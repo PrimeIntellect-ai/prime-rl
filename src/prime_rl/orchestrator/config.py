@@ -580,15 +580,15 @@ class BufferConfig(BaseConfig):
 class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False
 
-    # Multi-reward support
-    batch_normalize: bool = True
-    """
-    Whether to apply batch-wise normalization after summing per-reward advantages.
-    Recommended for training stability when using multiple rewards.
-    """
+    batch_normalize: Annotated[
+        bool,
+        Field(description="Whether to apply batch-wise normalization after summing per-reward advantages."),
+    ] = True
 
-    std_eps: float = 1e-8
-    """Epsilon for numerical stability in standard deviation normalization."""
+    std_eps: Annotated[
+        float,
+        Field(description="Epsilon for numerical stability in standard deviation normalization."),
+    ] = 1e-8
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):
