@@ -1,6 +1,6 @@
 import shutil
 import time
-from collections import defaultdict, deque
+from collections import deque
 from typing import TYPE_CHECKING
 
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -48,43 +48,26 @@ class Packer:
         )
 
         # Per-run buffer: stores (TrainingSample, temperature) tuples
-        self.buffers: dict[int, deque[tuple[TrainingSample, float]]] = defaultdict(deque)
+        self.buffers: list[deque[tuple[TrainingSample, float]]] = [deque() for _ in range(self.runs.max_runs)]
 
         # Per-run sample count consumed in current step
-        self.samples_consumed_this_step: dict[int, int] = defaultdict(int)
+        self.samples_consumed_this_step: list[int] = [0] * self.runs.max_runs
 
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
-        # Register creation hook to reset state when a run is replaced
-        self.runs.register_creation_hook(self._on_run_created)
         # Register create_run_data hook for receiver reset (master only, runs during check_for_changes)
         # This must happen early to prevent receiver from getting stuck looking for old data
         self.runs.register_create_run_data_hook(self._on_run_data_created)
 
     def _on_run_data_created(self, idx: int, run_id: str, config: "OrchestratorConfig") -> None:
-        """Reset receiver state when run data is created (master only).
-
-        Called during check_for_changes() before sync to prevent receiver from getting
-        stuck in infinite loop looking for old run data.
-        """
-        self.logger.debug(f"Resetting receiver state for run {idx}")
+        """Reset run state when run data is created (master only)."""
+        self.logger.debug(f"Packing is resetting run state for run {idx}")
         self.receiver.reset_run(idx)
 
-    def _on_run_created(self, idx: int, run_id: str) -> None:
-        """Reset packer state for a run index when a new run is created.
-
-        Called via creation hook when a run is deleted and a new run takes its place.
-        Clears buffered samples and partial step progress for the index.
-        """
-        self.logger.debug(f"Resetting packer state for run {idx}")
-        # Clear any buffered samples from the old run
-        if idx in self.buffers:
-            self.buffers[idx].clear()
-
-        # Reset partial step progress
-        if idx in self.samples_consumed_this_step:
-            del self.samples_consumed_this_step[idx]
+        # Reset run state
+        self.buffers[idx].clear()
+        self.samples_consumed_this_step[idx] = 0
 
     def _get_batch(self) -> None:
         """Receive batches from orchestrator and buffer samples per run."""
@@ -120,7 +103,7 @@ class Packer:
         threshold = self.seq_len * self.dp_world_size
         tokens = 0
 
-        for buffer in self.buffers.values():
+        for buffer in self.buffers:
             for sample, _ in buffer:
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
                 if tokens >= threshold:
@@ -151,14 +134,16 @@ class Packer:
                 if len(self.buffers[self._round_robin_position]) != 0:
                     break
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
+                print(f"Checking run {self._round_robin_position}")
             else:
                 # TODO: We could probably make the logic safer. This is basically counting on _has_enough_tokens() to be correct.
-                raise ValueError("No runs with work found. This should never happen.")
+                print({i: len(v) for i, v in enumerate(self.buffers)})
+                break
             run_idx = self._round_robin_position
-            self._round_robin_position += 1
+            self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
 
             while len(self.buffers[run_idx]) > 0:
-                sample, temperature = self.buffers[run_idx][-1]
+                sample, temperature = self.buffers[run_idx][0]
                 tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
                 if tokens_collected > token_budget:
                     return selected
@@ -190,7 +175,7 @@ class Packer:
             if (
                 self.small_batch_granularity
                 and time.time() - start_time > TIMEOUT_SECONDS
-                and any(self.buffers.values())
+                and any(len(i) > 0 for i in self.buffers)
             ):
                 self.logger.warning("Timeout waiting for enough tokens to pack")
                 break
@@ -202,8 +187,10 @@ class Packer:
         assert selected_samples, "No samples selected"
 
         # Group by run for prepare_batch (MultiLoRAMoE requires same run_idx in microbatch)
-        samples_by_run: dict[int, list[tuple[TrainingSample, float]]] = defaultdict(list)
+        samples_by_run: dict[int, list[tuple[TrainingSample, float]]] = {}
         for run_idx, sample, temperature in selected_samples:
+            if run_idx not in samples_by_run:
+                samples_by_run[run_idx] = []
             samples_by_run[run_idx].append((sample, temperature))
 
         micro_batch_grid = [[] for _ in range(self.dp_world_size)]
