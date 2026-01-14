@@ -83,13 +83,17 @@ async def orchestrate(config: OrchestratorConfig):
         tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
     # Install environments
-    env_ids_to_install = set()
-    env_ids_to_install.update(get_env_ids_to_install(config.env))
+    env_ids_to_install: dict[str, bool] = {}
+    for env_id, no_upgrade in get_env_ids_to_install(config.env).items():
+        existing = env_ids_to_install.get(env_id, False)
+        env_ids_to_install[env_id] = existing or no_upgrade
     if config.eval is not None:
-        env_ids_to_install.update(get_env_ids_to_install(config.eval.env))
+        for env_id, no_upgrade in get_env_ids_to_install(config.eval.env).items():
+            existing = env_ids_to_install.get(env_id, False)
+            env_ids_to_install[env_id] = existing or no_upgrade
 
-    for env_id in env_ids_to_install:
-        install_env(env_id)
+    for env_id, no_upgrade in env_ids_to_install.items():
+        install_env(env_id, no_upgrade=no_upgrade)
 
     # Setup client
     logger.info(
