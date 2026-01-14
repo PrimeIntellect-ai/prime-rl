@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import traceback
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from multiprocessing.queues import Queue
 
 
 def should_upload_step(step: int, keep_interval: int | None) -> bool:
@@ -75,4 +82,33 @@ def build_training_path_in_repo(repo_prefix: str, step: int) -> str:
 
 def build_weights_path_in_repo(repo_prefix: str, step: int) -> str:
     return _path_in_repo(repo_prefix, "weights", step)
+
+
+def hf_push_upload_worker(payload: dict[str, str], result_queue: "Queue[str | None]") -> None:
+    """
+    Worker entrypoint for running hf_push uploads in a separate process.
+
+    Writes None to result_queue on success, or a formatted traceback on error.
+    """
+    try:
+        upload_folder_to_hub(
+            repo_id=payload["repo_id"],
+            folder_path=Path(payload["folder_path"]),
+            path_in_repo=payload["path_in_repo"],
+            commit_message=payload["commit_message"],
+            create_repo=True,
+            private=True,
+        )
+        result_queue.put(None)
+    except Exception:  # noqa: BLE001
+        result_queue.put(traceback.format_exc())
+
+
+def log_hf_push_worker_result(desc: str, result: str | None) -> None:
+    logger = get_logger()
+    if result is None:
+        logger.info(f"hf_push upload finished OK ({desc})")
+    else:
+        logger.warning(f"hf_push upload failed ({desc})")
+        logger.warning(result.rstrip())
 

@@ -1,13 +1,11 @@
-import json
 import shutil
-import subprocess
-import sys
 import time
 import warnings
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import multiprocessing as mp
 import torch
 from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
@@ -33,6 +31,8 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.hf_hub import (
     build_training_path_in_repo,
     build_weights_path_in_repo,
+    hf_push_upload_worker,
+    log_hf_push_worker_result,
     should_upload_step,
 )
 from prime_rl.utils.logger import get_logger
@@ -95,7 +95,8 @@ class CheckpointManager:
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
         self.world = get_world()
-        self._upload_proc: subprocess.Popen[str] | None = None
+        self._upload_proc: mp.Process | None = None
+        self._upload_queue: mp.Queue[str | None] | None = None
         self._upload_desc: str | None = None
         if self.world.is_master:
             all_steps = get_all_ckpt_steps(self.ckpt_dir)
@@ -274,20 +275,22 @@ class CheckpointManager:
 
     def _spawn_upload(self, payload: dict[str, str], desc: str) -> None:
         try:
-            cmd = [sys.executable, "-m", "prime_rl.utils.hf_hub_worker", json.dumps(payload)]
             self.logger.info(f"Starting hf_push upload subprocess ({desc})")
-            self._upload_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            ctx = mp.get_context("spawn")
+            self._upload_queue = ctx.Queue(maxsize=1)
+            self._upload_proc = ctx.Process(target=hf_push_upload_worker, args=(payload, self._upload_queue), daemon=True)
+            self._upload_proc.start()
             self._upload_desc = desc
         except Exception as e:  # noqa: BLE001
             self.logger.warning(f"Failed to start hf_push upload subprocess ({desc}): {e}")
             self._upload_proc = None
+            self._upload_queue = None
             self._upload_desc = None
 
     def _poll_upload(self) -> None:
         if self._upload_proc is None:
             return
-        rc = self._upload_proc.poll()
-        if rc is None:
+        if self._upload_proc.is_alive():
             return
         self._finalize_upload()
 
@@ -295,24 +298,23 @@ class CheckpointManager:
         if self._upload_proc is None:
             return
         try:
-            self._upload_proc.wait()
+            self._upload_proc.join()
         finally:
             self._finalize_upload()
 
     def _finalize_upload(self) -> None:
         assert self._upload_proc is not None
-        rc = self._upload_proc.returncode
-        out, err = self._upload_proc.communicate()
         desc = self._upload_desc or "unknown"
-        if rc == 0:
-            self.logger.info(f"hf_push upload finished OK ({desc})")
-        else:
-            self.logger.warning(f"hf_push upload failed (rc={rc}) ({desc})")
-            if out.strip():
-                self.logger.warning(f"hf_push stdout:\n{out.rstrip()}")
-            if err.strip():
-                self.logger.warning(f"hf_push stderr:\n{err.rstrip()}")
+        result = None
+        if self._upload_queue is not None:
+            try:
+                result = self._upload_queue.get_nowait()
+            except Exception:  # noqa: BLE001
+                result = "hf_push worker exited without reporting status"
+        log_hf_push_worker_result(desc, result)
+
         self._upload_proc = None
+        self._upload_queue = None
         self._upload_desc = None
 
     def wait_for_last_hf_push(self) -> None:
@@ -342,7 +344,8 @@ class WeightCheckpointManager:
         self.lora_config = lora_config
         self.logger = get_logger()
         self.world = get_world()
-        self._upload_proc: subprocess.Popen[str] | None = None
+        self._upload_proc: mp.Process | None = None
+        self._upload_queue: mp.Queue[str | None] | None = None
         self._upload_desc: str | None = None
         if self.world.is_master:
             all_steps = get_all_ckpt_steps(self.weights_dir)
@@ -491,20 +494,22 @@ class WeightCheckpointManager:
 
     def _spawn_upload(self, payload: dict[str, str], desc: str) -> None:
         try:
-            cmd = [sys.executable, "-m", "prime_rl.utils.hf_hub_worker", json.dumps(payload)]
             self.logger.info(f"Starting hf_push upload subprocess ({desc})")
-            self._upload_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            ctx = mp.get_context("spawn")
+            self._upload_queue = ctx.Queue(maxsize=1)
+            self._upload_proc = ctx.Process(target=hf_push_upload_worker, args=(payload, self._upload_queue), daemon=True)
+            self._upload_proc.start()
             self._upload_desc = desc
         except Exception as e:  # noqa: BLE001
             self.logger.warning(f"Failed to start hf_push upload subprocess ({desc}): {e}")
             self._upload_proc = None
+            self._upload_queue = None
             self._upload_desc = None
 
     def _poll_upload(self) -> None:
         if self._upload_proc is None:
             return
-        rc = self._upload_proc.poll()
-        if rc is None:
+        if self._upload_proc.is_alive():
             return
         self._finalize_upload()
 
@@ -512,24 +517,23 @@ class WeightCheckpointManager:
         if self._upload_proc is None:
             return
         try:
-            self._upload_proc.wait()
+            self._upload_proc.join()
         finally:
             self._finalize_upload()
 
     def _finalize_upload(self) -> None:
         assert self._upload_proc is not None
-        rc = self._upload_proc.returncode
-        out, err = self._upload_proc.communicate()
         desc = self._upload_desc or "unknown"
-        if rc == 0:
-            self.logger.info(f"hf_push upload finished OK ({desc})")
-        else:
-            self.logger.warning(f"hf_push upload failed (rc={rc}) ({desc})")
-            if out.strip():
-                self.logger.warning(f"hf_push stdout:\n{out.rstrip()}")
-            if err.strip():
-                self.logger.warning(f"hf_push stderr:\n{err.rstrip()}")
+        result = None
+        if self._upload_queue is not None:
+            try:
+                result = self._upload_queue.get_nowait()
+            except Exception:  # noqa: BLE001
+                result = "hf_push worker exited without reporting status"
+        log_hf_push_worker_result(desc, result)
+
         self._upload_proc = None
+        self._upload_queue = None
         self._upload_desc = None
 
     def wait_for_last_hf_push(self) -> None:
