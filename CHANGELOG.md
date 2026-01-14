@@ -33,3 +33,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`model.lora.alpha`**: Changed default from 16.0 to 32.0 (2026-01-10)
 - **`orchestrator.env.log`**: Added logging configuration for environment workers. If set, enables logging with `level` (str, default: "warn") and `vf_level` (str, default: "warn") fields. If None (default), logging is disabled (#1561, 2026-01-13)
 - **`eval.watcher`**: Added flag (default `False`) to watch `weights_dir` for newly-created stable checkpoints and evaluate them as they appear (2026-01-14)
+- **`orchestrator.eval.retry.reraise`**: Changed default from `True` to `False`. When `False`, raises `tenacity.RetryError` after retries are exhausted instead of the original exception, allowing failed eval environments to be skipped with a warning (#1586, 2026-01-14)
