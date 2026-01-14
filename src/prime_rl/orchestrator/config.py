@@ -292,9 +292,9 @@ class RetryConfig(BaseConfig):
     reraise: Annotated[
         bool,
         Field(
-            description="Whether to reraise the exception after all retries are exhausted.",
+            description="Whether to reraise the original exception after all retries are exhausted. If False, raises tenacity.RetryError instead.",
         ),
-    ] = True
+    ] = False
 
 
 class EnvLogConfig(BaseConfig):
