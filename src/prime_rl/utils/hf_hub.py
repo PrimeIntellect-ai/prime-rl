@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from prime_rl.utils.logger import get_logger
-
 
 def should_upload_step(step: int, keep_interval: int | None) -> bool:
     """
@@ -52,15 +50,12 @@ def upload_folder_to_hub(
 
     This is intentionally "upload from disk" (no in-memory serialization).
     """
-    logger = get_logger()
-
     import huggingface_hub as hf_hub
 
     api = hf_hub.HfApi()
     if create_repo:
         api.create_repo(repo_id=repo_id, repo_type=repo_type, exist_ok=True, private=private)
 
-    logger.info(f"Uploading {folder_path} to hf://{repo_id}/{path_in_repo}")
     use_large_upload = _should_use_large_upload(folder_path)
     upload_fn = api.upload_folder
     if use_large_upload and hasattr(api, "upload_large_folder"):
