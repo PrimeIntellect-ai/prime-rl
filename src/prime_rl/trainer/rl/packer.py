@@ -77,6 +77,7 @@ class SinglePacker(BasePacker):
         batch = batches[0]
 
         self.runs.ready_to_update[0] = True
+        self.runs.progress[0].step += 1
         micro_batch_grid = prepare_batch(
             rollouts=batch.examples,
             temperature=batch.temperature,
