@@ -32,8 +32,8 @@ async def eval(config: OfflineEvalConfig):
 
     # Install environments
     env_ids_to_install = get_env_ids_to_install(config.env)
-    for env_id in env_ids_to_install:
-        install_env(env_id)
+    for env_id, no_upgrade in env_ids_to_install.items():
+        install_env(env_id, no_upgrade=no_upgrade)
 
     # Initialize the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
