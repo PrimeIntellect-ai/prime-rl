@@ -62,10 +62,8 @@ class PrimeMonitor(Monitor):
         self.run_id = run_id
 
         # Set up async HTTP client with background event loop
-        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
-        self._thread = Thread(target=self._run_event_loop, daemon=True)
-        self._thread.start()
-        self._client = httpx.AsyncClient(timeout=30)
+        self._init_async_client()
+        os.register_at_fork(after_in_child=self._reinit_after_fork)
 
         # Optionally, initialize sample logging attributes
         if config is not None and config.log_extras:
@@ -250,6 +248,17 @@ class PrimeMonitor(Monitor):
     def __del__(self) -> None:
         """Destructor to ensure cleanup."""
         self.close()
+
+    def _init_async_client(self) -> None:
+        """Initialize the event loop, background thread, and HTTP client."""
+        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+        self._thread = Thread(target=self._run_event_loop, daemon=True)
+        self._thread.start()
+        self._client = httpx.AsyncClient(timeout=30)
+
+    def _reinit_after_fork(self) -> None:
+        """Reinitialize thread and event loop after fork."""
+        self._init_async_client()
 
     def _run_event_loop(self) -> None:
         """Run the async event loop in a background thread."""

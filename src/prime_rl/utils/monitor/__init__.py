@@ -17,7 +17,6 @@ __all__ = [
     "NoOpMonitor",
     "setup_monitor",
     "get_monitor",
-    "reset_monitor",
 ]
 
 _MONITOR: Monitor | None = None
@@ -29,12 +28,6 @@ def get_monitor() -> Monitor:
     if _MONITOR is None:
         raise RuntimeError("Monitor not initialized. Please call `setup_monitor` first.")
     return _MONITOR
-
-
-def reset_monitor() -> None:
-    """Reset the global monitor. Needed in forked subprocesses before calling setup_monitor()."""
-    global _MONITOR
-    _MONITOR = None
 
 
 def setup_monitor(
