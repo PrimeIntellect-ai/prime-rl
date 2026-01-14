@@ -10,13 +10,6 @@ prime-rl uses [loguru](https://loguru.readthedocs.io/en/stable/) for logging wit
 - **Orchestrator**: follows `{output_dir}/logs/orchestrator.stdout`
 - **Inference**: follows `{output_dir}/logs/inference.stdout`
 
-Run it with defaults (`prime-rl` session, `outputs` dir), or override:
-
-```bash
-./scripts/tmux.sh
-./scripts/tmux.sh -s my-session -o my-outputs
-```
-
 ## Logger Architecture
 
 ### `setup_logger` and `get_logger`
