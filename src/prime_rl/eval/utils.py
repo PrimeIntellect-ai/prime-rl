@@ -641,7 +641,7 @@ async def run_eval(
     # Log statistics to monitor
     eval_metrics = {
         f"avg@{k}": results_df.reward.mean(),
-        "no_response/mean": no_response_rate,
+        "no_response/pct": no_response_rate * 100.0,
         "no_response/count": int((results_df.rollout_status == "no_response").sum()) if "rollout_status" in results_df else 0,
         "completion_len/avg": results_df.completion_len.mean().item(),
         "completion_len/max": results_df.completion_len.max().item(),
