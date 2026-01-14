@@ -92,6 +92,14 @@ async def eval(config: OfflineEvalConfig):
         )
         logger.info(f"Found {len(ckpt_steps)} stable weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
 
+        # Runtime validation: if explicit steps requested, ensure they exist and are stable
+        if config.steps is not None:
+            missing_steps = [step for step in config.steps if step not in ckpt_steps]
+            if missing_steps:
+                raise ValueError(
+                    f"Step {missing_steps[0]} not found (or not stable) in weights directory {config.weights_dir}"
+                )
+
         # Filter the steps to evaluate
         if config.steps is not None:
             ckpt_steps = [step for step in ckpt_steps if step in config.steps]
