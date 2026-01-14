@@ -1,4 +1,5 @@
 from pathlib import Path
+import importlib
 import sys
 import types
 
@@ -100,9 +101,7 @@ def _install_eval_import_stubs() -> None:
 _install_eval_import_stubs()
 
 # Import after stubbing so test can run in minimal env.
-import importlib  # noqa: E402
-
-eval_mod = importlib.import_module("prime_rl.eval.eval")  # noqa: E402
+eval_mod = importlib.import_module("prime_rl.eval.eval")
 
 
 @pytest.mark.asyncio
@@ -115,9 +114,6 @@ async def test_eval_continues_on_checkpoint_failure(tmp_path, monkeypatch):
         (step_dir / "STABLE").write_text("ok")
 
     called_steps: list[int] = []
-
-    async def _noop_async(*args, **kwargs):
-        return None
 
     async def _update_weights(_admin_clients, step_path):
         # step_path ends with step_{x}
