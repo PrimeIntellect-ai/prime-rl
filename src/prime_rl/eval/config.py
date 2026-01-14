@@ -79,6 +79,16 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
         ),
     ] = None
 
+    watcher: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, watch `weights_dir` for newly-created stable checkpoints (folders named `step_{x}` that contain a `STABLE` file) "
+                "and evaluate them as they appear, instead of immediately iterating over all existing checkpoints."
+            ),
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def validate_steps(self):
         if self.steps is not None and self.weights_dir is not None:

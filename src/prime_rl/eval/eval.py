@@ -108,6 +108,35 @@ async def eval(config: OfflineEvalConfig):
                 resume_path=config.resume_path,
             )
 
+        if config.watcher:
+            already_evaluated_ckpt_steps = ckpt_steps
+
+            while True:
+                all_ckpt_steps = sorted(
+                    [int(step_path.name.split("_")[-1]) for step_path in config.weights_dir.glob("step_*")]
+                )
+                new_ckpt_steps = [step for step in all_ckpt_steps if step not in already_evaluated_ckpt_steps]
+                if len(new_ckpt_steps) > 0:
+                    logger.info(f"New checkpoints to evaluate: {', '.join(map(str, new_ckpt_steps))}")
+                    for ckpt_step in new_ckpt_steps:
+                        logger.info(f"Evaluating model {config.model.name} at checkpoint {ckpt_step}")
+                        await update_weights(admin_clients, get_step_path(config.weights_dir, ckpt_step))
+                        await run_evals(
+                            clients=clients,
+                            eval_config=config,
+                            model_config=config.model,
+                            sampling_config=config.sampling,
+                            evals_client=evals_client,
+                            reasoning_field=config.reasoning_field,
+                            output_dir=config.output_dir,
+                            ckpt_step=ckpt_step,
+                            resume_path=config.resume_path,
+                        )
+                        already_evaluated_ckpt_steps.append(ckpt_step)
+                else:
+                    logger.info("No new checkpoints to evaluate, waiting for 10 seconds")
+                    await asyncio.sleep(10)
+
     logger.success("Eval finished!")
 
 
