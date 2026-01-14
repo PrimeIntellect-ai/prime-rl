@@ -25,9 +25,9 @@ from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSav
 from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.synthesize.utils import merge_reasoning_content, save_result
 from prime_rl.utils.client import setup_clients, setup_evals_client
-from prime_rl.utils.config import ClientConfig
+from prime_rl.utils.config import ClientConfig, PrimeMonitorConfig, WandbWithExtrasConfig
 from prime_rl.utils.logger import get_logger, reset_logger, setup_logger
-from prime_rl.utils.monitor import get_monitor
+from prime_rl.utils.monitor import get_monitor, reset_monitor, setup_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
 from prime_rl.utils.vf import (
     generate_group,
@@ -670,12 +670,18 @@ def _run_evals_in_subprocess(
     ckpt_step: int,
     step: int | None,
     max_concurrent: int,
+    prime_monitor_config: PrimeMonitorConfig | None,
+    wandb_config: WandbWithExtrasConfig | None,
 ):
     """Entry point for eval subprocess. Creates its own event loop and clients."""
     # Setup logger for subprocess (reset first since we inherit parent's global state when forked)
     reset_logger()
     logger = setup_logger("info")
     logger.info(f"Eval subprocess started for checkpoint step {ckpt_step}")
+
+    # Setup monitor for subprocess
+    reset_monitor()
+    setup_monitor(prime_config=prime_monitor_config, wandb_config=wandb_config, output_dir=Path(output_dir))
 
     # Create fresh clients in subprocess
     clients = setup_clients(client_config)
@@ -709,6 +715,8 @@ async def run_evals_subprocess(
     ckpt_step: int,
     step: int | None = None,
     max_concurrent: int = -1,
+    prime_monitor_config: PrimeMonitorConfig | None = None,
+    wandb_config: WandbWithExtrasConfig | None = None,
 ):
     """Run evals in a separate subprocess to isolate the event loop.
 
@@ -730,6 +738,8 @@ async def run_evals_subprocess(
             ckpt_step,
             step,
             max_concurrent,
+            prime_monitor_config,
+            wandb_config,
         ),
         daemon=True,
     )
