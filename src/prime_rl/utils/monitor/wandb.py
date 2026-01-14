@@ -71,15 +71,15 @@ class WandbMonitor(Monitor):
             self.logger.debug(f"Found WANDB_ARGS in environment variables {wandb_args}")
             sys.argv = json.loads(wandb_args)
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None, commit: bool | None = None) -> None:
         self.history.append(metrics)
         if not self.is_master:
             return
         if not self.enabled:
             return
-        wandb.log(metrics, step=step)
+        wandb.log(metrics, step=step, commit=commit)
 
-    def log_samples(self, rollouts: list[vf.State], step: int) -> None:
+    def log_samples(self, rollouts: list[vf.State], step: int, commit: bool | None = None) -> None:
         """Logs rollouts to W&B table."""
         if not self.is_master:
             return
@@ -122,7 +122,7 @@ class WandbMonitor(Monitor):
             self.samples_table.add_data(*sample.values())
             self.samples.append(sample)
 
-        wandb.log({"samples": self.samples_table}, step=step)
+        wandb.log({"samples": self.samples_table}, step=step, commit=commit)
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
