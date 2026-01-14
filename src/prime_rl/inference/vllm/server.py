@@ -111,7 +111,10 @@ async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_reques
     try:
         generator = await handler.create_chat_completion_with_tokens(request, raw_request)
     except Exception as e:
-        raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
+        # Don't chain exceptions here: chained tracebacks ("... direct cause ...")
+        # are noisy and can leak internals. Keep logs and the client response minimal.
+        logger.error("Error in /v1/chat/completions/tokens: %s: %s", type(e).__name__, e)
+        raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value, detail=str(e)) from None
     if isinstance(generator, ErrorResponse):
         return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
 

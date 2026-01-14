@@ -123,8 +123,10 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                     engine_prompts,
                 ) = self._make_request_with_harmony(request)
         except (ValueError, TypeError, RuntimeError, jinja2.TemplateError) as e:
-            logger.exception("Error in preprocessing prompt inputs")
-            return self.create_error_response(f"{e} {e.__cause__}")
+            # Avoid emitting full chained tracebacks and avoid leaking exception causes
+            # in the user-visible error message.
+            logger.error("Error in preprocessing prompt inputs: %s: %s", type(e).__name__, e)
+            return self.create_error_response(str(e))
 
         # In-place override the engine_prompts with the tokens from the request
         assert len(engine_prompts) == 1
