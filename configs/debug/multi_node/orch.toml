@@ -21,7 +21,6 @@ args = { max_turns = 50, cpu_cores = 2, memory_gb = 4, disk_size_gb = 2, labels 
 name = "mini-swe-agent-plus"
 
 [env.log]
-enabled = true
 level = "debug"
 vf_level = "debug"
 
