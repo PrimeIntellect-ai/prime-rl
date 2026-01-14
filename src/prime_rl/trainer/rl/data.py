@@ -141,7 +141,7 @@ class DataLoader:
                 dp_world_size=dp_world_size,
                 seq_len=seq_len,
                 tokenizer=tokenizer,
-                config=config,
+                transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 start_step=start_step,
             )
