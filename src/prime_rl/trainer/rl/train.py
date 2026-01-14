@@ -14,6 +14,7 @@ import torch.distributed.nn as dist_nn
 from torch.profiler import profile, ProfilerActivity, record_function
 from loguru import logger
 from prime_rl.trainer.ckpt import setup_ckpt_managers
+from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.trainer.rl.config import RLTrainerConfig
@@ -134,17 +135,22 @@ def train(config: RLTrainerConfig):
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
-    # Set up checkpoint manager
-    logger.info(f"Initializing checkpoint managers ({config.ckpt})")
-    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.output_dir, config.ckpt, config.model.lora)
-
-    # get the checkpoint step to load from
+    # For single-run, check for checkpoint to resume from
     checkpoint_step = None
-    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-        if config.ckpt.resume_step == -1:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-        else:
-            checkpoint_step = config.ckpt.resume_step
+    if config.max_concurrent_runs == 1:
+        # Set up checkpoint manager for single-run
+        logger.info(f"Initializing checkpoint managers ({config.ckpt})")
+        ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.output_dir, config.ckpt, config.model.lora)
+
+        if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
+            if config.ckpt.resume_step == -1:
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+            else:
+                checkpoint_step = config.ckpt.resume_step
+    else:
+        # Multi-run uses per-run checkpointing via MultiCheckpointManager
+        ckpt_manager, weight_ckpt_manager = setup_multi_checkpoint_manager(config.output_dir)
+        logger.info("Initialized multi-run checkpoint manager")
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
@@ -169,6 +175,12 @@ def train(config: RLTrainerConfig):
     else:
         optimizer = setup_multi_optimizer(config.optim, parallel_dims)
         scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps)
+
+        # Register checkpoint loading callback at index 1 (after scheduler creation at index 0)
+        def load_run_checkpoint(_optimizer, idx: int) -> None:
+            ckpt_manager.load_run(idx, optimizer, scheduler)
+
+        optimizer.register_post_creation_callback(load_run_checkpoint, index=1)
 
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
@@ -241,7 +253,7 @@ def train(config: RLTrainerConfig):
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
-            # Save full checkpoint
+            # Single-run: Save full checkpoint
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
@@ -257,6 +269,12 @@ def train(config: RLTrainerConfig):
 
                 # Maybe clean up old weight checkpoint
                 weight_ckpt_manager.maybe_clean()
+        elif config.max_concurrent_runs > 1:
+            # Multi-run: Save per-run checkpoints (each run has its own interval from orchestrator config)
+            save_ckpt_start_time = time.perf_counter()
+            ckpt_manager.save(optimizer, scheduler)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            ckpt_manager.maybe_clean()
         else:
             save_ckpt_time = 0
 

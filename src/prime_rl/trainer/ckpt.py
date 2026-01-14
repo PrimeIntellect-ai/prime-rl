@@ -199,6 +199,24 @@ class CheckpointManager:
         if self.world.is_master:
             self.ckpt_steps.append(step)
 
+    def save_stateful(self, step: int, stateful: Stateful) -> None:
+        """Save a custom Stateful object for a specified step."""
+        ckpt_path = self.get_ckpt_path(step)
+        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        self.logger.debug(f"Saving checkpoint to {ckpt_path}")
+        dcp_save({"app": stateful}, checkpoint_id=ckpt_path)
+        if self.world.is_master:
+            (ckpt_path / "STABLE").touch()
+            self.ckpt_steps.append(step)
+
+    def load_stateful(self, step: int, stateful: Stateful) -> None:
+        """Load into a custom Stateful object from a specified step."""
+        ckpt_path = self.get_ckpt_path(step)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
+        self.logger.debug(f"Loading checkpoint from {ckpt_path}")
+        dcp_load({"app": stateful}, checkpoint_id=ckpt_path)
+
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
         if self.config.keep_last is None and self.config.keep_interval is None:

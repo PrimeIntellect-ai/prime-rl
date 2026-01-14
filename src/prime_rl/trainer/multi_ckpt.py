@@ -1,0 +1,183 @@
+"""Multi-run checkpointing for RL training.
+
+MultiCheckpointManager owns per-run CheckpointManagers and AppStates,
+each saving to its own run directory.
+"""
+
+from dataclasses import asdict
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import torch
+import torch.distributed as dist
+from torch.distributed.checkpoint.stateful import Stateful
+
+from prime_rl.trainer.ckpt import CheckpointManager
+from prime_rl.trainer.config import CheckpointConfig
+from prime_rl.trainer.runs import Progress, get_runs
+from prime_rl.trainer.world import get_world
+from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.optim import MultiLoRAOptimizer
+    from prime_rl.trainer.scheduler import MultiLoRAScheduler
+
+
+class RunAppState(Stateful):
+    """Per-run state wrapper - just like AppState but for adapter weights."""
+
+    def __init__(
+        self,
+        model_state_dict: dict[str, Any],
+        idx: int,
+        optimizer,
+        scheduler,
+        progress: Progress,
+    ):
+        self.model_state_dict = model_state_dict
+        self.idx = idx
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.progress = progress
+
+    def state_dict(self) -> dict[str, Any]:
+        state = {
+            "model": self.model_state_dict,
+            "progress": asdict(self.progress),
+        }
+        if self.optimizer is not None:
+            state["optimizer"] = self.optimizer.state_dict()
+        if self.scheduler is not None:
+            state["scheduler"] = self.scheduler.state_dict()
+        return state
+
+    @torch.no_grad()
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        # Load adapter weights
+        for key, value in state_dict["model"].items():
+            if key in self.model_state_dict:
+                self.model_state_dict[key].copy_(value)
+        # Load optimizer
+        if "optimizer" in state_dict and self.optimizer is not None:
+            self.optimizer.load_state_dict(state_dict["optimizer"])
+        # Load scheduler
+        if "scheduler" in state_dict and self.scheduler is not None:
+            self.scheduler.load_state_dict(state_dict["scheduler"])
+        # Load progress
+        for key, value in state_dict["progress"].items():
+            setattr(self.progress, key, value)
+
+
+class MultiCheckpointManager:
+    """Owns per-run CheckpointManagers and AppStates."""
+
+    def __init__(self, output_dir: Path):
+        self.output_dir = output_dir
+        self.runs = get_runs()
+        self.world = get_world()
+        self.logger = get_logger()
+        self.managers: dict[int, CheckpointManager] = {}
+
+    def _get_or_create_manager(self, idx: int) -> CheckpointManager | None:
+        if idx in self.managers:
+            return self.managers[idx]
+
+        ckpt_config = self.runs.config[idx].ckpt
+        if ckpt_config is None:
+            return None
+
+        config = CheckpointConfig(
+            interval=ckpt_config.interval,
+            keep_last=ckpt_config.keep_last,
+            keep_interval=ckpt_config.keep_interval,
+        )
+        run_dir = self.runs.get_run_dir(idx)
+        manager = CheckpointManager(run_dir, config)
+        self.managers[idx] = manager
+        return manager
+
+    def _should_save(self, idx: int, step: int) -> bool:
+        """Determine if a checkpoint should be saved for a given run and step."""
+        ckpt_config = self.runs.config[idx].ckpt
+        if ckpt_config is None or ckpt_config.interval is None:
+            return False
+        if step <= 0 or step % ckpt_config.interval != 0:
+            return False
+        # Check if already saved this step
+        manager = self._get_or_create_manager(idx)
+        if manager is not None and step in manager.ckpt_steps:
+            return False
+        return True
+
+    def save(
+        self,
+        optimizer: "MultiLoRAOptimizer",
+        scheduler: "MultiLoRAScheduler",
+    ) -> None:
+        for idx in list(self.runs.used_idxs):
+            step = self.runs.progress[idx].step
+            if not self._should_save(idx, step):
+                continue
+
+            manager = self._get_or_create_manager(idx)
+            if manager is None:
+                continue
+
+            try:
+                model_state_dict = dict(self.runs.get_named_parameters_for_run(idx))
+                app_state = RunAppState(
+                    model_state_dict,
+                    idx,
+                    optimizer.optimizers[idx],
+                    scheduler.schedulers[idx],
+                    self.runs.progress[idx],
+                )
+                self.logger.info(f"Saving checkpoint for run {idx} at step {step}")
+                manager.save_stateful(step, app_state)
+            except FileNotFoundError:
+                self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
+            except Exception as e:
+                self.logger.error(f"Error checkpointing run {idx}: {e}")
+
+        dist.barrier()
+
+    def load_run(
+        self,
+        idx: int,
+        optimizer: "MultiLoRAOptimizer",
+        scheduler: "MultiLoRAScheduler",
+    ) -> bool:
+        if self.runs.config[idx].ckpt is None or self.runs.config[idx].ckpt.resume_step is None:
+            return False
+        step = self.runs.config[idx].ckpt.resume_step
+        manager = self._get_or_create_manager(idx)
+        if manager is None:
+            return False
+
+        try:
+            model_state_dict = dict(self.runs.get_named_parameters_for_run(idx))
+            app_state = RunAppState(
+                model_state_dict,
+                idx,
+                optimizer.optimizers[idx],
+                scheduler.schedulers[idx],
+                self.runs.progress[idx],
+            )
+            manager.load_stateful(step, app_state)
+            self.logger.info(f"Resumed run {self.runs.idx_2_id[idx]} from step {step}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error loading checkpoint for run {idx}: {e}")
+            return False
+
+    def maybe_clean(self) -> None:
+        if not self.world.is_master:
+            return
+        for idx in list(self.runs.used_idxs):
+            manager = self.managers.get(idx)
+            if manager is not None:
+                manager.maybe_clean()
+
+
+def setup_multi_checkpoint_manager(output_dir: Path) -> tuple[MultiCheckpointManager, None]:
+    return MultiCheckpointManager(output_dir), None
