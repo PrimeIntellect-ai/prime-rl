@@ -115,8 +115,6 @@ async def eval(config: OfflineEvalConfig):
                 return True
             except Exception:
                 logger.exception(f"Checkpoint eval failed (ckpt_step={ckpt_step})")
-                if not config.continue_on_ckpt_error:
-                    raise
                 return False
 
         if config.watcher:
