@@ -337,6 +337,8 @@ class WeightCheckpointManager:
         # Save weight checkpoint on master rank
         if self.world.is_master:
             self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
+            # Write STABLE file to indicate checkpoint is complete (for eval to safely read)
+            (step_path / "STABLE").touch()
             self.ckpt_steps.append(step)
 
     def maybe_clean(self) -> None:

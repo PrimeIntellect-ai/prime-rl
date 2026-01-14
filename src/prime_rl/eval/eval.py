@@ -82,8 +82,15 @@ async def eval(config: OfflineEvalConfig):
     # If specified, evaluate all checkpoints found in the weights directory
     if config.weights_dir is not None:
         logger.info(f"Evaluating weight checkpoints in {config.weights_dir}")
-        ckpt_steps = sorted([int(step_path.name.split("_")[-1]) for step_path in config.weights_dir.glob("step_*")])
-        logger.info(f"Found {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
+        # Only include checkpoints that have a STABLE file (indicating save completed)
+        ckpt_steps = sorted(
+            [
+                int(step_path.name.split("_")[-1])
+                for step_path in config.weights_dir.glob("step_*")
+                if (step_path / "STABLE").exists()
+            ]
+        )
+        logger.info(f"Found {len(ckpt_steps)} stable weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
 
         # Filter the steps to evaluate
         if config.steps is not None:
@@ -112,8 +119,13 @@ async def eval(config: OfflineEvalConfig):
             already_evaluated_ckpt_steps = ckpt_steps
 
             while True:
+                # Only include checkpoints that have a STABLE file (indicating save completed)
                 all_ckpt_steps = sorted(
-                    [int(step_path.name.split("_")[-1]) for step_path in config.weights_dir.glob("step_*")]
+                    [
+                        int(step_path.name.split("_")[-1])
+                        for step_path in config.weights_dir.glob("step_*")
+                        if (step_path / "STABLE").exists()
+                    ]
                 )
                 new_ckpt_steps = [step for step in all_ckpt_steps if step not in already_evaluated_ckpt_steps]
                 if len(new_ckpt_steps) > 0:
