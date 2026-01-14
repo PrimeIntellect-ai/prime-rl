@@ -4,7 +4,7 @@ import time
 
 import tomli_w
 
-from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.advantage import compute_advantages, compute_advantages_multi_reward
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
@@ -352,14 +352,50 @@ async def orchestrate(config: OrchestratorConfig):
         train_rollouts = train_task.result()
 
         # Compute advantages
-        rewards = [rollout["reward"] for rollout in train_rollouts]
-        completion_lens = [get_completion_len(rollout) for rollout in train_rollouts]
-        advantages = compute_advantages(
-            rewards,
-            completion_lens,
-            config.rollouts_per_example,
-            config.advantage,
-        )
+        # Check if any environment has reward_keys configured for multi-reward
+        reward_keys = None
+        reward_weights = None
+        for env_config in config.env:
+            if env_config.reward_keys is not None:
+                if reward_keys is None:
+                    reward_keys = env_config.reward_keys
+                    reward_weights = env_config.reward_weights
+                elif reward_keys != env_config.reward_keys:
+                    raise ValueError(
+                        f"All environments must have the same reward_keys. "
+                        f"Got {reward_keys} and {env_config.reward_keys}"
+                    )
+                elif reward_weights != env_config.reward_weights:
+                    raise ValueError(
+                        f"All environments must have the same reward_weights. "
+                        f"Got {reward_weights} and {env_config.reward_weights}"
+                    )
+
+        if reward_keys is not None:
+            # Validate reward_weights length if provided
+            if reward_weights is not None and len(reward_weights) != len(reward_keys):
+                raise ValueError(
+                    f"reward_weights length ({len(reward_weights)}) must match reward_keys length ({len(reward_keys)})"
+                )
+            # Multi-reward path: use per-reward normalized advantages
+            metrics = [rollout["metrics"] for rollout in train_rollouts]
+            advantages = compute_advantages_multi_reward(
+                metrics,
+                reward_keys,
+                config.rollouts_per_example,
+                config.advantage,
+                reward_weights,
+            )
+        else:
+            # Single-reward path: use standard advantage calculation
+            rewards = [rollout["reward"] for rollout in train_rollouts]
+            completion_lens = [get_completion_len(rollout) for rollout in train_rollouts]
+            advantages = compute_advantages(
+                rewards,
+                completion_lens,
+                config.rollouts_per_example,
+                config.advantage,
+            )
 
         # Update and sample rollouts from the buffer
         make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
