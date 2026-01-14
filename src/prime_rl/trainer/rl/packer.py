@@ -144,6 +144,9 @@ class Packer:
                 sample, temperature = self.buffers[run_idx][0]
                 tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
                 if tokens_collected > token_budget:
+                    if tokens_collected == (len(sample.prompt_ids) + len(sample.completion_ids)):
+                        # This means we have a sample that has more tokens than max seqlen
+                        continue
                     return selected
                 selected.append((run_idx, sample, temperature))
                 self.buffers[run_idx].popleft()
