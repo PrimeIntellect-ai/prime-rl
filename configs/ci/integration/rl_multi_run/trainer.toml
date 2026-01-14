@@ -8,6 +8,3 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [model.lora]
 rank = 8
-
-[data]
-pack_only_one_microbatch_in_each_step = true

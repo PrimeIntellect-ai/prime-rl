@@ -195,7 +195,6 @@ def train(config: RLTrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
-            pack_only_one_microbatch_in_each_step=config.data.pack_only_one_microbatch_in_each_step,
         )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")

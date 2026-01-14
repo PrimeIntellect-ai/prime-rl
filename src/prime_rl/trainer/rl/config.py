@@ -84,13 +84,6 @@ class DataLoaderConfig(BaseConfig):
     """Configures the data loader used for training."""
 
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
-    pack_only_one_microbatch_in_each_step: Annotated[
-        bool,
-        Field(
-            description="When True, packs only one microbatch in each step (as soon as token threshold is met). "
-            "When False (default), waits for runs to have batch_size samples before packing."
-        ),
-    ] = False
 
 
 class BaseWeightBroadcastConfig(BaseModel):

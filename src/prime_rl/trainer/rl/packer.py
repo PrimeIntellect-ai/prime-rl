@@ -136,11 +136,7 @@ class MultiPacker(BasePacker):
                 self.buffers[batch.run_idx].append((sample, batch.temperature))
 
     def _has_enough_tokens(self) -> bool:
-        """Check if we have enough samples in buffer to pack a step
-
-        When pack_only_one_microbatch_in_each_step=False, requires at least one run to have batch_size samples before packing.
-        When pack_only_one_microbatch_in_each_step=True, we pack whenever we can make at least 1 micro batch for each data rank.
-        """
+        """Check if we have enough samples in buffer to pack a step"""
         # When not using small batch granularity, require at least one full batch
         threshold = self.seq_len * self.dp_world_size
         tokens = 0
@@ -153,11 +149,7 @@ class MultiPacker(BasePacker):
         return False
 
     def _select_samples_round_robin(self, token_budget: int) -> list[tuple[int, TrainingSample, float]]:
-        """Select samples using round-robin from runs with buffered work.
-
-        When pack_only_one_microbatch_in_each_step=False, we ignore the token budget and select all the samples from a run with enough samples.
-        When pack_only_one_microbatch_in_each_step=True, we select samples from runs with buffered work until we have enough tokens to pack a step.
-        """
+        """Select samples using round-robin from runs with buffered work."""
         selected: list[tuple[int, TrainingSample, float]] = []
         tokens_collected = 0
 
