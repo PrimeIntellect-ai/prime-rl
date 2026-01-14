@@ -1,5 +1,6 @@
 import shutil
 import time
+from abc import ABC, abstractmethod
 from collections import deque
 from typing import TYPE_CHECKING
 
@@ -23,7 +24,7 @@ from prime_rl.utils.pathing import get_rollout_dir
 TIMEOUT_SECONDS = 10
 
 
-class Packer:
+class BasePacker(ABC):
     def __init__(
         self,
         dp_world_size: int,
@@ -32,7 +33,6 @@ class Packer:
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
         start_step: int = 0,
-        pack_only_one_microbatch_in_each_step: bool = False,
     ):
         self.logger = get_logger()
         self.runs = get_runs()
@@ -40,13 +40,67 @@ class Packer:
         self.seq_len = seq_len
         self.pad_to_multiple_of = pad_to_multiple_of
         self.tokenizer = tokenizer
-        self.pack_only_one_microbatch_in_each_step = pack_only_one_microbatch_in_each_step
         self.receiver = setup_training_batch_receiver(config)
         shutil.rmtree(get_rollout_dir(self.runs.output_dir), ignore_errors=True)
         self.sender: MicroBatchSender = setup_micro_batch_sender(
             self.runs.output_dir, dp_world_size, start_step, config
         )
 
+    @abstractmethod
+    def pack(self) -> None:
+        """Pack samples for the next step."""
+        pass
+
+
+class SinglePacker(BasePacker):
+    def __init__(
+        self,
+        dp_world_size: int,
+        seq_len: int,
+        pad_to_multiple_of: int,
+        tokenizer: PreTrainedTokenizer,
+        config: TransportConfigType,
+        start_step: int = 0,
+    ):
+        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
+        assert self.runs.max_runs == 1, "SinglePacker only supports one run"
+
+    def pack(self):
+        # Wait for batch to be available
+        batches = []
+        while len(batches) == 0:
+            self.runs.check_for_changes()
+            batches = self.receiver.receive()
+            time.sleep(0.2)
+
+        assert len(batches) == 1, "SinglePacker only supports one batch per step"
+        batch = batches[0]
+
+        self.runs.ready_to_update[0] = True
+        micro_batch_grid = prepare_batch(
+            rollouts=batch.examples,
+            temperature=batch.temperature,
+            seq_len=self.seq_len,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            num_train_workers=self.dp_world_size,
+            idxs=[0] * len(batch.examples),
+            num_loras=self.runs.max_runs,
+        )
+
+        self.sender.send(micro_batch_grid)
+
+
+class MultiPacker(BasePacker):
+    def __init__(
+        self,
+        dp_world_size: int,
+        seq_len: int,
+        pad_to_multiple_of: int,
+        tokenizer: PreTrainedTokenizer,
+        config: TransportConfigType,
+        start_step: int = 0,
+    ):
+        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
         # Per-run buffer: stores (TrainingSample, temperature) tuples
         self.buffers: list[deque[tuple[TrainingSample, float]]] = [deque() for _ in range(self.runs.max_runs)]
 
@@ -81,15 +135,6 @@ class Packer:
             for sample in batch.examples:
                 self.buffers[batch.run_idx].append((sample, batch.temperature))
 
-    def _get_runs_with_full_batch(self) -> list[int]:
-        """Get run indices that have at least batch_size samples buffered."""
-        runs_with_full_batch = []
-        for run_idx in self.runs.used_idxs:
-            batch_size = self.runs.config[run_idx].batch_size
-            if len(self.buffers[run_idx]) >= batch_size:
-                runs_with_full_batch.append(run_idx)
-        return runs_with_full_batch
-
     def _has_enough_tokens(self) -> bool:
         """Check if we have enough samples in buffer to pack a step
 
@@ -97,9 +142,6 @@ class Packer:
         When pack_only_one_microbatch_in_each_step=True, we pack whenever we can make at least 1 micro batch for each data rank.
         """
         # When not using small batch granularity, require at least one full batch
-        if not self.pack_only_one_microbatch_in_each_step:
-            return len(self._get_runs_with_full_batch()) > 0
-
         threshold = self.seq_len * self.dp_world_size
         tokens = 0
 
@@ -119,15 +161,6 @@ class Packer:
         selected: list[tuple[int, TrainingSample, float]] = []
         tokens_collected = 0
 
-        # For full batch mode, determine eligible runs once at the start
-        # (so popping samples doesn't disqualify runs mid-selection)
-        if not self.pack_only_one_microbatch_in_each_step:
-            for run_idx in self._get_runs_with_full_batch():
-                while len(self.buffers[run_idx]) > 0:
-                    sample, temperature = self.buffers[run_idx].popleft()
-                    selected.append((run_idx, sample, temperature))
-            return selected
-
         while tokens_collected < token_budget:
             # Round-robin until we find a run with work
             for _ in range(len(self.buffers)):
@@ -136,6 +169,7 @@ class Packer:
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
             else:
                 # TODO: We could probably make the logic safer. This is basically counting on _has_enough_tokens() to be correct.
+                # We also need to cover the timeout case here.
                 break
             run_idx = self._round_robin_position
             self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
@@ -173,11 +207,7 @@ class Packer:
         start_time = time.time()
 
         while not self._has_enough_tokens():
-            if (
-                self.pack_only_one_microbatch_in_each_step
-                and time.time() - start_time > TIMEOUT_SECONDS
-                and any(len(i) > 0 for i in self.buffers)
-            ):
+            if time.time() - start_time > TIMEOUT_SECONDS and any(len(i) > 0 for i in self.buffers):
                 self.logger.warning("Timeout waiting for enough tokens to pack")
                 break
             time.sleep(1)
@@ -221,3 +251,18 @@ class Packer:
                 micro_batch_grid[i].extend(micro_batch)
 
         self.sender.send(micro_batch_grid)
+
+
+def setup_packer(
+    dp_world_size: int,
+    seq_len: int,
+    pad_to_multiple_of: int,
+    tokenizer: PreTrainedTokenizer,
+    transport_config: TransportConfigType,
+    start_step: int = 0,
+) -> BasePacker:
+    runs = get_runs()
+    if runs.max_runs == 1:
+        return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+    else:
+        return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)

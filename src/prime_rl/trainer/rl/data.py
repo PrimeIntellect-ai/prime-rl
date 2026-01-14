@@ -7,7 +7,7 @@ from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
-from prime_rl.trainer.rl.packer import Packer
+from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_runs
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
@@ -133,19 +133,17 @@ class DataLoader:
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
-        pack_only_one_microbatch_in_each_step: bool = False,
     ):
         self.world = get_world()
 
         if self.world.is_master:
-            self.packer = Packer(
+            self.packer: BasePacker = setup_packer(
                 dp_world_size=dp_world_size,
                 seq_len=seq_len,
                 tokenizer=tokenizer,
                 config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 start_step=start_step,
-                pack_only_one_microbatch_in_each_step=pack_only_one_microbatch_in_each_step,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size
