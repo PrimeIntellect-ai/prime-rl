@@ -61,7 +61,12 @@ class PrimeMonitor(Monitor):
             return
         self.run_id = run_id
 
-        # Set up async HTTP client with background event loop
+        # Set up async HTTP client with background event loop.
+        # Evals can run in a forked subprocess (see run_evals_subprocess in eval/utils.py). When a
+        # process forks, only the calling thread survives - our background thread running the
+        # event loop is not copied. The Thread object still exists but the OS thread is gone,
+        # so asyncio.run_coroutine_threadsafe() silently fails. We use register_at_fork to
+        # recreate the thread, event loop, and HTTP client in the child process.
         self._init_async_client()
         os.register_at_fork(after_in_child=self._reinit_after_fork)
 
