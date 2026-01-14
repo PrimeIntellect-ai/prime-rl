@@ -14,7 +14,7 @@ import verifiers as vf
 from huggingface_hub import whoami
 from openai import AsyncOpenAI, BadRequestError
 from prime_evals import AsyncEvalsClient
-from tenacity import RetryCallState, retry, stop_after_attempt, wait_exponential
+from tenacity import RetryCallState, RetryError, retry, stop_after_attempt, wait_exponential
 from tqdm.asyncio import tqdm
 from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
@@ -634,9 +634,12 @@ async def run_evals(
     step: int | None = None,
     resume_path: Path | None = None,
 ):
-    await asyncio.gather(
-        *[
-            run_eval(
+    logger = get_logger()
+
+    async def run_eval_safe(env):
+        """Wrapper to catch RetryError and skip env."""
+        try:
+            return await run_eval(
                 clients=clients,
                 env_id=env.id,
                 env_name=env.name,
@@ -655,9 +658,19 @@ async def run_evals(
                 step=step,
                 resume_path=resume_path,
             )
-            for env in eval_config.env
-        ]
-    )
+        except RetryError as e:
+            env_name = env.name or env.id
+            logger.warning(
+                f"Env '{env_name}' exhausted {eval_config.retry.max_attempts} retry attempts, skipping. "
+                f"Last error: {e.last_attempt.exception()}"
+            )
+            return None
+
+    results = await asyncio.gather(*[run_eval_safe(env) for env in eval_config.env])
+
+    skipped = sum(1 for r in results if r is None)
+    if skipped > 0:
+        logger.warning(f"Skipped {skipped}/{len(eval_config.env)} environments due to retry exhaustion")
 
 
 def _run_evals_in_subprocess(
