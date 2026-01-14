@@ -351,52 +351,53 @@ async def orchestrate(config: OrchestratorConfig):
         generate_completions_time = time.perf_counter() - generate_completions_start_time
         train_rollouts = train_task.result()
 
-        # Compute advantages
-        # Check if any environment has reward_keys configured for multi-reward
-        reward_keys = None
-        reward_weights = None
-        for env_config in config.env:
-            if env_config.reward_keys is not None:
-                if reward_keys is None:
-                    reward_keys = env_config.reward_keys
-                    reward_weights = env_config.reward_weights
-                elif reward_keys != env_config.reward_keys:
-                    raise ValueError(
-                        f"All environments must have the same reward_keys. "
-                        f"Got {reward_keys} and {env_config.reward_keys}"
-                    )
-                elif reward_weights != env_config.reward_weights:
-                    raise ValueError(
-                        f"All environments must have the same reward_weights. "
-                        f"Got {reward_weights} and {env_config.reward_weights}"
-                    )
+        # Compute advantages (per-env, supporting mixed single/multi-reward configurations)
+        env_config_map = {(env_cfg.name or env_cfg.id): env_cfg for env_cfg in config.env}
+        advantages = [0.0] * len(train_rollouts)
+        rewards = [rollout["reward"] for rollout in train_rollouts]
 
-        if reward_keys is not None:
-            # Validate reward_weights length if provided
-            if reward_weights is not None and len(reward_weights) != len(reward_keys):
-                raise ValueError(
-                    f"reward_weights length ({len(reward_weights)}) must match reward_keys length ({len(reward_keys)})"
+        # Group rollout indices by environment
+        env_indices: dict[str, list[int]] = {}
+        for idx, rollout in enumerate(train_rollouts):
+            env_name = rollout["task"]
+            if env_name not in env_indices:
+                env_indices[env_name] = []
+            env_indices[env_name].append(idx)
+
+        # Compute advantages for each environment separately
+        for env_name, indices in env_indices.items():
+            env_cfg = env_config_map[env_name]
+            env_rollouts = [train_rollouts[i] for i in indices]
+
+            if env_cfg.reward_keys is not None:
+                # Multi-reward path
+                if env_cfg.reward_weights is not None and len(env_cfg.reward_weights) != len(env_cfg.reward_keys):
+                    raise ValueError(
+                        f"reward_weights length ({len(env_cfg.reward_weights)}) must match "
+                        f"reward_keys length ({len(env_cfg.reward_keys)}) for env '{env_name}'"
+                    )
+                metrics = [r["metrics"] for r in env_rollouts]
+                env_advantages = compute_advantages_multi_reward(
+                    metrics,
+                    env_cfg.reward_keys,
+                    config.rollouts_per_example,
+                    config.advantage,
+                    env_cfg.reward_weights,
                 )
-            # Multi-reward path: use per-reward normalized advantages
-            metrics = [rollout["metrics"] for rollout in train_rollouts]
-            rewards = [rollout["reward"] for rollout in train_rollouts]
-            advantages = compute_advantages_multi_reward(
-                metrics,
-                reward_keys,
-                config.rollouts_per_example,
-                config.advantage,
-                reward_weights,
-            )
-        else:
-            # Single-reward path: use standard advantage calculation
-            rewards = [rollout["reward"] for rollout in train_rollouts]
-            completion_lens = [get_completion_len(rollout) for rollout in train_rollouts]
-            advantages = compute_advantages(
-                rewards,
-                completion_lens,
-                config.rollouts_per_example,
-                config.advantage,
-            )
+            else:
+                # Single-reward path
+                env_rewards = [r["reward"] for r in env_rollouts]
+                env_completion_lens = [get_completion_len(r) for r in env_rollouts]
+                env_advantages = compute_advantages(
+                    env_rewards,
+                    env_completion_lens,
+                    config.rollouts_per_example,
+                    config.advantage,
+                )
+
+            # Place advantages back in original order
+            for i, adv in zip(indices, env_advantages):
+                advantages[i] = adv
 
         # Update and sample rollouts from the buffer
         make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
