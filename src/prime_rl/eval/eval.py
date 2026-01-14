@@ -96,28 +96,46 @@ async def eval(config: OfflineEvalConfig):
         if config.steps is not None:
             ckpt_steps = [step for step in ckpt_steps if step in config.steps]
 
-        logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
-        for ckpt_step in ckpt_steps[::-1]:
-            # Update the weights
-            logger.info(f"Evaluating model {config.model.name} at checkpoint {ckpt_step}")
-            await update_weights(admin_clients, get_step_path(config.weights_dir, ckpt_step))
+        async def _eval_ckpt(ckpt_step: int) -> bool:
+            try:
+                logger.info(f"Evaluating model {config.model.name} at checkpoint {ckpt_step}")
+                await update_weights(admin_clients, get_step_path(config.weights_dir, ckpt_step))
 
-            # Run evals on checkpoint
-            await run_evals(
-                clients=clients,
-                eval_config=config,
-                model_config=config.model,
-                sampling_config=config.sampling,
-                evals_client=evals_client,
-                reasoning_field=config.reasoning_field,
-                output_dir=config.output_dir,
-                ckpt_step=ckpt_step,
-                resume_path=config.resume_path,
-            )
+                await run_evals(
+                    clients=clients,
+                    eval_config=config,
+                    model_config=config.model,
+                    sampling_config=config.sampling,
+                    evals_client=evals_client,
+                    reasoning_field=config.reasoning_field,
+                    output_dir=config.output_dir,
+                    ckpt_step=ckpt_step,
+                    resume_path=config.resume_path,
+                )
+                return True
+            except Exception:
+                logger.exception(f"Checkpoint eval failed (ckpt_step={ckpt_step})")
+                if not config.continue_on_ckpt_error:
+                    raise
+                return False
 
         if config.watcher:
-            already_evaluated_ckpt_steps = ckpt_steps
+            # In watcher mode, we do NOT iterate over existing stable checkpoints (per config docstring).
+            # We only evaluate checkpoints that appear after the watcher starts.
+            already_evaluated_ckpt_steps: list[int] = list(ckpt_steps)
+            if len(already_evaluated_ckpt_steps) > 0:
+                logger.info(
+                    "Watcher mode enabled: skipping evaluation of existing stable checkpoints "
+                    f"(steps: {', '.join(map(str, already_evaluated_ckpt_steps))})"
+                )
+            else:
+                logger.info("Watcher mode enabled: no existing stable checkpoints detected")
+        else:
+            logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
+            for ckpt_step in ckpt_steps[::-1]:
+                await _eval_ckpt(ckpt_step)
 
+        if config.watcher:
             while True:
                 # Only include checkpoints that have a STABLE file (indicating save completed)
                 all_ckpt_steps = sorted(
@@ -131,20 +149,9 @@ async def eval(config: OfflineEvalConfig):
                 if len(new_ckpt_steps) > 0:
                     logger.info(f"New checkpoints to evaluate: {', '.join(map(str, new_ckpt_steps))}")
                     for ckpt_step in new_ckpt_steps:
-                        logger.info(f"Evaluating model {config.model.name} at checkpoint {ckpt_step}")
-                        await update_weights(admin_clients, get_step_path(config.weights_dir, ckpt_step))
-                        await run_evals(
-                            clients=clients,
-                            eval_config=config,
-                            model_config=config.model,
-                            sampling_config=config.sampling,
-                            evals_client=evals_client,
-                            reasoning_field=config.reasoning_field,
-                            output_dir=config.output_dir,
-                            ckpt_step=ckpt_step,
-                            resume_path=config.resume_path,
-                        )
-                        already_evaluated_ckpt_steps.append(ckpt_step)
+                        ok = await _eval_ckpt(ckpt_step)
+                        if ok:
+                            already_evaluated_ckpt_steps.append(ckpt_step)
                 else:
                     logger.info("No new checkpoints to evaluate, waiting for 10 seconds")
                     await asyncio.sleep(10)

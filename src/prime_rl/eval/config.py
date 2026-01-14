@@ -89,6 +89,17 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
         ),
     ] = False
 
+    continue_on_ckpt_error: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, failures while evaluating an individual checkpoint (e.g. missing/corrupt checkpoint directory, "
+                "weight reload failure, eval exception) will be logged and the eval run will continue to the next checkpoint. "
+                "In watcher mode, failed checkpoints are left pending and will be retried on the next poll."
+            ),
+        ),
+    ] = True
+
     @model_validator(mode="after")
     def validate_steps(self):
         if self.steps is not None and self.weights_dir is not None:
