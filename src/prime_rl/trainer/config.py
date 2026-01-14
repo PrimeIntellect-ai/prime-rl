@@ -429,7 +429,7 @@ class HubCheckpointUploadConfig(BaseConfig):
         str,
         Field(
             description=(
-                "HF Hub repository id to upload to (e.g. 'PrimeIntellect/INTELLECT-4-585-Ckpt')."
+                "HF Hub repository id to upload to (e.g. 'PrimeIntellect/INTELLECT-3-64-Ckpt')."
             )
         ),
     ]
@@ -439,7 +439,7 @@ class HubCheckpointUploadConfig(BaseConfig):
         Field(
             description=(
                 "Root folder within the HF repo to upload into (e.g. for repo "
-                "'PrimeIntellect/INTELLECT-4-585-Ckpt', a good prefix is 'INTELLECT-4')."
+                "'PrimeIntellect/INTELLECT-3-64-Ckpt', a good prefix is 'INTELLECT-3')."
             )
         ),
     ] = ""
