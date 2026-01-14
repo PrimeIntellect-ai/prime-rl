@@ -190,7 +190,6 @@ class TestComputeAdvantagesMultiReward:
             {"r": 1.0},
         ]
         config = AdvantageConfig(std_eps=1e-8)
-        # Should not raise ZeroDivisionError
         result = compute_advantages_multi_reward(
             uniform_metrics,
             ["r"],
@@ -198,3 +197,36 @@ class TestComputeAdvantagesMultiReward:
             config,
         )
         assert len(result) == 2
+
+    def test_no_config_returns_weighted_sum(self):
+        """When advantage_config is None, return weighted sum of rewards."""
+        metrics = [
+            {"a": 1.0, "b": 2.0},
+            {"a": 0.5, "b": 1.0},
+        ]
+        result = compute_advantages_multi_reward(
+            metrics,
+            ["a", "b"],
+            2,
+            None,
+            reward_weights=[1.0, 0.5],
+        )
+        assert result[0] == 1.0 * 1.0 + 2.0 * 0.5  # 2.0
+        assert result[1] == 0.5 * 1.0 + 1.0 * 0.5  # 1.0
+
+    def test_samples_per_problem_one_no_nan(self):
+        """With samples_per_problem=1, should not produce NaN."""
+        metrics = [
+            {"r": 1.0},
+            {"r": 0.0},
+            {"r": 0.5},
+        ]
+        config = AdvantageConfig()
+        result = compute_advantages_multi_reward(
+            metrics,
+            ["r"],
+            1,
+            config,
+        )
+        assert len(result) == 3
+        assert all(not (v != v) for v in result)  # NaN check: x != x is True only for NaN

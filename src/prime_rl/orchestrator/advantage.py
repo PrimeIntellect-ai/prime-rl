@@ -54,36 +54,32 @@ def compute_advantages_multi_reward(
     Returns:
         List of advantage values, one per sample
     """
+    if not advantage_config:
+        weights = reward_weights if reward_weights is not None else [1.0] * len(reward_keys)
+        return [sum(m.get(k, 0.0) * w for k, w in zip(reward_keys, weights)) for m in metrics]
+
     num_rewards = len(reward_keys)
-
-    # Extract rewards into tensor: [num_samples, num_rewards]
     reward_values = torch.tensor([[m.get(k, 0.0) for k in reward_keys] for m in metrics], dtype=torch.float32)
-
-    # Reshape to [num_problems, samples_per_problem, num_rewards]
-    reward_values = reward_values.view(-1, samples_per_problem, num_rewards)
+    reward_values = reward_values.view(-1, samples_per_problem, num_rewards)  # [P, S, R]
 
     # Per-reward normalization within each problem group
-    # mean/std computed over samples_per_problem dimension (dim=1)
     mean_per_reward = reward_values.mean(dim=1, keepdim=True)  # [P, 1, R]
-    std_per_reward = reward_values.std(dim=1, keepdim=True)  # [P, 1, R]
+    std_per_reward = reward_values.std(dim=1, keepdim=True, correction=0)  # [P, 1, R]
 
-    # Get epsilon from config
-    eps = advantage_config.std_eps if advantage_config else 1e-8
-
-    # Normalize each reward: (r - mean) / (std + eps)
+    eps = advantage_config.std_eps
     normalized = (reward_values - mean_per_reward) / (std_per_reward + eps)  # [P, S, R]
 
     # Weighted sum across rewards
     if reward_weights is not None:
-        weights = torch.tensor(reward_weights, dtype=torch.float32)  # [R]
+        weights = torch.tensor(reward_weights, dtype=torch.float32)
         advantages = (normalized * weights).sum(dim=-1)  # [P, S]
     else:
         advantages = normalized.sum(dim=-1)  # [P, S]
 
-    # Batch-wise normalization (optional but recommended)
-    if advantage_config and advantage_config.batch_normalize:
+    # Batch-wise normalization
+    if advantage_config.batch_normalize:
         batch_mean = advantages.mean()
-        batch_std = advantages.std()
+        batch_std = advantages.std(correction=0)
         advantages = (advantages - batch_mean) / (batch_std + eps)
 
     return advantages.flatten().tolist()
