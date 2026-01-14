@@ -379,6 +379,7 @@ async def orchestrate(config: OrchestratorConfig):
                 )
             # Multi-reward path: use per-reward normalized advantages
             metrics = [rollout["metrics"] for rollout in train_rollouts]
+            rewards = [rollout["reward"] for rollout in train_rollouts]
             advantages = compute_advantages_multi_reward(
                 metrics,
                 reward_keys,
