@@ -1,9 +1,10 @@
-from pathlib import Path
 import importlib
 import sys
 import types
+from pathlib import Path
 
 import pytest
+
 
 def _install_eval_import_stubs() -> None:
     """Stub out heavy deps so we can import eval script in a minimal env."""
