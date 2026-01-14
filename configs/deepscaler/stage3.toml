@@ -24,11 +24,9 @@ temperature = 0.6
 max_tokens = 24576
 
 [[orchestrator.env]]
-id = "shyampathak/deepscaler-multireward"
+id = "math-env"
 name = "deepscaler"
-args = { dataset_name = "agentica-org/DeepScaleR-Preview-Dataset", dataset_subset = "default", length_threshold_tokens = 8192, math_verify_max_workers = 128, math_verify_timeout = 60 }
-reward_keys = ["correct_answer", "length_reward"]
-reward_weights = [1.0, 1.0]
+args = { dataset_name= "agentica-org/DeepScaleR-Preview-Dataset", dataset_subset = "default", question_key = "problem", answer_key = "solution", math_verify_max_workers = 128, math_verify_timeout = 60 }
 
 [trainer.model.ac]
 
