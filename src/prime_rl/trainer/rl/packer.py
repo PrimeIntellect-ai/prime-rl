@@ -134,10 +134,8 @@ class Packer:
                 if len(self.buffers[self._round_robin_position]) != 0:
                     break
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
-                print(f"Checking run {self._round_robin_position}")
             else:
                 # TODO: We could probably make the logic safer. This is basically counting on _has_enough_tokens() to be correct.
-                print({i: len(v) for i, v in enumerate(self.buffers)})
                 break
             run_idx = self._round_robin_position
             self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
