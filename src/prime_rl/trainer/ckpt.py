@@ -1,3 +1,4 @@
+import multiprocessing as mp
 import shutil
 import time
 import warnings
@@ -5,7 +6,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-import multiprocessing as mp
 import torch
 from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
