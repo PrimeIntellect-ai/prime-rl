@@ -55,12 +55,18 @@ def read_existing_results(results_file: Path) -> pd.DataFrame:
     with open(results_file, "r") as f:
         for line in f:
             result = json.loads(line)
+            info = result.get("info", {}) or {}
+            prime_info = info.get("prime_rl", {}) if isinstance(info, dict) else {}
+            rollout_status = (
+                prime_info.get("rollout_status", "ok") if isinstance(prime_info, dict) else "ok"
+            )
             results.append(
                 {
                     "example_id": result["example_id"],
                     "reward": result["reward"],
                     "completion_len": result["completion_len"],
                     "is_truncated": result["is_truncated"],
+                    "rollout_status": rollout_status,
                 }
             )
 
@@ -195,12 +201,44 @@ def parse_and_calculate_max_tokens(error_message: str) -> int | None:
     return None
 
 
+def _make_no_response_state(
+    *,
+    example: dict,
+    rollout_idx: int,
+    env_name_or_id: str,
+    error: Exception,
+) -> dict:
+    """Create a vf.State-like dict for a rollout that never produced a model response."""
+    # NOTE: Keep completion/trajectory empty so merge_reasoning_content() doesn't assert.
+    return {
+        "example_id": example.get("example_id"),
+        "prompt": example.get("prompt"),
+        "completion": [],
+        "task": example.get("task"),
+        "reward": 0.0,
+        "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},
+        "info": {
+            "prime_rl": {
+                "rollout_status": "no_response",
+                "env": env_name_or_id,
+                "rollout_idx": rollout_idx,
+                "error": repr(error),
+            }
+        },
+        "answer": example.get("answer", ""),
+        "metrics": {},
+        "trajectory": [],
+        "oai_tools": [],
+    }
+
+
 async def generate_and_save_rollout(
     client: AsyncOpenAI,
     env: vf.Environment,
     model_name: str,
     example: dict,
     rollout_idx: int,
+    env_name_or_id: str,
     sampling_args: dict,
     save_file: Path | None,
     reasoning_field: str,
@@ -266,11 +304,29 @@ async def generate_and_save_rollout(
             pbar.update(1)
 
         return state
-    except Exception as e:
+    except (RetryError, Exception) as e:
+        # IMPORTANT: do not raise here (asyncio.gather would cancel all other rollouts).
         logger.exception(
-            f"Error evaluating rollout (example_id={example.get('example_id')}, rollout_idx={rollout_idx}): {repr(e)}"
+            f"Rollout failed after retries; recording no_response "
+            f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx}): {repr(e)}"
         )
-        raise
+        failed_state = _make_no_response_state(
+            example=example, rollout_idx=rollout_idx, env_name_or_id=env_name_or_id, error=e
+        )
+
+        # Save placeholder row if streaming saves enabled (supports resume + complete accounting).
+        if save_file is not None:
+            result_dict = await asyncio.to_thread(make_result, failed_state, reasoning_field, rollout_idx)
+            await save_result(result_dict, save_file)
+
+        # Update progress + running average as if reward=0 for this rollout.
+        async with rewards_lock:
+            rewards_accumulator.append(0.0)
+            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
+            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+            pbar.update(1)
+
+        return failed_state  # type: ignore[return-value]
 
 
 async def generate_and_save_group(
@@ -279,6 +335,7 @@ async def generate_and_save_group(
     model_name: str,
     example: dict,
     rollouts_per_example: int,
+    env_name_or_id: str,
     sampling_args: dict,
     save_file: Path | None,
     reasoning_field: str,
@@ -349,9 +406,34 @@ async def generate_and_save_group(
             pbar.update(rollouts_per_example)
 
         return states
-    except Exception as e:
-        logger.exception(f"Error evaluating group (example_id={example.get('example_id')}): {repr(e)}")
-        raise
+    except (RetryError, Exception) as e:
+        # IMPORTANT: do not raise here (asyncio.gather would cancel other groups).
+        logger.exception(
+            f"Group failed after retries; recording no_response rollouts "
+            f"(env={env_name_or_id}, example_id={example.get('example_id')}): {repr(e)}"
+        )
+        failed_states = [
+            _make_no_response_state(
+                example=example, rollout_idx=rollout_idx, env_name_or_id=env_name_or_id, error=e
+            )
+            for rollout_idx in range(rollouts_per_example)
+        ]
+
+        if save_file is not None:
+            await asyncio.gather(
+                *[
+                    make_and_save_result(state, save_file, reasoning_field, rollout_idx)
+                    for rollout_idx, state in enumerate(failed_states)
+                ]
+            )
+
+        async with rewards_lock:
+            rewards_accumulator.extend([0.0] * rollouts_per_example)
+            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
+            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+            pbar.update(rollouts_per_example)
+
+        return failed_states  # type: ignore[return-value]
 
 
 async def run_eval(
@@ -441,6 +523,7 @@ async def run_eval(
                     model_config.name,
                     example,
                     rollout_idx,
+                    env_name_or_id,
                     sampling_args,
                     path_to_save if save_config.stream else None,
                     reasoning_field,
@@ -488,6 +571,7 @@ async def run_eval(
                     model_config.name,
                     example,
                     rollouts_per_example,
+                    env_name_or_id,
                     sampling_args,
                     path_to_save if save_config.stream else None,
                     reasoning_field,
@@ -508,6 +592,12 @@ async def run_eval(
             "reward": [state["reward"] for state in all_states],
             "completion_len": [get_completion_len(state) for state in all_states],
             "is_truncated": [get_is_truncated(state) for state in all_states],
+            "rollout_status": [
+                (state.get("info", {}) or {}).get("prime_rl", {}).get("rollout_status", "ok")
+                if isinstance(state.get("info", {}), dict)
+                else "ok"
+                for state in all_states
+            ],
         }
     )
 
@@ -535,17 +625,24 @@ async def run_eval(
 
     # Log statistics to console
     eval_time = time.perf_counter() - eval_start_time
+    no_response_rate = float((results_df.rollout_status == "no_response").mean()) if "rollout_status" in results_df else 0.0
     message = f"Evaluated {env_name_or_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
             message += f", {capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
-    message += f", Completion Length: {results_df.completion_len.mean():.2f} (±{results_df.completion_len.std():.2f}, ∈[{results_df.completion_len.min():.2f}, {results_df.completion_len.max():.2f}]), Truncated: {results_df.is_truncated.mean() * 100:.1f}%)"
+    message += (
+        f", No-response: {no_response_rate * 100:.1f}%"
+        f", Completion Length: {results_df.completion_len.mean():.2f} (±{results_df.completion_len.std():.2f}, ∈[{results_df.completion_len.min():.2f}, {results_df.completion_len.max():.2f}])"
+        f", Truncated: {results_df.is_truncated.mean() * 100:.1f}%)"
+    )
     logger.success(message)
 
     # Log statistics to monitor
     eval_metrics = {
         f"avg@{k}": results_df.reward.mean(),
+        "no_response/mean": no_response_rate,
+        "no_response/count": int((results_df.rollout_status == "no_response").sum()) if "rollout_status" in results_df else 0,
         "completion_len/avg": results_df.completion_len.mean().item(),
         "completion_len/max": results_df.completion_len.max().item(),
         "completion_len/min": results_df.completion_len.min().item(),
