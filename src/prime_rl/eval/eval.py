@@ -117,23 +117,14 @@ async def eval(config: OfflineEvalConfig):
                 logger.exception(f"Checkpoint eval failed (ckpt_step={ckpt_step})")
                 return False
 
-        if config.watcher:
-            # In watcher mode, we do NOT iterate over existing stable checkpoints (per config docstring).
-            # We only evaluate checkpoints that appear after the watcher starts.
-            already_evaluated_ckpt_steps: list[int] = list(ckpt_steps)
-            if len(already_evaluated_ckpt_steps) > 0:
-                logger.info(
-                    "Watcher mode enabled: skipping evaluation of existing stable checkpoints "
-                    f"(steps: {', '.join(map(str, already_evaluated_ckpt_steps))})"
-                )
-            else:
-                logger.info("Watcher mode enabled: no existing stable checkpoints detected")
-        else:
-            logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
-            for ckpt_step in ckpt_steps[::-1]:
-                await _eval_ckpt(ckpt_step)
+        logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
+        for ckpt_step in ckpt_steps[::-1]:
+            await _eval_ckpt(ckpt_step)
 
         if config.watcher:
+            # Keep watcher behavior consistent with previous versions: after evaluating all currently-stable
+            # checkpoints, watch for new ones and evaluate them as they appear.
+            already_evaluated_ckpt_steps = list(ckpt_steps)
             while True:
                 # Only include checkpoints that have a STABLE file (indicating save completed)
                 all_ckpt_steps = sorted(
@@ -147,9 +138,8 @@ async def eval(config: OfflineEvalConfig):
                 if len(new_ckpt_steps) > 0:
                     logger.info(f"New checkpoints to evaluate: {', '.join(map(str, new_ckpt_steps))}")
                     for ckpt_step in new_ckpt_steps:
-                        ok = await _eval_ckpt(ckpt_step)
-                        if ok:
-                            already_evaluated_ckpt_steps.append(ckpt_step)
+                        await _eval_ckpt(ckpt_step)
+                        already_evaluated_ckpt_steps.append(ckpt_step)
                 else:
                     logger.info("No new checkpoints to evaluate, waiting for 10 seconds")
                     await asyncio.sleep(10)
