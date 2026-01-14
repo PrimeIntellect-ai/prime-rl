@@ -2,12 +2,8 @@ import shutil
 import time
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import TYPE_CHECKING
 
 from transformers.tokenization_utils import PreTrainedTokenizer
-
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.config import OrchestratorConfig
 
 from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.runs import get_runs
@@ -111,13 +107,13 @@ class MultiPacker(BasePacker):
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
-        # Register create_run_data hook for receiver reset (master only, runs during check_for_changes)
-        # This must happen early to prevent receiver from getting stuck looking for old data
-        self.runs.register_create_run_data_hook(self._on_run_data_created)
+        # Register delete_run_data hook for receiver reset (master only, runs during check_for_changes)
+        # This must happen when a run is deleted to prevent stale data from remaining
+        self.runs.register_delete_run_data_hook(self._on_run_data_deleted)
 
-    def _on_run_data_created(self, idx: int, run_id: str, config: "OrchestratorConfig") -> None:
-        """Reset run state when run data is created (master only)."""
-        self.logger.debug(f"Packing is resetting run state for run {idx}")
+    def _on_run_data_deleted(self, idx: int, run_id: str) -> None:
+        """Reset run state when run data is deleted (master only)."""
+        self.logger.debug(f"Packing is resetting run state for deleted run {idx}")
         self.receiver.reset_run(idx)
 
         # Reset run state
