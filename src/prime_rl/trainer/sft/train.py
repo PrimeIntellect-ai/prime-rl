@@ -17,7 +17,8 @@ from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
-from prime_rl.trainer.runs import Progress
+from prime_rl.trainer.runs import Progress, setup_runs
+from prime_rl.trainer.models.layers.lora import set_multilora_offsets
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -78,6 +79,9 @@ def train(config: SFTTrainerConfig):
     )
     torch.set_float32_matmul_precision("high")
 
+    # Setup runs (SFT always uses max_concurrent_runs=1)
+    setup_runs(config.output_dir, max_runs=1)
+
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
 
@@ -115,7 +119,12 @@ def train(config: SFTTrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = setup_optimizer(config.optim, list(model.named_parameters()), parallel_dims.world_mesh["dp_shard_cp"])
+    optimizer = setup_optimizer(
+        config.optim,
+        list(model.named_parameters()),
+        parallel_dims.world_mesh["dp_shard_cp"],
+        lora=config.model.lora is not None,
+    )
 
     # Set up the learning rate scheduler
     scheduler_steps = (
@@ -237,7 +246,14 @@ def train(config: SFTTrainerConfig):
                 logger.debug("Printing samples of the first micro batch")
                 print_sample(input_ids.flatten().tolist(), loss_mask.flatten().tolist(), tokenizer)
 
-                # Forward pass
+            # Set LoRA offsets before forward pass (all tokens go to single adapter for SFT)
+            if config.model.lora:
+                num_tokens = input_ids.numel()
+                set_multilora_offsets(
+                    torch.tensor([num_tokens], dtype=torch.int32, device=input_ids.device), reset_reference=True
+                )
+
+            # Forward pass
             logger.debug("Starting forward pass")
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 out = forward(model, input_ids, position_ids)
