@@ -85,10 +85,10 @@ def train(config: RLTrainerConfig):
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat.url)
 
-    # Setup metrics server (full on master, health-only on workers)
+    # Setup metrics server (full on master, health-only on other nodes' local rank 0)
     metrics_server = None
     health_server = None
-    if config.metrics_server is not None:
+    if config.metrics_server is not None and world.local_rank == 0:
         if world.is_master:
             logger.info(f"Initializing metrics server on port {config.metrics_server.port}")
             metrics_server = MetricsServer(config.metrics_server)
