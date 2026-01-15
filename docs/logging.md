@@ -2,6 +2,14 @@
 
 prime-rl uses [loguru](https://loguru.readthedocs.io/en/stable/) for logging with a global logger pattern. Logs are written to both console and files under `{output_dir}/logs/`. For RL training, we recommend streaming file logs into tmux panes (as set up by `tmux.sh`).
 
+## tmux helper (`scripts/tmux.sh`)
+
+`scripts/tmux.sh` sets up a tmux session for RL runs with **three panes (one per subprocess)**:
+
+- **Trainer**: run `uv run rl ...` here
+- **Orchestrator**: follows `{output_dir}/logs/orchestrator.stdout`
+- **Inference**: follows `{output_dir}/logs/inference.stdout`
+
 ## Logger Architecture
 
 ### `setup_logger` and `get_logger`

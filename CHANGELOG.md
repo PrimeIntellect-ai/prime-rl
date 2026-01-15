@@ -35,3 +35,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`eval.watcher`**: Added flag (default `False`) to watch `weights_dir` for newly-created stable checkpoints and evaluate them as they appear (2026-01-14)
 - **`orchestrator.log.env_worker_logs`**: Added flag (default `True`) to write env worker logs to `logs/env_workers/{env_name}.log` (2026-01-15)
 - **`orchestrator.env.log`**: Removed. Use `orchestrator.log` for env worker logging instead (2026-01-15)
+- **`orchestrator.eval.retry.reraise`**: Changed default from `True` to `False`. When `False`, raises `tenacity.RetryError` after retries are exhausted instead of the original exception, allowing failed eval environments to be skipped with a warning (#1586, 2026-01-14)

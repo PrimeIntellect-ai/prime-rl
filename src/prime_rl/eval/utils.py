@@ -639,7 +639,7 @@ async def run_evals(
     async def run_eval_safe(env):
         """Wrapper to catch RetryError and skip env."""
         try:
-            return await run_eval(
+            await run_eval(
                 clients=clients,
                 env_id=env.id,
                 env_name=env.name,
@@ -658,6 +658,7 @@ async def run_evals(
                 step=step,
                 resume_path=resume_path,
             )
+            return True
         except RetryError as e:
             env_name = env.name or env.id
             logger.warning(

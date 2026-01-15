@@ -90,22 +90,6 @@ class OfflineEvalConfig(EvalConfig, BaseSettings):
     ] = False
 
     @model_validator(mode="after")
-    def validate_steps(self):
-        if self.steps is not None and self.weights_dir is not None:
-            # Only consider checkpoints with STABLE file (indicating save completed)
-            ckpt_steps = sorted(
-                [
-                    int(step_path.name.split("_")[-1])
-                    for step_path in self.weights_dir.glob("step_*")
-                    if (step_path / "STABLE").exists()
-                ]
-            )
-            for step in self.steps:
-                if step not in ckpt_steps:
-                    raise ValueError(f"Step {step} not found (or not stable) in weights directory {self.weights_dir}")
-        return self
-
-    @model_validator(mode="after")
     def validate_eval_base(self):
         if self.weights_dir is None and not self.eval_base:
             raise ValueError(

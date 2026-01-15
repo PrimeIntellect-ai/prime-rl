@@ -39,12 +39,22 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
         self._last_logged_paths: list[Path] | None = None
         self._last_logged_time = time()
         self._waiting_since: float | None = None
+        # Track received steps per run independently of runs.progress[idx].step
+        # This prevents duplicate reads when trainer step != orchestrator step
+        self._received_steps: dict[int, int] = {}
+
+    def _get_received_step(self, idx: int) -> int:
+        """Get the next step to receive for a run, initializing from progress if needed."""
+        if idx not in self._received_steps:
+            # Initialize from runs.progress on first access (for checkpoint resume)
+            self._received_steps[idx] = self.runs.progress[idx].step
+        return self._received_steps[idx]
 
     def _get_batch_path(self, idx: int) -> Path:
-        """Get the batch file path for a specific run at its current step."""
+        """Get the batch file path for a specific run at its next step to receive."""
         run_dir = self.runs.get_run_dir(idx)
         rollout_dir = get_rollout_dir(run_dir)
-        step = self.runs.progress[idx].step
+        step = self._get_received_step(idx)
         return get_step_path(rollout_dir, step) / BATCH_FILE_NAME
 
     def can_receive(self) -> bool:
@@ -87,9 +97,20 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
                         batch: TrainingBatch = self.decoder.decode(f.read())
                     batch.run_idx = idx
                     batches.append(batch)
+                    # Increment received step to avoid reading the same file again
+                    self._received_steps[idx] = self._get_received_step(idx) + 1
                 except Exception as e:
                     self.logger.error(f"Error loading rollouts for run {idx}: {e}")
         return batches
+
+    def reset_run(self, idx: int) -> None:
+        """Reset received step tracking for a run index.
+
+        Called when a run is deleted and a new run takes its place.
+        The next access to _get_received_step will re-initialize from runs.progress.
+        """
+        if idx in self._received_steps:
+            del self._received_steps[idx]
 
 
 class FileSystemMicroBatchSender(MicroBatchSender):

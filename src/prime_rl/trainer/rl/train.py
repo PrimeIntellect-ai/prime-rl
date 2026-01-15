@@ -348,8 +348,12 @@ def train(config: RLTrainerConfig):
 
             vocab_size = model.config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
-            out["logprobs"] = shift_tensor_right(out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item())
-            out["entropy"] = shift_tensor_right(out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item())
+            out["logprobs"] = shift_tensor_right(
+                out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()
+            )
+            out["entropy"] = shift_tensor_right(
+                out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
+            )
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)

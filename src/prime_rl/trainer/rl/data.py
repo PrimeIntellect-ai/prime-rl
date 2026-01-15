@@ -7,7 +7,7 @@ from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
-from prime_rl.trainer.rl.packer import Packer
+from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_runs
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
@@ -137,11 +137,11 @@ class DataLoader:
         self.world = get_world()
 
         if self.world.is_master:
-            self.packer = Packer(
+            self.packer: BasePacker = setup_packer(
                 dp_world_size=dp_world_size,
                 seq_len=seq_len,
                 tokenizer=tokenizer,
-                config=config,
+                transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 start_step=start_step,
             )
@@ -172,7 +172,9 @@ class DataLoader:
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
             advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
             inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
-            teacher_logprobs=torch.tensor(micro_batch.teacher_logprobs, dtype=torch.float).unsqueeze(0) if micro_batch.teacher_logprobs is not None else None,
+            teacher_logprobs=torch.tensor(micro_batch.teacher_logprobs, dtype=torch.float).unsqueeze(0)
+            if micro_batch.teacher_logprobs is not None
+            else None,
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperature=micro_batch.temperature,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
