@@ -61,37 +61,90 @@ def _create_optimizer(
                 betas=(config.betas1, config.betas2),
             )
         case "muon":
+            return _create_muon_optimizer(config, named_params, device_mesh, lr)
 
-            def muon_enabled(n, p):
-                if p.ndim < 2:
-                    return False
-                if "lm_head" in n:
-                    return False
-                if "embed_tokens" in n:
-                    return False
-                return True
 
-            muon_params = [p for n, p in named_params if p.requires_grad and muon_enabled(n, p)]
-            adamw_params = [p for n, p in named_params if p.requires_grad and not muon_enabled(n, p)]
+def _create_muon_optimizer(
+    config: OptimizerConfigType,
+    named_params: list[tuple[str, nn.Parameter]],
+    device_mesh: DeviceMesh,
+    lr: float | None = None,
+) -> Optimizer:
+    def muon_enabled(n, p):
+        if p.ndim < 2:
+            return False
+        if "lm_head" in n:
+            return False
+        if "embed_tokens" in n:
+            return False
+        return True
 
-            optimizer = Muon(
-                [
-                    dict(
-                        params=muon_params,
-                        algorithm="muon",
-                        lr=lr,
-                        weight_decay=config.weight_decay,
-                        adjust_lr="rms_norm",
-                    ),
-                    dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay),
-                ],
+    muon_params = []
+    expert_params = []
+    router_params = []
+    adamw_params = []
+    for n, p in named_params:
+        if p.requires_grad and muon_enabled(n, p):
+            if "mlp.experts" in n:
+                expert_params.append(p)
+            elif "mlp.router" in n:
+                router_params.append(p)
+            else:
+                muon_params.append(p)
+        elif p.requires_grad:
+            adamw_params.append(p)
+        else:
+            pass
+
+    param_groups = []
+
+    param_groups.append(
+        dict(params=muon_params, algorithm="muon", lr=lr, weight_decay=config.weight_decay, adjust_lr="rms_norm")
+    )
+    if expert_params:
+        experts_mesh_name = None
+        if "ep" in device_mesh.mesh_dim_names and device_mesh["ep"].size() > 1:
+            experts_mesh_name = "dp_shard_mod_ep"
+        param_groups.append(
+            dict(
+                params=expert_params,
+                algorithm="muon",
                 lr=lr,
                 weight_decay=config.weight_decay,
                 adjust_lr="rms_norm",
-                distributed_mesh=device_mesh,
+                distributed_mesh_name=experts_mesh_name,
             )
+        )
+    if router_params:
+        param_groups.append(
+            dict(
+                params=router_params,
+                algorithm="muon",
+                lr=lr,
+                weight_decay=config.weight_decay,
+                adjust_lr="rms_norm",
+            )
+        )
 
-            return optimizer
+    param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
+
+    optimizer = Muon(
+        [
+            dict(
+                params=muon_params,
+                algorithm="muon",
+                lr=lr,
+                weight_decay=config.weight_decay,
+                adjust_lr="rms_norm",
+            ),
+            dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay),
+        ],
+        lr=lr,
+        weight_decay=config.weight_decay,
+        adjust_lr="rms_norm",
+        distributed_mesh=device_mesh,
+    )
+    return optimizer
 
 
 class MultiLoRAOptimizer:

@@ -596,6 +596,20 @@ wheels = [
 ]
 
 [[package]]
+name = "debugpy-run"
+version = "1.16"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "debugpy" },
+    { name = "packaging" },
+    { name = "psutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7d/12/e37598b6f39190edaa0aa81f14de794944f3af4e27dea6c5c63185041626/debugpy_run-1.16.tar.gz", hash = "sha256:90332c4e2564f343db266a6d56d530b83d114bd020f0640aad5e4d531c9d8de6", size = 7997, upload-time = "2025-11-06T23:02:11.108Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/df/40/e2ecf527c889fe7d50e95bcf05632d37a735f83f7566e9bc32cc8d856c31/debugpy_run-1.16-py3-none-any.whl", hash = "sha256:ca90b9ca43da4cd68fd6498e9ad706ab647a71e4b92de87f48c74b1deee12d49", size = 7833, upload-time = "2025-11-06T23:02:09.894Z" },
+]
+
+[[package]]
 name = "decorator"
 version = "5.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -629,7 +643,7 @@ wheels = [
 [[package]]
 name = "dion"
 version = "0.1.0"
-source = { git = "https://github.com/samsja/dion.git?rev=main#3c4bce5a60f3d1590761b881e253da5400355403" }
+source = { git = "https://github.com/samsja/dion.git?rev=d891eebbd950a6ff11d9b5f806282e33df83df9d#d891eebbd950a6ff11d9b5f806282e33df83df9d" }
 dependencies = [
     { name = "numpy" },
     { name = "torch" },
@@ -2421,6 +2435,7 @@ dependencies = [
     { name = "blobfile" },
     { name = "cydifflib" },
     { name = "datasets" },
+    { name = "debugpy-run" },
     { name = "dion" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
@@ -2480,7 +2495,8 @@ requires-dist = [
     { name = "blobfile", specifier = ">=3.0.0" },
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
+    { name = "debugpy-run", specifier = ">=1.16" },
+    { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eebbd950a6ff11d9b5f806282e33df83df9d" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
