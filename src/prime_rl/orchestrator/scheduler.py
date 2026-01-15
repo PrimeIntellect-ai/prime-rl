@@ -94,7 +94,7 @@ class Scheduler:
 
             # Setup log file if env worker file logging is enabled (all workers share one file)
             env_log_file = None
-            if config.log.per_worker_logs and output_dir is not None:
+            if config.log.env_worker_logs and output_dir is not None:
                 env_log_file = get_env_worker_log_file(output_dir, env_name)
                 env_log_file.parent.mkdir(parents=True, exist_ok=True)
 

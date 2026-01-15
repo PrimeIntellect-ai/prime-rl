@@ -55,10 +55,10 @@ Environment workers run in **separate subprocesses** to isolate event loop lag. 
 [orchestrator.log]
 level = "debug"           # Log level for prime-rl logger
 vf_level = "info"         # Log level for verifiers library
-per_worker_logs = true    # Enable file logging for env workers
+env_worker_logs = true    # Enable file logging for env workers
 ```
 
-When `per_worker_logs = true`, logs are written to:
+When `env_worker_logs = true`, logs are written to:
 ```
 output_dir/
 └── logs/
@@ -70,7 +70,7 @@ output_dir/
 
 All workers for an environment share the same log file.
 
-Set `per_worker_logs = false` to disable worker file logging (workers inherit parent process logging).
+Set `env_worker_logs = false` to disable worker file logging (workers inherit parent process logging).
 
 ## Torchrun
 
