@@ -232,7 +232,7 @@ def _make_no_response_state(
     }
 
 
-def _mark_save_failed(state: vf.State, *, env_name_or_id: str, rollout_idx: int, error: Exception) -> None:
+def _mark_save_failed(state: dict, *, env_name_or_id: str, rollout_idx: int, error: Exception) -> None:
     """Annotate a successful rollout state when persistence fails."""
     info = state.get("info")
     if not isinstance(info, dict):
@@ -348,7 +348,9 @@ async def generate_and_save_rollout(
                 f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx})",
                 exc_info=(type(save_e), save_e, save_e.__traceback__),
             )
-            _mark_save_failed(state, env_name_or_id=env_name_or_id, rollout_idx=rollout_idx, error=save_e)
+            _mark_save_failed(
+                state, env_name_or_id=env_name_or_id, rollout_idx=rollout_idx, error=save_e  # type: ignore[arg-type]
+            )
 
     # Update running average immediately.
     async with rewards_lock:
