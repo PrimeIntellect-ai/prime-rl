@@ -55,10 +55,10 @@ def read_existing_results(results_file: Path) -> pd.DataFrame:
     with open(results_file, "r") as f:
         for line in f:
             result = json.loads(line)
-            info = result.get("info", {}) or {}
-            prime_info = info.get("prime_rl", {}) if isinstance(info, dict) else {}
+            info = result.get("info", {})
+            prime_info = info.get("prime_rl", {})
             rollout_status = (
-                prime_info.get("rollout_status", "ok") if isinstance(prime_info, dict) else "ok"
+                prime_info.get("rollout_status", "ok")
             )
             results.append(
                 {
