@@ -78,7 +78,7 @@ class LogConfig(BaseConfig):
         Field(
             description="Whether env workers log to files. If True, workers write to logs/env_workers/{env_name}.log.",
         ),
-    ] = True
+    ] = False
 
     log_data: Annotated[
         bool,
