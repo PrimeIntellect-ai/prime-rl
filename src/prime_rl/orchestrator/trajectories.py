@@ -60,27 +60,7 @@ def _interleave_steps(steps: list[dict], has_error: bool, mismatch_label: str) -
 
 def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     """
-    Convert vf.State to a *single* trainable rollout by interleaving the trajectory.
-
-    NOTE:
-    - This requires that consecutive trajectory steps share token prefixes (incremental tokenization)
-    - This approach is suceptible to introduce subtle difference due to re-tokenization in multi-turn environments.
-    """
-    logger = get_logger()
-
-    trajectory = state["trajectory"]
-    if len(trajectory) == 0:
-        logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
-        return None
-
-    has_error = state["error"] is not None
-    rollout = _interleave_steps(trajectory, has_error, f"example {state['example_id']}")
-    return [rollout] if rollout else None
-
-
-def grouped_interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
-    """
-    Convert vf.State to trainable rollouts using grouped interleaving.
+    Convert vf.State to trainable rollouts using interleaving by trajectory_id.
 
     Steps with the same trajectory_id are interleaved into one training sample.
     Different trajectory_ids become separate training samples.

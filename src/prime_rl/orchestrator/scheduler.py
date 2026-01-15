@@ -106,7 +106,7 @@ class Scheduler:
                     client_config=client_config,
                     model_name=self.model_name,
                     seq_len=config.seq_len,
-                    interleaved_rollouts=config.trajectory_strategy in ("interleaved", "grouped_interleaved"),
+                    interleaved_rollouts=config.trajectory_strategy == "interleaved",
                     max_concurrent=config.max_concurrent or -1,
                     example_lookup=self.example_lookups[env_name],
                     sampling_args=self.sampling_args,

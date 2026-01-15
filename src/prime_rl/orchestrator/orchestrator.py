@@ -7,11 +7,7 @@ import tomli_w
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import (
-    branch_rollout,
-    grouped_interleave_rollout,
-    interleave_rollout,
-)
+from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -145,7 +141,7 @@ async def orchestrate(config: OrchestratorConfig):
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
     )
     env.set_max_seq_len(config.seq_len)
-    if config.trajectory_strategy in ("interleaved", "grouped_interleaved"):
+    if config.trajectory_strategy == "interleaved":
         logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
         env.set_interleaved_rollouts(True)
     if config.buffer.skip_verification:
@@ -351,12 +347,7 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
         # Update and sample rollouts from the buffer
-        if config.trajectory_strategy == "grouped_interleaved":
-            make_train_example = grouped_interleave_rollout
-        elif config.trajectory_strategy == "interleaved":
-            make_train_example = interleave_rollout
-        else:
-            make_train_example = branch_rollout
+        make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
         train_examples: list[TrainingSample] = []
         for train_rollout, advantage in zip(train_rollouts, advantages):
             train_example = make_train_example(train_rollout)

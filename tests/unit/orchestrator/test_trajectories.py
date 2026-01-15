@@ -3,11 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 import verifiers as vf
 
-from prime_rl.orchestrator.trajectories import (
-    branch_rollout,
-    grouped_interleave_rollout,
-    interleave_rollout,
-)
+from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 
 
 @pytest.fixture
@@ -291,8 +287,8 @@ def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_tra
     assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
 
 
-def test_grouped_interleave_rollout(grouped_trajectory_state):
-    rollouts = grouped_interleave_rollout(grouped_trajectory_state)
+def test_interleave_rollout_grouped_trajectory(grouped_trajectory_state):
+    rollouts = interleave_rollout(grouped_trajectory_state)
     assert len(rollouts) == 2
 
     agent_a = rollouts[0]
