@@ -160,7 +160,7 @@ def train(config: RLTrainerConfig):
         )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
-        optimizer = setup_multi_optimizer(config.optim, parallel_dims.world_mesh["dp_shard_cp"])
+        optimizer = setup_multi_optimizer(config.optim, parallel_dims)
         scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps)
 
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
