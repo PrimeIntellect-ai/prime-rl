@@ -3,10 +3,10 @@ from typing import Callable
 
 from dion import Muon
 from torch import nn
-from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
+from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.runs import get_runs
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -15,7 +15,7 @@ from prime_rl.utils.logger import get_logger
 def setup_optimizer(
     config: OptimizerConfigType,
     named_params: list[tuple[str, nn.Parameter]],
-    device_mesh: DeviceMesh,
+    parallel_dims: ParallelDims,
     lora: bool = False,
 ) -> Optimizer:
     if lora:
@@ -32,13 +32,13 @@ def setup_optimizer(
             time.sleep(1)
         named_params = runs.get_named_parameters_for_run(0)
 
-    return _create_optimizer(config, named_params, device_mesh)
+    return _create_optimizer(config, named_params, parallel_dims)
 
 
 def _create_optimizer(
     config: OptimizerConfigType,
     named_params: list[tuple[str, nn.Parameter]],
-    device_mesh: DeviceMesh,
+    parallel_dims: ParallelDims,
     lr: float | None = None,
 ) -> Optimizer:
     """Create optimizer. If lr is None, uses config.lr."""
@@ -61,13 +61,13 @@ def _create_optimizer(
                 betas=(config.betas1, config.betas2),
             )
         case "muon":
-            return _create_muon_optimizer(config, named_params, device_mesh, lr)
+            return _create_muon_optimizer(config, named_params, parallel_dims, lr)
 
 
 def _create_muon_optimizer(
     config: OptimizerConfigType,
     named_params: list[tuple[str, nn.Parameter]],
-    device_mesh: DeviceMesh,
+    parallel_dims: ParallelDims,
     lr: float | None = None,
 ) -> Optimizer:
     def muon_enabled(n, p):
@@ -103,7 +103,7 @@ def _create_muon_optimizer(
     )
     if expert_params:
         experts_mesh_name = None
-        if "ep" in device_mesh.mesh_dim_names and device_mesh["ep"].size() > 1:
+        if parallel_dims.ep_enabled:
             experts_mesh_name = "dp_shard_mod_ep"
         param_groups.append(
             dict(
@@ -128,20 +128,27 @@ def _create_muon_optimizer(
 
     param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
 
+    if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
+        distributed_mesh = parallel_dims.world_mesh["dp_shard_cp"]
+    else:
+        distributed_mesh = parallel_dims.world_mesh
+
     optimizer = Muon(
-        param_groups=param_groups,
+        params=param_groups,
         lr=lr,
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
-        distributed_mesh=device_mesh,
+        distributed_mesh=distributed_mesh,
+        world_mesh=parallel_dims.world_mesh,
+        fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
     )
     return optimizer
 
 
 class MultiLoRAOptimizer:
-    def __init__(self, config: OptimizerConfigType, device_mesh: DeviceMesh):
+    def __init__(self, config: OptimizerConfigType, parallel_dims: ParallelDims):
         self.config = config
-        self.device_mesh = device_mesh
+        self.parallel_dims = parallel_dims
         self.runs = get_runs()
         self.logger = get_logger()
 
@@ -165,7 +172,7 @@ class MultiLoRAOptimizer:
         named_params = self.runs.get_named_parameters_for_run(idx)
 
         lr = self.runs.config[idx].optim.lr
-        self.optimizers[idx] = _create_optimizer(self.config, named_params, self.device_mesh, lr)
+        self.optimizers[idx] = _create_optimizer(self.config, named_params, self.parallel_dims, lr)
 
         # Call post-creation callbacks (e.g., for scheduler creation)
         for callback in self._post_creation_callbacks:
@@ -190,5 +197,5 @@ class MultiLoRAOptimizer:
             return self.optimizers[idx].param_groups[0]["lr"]
 
 
-def setup_multi_optimizer(config: OptimizerConfigType, device_mesh: DeviceMesh) -> MultiLoRAOptimizer:
-    return MultiLoRAOptimizer(config, device_mesh)
+def setup_multi_optimizer(config: OptimizerConfigType, parallel_dims: ParallelDims) -> MultiLoRAOptimizer:
+    return MultiLoRAOptimizer(config, parallel_dims)

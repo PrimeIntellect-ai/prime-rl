@@ -155,7 +155,7 @@ def train(config: RLTrainerConfig):
         optimizer = setup_optimizer(
             config.optim,
             list(model.named_parameters()),
-            parallel_dims.world_mesh["dp_shard_cp"],
+            parallel_dims,
             lora=config.model.lora is not None,
         )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
