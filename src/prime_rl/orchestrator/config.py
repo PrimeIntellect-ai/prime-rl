@@ -675,11 +675,14 @@ class OrchestratorConfig(BaseSettings):
     rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
 
     trajectory_strategy: Annotated[
-        Literal["interleaved", "branching"],
+        Literal["interleaved", "grouped_interleaved", "branching"],
         Field(
-            description="Strategy to use for building training examples from multi-turn rollouts. If interleaved, will try to concatenate consecutive trajectory steps into a single training example. If branching, will create a separate training example for each trajectory step."
+            description="Strategy for building training examples from multi-turn rollouts. "
+            "If interleaved, all steps are interleaved into a single training example. "
+            "If grouped_interleaved, steps with the same trajectory_id are interleaved into "
+            "one training example. If branching, each trajectory step becomes a separate example."
         ),
-    ] = "interleaved"
+    ] = "grouped_interleaved"
 
     output_dir: Annotated[
         Path,
