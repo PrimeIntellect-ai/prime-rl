@@ -31,7 +31,7 @@ uv run torchrun \
   src/prime_rl/trainer/sft/train.py ...
 ```
 
-*The `--local-rank-filter` flag is used to only log the logs from the master rank, as detailed in [logs](logs.md).*
+*The `--local-rank-filter` flag is used to only log the logs from the master rank, as detailed in [logging](logging.md).*
 
 ### Multi-Node
 
@@ -287,10 +287,11 @@ TBD.
 
 For deployments on Kubernetes clusters, PRIME-RL provides a Helm chart that manages the entire training infrastructure including orchestrator, trainer, and inference components with automatic pod scheduling, GPU allocation, and shared storage.
 
-See the [Kubernetes deployment guide](../k8s/README.md) for complete documentation including:
+See the dedicated [Kubernetes guide](kubernetes.md) for complete documentation including:
+
 - Prerequisites and setup
-- Quick start examples
-- Component architecture
-- Scaling and distributed training
-- Configuration options
+- Quick start with Helm
+- Component architecture (orchestrator, inference, trainer)
+- Configuration options (storage, GPU, secrets)
+- Distributed training with environment variables
 - Troubleshooting
