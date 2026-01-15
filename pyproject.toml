@@ -41,7 +41,6 @@ dependencies = [
     "prime>=0.5.0",
     "tenacity>=8.2.0",
     "pyzmq>=27.1.0",
-    "debugpy-run>=1.16",
 ]
 
 [project.scripts]
