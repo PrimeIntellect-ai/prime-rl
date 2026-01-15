@@ -294,3 +294,4 @@ See the dedicated [Kubernetes guide](kubernetes.md) for complete documentation i
 - Component architecture
 - Scaling and distributed training
 - Configuration options
+- Troubleshooting
