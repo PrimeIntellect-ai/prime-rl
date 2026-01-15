@@ -11,15 +11,14 @@ To run these tests:
 """
 
 import asyncio
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ConnectError
 from openai import APIConnectionError, AsyncOpenAI
-
 
 # =============================================================================
 # Approach 1: Unit Test - Error Classification
