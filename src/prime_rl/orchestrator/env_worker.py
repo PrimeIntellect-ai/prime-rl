@@ -187,12 +187,13 @@ def worker_main(
     log_level: str,
     vf_log_level: str,
     log_file: str | None,
+    worker_name: str | None = None,
 ):
     """Main entry point for worker process."""
     # Reset logger inherited from parent process, then setup fresh logger for this worker
     if log_file:
         reset_logger()
-        setup_logger(log_level, log_file=Path(log_file), append=True)
+        setup_logger(log_level, log_file=Path(log_file), append=True, tag=worker_name)
         intercept_verifiers_logging(level=vf_log_level)
 
     # Load environment
@@ -286,6 +287,7 @@ class EnvWorker:
                 self.log_level,
                 self.vf_log_level,
                 self.log_file,
+                self.worker_name,
             ),
             daemon=True,
         )

@@ -27,17 +27,18 @@ class _VerifiersInterceptHandler(logging.Handler):
         logger.opt(depth=depth, exception=record.exc_info).log(level, f"[verifiers] {record.getMessage()}")
 
 
-def setup_logger(log_level: str, log_file: Path | None = None, append: bool = False):
+def setup_logger(log_level: str, log_file: Path | None = None, append: bool = False, tag: str | None = None):
     global _LOGGER
     if _LOGGER is not None:
         raise RuntimeError("Logger already set. Please call `setup_logger` only once.")
 
-    # Format message
+    # Format message with optional tag prefix
+    tag_prefix = f"[{tag}] " if tag else ""
     message = "".join(
         [
             " <level>{level: >7}</level>",
             f" <level>{NO_BOLD}",
-            "{message}",
+            f"{tag_prefix}{{message}}",
             f"{RESET}</level>",
         ]
     )
