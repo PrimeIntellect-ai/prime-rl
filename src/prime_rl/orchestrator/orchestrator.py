@@ -64,7 +64,9 @@ from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len
 async def orchestrate(config: OrchestratorConfig):
     # Initialize the logger
     logger = setup_logger(
-        config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
+        config.log.level,
+        log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
+        json=config.log.json,
     )
     vf.setup_logging(level=config.log.vf_level.upper())
     logger.info("Starting orchestrator")

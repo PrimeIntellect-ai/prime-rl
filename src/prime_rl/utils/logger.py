@@ -7,8 +7,7 @@ _LOGGER = None
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
-
-def setup_logger(log_level: str, log_file: Path | None = None):
+def setup_logger(log_level: str, log_file: Path | None = None, json: bool | None = None):
     global _LOGGER
     if _LOGGER is not None:
         raise RuntimeError("Logger already set. Please call `setup_logger` only once.")
@@ -47,17 +46,25 @@ def setup_logger(log_level: str, log_file: Path | None = None):
         extra={},
     )
 
+    json_logging = bool(json)
+
     # Install console handler
-    logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
+    if json_logging:
+        logger.add(sys.stdout, level=log_level.upper(), serialize=True)
+    else:
+        logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
 
     # If specified, install file handler
     if log_file is not None:
         if log_file.exists():
             log_file.unlink()
-        logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
+        if json_logging:
+            logger.add(log_file, level=log_level.upper(), serialize=True)
+        else:
+            logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
 
     # Disable critical logging
-    logger.critical = lambda _: None
+    logger.critical = lambda *args, **kwargs: None
 
     # Set the global logger instance
     _LOGGER = logger
