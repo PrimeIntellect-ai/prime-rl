@@ -73,6 +73,13 @@ class LogConfig(BaseConfig):
         ),
     ] = True
 
+    per_worker_logs: Annotated[
+        bool,
+        Field(
+            description="Whether env workers log to separate files. If True, each worker writes to logs/env_workers/{env_name}/worker_{N}.log.",
+        ),
+    ] = True
+
     log_data: Annotated[
         bool,
         Field(

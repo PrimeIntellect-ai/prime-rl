@@ -49,32 +49,27 @@ For RL training, logs are organized by component:
 
 ## Per-Environment Worker Logging
 
-Environment workers run in **separate subprocesses** to isolate event loop lag. By default, they don't write to separate log files. To enable per-env logging, set the `log` field on the environment config:
+Environment workers run in **separate subprocesses** to isolate event loop lag. Worker logging is controlled at the orchestrator level via `orchestrator.log`:
 
 ```toml
-[[orchestrator.env]]
-id = "math-env"
-name = "math"
-log = { level = "debug", vf_level = "info" }
+[orchestrator.log]
+level = "debug"           # Log level for prime-rl logger
+vf_level = "info"         # Log level for verifiers library
+per_worker_logs = true    # Enable file logging for env workers
 ```
 
-This produces:
+When `per_worker_logs = true`, logs are written to:
 ```
 output_dir/
 └── logs/
     └── env_workers/
-        └── math/
+        └── {env_name}/
             ├── worker_0.log
             ├── worker_1.log
             └── ...
 ```
 
-### Configuration Options
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `level` | Log level for prime-rl logger (`debug`, `info`, `warn`, `error`) | `warn` |
-| `vf_level` | Log level for verifiers library logger | `warn` |
+Set `per_worker_logs = false` to disable worker file logging (workers inherit parent process logging).
 
 ## Torchrun
 
