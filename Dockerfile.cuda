@@ -62,6 +62,9 @@ RUN apt-get update && apt-get install -y \
     net-tools \
     curl \
     vim \
+    # InfiniBand/RDMA libraries for NCCL multi-node communication
+    libibverbs1 \
+    ibverbs-providers \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
