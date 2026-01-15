@@ -232,6 +232,21 @@ def _make_no_response_state(
     }
 
 
+def _mark_save_failed(state: dict, *, env_name_or_id: str, rollout_idx: int, error: Exception) -> None:
+    """Annotate a successful rollout state when persistence fails."""
+    info = state.get("info")
+    if not isinstance(info, dict):
+        return
+    prime_info = info.get("prime_rl")
+    if not isinstance(prime_info, dict):
+        prime_info = {}
+        info["prime_rl"] = prime_info
+    prime_info.setdefault("env", env_name_or_id)
+    prime_info.setdefault("rollout_idx", rollout_idx)
+    prime_info["rollout_status"] = "save_failed"
+    prime_info["save_error"] = repr(error)
+
+
 async def generate_and_save_rollout(
     client: AsyncOpenAI,
     env: vf.Environment,
@@ -290,24 +305,10 @@ async def generate_and_save_rollout(
 
     try:
         state = await _generate_rollout(client, env, model_name, example, _sampling_args)
-
-        # Save with rollout_idx if streaming saves enabled
-        if save_file is not None:
-            result_dict = await asyncio.to_thread(make_result, state, reasoning_field, rollout_idx)
-            await save_result(result_dict, save_file)
-
-        # Update running average immediately
-        async with rewards_lock:
-            rewards_accumulator.append(state["reward"])
-            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
-            pbar.update(1)
-
-        return state
     except (RetryError, Exception) as e:
         # IMPORTANT: do not raise here (asyncio.gather would cancel all other rollouts).
         logger.exception(
-            f"Rollout failed after retries; recording no_response "
+            f"Rollout generation failed after retries; recording no_response "
             f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx}): {repr(e)}"
         )
         failed_state = _make_no_response_state(
@@ -316,8 +317,15 @@ async def generate_and_save_rollout(
 
         # Save placeholder row if streaming saves enabled (supports resume + complete accounting).
         if save_file is not None:
-            result_dict = await asyncio.to_thread(make_result, failed_state, reasoning_field, rollout_idx)
-            await save_result(result_dict, save_file)
+            try:
+                result_dict = await asyncio.to_thread(make_result, failed_state, reasoning_field, rollout_idx)
+                await save_result(result_dict, save_file)
+            except Exception as save_e:
+                logger.error(
+                    "Failed to persist no_response placeholder "
+                    f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx})",
+                    exc_info=(type(save_e), save_e, save_e.__traceback__),
+                )
 
         # Update progress + running average as if reward=0 for this rollout.
         async with rewards_lock:
@@ -327,6 +335,31 @@ async def generate_and_save_rollout(
             pbar.update(1)
 
         return failed_state  # type: ignore[return-value]
+
+    # Save with rollout_idx if streaming saves enabled.
+    # IMPORTANT: if persistence fails, keep the successful rollout instead of recording no_response.
+    if save_file is not None:
+        try:
+            result_dict = await asyncio.to_thread(make_result, state, reasoning_field, rollout_idx)
+            await save_result(result_dict, save_file)
+        except Exception as save_e:
+            logger.error(
+                "Rollout generated successfully but saving failed; keeping rollout in-memory "
+                f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx})",
+                exc_info=(type(save_e), save_e, save_e.__traceback__),
+            )
+            _mark_save_failed(
+                state, env_name_or_id=env_name_or_id, rollout_idx=rollout_idx, error=save_e  # type: ignore[arg-type]
+            )
+
+    # Update running average immediately.
+    async with rewards_lock:
+        rewards_accumulator.append(state["reward"])
+        avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
+        pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+        pbar.update(1)
+
+    return state
 
 
 async def generate_and_save_group(
@@ -389,27 +422,10 @@ async def generate_and_save_group(
 
     try:
         states = await _generate_group(client, env, model_name, example, rollouts_per_example, _sampling_args)
-        if save_file is not None:
-            await asyncio.gather(
-                *[
-                    make_and_save_result(state, save_file, reasoning_field, rollout_idx)
-                    for rollout_idx, state in enumerate(states)
-                ]
-            )
-
-        # Update running average after group completes
-        async with rewards_lock:
-            for state in states:
-                rewards_accumulator.append(state["reward"])
-            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
-            pbar.update(rollouts_per_example)
-
-        return states
     except (RetryError, Exception) as e:
         # IMPORTANT: do not raise here (asyncio.gather would cancel other groups).
         logger.exception(
-            f"Group failed after retries; recording no_response rollouts "
+            f"Group generation failed after retries; recording no_response rollouts "
             f"(env={env_name_or_id}, example_id={example.get('example_id')}): {repr(e)}"
         )
         failed_states = [
@@ -420,12 +436,20 @@ async def generate_and_save_group(
         ]
 
         if save_file is not None:
-            await asyncio.gather(
+            save_results = await asyncio.gather(
                 *[
                     make_and_save_result(state, save_file, reasoning_field, rollout_idx)
                     for rollout_idx, state in enumerate(failed_states)
-                ]
+                ],
+                return_exceptions=True,
             )
+            for rollout_idx, save_result_exc in enumerate(save_results):
+                if isinstance(save_result_exc, Exception):
+                    logger.error(
+                        "Failed to persist no_response placeholder for group "
+                        f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx})",
+                        exc_info=(type(save_result_exc), save_result_exc, save_result_exc.__traceback__),
+                    )
 
         async with rewards_lock:
             rewards_accumulator.extend([0.0] * rollouts_per_example)
@@ -434,6 +458,40 @@ async def generate_and_save_group(
             pbar.update(rollouts_per_example)
 
         return failed_states  # type: ignore[return-value]
+
+    # Save results for the generated group.
+    # IMPORTANT: if persistence fails, keep the successful rollouts instead of recording no_response.
+    if save_file is not None:
+        save_results = await asyncio.gather(
+            *[
+                make_and_save_result(state, save_file, reasoning_field, rollout_idx)
+                for rollout_idx, state in enumerate(states)
+            ],
+            return_exceptions=True,
+        )
+        for rollout_idx, save_result_exc in enumerate(save_results):
+            if isinstance(save_result_exc, Exception):
+                logger.error(
+                    "Group generated successfully but saving rollout failed; keeping rollout in-memory "
+                    f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx})",
+                    exc_info=(type(save_result_exc), save_result_exc, save_result_exc.__traceback__),
+                )
+                _mark_save_failed(
+                    states[rollout_idx],
+                    env_name_or_id=env_name_or_id,
+                    rollout_idx=rollout_idx,
+                    error=save_result_exc,
+                )
+
+    # Update running average after group completes.
+    async with rewards_lock:
+        for state in states:
+            rewards_accumulator.append(state["reward"])
+        avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
+        pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+        pbar.update(rollouts_per_example)
+
+    return states
 
 
 async def run_eval(
