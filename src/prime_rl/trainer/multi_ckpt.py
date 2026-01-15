@@ -18,6 +18,7 @@ from prime_rl.trainer.config import CheckpointConfig
 from prime_rl.trainer.runs import Progress, get_runs
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import resolve_latest_ckpt_step
 
 if TYPE_CHECKING:
     from prime_rl.trainer.optim import MultiLoRAOptimizer
@@ -161,10 +162,17 @@ class MultiCheckpointManager:
     ) -> bool:
         if self.runs.config[idx].ckpt is None or self.runs.config[idx].ckpt.resume_step is None:
             return False
-        step = self.runs.config[idx].ckpt.resume_step
+
         manager = self._get_or_create_manager(idx)
         if manager is None:
             return False
+
+        # Handle -1 meaning "latest checkpoint"
+        step = self.runs.config[idx].ckpt.resume_step
+        if step == -1:
+            step = resolve_latest_ckpt_step(manager.ckpt_dir)
+            if step is None:
+                return False
 
         try:
             model_state_dict = dict(self.runs.get_named_parameters_for_run(idx))
