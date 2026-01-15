@@ -25,6 +25,7 @@ from openai import APIConnectionError, AsyncOpenAI
 # Approach 1: Unit Test - Error Classification
 # =============================================================================
 
+
 def is_transient_error(error: Exception) -> bool:
     """
     Check if an error is transient (network/infrastructure related).
@@ -42,14 +43,17 @@ def is_transient_error(error: Exception) -> bool:
             return True
         # Check the string representation for common transient patterns
         error_str = str(current).lower()
-        if any(pattern in error_str for pattern in [
-            "connection",
-            "timeout",
-            "name or service not known",
-            "dns",
-            "temporary failure",
-            "network",
-        ]):
+        if any(
+            pattern in error_str
+            for pattern in [
+                "connection",
+                "timeout",
+                "name or service not known",
+                "dns",
+                "temporary failure",
+                "network",
+            ]
+        ):
             return True
         current = current.__cause__
     return False
@@ -94,6 +98,7 @@ class TestErrorClassification:
 # Approach 2: Unit Test - Mock OpenAI Client
 # =============================================================================
 
+
 class TestMockedClientErrors:
     """Test error handling with a mocked OpenAI client."""
 
@@ -110,17 +115,13 @@ class TestMockedClientErrors:
         """Test that connection errors are properly raised."""
         # Configure mock to raise APIConnectionError
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=APIConnectionError(
-                message="Connection error",
-                request=MagicMock()
-            )
+            side_effect=APIConnectionError(message="Connection error", request=MagicMock())
         )
 
         # Attempt to call the client
         with pytest.raises(APIConnectionError):
             await mock_client.chat.completions.create(
-                model="test-model",
-                messages=[{"role": "user", "content": "test"}]
+                model="test-model", messages=[{"role": "user", "content": "test"}]
             )
 
     @pytest.mark.asyncio
@@ -132,10 +133,7 @@ class TestMockedClientErrors:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise APIConnectionError(
-                    message="Connection error",
-                    request=MagicMock()
-                )
+                raise APIConnectionError(message="Connection error", request=MagicMock())
             return MagicMock()  # Success on 3rd call
 
         mock_client.chat.completions.create = intermittent_create
@@ -154,6 +152,7 @@ class TestMockedClientErrors:
 # =============================================================================
 # Approach 3: Integration Test - Mock HTTP Server
 # =============================================================================
+
 
 class FailingHTTPHandler(BaseHTTPRequestHandler):
     """HTTP handler that can be configured to fail."""
@@ -187,14 +186,11 @@ class FailingHTTPHandler(BaseHTTPRequestHandler):
             "object": "chat.completion",
             "created": 1234567890,
             "model": "test-model",
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": "Hello!"},
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
         import json
+
         self.wfile.write(json.dumps(response).encode())
 
     def log_message(self, format, *args):
@@ -235,18 +231,14 @@ class TestMockHTTPServer:
         # First 3 calls should fail with 500
         for i in range(3):
             try:
-                await client.chat.completions.create(
-                    model="test-model",
-                    messages=[{"role": "user", "content": "test"}]
-                )
+                await client.chat.completions.create(model="test-model", messages=[{"role": "user", "content": "test"}])
                 pytest.fail("Expected error")
             except Exception:
                 pass  # Expected
 
         # 4th call should succeed
         response = await client.chat.completions.create(
-            model="test-model",
-            messages=[{"role": "user", "content": "test"}]
+            model="test-model", messages=[{"role": "user", "content": "test"}]
         )
         assert response is not None
 
@@ -254,6 +246,7 @@ class TestMockHTTPServer:
 # =============================================================================
 # Approach 4: Test Backoff Logic
 # =============================================================================
+
 
 class TestBackoffLogic:
     """Test the exponential backoff calculation."""
@@ -271,10 +264,10 @@ class TestBackoffLogic:
 
         # After threshold, exponential backoff
         expected_backoffs = [
-            (10, 1.0),   # 2^0 = 1
-            (11, 2.0),   # 2^1 = 2
-            (12, 4.0),   # 2^2 = 4
-            (13, 8.0),   # 2^3 = 8
+            (10, 1.0),  # 2^0 = 1
+            (11, 2.0),  # 2^1 = 2
+            (12, 4.0),  # 2^2 = 4
+            (13, 8.0),  # 2^3 = 8
             (14, 16.0),  # 2^4 = 16
             (15, 32.0),  # 2^5 = 32
             (16, 60.0),  # 2^6 = 64 -> capped at 60
@@ -288,6 +281,7 @@ class TestBackoffLogic:
     @pytest.mark.asyncio
     async def test_backoff_timing(self):
         """Test that backoff actually delays execution."""
+
         async def simulate_backoff(consecutive_failures: int) -> float:
             """Simulate the backoff behavior and return actual delay."""
             threshold = 3
@@ -314,6 +308,7 @@ class TestBackoffLogic:
 # Approach 5: Simulate Full Scheduler Behavior (Pseudo-Integration)
 # =============================================================================
 
+
 class MockSchedulerContext:
     """Simulates scheduler context for testing transient error handling."""
 
@@ -332,7 +327,7 @@ class MockSchedulerContext:
                 if self.consecutive_failures >= self.max_consecutive_failures:
                     backoff = min(
                         self.backoff_base ** (self.consecutive_failures - self.max_consecutive_failures),
-                        self.max_backoff
+                        self.max_backoff,
                     )
                     self.total_backoff_time += backoff
                     await asyncio.sleep(backoff)
