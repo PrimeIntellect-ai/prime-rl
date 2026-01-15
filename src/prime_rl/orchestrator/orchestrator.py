@@ -44,7 +44,7 @@ from prime_rl.utils.client import (
     update_weights,
 )
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
@@ -66,7 +66,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
     )
-    vf.setup_logging(level=config.log.vf_level.upper())
+    intercept_verifiers_logging(level=config.log.vf_level)
     logger.info("Starting orchestrator")
 
     event_loop_lag_monitor = EventLoopLagMonitor()

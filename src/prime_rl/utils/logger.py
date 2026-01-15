@@ -1,3 +1,4 @@
+import logging
 import sys
 from pathlib import Path
 
@@ -6,6 +7,24 @@ _LOGGER = None
 
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
+
+
+class _VerifiersInterceptHandler(logging.Handler):
+    """Intercept stdlib logging from verifiers and route to loguru with [verifiers] tag."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        logger = get_logger()
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        frame, depth = logging.currentframe(), 2
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(level, f"[verifiers] {record.getMessage()}")
 
 
 def setup_logger(log_level: str, log_file: Path | None = None, append: bool = False):
@@ -84,3 +103,12 @@ def reset_logger():
     """Reset the global logger. Useful mainly in test to clear loggers between tests."""
     global _LOGGER
     _LOGGER = None
+
+
+def intercept_verifiers_logging(level: str = "DEBUG"):
+    """Intercept all verifiers stdlib logging and route through prime-rl loguru with [verifiers] tag."""
+    vf_logger = logging.getLogger("verifiers")
+    vf_logger.handlers.clear()
+    vf_logger.addHandler(_VerifiersInterceptHandler())
+    vf_logger.setLevel(level.upper())
+    vf_logger.propagate = False
