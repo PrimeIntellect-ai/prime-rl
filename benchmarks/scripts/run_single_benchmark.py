@@ -125,6 +125,8 @@ def build_command(config: BenchmarkConfig) -> list[str]:
         "--bench.output-json",
         str(config.output),
         "--model.compile",
+        "--dist-timeout-seconds",
+        str(config.timeout),
     ]
 
     # Add activation checkpointing if enabled
