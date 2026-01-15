@@ -55,11 +55,9 @@ def read_existing_results(results_file: Path) -> pd.DataFrame:
     with open(results_file, "r") as f:
         for line in f:
             result = json.loads(line)
-            info = result.get("info", {})
-            prime_info = info.get("prime_rl", {})
-            rollout_status = (
-                prime_info.get("rollout_status", "ok")
-            )
+            info = result.get("info", {}) or {}
+            prime_info = info.get("prime_rl", {}) if isinstance(info, dict) else {}
+            rollout_status = prime_info.get("rollout_status", "ok") if isinstance(prime_info, dict) else "ok"
             results.append(
                 {
                     "example_id": result["example_id"],
@@ -215,7 +213,7 @@ def _make_no_response_state(
         "prompt": example.get("prompt"),
         "completion": [],
         "task": example.get("task"),
-        "reward": 0.0,
+        "reward": None,
         "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},
         "info": {
             "prime_rl": {
@@ -232,19 +230,19 @@ def _make_no_response_state(
     }
 
 
-def _mark_save_failed(state: dict, *, env_name_or_id: str, rollout_idx: int, error: Exception) -> None:
-    """Annotate a successful rollout state when persistence fails."""
-    info = state.get("info")
-    if not isinstance(info, dict):
-        return
-    prime_info = info.get("prime_rl")
-    if not isinstance(prime_info, dict):
-        prime_info = {}
-        info["prime_rl"] = prime_info
-    prime_info.setdefault("env", env_name_or_id)
-    prime_info.setdefault("rollout_idx", rollout_idx)
-    prime_info["rollout_status"] = "save_failed"
-    prime_info["save_error"] = repr(error)
+def _is_valid_reward(reward: Any) -> bool:
+    if reward is None:
+        return False
+    if isinstance(reward, float) and np.isnan(reward):
+        return False
+    return isinstance(reward, (int, float))
+
+
+def _format_avg_reward(rewards: list) -> str:
+    valid = [r for r in rewards if _is_valid_reward(r)]
+    if not valid:
+        return "N/A"
+    return f"{(sum(valid) / len(valid)):.4f}"
 
 
 async def generate_and_save_rollout(
@@ -317,46 +315,26 @@ async def generate_and_save_rollout(
 
         # Save placeholder row if streaming saves enabled (supports resume + complete accounting).
         if save_file is not None:
-            try:
-                result_dict = await asyncio.to_thread(make_result, failed_state, reasoning_field, rollout_idx)
-                await save_result(result_dict, save_file)
-            except Exception as save_e:
-                logger.error(
-                    "Failed to persist no_response placeholder "
-                    f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx})",
-                    exc_info=(type(save_e), save_e, save_e.__traceback__),
-                )
+            result_dict = await asyncio.to_thread(make_result, failed_state, reasoning_field, rollout_idx)
+            await save_result(result_dict, save_file)
 
-        # Update progress + running average as if reward=0 for this rollout.
+        # Update progress + running average without biasing downward.
         async with rewards_lock:
-            rewards_accumulator.append(0.0)
-            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+            rewards_accumulator.append(None)
+            pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
             pbar.update(1)
 
         return failed_state  # type: ignore[return-value]
 
     # Save with rollout_idx if streaming saves enabled.
-    # IMPORTANT: if persistence fails, keep the successful rollout instead of recording no_response.
     if save_file is not None:
-        try:
-            result_dict = await asyncio.to_thread(make_result, state, reasoning_field, rollout_idx)
-            await save_result(result_dict, save_file)
-        except Exception as save_e:
-            logger.error(
-                "Rollout generated successfully but saving failed; keeping rollout in-memory "
-                f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx})",
-                exc_info=(type(save_e), save_e, save_e.__traceback__),
-            )
-            _mark_save_failed(
-                state, env_name_or_id=env_name_or_id, rollout_idx=rollout_idx, error=save_e  # type: ignore[arg-type]
-            )
+        result_dict = await asyncio.to_thread(make_result, state, reasoning_field, rollout_idx)
+        await save_result(result_dict, save_file)
 
     # Update running average immediately.
     async with rewards_lock:
         rewards_accumulator.append(state["reward"])
-        avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-        pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+        pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
         pbar.update(1)
 
     return state
@@ -436,59 +414,34 @@ async def generate_and_save_group(
         ]
 
         if save_file is not None:
-            save_results = await asyncio.gather(
+            await asyncio.gather(
                 *[
                     make_and_save_result(state, save_file, reasoning_field, rollout_idx)
                     for rollout_idx, state in enumerate(failed_states)
-                ],
-                return_exceptions=True,
+                ]
             )
-            for rollout_idx, save_result_exc in enumerate(save_results):
-                if isinstance(save_result_exc, Exception):
-                    logger.error(
-                        "Failed to persist no_response placeholder for group "
-                        f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx})",
-                        exc_info=(type(save_result_exc), save_result_exc, save_result_exc.__traceback__),
-                    )
 
         async with rewards_lock:
-            rewards_accumulator.extend([0.0] * rollouts_per_example)
-            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+            rewards_accumulator.extend([None] * rollouts_per_example)
+            pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
             pbar.update(rollouts_per_example)
 
         return failed_states  # type: ignore[return-value]
 
     # Save results for the generated group.
-    # IMPORTANT: if persistence fails, keep the successful rollouts instead of recording no_response.
     if save_file is not None:
-        save_results = await asyncio.gather(
+        await asyncio.gather(
             *[
                 make_and_save_result(state, save_file, reasoning_field, rollout_idx)
                 for rollout_idx, state in enumerate(states)
-            ],
-            return_exceptions=True,
+            ]
         )
-        for rollout_idx, save_result_exc in enumerate(save_results):
-            if isinstance(save_result_exc, Exception):
-                logger.error(
-                    "Group generated successfully but saving rollout failed; keeping rollout in-memory "
-                    f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx})",
-                    exc_info=(type(save_result_exc), save_result_exc, save_result_exc.__traceback__),
-                )
-                _mark_save_failed(
-                    states[rollout_idx],
-                    env_name_or_id=env_name_or_id,
-                    rollout_idx=rollout_idx,
-                    error=save_result_exc,
-                )
 
     # Update running average after group completes.
     async with rewards_lock:
         for state in states:
             rewards_accumulator.append(state["reward"])
-        avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-        pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+        pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
         pbar.update(rollouts_per_example)
 
     return states
@@ -570,8 +523,7 @@ async def run_eval(
 
         pbar = tqdm(total=total_rollouts, desc="Evaluating")
         if rewards_accumulator:
-            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+            pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
 
         all_states = await asyncio.gather(
             *[
@@ -618,8 +570,7 @@ async def run_eval(
 
         pbar = tqdm(total=total_rollouts, desc="Evaluating")
         if rewards_accumulator:
-            avg_reward = sum(rewards_accumulator) / len(rewards_accumulator)
-            pbar.set_postfix({"Avg Reward": f"{avg_reward:.4f}"})
+            pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
 
         group_states_list = await asyncio.gather(
             *[
@@ -669,12 +620,12 @@ async def run_eval(
     else:
         results_df = new_results_df
 
-    unique_rewards = results_df.reward.unique()
+    unique_rewards = results_df.reward.dropna().unique()
     could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
     if could_be_binary:
         pass_at_k = (
             results_df.groupby("example_id")
-            .apply(lambda x: compute_pass_at_k(x.reward), include_groups=False)
+            .apply(lambda x: compute_pass_at_k(x.reward.dropna()), include_groups=False)
             .apply(pd.Series)
         )
     else:
