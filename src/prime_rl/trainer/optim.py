@@ -129,16 +129,7 @@ def _create_muon_optimizer(
     param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
 
     optimizer = Muon(
-        [
-            dict(
-                params=muon_params,
-                algorithm="muon",
-                lr=lr,
-                weight_decay=config.weight_decay,
-                adjust_lr="rms_norm",
-            ),
-            dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay),
-        ],
+        param_groups=param_groups,
         lr=lr,
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
