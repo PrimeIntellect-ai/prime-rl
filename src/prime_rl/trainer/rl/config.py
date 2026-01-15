@@ -273,3 +273,10 @@ class RLTrainerConfig(BaseSettings):
         if self.model.fused_lm_head_chunk_size is None and self.model.impl != "liger_kernel":
             self.model.fused_lm_head_chunk_size = 2048
         return self
+
+    @model_validator(mode="after")
+    def ep_only_with_custom_impl(self):
+        if self.model.ep > 1 and (self.model.impl != "custom" or self.model.impl == "auto"):
+            raise ValueError("EP is only supported with the custom implementation or auto mode")
+
+        return self

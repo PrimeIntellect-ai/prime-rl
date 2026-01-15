@@ -56,6 +56,7 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
+from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
@@ -397,8 +398,6 @@ def train(config: RLTrainerConfig):
             logger.debug(micro_step_message)
 
         # Optionally, clip the gradients
-
-        from torchtitan.distributed.utils import clip_grad_norm_
 
         grad_norm = clip_grad_norm_(
             model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
