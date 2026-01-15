@@ -230,6 +230,10 @@ class ParallelDims:
         return self.ep > 1
 
     @cached_property
+    def fsdp_gradient_divide_factor(self) -> int:
+        return self.dp_replicate * self.dp_shard * self.cp
+
+    @cached_property
     def non_data_parallel_size(self):
         return self.cp * self.tp * self.pp
 

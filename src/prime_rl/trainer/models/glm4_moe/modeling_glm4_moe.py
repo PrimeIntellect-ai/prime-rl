@@ -77,6 +77,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
 
         if layer_idx >= config.first_k_dense_replace:
             self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            self.moe_enabled = True
         else:
             self.mlp = MLP(mlp_config)
 

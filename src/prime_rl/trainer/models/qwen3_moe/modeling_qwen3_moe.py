@@ -84,6 +84,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
         ):
             self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            self.moe_enabled = True
         else:
             self.mlp = MLP(mlp_config)
 
