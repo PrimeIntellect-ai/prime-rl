@@ -290,8 +290,7 @@ For deployments on Kubernetes clusters, PRIME-RL provides a Helm chart that mana
 See the dedicated [Kubernetes guide](kubernetes.md) for complete documentation including:
 
 - Prerequisites and setup
-- Quick start with Helm
-- Component architecture (orchestrator, inference, trainer)
-- Configuration options (storage, GPU, secrets)
-- Distributed training with environment variables
-- Troubleshooting
+- Quick start examples
+- Component architecture
+- Scaling and distributed training
+- Configuration options
