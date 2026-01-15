@@ -187,7 +187,9 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             **fsdp_config,
         )
 
-    if hasattr(model, "config") and not model.config.tie_word_embeddings:
+    shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings
+
+    if shard_norm_and_lm_head:
         # This optimization breaks weight tying
         fully_shard(
             model.model.embed_tokens,
@@ -217,7 +219,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     next_transformer_blocks = transformer_blocks[1:] + [None]
 
     if model.model.embed_tokens is not None and len(model.model.layers) > 0:
-        model.model.embed_tokens.set_modules_to_forward_prefetch([transformer_blocks[0]])
+        if shard_norm_and_lm_head:
+            model.model.embed_tokens.set_modules_to_forward_prefetch([transformer_blocks[0]])
 
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
@@ -228,14 +231,18 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             else:
                 transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
         elif model.model.norm is not None and model.lm_head is not None:
-            transformer_block.set_modules_to_forward_prefetch([model.model.norm, model.lm_head])
+            if shard_norm_and_lm_head:
+                transformer_block.set_modules_to_forward_prefetch([model.model.norm, model.lm_head])
 
     # backward
     reversed_transformer_blocks = list(reversed(model.model.layers))
     prev_transformer_blocks = reversed_transformer_blocks[1:] + [None]
 
     if model.model.norm is not None and model.lm_head is not None and len(model.model.layers) > 0:
-        model.lm_head.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+        if shard_norm_and_lm_head:
+            model.lm_head.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+        else:
+            model.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
 
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
@@ -246,7 +253,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             else:
                 transformer_block.set_modules_to_backward_prefetch([prev_transformer_block])
         elif model.model.embed_tokens is not None:
-            transformer_block.set_modules_to_backward_prefetch([model.model.embed_tokens])
+            if shard_norm_and_lm_head:
+                transformer_block.set_modules_to_backward_prefetch([model.model.embed_tokens])
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
@@ -393,9 +401,12 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 
 def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
     for transformer_block in model.model.layers:
-        parallelize_module(
-            transformer_block.mlp.experts, device_mesh=parallel_dims.world_mesh["ep"], parallelize_plan=ExpertParallel()
-        )
+        if getattr(transformer_block, "moe_enabled", False):
+            parallelize_module(
+                transformer_block.mlp.experts,
+                device_mesh=parallel_dims.world_mesh["ep"],
+                parallelize_plan=ExpertParallel(),
+            )
 
 
 def setup_model(

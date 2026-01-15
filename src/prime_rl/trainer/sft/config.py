@@ -247,7 +247,7 @@ class SFTTrainerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def ep_only_with_custom_impl(self):
-        if self.model.ep > 1 and (self.model.impl != "custom" or self.model.impl == "auto"):
+        if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")
 
         return self
