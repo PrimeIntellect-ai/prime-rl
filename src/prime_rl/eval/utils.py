@@ -56,8 +56,8 @@ def read_existing_results(results_file: Path) -> pd.DataFrame:
         for line in f:
             result = json.loads(line)
             info = result.get("info", {}) or {}
-            prime_info = info.get("prime_rl", {}) if isinstance(info, dict) else {}
-            rollout_status = prime_info.get("rollout_status", "ok") if isinstance(prime_info, dict) else "ok"
+            prime_info = info.get("prime_rl", {})
+            rollout_status = prime_info.get("rollout_status", "ok")
             results.append(
                 {
                     "example_id": result["example_id"],
@@ -603,8 +603,6 @@ async def run_eval(
             "is_truncated": [get_is_truncated(state) for state in all_states],
             "rollout_status": [
                 (state.get("info", {}) or {}).get("prime_rl", {}).get("rollout_status", "ok")
-                if isinstance(state.get("info", {}), dict)
-                else "ok"
                 for state in all_states
             ],
         }
