@@ -1,7 +1,5 @@
 import asyncio
 
-import verifiers as vf
-
 from prime_rl.orchestrator.utils import (
     set_semaphore,
 )
@@ -13,7 +11,7 @@ from prime_rl.utils.client import (
     setup_admin_clients,
     setup_clients,
 )
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, install_env
 
@@ -24,7 +22,7 @@ async def synthesize(config: SynthesizeConfig):
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "synthesize.log" if config.log.file else None
     )
-    vf.setup_logging(level=config.log.vf_level.upper())
+    intercept_verifiers_logging(level=config.log.vf_level)
 
     env_names = [env.name or env.id for env in config.env]
     logger.info(f"Starting synthetic data generation for {config.model.name} in environments {', '.join(env_names)}")
