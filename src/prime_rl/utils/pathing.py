@@ -29,8 +29,8 @@ def get_broadcast_dir(output_dir: Path) -> Path:
     return output_dir / "broadcasts"
 
 
-def get_env_worker_log_dir(output_dir: Path, env_name: str) -> Path:
-    return output_dir / "logs" / "env_workers" / env_name
+def get_env_worker_log_file(output_dir: Path, env_name: str) -> Path:
+    return output_dir / "logs" / "env_workers" / f"{env_name}.log"
 
 
 def get_step_path(path: Path, step: int) -> Path:

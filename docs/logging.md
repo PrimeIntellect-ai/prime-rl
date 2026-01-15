@@ -63,11 +63,12 @@ When `per_worker_logs = true`, logs are written to:
 output_dir/
 └── logs/
     └── env_workers/
-        └── {env_name}/
-            ├── worker_0.log
-            ├── worker_1.log
-            └── ...
+        ├── {env_name_1}.log
+        ├── {env_name_2}.log
+        └── ...
 ```
+
+All workers for an environment share the same log file.
 
 Set `per_worker_logs = false` to disable worker file logging (workers inherit parent process logging).
 

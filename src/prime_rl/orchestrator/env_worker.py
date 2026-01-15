@@ -193,12 +193,12 @@ def worker_main(
     # Reset logger inherited from parent process, then setup fresh logger for this worker
     if log_file:
         reset_logger()
-        setup_logger(log_level, log_file=Path(log_file))
+        setup_logger(log_level, log_file=Path(log_file), append=True)
         vf.setup_logging(level=vf_log_level.upper())
-        # Redirect verifiers to file instead of inherited stderr
+        # Redirect verifiers to file instead of inherited stderr (append mode for shared file)
         vf_logger = logging.getLogger("verifiers")
         vf_logger.handlers.clear()
-        vf_handler = logging.FileHandler(log_file)
+        vf_handler = logging.FileHandler(log_file, mode="a")
         vf_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)7s %(message)s", datefmt="%H:%M:%S"))
         vf_logger.addHandler(vf_handler)
 

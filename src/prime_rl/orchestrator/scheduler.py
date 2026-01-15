@@ -19,7 +19,7 @@ from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.utils.client import update_weights
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.pathing import get_env_worker_log_dir
+from prime_rl.utils.pathing import get_env_worker_log_file
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
@@ -92,11 +92,11 @@ class Scheduler:
             self.env_names.append(env_name)
             self.workers[env_name] = []
 
-            # Setup log directory if env worker file logging is enabled
-            env_log_dir = None
+            # Setup log file if env worker file logging is enabled (all workers share one file)
+            env_log_file = None
             if config.log.per_worker_logs and output_dir is not None:
-                env_log_dir = get_env_worker_log_dir(output_dir, env_name)
-                env_log_dir.mkdir(parents=True, exist_ok=True)
+                env_log_file = get_env_worker_log_file(output_dir, env_name)
+                env_log_file.parent.mkdir(parents=True, exist_ok=True)
 
             for worker_idx in range(self.workers_per_env):
                 worker = EnvWorker(
@@ -112,7 +112,7 @@ class Scheduler:
                     worker_name=f"{env_name}_{worker_idx}",
                     log_level=config.log.level,
                     vf_log_level=config.log.vf_level,
-                    log_file=str(env_log_dir / f"worker_{worker_idx}.log") if env_log_dir else None,
+                    log_file=str(env_log_file) if env_log_file else None,
                 )
                 self.workers[env_name].append(worker)
 
