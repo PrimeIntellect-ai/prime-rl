@@ -125,7 +125,7 @@ async def eval(config: OfflineEvalConfig):
                 return False
 
         logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
-        for ckpt_step in ckpt_steps[::-1]:
+        for ckpt_step in ckpt_steps:
             await _eval_ckpt(ckpt_step)
 
         if config.watcher:
