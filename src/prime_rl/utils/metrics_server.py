@@ -133,9 +133,7 @@ class MetricsServer(HealthServer):
             )
             self._runs_max = Gauge("trainer_runs_max", "Maximum run capacity", registry=self._registry)
             # Per-run metrics with labels
-            self._run_step = Gauge(
-                "trainer_run_step", "Training step for run", ["run"], registry=self._registry
-            )
+            self._run_step = Gauge("trainer_run_step", "Training step for run", ["run"], registry=self._registry)
             self._run_tokens = Gauge(
                 "trainer_run_tokens", "Total tokens processed by run", ["run"], registry=self._registry
             )
@@ -143,7 +141,10 @@ class MetricsServer(HealthServer):
                 "trainer_run_learning_rate", "Current learning rate for run", ["run"], registry=self._registry
             )
             self._run_ready = Gauge(
-                "trainer_run_ready", "Whether run is ready for updates (1=ready, 0=not ready)", ["run"], registry=self._registry
+                "trainer_run_ready",
+                "Whether run is ready for updates (1=ready, 0=not ready)",
+                ["run"],
+                registry=self._registry,
             )
             # Track known run labels for cleanup
             self._known_runs: set[str] = set()

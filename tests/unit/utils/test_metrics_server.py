@@ -221,7 +221,7 @@ def test_server_update_runs_cleanup():
     # run_001 should be updated
     assert 'trainer_run_step{run="run_001"} 60.0' in content
     # run_002 should be removed
-    assert 'run_002' not in content
+    assert "run_002" not in content
 
     server.stop()
 
