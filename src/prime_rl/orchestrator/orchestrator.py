@@ -50,6 +50,7 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
     get_broadcast_dir,
+    get_ckpt_dir,
     get_env_ids_to_install,
     get_step_path,
     install_env,
@@ -230,9 +231,14 @@ async def orchestrate(config: OrchestratorConfig):
         if config.eval and config.eval.skip_eval_on_resume:
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
+
+        weight_dir = get_step_path(get_ckpt_dir(config.output_dir), scheduler.ckpt_step) / "weight"
+        if not weight_dir.exists():
+            weight_dir = (get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),)
+        if not weight_dir.exists():
+            raise ValueError(f"No weight directory found for checkpoint step {scheduler.ckpt_step}")
         await update_weights(
             admin_clients,
-            get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
             lora_name=config.model.lora.name if config.model.lora else None,
         )
     else:
