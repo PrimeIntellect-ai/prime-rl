@@ -82,7 +82,8 @@ class MultiCheckpointManager:
         self.runs.register_deletion_hook(self._delete_run_data_hook)
 
     def _delete_run_data_hook(self, idx: int, run_id: str) -> None:
-        del self.managers[idx]
+        if idx in self.managers:
+            del self.managers[idx]
 
     def _get_or_create_manager(self, idx: int) -> CheckpointManager | None:
         if idx in self.managers:
