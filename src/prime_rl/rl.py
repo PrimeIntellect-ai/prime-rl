@@ -324,7 +324,7 @@ class RLConfig(BaseSettings):
                 batch_size=self.orchestrator.batch_size,
             )
 
-        # Compare truthiness since trainer.bench is BenchConfig | None and orchestrator.bench is bool
+        
         trainer_bench_enabled = self.trainer.bench is not None
         if trainer_bench_enabled != self.orchestrator.bench:
             raise ValueError(
