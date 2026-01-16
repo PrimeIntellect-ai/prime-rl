@@ -36,3 +36,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`orchestrator.log.env_worker_logs`**: Added flag (default `False`) to write env worker logs to `logs/env_workers/{env_name}.log` (2026-01-15)
 - **`orchestrator.env.log`**: Removed. Use `orchestrator.log` for env worker logging instead (2026-01-15)
 - **`orchestrator.eval.retry.reraise`**: Changed default from `True` to `False`. When `False`, raises `tenacity.RetryError` after retries are exhausted instead of the original exception, allowing failed eval environments to be skipped with a warning (#1586, 2026-01-14)
+- **`orchestrator.trajectory_strategy=interleaved`**: Interleaving now groups steps by `trajectory_id`, producing one training sample per trajectory group. Single-trajectory environments are unchanged (2026-01-15)
