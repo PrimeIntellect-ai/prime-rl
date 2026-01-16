@@ -184,7 +184,8 @@ class Scheduler:
         if next_ckpt_step > self.ckpt_step:
             if next_ckpt_step == async_away_ckpt_step:
                 self.logger.info(
-                    f"Hit async barrier because we are >{self.max_async_level} step(s) async. Waiting for checkpoint {next_ckpt_step}"
+                    f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
+                    f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
                 )
                 self.checkpoint_ready.clear()
                 wait_for_ckpt_start_time = time.perf_counter()
