@@ -239,6 +239,7 @@ async def orchestrate(config: OrchestratorConfig):
             raise ValueError(f"No weight directory found for checkpoint step {scheduler.ckpt_step}")
         await update_weights(
             admin_clients,
+            weight_dir,
             lora_name=config.model.lora.name if config.model.lora else None,
         )
     else:
