@@ -222,7 +222,7 @@ def main():
     print(f"\nSummary: {successful} successful, {len(results) - successful} failed benchmarks", file=sys.stderr)
 
     if has_regressions:
-        Path("/tmp/has_regressions").touch()
+        Path("/tmp/prime-rl-benchmark-aggregate-has-regressions").touch()
         print("WARNING: Performance regressions detected!", file=sys.stderr)
 
 

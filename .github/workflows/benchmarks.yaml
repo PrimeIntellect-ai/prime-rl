@@ -179,7 +179,7 @@ jobs:
             --output-markdown "benchmarks/results/BENCHMARKS.md" \
             --regression-threshold 0.05
 
-          if [ -f /tmp/has_regressions ]; then
+          if [ -f /tmp/prime-rl-benchmark-aggregate-has-regressions ]; then
             echo "has_regressions=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_regressions=false" >> "$GITHUB_OUTPUT"
