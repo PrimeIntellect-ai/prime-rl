@@ -79,11 +79,15 @@ class MultiCheckpointManager:
         self.world = get_world()
         self.logger = get_logger()
         self.managers: dict[int, CheckpointManager] = {}
-        self.runs.register_deletion_hook(self._delete_run_data_hook)
+        self.runs.register_deletion_hook(self._run_deleted_hook)
+        self.runs.register_creation_hook(self._run_created_hook)
 
-    def _delete_run_data_hook(self, idx: int, run_id: str) -> None:
+    def _run_deleted_hook(self, idx: int, run_id: str) -> None:
         if idx in self.managers:
             del self.managers[idx]
+
+    def _run_created_hook(self, idx: int, run_id: str) -> None:
+        self.managers[idx] = self._get_or_create_manager(idx)
 
     def _get_or_create_manager(self, idx: int) -> CheckpointManager | None:
         if idx in self.managers:
@@ -131,7 +135,7 @@ class MultiCheckpointManager:
                 continue
 
             try:
-                model_state_dict = dict(self.runs.get_named_parameters_for_run(idx))
+                model_state_dict = {k: v.data.detach().clone() for k, v in self.runs.get_named_parameters_for_run(idx)}
                 app_state = RunAppState(
                     model_state_dict,
                     idx,
