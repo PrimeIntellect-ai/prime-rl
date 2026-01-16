@@ -295,8 +295,9 @@ class Scheduler:
 
                 except asyncio.CancelledError:
                     pass  # Request was cancelled, will be rescheduled
-                except WorkerDiedError:
-                    raise  # Re-raise to exit process for K8s restart
+                except WorkerDiedError as e:
+                    # Worker died but will auto-restart, just log and continue
+                    self.logger.warning(f"Rollout lost due to worker death (worker will auto-restart): {e}")
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
 

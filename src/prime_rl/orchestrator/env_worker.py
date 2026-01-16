@@ -17,7 +17,7 @@ from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
-from prime_rl.utils.logger import intercept_verifiers_logging, reset_logger, setup_logger
+from prime_rl.utils.logger import get_logger, intercept_verifiers_logging, reset_logger, setup_logger
 
 
 class WorkerDiedError(Exception):
@@ -304,6 +304,30 @@ class EnvWorker:
             if self.process.is_alive():
                 self.process.terminate()
 
+    def restart(self):
+        """Restart the worker process after unexpected death."""
+        # Clean up old process if it exists
+        if self.process is not None:
+            # Don't send shutdown signal - process is already dead
+            if self.process.is_alive():
+                self.process.terminate()
+                self.process.join(timeout=5)
+
+        # Clear queues to avoid stale data (drain without blocking)
+        while True:
+            try:
+                self.request_queue.get_nowait()
+            except queue.Empty:
+                break
+        while True:
+            try:
+                self.response_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # Start fresh process
+        self.start()
+
     async def submit_request(
         self,
         example_id: int,
@@ -327,6 +351,7 @@ class EnvWorker:
 
     async def collect_responses(self):
         """Background task to collect responses and resolve futures."""
+        logger = get_logger()
         while True:
             # Drain queue first to salvage any responses before checking for dead worker
             while True:
@@ -354,7 +379,13 @@ class EnvWorker:
                     if not future.done():
                         future.set_exception(error)
                 self.pending_futures.clear()
-                raise error
+
+                # Log warning and restart the worker automatically
+                logger.warning(
+                    f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code}). "
+                    f"Restarting worker automatically. In-flight requests will be rescheduled."
+                )
+                self.restart()
 
             await asyncio.sleep(0.01)
 
