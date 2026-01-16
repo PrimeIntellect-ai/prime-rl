@@ -82,11 +82,12 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
 
     # Interleave within each group
     rollouts: list[TrainingSample] = []
+    example_id = state.get("example_id") or "unknown"
     for trajectory_id, steps in groups.items():
         rollout = _interleave_steps(
             steps,
             has_error,
-            f"example {state['example_id']} trajectory {trajectory_id}",
+            f"example {example_id} trajectory {trajectory_id}",
         )
         if rollout:
             rollouts.append(rollout)
