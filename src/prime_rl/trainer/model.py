@@ -31,6 +31,7 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -176,7 +177,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
 
     for transformer_block in model.model.layers:
-        if parallel_dims.ep_enabled and getattr(transformer_block, "moe_enabled", False):
+        if parallel_dims.ep_enabled and isinstance(transformer_block.mlp, MoE):
             fully_shard(transformer_block.mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
 
             transformer_block.mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
@@ -217,6 +218,9 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     if not parallel_dims.ep_enabled:
         return
 
+    # if EP is enabled, d2h syncs in the dispatch/combine can interfere with FSDP prefetch, that's why we set it below manually
+    # the rest of the function handles only that
+
     transformer_blocks = list(model.model.layers)
     next_transformer_blocks = transformer_blocks[1:] + [None]
 
@@ -226,7 +230,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
-            if getattr(next_transformer_block, "moe_enabled", False):
+            if isinstance(next_transformer_block.mlp, MoE):
                 transformer_block.set_modules_to_forward_prefetch(
                     [next_transformer_block, next_transformer_block.mlp.experts]
                 )
@@ -248,7 +252,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
-            if getattr(prev_transformer_block, "moe_enabled", False):
+            if isinstance(prev_transformer_block.mlp, MoE):
                 transformer_block.set_modules_to_backward_prefetch(
                     [prev_transformer_block, prev_transformer_block.mlp.experts]
                 )
@@ -403,7 +407,7 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 
 def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
     for transformer_block in model.model.layers:
-        if getattr(transformer_block, "moe_enabled", False):
+        if isinstance(transformer_block.mlp, MoE):
             parallelize_module(
                 transformer_block.mlp.experts,
                 device_mesh=parallel_dims.world_mesh["ep"],

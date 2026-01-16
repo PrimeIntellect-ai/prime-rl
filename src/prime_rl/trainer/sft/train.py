@@ -288,7 +288,9 @@ def train(config: SFTTrainerConfig):
         logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
         grad_norm = clip_grad_norm_(
             model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
-        ).to(torch.device("cuda"))
+        )
+        if grad_norm.device.type == "cpu":
+            grad_norm = grad_norm.to(torch.device("cuda"))
 
         logger.debug("Optimizer step")
         optimizer.step()
