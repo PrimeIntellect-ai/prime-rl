@@ -98,8 +98,8 @@ class MultiPacker(BasePacker):
         start_step: int = 0,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
-        # Per-run buffer: stores (TrainingSample, temperature) tuples
-        self.buffers: list[deque[tuple[TrainingSample, float]]] = [deque() for _ in range(self.runs.max_runs)]
+        # Per-run buffer: stores (TrainingSample, temperature, step) tuples
+        self.buffers: list[deque[tuple[TrainingSample, float, int]]] = [deque() for _ in range(self.runs.max_runs)]
 
         # Per-run sample count consumed in current step
         self.samples_consumed_this_step: list[int] = [0] * self.runs.max_runs
@@ -130,7 +130,7 @@ class MultiPacker(BasePacker):
                 self.logger.warning("Received batch with no run index")
                 continue
             for sample in batch.examples:
-                self.buffers[batch.run_idx].append((sample, batch.temperature))
+                self.buffers[batch.run_idx].append((sample, batch.temperature, batch.step))
 
     def _has_enough_tokens(self) -> bool:
         """Check if we have enough samples in buffer to pack a step"""
@@ -138,8 +138,12 @@ class MultiPacker(BasePacker):
         threshold = self.seq_len * self.dp_world_size
         tokens = 0
 
-        for buffer in self.buffers:
-            for sample, _ in buffer:
+        for run_idx in self.runs.used_idxs:
+            buffer = self.buffers[run_idx]
+            current_step = self.runs.progress[run_idx].step
+            for sample, _, step in buffer:
+                if step != current_step:
+                    continue
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
                 if tokens >= threshold:
                     return True
@@ -151,10 +155,12 @@ class MultiPacker(BasePacker):
         tokens_collected = 0
 
         while tokens_collected < token_budget:
-            # Round-robin until we find a run with work
+            # Round-robin until we find a run with work for the current step
             for _ in range(len(self.buffers)):
-                if len(self.buffers[self._round_robin_position]) != 0:
-                    break
+                if len(self.buffers[self._round_robin_position]) > 0:
+                    _, _, step = self.buffers[self._round_robin_position][0]
+                    if step == self.runs.progress[self._round_robin_position].step:
+                        break
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
             else:
                 # TODO: We could probably make the logic safer. This is basically counting on _has_enough_tokens() to be correct.
@@ -162,9 +168,13 @@ class MultiPacker(BasePacker):
                 break
             run_idx = self._round_robin_position
             self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
+            current_step = self.runs.progress[run_idx].step
 
             while len(self.buffers[run_idx]) > 0:
-                sample, temperature = self.buffers[run_idx][0]
+                sample, temperature, step = self.buffers[run_idx][0]
+                if step != current_step:
+                    # Samples from different steps should be consumed later
+                    break
                 tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
                 if tokens_collected > token_budget:
                     if tokens_collected == (len(sample.prompt_ids) + len(sample.completion_ids)):
