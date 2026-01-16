@@ -144,7 +144,12 @@ class MultiCheckpointManager:
                     self.runs.progress[idx],
                 )
                 self.logger.info(f"Saving checkpoint for run {idx} at step {step}")
-                manager.save_stateful(step, app_state)
+                ckpt_path = manager.get_ckpt_path(step)
+                ckpt_path.mkdir(parents=True, exist_ok=True)
+                torch.save(app_state.state_dict(), ckpt_path / f"rank_{self.world.rank}.pt")
+                if self.world.is_master:
+                    (ckpt_path / "STABLE").touch()
+                manager.ckpt_steps.append(step)
 
                 # Copy broadcast folder to checkpoint
                 if self.world.is_master:
@@ -188,7 +193,13 @@ class MultiCheckpointManager:
                 scheduler.schedulers[idx],
                 self.runs.progress[idx],
             )
-            manager.load_stateful(step, app_state)
+            ckpt_path = manager.get_ckpt_path(step)
+            if not ckpt_path.exists():
+                raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
+            self.logger.info(f"Loading checkpoint from {ckpt_path}")
+            state_dict = torch.load(ckpt_path / f"rank_{self.world.rank}.pt")
+            app_state.load_state_dict(state_dict)
+
             self.logger.info(f"Resumed run {self.runs.idx_2_id[idx]} from step {step}")
             return True
         except Exception as e:
