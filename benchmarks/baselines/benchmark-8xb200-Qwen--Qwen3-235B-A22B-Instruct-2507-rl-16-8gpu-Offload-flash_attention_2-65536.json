@@ -1,0 +1,46 @@
+{
+  "config": {
+    "type": "rl",
+    "num_gpus": 8,
+    "model_name": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+    "lora_rank": 16,
+    "seq_len": 65536,
+    "ac": "Offload",
+    "attention": "flash_attention_2",
+    "output": "/tmp/benchmark_result.json",
+    "dry_run": false,
+    "timeout": 6900,
+    "micro_batches": 2,
+    "docker_image": "primeintellect/prime-rl-jackmin@sha256:5a146f7dfdcdf6b0e90fd3f1ed0874d22a3a0641378dc8dad46ce213d02fa2e6",
+    "device_name": "NVIDIA B200",
+    "commit_sha": "unknown",
+    "timestamp": "2026-01-15T22:55:26.218741+00:00",
+    "success": false,
+    "error_reason": "[rank4]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 8.00 GiB. GPU 4 has a total capacity of 178.36 GiB of which 7.20 GiB is free. Including non-PyTorch memory, this process has 171.05 GiB memory in use. Of the allocated memory 168.36 GiB is allocated by PyTorch, and 418.92 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+    "time_taken": 1187.6552004240002
+  },
+  "metrics": {
+    "mfu": {
+      "mean": 0,
+      "std": 0,
+      "min": 0,
+      "max": 0
+    },
+    "throughput": {
+      "mean": 0,
+      "std": 0,
+      "min": 0,
+      "max": 0
+    },
+    "step_time": {
+      "mean": 0,
+      "std": 0,
+      "min": 0,
+      "max": 0
+    },
+    "peak_memory": {
+      "gib": 0,
+      "pct": 0
+    }
+  }
+}
