@@ -303,6 +303,10 @@ class EnvConfig(BaseConfig):
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
     name: Annotated[str | None, Field(description="Name of the environment to use.")] = None
+    no_upgrade: Annotated[
+        bool,
+        Field(description="If True, don't upgrade existing packages during install. Useful with locked dependencies."),
+    ] = False
 
 
 class EvalEnvConfig(EnvConfig):
