@@ -5,7 +5,6 @@ Runs environment rollouts in a separate process to isolate event loop lag.
 """
 
 import asyncio
-import logging
 import queue
 import uuid
 from dataclasses import dataclass
@@ -18,7 +17,7 @@ from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
-from prime_rl.utils.logger import reset_logger, setup_logger
+from prime_rl.utils.logger import intercept_verifiers_logging, reset_logger, setup_logger
 
 
 class WorkerDiedError(Exception):
@@ -189,19 +188,14 @@ def worker_main(
     log_level: str,
     vf_log_level: str,
     log_file: str | None,
+    worker_name: str | None = None,
 ):
     """Main entry point for worker process."""
     # Reset logger inherited from parent process, then setup fresh logger for this worker
     if log_file:
         reset_logger()
-        setup_logger(log_level, log_file=Path(log_file))
-        vf.setup_logging(level=vf_log_level.upper())
-        # Redirect verifiers to file instead of inherited stderr
-        vf_logger = logging.getLogger("verifiers")
-        vf_logger.handlers.clear()
-        vf_handler = logging.FileHandler(log_file)
-        vf_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)7s %(message)s", datefmt="%H:%M:%S"))
-        vf_logger.addHandler(vf_handler)
+        setup_logger(log_level, log_file=Path(log_file), append=True, tag=worker_name)
+        intercept_verifiers_logging(level=vf_log_level)
 
     # Load environment
     env = vf.load_environment(env_id, **env_args)
@@ -294,6 +288,7 @@ class EnvWorker:
                 self.log_level,
                 self.vf_log_level,
                 self.log_file,
+                self.worker_name,
             ),
             daemon=True,
         )

@@ -71,10 +71,6 @@ class EventLoopLagMonitor:
             self.logger.warning(
                 f"Detected busy event loop. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
             )
-        else:
-            self.logger.debug(
-                f"Event loop is running smoothly. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
-            )
 
         return {
             "event_loop_lag/min": min_lag,

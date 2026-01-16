@@ -14,6 +14,7 @@
                 "checkpointing",
                 "benchmarking",
                 "deployment",
+                "kubernetes",
                 "troubleshooting"
             ]
         }

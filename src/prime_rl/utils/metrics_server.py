@@ -35,18 +35,73 @@ class RunStats:
     ready: bool
 
 
-class MetricsServer:
-    """Prometheus metrics server for trainer observability.
+class HealthServer:
+    """Lightweight HTTP server exposing /health for Kubernetes liveness probes.
+
+    Can be subclassed to add additional endpoints (e.g., MetricsServer).
+    """
+
+    def __init__(self, port: int, host: str = "0.0.0.0"):
+        self.port = port
+        self.host = host
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        self._started = False
+
+    def _make_handler(self) -> type[BaseHTTPRequestHandler]:
+        """Create the request handler class. Override to add endpoints."""
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/health":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"ok\n")
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        return Handler
+
+    def start(self) -> None:
+        """Start the server in a background thread."""
+        if self._started:
+            logger.warning(f"{self.__class__.__name__} already started")
+            return
+
+        self._server = HTTPServer((self.host, self.port), self._make_handler())
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        self._started = True
+        logger.info(f"Health server started at http://{self.host}:{self.port}/health")
+
+    def stop(self) -> None:
+        """Stop the server and release the port."""
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            if self._thread is not None:
+                self._thread.join(timeout=5.0)
+            self._server = None
+            self._thread = None
+            self._started = False
+            logger.info(f"{self.__class__.__name__} stopped")
+
+
+class MetricsServer(HealthServer):
+    """Prometheus metrics server extending HealthServer with /metrics endpoint.
 
     Uses an isolated CollectorRegistry to avoid global state pollution.
     Disabled by default - enable by setting `metrics_server` in trainer config.
     """
 
     def __init__(self, config: "MetricsServerConfig"):
+        super().__init__(config.port, config.host)
         self.config = config
-        self._server: HTTPServer | None = None
-        self._thread: threading.Thread | None = None
-        self._started = False
 
         if PROMETHEUS_AVAILABLE:
             self._registry = CollectorRegistry()
@@ -78,9 +133,7 @@ class MetricsServer:
             )
             self._runs_max = Gauge("trainer_runs_max", "Maximum run capacity", registry=self._registry)
             # Per-run metrics with labels
-            self._run_step = Gauge(
-                "trainer_run_step", "Training step for run", ["run"], registry=self._registry
-            )
+            self._run_step = Gauge("trainer_run_step", "Training step for run", ["run"], registry=self._registry)
             self._run_tokens = Gauge(
                 "trainer_run_tokens", "Total tokens processed by run", ["run"], registry=self._registry
             )
@@ -88,15 +141,18 @@ class MetricsServer:
                 "trainer_run_learning_rate", "Current learning rate for run", ["run"], registry=self._registry
             )
             self._run_ready = Gauge(
-                "trainer_run_ready", "Whether run is ready for updates (1=ready, 0=not ready)", ["run"], registry=self._registry
+                "trainer_run_ready",
+                "Whether run is ready for updates (1=ready, 0=not ready)",
+                ["run"],
+                registry=self._registry,
             )
             # Track known run labels for cleanup
             self._known_runs: set[str] = set()
         else:
             self._registry = None
 
-    def _make_handler(self):
-        """Create handler class with access to our registry."""
+    def _make_handler(self) -> type[BaseHTTPRequestHandler]:
+        """Create handler with /metrics and /health endpoints."""
         registry = self._registry
 
         class Handler(BaseHTTPRequestHandler):
@@ -121,7 +177,6 @@ class MetricsServer:
                     self.wfile.write(b"# prometheus_client not installed\n")
 
             def _handle_health(self):
-                """Simple liveness probe - returns 200 if server is running."""
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
                 self.end_headers()
@@ -141,24 +196,12 @@ class MetricsServer:
         if not PROMETHEUS_AVAILABLE:
             logger.warning("prometheus_client not installed. Install with: uv sync --extra metrics")
 
-        self._server = HTTPServer((self.config.host, self.config.port), self._make_handler())
+        self._server = HTTPServer((self.host, self.port), self._make_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         self._started = True
-        logger.info(f"Metrics server started at http://{self.config.host}:{self.config.port}/metrics")
-        logger.info(f"Health endpoint available at http://{self.config.host}:{self.config.port}/health")
-
-    def stop(self) -> None:
-        """Stop the metrics server and release the port."""
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()  # Close socket to release port
-            if self._thread is not None:
-                self._thread.join(timeout=5.0)  # Wait for thread to finish
-            self._server = None
-            self._thread = None
-            self._started = False
-            logger.info("Metrics server stopped")
+        logger.info(f"Metrics server started at http://{self.host}:{self.port}/metrics")
+        logger.info(f"Health endpoint available at http://{self.host}:{self.port}/health")
 
     def update(
         self,

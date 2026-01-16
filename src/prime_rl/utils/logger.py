@@ -1,3 +1,4 @@
+import logging
 import sys
 from pathlib import Path
 
@@ -8,17 +9,36 @@ NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
 
-def setup_logger(log_level: str, log_file: Path | None = None):
+class _VerifiersInterceptHandler(logging.Handler):
+    """Intercept stdlib logging from verifiers and route to loguru with [verifiers] tag."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        logger = get_logger()
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        frame, depth = logging.currentframe(), 2
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(level, f"[verifiers] {record.getMessage()}")
+
+
+def setup_logger(log_level: str, log_file: Path | None = None, append: bool = False, tag: str | None = None):
     global _LOGGER
     if _LOGGER is not None:
         raise RuntimeError("Logger already set. Please call `setup_logger` only once.")
 
-    # Format message
+    # Format message with optional tag prefix
+    tag_prefix = f"[{tag}] " if tag else ""
     message = "".join(
         [
             " <level>{level: >7}</level>",
             f" <level>{NO_BOLD}",
-            "{message}",
+            f"{tag_prefix}{{message}}",
             f"{RESET}</level>",
         ]
     )
@@ -52,7 +72,7 @@ def setup_logger(log_level: str, log_file: Path | None = None):
 
     # If specified, install file handler
     if log_file is not None:
-        if log_file.exists():
+        if not append and log_file.exists():
             log_file.unlink()
         logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
 
@@ -84,3 +104,12 @@ def reset_logger():
     """Reset the global logger. Useful mainly in test to clear loggers between tests."""
     global _LOGGER
     _LOGGER = None
+
+
+def intercept_verifiers_logging(level: str = "DEBUG"):
+    """Intercept all verifiers stdlib logging and route through prime-rl loguru with [verifiers] tag."""
+    vf_logger = logging.getLogger("verifiers")
+    vf_logger.handlers.clear()
+    vf_logger.addHandler(_VerifiersInterceptHandler())
+    vf_logger.setLevel(level.upper())
+    vf_logger.propagate = False

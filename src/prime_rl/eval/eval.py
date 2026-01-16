@@ -1,7 +1,5 @@
 import asyncio
 
-import verifiers as vf
-
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.utils import set_semaphore
@@ -14,7 +12,7 @@ from prime_rl.utils.client import (
     setup_evals_client,
     update_weights,
 )
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, get_step_path, install_env
@@ -26,7 +24,7 @@ async def eval(config: OfflineEvalConfig):
     logger = setup_logger(
         config.log.level, log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None
     )
-    vf.setup_logging(level=config.log.vf_level.upper())
+    intercept_verifiers_logging(level=config.log.vf_level)
 
     env_names = [env.name or env.id for env in config.env]
     logger.info(f"Starting evals for {config.model.name} in environments {', '.join(env_names)}")
@@ -125,7 +123,7 @@ async def eval(config: OfflineEvalConfig):
                 return False
 
         logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
-        for ckpt_step in ckpt_steps[::-1]:
+        for ckpt_step in ckpt_steps:
             await _eval_ckpt(ckpt_step)
 
         if config.watcher:

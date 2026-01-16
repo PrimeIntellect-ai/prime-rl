@@ -8,7 +8,7 @@ from contextlib import closing
 import pytest
 
 from prime_rl.utils.config import MetricsServerConfig
-from prime_rl.utils.metrics_server import PROMETHEUS_AVAILABLE, MetricsServer, RunStats
+from prime_rl.utils.metrics_server import PROMETHEUS_AVAILABLE, HealthServer, MetricsServer, RunStats
 
 
 def find_free_port() -> int:
@@ -221,6 +221,52 @@ def test_server_update_runs_cleanup():
     # run_001 should be updated
     assert 'trainer_run_step{run="run_001"} 60.0' in content
     # run_002 should be removed
-    assert 'run_002' not in content
+    assert "run_002" not in content
+
+    server.stop()
+
+
+def test_health_server_start_stop():
+    port = find_free_port()
+    server = HealthServer(port=port)
+
+    server.start()
+    assert server._started
+    time.sleep(0.1)
+
+    response = urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2)
+    assert response.status == 200
+    assert response.read() == b"ok\n"
+
+    server.stop()
+    assert not server._started
+
+
+def test_health_server_returns_404_on_metrics():
+    """HealthServer should not expose /metrics endpoint."""
+    port = find_free_port()
+    server = HealthServer(port=port)
+    server.start()
+    time.sleep(0.1)
+
+    try:
+        urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2)
+        pytest.fail("Expected 404")
+    except urllib.error.HTTPError as e:
+        assert e.code == 404
+    finally:
+        server.stop()
+
+
+def test_metrics_server_health_endpoint():
+    """MetricsServer should also expose /health endpoint."""
+    port = find_free_port()
+    server = MetricsServer(MetricsServerConfig(port=port))
+    server.start()
+    time.sleep(0.1)
+
+    response = urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2)
+    assert response.status == 200
+    assert response.read() == b"ok\n"
 
     server.stop()
