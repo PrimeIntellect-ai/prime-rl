@@ -77,13 +77,17 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     # Group steps by trajectory_id, preserving order within groups
     groups: dict[str, list[dict]] = defaultdict(list)
     for step in trajectory:
-        trajectory_id = step.get("trajectory_id", "main")
+        trajectory_id = step.get("trajectory_id") or "main"
         groups[trajectory_id].append(step)
 
     # Interleave within each group
     rollouts: list[TrainingSample] = []
     for trajectory_id, steps in groups.items():
-        rollout = _interleave_steps(steps, has_error, f"trajectory {trajectory_id}")
+        rollout = _interleave_steps(
+            steps,
+            has_error,
+            f"example {state['example_id']} trajectory {trajectory_id}",
+        )
         if rollout:
             rollouts.append(rollout)
 
