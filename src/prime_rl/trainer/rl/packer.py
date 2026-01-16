@@ -17,7 +17,7 @@ from prime_rl.transport import (
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
 
-TIMEOUT_SECONDS = 10
+TIMEOUT_SECONDS = 0.1
 
 
 class BasePacker(ABC):
