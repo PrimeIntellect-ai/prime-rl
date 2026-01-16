@@ -67,14 +67,13 @@ def setup_logger(log_level: str, log_file: Path | None = None, append: bool = Fa
         extra={},
     )
 
-    # Install console handler
-    logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
-
-    # If specified, install file handler
+    # If log_file is specified, write only to file (used by workers); otherwise write to stdout
     if log_file is not None:
         if not append and log_file.exists():
             log_file.unlink()
-        logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
+        logger.add(log_file, format=format, level=log_level.upper(), colorize=False)
+    else:
+        logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
 
     # Disable critical logging
     logger.critical = lambda _: None
