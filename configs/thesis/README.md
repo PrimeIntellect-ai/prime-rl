@@ -74,3 +74,10 @@ to try later:
 - sequence masking only
 - geometric sequence masking
 - combine masking strategies
+
+```bash
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 32 --wandb.name wiki-search-32-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 64 --wandb.name wiki-search-64-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 128 --wandb.name wiki-search-128-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 256 --wandb.name wiki-search-256-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
+```
