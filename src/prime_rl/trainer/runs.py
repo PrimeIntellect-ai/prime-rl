@@ -257,6 +257,7 @@ class Runs:
                 "ready_to_update": self.ready_to_update,
                 "scaling_factors": self.scaling_factors.cpu(),
                 "new_configs": new_configs,
+                "progress": self.progress,
             }
             self.store.set("runs", pickle.dumps(sync_data))
         dist.barrier()
@@ -273,6 +274,7 @@ class Runs:
             self.ready_to_update = sync_data["ready_to_update"]
             self.scaling_factors.copy_(sync_data["scaling_factors"])
             new_configs: dict[str, "OrchestratorConfig"] = sync_data["new_configs"]
+            master_progress: dict[int, Progress] = sync_data["progress"]
 
             new_runs = new_id_2_idx.keys() - self.id_2_idx.keys()
             deleted_runs = self.id_2_idx.keys() - new_id_2_idx.keys()
@@ -287,6 +289,9 @@ class Runs:
             for new_run in new_runs:
                 new_id = new_id_2_idx[new_run]
                 self._create_run_data(new_run, new_id, new_configs[new_run])
+
+            # Sync progress from master
+            self.progress = master_progress
 
         # Call deletion hooks on all ranks
         for deleted_run in deleted_runs:
