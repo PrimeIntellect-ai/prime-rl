@@ -113,7 +113,7 @@ class Scheduler:
                     log_level=config.log.level,
                     vf_log_level=config.log.vf_level,
                     log_file=str(env_log_file) if env_log_file else None,
-                    max_restarts=config.max_worker_restarts,
+                    max_restarts=config.max_env_worker_restarts,
                 )
                 self.workers[env_name].append(worker)
 

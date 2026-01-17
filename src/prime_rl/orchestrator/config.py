@@ -685,11 +685,11 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 1
 
-    max_worker_restarts: Annotated[
+    max_env_worker_restarts: Annotated[
         int,
         Field(
             ge=0,
-            description="Maximum number of automatic restarts for a worker that dies unexpectedly. After this limit, the orchestrator will crash to allow K8s to reschedule.",
+            description="Maximum number of automatic restarts for an environment worker that dies unexpectedly. After this limit, the orchestrator will crash to allow K8s to reschedule.",
         ),
     ] = 5
 
