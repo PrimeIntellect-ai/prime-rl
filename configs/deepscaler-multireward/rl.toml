@@ -1,0 +1,46 @@
+# DeepScaleR Multi-Reward (GDPO)
+#
+# Uses gated length reward: only fires when correct AND under threshold
+# - Context: 16K (model can think longer if needed)
+# - Length threshold: 8192 (rewarded for staying efficient)
+
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
+
+max_steps = 1000
+seq_len = 16384
+
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+
+[wandb]
+project = "deepscaler-multireward"
+name = "gdpo-16k-ctx-8k-threshold"
+
+[ckpt]
+interval = 100
+
+[orchestrator]
+batch_size = 1024
+rollouts_per_example = 8
+
+[orchestrator.sampling]
+temperature = 0.6
+max_tokens = 16384
+
+[[orchestrator.env]]
+id = "deepscaler-multireward"
+name = "deepscaler"
+args = { length_threshold_tokens = 8192, math_verify_max_workers = 128, math_verify_timeout = 60 }
+# GDPO: per-reward normalization before aggregation
+reward_keys = ["correct_answer", "length_reward"]
+reward_weights = [1.0, 1.0]
+
+[orchestrator.advantage]
+batch_normalize = true
+std_eps = 1e-8
+
+[trainer.model.ac]
+
+[inference.parallel]
+dp = 6

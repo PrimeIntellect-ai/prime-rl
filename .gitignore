@@ -196,3 +196,5 @@ debug_I2_zero_band
 .idea
 
 outputs/
+.claude/
+local/
