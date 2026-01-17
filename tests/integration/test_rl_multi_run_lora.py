@@ -149,7 +149,7 @@ def multi_run_result(
     orch_procs: dict[str, subprocess.Popen] = {}
     for name in ORCHESTRATOR_NAMES:
         start_orchestrator(name, max_steps=20)
-        time.sleep(2)
+        time.sleep(5)
 
     # Wait for alpha to reach step 11, then kill it
     # There is a checkpoint at step 10, so we need to wait for step 11
@@ -177,10 +177,11 @@ def multi_run_result(
     shutil.rmtree(run_dir)
 
     # Queue alpha's resume proc
-    alpha_ckpt_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(tmp_path / "alpha_ckpt_step_10", alpha_ckpt_dir)
-    print(f"Copied alpha checkpoint to {alpha_ckpt_dir}")
-    start_orchestrator("alpha", max_steps=20, proc_name="alpha_resume")
+    # We cant use the same dir in case the trainer misses the change
+    run_dir = output_dir / "run_alpha_resume"
+    shutil.copytree(tmp_path / "alpha_ckpt_step_10", run_dir / "checkpoints" / "step_10")
+    print(f"Copied alpha checkpoint to {run_dir / 'checkpoints' / 'step_10'}")
+    start_orchestrator("alpha_resume", max_steps=20)
 
     # Wait for beta to finish
     try:
@@ -194,15 +195,24 @@ def multi_run_result(
     shutil.rmtree(run_dir)
 
     # Queue beta's resume
-    beta_ckpt_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(tmp_path / "beta_ckpt_step_20", beta_ckpt_dir)
-    start_orchestrator("beta", max_steps=25, proc_name="beta_resume")
+    run_dir = output_dir / "run_beta_resume"
+    shutil.copytree(tmp_path / "beta_ckpt_step_20", run_dir / "checkpoints" / "step_20")
+    print(f"Copied beta checkpoint to {run_dir / 'checkpoints' / 'step_20'}")
+    start_orchestrator("beta_resume", max_steps=25)
 
     for name in orch_procs.keys():
         try:
             orch_procs[name].wait(timeout=TIMEOUT)
         except subprocess.TimeoutExpired:
             orch_procs[name].terminate()
+
+    # Wait for gamma to finish
+    try:
+        orch_procs["gamma"].wait(timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        orch_procs["gamma"].terminate()
+    run_dir = output_dir / "run_gamma"
+    shutil.rmtree(run_dir)
 
     # Build results
     results = {name: ProcessResult(orch_procs[name]) for name in orch_procs.keys()}
