@@ -385,18 +385,19 @@ class EnvWorker:
                         future.set_exception(error)
                 self.pending_futures.clear()
 
-                # Check if we've exceeded max restarts
+                # Check if we've exceeded max restarts (-1 means unlimited)
                 self._restart_count += 1
-                if self._restart_count > self.max_restarts:
+                if self.max_restarts >= 0 and self._restart_count > self.max_restarts:
                     logger.error(
                         f"Worker '{self.worker_name}' died {self._restart_count} times, exceeding max restarts ({self.max_restarts}). Giving up."
                     )
                     raise error
 
                 # Log warning and restart the worker automatically
+                restart_info = f"{self._restart_count}/{self.max_restarts}" if self.max_restarts >= 0 else f"{self._restart_count}"
                 logger.warning(
                     f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code}). "
-                    f"Restarting worker automatically ({self._restart_count}/{self.max_restarts}). In-flight requests will be rescheduled."
+                    f"Restarting worker automatically ({restart_info}). In-flight requests will be rescheduled."
                 )
                 self.restart()
 
