@@ -308,10 +308,11 @@ class EnvWorker:
         """Restart the worker process after unexpected death."""
         # Clean up old process if it exists
         if self.process is not None:
-            # Don't send shutdown signal - process is already dead
             if self.process.is_alive():
                 self.process.terminate()
-                self.process.join(timeout=5)
+            # Always join to reap zombie process, even if already dead
+            self.process.join(timeout=5)
+            self.process.close()
 
         # Clear queues to avoid stale data (drain without blocking)
         while True:
