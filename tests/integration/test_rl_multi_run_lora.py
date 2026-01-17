@@ -61,7 +61,7 @@ def multi_run_result(
                 "run",
                 "torchrun",
                 "--nproc-per-node",
-                "1",
+                "2",
                 "-m",
                 "prime_rl.trainer.rl.train",
                 "@",
@@ -77,7 +77,7 @@ def multi_run_result(
             ],
             stdout=f,
             stderr=f,
-            env={**env_base, "CUDA_VISIBLE_DEVICES": "1"},
+            env={**env_base, "CUDA_VISIBLE_DEVICES": "2,3"},
         )
     processes.append(trainer_proc)
     time.sleep(10)
@@ -179,6 +179,8 @@ def multi_run_result(
     # Queue alpha's resume proc
     # We cant use the same dir in case the trainer misses the change
     run_dir = output_dir / "run_alpha_resume"
+    while not (run_dir / "checkpoints" / "step_10" / "trainer").exists():
+        time.sleep(1)
     shutil.copytree(tmp_path / "alpha_ckpt_step_10", run_dir / "checkpoints" / "step_10")
     print(f"Copied alpha checkpoint to {run_dir / 'checkpoints' / 'step_10'}")
     start_orchestrator("alpha_resume", max_steps=20)
@@ -191,7 +193,10 @@ def multi_run_result(
 
     run_dir = output_dir / "run_beta"
     beta_ckpt_dir = run_dir / "checkpoints" / "step_20"
+    while not (beta_ckpt_dir / "trainer").exists():
+        time.sleep(1)
     shutil.copytree(beta_ckpt_dir, tmp_path / "beta_ckpt_step_20")
+    print(f"Copied {beta_ckpt_dir} to {tmp_path / 'beta_ckpt_step_20'}")
     shutil.rmtree(run_dir)
 
     # Queue beta's resume
