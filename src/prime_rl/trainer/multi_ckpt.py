@@ -142,9 +142,11 @@ class MultiCheckpointManager:
                     scheduler.schedulers[idx],
                     self.runs.progress[idx],
                 )
-                self.logger.info(f"Saving checkpoint for run {idx} at step {step}")
                 ckpt_path = manager.get_ckpt_path(step)
                 ckpt_path.mkdir(parents=True, exist_ok=True)
+                self.logger.info(
+                    f"Saving checkpoint for run {idx} at step {step} to {ckpt_path / f'rank_{self.world.rank}.pt'}"
+                )
                 torch.save(app_state.state_dict(), ckpt_path / f"rank_{self.world.rank}.pt")
                 if self.world.is_master:
                     (ckpt_path / "STABLE").touch()
