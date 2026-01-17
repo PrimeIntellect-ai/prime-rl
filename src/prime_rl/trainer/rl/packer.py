@@ -132,10 +132,7 @@ class MultiPacker(BasePacker):
             for sample in batch.examples:
                 self.buffers[batch.run_idx].append((sample, batch.temperature, batch.step))
 
-    def _has_enough_tokens(self) -> bool:
-        """Check if we have enough samples in buffer to pack a step"""
-        # When not using small batch granularity, require at least one full batch
-        threshold = self.seq_len * self.dp_world_size
+    def _count_tokens(self, threshold: int | None = None) -> int:
         tokens = 0
 
         for run_idx in self.runs.used_idxs:
@@ -145,9 +142,15 @@ class MultiPacker(BasePacker):
                 if step != current_step:
                     continue
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
-                if tokens >= threshold:
-                    return True
-        return False
+                if threshold is not None and tokens >= threshold:
+                    return tokens
+        return tokens
+
+    def _has_enough_tokens(self) -> bool:
+        """Check if we have enough samples in buffer to pack a step"""
+        # When not using small batch granularity, require at least one full batch
+        threshold = self.seq_len * self.dp_world_size
+        return self._count_tokens(threshold) >= threshold
 
     def _select_samples_round_robin(self, token_budget: int) -> list[tuple[int, TrainingSample, float]]:
         """Select samples using round-robin from runs with buffered work."""
@@ -208,7 +211,7 @@ class MultiPacker(BasePacker):
         start_time = time.time()
 
         while not self._has_enough_tokens():
-            if time.time() - start_time > TIMEOUT_SECONDS and any(len(i) > 0 for i in self.buffers):
+            if time.time() - start_time > TIMEOUT_SECONDS and self._count_tokens() > 0:
                 self.logger.warning("Timeout waiting for enough tokens to pack")
                 break
             time.sleep(1)
