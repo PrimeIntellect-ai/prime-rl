@@ -234,7 +234,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         weight_dir = get_step_path(get_ckpt_dir(config.output_dir), scheduler.ckpt_step) / "weight"
         if not weight_dir.exists():
-            weight_dir = (get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),)
+            weight_dir = get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step)
         if not weight_dir.exists():
             raise ValueError(f"No weight directory found for checkpoint step {scheduler.ckpt_step}")
         await update_weights(
