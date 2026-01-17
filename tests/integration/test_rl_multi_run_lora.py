@@ -28,14 +28,13 @@ def wandb_name(branch_name: str) -> str:
 
 @pytest.fixture(scope="module")
 def multi_run_result(
-    output_dir: Path,
-    wandb_project: str,
-    wandb_name: str,
+    output_dir: Path, wandb_project: str, wandb_name: str, tmp_path_factory
 ) -> Generator[tuple[dict[str, ProcessResult], str], None, None]:
     """
     Start trainer, inference, and 3 orchestrators.
     Kill one orchestrator halfway and delete its directory.
     """
+    tmp_path: Path = tmp_path_factory.mktemp("prime_rl_test_rl_multi_run_lora")
     log_dir = output_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -111,9 +110,10 @@ def multi_run_result(
             p.terminate()
         pytest.fail("Trainer did not start in time")
 
-    # Start orchestrators
-    orch_procs: dict[str, subprocess.Popen] = {}
-    for name in ORCHESTRATOR_NAMES:
+    def start_orchestrator(name: str, max_steps: int, proc_name: str | None = None):
+        print(f"Starting orchestrator {name} with proc name {proc_name}")
+        if proc_name is None:
+            proc_name = name
         run_dir = output_dir / f"run_{name}"
         run_dir.mkdir(parents=True, exist_ok=True)
         orch_log_dir = run_dir / "logs"
@@ -129,33 +129,41 @@ def multi_run_result(
                     "configs/ci/integration/rl_multi_run/orchestrator.toml",
                     "--output-dir",
                     run_dir.as_posix(),
+                    "--max-steps",
+                    str(max_steps),
                     "--model.lora.name",
                     name,
                     "--wandb.project",
                     wandb_project,
                     "--wandb.name",
-                    f"{wandb_name}-{name}",
+                    f"{wandb_name}-{proc_name}",
                 ],
                 stdout=f,
                 stderr=f,
                 env=env_base,
             )
-        orch_procs[name] = proc
+        orch_procs[proc_name] = proc
         processes.append(proc)
+
+    # Start orchestrators
+    orch_procs: dict[str, subprocess.Popen] = {}
+    for name in ORCHESTRATOR_NAMES:
+        start_orchestrator(name, max_steps=20)
         time.sleep(2)
 
-    # Wait for alpha to reach step 10, then kill it
+    # Wait for alpha to reach step 11, then kill it
+    # There is a checkpoint at step 10, so we need to wait for step 11
     killed_name = "alpha"
     killed_log = output_dir / f"run_{killed_name}" / "logs" / "orchestrator.stdout"
     start_time = time.time()
     while time.time() - start_time < 300:
         if killed_log.exists():
             content = killed_log.read_text()
-            if "Step 10" in content or "Step 11" in content or "Step 12" in content:
+            if "Step 11" in content or "Step 12" in content or "Step 13" in content:
                 break
         time.sleep(2)
 
-    # Kill alpha and delete its directory
+    # Kill alpha and delete its run directory so trainer moves on to gamma
     orch_procs[killed_name].send_signal(signal.SIGTERM)
     try:
         orch_procs[killed_name].wait(timeout=30)
@@ -163,19 +171,41 @@ def multi_run_result(
         orch_procs[killed_name].kill()
 
     run_dir = output_dir / f"run_{killed_name}"
-    while run_dir.exists():
-        shutil.rmtree(run_dir)
+    alpha_ckpt_dir = run_dir / "checkpoints" / "step_10"
+    shutil.copytree(alpha_ckpt_dir, tmp_path / "alpha_ckpt_step_10")
+    print(f"Copied alpha checkpoint to {tmp_path / 'alpha_ckpt_step_10'}")
+    shutil.rmtree(run_dir)
 
-    # Wait for remaining orchestrators to complete
-    remaining_names = [n for n in ORCHESTRATOR_NAMES if n != killed_name]
-    for name in remaining_names:
+    # Queue alpha's resume proc
+    alpha_ckpt_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(tmp_path / "alpha_ckpt_step_10", alpha_ckpt_dir)
+    print(f"Copied alpha checkpoint to {alpha_ckpt_dir}")
+    start_orchestrator("alpha", max_steps=20, proc_name="alpha_resume")
+
+    # Wait for beta to finish
+    try:
+        orch_procs["beta"].wait(timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        orch_procs[name].terminate()
+
+    run_dir = output_dir / "run_beta"
+    beta_ckpt_dir = run_dir / "checkpoints" / "step_20"
+    shutil.copytree(beta_ckpt_dir, tmp_path / "beta_ckpt_step_20")
+    shutil.rmtree(run_dir)
+
+    # Queue beta's resume
+    beta_ckpt_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(tmp_path / "beta_ckpt_step_20", beta_ckpt_dir)
+    start_orchestrator("beta", max_steps=25, proc_name="beta_resume")
+
+    for name in orch_procs.keys():
         try:
             orch_procs[name].wait(timeout=TIMEOUT)
         except subprocess.TimeoutExpired:
             orch_procs[name].terminate()
 
     # Build results
-    results = {name: ProcessResult(orch_procs[name]) for name in remaining_names}
+    results = {name: ProcessResult(orch_procs[name]) for name in orch_procs.keys()}
 
     yield results, killed_name
 
