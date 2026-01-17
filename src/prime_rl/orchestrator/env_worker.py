@@ -223,8 +223,6 @@ def worker_main(
 class EnvWorker:
     """Manages a worker subprocess for an environment."""
 
-    MAX_RESTARTS = 5  # Maximum number of automatic restarts before giving up
-
     def __init__(
         self,
         env_id: str,
@@ -240,6 +238,7 @@ class EnvWorker:
         log_level: str = "warn",
         vf_log_level: str = "warn",
         log_file: str | None = None,
+        max_restarts: int = 5,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -255,6 +254,7 @@ class EnvWorker:
         self.log_level = log_level
         self.vf_log_level = vf_log_level
         self.log_file = log_file
+        self.max_restarts = max_restarts
 
         self.request_queue: Queue = Queue()
         self.response_queue: Queue = Queue()
@@ -387,16 +387,16 @@ class EnvWorker:
 
                 # Check if we've exceeded max restarts
                 self._restart_count += 1
-                if self._restart_count > self.MAX_RESTARTS:
+                if self._restart_count > self.max_restarts:
                     logger.error(
-                        f"Worker '{self.worker_name}' died {self._restart_count} times, exceeding max restarts ({self.MAX_RESTARTS}). Giving up."
+                        f"Worker '{self.worker_name}' died {self._restart_count} times, exceeding max restarts ({self.max_restarts}). Giving up."
                     )
                     raise error
 
                 # Log warning and restart the worker automatically
                 logger.warning(
                     f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code}). "
-                    f"Restarting worker automatically ({self._restart_count}/{self.MAX_RESTARTS}). In-flight requests will be rescheduled."
+                    f"Restarting worker automatically ({self._restart_count}/{self.max_restarts}). In-flight requests will be rescheduled."
                 )
                 self.restart()
 

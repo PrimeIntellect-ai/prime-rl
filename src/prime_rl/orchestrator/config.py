@@ -685,6 +685,14 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 1
 
+    max_worker_restarts: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum number of automatic restarts for a worker that dies unexpectedly. After this limit, the orchestrator will crash to allow K8s to reschedule.",
+        ),
+    ] = 5
+
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
     oversampling_factor: Annotated[
