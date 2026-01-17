@@ -199,6 +199,9 @@ class MultiPacker(BasePacker):
         # May complete multiple steps if we consumed more than batch_size worth
         while self.samples_consumed_this_step[run_idx] >= batch_size:
             self.runs.progress[run_idx].step += 1
+            self.logger.debug(
+                f"Run {run_idx} has seen {self.samples_consumed_this_step[run_idx]} samples and is ready to update and going to step {self.runs.progress[run_idx].step}"
+            )
             self.runs.ready_to_update[run_idx] = True
             self.samples_consumed_this_step[run_idx] -= batch_size
 
