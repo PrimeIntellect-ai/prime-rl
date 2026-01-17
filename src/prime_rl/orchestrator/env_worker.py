@@ -223,6 +223,8 @@ def worker_main(
 class EnvWorker:
     """Manages a worker subprocess for an environment."""
 
+    MAX_RESTARTS = 5  # Maximum number of automatic restarts before giving up
+
     def __init__(
         self,
         env_id: str,
@@ -268,6 +270,8 @@ class EnvWorker:
         self._stopping = False
         # Track if worker died unexpectedly (prevents scheduler from routing to dead worker)
         self._dead = False
+        # Track restart count to prevent infinite restart loops
+        self._restart_count = 0
 
     def start(self):
         """Start the worker process."""
@@ -381,10 +385,18 @@ class EnvWorker:
                         future.set_exception(error)
                 self.pending_futures.clear()
 
+                # Check if we've exceeded max restarts
+                self._restart_count += 1
+                if self._restart_count > self.MAX_RESTARTS:
+                    logger.error(
+                        f"Worker '{self.worker_name}' died {self._restart_count} times, exceeding max restarts ({self.MAX_RESTARTS}). Giving up."
+                    )
+                    raise error
+
                 # Log warning and restart the worker automatically
                 logger.warning(
                     f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code}). "
-                    f"Restarting worker automatically. In-flight requests will be rescheduled."
+                    f"Restarting worker automatically ({self._restart_count}/{self.MAX_RESTARTS}). In-flight requests will be rescheduled."
                 )
                 self.restart()
 
