@@ -61,7 +61,7 @@ def multi_run_result(
                 "run",
                 "torchrun",
                 "--nproc-per-node",
-                "1",
+                "2",
                 "-m",
                 "prime_rl.trainer.rl.train",
                 "@",
@@ -77,7 +77,7 @@ def multi_run_result(
             ],
             stdout=f,
             stderr=f,
-            env={**env_base, "CUDA_VISIBLE_DEVICES": "1"},
+            env={**env_base, "CUDA_VISIBLE_DEVICES": "2,3"},
         )
     processes.append(trainer_proc)
     time.sleep(10)
