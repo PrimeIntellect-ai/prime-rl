@@ -65,9 +65,8 @@ class RunAppState(Stateful):
         # Load scheduler
         if "scheduler" in state_dict and self.scheduler is not None:
             self.scheduler.load_state_dict(state_dict["scheduler"])
-        # Load progress
-        for key, value in state_dict["progress"].items():
-            setattr(self.progress, key, value)
+        # Don't load progress because it resets packers count
+        # There will be a step issue if we load progress
 
 
 class MultiCheckpointManager:
