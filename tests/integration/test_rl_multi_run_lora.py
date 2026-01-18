@@ -195,7 +195,7 @@ def multi_run_result(
     # Start orchestrators
     orch_procs: dict[str, subprocess.Popen] = {}
     for name in ORCHESTRATOR_NAMES:
-        start_orchestrator(
+        orch_procs[name] = start_orchestrator(
             name, max_steps=20, output_dir=output_dir, wandb_project=wandb_project, wandb_name=wandb_name
         )
         time.sleep(5)
@@ -239,7 +239,7 @@ def multi_run_result(
     ckpt_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(tmp_path / "alpha_ckpt_step_10", ckpt_dir)
     print(f"Copied alpha checkpoint to {ckpt_dir}")
-    start_orchestrator(
+    orch_procs["alpha_resume"] = start_orchestrator(
         "alpha_resume", max_steps=20, output_dir=output_dir, wandb_project=wandb_project, wandb_name=wandb_name
     )
 
@@ -274,7 +274,7 @@ def multi_run_result(
     ckpt_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(tmp_path / "beta_ckpt_step_20", ckpt_dir)
     print(f"Copied beta checkpoint to {ckpt_dir}")
-    start_orchestrator(
+    orch_procs["beta_resume"] = start_orchestrator(
         "beta_resume", max_steps=25, output_dir=output_dir, wandb_project=wandb_project, wandb_name=wandb_name
     )
 
