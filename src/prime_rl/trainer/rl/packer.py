@@ -194,9 +194,6 @@ class MultiPacker(BasePacker):
         # Removing the len(self.buffers[run_idx]) == 0 check would allow incremental orchestrator rollouts
         if len(self.buffers[run_idx]) == 0 or self.buffers[run_idx][0][2] > self.runs.progress[run_idx].step:
             self.runs.progress[run_idx].step += 1
-            self.logger.debug(
-                f"Run {run_idx} has seen {self.samples_consumed_this_step[run_idx]} samples and is ready to update and going to step {self.runs.progress[run_idx].step}"
-            )
             self.runs.ready_to_update[run_idx] = True
 
         self.runs.progress[run_idx].total_tokens += num_tokens
