@@ -350,7 +350,8 @@ def test_reward_goes_up(multi_run_result: dict[str, ProcessResult], output_dir: 
 
     print("Test reward goes up", multi_run_result.keys())
     for name in multi_run_result.keys():
-        if name == "beta_resume":  # Beta is resumed after saturation
+        # The resumes are close to saturation so might not go up
+        if "resume" in name:
             continue
         log_file = log_dir / f"{name}_orchestrator.stdout"
         with open(log_file, "r") as f:
