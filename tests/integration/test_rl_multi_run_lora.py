@@ -142,9 +142,9 @@ def start_inference_and_trainer(
 def start_orchestrator(
     name: str, max_steps: int, output_dir: Path, wandb_project: str, wandb_name: str, proc_name: str | None = None
 ):
-    print(f"Starting orchestrator {name} with proc name {proc_name}")
     if proc_name is None:
         proc_name = name
+    print(f"Starting orchestrator {name} with proc name {proc_name}")
     run_dir = output_dir / f"run_{name}"
     run_dir.mkdir(parents=True, exist_ok=True)
     orch_log_dir = run_dir / "logs"
