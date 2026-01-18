@@ -272,6 +272,10 @@ class EnvWorker:
         self._dead = False
         # Track restart count to prevent infinite restart loops
         self._restart_count = 0
+        # Track fatal error when max restarts exceeded (orchestrator should crash)
+        self._fatal_error: Exception | None = None
+        # Track successful responses since last restart (to reset restart count)
+        self._responses_since_restart = 0
 
     def start(self):
         """Start the worker process."""
@@ -372,6 +376,12 @@ class EnvWorker:
                     # Check if future was cancelled (e.g., by update_policy)
                     if not future.done():
                         future.set_result(response.results)
+                    # Track successful responses; reset restart count after stable operation
+                    self._responses_since_restart += 1
+                    if self._responses_since_restart >= 10 and self._restart_count > 0:
+                        logger.debug(f"Worker '{self.worker_name}' stable after {self._responses_since_restart} responses, resetting restart count")
+                        self._restart_count = 0
+                        self._responses_since_restart = 0
 
             # Check if worker process died unexpectedly (but not during intentional shutdown)
             if self.process and not self.process.is_alive() and not self._stopping:
@@ -391,6 +401,8 @@ class EnvWorker:
                     logger.error(
                         f"Worker '{self.worker_name}' died {self._restart_count} times, exceeding max restarts ({self.max_restarts}). Giving up."
                     )
+                    # Store fatal error so orchestrator can detect and crash
+                    self._fatal_error = error
                     raise error
 
                 # Log warning and restart the worker automatically
@@ -399,6 +411,7 @@ class EnvWorker:
                     f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code}). "
                     f"Restarting worker automatically ({restart_info}). In-flight requests will be rescheduled."
                 )
+                self._responses_since_restart = 0  # Reset on restart
                 self.restart()
 
             await asyncio.sleep(0.01)

@@ -297,8 +297,10 @@ class Scheduler:
                 except asyncio.CancelledError:
                     pass  # Request was cancelled, will be rescheduled
                 except WorkerDiedError as e:
-                    # Worker died but will auto-restart, just log and continue
-                    self.logger.warning(f"Rollout lost due to worker death (worker will auto-restart): {e}")
+                    # Worker died - check if it will auto-restart or if orchestrator should crash
+                    self.logger.warning(f"Rollout lost due to worker death: {e}")
+                    # Check if any worker has permanently failed (exceeded max restarts)
+                    self._check_for_fatal_worker_errors()
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
 
@@ -306,6 +308,14 @@ class Scheduler:
 
         pbar.close()
         return batch_rollouts
+
+    def _check_for_fatal_worker_errors(self):
+        """Check if any worker has permanently failed and raise the error to crash orchestrator."""
+        for workers in self.workers.values():
+            for worker in workers:
+                if worker._fatal_error is not None:
+                    self.logger.error(f"Worker '{worker.worker_name}' permanently failed, crashing orchestrator for K8s reschedule")
+                    raise worker._fatal_error
 
     @property
     def max_off_policy_level(self) -> int:
