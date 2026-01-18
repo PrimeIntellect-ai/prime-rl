@@ -213,13 +213,10 @@ def multi_run_result(
         sigterm=True,
     )
 
-    # Wait for trainer checkpoints to be saved
+    # Wait for trainer checkpoints to be saved (STABLE file indicates checkpoint is complete)
     alpha_ckpt_dir = output_dir / "run_alpha" / "checkpoints" / "step_10"
-    while not (alpha_ckpt_dir / "trainer").exists():
-        print(f"Waiting for {alpha_ckpt_dir / 'trainer'} to exist")
-        time.sleep(1)
-    while not (alpha_ckpt_dir / "weight").exists():
-        print(f"Waiting for {alpha_ckpt_dir / 'weight'} to exist")
+    while not (alpha_ckpt_dir / "STABLE").exists():
+        print(f"Waiting for {alpha_ckpt_dir / 'STABLE'} to exist")
         time.sleep(1)
 
     # Stash alpha checkpoint and logs
@@ -255,12 +252,9 @@ def multi_run_result(
 
     run_dir = output_dir / "run_beta"
     beta_ckpt_dir = run_dir / "checkpoints" / "step_20"
-    while not (beta_ckpt_dir / "trainer").exists():
+    while not (beta_ckpt_dir / "STABLE").exists():
         time.sleep(1)
-        print(f"Waiting for {beta_ckpt_dir / 'trainer'} to exist")
-    while not (beta_ckpt_dir / "weight").exists():
-        time.sleep(1)
-        print(f"Waiting for {beta_ckpt_dir / 'weight'} to exist")
+        print(f"Waiting for {beta_ckpt_dir / 'STABLE'} to exist")
     shutil.copy(run_dir / "logs" / "orchestrator.stdout", log_dir / "beta_orchestrator.stdout")
     shutil.copytree(beta_ckpt_dir, tmp_path / "beta_ckpt_step_20")
     print(f"Copied {beta_ckpt_dir} to {tmp_path / 'beta_ckpt_step_20'}")

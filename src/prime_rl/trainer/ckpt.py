@@ -98,6 +98,12 @@ class CheckpointManager:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
 
+    def mark_stable(self, step: int) -> None:
+        """Write STABLE file to indicate checkpoint is complete (for eval to safely read)."""
+        if self.world.is_master:
+            step_path = get_step_path(self.ckpt_dir, step)
+            (step_path / "STABLE").touch()
+
     def save_to_path(
         self,
         path: Path,

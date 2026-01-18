@@ -148,8 +148,6 @@ class MultiCheckpointManager:
                     f"Saving checkpoint for run {idx} at step {step} to {ckpt_path / f'rank_{self.world.rank}.pt'}"
                 )
                 torch.save(app_state.state_dict(), ckpt_path / f"rank_{self.world.rank}.pt")
-                if self.world.is_master:
-                    (ckpt_path / "STABLE").touch()
                 manager.ckpt_steps.append(step)
 
                 # Copy broadcast folder to checkpoint
@@ -158,6 +156,8 @@ class MultiCheckpointManager:
                     broadcast_src = run_dir / "broadcasts" / f"step_{step}"
                     weight_dst = run_dir / "checkpoints" / f"step_{step}" / "weight"
                     shutil.copytree(broadcast_src, weight_dst)
+                dist.barrier()
+                manager.mark_stable(step)
             except FileNotFoundError:
                 self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
             except Exception as e:
