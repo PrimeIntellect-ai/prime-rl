@@ -79,5 +79,10 @@ to try later:
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 32 --wandb.name wiki-search-32-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 64 --wandb.name wiki-search-64-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 128 --wandb.name wiki-search-128-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
-uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 256 --wandb.name wiki-search-256-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
+```
+
+```bash
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 32 --wandb.name wiki-search-32-step-off-policy-kl-tau-1e-1 --trainer.loss.kl-tau 1e-1
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 64 --wandb.name wiki-search-64-step-off-policy-kl-tau-1e-1 --trainer.loss.kl-tau 1e-1
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 128 --wandb.name wiki-search-128-step-off-policy-kl-tau-1e-1 --trainer.loss.kl-tau 1e-1
 ```
