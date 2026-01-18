@@ -16,7 +16,7 @@ from tests.utils import check_number_goes_up_or_down, check_number_in_range, str
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
-TIMEOUT = 600  # 15 minutes
+TIMEOUT = 300  # 5 minutes
 ORCHESTRATOR_NAMES = ["alpha", "beta", "gamma"]
 
 
@@ -25,20 +25,38 @@ def wait_for_log_and_kill(
     conditions: list[str],
     proc: subprocess.Popen,
     timeout: int = 300,
-    poll_interval: float = 2,
+    poll_interval: float = 0.1,
+    sigterm: bool = True,
+    kill: bool = False,
 ) -> None:
-    """Wait for any of the conditions to appear in log file, then kill the process."""
+    """Wait for any of the conditions to appear in log file, then send SIGTERM and kill the process.
+
+    Args:
+        log_file: Path to the log file.
+        conditions: List of substrings to wait for.
+        proc: Process to kill.
+        timeout: Timeout waiting for conditions in seconds.
+        poll_interval: Interval in seconds to poll the log file.
+        sigterm: Whether to send SIGTERM to the process.
+        kill: Whether to kill the process right after sending SIGTERM.
+    """
     start_time = time.time()
     while time.time() - start_time < timeout:
         if log_file.exists():
             content = log_file.read_text()
             if any(cond in content for cond in conditions):
                 break
+        print(f"Waiting for conditions {conditions} in {proc.pid}")
         time.sleep(poll_interval)
 
-    proc.send_signal(signal.SIGTERM)
+    if sigterm:
+        print(f"Sending SIGTERM to process {proc.pid}")
+        proc.send_signal(signal.SIGTERM)
+    if kill:
+        print(f"Killing process {proc.pid}")
+        proc.kill()
     try:
-        proc.wait(timeout=30)
+        proc.wait(timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         proc.kill()
 
@@ -186,6 +204,13 @@ def multi_run_result(
 
     run_dir = output_dir / f"run_{killed_name}"
     alpha_ckpt_dir = run_dir / "checkpoints" / "step_10"
+    while not (alpha_ckpt_dir / "trainer").exists():
+        print(f"Waiting for {alpha_ckpt_dir / 'trainer'} to exist")
+        time.sleep(1)
+    while not (alpha_ckpt_dir / "weight").exists():
+        print(f"Waiting for {alpha_ckpt_dir / 'weight'} to exist")
+        time.sleep(1)
+    shutil.copytree(run_dir / "logs", tmp_path / "alpha_logs")
     shutil.copytree(alpha_ckpt_dir, tmp_path / "alpha_ckpt_step_10")
     print(f"Copied alpha checkpoint to {tmp_path / 'alpha_ckpt_step_10'}")
     shutil.rmtree(run_dir)
@@ -193,27 +218,19 @@ def multi_run_result(
     # Queue alpha's resume proc
     # We cant use the same dir in case the trainer misses the change
     run_dir = output_dir / "run_alpha_resume"
-    while not (run_dir / "checkpoints" / "step_10" / "trainer").exists():
-        time.sleep(1)
-    shutil.copytree(tmp_path / "alpha_ckpt_step_10", run_dir / "checkpoints" / "step_10")
-    print(f"Copied alpha checkpoint to {run_dir / 'checkpoints' / 'step_10'}")
+    ckpt_dir = run_dir / "checkpoints" / "step_10"
+    ckpt_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(tmp_path / "alpha_ckpt_step_10", ckpt_dir)
+    print(f"Copied alpha checkpoint to {ckpt_dir}")
     start_orchestrator("alpha_resume", max_steps=20)
 
-    # Wait for beta to finish
-    try:
-        print("Waiting for beta to finish")
-        orch_procs["beta"].wait(timeout=TIMEOUT)
-    except subprocess.TimeoutExpired:
-        orch_procs[name].terminate()
-
     # Wait for beta to finish, then kill it
-    killed_name = "beta"
-    killed_log = output_dir / f"run_{killed_name}" / "logs" / "orchestrator.stdout"
     wait_for_log_and_kill(
-        killed_log,
+        output_dir / "run_beta" / "logs" / "orchestrator.stdout",
         conditions=["Orchestrator finished."],
-        proc=orch_procs[killed_name],
+        proc=orch_procs["beta"],
         poll_interval=1,
+        sigterm=False,
     )
 
     run_dir = output_dir / "run_beta"
@@ -221,35 +238,50 @@ def multi_run_result(
     while not (beta_ckpt_dir / "trainer").exists():
         time.sleep(1)
         print(f"Waiting for {beta_ckpt_dir / 'trainer'} to exist")
+    while not (beta_ckpt_dir / "weight").exists():
+        time.sleep(1)
+        print(f"Waiting for {beta_ckpt_dir / 'weight'} to exist")
+    shutil.copytree(run_dir / "logs", tmp_path / "beta_logs")
     shutil.copytree(beta_ckpt_dir, tmp_path / "beta_ckpt_step_20")
     print(f"Copied {beta_ckpt_dir} to {tmp_path / 'beta_ckpt_step_20'}")
     shutil.rmtree(run_dir)
 
     # Queue beta's resume
     run_dir = output_dir / "run_beta_resume"
-    shutil.copytree(tmp_path / "beta_ckpt_step_20", run_dir / "checkpoints" / "step_20")
-    print(f"Copied beta checkpoint to {run_dir / 'checkpoints' / 'step_20'}")
+    ckpt_dir = run_dir / "checkpoints" / "step_20"
+    ckpt_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(tmp_path / "beta_ckpt_step_20", ckpt_dir)
+    print(f"Copied beta checkpoint to {ckpt_dir}")
     start_orchestrator("beta_resume", max_steps=25)
 
+    # Wait for gamma to finish
+    wait_for_log_and_kill(
+        output_dir / "run_gamma" / "logs" / "orchestrator.stdout",
+        conditions=["Orchestrator finished."],
+        proc=orch_procs["gamma"],
+        timeout=TIMEOUT,
+        sigterm=False,
+    )
+    shutil.copytree(output_dir / "run_gamma" / "logs", tmp_path / "gamma_logs")
+    shutil.rmtree(output_dir / "run_gamma")
+
+    # Wait for remaining orchestrators to finish
     for name in orch_procs.keys():
         try:
             orch_procs[name].wait(timeout=TIMEOUT)
         except subprocess.TimeoutExpired:
             orch_procs[name].terminate()
 
-    # Wait for gamma to finish
-    gamma_log = output_dir / "run_gamma" / "logs" / "orchestrator.stdout"
-    wait_for_log_and_kill(
-        gamma_log,
-        conditions=["Orchestrator finished."],
-        proc=orch_procs["gamma"],
-        timeout=TIMEOUT,
-    )
-    run_dir = output_dir / "run_gamma"
-    shutil.rmtree(run_dir)
-
     # Build results
     results = {name: ProcessResult(orch_procs[name]) for name in orch_procs.keys()}
+
+    # Restore logs for deleted runs
+    (output_dir / "run_alpha").mkdir(parents=True, exist_ok=True)
+    (output_dir / "run_beta").mkdir(parents=True, exist_ok=True)
+    (output_dir / "run_gamma").mkdir(parents=True, exist_ok=True)
+    shutil.copytree(tmp_path / "alpha_logs", output_dir / "run_alpha" / "logs")
+    shutil.copytree(tmp_path / "beta_logs", output_dir / "run_beta" / "logs")
+    shutil.copytree(tmp_path / "gamma_logs", output_dir / "run_gamma" / "logs")
 
     yield results, killed_name
 
@@ -274,6 +306,8 @@ def test_remaining_orchestrators_complete(
     results, killed_name = multi_run_result
 
     for name, result in results.items():
+        if name == "alpha":  # We sigtermed alpha
+            continue
         if result.returncode != 0:
             log_file = output_dir / f"run_{name}" / "logs" / "orchestrator.stdout"
             if log_file.exists():
@@ -286,7 +320,10 @@ def test_reward_goes_up(multi_run_result: tuple[dict[str, ProcessResult], str], 
     """Test that reward goes up for remaining orchestrators."""
     results, _ = multi_run_result
 
+    print("Test reward goes up", results.keys())
     for name in results.keys():
+        if name == "beta_resume":  # Beta is resumed after saturation
+            continue
         log_file = output_dir / f"run_{name}" / "logs" / "orchestrator.stdout"
         with open(log_file, "r") as f:
             lines = strip_escape_codes(f.read()).splitlines()
@@ -297,9 +334,19 @@ def test_reward_in_range(multi_run_result: tuple[dict[str, ProcessResult], str],
     """Test that final reward is in acceptable range for remaining orchestrators."""
     results, _ = multi_run_result
 
+    print("Test reward in range", results.keys())
     for name in results.keys():
         log_file = output_dir / f"run_{name}" / "logs" / "orchestrator.stdout"
         with open(log_file, "r") as f:
             lines = strip_escape_codes(f.read()).splitlines()
-        check_number_in_range(lines, step=7, min_threshold=0.2, max_threshold=0.6, pattern=r"Reward:\s*(\d+\.\d{4})")
-        check_number_in_range(lines, min_threshold=0.65, pattern=r"Reward:\s*(\d+\.\d{4})")
+        if name in ["beta", "gamma"]:
+            check_number_in_range(
+                lines, step=7, min_threshold=0.2, max_threshold=0.6, pattern=r"Reward:\s*(\d+\.\d{4})"
+            )
+            check_number_in_range(lines, min_threshold=0.65, pattern=r"Reward:\s*(\d+\.\d{4})")
+        elif name in ["alpha_resume", "beta_resume"]:
+            check_number_in_range(lines, min_threshold=0.65, pattern=r"Reward:\s*(\d+\.\d{4})")
+        elif name == "alpha":  # Only had 10 steps, so it's lower
+            check_number_in_range(lines, min_threshold=0.4, pattern=r"Reward:\s*(\d+\.\d{4})")
+        else:
+            pytest.fail(f"Unknown orchestrator {name}")
