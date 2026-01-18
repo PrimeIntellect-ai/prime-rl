@@ -20,6 +20,29 @@ TIMEOUT = 600  # 15 minutes
 ORCHESTRATOR_NAMES = ["alpha", "beta", "gamma"]
 
 
+def wait_for_log_and_kill(
+    log_file: Path,
+    conditions: list[str],
+    proc: subprocess.Popen,
+    timeout: int = 300,
+    poll_interval: float = 2,
+) -> None:
+    """Wait for any of the conditions to appear in log file, then kill the process."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if log_file.exists():
+            content = log_file.read_text()
+            if any(cond in content for cond in conditions):
+                break
+        time.sleep(poll_interval)
+
+    proc.send_signal(signal.SIGTERM)
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for multi-run RL CI integration tests."""
@@ -155,20 +178,11 @@ def multi_run_result(
     # There is a checkpoint at step 10, so we need to wait for step 11
     killed_name = "alpha"
     killed_log = output_dir / f"run_{killed_name}" / "logs" / "orchestrator.stdout"
-    start_time = time.time()
-    while time.time() - start_time < 300:
-        if killed_log.exists():
-            content = killed_log.read_text()
-            if "Step 11" in content or "Step 12" in content or "Step 13" in content:
-                break
-        time.sleep(2)
-
-    # Kill alpha and delete its run directory so trainer moves on to gamma
-    orch_procs[killed_name].send_signal(signal.SIGTERM)
-    try:
-        orch_procs[killed_name].wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        orch_procs[killed_name].kill()
+    wait_for_log_and_kill(
+        killed_log,
+        conditions=["Step 11", "Step 12", "Step 13"],
+        proc=orch_procs[killed_name],
+    )
 
     run_dir = output_dir / f"run_{killed_name}"
     alpha_ckpt_dir = run_dir / "checkpoints" / "step_10"
@@ -187,14 +201,26 @@ def multi_run_result(
 
     # Wait for beta to finish
     try:
+        print("Waiting for beta to finish")
         orch_procs["beta"].wait(timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         orch_procs[name].terminate()
+
+    # Wait for beta to finish, then kill it
+    killed_name = "beta"
+    killed_log = output_dir / f"run_{killed_name}" / "logs" / "orchestrator.stdout"
+    wait_for_log_and_kill(
+        killed_log,
+        conditions=["Orchestrator finished."],
+        proc=orch_procs[killed_name],
+        poll_interval=1,
+    )
 
     run_dir = output_dir / "run_beta"
     beta_ckpt_dir = run_dir / "checkpoints" / "step_20"
     while not (beta_ckpt_dir / "trainer").exists():
         time.sleep(1)
+        print(f"Waiting for {beta_ckpt_dir / 'trainer'} to exist")
     shutil.copytree(beta_ckpt_dir, tmp_path / "beta_ckpt_step_20")
     print(f"Copied {beta_ckpt_dir} to {tmp_path / 'beta_ckpt_step_20'}")
     shutil.rmtree(run_dir)
@@ -212,10 +238,13 @@ def multi_run_result(
             orch_procs[name].terminate()
 
     # Wait for gamma to finish
-    try:
-        orch_procs["gamma"].wait(timeout=TIMEOUT)
-    except subprocess.TimeoutExpired:
-        orch_procs["gamma"].terminate()
+    gamma_log = output_dir / "run_gamma" / "logs" / "orchestrator.stdout"
+    wait_for_log_and_kill(
+        gamma_log,
+        conditions=["Orchestrator finished."],
+        proc=orch_procs["gamma"],
+        timeout=TIMEOUT,
+    )
     run_dir = output_dir / "run_gamma"
     shutil.rmtree(run_dir)
 
