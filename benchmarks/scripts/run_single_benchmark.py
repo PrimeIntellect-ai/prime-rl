@@ -79,6 +79,8 @@ class BenchmarkConfig(BaseSettings):
 
     micro_batches: Annotated[int, Field(ge=1, description="Number of micro batches")] = 2
 
+    ep: Annotated[int, Field(ge=1, description="Expert parallelism size (1 = no EP)")] = 1
+
     docker_image: Annotated[str | None, Field(description="Docker image used for the benchmark")] = None
 
     # Metadata set by the script
@@ -139,6 +141,10 @@ def build_command(config: BenchmarkConfig) -> list[str]:
     if config.lora_rank is not None:
         cmd.extend(["--model.lora.rank", str(config.lora_rank)])
         cmd.extend(["--max-concurrent-runs", str(MAX_LORAS)])
+
+    # Add expert parallelism if enabled
+    if config.ep > 1:
+        cmd.extend(["--model.ep", str(config.ep)])
 
     # Data configuration differs between RL and SFT
     if config.type.startswith("rl"):
