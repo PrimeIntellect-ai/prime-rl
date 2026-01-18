@@ -81,6 +81,8 @@ class BenchmarkConfig(BaseSettings):
 
     ep: Annotated[int, Field(ge=1, description="Expert parallelism size (1 = no EP)")] = 1
 
+    cp: Annotated[int, Field(ge=1, description="Context parallelism size (1 = no CP)")] = 1
+
     docker_image: Annotated[str | None, Field(description="Docker image used for the benchmark")] = None
 
     # Metadata set by the script
@@ -145,6 +147,10 @@ def build_command(config: BenchmarkConfig) -> list[str]:
     # Add expert parallelism if enabled
     if config.ep > 1:
         cmd.extend(["--model.ep", str(config.ep)])
+
+    # Add context parallelism if enabled
+    if config.cp > 1:
+        cmd.extend(["--model.cp", str(config.cp)])
 
     # Data configuration differs between RL and SFT
     if config.type.startswith("rl"):
