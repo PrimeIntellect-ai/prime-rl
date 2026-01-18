@@ -5,6 +5,13 @@ max_async_level = 5
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+seq_len = 65536
 
 [model.lora]
 rank = 8
+
+[model.ac]
+freq = 1
+
+[model.compile]
+fullgraph = false

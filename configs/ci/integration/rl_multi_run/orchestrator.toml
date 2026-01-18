@@ -17,3 +17,6 @@ max_tokens = 128
 [[env]]
 id = "reverse-text"
 
+[ckpt]
+interval = 10
+resume_step = -1

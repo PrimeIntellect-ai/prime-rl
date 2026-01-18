@@ -40,6 +40,7 @@ class Runs:
         self.ready_to_update = [False] * max_runs
 
         self._creation_hooks: list[Callable[[int, str], None]] = []
+        self._deletion_hooks: list[Callable[[int, str], None]] = []
         self._create_run_data_hooks: list[Callable[[int, str, "OrchestratorConfig"], None]] = []
         self._delete_run_data_hooks: list[Callable[[int, str], None]] = []
         self._config_validation_hooks: list[Callable[["OrchestratorConfig"], tuple[bool, str]]] = []
@@ -199,6 +200,11 @@ class Runs:
         for hook in self._creation_hooks:
             hook(new_id, new_run)
 
+    def _delete_run_hooks(self, deleted_idx: int, deleted_run: str) -> None:
+        """Call deletion hooks for a run."""
+        for hook in self._deletion_hooks:
+            hook(deleted_idx, deleted_run)
+
     def check_for_changes(self) -> None:
         """Detect run changes and update data structures. Must be followed by sync_runs().
 
@@ -251,6 +257,7 @@ class Runs:
                 "ready_to_update": self.ready_to_update,
                 "scaling_factors": self.scaling_factors.cpu(),
                 "new_configs": new_configs,
+                "progress": self.progress,
             }
             self.store.set("runs", pickle.dumps(sync_data))
         dist.barrier()
@@ -259,24 +266,37 @@ class Runs:
             # Calculate changes since last sync (this is what other ranks will see)
             new_runs = self.id_2_idx.keys() - self._last_synced_id_2_idx.keys()
             deleted_runs = self._last_synced_id_2_idx.keys() - self.id_2_idx.keys()
+            # Capture deleted indices from last synced state (already removed from id_2_idx)
+            deleted_run_idxs = {run: self._last_synced_id_2_idx[run] for run in deleted_runs}
         else:
             sync_data: dict = pickle.loads(self.store.get("runs"))
             new_id_2_idx: dict[str, int] = sync_data["id_2_idx"]
             self.ready_to_update = sync_data["ready_to_update"]
             self.scaling_factors.copy_(sync_data["scaling_factors"])
             new_configs: dict[str, "OrchestratorConfig"] = sync_data["new_configs"]
+            master_progress: dict[int, Progress] = sync_data["progress"]
 
             new_runs = new_id_2_idx.keys() - self.id_2_idx.keys()
             deleted_runs = self.id_2_idx.keys() - new_id_2_idx.keys()
+            # Capture deleted indices before removing from id_2_idx
+            deleted_run_idxs = {run: self.id_2_idx[run] for run in deleted_runs}
 
             # Other ranks catch up with master's data state
             for deleted_run in deleted_runs:
-                deleted_idx = self.id_2_idx[deleted_run]
+                deleted_idx = deleted_run_idxs[deleted_run]
                 self._delete_run_data(deleted_run, deleted_idx)
 
             for new_run in new_runs:
                 new_id = new_id_2_idx[new_run]
                 self._create_run_data(new_run, new_id, new_configs[new_run])
+
+            # Sync progress from master
+            self.progress = master_progress
+
+        # Call deletion hooks on all ranks
+        for deleted_run in deleted_runs:
+            deleted_idx = deleted_run_idxs[deleted_run]
+            self._delete_run_hooks(deleted_idx, deleted_run)
 
         for new_run in new_runs:
             new_id = self.id_2_idx[new_run]
@@ -305,9 +325,18 @@ class Runs:
 
         Args:
             hook: A callable that takes (idx: int, run_id: str) as arguments.
-                  Called when a new run is added to the system.
+                  Called on all ranks when a new run is added to the system.
         """
         self._creation_hooks.append(hook)
+
+    def register_deletion_hook(self, hook: Callable[[int, str], None]) -> None:
+        """Register a hook to be called when a run is deleted.
+
+        Args:
+            hook: A callable that takes (idx: int, run_id: str) as arguments.
+                  Called on all ranks when a run is removed from the system.
+        """
+        self._deletion_hooks.append(hook)
 
     def register_module(self, prefix: str, module: "MultiLoRALinear") -> None:
         """Register a MultiLoRALinear module with its FQN prefix.
