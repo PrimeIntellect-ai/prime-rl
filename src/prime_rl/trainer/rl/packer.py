@@ -101,9 +101,6 @@ class MultiPacker(BasePacker):
         # Per-run buffer: stores (TrainingSample, temperature, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, float, int]]] = [deque() for _ in range(self.runs.max_runs)]
 
-        # Per-run sample count consumed in current step
-        self.samples_consumed_this_step: list[int] = [0] * self.runs.max_runs
-
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
@@ -118,7 +115,6 @@ class MultiPacker(BasePacker):
 
         # Reset run state
         self.buffers[idx].clear()
-        self.samples_consumed_this_step[idx] = 0
 
     def _get_batch(self) -> None:
         """Receive batches from orchestrator and buffer samples per run."""
@@ -162,7 +158,7 @@ class MultiPacker(BasePacker):
             for _ in range(len(self.buffers)):
                 if len(self.buffers[self._round_robin_position]) > 0:
                     _, _, step = self.buffers[self._round_robin_position][0]
-                    if step == self.runs.progress[self._round_robin_position].step:
+                    if step <= self.runs.progress[self._round_robin_position].step:
                         break
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
             else:
@@ -175,7 +171,7 @@ class MultiPacker(BasePacker):
 
             while len(self.buffers[run_idx]) > 0:
                 sample, temperature, step = self.buffers[run_idx][0]
-                if step != current_step:
+                if step > current_step:
                     # Samples from different steps should be consumed later
                     break
                 tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
@@ -193,14 +189,11 @@ class MultiPacker(BasePacker):
 
     def _update_run_progress(self, run_idx: int, num_samples: int, num_tokens: int) -> None:
         """Update progress, increment step only when batch_size reached."""
-        self.samples_consumed_this_step[run_idx] += num_samples
-        batch_size = self.runs.config[run_idx].batch_size
-
-        # May complete multiple steps if we consumed more than batch_size worth
-        while self.samples_consumed_this_step[run_idx] >= batch_size:
+        # HACK: This fixes the issue with branching rollouts having unpredictable batch size
+        # However, it makes us unable to do incremental orchestrator rollouts
+        if len(self.buffers[run_idx]) == 0 or self.buffers[run_idx][0][2] > self.runs.progress[run_idx].step:
             self.runs.progress[run_idx].step += 1
             self.runs.ready_to_update[run_idx] = True
-            self.samples_consumed_this_step[run_idx] -= batch_size
 
         self.runs.progress[run_idx].total_tokens += num_tokens
         self.runs.progress[run_idx].total_samples += num_samples
