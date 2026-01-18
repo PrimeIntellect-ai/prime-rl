@@ -67,21 +67,9 @@ def wandb_name(branch_name: str) -> str:
     return f"test-rl-multi-run-{branch_name}"
 
 
-@pytest.fixture(scope="module")
-def multi_run_result(
-    output_dir: Path, wandb_project: str, wandb_name: str, tmp_path_factory
-) -> Generator[tuple[dict[str, ProcessResult], str], None, None]:
-    """
-    Start trainer, inference, and 3 orchestrators.
-    Kill one orchestrator halfway and delete its directory.
-    """
-    tmp_path: Path = tmp_path_factory.mktemp("prime_rl_test_rl_multi_run_lora")
-    log_dir = output_dir / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    env_base = {**os.environ, "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True"}
-    processes: list[subprocess.Popen] = []
-
+def start_inference_and_trainer(
+    log_dir: Path, output_dir: Path, wandb_project: str, wandb_name: str
+) -> tuple[subprocess.Popen, subprocess.Popen]:
     # Start inference server
     inference_log = log_dir / "inference.stdout"
     with open(inference_log, "w") as f:
@@ -89,9 +77,8 @@ def multi_run_result(
             ["uv", "run", "inference", "@", "configs/ci/integration/rl_multi_run/inference.toml"],
             stdout=f,
             stderr=f,
-            env={**env_base, "CUDA_VISIBLE_DEVICES": "0"},
+            env={**os.environ, "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True", "CUDA_VISIBLE_DEVICES": "0"},
         )
-    processes.append(inference_proc)
 
     # Start trainer
     trainer_log = log_dir / "trainer.stdout"
@@ -102,7 +89,7 @@ def multi_run_result(
                 "run",
                 "torchrun",
                 "--nproc-per-node",
-                "2",
+                "1",
                 "-m",
                 "prime_rl.trainer.rl.train",
                 "@",
@@ -118,10 +105,8 @@ def multi_run_result(
             ],
             stdout=f,
             stderr=f,
-            env={**env_base, "CUDA_VISIBLE_DEVICES": "2,3"},
+            env={**os.environ, "CUDA_VISIBLE_DEVICES": "1"},
         )
-    processes.append(trainer_proc)
-    time.sleep(10)
 
     # Wait for inference to be ready
     ready_indicators = ["Application startup complete", "Uvicorn running on", "Started server process"]
@@ -133,8 +118,8 @@ def multi_run_result(
                 break
         time.sleep(2)
     else:
-        for p in processes:
-            p.terminate()
+        trainer_proc.terminate()
+        inference_proc.terminate()
         pytest.fail("Inference server did not start in time")
 
     # Wait for trainer to be ready
@@ -147,85 +132,120 @@ def multi_run_result(
                 break
         time.sleep(2)
     else:
-        for p in processes:
-            p.terminate()
+        trainer_proc.terminate()
+        inference_proc.terminate()
         pytest.fail("Trainer did not start in time")
 
-    def start_orchestrator(name: str, max_steps: int, proc_name: str | None = None):
-        print(f"Starting orchestrator {name} with proc name {proc_name}")
-        if proc_name is None:
-            proc_name = name
-        run_dir = output_dir / f"run_{name}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        orch_log_dir = run_dir / "logs"
-        orch_log_dir.mkdir(parents=True, exist_ok=True)
+    return trainer_proc, inference_proc
 
-        with open(orch_log_dir / "orchestrator.stdout", "w") as f:
-            proc = subprocess.Popen(
-                [
-                    "uv",
-                    "run",
-                    "orchestrator",
-                    "@",
-                    "configs/ci/integration/rl_multi_run/orchestrator.toml",
-                    "--output-dir",
-                    run_dir.as_posix(),
-                    "--max-steps",
-                    str(max_steps),
-                    "--model.lora.name",
-                    name,
-                    "--wandb.project",
-                    wandb_project,
-                    "--wandb.name",
-                    f"{wandb_name}-{proc_name}",
-                ],
-                stdout=f,
-                stderr=f,
-                env=env_base,
-            )
-        orch_procs[proc_name] = proc
-        processes.append(proc)
+
+def start_orchestrator(
+    name: str, max_steps: int, output_dir: Path, wandb_project: str, wandb_name: str, proc_name: str | None = None
+):
+    print(f"Starting orchestrator {name} with proc name {proc_name}")
+    if proc_name is None:
+        proc_name = name
+    run_dir = output_dir / f"run_{name}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    orch_log_dir = run_dir / "logs"
+    orch_log_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(orch_log_dir / "orchestrator.stdout", "w") as f:
+        proc = subprocess.Popen(
+            [
+                "uv",
+                "run",
+                "orchestrator",
+                "@",
+                "configs/ci/integration/rl_multi_run/orchestrator.toml",
+                "--output-dir",
+                run_dir.as_posix(),
+                "--max-steps",
+                str(max_steps),
+                "--model.lora.name",
+                name,
+                "--wandb.project",
+                wandb_project,
+                "--wandb.name",
+                f"{wandb_name}-{proc_name}",
+            ],
+            stdout=f,
+            stderr=f,
+        )
+    return proc
+
+
+@pytest.fixture(scope="module")
+def multi_run_result(
+    output_dir: Path, wandb_project: str, wandb_name: str, tmp_path_factory
+) -> Generator[tuple[dict[str, ProcessResult], str], None, None]:
+    """
+    Test multi-run RL with LoRA adapters.
+    """
+    tmp_path: Path = tmp_path_factory.mktemp("prime_rl_test_rl_multi_run_lora")
+    log_dir = output_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    processes: list[subprocess.Popen] = []
+
+    trainer_proc, inference_proc = start_inference_and_trainer(log_dir, output_dir, wandb_project, wandb_name)
+    processes.append(trainer_proc)
+    processes.append(inference_proc)
 
     # Start orchestrators
     orch_procs: dict[str, subprocess.Popen] = {}
     for name in ORCHESTRATOR_NAMES:
-        start_orchestrator(name, max_steps=20)
+        start_orchestrator(
+            name, max_steps=20, output_dir=output_dir, wandb_project=wandb_project, wandb_name=wandb_name
+        )
         time.sleep(5)
 
+    # =========================
+    # Kill alpha orchestrator
+    # -------------------------
     # Wait for alpha to reach step 11, then kill it
     # There is a checkpoint at step 10, so we need to wait for step 11
-    killed_name = "alpha"
-    killed_log = output_dir / f"run_{killed_name}" / "logs" / "orchestrator.stdout"
+    killed_log = output_dir / "run_alpha" / "logs" / "orchestrator.stdout"
     wait_for_log(
         killed_log,
         conditions=["Step 11", "Step 12", "Step 13"],
-        proc=orch_procs[killed_name],
+        proc=orch_procs["alpha"],
         sigterm=True,
     )
 
-    run_dir = output_dir / f"run_{killed_name}"
-    alpha_ckpt_dir = run_dir / "checkpoints" / "step_10"
+    # Wait for trainer checkpoints to be saved
+    alpha_ckpt_dir = output_dir / "run_alpha" / "checkpoints" / "step_10"
     while not (alpha_ckpt_dir / "trainer").exists():
         print(f"Waiting for {alpha_ckpt_dir / 'trainer'} to exist")
         time.sleep(1)
     while not (alpha_ckpt_dir / "weight").exists():
         print(f"Waiting for {alpha_ckpt_dir / 'weight'} to exist")
         time.sleep(1)
-    shutil.copy(run_dir / "logs" / "orchestrator.stdout", log_dir / "alpha_orchestrator.stdout")
+
+    # Stash alpha checkpoint and logs
+    shutil.copy(output_dir / "run_alpha" / "logs" / "orchestrator.stdout", log_dir / "alpha_orchestrator.stdout")
     shutil.copytree(alpha_ckpt_dir, tmp_path / "alpha_ckpt_step_10")
     print(f"Copied alpha checkpoint to {tmp_path / 'alpha_ckpt_step_10'}")
-    shutil.rmtree(run_dir)
 
+    # Remove alpha run directory
+    shutil.rmtree(output_dir / "run_alpha")
+
+    # ===========================
     # Queue alpha's resume proc
+    # ---------------------------
     # We cant use the same dir in case the trainer misses the change
     run_dir = output_dir / "run_alpha_resume"
     ckpt_dir = run_dir / "checkpoints" / "step_10"
     ckpt_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(tmp_path / "alpha_ckpt_step_10", ckpt_dir)
     print(f"Copied alpha checkpoint to {ckpt_dir}")
-    start_orchestrator("alpha_resume", max_steps=20)
+    start_orchestrator(
+        "alpha_resume", max_steps=20, output_dir=output_dir, wandb_project=wandb_project, wandb_name=wandb_name
+    )
 
+    # =========================
     # Wait for beta to finish
+    # -------------------------
     wait_for_log(
         output_dir / "run_beta" / "logs" / "orchestrator.stdout",
         conditions=["Orchestrator finished."],
@@ -246,15 +266,21 @@ def multi_run_result(
     print(f"Copied {beta_ckpt_dir} to {tmp_path / 'beta_ckpt_step_20'}")
     shutil.rmtree(run_dir)
 
+    # =====================
     # Queue beta's resume
+    # ---------------------
     run_dir = output_dir / "run_beta_resume"
     ckpt_dir = run_dir / "checkpoints" / "step_20"
     ckpt_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(tmp_path / "beta_ckpt_step_20", ckpt_dir)
     print(f"Copied beta checkpoint to {ckpt_dir}")
-    start_orchestrator("beta_resume", max_steps=25)
+    start_orchestrator(
+        "beta_resume", max_steps=25, output_dir=output_dir, wandb_project=wandb_project, wandb_name=wandb_name
+    )
 
+    # ==========================
     # Wait for gamma to finish
+    # --------------------------
     wait_for_log(
         output_dir / "run_gamma" / "logs" / "orchestrator.stdout",
         conditions=["Orchestrator finished."],
@@ -264,25 +290,30 @@ def multi_run_result(
     shutil.copy(output_dir / "run_gamma" / "logs" / "orchestrator.stdout", log_dir / "gamma_orchestrator.stdout")
     shutil.rmtree(output_dir / "run_gamma")
 
-    # Wait for remaining orchestrators to finish
-    for name in orch_procs.keys():
+    # =================================================
+    # Wait for alpha_resume and beta_resume to finish
+    # -------------------------------------------------
+    for name in ["alpha_resume", "beta_resume"]:
         try:
             orch_procs[name].wait(timeout=TIMEOUT)
         except subprocess.TimeoutExpired:
             orch_procs[name].terminate()
 
-    # Build results
-    results = {name: ProcessResult(orch_procs[name]) for name in orch_procs.keys()}
-
-    # Copy logs from remaining orchestrators to log_dir
     for name in ["alpha_resume", "beta_resume"]:
         src_log = output_dir / f"run_{name}" / "logs" / "orchestrator.stdout"
         if src_log.exists():
             shutil.copy(src_log, log_dir / f"{name}_orchestrator.stdout")
 
-    yield results, killed_name
+    # ===============
+    # Build results
+    # ---------------
+    results = {name: ProcessResult(orch_procs[name]) for name in orch_procs.keys()}
 
+    yield results
+
+    # =========
     # Cleanup
+    # ---------
     for p in processes:
         if p.poll() is None:
             p.terminate()
@@ -296,14 +327,13 @@ check_reward_goes_up = partial(check_number_goes_up_or_down, go_up=True, pattern
 
 
 def test_remaining_orchestrators_complete(
-    multi_run_result: tuple[dict[str, ProcessResult], str],
+    multi_run_result: dict[str, ProcessResult],
     output_dir: Path,
 ):
     """Test that remaining orchestrators complete successfully."""
-    results, killed_name = multi_run_result
     log_dir = output_dir / "logs"
 
-    for name, result in results.items():
+    for name, result in multi_run_result.items():
         if name == "alpha":  # We sigtermed alpha
             continue
         if result.returncode != 0:
@@ -314,13 +344,12 @@ def test_remaining_orchestrators_complete(
         assert result.returncode == 0, f"Orchestrator {name} failed with code {result.returncode}"
 
 
-def test_reward_goes_up(multi_run_result: tuple[dict[str, ProcessResult], str], output_dir: Path):
+def test_reward_goes_up(multi_run_result: dict[str, ProcessResult], output_dir: Path):
     """Test that reward goes up for remaining orchestrators."""
-    results, _ = multi_run_result
     log_dir = output_dir / "logs"
 
-    print("Test reward goes up", results.keys())
-    for name in results.keys():
+    print("Test reward goes up", multi_run_result.keys())
+    for name in multi_run_result.keys():
         if name == "beta_resume":  # Beta is resumed after saturation
             continue
         log_file = log_dir / f"{name}_orchestrator.stdout"
@@ -329,13 +358,12 @@ def test_reward_goes_up(multi_run_result: tuple[dict[str, ProcessResult], str], 
         check_reward_goes_up(lines)
 
 
-def test_reward_in_range(multi_run_result: tuple[dict[str, ProcessResult], str], output_dir: Path):
+def test_reward_in_range(multi_run_result: dict[str, ProcessResult], output_dir: Path):
     """Test that final reward is in acceptable range for remaining orchestrators."""
-    results, _ = multi_run_result
     log_dir = output_dir / "logs"
 
-    print("Test reward in range", results.keys())
-    for name in results.keys():
+    print("Test reward in range", multi_run_result.keys())
+    for name in multi_run_result.keys():
         log_file = log_dir / f"{name}_orchestrator.stdout"
         with open(log_file, "r") as f:
             lines = strip_escape_codes(f.read()).splitlines()
