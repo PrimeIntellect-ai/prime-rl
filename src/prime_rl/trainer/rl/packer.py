@@ -135,7 +135,7 @@ class MultiPacker(BasePacker):
             buffer = self.buffers[run_idx]
             current_step = self.runs.progress[run_idx].step
             for sample, _, step in buffer:
-                if step != current_step:
+                if step > current_step:
                     continue
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
                 if threshold is not None and tokens >= threshold:
@@ -188,9 +188,10 @@ class MultiPacker(BasePacker):
         return selected
 
     def _update_run_progress(self, run_idx: int, num_samples: int, num_tokens: int) -> None:
-        """Update progress, increment step only when batch_size reached."""
+        """Update run progress; increment step when all samples from the current step have been consumed."""
         # HACK: This fixes the issue with branching rollouts having unpredictable batch size
         # However, it makes us unable to do incremental orchestrator rollouts
+        # Removing the len(self.buffers[run_idx]) == 0 check would allow incremental orchestrator rollouts
         if len(self.buffers[run_idx]) == 0 or self.buffers[run_idx][0][2] > self.runs.progress[run_idx].step:
             self.runs.progress[run_idx].step += 1
             self.runs.ready_to_update[run_idx] = True
