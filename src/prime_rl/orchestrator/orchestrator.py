@@ -31,6 +31,7 @@ from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     get_sampling_args,
+    get_weight_dir,
     print_benchmark,
     set_semaphore,
 )
@@ -49,10 +50,7 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
-    get_broadcast_dir,
-    get_ckpt_dir,
     get_env_ids_to_install,
-    get_step_path,
     install_env,
     resolve_latest_ckpt_step,
     to_col_format,
@@ -232,14 +230,9 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
 
-        weight_dir = get_step_path(get_ckpt_dir(config.output_dir), scheduler.ckpt_step) / "weight"
-        if not weight_dir.exists():
-            weight_dir = get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step)
-        if not weight_dir.exists():
-            raise ValueError(f"No weight directory found for checkpoint step {scheduler.ckpt_step}")
         await update_weights(
             admin_clients,
-            weight_dir,
+            get_weight_dir(config.output_dir, scheduler.ckpt_step),
             lora_name=config.model.lora.name if config.model.lora else None,
         )
     else:

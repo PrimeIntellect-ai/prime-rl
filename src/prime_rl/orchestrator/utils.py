@@ -1,5 +1,6 @@
 import asyncio
 from itertools import cycle
+from pathlib import Path
 from typing import Any, AsyncContextManager
 
 import pandas as pd
@@ -15,6 +16,9 @@ from prime_rl.transport import TrainingSample
 from prime_rl.utils.utils import (
     format_num,
     format_time,
+    get_broadcast_dir,
+    get_ckpt_dir,
+    get_step_path,
 )
 
 SEMAPHORE: AsyncContextManager | None = None
@@ -161,3 +165,16 @@ async def compute_teacher_logprobs(
         return [0.0 if lp is None else float(next(iter(lp.values()))["logprob"]) for lp in response.prompt_logprobs]
 
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
+
+
+def get_weight_dir(output_dir: Path, step: int) -> Path:
+    """Get the weight directory for a given checkpoint step."""
+    ckpt_weight_dir = get_step_path(get_ckpt_dir(output_dir), step) / "weight"
+    broadcast_weight_dir = get_step_path(get_broadcast_dir(output_dir), step)
+    if ckpt_weight_dir.exists():
+        return ckpt_weight_dir
+    if broadcast_weight_dir.exists():
+        return broadcast_weight_dir
+    raise FileNotFoundError(
+        f"No weight directory found for checkpoint step {step}. Expected to find it in {ckpt_weight_dir} or {broadcast_weight_dir}."
+    )
