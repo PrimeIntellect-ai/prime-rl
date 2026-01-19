@@ -138,11 +138,17 @@ class MultiCheckpointManager:
                 torch.save(run_state.state_dict(), ckpt_path / f"rank_{self.world.rank}.pt")
 
                 # Copy broadcast folder to checkpoint
+                # This way, we only need to save the checkpoint folder
                 if self.world.is_master:
                     run_dir = self.runs.get_run_dir(idx)
                     broadcast_src = run_dir / "broadcasts" / f"step_{step}"
                     weight_dst = run_dir / "checkpoints" / f"step_{step}" / "weight"
-                    shutil.copytree(broadcast_src, weight_dst)
+                    try:
+                        shutil.copytree(broadcast_src, weight_dst)
+                    except FileNotFoundError:
+                        self.logger.error(
+                            f"Broadcast folder not found for run {idx} at step {step}. Looking for it in {broadcast_src}"
+                        )
             except FileNotFoundError:
                 self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
             except Exception as e:
