@@ -89,7 +89,7 @@ def start_inference_and_trainer(
                 "run",
                 "torchrun",
                 "--nproc-per-node",
-                "1",
+                "2",
                 "-m",
                 "prime_rl.trainer.rl.train",
                 "@",
@@ -105,7 +105,7 @@ def start_inference_and_trainer(
             ],
             stdout=f,
             stderr=f,
-            env={**os.environ, "CUDA_VISIBLE_DEVICES": "1"},
+            env={**os.environ, "CUDA_VISIBLE_DEVICES": "2,3"},
         )
 
     # Wait for inference to be ready
