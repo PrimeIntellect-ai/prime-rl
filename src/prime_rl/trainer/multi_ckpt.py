@@ -122,6 +122,7 @@ class MultiCheckpointManager:
 
             manager = self.managers[idx]
 
+            # We have a very wide try-except because we dont want to crash the trainer over one run having issues
             try:
                 model_state_dict = {k: v.data.detach().clone() for k, v in self.runs.get_named_parameters_for_run(idx)}
                 run_state = RunState(
