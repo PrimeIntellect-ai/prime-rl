@@ -217,7 +217,9 @@ def multi_run_result(
     processes.append(trainer_proc)
     processes.append(inference_proc)
 
-    # Start orchestrators
+    # ===========================================
+    # Start alpha, beta, and gamma orchestrators
+    # -------------------------------------------
     orch_procs: dict[str, subprocess.Popen] = {}
     for name in ORCHESTRATOR_NAMES:
         orch_procs[name] = start_orchestrator(
@@ -225,10 +227,9 @@ def multi_run_result(
         )
         time.sleep(5)
 
-    # =========================
-    # Kill alpha orchestrator
-    # -------------------------
-    # Wait for alpha to reach step 11, then kill it
+    # ================================================
+    # Kill alpha orchestrator once it is past step 10
+    # ------------------------------------------------
     # There is a checkpoint at step 10, so we need to wait for step 11
     killed_log = output_dir / "run_alpha" / "logs" / "orchestrator.stdout"
     wait_for_log(
@@ -263,15 +264,15 @@ def multi_run_result(
         "alpha_resume", max_steps=20, output_dir=output_dir, wandb_project=wandb_project, wandb_name=wandb_name
     )
 
-    # =========================
-    # Wait for beta to finish
-    # -------------------------
+    # ============================================================
+    # Clear beta run directory once it saves the final checkpoint
+    # ------------------------------------------------------------
     wait_for_log(
         output_dir / "run_beta" / "logs" / "orchestrator.stdout",
         conditions=["Orchestrator finished."],
         proc=orch_procs["beta"],
         poll_interval=1,
-    )  # I dont think this is actually necessary, but leave for now
+    )
 
     run_dir = output_dir / "run_beta"
     beta_ckpt_dir = run_dir / "checkpoints" / "step_20"
@@ -293,9 +294,9 @@ def multi_run_result(
         "beta_resume", max_steps=25, output_dir=output_dir, wandb_project=wandb_project, wandb_name=wandb_name
     )
 
-    # ==========================
-    # Wait for gamma to finish
-    # --------------------------
+    # ===========================================
+    # Clear gamma run directory once it finishes
+    # -------------------------------------------
     wait_for_log(
         output_dir / "run_gamma" / "logs" / "orchestrator.stdout",
         conditions=["Orchestrator finished."],
@@ -305,9 +306,9 @@ def multi_run_result(
     shutil.copy(output_dir / "run_gamma" / "logs" / "orchestrator.stdout", log_dir / "gamma_orchestrator.stdout")
     shutil.rmtree(output_dir / "run_gamma")
 
-    # =================================================
+    # ================================================
     # Wait for alpha_resume and beta_resume to finish
-    # -------------------------------------------------
+    # ------------------------------------------------
     for name in ["alpha_resume", "beta_resume"]:
         try:
             orch_procs[name].wait(timeout=TIMEOUT)
