@@ -1,5 +1,4 @@
 # Trainer config for multi-run RL integration test
-max_steps = 100000
 max_concurrent_runs = 2
 max_async_level = 5
 
