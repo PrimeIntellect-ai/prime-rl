@@ -159,10 +159,10 @@ class MultiCheckpointManager:
                 self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
             except Exception as e:
                 self.logger.error(f"Error checkpointing run {idx}: {e}")
-
+            dist.barrier()
+            manager.mark_stable(step)
+            manager.ckpt_steps.append(step)
         dist.barrier()
-        manager.mark_stable(step)
-        manager.ckpt_steps.append(step)
 
     def load_run(
         self,
