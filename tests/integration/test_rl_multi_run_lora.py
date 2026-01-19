@@ -203,7 +203,7 @@ def start_orchestrator(
 @pytest.fixture(scope="module")
 def multi_run_result(
     output_dir: Path, wandb_project: str, wandb_name: str, tmp_path_factory
-) -> Generator[tuple[dict[str, ProcessResult], str], None, None]:
+) -> Generator[dict[str, ProcessResult], None, None]:
     """
     Test multi-run RL with LoRA adapters.
     """
