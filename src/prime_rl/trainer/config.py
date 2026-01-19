@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
@@ -45,6 +46,15 @@ class CompileConfig(BaseConfig):
         bool,
         Field(description="Whether to compile the transformer blocks with fullgraph."),
     ] = False
+
+
+class BenchConfig(BaseConfig):
+    """Configures benchmark mode."""
+
+    output_json: Annotated[
+        Path | None,
+        Field(description="Path to write benchmark results as JSON. If not set, only prints to console."),
+    ] = None
 
 
 class DebugModelConfig(BaseConfig):

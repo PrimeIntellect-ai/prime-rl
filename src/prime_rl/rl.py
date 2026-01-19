@@ -324,7 +324,9 @@ class RLConfig(BaseSettings):
                 batch_size=self.orchestrator.batch_size,
             )
 
-        if self.trainer.bench != self.orchestrator.bench:
+        
+        trainer_bench_enabled = self.trainer.bench is not None
+        if trainer_bench_enabled != self.orchestrator.bench:
             raise ValueError(
                 f"Trainer benchmark mode ({self.trainer.bench}) and orchestrator benchmark mode ({self.orchestrator.bench}) are not the same. Please specify the same benchmark mode for both."
             )

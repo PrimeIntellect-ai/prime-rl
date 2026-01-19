@@ -1,0 +1,245 @@
+name: Trainer Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      set_baselines:
+        description: "Save results as new baselines"
+        required: false
+        default: false
+        type: boolean
+      image:
+        description: "Docker image to use for benchmarks"
+        required: true
+        type: string
+
+jobs:
+  build-matrix:
+    name: Build benchmark matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - name: Build matrix
+        id: build
+        run: |
+          matrix='{"include":[
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xa6000","num_gpus":1,"type":"rl","lora_rank":null,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xh100","num_gpus":1,"type":"rl","lora_rank":null,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xa6000","num_gpus":1,"type":"rl","lora_rank":null,"seq_len":65536,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xh100","num_gpus":1,"type":"rl","lora_rank":null,"seq_len":65536,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xh100","num_gpus":1,"type":"rl","lora_rank":null,"seq_len":65536,"attention":"flash_attention_3","ac":"Offload","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xa6000","num_gpus":1,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xh100","num_gpus":1,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xa6000","num_gpus":1,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xh100","num_gpus":1,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xh100","num_gpus":1,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_3","ac":"Offload","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xa6000","num_gpus":1,"type":"sft","lora_rank":null,"seq_len":8192,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xh100","num_gpus":1,"type":"sft","lora_rank":null,"seq_len":8192,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-0.6B","runner":"1xh100","num_gpus":1,"type":"sft","lora_rank":null,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xh100","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xh100","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":65536,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":65536,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":65536,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"1xa6000","num_gpus":1,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"1xh100","num_gpus":1,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_3","ac":"Offload","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"1xh100","num_gpus":1,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xh100","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"1xh100","num_gpus":1,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"1xh100","num_gpus":1,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_3","ac":"Offload","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xh100","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"sft","lora_rank":null,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xh200","num_gpus":8,"type":"sft","lora_rank":null,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xh100","num_gpus":8,"type":"sft","lora_rank":null,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-4B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"sft","lora_rank":null,"seq_len":65536,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xh100","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":65536,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":null,"seq_len":65536,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xh100","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xh100","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xh200","num_gpus":8,"type":"sft","lora_rank":null,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":30},
+            {"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"sft","lora_rank":null,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":30},
+            {"model":"PrimeIntellect/INTELLECT-3","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_3","ac":"Offload","timeout_minutes":60},
+            {"model":"PrimeIntellect/INTELLECT-3","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_3","ac":"Recompute","timeout_minutes":60},
+            {"model":"PrimeIntellect/INTELLECT-3","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":60},
+            {"model":"PrimeIntellect/INTELLECT-3","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_2","ac":"Offload","timeout_minutes":60},
+            {"model":"PrimeIntellect/INTELLECT-3","runner":"8xh200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_3","ac":"Offload","timeout_minutes":60},
+            {"model":"PrimeIntellect/INTELLECT-3","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_2","ac":"Offload","timeout_minutes":60},
+            {"model":"PrimeIntellect/INTELLECT-3","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":65536,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":60},
+            {"model":"Qwen/Qwen3-235B-A22B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_2","ac":"Recompute","timeout_minutes":120},
+            {"model":"Qwen/Qwen3-235B-A22B-Instruct-2507","runner":"8xb200","num_gpus":8,"type":"rl","lora_rank":16,"seq_len":16384,"attention":"flash_attention_2","ac":"Offload","timeout_minutes":120},
+          ]}'
+          echo "matrix=$(echo "$matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+  get-image-digest:
+    name: Get image digest
+    runs-on: 1xa6000
+    outputs:
+      image_with_digest: ${{ steps.digest.outputs.image_with_digest }}
+    steps:
+      - name: Get image digest
+        id: digest
+        run: |
+          docker pull "${{ inputs.image }}"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${{ inputs.image }}")
+          echo "image_with_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+  run-benchmark:
+    name: "${{ matrix.model }} (${{ matrix.type }}${{ matrix.lora_rank && format(' r={0}', matrix.lora_rank) || '' }}) on ${{ matrix.runner }}"
+    needs: [build-matrix, get-image-digest]
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ needs.get-image-digest.outputs.image_with_digest }}
+      options: --gpus all --shm-size=16g --user root --entrypoint bash -v huggingface_cache:/huggingface_cache
+    env:
+      HF_HOME: /huggingface_cache
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      PRIME_DIST__TIMEOUT__SECONDS: 3600
+    defaults:
+      run:
+        working-directory: /app
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build-matrix.outputs.matrix) }}
+    steps:
+      - name: Clean HF cache locks and fix permissions
+        run: |
+          # Remove stale lock files from interrupted downloads
+          find /huggingface_cache -name "*.lock" -type f -delete 2>/dev/null || true
+          # Ensure cache directory exists and is writable
+          mkdir -p /huggingface_cache/hub
+          chmod -R u+rw /huggingface_cache 2>/dev/null || true
+      - name: Run benchmark
+        run: |
+          python benchmarks/scripts/run_single_benchmark.py \
+            --type "${{ matrix.type }}" \
+            --num-gpus "${{ matrix.num_gpus }}" \
+            --model-name "${{ matrix.model }}" \
+            ${{ matrix.lora_rank && format('--lora-rank {0}', matrix.lora_rank) || '' }} \
+            --seq-len "${{ matrix.seq_len }}" \
+            --ac "${{ matrix.ac }}" \
+            --attention "${{ matrix.attention }}" \
+            --output "/tmp/benchmark_result.json" \
+            --docker-image "${{ needs.get-image-digest.outputs.image_with_digest }}" \
+            --timeout $(( (${{ matrix.timeout_minutes }} - 5) * 60 ))
+      - name: Set artifact name
+        id: artifact
+        run: echo "name=benchmark-${{ matrix.runner }}-$(echo '${{ matrix.model }}' | sed 's/\//--/')-${{ matrix.type }}-${{ matrix.lora_rank || 'full' }}-${{ matrix.num_gpus }}gpu-${{ matrix.ac }}-${{ matrix.attention }}-${{ matrix.seq_len }}" >> "$GITHUB_OUTPUT"
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: /tmp/benchmark_result.json
+          retention-days: 30
+
+  aggregate-and-report:
+    name: Aggregate results and create PR
+    needs: run-benchmark
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository # We can't use the image because then no git
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install dependencies
+        run: uv sync
+      - name: Download all benchmark artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/benchmark_artifacts
+          pattern: benchmark-*
+      - name: Aggregate results
+        id: aggregate
+        run: |
+          mkdir -p benchmarks/baselines
+          uv run python benchmarks/scripts/aggregate_results.py \
+            --artifacts-dir "/tmp/benchmark_artifacts" \
+            --baselines-dir "benchmarks/baselines" \
+            --output-markdown "benchmarks/results/BENCHMARKS.md" \
+            --regression-threshold 0.05
+
+          if [ -f /tmp/prime-rl-benchmark-aggregate-has-regressions ]; then
+            echo "has_regressions=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_regressions=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Set baselines from artifacts
+        if: ${{ github.event.inputs.set_baselines == 'true' }}
+        run: |
+          rm -f benchmarks/baselines/*.json
+          for dir in /tmp/benchmark_artifacts/*/; do
+            name=$(basename "$dir")
+            cp "$dir/benchmark_result.json" "benchmarks/baselines/${name}.json"
+          done
+      - name: Set benchmark metadata (date + unique branch)
+        run: |
+          BENCHMARK_DATE="$(date +%Y-%m-%d)"
+          echo "BENCHMARK_DATE=${BENCHMARK_DATE}" >> "$GITHUB_ENV"
+          echo "BENCHMARK_BRANCH=benchmark-results-${BENCHMARK_DATE}-${{ github.run_id }}" >> "$GITHUB_ENV"
+      - name: Create PR branch and commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BENCHMARK_BRANCH"
+          git add benchmarks/results/BENCHMARKS.md
+          ${{ github.event.inputs.set_baselines == 'true' && 'git add benchmarks/baselines/' || 'true' }}
+          git commit -m "Update benchmark results $(date +%Y-%m-%d)" || echo "No changes to commit"
+          git push origin "$BENCHMARK_BRANCH" --force
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ steps.aggregate.outputs.has_regressions }}" = "true" ]; then
+            WARNING="> :warning: **Performance regressions detected!** Please review the results carefully."
+          else
+            WARNING="> :white_check_mark: No regressions detected."
+          fi
+
+          PR_BODY_FILE="/tmp/benchmark_pr_body.md"
+          cat > "${PR_BODY_FILE}" <<EOF
+          ## Nightly Benchmark Results
+
+          **Run ID:** ${{ github.run_id }}
+          **Date:** ${BENCHMARK_DATE}
+          **Regression Detected:** ${{ steps.aggregate.outputs.has_regressions }}
+
+          ${WARNING}
+
+          ---
+          ## Results (\`benchmarks/results/BENCHMARKS.md\`)
+
+          EOF
+          cat benchmarks/results/BENCHMARKS.md >> "${PR_BODY_FILE}"
+          cat >> "${PR_BODY_FILE}" <<'EOF'
+
+          ---
+          *This PR was automatically generated by the nightly benchmark workflow.*
+          EOF
+
+          gh pr create \
+            --base main \
+            --head "$BENCHMARK_BRANCH" \
+            --title "[Benchmarks] Nightly performance results - ${BENCHMARK_DATE}" \
+            --body-file "${PR_BODY_FILE}" \
+          || echo "PR already exists"

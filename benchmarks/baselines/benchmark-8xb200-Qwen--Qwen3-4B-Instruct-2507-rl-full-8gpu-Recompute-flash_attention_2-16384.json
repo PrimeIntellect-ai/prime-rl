@@ -1,0 +1,46 @@
+{
+  "config": {
+    "type": "rl",
+    "num_gpus": 8,
+    "model_name": "Qwen/Qwen3-4B-Instruct-2507",
+    "lora_rank": null,
+    "seq_len": 16384,
+    "ac": "Recompute",
+    "attention": "flash_attention_2",
+    "output": "/tmp/benchmark_result.json",
+    "dry_run": false,
+    "timeout": 1500,
+    "micro_batches": 2,
+    "docker_image": "primeintellect/prime-rl-jackmin@sha256:5a146f7dfdcdf6b0e90fd3f1ed0874d22a3a0641378dc8dad46ce213d02fa2e6",
+    "device_name": "NVIDIA B200",
+    "commit_sha": "unknown",
+    "timestamp": "2026-01-15T22:52:34.912968+00:00",
+    "success": true,
+    "error_reason": null,
+    "time_taken": 77.61734246100059
+  },
+  "metrics": {
+    "mfu": {
+      "mean": 6.465139069561914,
+      "std": 0.04130725425852038,
+      "min": 6.418776595758626,
+      "max": 6.498024945638078
+    },
+    "throughput": {
+      "mean": 27541.81564064197,
+      "std": 175.970968167648,
+      "min": 27344.3091844938,
+      "max": 27681.911116752446
+    },
+    "step_time": {
+      "mean": 4.634802302666685,
+      "std": 0.08513574433508829,
+      "min": 4.565404164000029,
+      "max": 4.72980078099954
+    },
+    "peak_memory": {
+      "gib": 17.037109375,
+      "pct": 9.552000186156143
+    }
+  }
+}

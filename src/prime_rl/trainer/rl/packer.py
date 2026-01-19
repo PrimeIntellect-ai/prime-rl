@@ -17,7 +17,7 @@ from prime_rl.transport import (
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
 
-TIMEOUT_SECONDS = 10
+TIMEOUT_SECONDS = 0.1
 
 
 class BasePacker(ABC):
@@ -101,9 +101,6 @@ class MultiPacker(BasePacker):
         # Per-run buffer: stores (TrainingSample, temperature, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, float, int]]] = [deque() for _ in range(self.runs.max_runs)]
 
-        # Per-run sample count consumed in current step
-        self.samples_consumed_this_step: list[int] = [0] * self.runs.max_runs
-
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
@@ -118,7 +115,6 @@ class MultiPacker(BasePacker):
 
         # Reset run state
         self.buffers[idx].clear()
-        self.samples_consumed_this_step[idx] = 0
 
     def _get_batch(self) -> None:
         """Receive batches from orchestrator and buffer samples per run."""
@@ -132,22 +128,25 @@ class MultiPacker(BasePacker):
             for sample in batch.examples:
                 self.buffers[batch.run_idx].append((sample, batch.temperature, batch.step))
 
-    def _has_enough_tokens(self) -> bool:
-        """Check if we have enough samples in buffer to pack a step"""
-        # When not using small batch granularity, require at least one full batch
-        threshold = self.seq_len * self.dp_world_size
+    def _count_tokens(self, threshold: int | None = None) -> int:
         tokens = 0
 
         for run_idx in self.runs.used_idxs:
             buffer = self.buffers[run_idx]
             current_step = self.runs.progress[run_idx].step
             for sample, _, step in buffer:
-                if step != current_step:
+                if step > current_step:
                     continue
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
-                if tokens >= threshold:
-                    return True
-        return False
+                if threshold is not None and tokens >= threshold:
+                    return tokens
+        return tokens
+
+    def _has_enough_tokens(self) -> bool:
+        """Check if we have enough samples in buffer to pack a step"""
+        # When not using small batch granularity, require at least one full batch
+        threshold = self.seq_len * self.dp_world_size
+        return self._count_tokens(threshold) >= threshold
 
     def _select_samples_round_robin(self, token_budget: int) -> list[tuple[int, TrainingSample, float]]:
         """Select samples using round-robin from runs with buffered work."""
@@ -159,7 +158,7 @@ class MultiPacker(BasePacker):
             for _ in range(len(self.buffers)):
                 if len(self.buffers[self._round_robin_position]) > 0:
                     _, _, step = self.buffers[self._round_robin_position][0]
-                    if step == self.runs.progress[self._round_robin_position].step:
+                    if step <= self.runs.progress[self._round_robin_position].step:
                         break
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
             else:
@@ -172,7 +171,7 @@ class MultiPacker(BasePacker):
 
             while len(self.buffers[run_idx]) > 0:
                 sample, temperature, step = self.buffers[run_idx][0]
-                if step != current_step:
+                if step > current_step:
                     # Samples from different steps should be consumed later
                     break
                 tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
@@ -189,15 +188,13 @@ class MultiPacker(BasePacker):
         return selected
 
     def _update_run_progress(self, run_idx: int, num_samples: int, num_tokens: int) -> None:
-        """Update progress, increment step only when batch_size reached."""
-        self.samples_consumed_this_step[run_idx] += num_samples
-        batch_size = self.runs.config[run_idx].batch_size
-
-        # May complete multiple steps if we consumed more than batch_size worth
-        while self.samples_consumed_this_step[run_idx] >= batch_size:
+        """Update run progress; increment step when all samples from the current step have been consumed."""
+        # HACK: This fixes the issue with branching rollouts having unpredictable batch size
+        # However, it makes us unable to do incremental orchestrator rollouts
+        # Removing the len(self.buffers[run_idx]) == 0 check would allow incremental orchestrator rollouts
+        if len(self.buffers[run_idx]) == 0 or self.buffers[run_idx][0][2] > self.runs.progress[run_idx].step:
             self.runs.progress[run_idx].step += 1
             self.runs.ready_to_update[run_idx] = True
-            self.samples_consumed_this_step[run_idx] -= batch_size
 
         self.runs.progress[run_idx].total_tokens += num_tokens
         self.runs.progress[run_idx].total_samples += num_samples
@@ -208,7 +205,7 @@ class MultiPacker(BasePacker):
         start_time = time.time()
 
         while not self._has_enough_tokens():
-            if time.time() - start_time > TIMEOUT_SECONDS and any(len(i) > 0 for i in self.buffers):
+            if time.time() - start_time > TIMEOUT_SECONDS and self._count_tokens() > 0:
                 self.logger.warning("Timeout waiting for enough tokens to pack")
                 break
             time.sleep(1)

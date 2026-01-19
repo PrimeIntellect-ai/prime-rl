@@ -227,5 +227,5 @@ def test_reward_in_range(multi_run_result: tuple[dict[str, ProcessResult], str],
         log_file = output_dir / f"run_{name}" / "logs" / "orchestrator.stdout"
         with open(log_file, "r") as f:
             lines = strip_escape_codes(f.read()).splitlines()
-        check_number_in_range(lines, step=9, min_threshold=0.2, max_threshold=0.6, pattern=r"Reward:\s*(\d+\.\d{4})")
+        check_number_in_range(lines, step=7, min_threshold=0.2, max_threshold=0.6, pattern=r"Reward:\s*(\d+\.\d{4})")
         check_number_in_range(lines, min_threshold=0.65, pattern=r"Reward:\s*(\d+\.\d{4})")

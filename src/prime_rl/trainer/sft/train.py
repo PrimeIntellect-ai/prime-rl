@@ -33,6 +33,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
+    export_benchmark_json,
     get_ckpt_disk_metrics,
     print_sample,
     setup_torch_distributed,
@@ -45,6 +46,8 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
+
+from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
@@ -59,7 +62,7 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Starting SFT trainer in {world}")
 
     # Print warning if running in benchmark mode
-    if config.bench:
+    if config.bench is not None:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Setup the monitor
@@ -115,7 +118,7 @@ def train(config: SFTTrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = setup_optimizer(config.optim, list(model.named_parameters()), parallel_dims.world_mesh["dp_shard_cp"])
+    optimizer = setup_optimizer(config.optim, list(model.named_parameters()), parallel_dims)
 
     # Set up the learning rate scheduler
     scheduler_steps = (
@@ -284,7 +287,11 @@ def train(config: SFTTrainerConfig):
             logger.debug(micro_step_message)
 
         logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
+        grad_norm = clip_grad_norm_(
+            model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
+        )
+        if grad_norm.device.type == "cpu":
+            grad_norm = grad_norm.to(torch.device("cuda"))
 
         logger.debug("Optimizer step")
         optimizer.step()
@@ -423,9 +430,13 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("SFT trainer finished!")
 
-    # Optionally, print benchmark table
-    if config.bench and world.is_master:
-        print_benchmark(to_col_format(monitor.history))
+    # Optionally, print benchmark table and export JSON
+    if config.bench is not None and world.is_master:
+        history = to_col_format(monitor.history)
+        print_benchmark(history)
+        if config.bench.output_json:
+            export_benchmark_json(history, config.bench.output_json)
+            logger.info(f"Benchmark results written to {config.bench.output_json}")
 
 
 def main():

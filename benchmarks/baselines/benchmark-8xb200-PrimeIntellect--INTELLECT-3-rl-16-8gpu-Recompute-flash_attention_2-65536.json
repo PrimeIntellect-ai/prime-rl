@@ -1,0 +1,46 @@
+{
+  "config": {
+    "type": "rl",
+    "num_gpus": 8,
+    "model_name": "PrimeIntellect/INTELLECT-3",
+    "lora_rank": 16,
+    "seq_len": 65536,
+    "ac": "Recompute",
+    "attention": "flash_attention_2",
+    "output": "/tmp/benchmark_result.json",
+    "dry_run": false,
+    "timeout": 3300,
+    "micro_batches": 2,
+    "docker_image": "primeintellect/prime-rl-jackmin@sha256:5a146f7dfdcdf6b0e90fd3f1ed0874d22a3a0641378dc8dad46ce213d02fa2e6",
+    "device_name": "NVIDIA B200",
+    "commit_sha": "unknown",
+    "timestamp": "2026-01-15T23:15:30.364274+00:00",
+    "success": true,
+    "error_reason": null,
+    "time_taken": 984.287366173
+  },
+  "metrics": {
+    "mfu": {
+      "mean": 5.827906818358083,
+      "std": 0.022833943391300654,
+      "min": 5.807295619326128,
+      "max": 5.8524522502693515
+    },
+    "throughput": {
+      "mean": 5160.461813808787,
+      "std": 20.21887044561124,
+      "min": 5142.211126408267,
+      "max": 5182.196163383928
+    },
+    "step_time": {
+      "mean": 202.34163654333315,
+      "std": 1.810525756526242,
+      "min": 200.36271737700008,
+      "max": 203.91497343799983
+    },
+    "peak_memory": {
+      "gib": 153.607421875,
+      "pct": 86.12130673399314
+    }
+  }
+}

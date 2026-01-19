@@ -13,7 +13,10 @@ from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
+from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.tensor.parallel import parallelize_module
+from torchtitan.distributed.expert_parallel import ExpertParallel
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -28,6 +31,7 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -150,31 +154,48 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
-    # TODO: Support dp_replicate
+    offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
+
+    fsdp_config = {
+        "mp_policy": mp_policy,
+        "offload_policy": offload_policy,
+        "reshard_after_forward": config.reshard_after_forward,
+    }
+
     if config.dp_replicate > 1:
         hsdp_mesh = parallel_dims.world_mesh["dp_replicate", "dp_shard_cp"]
     else:
         hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
 
-    offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
+    dp_mod_ep_mesh: DeviceMesh | None = None
+    if parallel_dims.ep_enabled:
+        dp_mod_ep_mesh_dim_names = []
+        if parallel_dims.dp_replicate_enabled:
+            dp_mod_ep_mesh_dim_names.append("dp_replicate")
+        dp_mod_ep_mesh_dim_names.append("dp_shard_mod_ep")
+
+        dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
 
     for transformer_block in model.model.layers:
+        if parallel_dims.ep_enabled and isinstance(transformer_block.mlp, MoE):
+            fully_shard(transformer_block.mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
+
+            transformer_block.mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            offload_policy=offload_policy,
-            reshard_after_forward=config.reshard_after_forward,
+            **fsdp_config,
         )
 
-    if hasattr(model, "config") and not model.config.tie_word_embeddings:
+    shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings
+
+    if shard_norm_and_lm_head:
         # This optimization breaks weight tying
         fully_shard(
             model.model.embed_tokens,
             mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            offload_policy=offload_policy,
-            reshard_after_forward=config.reshard_after_forward,
+            **fsdp_config,
         )
         fully_shard(
             [model.lm_head, model.model.norm],
@@ -193,6 +214,53 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
     )
+
+    if not parallel_dims.ep_enabled:
+        return
+
+    # if EP is enabled, d2h syncs in the dispatch/combine can interfere with FSDP prefetch, that's why we set it below manually
+    # the rest of the function handles only that
+
+    transformer_blocks = list(model.model.layers)
+    next_transformer_blocks = transformer_blocks[1:] + [None]
+
+    if model.model.embed_tokens is not None and len(model.model.layers) > 0:
+        if shard_norm_and_lm_head:
+            model.model.embed_tokens.set_modules_to_forward_prefetch([transformer_blocks[0]])
+
+    for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
+        if next_transformer_block is not None:
+            if isinstance(next_transformer_block.mlp, MoE):
+                transformer_block.set_modules_to_forward_prefetch(
+                    [next_transformer_block, next_transformer_block.mlp.experts]
+                )
+            else:
+                transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
+        elif model.model.norm is not None and model.lm_head is not None:
+            if shard_norm_and_lm_head:
+                transformer_block.set_modules_to_forward_prefetch([model.model.norm, model.lm_head])
+
+    # backward
+    reversed_transformer_blocks = list(reversed(model.model.layers))
+    prev_transformer_blocks = reversed_transformer_blocks[1:] + [None]
+
+    if model.model.norm is not None and model.lm_head is not None and len(model.model.layers) > 0:
+        if shard_norm_and_lm_head:
+            model.lm_head.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+        else:
+            model.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+
+    for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
+        if prev_transformer_block is not None:
+            if isinstance(prev_transformer_block.mlp, MoE):
+                transformer_block.set_modules_to_backward_prefetch(
+                    [prev_transformer_block, prev_transformer_block.mlp.experts]
+                )
+            else:
+                transformer_block.set_modules_to_backward_prefetch([prev_transformer_block])
+        elif model.model.embed_tokens is not None:
+            if shard_norm_and_lm_head:
+                transformer_block.set_modules_to_backward_prefetch([model.model.embed_tokens])
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
@@ -337,6 +405,16 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     get_logger().info(f"Compiled {len(model.model.layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
+def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
+    for transformer_block in model.model.layers:
+        if isinstance(transformer_block.mlp, MoE):
+            parallelize_module(
+                transformer_block.mlp.experts,
+                device_mesh=parallel_dims.world_mesh["ep"],
+                parallelize_plan=ExpertParallel(),
+            )
+
+
 def setup_model(
     config: ModelConfig, parallel_dims: ParallelDims, loading_from_checkpoint_later: bool = False
 ) -> nn.Module:
@@ -366,6 +444,9 @@ def setup_model(
     # Apply LoRA before FSDP setup
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
+
+    if parallel_dims.ep_enabled:
+        apply_ep(model, parallel_dims)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:

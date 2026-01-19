@@ -1,0 +1,46 @@
+{
+  "config": {
+    "type": "rl",
+    "num_gpus": 1,
+    "model_name": "Qwen/Qwen3-4B-Instruct-2507",
+    "lora_rank": 16,
+    "seq_len": 16384,
+    "ac": "Recompute",
+    "attention": "flash_attention_2",
+    "output": "/tmp/benchmark_result.json",
+    "dry_run": false,
+    "timeout": 1500,
+    "micro_batches": 2,
+    "docker_image": "primeintellect/prime-rl-jackmin@sha256:5a146f7dfdcdf6b0e90fd3f1ed0874d22a3a0641378dc8dad46ce213d02fa2e6",
+    "device_name": "NVIDIA RTX A6000",
+    "commit_sha": "unknown",
+    "timestamp": "2026-01-15T22:03:16.754400+00:00",
+    "success": true,
+    "error_reason": null,
+    "time_taken": 189.08276393299457
+  },
+  "metrics": {
+    "mfu": {
+      "mean": 13.593108190460633,
+      "std": 0.6113375543806666,
+      "min": 12.9129464707711,
+      "max": 14.096800271491071
+    },
+    "throughput": {
+      "mean": 1232.6245823189486,
+      "std": 55.4361583139007,
+      "min": 1170.947440940054,
+      "max": 1278.299436980461
+    },
+    "step_time": {
+      "mean": 24.43446325266268,
+      "std": 0.05958367621622373,
+      "min": 24.387022126989905,
+      "max": 24.501337252993835
+    },
+    "peak_memory": {
+      "gib": 23.302734375,
+      "pct": 49.160025803760085
+    }
+  }
+}
