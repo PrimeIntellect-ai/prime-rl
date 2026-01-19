@@ -201,10 +201,10 @@ class MultiCheckpointManager:
     def maybe_clean(self) -> None:
         if not self.world.is_master:
             return
-        for idx in list(self.runs.used_idxs):
-            manager = self.managers.get(idx)
-            if manager is not None:
-                manager.maybe_clean()
+        for idx in self.runs.used_idxs:
+            if self.managers[idx] is None:
+                continue
+            self.managers[idx].maybe_clean()
 
 
 def setup_multi_checkpoint_manager(output_dir: Path) -> tuple[MultiCheckpointManager, None]:
