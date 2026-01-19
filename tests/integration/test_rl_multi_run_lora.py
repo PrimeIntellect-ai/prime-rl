@@ -20,6 +20,29 @@ TIMEOUT = 300  # 5 minutes
 ORCHESTRATOR_NAMES = ["alpha", "beta", "gamma"]
 
 
+def wait_for_file(
+    file_path: Path,
+    timeout: int = 300,
+    poll_interval: float = 1.0,
+) -> None:
+    """Wait for STABLE file to exist in checkpoint directory.
+
+    Args:
+        ckpt_dir: Path to the checkpoint directory.
+        timeout: Timeout waiting for STABLE file in seconds.
+        poll_interval: Interval in seconds to poll for the file.
+
+    Raises:
+        TimeoutError: If the STABLE file does not appear within timeout.
+    """
+    start_time = time.time()
+    while not file_path.exists() and time.time() - start_time < timeout:
+        print(f"Waiting for {file_path} to exist")
+        time.sleep(poll_interval)
+    else:
+        raise TimeoutError(f"Timed out waiting for {file_path} to exist after {timeout}s")
+
+
 def wait_for_log(
     log_file: Path,
     conditions: list[str],
@@ -89,7 +112,7 @@ def start_inference_and_trainer(
                 "run",
                 "torchrun",
                 "--nproc-per-node",
-                "2",
+                "1",
                 "-m",
                 "prime_rl.trainer.rl.train",
                 "@",
@@ -105,7 +128,7 @@ def start_inference_and_trainer(
             ],
             stdout=f,
             stderr=f,
-            env={**os.environ, "CUDA_VISIBLE_DEVICES": "2,3"},
+            env={**os.environ, "CUDA_VISIBLE_DEVICES": "1"},
         )
 
     # Wait for inference to be ready
@@ -215,9 +238,7 @@ def multi_run_result(
 
     # Wait for trainer checkpoints to be saved (STABLE file indicates checkpoint is complete)
     alpha_ckpt_dir = output_dir / "run_alpha" / "checkpoints" / "step_10"
-    while not (alpha_ckpt_dir / "STABLE").exists():
-        print(f"Waiting for {alpha_ckpt_dir / 'STABLE'} to exist")
-        time.sleep(1)
+    wait_for_file(alpha_ckpt_dir / "STABLE", timeout=TIMEOUT)
 
     # Stash alpha checkpoint and logs
     shutil.copy(output_dir / "run_alpha" / "logs" / "orchestrator.stdout", log_dir / "alpha_orchestrator.stdout")
@@ -248,13 +269,11 @@ def multi_run_result(
         conditions=["Orchestrator finished."],
         proc=orch_procs["beta"],
         poll_interval=1,
-    )
+    )  # I dont think this is actually necessary, but leave for now
 
     run_dir = output_dir / "run_beta"
     beta_ckpt_dir = run_dir / "checkpoints" / "step_20"
-    while not (beta_ckpt_dir / "STABLE").exists():
-        time.sleep(1)
-        print(f"Waiting for {beta_ckpt_dir / 'STABLE'} to exist")
+    wait_for_file(beta_ckpt_dir / "STABLE", timeout=TIMEOUT)
     shutil.copy(run_dir / "logs" / "orchestrator.stdout", log_dir / "beta_orchestrator.stdout")
     shutil.copytree(beta_ckpt_dir, tmp_path / "beta_ckpt_step_20")
     print(f"Copied {beta_ckpt_dir} to {tmp_path / 'beta_ckpt_step_20'}")
