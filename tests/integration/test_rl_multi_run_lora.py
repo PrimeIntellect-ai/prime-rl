@@ -36,11 +36,11 @@ def wait_for_file(
         TimeoutError: If the file does not appear within timeout.
     """
     start_time = time.time()
-    while not file_path.exists() and time.time() - start_time < timeout:
+    while not file_path.exists():
+        if time.time() - start_time > timeout:
+            raise TimeoutError(f"Timed out waiting for {file_path} to exist after {timeout}s")
         print(f"Waiting for {file_path} to exist")
         time.sleep(poll_interval)
-    else:
-        raise TimeoutError(f"Timed out waiting for {file_path} to exist after {timeout}s")
 
 
 def wait_for_log(
@@ -65,14 +65,14 @@ def wait_for_log(
     """
     start_time = time.time()
     print(f"Waiting for conditions {conditions} in {proc.pid}")
-    while time.time() - start_time < timeout:
+    while True:
+        if time.time() - start_time > timeout:
+            raise TimeoutError(f"Timed out waiting for conditions {conditions} in {log_file} after {timeout}s")
         if log_file.exists():
             content = log_file.read_text()
             if any(cond in content for cond in conditions):
                 break
         time.sleep(poll_interval)
-    else:
-        raise TimeoutError(f"Timed out waiting for conditions {conditions} in {log_file} after {timeout}s")
 
     if sigterm:
         print(f"Sending SIGTERM to process {proc.pid}")
