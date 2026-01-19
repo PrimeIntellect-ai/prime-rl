@@ -25,15 +25,15 @@ def wait_for_file(
     timeout: int = 300,
     poll_interval: float = 1.0,
 ) -> None:
-    """Wait for STABLE file to exist in checkpoint directory.
+    """Wait for file to exist.
 
     Args:
-        ckpt_dir: Path to the checkpoint directory.
-        timeout: Timeout waiting for STABLE file in seconds.
+        file_path: Path to the file.
+        timeout: Timeout waiting for file to exist in seconds.
         poll_interval: Interval in seconds to poll for the file.
 
     Raises:
-        TimeoutError: If the STABLE file does not appear within timeout.
+        TimeoutError: If the file does not appear within timeout.
     """
     start_time = time.time()
     while not file_path.exists() and time.time() - start_time < timeout:
@@ -52,7 +52,7 @@ def wait_for_log(
     sigterm: bool = False,
     kill: bool = False,
 ) -> None:
-    """Wait for any of the conditions to appear in log file, then optionally send SIGTERM and kill the process.
+    """Wait for any of the conditions to appear in log file, then optionally send SIGTERM or kill the process.
 
     Args:
         log_file: Path to the log file.
@@ -71,6 +71,8 @@ def wait_for_log(
             if any(cond in content for cond in conditions):
                 break
         time.sleep(poll_interval)
+    else:
+        raise TimeoutError(f"Timed out waiting for conditions {conditions} in {log_file} after {timeout}s")
 
     if sigterm:
         print(f"Sending SIGTERM to process {proc.pid}")
