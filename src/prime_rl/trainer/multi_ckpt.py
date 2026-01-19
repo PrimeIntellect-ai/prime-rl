@@ -148,7 +148,6 @@ class MultiCheckpointManager:
                     f"Saving checkpoint for run {idx} at step {step} to {ckpt_path / f'rank_{self.world.rank}.pt'}"
                 )
                 torch.save(app_state.state_dict(), ckpt_path / f"rank_{self.world.rank}.pt")
-                manager.ckpt_steps.append(step)
 
                 # Copy broadcast folder to checkpoint
                 if self.world.is_master:
@@ -163,6 +162,7 @@ class MultiCheckpointManager:
 
         dist.barrier()
         manager.mark_stable(step)
+        manager.ckpt_steps.append(step)
 
     def load_run(
         self,
