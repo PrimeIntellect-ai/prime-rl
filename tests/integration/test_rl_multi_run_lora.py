@@ -35,11 +35,11 @@ def wait_for_file(
     Raises:
         TimeoutError: If the file does not appear within timeout.
     """
+    print(f"Waiting for {file_path} to exist")
     start_time = time.time()
     while not file_path.exists():
         if time.time() - start_time > timeout:
             raise TimeoutError(f"Timed out waiting for {file_path} to exist after {timeout}s")
-        print(f"Waiting for {file_path} to exist")
         time.sleep(poll_interval)
 
 
