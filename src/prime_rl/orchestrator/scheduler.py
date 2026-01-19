@@ -108,7 +108,6 @@ class Scheduler:
                     interleaved_rollouts=config.trajectory_strategy == "interleaved",
                     max_concurrent=config.max_concurrent or -1,
                     example_lookup=self.example_lookups[env_name],
-                    sampling_args=self.sampling_args,
                     worker_name=f"{env_name}_{worker_idx}",
                     log_level=config.log.level,
                     vf_log_level=config.log.vf_level,
@@ -147,6 +146,10 @@ class Scheduler:
             for worker in workers:
                 worker.stop()
 
+    def set_sampling_args(self, sampling_args: dict) -> None:
+        """Update sampling args for future rollout requests."""
+        self.sampling_args = sampling_args
+
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
         example = self.buffer.sample_examples(n=1)[0]
@@ -159,6 +162,7 @@ class Scheduler:
         future, request_id = await worker.submit_request(
             example_id=example["example_id"],
             rollouts_per_example=self.config.rollouts_per_example,
+            sampling_args=self.sampling_args,
         )
 
         self.inflight_group_rollouts[future] = InflightRolloutInfo(

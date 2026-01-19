@@ -67,6 +67,41 @@ class ModelConfig(BaseModelConfig):
     ] = None
 
 
+class TemperatureScheduleConfig(BaseConfig):
+    """Configures temperature growth over training steps."""
+
+    type: Annotated[
+        Literal["constant", "linear", "cosine"],
+        Field(
+            description="Schedule shape. Cosine uses a smooth, monotonic increase from start to end.",
+        ),
+    ] = "linear"
+
+    end_temperature: Annotated[
+        float | None,
+        Field(
+            ge=0,
+            description="Final temperature when the schedule completes (required for linear/cosine; optional for constant).",
+        ),
+    ] = None
+
+    start_temperature: Annotated[
+        float | None,
+        Field(
+            ge=0,
+            description="Starting temperature. If None, defaults to sampling.temperature.",
+        ),
+    ] = None
+
+    total_steps: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of steps to reach end_temperature (inclusive of step 0). Ignored for constant; defaults to orchestrator max_steps if None.",
+        ),
+    ] = None
+
+
 class SamplingConfig(BaseConfig):
     """Configures how tokens are sampled from the model for training. Largely follows the vLLM sampling parameters."""
 
@@ -77,6 +112,13 @@ class SamplingConfig(BaseConfig):
             description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
         ),
     ] = 1.0
+
+    temperature_schedule: Annotated[
+        TemperatureScheduleConfig | None,
+        Field(
+            description="Optional schedule to grow temperature over training steps.",
+        ),
+    ] = None
 
     repetition_penalty: Annotated[
         float,
@@ -798,4 +840,23 @@ class OrchestratorConfig(BaseSettings):
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_temperature_schedule(self):
+        if self.sampling.temperature_schedule is not None:
+            schedule = self.sampling.temperature_schedule
+            if schedule.type in ("linear", "cosine") and schedule.end_temperature is None:
+                raise ValueError("temperature_schedule.end_temperature must be set for linear/cosine schedules")
+            if schedule.type in ("linear", "cosine") and schedule.total_steps is None and self.max_steps is None:
+                raise ValueError("temperature_schedule.total_steps must be set when max_steps is None")
+            if schedule.start_temperature is not None and schedule.start_temperature != self.sampling.temperature:
+                raise ValueError(
+                    "temperature_schedule.start_temperature must match sampling.temperature to avoid ambiguity"
+                )
+            if schedule.type == "constant" and schedule.end_temperature is not None:
+                if schedule.end_temperature != self.sampling.temperature:
+                    raise ValueError(
+                        "temperature_schedule.end_temperature must match sampling.temperature for constant schedule"
+                    )
         return self

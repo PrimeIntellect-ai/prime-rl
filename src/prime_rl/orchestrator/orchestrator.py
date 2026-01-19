@@ -30,6 +30,7 @@ from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
+    compute_temperature,
     get_sampling_args,
     print_benchmark,
     set_semaphore,
@@ -310,6 +311,8 @@ async def orchestrate(config: OrchestratorConfig):
             scheduler.checkpoint_ready.set()
 
         # Schedule generating the training batch
+        temperature = compute_temperature(progress.step, config.sampling, config.max_steps)
+        scheduler.set_sampling_args(get_sampling_args(config.sampling, temperature=temperature))
         generate_completions_start_time = time.perf_counter()
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
@@ -324,7 +327,7 @@ async def orchestrate(config: OrchestratorConfig):
                     model_name=config.model.name,
                     examples=val_examples,
                     rollouts_per_example=config.val.rollouts_per_example,
-                    sampling_args=get_sampling_args(config.sampling),
+                    sampling_args=get_sampling_args(config.sampling, temperature=temperature),
                     pbar_description="Generating rollouts (val)",
                 )
             )
@@ -377,7 +380,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         training_batch = TrainingBatch(
             examples=train_examples,
-            temperature=config.sampling.temperature,
+            temperature=temperature,
             step=progress.step,
         )
         assert len(training_batch.examples) != 0, "Step with no samples is not allowed"
@@ -473,6 +476,7 @@ async def orchestrate(config: OrchestratorConfig):
             "perf/throughput": throughput,
             # Train reward
             "reward/mean": results_df.reward.mean(),
+            "sampling/temperature": temperature,
             # Batch metrics
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
