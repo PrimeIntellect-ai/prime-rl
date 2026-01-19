@@ -156,14 +156,13 @@ class MultiCheckpointManager:
                     broadcast_src = run_dir / "broadcasts" / f"step_{step}"
                     weight_dst = run_dir / "checkpoints" / f"step_{step}" / "weight"
                     shutil.copytree(broadcast_src, weight_dst)
-                dist.barrier()
-                manager.mark_stable(step)
             except FileNotFoundError:
                 self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
             except Exception as e:
                 self.logger.error(f"Error checkpointing run {idx}: {e}")
 
         dist.barrier()
+        manager.mark_stable(step)
 
     def load_run(
         self,
