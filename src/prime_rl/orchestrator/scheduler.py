@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 from httpx import AsyncClient
 from tqdm import tqdm
@@ -18,7 +18,7 @@ from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import EnvConfig, OrchestratorConfig
 from prime_rl.orchestrator.env_worker import EnvWorker, WorkerDiedError
 from prime_rl.orchestrator.utils import get_sampling_args
-from prime_rl.utils.client import update_weights
+from prime_rl.utils.client import InferencePool
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_env_worker_log_file
@@ -28,9 +28,6 @@ from prime_rl.utils.utils import (
     get_step_path,
     wait_for_path,
 )
-
-if TYPE_CHECKING:
-    from prime_rl.utils.elastic import ElasticInferencePool
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -65,7 +62,7 @@ class Scheduler:
         strict_async_level: bool,
         lora_name: str | None = None,
         output_dir: Path | None = None,
-        elastic_pool: ElasticInferencePool | None = None,
+        inference_pool: InferencePool | None = None,
     ):
         self.logger = get_logger()
         self.admin_clients = admin_clients
@@ -83,8 +80,8 @@ class Scheduler:
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
 
-        # Elastic inference pool (optional) - used for admin operations (adapter sync)
-        self.elastic_pool = elastic_pool
+        # Inference pool - used for admin operations (adapter sync) and metrics
+        self.inference_pool = inference_pool
 
         # Build example lookup dicts per env (example_id -> example)
         self.example_lookups: dict[str, dict[int, dict]] = {}
@@ -216,13 +213,7 @@ class Scheduler:
             # Update weights on inference servers
             update_weights_start_time = time.perf_counter()
             weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-            await update_weights(
-                self.admin_clients,
-                weights_path,
-                lora_name=self.lora_name,
-                elastic_pool=self.elastic_pool,
-                step=next_ckpt_step,
-            )
+            await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
@@ -376,8 +367,8 @@ class Scheduler:
                         # e.g. "worker_lag/env_0/max"
                         metrics[f"worker_lag/{worker_key}/{metric_name.split('/')[-1]}"] = value
 
-        # Add elastic pool metrics if available
-        if self.elastic_pool is not None:
-            metrics.update(self.elastic_pool.get_metrics())
+        # Add inference pool metrics (e.g. elastic pool server counts)
+        if self.inference_pool is not None:
+            metrics.update(self.inference_pool.get_metrics())
 
         return metrics
