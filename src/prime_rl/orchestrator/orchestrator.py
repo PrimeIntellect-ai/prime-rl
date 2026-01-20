@@ -96,6 +96,12 @@ async def orchestrate(config: OrchestratorConfig):
     elastic_pool = None
 
     if config.client.is_elastic:
+        # Elastic mode only supports LoRA training (uses load_lora_adapter API)
+        if config.model.lora is None:
+            raise ValueError(
+                "Elastic inference pool requires LoRA training. "
+                "Set model.lora config or disable client.elastic."
+            )
         logger.info(
             f"Initializing elastic inference pool (hostname={config.client.elastic.hostname}, "
             f"port={config.client.elastic.port}, sync_interval={config.client.elastic.sync_interval}s)"
