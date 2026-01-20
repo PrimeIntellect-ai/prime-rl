@@ -24,17 +24,13 @@ ServerType = Literal["vllm", "openai"]
 class ElasticConfig(BaseConfig):
     """Configures elastic inference pool with DNS-based service discovery.
 
-    Works with any DNS hostname that resolves to multiple IP addresses:
-    - Kubernetes headless services
-    - Consul DNS
-    - Any DNS with multiple A records
-    - Load balancers that expose backend IPs
+    Works with any DNS hostname that resolves to multiple IP addresses.
     """
 
     hostname: Annotated[
         str,
         Field(
-            description="DNS hostname that resolves to inference server IPs (e.g., 'my-inference-headless.namespace.svc.cluster.local' for K8s, or any hostname with multiple A records).",
+            description="DNS hostname that resolves to inference server IPs.",
         ),
     ]
 

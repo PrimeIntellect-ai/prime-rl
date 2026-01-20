@@ -4,12 +4,6 @@ Elastic inference pool with DNS-based service discovery.
 Discovers inference servers via DNS (any hostname that resolves to multiple IPs),
 tracks which servers have the correct LoRA adapter loaded, and
 only exposes ready servers to workers.
-
-Works with:
-- Kubernetes headless services
-- Consul DNS
-- Any DNS with multiple A records
-- Load balancers that expose backend IPs
 """
 
 import asyncio
