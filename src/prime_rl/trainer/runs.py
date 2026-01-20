@@ -108,6 +108,8 @@ class MultiRunManager:
             hook: A callable that takes (idx: int, run_id: str, config: OrchestratorConfig).
                   Called only on master rank in discover_runs() when a new run is found.
         """
+        if not self.world.is_master:
+            raise RuntimeError("register_discovered_hook() must only be called on the master rank")
         self._discovered_hooks.append(hook)
 
     def register_forgotten_hook(self, hook: Callable[[int, str], None]) -> None:
@@ -117,6 +119,8 @@ class MultiRunManager:
             hook: A callable that takes (idx: int, run_id: str).
                   Called only on master rank in discover_runs() when a run is removed.
         """
+        if not self.world.is_master:
+            raise RuntimeError("register_forgotten_hook() must only be called on the master rank")
         self._forgotten_hooks.append(hook)
 
     def register_config_validation_hook(self, hook: Callable[["OrchestratorConfig"], tuple[bool, str]]) -> None:
@@ -126,6 +130,8 @@ class MultiRunManager:
             hook: A callable that takes (config: OrchestratorConfig) and returns
                   (is_valid: bool, error_message: str). Error message is used when invalid.
         """
+        if not self.world.is_master:
+            raise RuntimeError("register_config_validation_hook() must only be called on the master rank")
         self._config_validation_hooks.append(hook)
 
     # =========================================================================
@@ -302,6 +308,8 @@ class MultiRunManager:
         and updates internal data structures. Hooks and parameter resets for all ranks
         are deferred to sync_runs().
         """
+        if not self.world.is_master:
+            raise RuntimeError("discover_runs() must only be called on the master rank")
         run_ids = {run_path.stem for run_path in self.output_dir.glob("run_*")}
         deleted_runs = self.id_2_idx.keys() - run_ids
         new_runs = run_ids - self.id_2_idx.keys()
