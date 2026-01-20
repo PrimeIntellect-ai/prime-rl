@@ -213,8 +213,13 @@ class ElasticInferencePool:
             return True
         if loaded is None:
             return False
-        # Match by path or step
-        return loaded.path == self._desired.lora_path or loaded.step == self._desired.step
+        # Match by path first
+        if loaded.path == self._desired.lora_path:
+            return True
+        # Only match by step if step > 0 (avoid false match on default step=0)
+        if self._desired.step > 0 and loaded.step == self._desired.step:
+            return True
+        return False
 
     async def _sync_server_adapter(self, ip: str) -> bool:
         """Sync a server to the desired adapter state."""
