@@ -353,7 +353,8 @@ async def orchestrate(config: OrchestratorConfig):
         make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
         train_examples: list[TrainingSample] = []
         for train_rollout, advantage in zip(train_rollouts, advantages):
-            train_example = make_train_example(train_rollout)
+            rollout_temperature = train_rollout.get("temperature", temperature)
+            train_example = make_train_example(train_rollout, temperature=rollout_temperature)
             if train_example is not None:
                 for te in train_example:
                     te.advantage = advantage

@@ -35,6 +35,7 @@ class RolloutRequest:
     rollouts_per_example: int
     model_name: str  # Model name to use for this request (may change for LoRA)
     sampling_args: dict
+    temperature: float
 
 
 @dataclass
@@ -105,6 +106,8 @@ async def process_request(
     )
 
     results = [extract_result(state) for state in states]
+    for result in results:
+        result["temperature"] = request.temperature
     return RolloutResponse(request_id=request.request_id, results=results)
 
 
@@ -139,9 +142,7 @@ async def worker_loop(
                 break
             if request is None:  # Shutdown signal
                 return False
-            task = asyncio.create_task(
-                process_request(request, env, client_cycle, semaphore, example_lookup)
-            )
+            task = asyncio.create_task(process_request(request, env, client_cycle, semaphore, example_lookup))
             pending_tasks[task] = request.request_id
         return True
 
@@ -303,6 +304,7 @@ class EnvWorker:
         example_id: int,
         rollouts_per_example: int,
         sampling_args: dict,
+        temperature: float,
     ) -> tuple[asyncio.Future, str]:
         """Submit a rollout request and return a (future, request_id) tuple."""
         request_id = uuid.uuid4().hex
@@ -312,6 +314,7 @@ class EnvWorker:
             rollouts_per_example=rollouts_per_example,
             model_name=self.model_name,
             sampling_args=sampling_args,
+            temperature=temperature,
         )
 
         loop = asyncio.get_event_loop()

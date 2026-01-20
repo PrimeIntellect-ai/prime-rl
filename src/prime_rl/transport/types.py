@@ -10,6 +10,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_ids: list[int]
     completion_mask: list[bool]
     completion_logprobs: list[float]
+    temperature: float | None = None
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None
     reward: float | None = None

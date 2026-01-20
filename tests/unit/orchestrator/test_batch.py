@@ -30,7 +30,7 @@ def test_prepare_batch_balances_micro_batches_across_workers(
 
     batches_per_gpu = prepare_batch(
         rollouts=examples,
-        temperature=0.5,
+        temperatures=[0.5] * rollout_count,
         seq_len=4,
         num_train_workers=num_train_workers,
         idxs=[0] * rollout_count,
@@ -53,3 +53,21 @@ def test_prepare_batch_balances_micro_batches_across_workers(
     for batch in flat_batches[len(examples) :]:
         assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 0
         assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0
+
+
+def test_prepare_batch_splits_by_temperature(make_training_example):
+    examples = [make_training_example() for _ in range(2)]
+    temps = [0.7, 1.1]
+
+    batches_per_gpu = prepare_batch(
+        rollouts=examples,
+        temperatures=temps,
+        seq_len=16,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+    )
+
+    flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
+    assert len(flat_batches) == 2
+    assert {batch.temperature for batch in flat_batches} == set(temps)

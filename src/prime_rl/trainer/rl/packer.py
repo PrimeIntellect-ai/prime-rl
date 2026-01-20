@@ -76,7 +76,9 @@ class SinglePacker(BasePacker):
         self.runs.progress[0].step += 1
         micro_batch_grid = prepare_batch(
             rollouts=batch.examples,
-            temperature=batch.temperature,
+            temperatures=[
+                sample.temperature if sample.temperature is not None else batch.temperature for sample in batch.examples
+            ],
             seq_len=self.seq_len,
             pad_to_multiple_of=self.pad_to_multiple_of,
             num_train_workers=self.dp_world_size,
@@ -126,7 +128,8 @@ class MultiPacker(BasePacker):
                 self.logger.warning("Received batch with no run index")
                 continue
             for sample in batch.examples:
-                self.buffers[batch.run_idx].append((sample, batch.temperature, batch.step))
+                sample_temperature = sample.temperature if sample.temperature is not None else batch.temperature
+                self.buffers[batch.run_idx].append((sample, sample_temperature, batch.step))
 
     def _count_tokens(self, threshold: int | None = None) -> int:
         tokens = 0
@@ -215,20 +218,19 @@ class MultiPacker(BasePacker):
         selected_samples = self._select_samples_round_robin(token_budget)
         assert selected_samples, "No samples selected"
 
-        # Group by run for prepare_batch (MultiLoRAMoE requires same run_idx in microbatch)
-        samples_by_run: dict[int, list[tuple[TrainingSample, float]]] = {}
+        # Group by run and temperature for prepare_batch (avoid mixing temperatures in microbatches)
+        samples_by_run_temp: dict[tuple[int, float], list[tuple[TrainingSample, float]]] = {}
         for run_idx, sample, temperature in selected_samples:
-            if run_idx not in samples_by_run:
-                samples_by_run[run_idx] = []
-            samples_by_run[run_idx].append((sample, temperature))
+            key = (run_idx, temperature)
+            if key not in samples_by_run_temp:
+                samples_by_run_temp[key] = []
+            samples_by_run_temp[key].append((sample, temperature))
 
         micro_batch_grid = [[] for _ in range(self.dp_world_size)]
 
-        for run_idx, sample_temp_pairs in samples_by_run.items():
+        for (run_idx, temperature), sample_temp_pairs in samples_by_run_temp.items():
             samples = [s for s, _ in sample_temp_pairs]
-            # We don't support dynamic temperatures in orchestrator yet
-            # So this works for now
-            temperature = sample_temp_pairs[0][1]
+            temperatures = [temp for _, temp in sample_temp_pairs]
 
             num_samples = len(samples)
             num_tokens = sum(len(s.prompt_ids) + len(s.completion_ids) for s in samples)
@@ -237,7 +239,7 @@ class MultiPacker(BasePacker):
 
             _micro_batch_grid = prepare_batch(
                 rollouts=samples,
-                temperature=temperature,
+                temperatures=temperatures,
                 seq_len=self.seq_len,
                 pad_to_multiple_of=self.pad_to_multiple_of,
                 num_train_workers=self.dp_world_size,

@@ -33,13 +33,7 @@ def prepare_sample(
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
 
-    assert (
-        len(input_ids)
-        == len(advantages)
-        == len(loss_mask)
-        == len(position_ids)
-        == len(inference_logprobs)
-    ), (
+    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
     )
     if teacher_logprobs is not None:
@@ -62,7 +56,7 @@ def packed_samples_into_micro_bs(
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     """
-    samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
+    samples.sort(key=lambda x: (x[0], x[1].temperature, -len(x[1].input_ids)))
 
     ## we create bins
     micro_batches: list[MicroBatch] = []
@@ -71,7 +65,10 @@ def packed_samples_into_micro_bs(
         # Try to find a bin that can fit this sequence
         for bin_content in micro_batches:
             # Check if sequence fits in this bin
-            if len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len:
+            if (
+                bin_content.temperature == sample.temperature
+                and len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
+            ):
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
@@ -123,7 +120,7 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
 
 def prepare_batch(
     rollouts: list[TrainingSample],
-    temperature: float,
+    temperatures: list[float],
     seq_len: int,
     num_train_workers: int,
     idxs: list[int],
@@ -136,7 +133,12 @@ def prepare_batch(
     """
     max_seq_len = seq_len
 
-    all_samples = [(idx, prepare_sample(rollout, max_seq_len, temperature)) for idx, rollout in zip(idxs, rollouts)]
+    if len(rollouts) != len(temperatures):
+        raise ValueError("rollouts and temperatures must be the same length")
+
+    all_samples = [
+        (idx, prepare_sample(rollout, max_seq_len, temp)) for idx, rollout, temp in zip(idxs, rollouts, temperatures)
+    ]
 
     micro_batches = packed_samples_into_micro_bs(all_samples, max_seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]

@@ -342,9 +342,10 @@ def train(config: RLTrainerConfig):
 
             if out.get("logprobs") is None:
                 assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
-                logits = out["logits"] / float(temperature)
-                out["logprobs"] = selective_log_softmax(logits, labels)
-                out["entropy"] = compute_entropy(logits)
+                logits = out["logits"]
+                scaled_logits = logits / float(temperature)
+                out["logprobs"] = selective_log_softmax(scaled_logits, labels)
+                out["entropy"] = compute_entropy(scaled_logits)
 
             if cp_enabled:
                 logprobs = dist_nn.all_gather(out["logprobs"], group=cp_group)
