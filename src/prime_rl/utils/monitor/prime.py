@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import time
 from pathlib import Path
@@ -93,7 +94,7 @@ class PrimeMonitor(Monitor):
         )
 
     def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
-        """Logs rollouts to Prime Intellect API."""
+        """Logs rollouts to Prime Intellect API using presigned URLs for direct R2 upload."""
         if not self.is_master:
             return
         if not self.enabled:
@@ -114,6 +115,22 @@ class PrimeMonitor(Monitor):
         start_time = time.perf_counter()
 
         # Prepare samples for API
+        samples = self._prepare_samples(rollouts, step)
+
+        if not samples:
+            self.logger.warning(f"No samples to log at step {step}")
+            return
+
+        # Use presigned URL flow for uploading samples
+        self._upload_samples_via_presigned_url(samples, step)
+
+        self.last_log_samples_step = step
+        self.logger.debug(
+            f"Logged samples at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
+        )
+
+    def _prepare_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> list[dict[str, Any]]:
+        """Prepare samples from rollouts for upload."""
         samples = []
         for rollout in rollouts:
             # Extract prompt and completion from the rollout state, which includes final_env_response
@@ -163,19 +180,86 @@ class PrimeMonitor(Monitor):
             }
             samples.append(sample)
 
-        # Upload samples
-        self._make_request(
-            "samples",
-            {
-                "run_id": self.run_id,
-                "step": step,
-                "samples": samples,
-            },
+        return samples
+
+    def _upload_samples_via_presigned_url(self, samples: list[dict[str, Any]], step: int) -> None:
+        """Upload samples using presigned URL flow (fire-and-forget)."""
+        asyncio.run_coroutine_threadsafe(
+            self._upload_samples_via_presigned_url_async(samples, step),
+            self._loop,
         )
-        self.last_log_samples_step = step
-        self.logger.debug(
-            f"Logged samples at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
-        )
+
+    async def _upload_samples_via_presigned_url_async(
+        self, samples: list[dict[str, Any]], step: int, max_retries: int = 3
+    ) -> None:
+        """Upload samples via presigned URL flow."""
+        try:
+            presign_data = await self._request_presigned_url(step, len(samples))
+            if not presign_data:
+                self.logger.warning(f"Failed to get presigned URL for samples at step {step}")
+                return
+
+            presigned_url = presign_data["presigned_url"]
+            s3_key = presign_data["s3_key"]
+            json_bytes = json.dumps(samples).encode("utf-8")
+
+            upload_success = await self._upload_to_r2(
+                presigned_url, json_bytes, content_type="application/json", max_retries=max_retries
+            )
+            if not upload_success:
+                self.logger.warning(f"Failed to upload samples to R2 at step {step}")
+                return
+
+            await self._confirm_samples_upload(step, s3_key, len(samples))
+
+        except Exception as e:
+            self.logger.warning(f"Failed to upload samples via presigned URL at step {step}: {type(e).__name__}: {e}")
+
+    async def _request_presigned_url(self, step: int, sample_count: int) -> dict[str, Any] | None:
+        """Request a presigned URL from the backend."""
+        headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
+        try:
+            response = await self._client.post(
+                f"{self.base_url}/samples/presign",
+                headers=headers,
+                json={"run_id": self.run_id, "step": step, "sample_count": sample_count},
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            self.logger.warning(f"Failed to request presigned URL: {type(e).__name__}: {e}")
+            return None
+
+    async def _upload_to_r2(
+        self, presigned_url: str, data: bytes, content_type: str = "application/json", max_retries: int = 3
+    ) -> bool:
+        """Upload data to R2 using presigned URL."""
+        for attempt in range(max_retries):
+            try:
+                response = await self._client.put(presigned_url, content=data, headers={"Content-Type": content_type})
+                response.raise_for_status()
+                return True
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    self.logger.warning(f"Failed to upload to R2 after {max_retries} attempts: {type(e).__name__}: {e}")
+                    return False
+                delay = 2**attempt
+                self.logger.debug(f"Retrying R2 upload in {delay}s (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(delay)
+        return False
+
+    async def _confirm_samples_upload(self, step: int, s3_key: str, sample_count: int) -> None:
+        """Confirm samples upload with the backend."""
+        headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
+        try:
+            response = await self._client.post(
+                f"{self.base_url}/samples/confirm",
+                headers=headers,
+                json={"run_id": self.run_id, "step": step, "s3_key": s3_key, "sample_count": sample_count},
+            )
+            response.raise_for_status()
+        except Exception as e:
+            self.logger.warning(f"Failed to confirm samples upload: {type(e).__name__}: {e}")
 
     def log_final_samples(self) -> None:
         """Log final samples (no-op - samples are logged per-step only)."""
