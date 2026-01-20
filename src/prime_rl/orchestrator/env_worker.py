@@ -312,7 +312,7 @@ class EnvWorker:
             if self.process.is_alive():
                 self.process.terminate()
 
-    def restart(self):
+    def _restart(self):
         """Restart the worker process after unexpected death."""
         # Clean up old process if it exists
         if self.process is not None:
@@ -412,7 +412,7 @@ class EnvWorker:
                     f"Restarting worker automatically ({restart_info}). In-flight requests will be rescheduled."
                 )
                 self._responses_since_restart = 0  # Reset on restart
-                self.restart()
+                self._restart()
 
             await asyncio.sleep(0.01)
 

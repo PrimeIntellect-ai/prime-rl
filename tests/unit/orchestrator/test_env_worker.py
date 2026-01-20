@@ -57,7 +57,7 @@ def test_restart_drains_queues(env_worker):
     env_worker.response_queue.put("stale_response")
 
     with patch.object(env_worker, "start"):
-        env_worker.restart()
+        env_worker._restart()
 
     # Queues should be empty after restart
     assert env_worker.request_queue.empty()
@@ -169,7 +169,7 @@ def test_full_restart_cycle(mock_client_config):
         assert not worker.process.is_alive()
 
         # Restart
-        worker.restart()
+        worker._restart()
         assert worker.process is not None
         assert worker.process.is_alive()
         assert worker.process.pid != original_pid  # New process
