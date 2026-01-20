@@ -7,7 +7,7 @@ This directory maintains the documentation for PRIME-RL. It is organized into th
 - [**Environments**](environments.md) - Installing and using verifiers environments from the Environments Hub
 - [**Async Training**](async.md) - Understanding asynchronous off-policy training and step semantics
 - [**Logging**](logging.md) - Logging with loguru, torchrun, and Weights & Biases
-- [**RunsManager**](runs.md) - Multi-run training with the RunsManager object for concurrent LoRA adapters
+- [**MultiRunManager**](runs.md) - Multi-run training with the MultiRunManager object for concurrent LoRA adapters
 - [**Checkpointing**](checkpointing.md) - Saving and resuming training from checkpoints
 - [**Benchmarking**](benchmarking.md) - Performance benchmarking and throughput measurement
 - [**Deployment**](deployment.md) - Training deployment on single-GPU, multi-GPU, and multi-node clusters

@@ -1,6 +1,6 @@
-# RunsManager
+# MultiRunManager
 
-The `RunsManager` object is a global singleton that manages the parameters and components for multiple concurrent training runs within a single trainer process.
+The `MultiRunManager` object is a global singleton that manages the parameters and components for multiple concurrent training runs within a single trainer process.
 This allows multiple orchestrator deployments to share the same trainer.
 
 When `max_concurrent_runs > 1`, the trainer can train multiple runs in parallel. Each run:
@@ -11,7 +11,7 @@ When `max_concurrent_runs > 1`, the trainer can train multiple runs in parallel.
 - Tracks its own training progress (step, tokens, samples)
 - Loads its own orchestrator configuration
 
-The `RunsManager` object provides:
+The `MultiRunManager` object provides:
 
 - **Bidirectional mapping** between run IDs (e.g., `run_abc123`) and run indices (0, 1, 2, ...)
 - **Progress tracking** per run (step count, total tokens, total samples)
@@ -22,16 +22,16 @@ The `RunsManager` object provides:
 
 ## **Initialization and run discovery**
 
-The `RunsManager` singleton is set up at the start of training:
+The `MultiRunManager` singleton is set up at the start of training:
 
 ```python
-from prime_rl.trainer.runs import setup_runs_manager, get_runs_manager
+from prime_rl.trainer.runs import setup_multi_run_manager, get_multi_run_manager
 
 # Initialize with output directory and max concurrent runs
-setup_runs_manager(output_dir=Path("outputs/my-experiment"), max_runs=4)
+setup_multi_run_manager(output_dir=Path("outputs/my-experiment"), max_runs=4)
 
 # Get the singleton instance anywhere in the codebase
-runs = get_runs_manager()
+runs = get_multi_run_manager()
 ```
 
 Each run's directory follows this structure:
@@ -81,21 +81,21 @@ The `sync_runs()` method (all ranks):
 
 ## LoRA Module Registration
 
-LoRA modules register themselves with `RunsManager` for parameter management:
+LoRA modules register themselves with `MultiRunManager` for parameter management:
 
 ```python
 # In apply_lora_to_model()
 lora_module = MultiLoRALinear(
     base_layer=base_module,
     rank=config.rank,
-    n_adapters=get_runs_manager().max_runs,
+    n_adapters=get_multi_run_manager().max_runs,
     ...
 )
-lora_module.register_with_runs(get_runs_manager(), module_name)
+lora_module.register_with_runs(get_multi_run_manager(), module_name)
 
 ```
 
-The `RunsManager` object then exposes:
+The `MultiRunManager` object then exposes:
 
 ```python
 # Get parameters for a specific run (used by optimizer creation)
@@ -111,7 +111,7 @@ runs.reset_run_parameters(idx)
 
 ## Hooks
 
-The `RunsManager` object supports several types of hooks for different lifecycle events.
+The `MultiRunManager` object supports several types of hooks for different lifecycle events.
 Deletion hooks are always called before creation hooks.
 
 ```mermaid
