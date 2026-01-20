@@ -443,16 +443,15 @@ class AfmoeModel(AfmoePreTrainedModel):
         cache_position = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
 
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3"):
-            flat_position_ids = position_ids.view(-1)
-            seqlens = torch.cat(
-                [
-                    flat_position_ids[0:1],
-                    flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
-                    flat_position_ids[-1:] + 1,
-                ]
+            batch_size, seq_len = inputs_embeds.shape[:2]
+            cu_seqlens = torch.arange(
+                0,
+                (batch_size + 1) * seq_len,
+                step=seq_len,
+                dtype=torch.int32,
+                device=inputs_embeds.device,
             )
-            max_seqlen = seqlens.max().item()
-            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+            max_seqlen = seq_len
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None
