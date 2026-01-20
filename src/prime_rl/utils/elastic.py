@@ -235,7 +235,7 @@ class ElasticInferencePool:
 
         try:
             if self._desired.lora_name and self._desired.lora_path:
-                self.logger.info(f"Loading adapter {self._desired.lora_name} on {ip}")
+                self.logger.debug(f"Loading adapter {self._desired.lora_name} on {ip}")
                 await load_lora_adapter([self._admin_clients[ip]], self._desired.lora_name, self._desired.lora_path)
 
             # Verify sync succeeded
@@ -245,7 +245,7 @@ class ElasticInferencePool:
             if self._adapter_matches_desired(loaded):
                 server.status = "ready"
                 server.sync_failures = 0
-                self.logger.info(f"Successfully synced server {ip}")
+                self.logger.debug(f"Successfully synced server {ip}")
                 return True
 
             server.status = "unhealthy"
@@ -294,7 +294,7 @@ class ElasticInferencePool:
                 await admin_client.aclose()
                 return False
 
-            self.logger.info(f"Discovered new inference server: {ip}")
+            self.logger.debug(f"Discovered new inference server: {ip}")
             self._admin_clients[ip] = admin_client
             self._servers[ip] = ServerState(ip=ip, url=self._build_url(ip), status="discovering")
             await self._sync_server_adapter(ip)
@@ -312,7 +312,7 @@ class ElasticInferencePool:
 
     async def _remove_server(self, ip: str) -> None:
         """Remove a server from the pool."""
-        self.logger.info(f"Inference server removed: {ip}")
+        self.logger.debug(f"Inference server removed: {ip}")
         self._servers.pop(ip, None)
         if ip in self._admin_clients:
             try:
@@ -354,7 +354,7 @@ class ElasticInferencePool:
                 if ip not in self._admin_clients:
                     continue
                 if not await self._check_server_health(self._admin_clients[ip], ip):
-                    self.logger.info(f"Server {ip} failed health check, removing")
+                    self.logger.debug(f"Server {ip} failed health check, removing")
                     await self._remove_server(ip)
                     removed += 1
                 elif self._servers[ip].status != "ready":
@@ -372,7 +372,7 @@ class ElasticInferencePool:
             try:
                 added, removed = await self.sync()
                 if added > 0 or removed > 0:
-                    self.logger.info(
+                    self.logger.debug(
                         f"Elastic pool sync: +{added} -{removed} servers "
                         f"(total: {self.num_servers}, ready: {self.num_ready_servers})"
                     )
@@ -385,12 +385,12 @@ class ElasticInferencePool:
         if self._started:
             return
 
-        self.logger.info(
+        self.logger.debug(
             f"Starting elastic inference pool (hostname={self.hostname}, interval={self.sync_interval}s)"
         )
 
         await self.sync()
-        self.logger.info(f"Initial discovery found {self.num_servers} server(s) ({self.num_ready_servers} ready)")
+        self.logger.debug(f"Initial discovery found {self.num_servers} server(s) ({self.num_ready_servers} ready)")
 
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._started = True
