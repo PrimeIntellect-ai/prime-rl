@@ -104,7 +104,7 @@ def test_collect_responses_restarts_on_worker_death(env_worker):
             env_worker.process.start()
             env_worker._dead = False
 
-        with patch.object(env_worker, "restart", side_effect=real_restart) as mock_restart:
+        with patch.object(env_worker, "_restart", side_effect=real_restart) as mock_restart:
             collect_task = asyncio.create_task(env_worker.collect_responses())
 
             # Give it a moment to start
