@@ -81,7 +81,7 @@ def pool(client_config):
         client_config=client_config,
         base_model="Qwen/Qwen2-0.5B",
         port=8000,
-        sync_interval=5.0,
+        sync_interval_s=5.0,
     )
 
 
@@ -94,7 +94,7 @@ def test_pool_init_sets_attributes(pool):
     assert pool.hostname == "inference.local"
     assert pool.base_model == "Qwen/Qwen2-0.5B"
     assert pool.port == 8000
-    assert pool.sync_interval == 5.0
+    assert pool.sync_interval_s == 5.0
     assert pool.num_servers == 0
     assert pool.num_ready_servers == 0
     assert pool.ready_urls == []

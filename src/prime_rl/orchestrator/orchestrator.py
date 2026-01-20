@@ -98,14 +98,14 @@ async def orchestrate(config: OrchestratorConfig):
     if config.client.is_elastic:
         logger.info(
             f"Initializing elastic inference pool (hostname={config.client.elastic.hostname}, "
-            f"port={config.client.elastic.port}, sync_interval={config.client.elastic.sync_interval}s)"
+            f"port={config.client.elastic.port}, sync_interval_s={config.client.elastic.sync_interval_s})"
         )
         elastic_pool = ElasticInferencePool(
             hostname=config.client.elastic.hostname,
             client_config=config.client,
             base_model=config.model.name,
             port=config.client.elastic.port,
-            sync_interval=config.client.elastic.sync_interval,
+            sync_interval_s=config.client.elastic.sync_interval_s,
         )
         # Start the elastic pool (discovers initial servers)
         await elastic_pool.start()

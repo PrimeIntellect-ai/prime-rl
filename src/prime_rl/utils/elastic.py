@@ -87,7 +87,7 @@ class ElasticInferencePool:
         client_config: ClientConfig,
         base_model: str | None = None,
         port: int = 8000,
-        sync_interval: float = 5.0,
+        sync_interval_s: float = 5.0,
     ):
         """Initialize the elastic inference pool.
 
@@ -96,14 +96,14 @@ class ElasticInferencePool:
             client_config: Client configuration for creating admin clients
             base_model: Base model name for adapter detection
             port: Port that inference servers listen on
-            sync_interval: How often to check for new/removed servers in seconds
+            sync_interval_s: How often to check for new/removed servers in seconds
         """
         self.logger = get_logger()
         self.hostname = hostname
         self.client_config = client_config
         self.base_model = base_model
         self.port = port
-        self.sync_interval = sync_interval
+        self.sync_interval_s = sync_interval_s
 
         # Track servers and their state
         self._servers: dict[str, ServerState] = {}  # ip -> ServerState
@@ -382,7 +382,7 @@ class ElasticInferencePool:
                     )
             except Exception as e:
                 self.logger.error(f"Error in elastic sync loop: {e}")
-            await asyncio.sleep(self.sync_interval)
+            await asyncio.sleep(self.sync_interval_s)
 
     async def start(self) -> None:
         """Start the elastic inference pool."""
@@ -390,7 +390,7 @@ class ElasticInferencePool:
             return
 
         self.logger.debug(
-            f"Starting elastic inference pool (hostname={self.hostname}, interval={self.sync_interval}s)"
+            f"Starting elastic inference pool (hostname={self.hostname}, sync_interval_s={self.sync_interval_s})"
         )
 
         await self.sync()
@@ -441,7 +441,7 @@ class ElasticInferencePool:
             if self.num_ready_servers >= min_servers:
                 return
             self.logger.debug(f"Waiting for servers: {self.num_ready_servers}/{min_servers} ready")
-            await asyncio.sleep(self.sync_interval)
+            await asyncio.sleep(self.sync_interval_s)
 
         raise TimeoutError(f"Timed out waiting for {min_servers} ready servers (got {self.num_ready_servers})")
 
