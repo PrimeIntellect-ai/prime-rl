@@ -397,6 +397,8 @@ async def orchestrate(config: OrchestratorConfig):
                 f"Step {progress.step} produced 0 training samples "
                 f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
             )
+            # Cancel validation task to avoid accumulating background tasks
+            val_task.cancel()
             await asyncio.sleep(backoff)
             continue
 
