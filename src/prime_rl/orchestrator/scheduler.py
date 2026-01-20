@@ -215,10 +215,6 @@ class Scheduler:
 
             if self.lora_name is not None:
                 self.model_name = self.lora_name
-                # Update model name on all workers so future requests use the LoRA adapter
-                for workers in self.workers.values():
-                    for worker in workers:
-                        worker.update_model_name(self.lora_name)
 
             self.checkpoint_ready.set()
 
