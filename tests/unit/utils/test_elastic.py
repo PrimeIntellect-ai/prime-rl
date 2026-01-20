@@ -136,6 +136,14 @@ class TestAdapterMatching:
         loaded = LoadedAdapter(name="my-lora", path=Path("/weights/step_50"), step=50)
         assert pool._adapter_matches_desired(loaded) is False
 
+    def test_step_zero_does_not_cause_false_match(self, pool):
+        # When both step values default to 0, they should NOT match if paths differ
+        pool._desired = DesiredAdapterState(
+            lora_name="my-lora", lora_path=Path("/weights/custom-adapter"), step=0
+        )
+        loaded = LoadedAdapter(name="other-lora", path=Path("/other/different-adapter"), step=0)
+        assert pool._adapter_matches_desired(loaded) is False
+
 
 class TestReadyUrls:
     def test_ready_urls_returns_only_ready_servers(self, pool):
@@ -227,15 +235,20 @@ class TestServerSync:
 
     def test_sync_resyncs_non_ready_servers(self, pool):
         async def run_test():
+            mock_admin = AsyncMock()
             pool._servers = {
                 "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="syncing"),
             }
+            pool._admin_clients["10.0.0.1"] = mock_admin
 
             with patch("prime_rl.utils.elastic.discover_server_ips") as mock_discover:
                 mock_discover.return_value = ["10.0.0.1"]
 
-                with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock) as mock_sync:
-                    await pool.sync()
+                with patch.object(pool, "_check_server_health", new_callable=AsyncMock) as mock_health:
+                    mock_health.return_value = True
+
+                    with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock) as mock_sync:
+                        await pool.sync()
 
             mock_sync.assert_called_once_with("10.0.0.1")
 
@@ -250,9 +263,12 @@ class TestAddServer:
             with patch.object(pool, "_create_admin_client", new_callable=AsyncMock) as mock_create:
                 mock_create.return_value = mock_admin
 
-                with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock) as mock_sync:
-                    mock_sync.return_value = True
-                    result = await pool._add_server("10.0.0.1")
+                with patch.object(pool, "_check_server_health", new_callable=AsyncMock) as mock_health:
+                    mock_health.return_value = True
+
+                    with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock) as mock_sync:
+                        mock_sync.return_value = True
+                        result = await pool._add_server("10.0.0.1")
 
             assert result is True
             assert "10.0.0.1" in pool._servers
@@ -269,6 +285,72 @@ class TestAddServer:
             assert result is False
             assert "10.0.0.1" not in pool._servers
             assert "10.0.0.1" not in pool._admin_clients
+
+        asyncio.run(run_test())
+
+    def test_add_server_health_check_failure(self, pool):
+        async def run_test():
+            mock_admin = AsyncMock()
+
+            with patch.object(pool, "_create_admin_client", new_callable=AsyncMock) as mock_create:
+                mock_create.return_value = mock_admin
+
+                with patch.object(pool, "_check_server_health", new_callable=AsyncMock) as mock_health:
+                    mock_health.return_value = False  # Health check fails
+                    result = await pool._add_server("10.0.0.1")
+
+            assert result is False
+            assert "10.0.0.1" not in pool._servers
+            mock_admin.aclose.assert_called_once()
+
+        asyncio.run(run_test())
+
+
+class TestCheckServerHealth:
+    def test_health_check_success(self, pool):
+        async def run_test():
+            mock_admin = AsyncMock()
+            mock_health_response = MagicMock()
+            mock_health_response.raise_for_status = MagicMock()
+
+            mock_models_response = MagicMock()
+            mock_models_response.raise_for_status = MagicMock()
+            mock_models_response.json.return_value = {"data": [{"id": "Qwen/Qwen2-0.5B"}]}
+
+            mock_admin.get.side_effect = [mock_health_response, mock_models_response]
+
+            result = await pool._check_server_health(mock_admin, "10.0.0.1")
+
+            assert result is True
+
+        asyncio.run(run_test())
+
+    def test_health_check_fails_on_health_endpoint(self, pool):
+        async def run_test():
+            mock_admin = AsyncMock()
+            mock_admin.get.side_effect = Exception("Connection refused")
+
+            result = await pool._check_server_health(mock_admin, "10.0.0.1")
+
+            assert result is False
+
+        asyncio.run(run_test())
+
+    def test_health_check_fails_when_base_model_missing(self, pool):
+        async def run_test():
+            mock_admin = AsyncMock()
+            mock_health_response = MagicMock()
+            mock_health_response.raise_for_status = MagicMock()
+
+            mock_models_response = MagicMock()
+            mock_models_response.raise_for_status = MagicMock()
+            mock_models_response.json.return_value = {"data": [{"id": "other-model"}]}
+
+            mock_admin.get.side_effect = [mock_health_response, mock_models_response]
+
+            result = await pool._check_server_health(mock_admin, "10.0.0.1")
+
+            assert result is False
 
         asyncio.run(run_test())
 
