@@ -1,7 +1,7 @@
 from pathlib import Path
 from time import time
 
-from prime_rl.trainer.runs import get_runs
+from prime_rl.trainer.runs import get_runs_manager
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
 from prime_rl.transport.types import MicroBatch, TrainingBatch
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
@@ -35,7 +35,7 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
 
     def __init__(self) -> None:
         super().__init__()
-        self.runs = get_runs()
+        self.runs = get_runs_manager()
         self._last_logged_paths: list[Path] | None = None
         self._last_logged_time = time()
         self._waiting_since: float | None = None

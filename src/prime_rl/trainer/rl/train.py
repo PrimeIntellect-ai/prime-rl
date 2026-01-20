@@ -50,7 +50,7 @@ from prime_rl.trainer.utils import (
     get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.trainer.runs import setup_runs, Progress, get_runs
+from prime_rl.trainer.runs import setup_runs_manager, Progress, get_runs_manager
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
@@ -108,8 +108,8 @@ def train(config: RLTrainerConfig):
     torch.set_float32_matmul_precision("high")
 
     # Setup runs and offsets
-    setup_runs(config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank))
-    runs = get_runs()
+    setup_runs_manager(config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank))
+    runs = get_runs_manager()
 
     # Register validation and scaling hooks for LoRA
     if config.model.lora:
@@ -126,11 +126,11 @@ def train(config: RLTrainerConfig):
                 )
             return True, ""
 
-        def compute_scaling(orch_config) -> float:
-            return orch_config.model.lora.alpha / orch_config.model.lora.rank
+        def on_run_discovered(idx: int, run_id: str, orch_config) -> None:
+            runs.scaling_factors[idx] = orch_config.model.lora.alpha / orch_config.model.lora.rank
 
         runs.register_config_validation_hook(validate_lora_rank)
-        runs.register_scaling_hook(compute_scaling)
+        runs.register_discovered_hook(on_run_discovered)
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
@@ -521,7 +521,7 @@ def train(config: RLTrainerConfig):
                 mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
             )
             # Update run/LoRA metrics
-            runs = get_runs()
+            runs = get_runs_manager()
             runs_discovered = len(list(config.output_dir.glob("run_*")))
             run_stats = []
             for idx in runs.used_idxs:

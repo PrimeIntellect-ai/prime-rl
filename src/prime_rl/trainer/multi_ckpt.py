@@ -15,7 +15,7 @@ from torch.distributed.checkpoint.stateful import Stateful
 
 from prime_rl.trainer.ckpt import CheckpointManager
 from prime_rl.trainer.config import CheckpointConfig
-from prime_rl.trainer.runs import Progress, get_runs
+from prime_rl.trainer.runs import Progress, get_runs_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import resolve_latest_ckpt_step
@@ -72,7 +72,7 @@ class MultiCheckpointManager:
 
     def __init__(self, output_dir: Path):
         self.output_dir = output_dir
-        self.runs = get_runs()
+        self.runs = get_runs_manager()
         self.world = get_world()
         self.logger = get_logger()
         self.managers: list[CheckpointManager | None] = [None] * self.runs.max_runs

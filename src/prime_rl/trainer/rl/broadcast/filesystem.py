@@ -11,7 +11,7 @@ from prime_rl.trainer.lora import save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig
-from prime_rl.trainer.runs import get_runs
+from prime_rl.trainer.runs import get_runs_manager
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
@@ -31,7 +31,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         self.save_format: Literal["safetensors", "torch"] = config.save_format
         self.save_sharded = config.save_sharded if lora_config is None else False
         self.world = get_world()
-        self.runs = get_runs()
+        self.runs = get_runs_manager()
         self.logger.debug(
             f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={self.save_sharded})"
         )

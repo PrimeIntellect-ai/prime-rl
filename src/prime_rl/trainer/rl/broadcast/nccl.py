@@ -13,7 +13,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig
-from prime_rl.trainer.runs import get_runs
+from prime_rl.trainer.runs import get_runs_manager
 from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.weights import get_max_layer_num
 from prime_rl.utils.logger import get_logger
@@ -147,7 +147,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         super().__init__(output_dir)
         self.logger = get_logger()
         self.world = get_world()
-        self.runs = get_runs()
+        self.runs = get_runs_manager()
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
             config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout, dtype
         )

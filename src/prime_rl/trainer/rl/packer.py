@@ -6,7 +6,7 @@ from collections import deque
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.batch import prepare_batch
-from prime_rl.trainer.runs import get_runs
+from prime_rl.trainer.runs import get_runs_manager
 from prime_rl.transport import (
     MicroBatchSender,
     TrainingSample,
@@ -31,7 +31,7 @@ class BasePacker(ABC):
         start_step: int = 0,
     ):
         self.logger = get_logger()
-        self.runs = get_runs()
+        self.runs = get_runs_manager()
         self.dp_world_size = dp_world_size
         self.seq_len = seq_len
         self.pad_to_multiple_of = pad_to_multiple_of
@@ -65,7 +65,7 @@ class SinglePacker(BasePacker):
         # Wait for batch to be available
         batches = []
         while len(batches) == 0:
-            self.runs.check_for_changes()
+            self.runs.discover_runs()
             batches = self.receiver.receive()
             time.sleep(0.2)
 
@@ -104,9 +104,9 @@ class MultiPacker(BasePacker):
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
-        # Register delete_run_data hook for receiver reset (master only, runs during check_for_changes)
+        # Register forgotten hook for receiver reset (master only, runs during discover_runs)
         # This must happen when a run is deleted to prevent stale data from remaining
-        self.runs.register_delete_run_data_hook(self._on_run_data_deleted)
+        self.runs.register_forgotten_hook(self._on_run_data_deleted)
 
     def _on_run_data_deleted(self, idx: int, run_id: str) -> None:
         """Reset run state when run data is deleted (master only)."""
@@ -118,7 +118,7 @@ class MultiPacker(BasePacker):
 
     def _get_batch(self) -> None:
         """Receive batches from orchestrator and buffer samples per run."""
-        self.runs.check_for_changes()
+        self.runs.discover_runs()
         batches = self.receiver.receive()
 
         for batch in batches:
@@ -259,7 +259,7 @@ def setup_packer(
     transport_config: TransportConfigType,
     start_step: int = 0,
 ) -> BasePacker:
-    runs = get_runs()
+    runs = get_runs_manager()
     if runs.max_runs == 1:
         return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
     else:

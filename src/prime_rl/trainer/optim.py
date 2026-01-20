@@ -7,7 +7,7 @@ from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.runs import get_runs
+from prime_rl.trainer.runs import get_runs_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -21,12 +21,12 @@ def setup_optimizer(
     if lora:
         # Wait for run 0 to be created in the runs system
         # Otherwise, the creation will reset the parameters
-        runs = get_runs()
+        runs = get_runs_manager()
         world = get_world()
         logger = get_logger()
         while 0 not in runs.idx_2_id:
             if world.is_master:
-                runs.check_for_changes()
+                runs.discover_runs()
             runs.sync_runs()
             logger.info(f"Waiting for run 0 to be created {runs.id_2_idx=}")
             time.sleep(1)
@@ -149,7 +149,7 @@ class MultiLoRAOptimizer:
     def __init__(self, config: OptimizerConfigType, parallel_dims: ParallelDims):
         self.config = config
         self.parallel_dims = parallel_dims
-        self.runs = get_runs()
+        self.runs = get_runs_manager()
         self.logger = get_logger()
 
         self.optimizers: list[Optimizer | None] = [None] * self.runs.max_runs
