@@ -193,10 +193,11 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup scheduler (uses subprocess workers for env execution)
     # In elastic mode, pass client_config with ready URLs so workers start with correct endpoints
+    # Use empty list if no servers ready yet - workers will queue requests until servers are available
     if elastic_pool is not None:
         worker_client_config = ClientConfig(
             timeout=config.client.timeout,
-            base_url=elastic_pool.ready_urls or config.client.base_url,
+            base_url=elastic_pool.ready_urls or [],
             api_key_var=config.client.api_key_var,
             headers=config.client.headers,
         )

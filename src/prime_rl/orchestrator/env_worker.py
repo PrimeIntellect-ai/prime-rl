@@ -163,7 +163,7 @@ async def worker_loop(
             try:
                 client.close()
             except Exception:
-                pass
+                pass  # Best-effort cleanup, ignore errors
 
         if not urls:
             # Clear clients when no servers are available to avoid stale requests

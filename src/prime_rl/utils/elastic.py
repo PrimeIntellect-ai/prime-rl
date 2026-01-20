@@ -8,6 +8,7 @@ only exposes ready servers to workers.
 
 import asyncio
 import socket
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
@@ -309,7 +310,7 @@ class ElasticInferencePool:
                 try:
                     await self._admin_clients.pop(ip).aclose()
                 except Exception:
-                    pass
+                    pass  # Best-effort cleanup, ignore errors
             return False
 
     async def _remove_server(self, ip: str) -> None:
@@ -320,7 +321,7 @@ class ElasticInferencePool:
             try:
                 await self._admin_clients.pop(ip).aclose()
             except Exception:
-                pass
+                pass  # Best-effort cleanup, ignore errors
 
     def _notify_if_ready_urls_changed(self) -> None:
         """Notify callback if ready URLs have changed."""
@@ -405,7 +406,7 @@ class ElasticInferencePool:
             try:
                 await self._sync_task
             except asyncio.CancelledError:
-                pass
+                pass  # Expected when cancelling the sync task
 
         for ip in list(self._servers.keys()):
             await self._remove_server(ip)
@@ -434,8 +435,6 @@ class ElasticInferencePool:
 
     async def wait_for_ready(self, min_servers: int = 1, timeout: float = 300.0) -> None:
         """Wait for at least min_servers to be ready."""
-        import time
-
         start = time.time()
         while time.time() - start < timeout:
             await self.sync()
