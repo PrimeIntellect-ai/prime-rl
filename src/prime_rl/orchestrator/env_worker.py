@@ -173,6 +173,7 @@ async def worker_loop(
             for task in done:
                 pending_tasks.pop(task)
                 response = task.result()
+                # Attach lag metrics to response
                 response.lag_metrics = lag_monitor.get_metrics()
                 response_queue.put(response)
     finally:
