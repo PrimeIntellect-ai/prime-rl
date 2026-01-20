@@ -34,15 +34,18 @@ def monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode():
 
 # Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
 def monkey_patch_load_lora_adapter():
-    from vllm.entrypoints.openai.serving_models import (
-        ErrorResponse,
-        HTTPStatus,
-        LoadLoRAAdapterRequest,
-        LoRARequest,
+    from http import HTTPStatus
+
+    from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+    from vllm.entrypoints.openai.models.serving import (
         OpenAIServingModels,
         create_error_response,
-        logger,
     )
+    from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
+    from vllm.logger import init_logger
+    from vllm.lora.request import LoRARequest
+
+    logger = init_logger(__name__)
 
     async def _patched_load_lora_adapter(
         self: OpenAIServingModels, request: LoadLoRAAdapterRequest, base_model_name: str | None = None
