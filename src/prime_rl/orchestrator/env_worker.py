@@ -97,23 +97,29 @@ def extract_result(state: vf.State) -> dict:
     - orchestrator metrics: reward, is_truncated, error, timing, metrics, trajectory
     - interleave_rollout/branch_rollout: trajectory[*]["tokens"] with all token fields
     """
+    # Get trajectory with tokens (needed for training)
     trajectory = []
     for step in state.get("trajectory", []):
         traj_step = {
             "prompt": step.get("prompt"),
             "completion": step.get("completion"),
+            # tokens dict contains: prompt_ids, prompt_mask, completion_ids,
+            # completion_mask, completion_logprobs, is_truncated
             "tokens": step.get("tokens"),
         }
         trajectory.append(traj_step)
 
     return {
+        # Required by buffer
         "example_id": state.get("example_id"),
         "task": state.get("task"),
         "reward": state.get("reward"),
+        # Required by orchestrator metrics
         "is_truncated": state.get("is_truncated", False),
         "error": type(state["error"]).__name__ if state.get("error") else None,
         "timing": dict(state.get("timing", {})),
         "metrics": state.get("metrics", {}),
+        # Required for training examples
         "prompt": state.get("prompt"),
         "completion": state.get("completion"),
         "trajectory": trajectory,
