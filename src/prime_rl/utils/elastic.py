@@ -258,19 +258,50 @@ class ElasticInferencePool:
             self.logger.error(f"Failed to sync server {ip}: {e}")
             return False
 
-    async def _add_server(self, ip: str) -> bool:
-        """Add a new server to the pool."""
-        self.logger.info(f"Discovered new inference server: {ip}")
+    async def _check_server_health(self, admin_client: AsyncClient, ip: str) -> bool:
+        """Check if server is healthy and has the base model loaded."""
+        try:
+            # Check /health endpoint
+            response = await admin_client.get("/health")
+            response.raise_for_status()
+        except Exception as e:
+            self.logger.debug(f"Server {ip} health check failed: {e}")
+            return False
 
         try:
+            # Check if base model is available
+            response = await admin_client.get("/v1/models")
+            response.raise_for_status()
+            data = response.json()
+            models = [m.get("id") for m in data.get("data", [])]
+
+            if self.base_model is not None and self.base_model not in models:
+                self.logger.debug(f"Server {ip} does not have base model {self.base_model}, found: {models}")
+                return False
+        except Exception as e:
+            self.logger.debug(f"Server {ip} model check failed: {e}")
+            return False
+
+        return True
+
+    async def _add_server(self, ip: str) -> bool:
+        """Add a new server to the pool."""
+        try:
             admin_client = await self._create_admin_client(ip)
+
+            # Check health and base model before announcing discovery
+            if not await self._check_server_health(admin_client, ip):
+                await admin_client.aclose()
+                return False
+
+            self.logger.info(f"Discovered new inference server: {ip}")
             self._admin_clients[ip] = admin_client
             self._servers[ip] = ServerState(ip=ip, url=self._build_url(ip), status="discovering")
             await self._sync_server_adapter(ip)
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to add server {ip}: {e}")
+            self.logger.debug(f"Failed to add server {ip}: {e}")
             self._servers.pop(ip, None)
             if ip in self._admin_clients:
                 try:
