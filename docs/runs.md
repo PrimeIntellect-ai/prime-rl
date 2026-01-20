@@ -116,35 +116,35 @@ Deletion hooks are always called before creation hooks.
 
 ```mermaid
 flowchart TD
-    subgraph master["<b>MASTER RANK</b>"]
-        discover["<b>discover_runs()</b><br/><i>can be called multiple times</i>"]
+    subgraph master["Rank 0 (Master)"]
+        discover["discover_runs()"]
+        forgotten["forgotten_hooks"]
+        validation["config_validation_hooks"]
+        discovered["discovered_hooks"]
 
-        discover --> deleted_check{"deleted runs?"}
-        discover --> new_check{"new runs?"}
-
-        deleted_check -->|yes| forgotten["<b>forgotten_hooks</b>"]
-        new_check -->|yes| validation["<b>config_validation_hooks</b>"]
-        validation -->|valid| discovered["<b>discovered_hooks</b>"]
+        discover --> forgotten
+        forgotten --> validation
+        validation --> discovered
+        discovered --> discover
     end
 
-    forgotten --> barrier[["<b>dist.barrier()</b>"]]
+    subgraph rank1["Rank 1"]
+        wait1["waiting..."]
+    end
+
+    subgraph rankN["Rank N"]
+        waitN["waiting..."]
+    end
+
     discovered --> barrier
-    deleted_check -->|no| barrier
-    new_check -->|no| barrier
-    validation -->|invalid| barrier
+    wait1 --> barrier
+    waitN --> barrier
 
-    subgraph all["<b>ALL RANKS</b>"]
-        barrier --> sync["<b>sync_runs()</b>"]
+    barrier[["sync_runs()"]]
 
-        sync --> sync_deleted{"deleted runs?"}
-        sync --> sync_new{"new runs?"}
+    barrier --> deletion["deletion_hooks"]
+    deletion --> creation["creation_hooks"]
 
-        sync_deleted -->|yes| deletion["<b>deletion_hooks</b>"]
-        sync_new -->|yes| creation["<b>creation_hooks</b>"]
-    end
-
-    style master fill:#e1f5fe
-    style all fill:#f3e5f5
     style barrier fill:#fff9c4
 ```
 
