@@ -339,19 +339,26 @@ class ElasticInferencePool:
             added = 0
             removed = 0
 
-            # Add new servers
+            # Add new servers (only if they pass health check)
             for ip in discovered_ips - known_ips:
                 if await self._add_server(ip):
                     added += 1
 
-            # Remove gone servers
+            # Remove servers no longer in DNS
             for ip in known_ips - discovered_ips:
                 await self._remove_server(ip)
                 removed += 1
 
-            # Re-sync servers that aren't ready
-            for ip, server in self._servers.items():
-                if server.status != "ready":
+            # Health check known servers and remove unhealthy ones
+            for ip in list(self._servers.keys()):
+                if ip not in self._admin_clients:
+                    continue
+                if not await self._check_server_health(self._admin_clients[ip], ip):
+                    self.logger.info(f"Server {ip} failed health check, removing")
+                    await self._remove_server(ip)
+                    removed += 1
+                elif self._servers[ip].status != "ready":
+                    # Re-sync servers that aren't ready but are healthy
                     await self._sync_server_adapter(ip)
 
             # Notify if ready URLs changed
