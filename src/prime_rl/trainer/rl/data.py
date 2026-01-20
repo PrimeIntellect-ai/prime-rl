@@ -41,7 +41,7 @@ class FakeDataLoader:
         self.seq_len = seq_len
         self.generate_samples = config.generate_samples
         self.batch_counter = 0
-        self.runs = get_multi_run_manager()
+        self.multi_run_manager = get_multi_run_manager()
 
     def wait_for_batch(self) -> None:
         return
@@ -84,7 +84,7 @@ class FakeDataLoader:
         loss_mask = torch.ones(input_ids.shape[0], dtype=torch.bool)
         advantages = torch.randn(input_ids.shape[0], generator=generator)
         inference_logprobs = torch.randn(input_ids.shape[0], generator=generator)
-        lora_num_tokens = torch.zeros(self.runs.max_runs, dtype=torch.int32)
+        lora_num_tokens = torch.zeros(self.multi_run_manager.max_runs, dtype=torch.int32)
         lora_num_tokens[0] = input_ids.shape[0]
 
         return {
@@ -99,7 +99,7 @@ class FakeDataLoader:
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
-        lora_num_tokens = torch.zeros(self.runs.max_runs, dtype=torch.int32)
+        lora_num_tokens = torch.zeros(self.multi_run_manager.max_runs, dtype=torch.int32)
         lora_num_tokens[0] = self.seq_len
         return {
             "input_ids": torch.randint(
@@ -148,7 +148,7 @@ class DataLoader:
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
-        self.runs = get_multi_run_manager()
+        self.multi_run_manager = get_multi_run_manager()
 
         self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, dp_rank, start_step, config)
 
@@ -156,7 +156,7 @@ class DataLoader:
         if self.world.is_master:
             self.packer.pack()
         self.receiver.wait()
-        self.runs.sync_runs()
+        self.multi_run_manager.sync_runs()
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
@@ -165,7 +165,7 @@ class DataLoader:
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
         if micro_batch.lora_num_tokens is None:
-            micro_batch.lora_num_tokens = [0] * self.runs.max_runs
+            micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),

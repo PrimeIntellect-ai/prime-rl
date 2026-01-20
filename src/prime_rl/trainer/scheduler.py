@@ -126,17 +126,17 @@ class MultiLoRAScheduler:
     ):
         self.scheduler_config = scheduler_config
         self.max_steps = max_steps
-        self.runs = get_multi_run_manager()
+        self.multi_run_manager = get_multi_run_manager()
         self.logger = get_logger()
 
-        self.schedulers: list[LRScheduler | None] = [None] * self.runs.max_runs
+        self.schedulers: list[LRScheduler | None] = [None] * self.multi_run_manager.max_runs
 
     def scheduler_creation_hook(self, optimizer: Optimizer, idx: int) -> None:
         """Create a scheduler for a newly created optimizer.
 
         This should be called after an optimizer is created for a run.
         """
-        lr = self.runs.config[idx].optim.lr
+        lr = self.multi_run_manager.config[idx].optim.lr
         self.schedulers[idx] = setup_scheduler(
             optimizer,
             self.scheduler_config,
@@ -146,7 +146,7 @@ class MultiLoRAScheduler:
 
     def step(self) -> None:
         """Step all active schedulers."""
-        for idx in self.runs.ready_to_update_idxs:
+        for idx in self.multi_run_manager.ready_to_update_idxs:
             self.schedulers[idx].step()
 
     def get_last_lr(self, idx: int) -> list[float]:

@@ -35,32 +35,32 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
 
     def __init__(self) -> None:
         super().__init__()
-        self.runs = get_multi_run_manager()
+        self.multi_run_manager = get_multi_run_manager()
         self._last_logged_paths: list[Path] | None = None
         self._last_logged_time = time()
         self._waiting_since: float | None = None
-        # Track received steps per run independently of runs.progress[idx].step
+        # Track received steps per run independently of multi_run_manager.progress[idx].step
         # This prevents duplicate reads when trainer step != orchestrator step
         self._received_steps: dict[int, int] = {}
 
     def _get_received_step(self, idx: int) -> int:
         """Get the next step to receive for a run, initializing from progress if needed."""
         if idx not in self._received_steps:
-            # Initialize from runs.progress on first access (for checkpoint resume)
-            self._received_steps[idx] = self.runs.progress[idx].step
+            # Initialize from multi_run_manager.progress on first access (for checkpoint resume)
+            self._received_steps[idx] = self.multi_run_manager.progress[idx].step
         return self._received_steps[idx]
 
     def _get_batch_path(self, idx: int) -> Path:
         """Get the batch file path for a specific run at its next step to receive."""
-        run_dir = self.runs.get_run_dir(idx)
+        run_dir = self.multi_run_manager.get_run_dir(idx)
         rollout_dir = get_rollout_dir(run_dir)
         step = self._get_received_step(idx)
         return get_step_path(rollout_dir, step) / BATCH_FILE_NAME
 
     def can_receive(self) -> bool:
         """Check if any run has a batch file available."""
-        for idx in self.runs.used_idxs:
-            if not self.runs.ready_to_update[idx] and self._get_batch_path(idx).exists():
+        for idx in self.multi_run_manager.used_idxs:
+            if not self.multi_run_manager.ready_to_update[idx] and self._get_batch_path(idx).exists():
                 return True
         return False
 
@@ -75,7 +75,7 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
         else:
             self._waiting_since = self._waiting_since or now
 
-        current_paths = [self._get_batch_path(idx) for idx in self.runs.used_idxs]
+        current_paths = [self._get_batch_path(idx) for idx in self.multi_run_manager.used_idxs]
         if current_paths != self._last_logged_paths or now - self._last_logged_time > LOG_FREQ_SECONDS:
             if len(current_paths) == 0:
                 self.logger.debug(
@@ -87,8 +87,8 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
             self.logger.debug(f"Looking for batches in {current_paths}{waiting_suffix}")
             self._last_logged_paths = current_paths
             self._last_logged_time = now
-        for idx in list(self.runs.used_idxs):
-            if self.runs.ready_to_update[idx]:
+        for idx in self.multi_run_manager.used_idxs:
+            if self.multi_run_manager.ready_to_update[idx]:
                 continue
             batch_path = self._get_batch_path(idx)
             if batch_path.exists():
@@ -107,7 +107,7 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
         """Reset received step tracking for a run index.
 
         Called when a run is deleted and a new run takes its place.
-        The next access to _get_received_step will re-initialize from runs.progress.
+        The next access to _get_received_step will re-initialize from multi_run_manager.progress.
         """
         if idx in self._received_steps:
             del self._received_steps[idx]

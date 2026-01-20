@@ -107,9 +107,9 @@ def train(config: RLTrainerConfig):
     )
     torch.set_float32_matmul_precision("high")
 
-    # Setup runs and offsets
+    # Setup multi run manager and offsets
     setup_multi_run_manager(config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank))
-    runs = get_multi_run_manager()
+    multi_run_manager = get_multi_run_manager()
 
     # Register validation and scaling hooks for LoRA
     if config.model.lora:
@@ -127,10 +127,10 @@ def train(config: RLTrainerConfig):
             return True, ""
 
         def on_run_discovered(idx: int, run_id: str, orch_config) -> None:
-            runs.scaling_factors[idx] = orch_config.model.lora.alpha / orch_config.model.lora.rank
+            multi_run_manager.scaling_factors[idx] = orch_config.model.lora.alpha / orch_config.model.lora.rank
 
-        runs.register_config_validation_hook(validate_lora_rank)
-        runs.register_discovered_hook(on_run_discovered)
+        multi_run_manager.register_config_validation_hook(validate_lora_rank)
+        multi_run_manager.register_discovered_hook(on_run_discovered)
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
@@ -244,8 +244,8 @@ def train(config: RLTrainerConfig):
         else:
             broadcast_weights_time = 0
             # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
-            for idx in runs.used_idxs:
-                runs.ready_to_update[idx] = False
+            for idx in multi_run_manager.used_idxs:
+                multi_run_manager.ready_to_update[idx] = False
 
         if (
             ckpt_manager is not None
@@ -521,12 +521,12 @@ def train(config: RLTrainerConfig):
                 mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
             )
             # Update run/LoRA metrics
-            runs = get_multi_run_manager()
+            multi_run_manager = get_multi_run_manager()
             runs_discovered = len(list(config.output_dir.glob("run_*")))
             run_stats = []
-            for idx in runs.used_idxs:
-                run_id = runs.idx_2_id[idx]
-                run_progress = runs.progress[idx]
+            for idx in multi_run_manager.used_idxs:
+                run_id = multi_run_manager.idx_2_id[idx]
+                run_progress = multi_run_manager.progress[idx]
                 if config.max_concurrent_runs == 1:
                     lr = optimizer.param_groups[0]["lr"]
                 else:
@@ -537,12 +537,12 @@ def train(config: RLTrainerConfig):
                         step=run_progress.step,
                         total_tokens=run_progress.total_tokens,
                         learning_rate=lr,
-                        ready=runs.ready_to_update[idx],
+                        ready=multi_run_manager.ready_to_update[idx],
                     )
                 )
             metrics_server.update_runs(
                 runs_discovered=runs_discovered,
-                runs_max=runs.max_runs,
+                runs_max=multi_run_manager.max_runs,
                 run_stats=run_stats,
             )
 

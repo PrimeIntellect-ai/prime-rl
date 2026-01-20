@@ -19,18 +19,18 @@ def setup_optimizer(
     lora: bool = False,
 ) -> Optimizer:
     if lora:
-        # Wait for run 0 to be created in the runs system
+        # Wait for run 0 to be created in the multi run manager
         # Otherwise, the creation will reset the parameters
-        runs = get_multi_run_manager()
+        multi_run_manager = get_multi_run_manager()
         world = get_world()
         logger = get_logger()
-        while 0 not in runs.idx_2_id:
+        while 0 not in multi_run_manager.idx_2_id:
             if world.is_master:
-                runs.discover_runs()
-            runs.sync_runs()
-            logger.info(f"Waiting for run 0 to be created {runs.id_2_idx=}")
+                multi_run_manager.discover_runs()
+            multi_run_manager.sync_runs()
+            logger.info(f"Waiting for run 0 to be created {multi_run_manager.id_2_idx=}")
             time.sleep(1)
-        named_params = runs.get_named_parameters_for_run(0)
+        named_params = multi_run_manager.get_named_parameters_for_run(0)
 
     return _create_optimizer(config, named_params, parallel_dims)
 
@@ -149,15 +149,15 @@ class MultiLoRAOptimizer:
     def __init__(self, config: OptimizerConfigType, parallel_dims: ParallelDims):
         self.config = config
         self.parallel_dims = parallel_dims
-        self.runs = get_multi_run_manager()
+        self.multi_run_manager = get_multi_run_manager()
         self.logger = get_logger()
 
-        self.optimizers: list[Optimizer | None] = [None] * self.runs.max_runs
+        self.optimizers: list[Optimizer | None] = [None] * self.multi_run_manager.max_runs
         self._post_creation_callbacks: list[Callable[[Optimizer, int], None]] = []
 
         # Register creation hook for optimizer setup
         # The MultiRunManager class handles parameter reset internally when new runs are created
-        self.runs.register_creation_hook(self.optimizer_creation_hook)
+        self.multi_run_manager.register_creation_hook(self.optimizer_creation_hook)
 
     def register_post_creation_callback(
         self, callback: Callable[[Optimizer, int], None], index: int | None = None
@@ -175,9 +175,9 @@ class MultiLoRAOptimizer:
 
     def optimizer_creation_hook(self, idx: int, run_id: str) -> None:
         # Get named parameters for this run from the MultiRunManager system
-        named_params = self.runs.get_named_parameters_for_run(idx)
+        named_params = self.multi_run_manager.get_named_parameters_for_run(idx)
 
-        lr = self.runs.config[idx].optim.lr
+        lr = self.multi_run_manager.config[idx].optim.lr
         self.optimizers[idx] = _create_optimizer(self.config, named_params, self.parallel_dims, lr)
 
         # Call post-creation callbacks in order
@@ -185,16 +185,16 @@ class MultiLoRAOptimizer:
             callback(self.optimizers[idx], idx)
 
     def step(self):
-        for idx in self.runs.ready_to_update_idxs:
+        for idx in self.multi_run_manager.ready_to_update_idxs:
             self.optimizers[idx].step()
 
     def zero_grad(self):
-        for idx in self.runs.ready_to_update_idxs:
+        for idx in self.multi_run_manager.ready_to_update_idxs:
             self.optimizers[idx].zero_grad()
 
     def get_current_lr(self, idx: int | None = None) -> float:
         if idx is None:
-            for idx in self.runs.ready_to_update_idxs:
+            for idx in self.multi_run_manager.ready_to_update_idxs:
                 return self.optimizers[idx].param_groups[0]["lr"]
             else:
                 self.logger.warning("No runs are ready to update. Returning 0.0 for current learning rate.")

@@ -147,7 +147,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         super().__init__(output_dir)
         self.logger = get_logger()
         self.world = get_world()
-        self.runs = get_multi_run_manager()
+        self.multi_run_manager = get_multi_run_manager()
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
             config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout, dtype
         )
@@ -173,13 +173,14 @@ class NCCLWeightBroadcast(WeightBroadcast):
         """
         notified_runs: list[tuple[int, Path]] = []
         if self.world.is_master:
-            for idx in self.runs.used_idxs:
-                if not self.runs.ready_to_update[idx]:
+            for idx in self.multi_run_manager.used_idxs:
+                if not self.multi_run_manager.ready_to_update[idx]:
                     continue
 
                 try:
                     save_dir = get_step_path(
-                        get_broadcast_dir(self.runs.get_run_dir(idx)), self.runs.progress[idx].step
+                        get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
+                        self.multi_run_manager.progress[idx].step,
                     )
                     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -191,7 +192,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
                 except Exception as e:
                     self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
                 finally:
-                    self.runs.ready_to_update[idx] = False
+                    self.multi_run_manager.ready_to_update[idx] = False
         return notified_runs
 
     def _wait_for_nccl_ready(self, notified_runs: list[tuple[int, Path]]):

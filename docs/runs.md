@@ -31,7 +31,7 @@ from prime_rl.trainer.runs import setup_multi_run_manager, get_multi_run_manager
 setup_multi_run_manager(output_dir=Path("outputs/my-experiment"), max_runs=4)
 
 # Get the singleton instance anywhere in the codebase
-runs = get_multi_run_manager()
+multi_run_manager = get_multi_run_manager()
 ```
 
 Each run's directory follows this structure:
@@ -57,10 +57,10 @@ Runs are discovered by scanning the output directory for the pattern `run_*`. Ea
 
 ```python
 # Master rank scans for new/deleted runs
-runs.discover_runs()
+multi_run_manager.discover_runs()
 
 # All ranks synchronize state (must be called after discover_runs)
-runs.sync_runs()
+multi_run_manager.sync_runs()
 ```
 
 The `discover_runs()` method (master only):
@@ -99,13 +99,13 @@ The `MultiRunManager` object then exposes:
 
 ```python
 # Get parameters for a specific run (used by optimizer creation)
-runs.get_named_parameters_for_run(idx)
+multi_run_manager.get_named_parameters_for_run(idx)
 
 # Get state dict for a specific run (used by weight broadcast)
-runs.get_state_dict_for_run(idx)
+multi_run_manager.get_state_dict_for_run(idx)
 
 # Reset parameters for a new run
-runs.reset_run_parameters(idx)
+multi_run_manager.reset_run_parameters(idx)
 
 ```
 
@@ -153,17 +153,17 @@ flowchart TD
 ```python
 # These hooks are only called on the master as only master uses `discover_runs()`
 # These hooks are thus only relevant to master only components (packer)
-runs.register_discovered_hook(callback)
-runs.register_forgotten_hook(callback)
+multi_run_manager.register_discovered_hook(callback)
+multi_run_manager.register_forgotten_hook(callback)
 
 # These hooks are executed by all ranks in the order they were added during `sync_runs()`
 # This ensures DTensor creations and other distributed operations happen together
 # Calling torch.dist.barrier() in a hook here should work
-runs.register_creation_hook(callback)
-runs.register_deletion_hook(callback)
+multi_run_manager.register_creation_hook(callback)
+multi_run_manager.register_deletion_hook(callback)
 
 # These hooks validate the orchestrator config when runs are discovered:
-runs.register_config_validation_hook(callback)
+multi_run_manager.register_config_validation_hook(callback)
 ```
 
 The callback signatures:
@@ -178,7 +178,7 @@ def discovered_callback(idx: int, run_id: str, config: OrchestratorConfig) -> No
         config: The orchestrator config for the run
     """
     # Example: Set the scaling factor for the run
-    runs.scaling_factors[idx] = config.model.lora.alpha / config.model.lora.rank
+    multi_run_manager.scaling_factors[idx] = config.model.lora.alpha / config.model.lora.rank
 
 def forgotten_callback(idx: int, run_id: str) -> None:
     """Called when a run is forgotten/removed (master only).
