@@ -44,7 +44,6 @@ def env_worker(mock_client_config):
         interleaved_rollouts=False,
         max_concurrent=1,
         example_lookup={},
-        sampling_args={},
         worker_name="test_worker",
     )
     return worker
@@ -151,7 +150,6 @@ def test_full_restart_cycle(mock_client_config):
         interleaved_rollouts=False,
         max_concurrent=1,
         example_lookup={},
-        sampling_args={},
         worker_name="test_worker",
     )
 
