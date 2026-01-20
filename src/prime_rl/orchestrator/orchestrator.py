@@ -229,9 +229,9 @@ async def orchestrate(config: OrchestratorConfig):
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     if elastic_pool is not None:
-        # For elastic mode, wait for at least one pod to be ready
-        await elastic_pool.wait_for_ready(min_pods=1, timeout=1800)
-        # Refresh clients after waiting (new pods may have been discovered)
+        # For elastic mode, wait for at least one server to be ready
+        await elastic_pool.wait_for_ready(min_servers=1, timeout=1800)
+        # Refresh clients after waiting (new servers may have been discovered)
         clients = elastic_pool.get_inference_clients()
         admin_clients = elastic_pool.admin_clients
     else:
