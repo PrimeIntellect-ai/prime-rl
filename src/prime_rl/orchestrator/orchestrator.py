@@ -44,6 +44,7 @@ from prime_rl.utils.client import (
     setup_clients,
     update_weights,
 )
+from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.elastic import ElasticInferencePool
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
@@ -191,9 +192,20 @@ async def orchestrate(config: OrchestratorConfig):
             checkpoint_step = config.ckpt.resume_step
 
     # Setup scheduler (uses subprocess workers for env execution)
+    # In elastic mode, pass client_config with ready URLs so workers start with correct endpoints
+    if elastic_pool is not None:
+        worker_client_config = ClientConfig(
+            timeout=config.client.timeout,
+            base_url=elastic_pool.ready_urls or config.client.base_url,
+            api_key_var=config.client.api_key_var,
+            headers=config.client.headers,
+        )
+    else:
+        worker_client_config = config.client
+
     scheduler = Scheduler(
         admin_clients=admin_clients,
-        client_config=config.client,
+        client_config=worker_client_config,
         env_configs=config.env,
         buffer=buffer,
         config=config,
