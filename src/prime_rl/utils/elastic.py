@@ -16,7 +16,7 @@ import asyncio
 import socket
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from httpx import AsyncClient
 
@@ -50,13 +50,16 @@ class LoadedAdapter:
     step: int
 
 
+ServerStatus = Literal["discovering", "syncing", "ready", "unhealthy"]
+
+
 @dataclass
 class ServerState:
     """State of an individual inference server."""
 
     ip: str
     url: str
-    status: str = "discovering"  # discovering, syncing, ready, unhealthy
+    status: ServerStatus = "discovering"
     loaded_adapter: LoadedAdapter | None = None
     sync_failures: int = 0
 
