@@ -112,7 +112,7 @@ def train(config: RLTrainerConfig):
     multi_run_manager = get_multi_run_manager()
 
     # Register validation and scaling hooks for LoRA
-    if config.model.lora:
+    if config.model.lora and world.is_master:
         trainer_lora = config.model.lora
 
         def validate_lora_rank(orch_config) -> tuple[bool, str]:
