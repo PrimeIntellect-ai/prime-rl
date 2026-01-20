@@ -156,7 +156,7 @@ class MultiLoRAOptimizer:
         self._post_creation_callbacks: list[Callable[[Optimizer, int], None]] = []
 
         # Register creation hook for optimizer setup
-        # The Runs class handles parameter reset internally when new runs are created
+        # The RunsManager class handles parameter reset internally when new runs are created
         self.runs.register_creation_hook(self.optimizer_creation_hook)
 
     def register_post_creation_callback(
@@ -174,7 +174,7 @@ class MultiLoRAOptimizer:
             self._post_creation_callbacks.insert(index, callback)
 
     def optimizer_creation_hook(self, idx: int, run_id: str) -> None:
-        # Get named parameters for this run from the Runs system
+        # Get named parameters for this run from the RunsManager system
         named_params = self.runs.get_named_parameters_for_run(idx)
 
         lr = self.runs.config[idx].optim.lr

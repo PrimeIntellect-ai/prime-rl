@@ -51,7 +51,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             self.logger.debug(f"Broadcasting weights for run {idx} (ready_to_update={self.runs.ready_to_update[idx]})")
 
             if adapter_only:
-                # For adapter-only, Runs creates state dict directly for each run
+                # For adapter-only, RunsManager creates state dict directly for each run
                 # All ranks must participate in DTensor gathering, but only master saves
                 state_dict = self.runs.get_state_dict_for_run(idx)
                 for key, value in state_dict.items():
