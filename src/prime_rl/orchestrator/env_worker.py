@@ -35,7 +35,7 @@ class RolloutRequest:
     request_id: str
     example_id: int
     rollouts_per_example: int
-    model_name: str
+    model_name: str  # Model name to use for this request (may change for LoRA)
 
 
 @dataclass
@@ -43,8 +43,8 @@ class RolloutResponse:
     """Response containing rollout results."""
 
     request_id: str
-    results: list[dict]
-    lag_metrics: dict | None = None
+    results: list[dict]  # Simplified state dicts
+    lag_metrics: dict | None = None  # Event loop lag metrics from worker
 
 
 def extract_result(state: vf.State) -> dict:
@@ -104,7 +104,8 @@ async def worker_loop(
     logger = get_logger()
     semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)
 
-    lag_monitor = EventLoopLagMonitor(interval=0.1)
+    # Start event loop lag monitor for this worker
+    lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
     lag_monitor_task = asyncio.create_task(lag_monitor.run())
 
     # Mutable state for elastic mode
@@ -113,6 +114,7 @@ async def worker_loop(
     last_refresh = 0.0
     last_urls: set[str] = set()
 
+    # Track in-flight tasks
     pending_tasks: dict[asyncio.Task, str] = {}
     waiting_requests: list[RolloutRequest] = []
 
@@ -182,8 +184,8 @@ async def worker_loop(
                     request = request_queue.get_nowait()
                 except queue.Empty:
                     break
-                if request is None:
-                    return  # Shutdown
+                if request is None:  # Shutdown signal
+                    return
 
                 client = next(client_cycle)
                 if client is None:
@@ -193,16 +195,20 @@ async def worker_loop(
                     pending_tasks[task] = request.request_id
 
             if not pending_tasks:
+                # No pending tasks, wait a bit for new requests
                 await asyncio.sleep(0.01)
                 continue
 
+            # Wait for at least one task to complete
             done, _ = await asyncio.wait(pending_tasks.keys(), timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 pending_tasks.pop(task)
                 response = task.result()
+                # Attach lag metrics to response
                 response.lag_metrics = lag_monitor.get_metrics()
                 response_queue.put(response)
     finally:
+        # Cleanup
         lag_monitor_task.cancel()
         for c in current_clients:
             await c.close()
@@ -231,18 +237,22 @@ def worker_main(
     elastic_sync_interval: float = 5.0,
 ):
     """Main entry point for worker subprocess."""
+    # Reset logger inherited from parent process, then setup fresh logger for this worker
     if log_file:
         reset_logger()
         setup_logger(log_level, log_file=Path(log_file), append=True, tag=worker_name)
         intercept_verifiers_logging(level=vf_log_level)
 
+    # Load environment
     env = vf.load_environment(env_id, **env_args)
     env.set_max_seq_len(seq_len)
     env.set_interleaved_rollouts(interleaved_rollouts)
 
+    # Create clients (empty list in elastic mode - workers discover servers dynamically)
     client_config = ClientConfig(**client_config_dict)
     clients = [] if elastic_hostname else setup_clients(client_config)
 
+    # Run async loop
     asyncio.run(
         worker_loop(
             request_queue,
