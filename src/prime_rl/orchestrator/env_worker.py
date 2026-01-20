@@ -92,6 +92,12 @@ def extract_result(state: vf.State) -> dict:
     }
 
 
+class NoServersAvailableError(Exception):
+    """Raised when no inference servers are available."""
+
+    pass
+
+
 async def process_request(
     request: RolloutRequest,
     env: vf.Environment,
@@ -102,6 +108,8 @@ async def process_request(
 ) -> RolloutResponse:
     """Process a single rollout request."""
     client = next(client_cycle)
+    if client is None:
+        raise NoServersAvailableError("No inference servers available - waiting for servers to become ready")
     example = example_lookup[request.example_id]
     group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
 
@@ -147,11 +155,17 @@ async def worker_loop(
     def handle_url_update(urls: list[str]) -> None:
         """Handle URL update by recreating clients with new ready URLs."""
         nonlocal current_clients, client_cycle
-        if not urls:
-            return  # Don't update if empty - keep existing clients
 
         logger = get_logger()
-        logger.debug(f"Updating inference URLs: {len(urls)} ready pod(s)")
+
+        if not urls:
+            # Clear clients when no servers are available to avoid stale requests
+            logger.debug("No ready inference servers - clearing clients")
+            current_clients = []
+            client_cycle = cycle([None])  # Marker: next() returns None
+            return
+
+        logger.debug(f"Updating inference URLs: {len(urls)} ready server(s)")
 
         # Create new clients with updated URLs
         new_config = ClientConfig(
@@ -163,8 +177,22 @@ async def worker_loop(
         current_clients = setup_clients(new_config)
         client_cycle = cycle(current_clients)
 
+    # Queue for requests that are waiting for servers to become available
+    waiting_requests: list[RolloutRequest] = []
+
     def check_for_requests():
         """Non-blocking check for new requests."""
+        nonlocal waiting_requests
+
+        # First, try to process waiting requests if we have servers now
+        if current_clients and waiting_requests:
+            for request in waiting_requests:
+                task = asyncio.create_task(
+                    process_request(request, env, client_cycle, semaphore, example_lookup, sampling_args)
+                )
+                pending_tasks[task] = request.request_id
+            waiting_requests = []
+
         while True:
             try:
                 request = request_queue.get_nowait()
@@ -175,6 +203,12 @@ async def worker_loop(
             if isinstance(request, UpdateUrlsRequest):
                 handle_url_update(request.urls)
                 continue
+
+            # Queue requests if no servers available (avoid stale client errors)
+            if not current_clients:
+                waiting_requests.append(request)
+                continue
+
             task = asyncio.create_task(
                 process_request(request, env, client_cycle, semaphore, example_lookup, sampling_args)
             )
