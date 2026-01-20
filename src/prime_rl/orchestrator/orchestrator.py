@@ -97,21 +97,21 @@ async def orchestrate(config: OrchestratorConfig):
 
     if config.client.is_elastic:
         logger.info(
-            f"Initializing elastic inference pool (headless_service={config.client.elastic.headless_service}, "
+            f"Initializing elastic inference pool (hostname={config.client.elastic.hostname}, "
             f"port={config.client.elastic.port}, sync_interval={config.client.elastic.sync_interval}s)"
         )
         elastic_pool = ElasticInferencePool(
-            headless_service=config.client.elastic.headless_service,
+            hostname=config.client.elastic.hostname,
             client_config=config.client,
             base_model=config.model.name,
             port=config.client.elastic.port,
             sync_interval=config.client.elastic.sync_interval,
         )
-        # Start the elastic pool (discovers initial pods)
+        # Start the elastic pool (discovers initial servers)
         await elastic_pool.start()
         clients = elastic_pool.get_inference_clients()
         admin_clients = elastic_pool.admin_clients
-        logger.info(f"Elastic pool started with {elastic_pool.num_pods} pod(s) ({elastic_pool.num_ready_pods} ready)")
+        logger.info(f"Elastic pool started with {elastic_pool.num_servers} server(s) ({elastic_pool.num_ready_servers} ready)")
     else:
         logger.info(
             f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers})"

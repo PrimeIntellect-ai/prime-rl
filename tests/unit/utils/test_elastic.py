@@ -10,33 +10,33 @@ from prime_rl.utils.elastic import (
     DesiredAdapterState,
     ElasticInferencePool,
     LoadedAdapter,
-    PodState,
-    discover_pod_ips,
+    ServerState,
+    discover_server_ips,
 )
 
 # =============================================================================
-# Tests for discover_pod_ips
+# Tests for discover_server_ips
 # =============================================================================
 
 
-def test_discover_pod_ips_returns_sorted_ips():
+def test_discover_server_ips_returns_sorted_ips():
     with patch("socket.gethostbyname_ex") as mock_dns:
         mock_dns.return_value = ("host", [], ["10.0.0.3", "10.0.0.1", "10.0.0.2"])
-        ips = discover_pod_ips("my-service.ns.svc.cluster.local")
+        ips = discover_server_ips("my-service.ns.svc.cluster.local")
         assert ips == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
 
 
-def test_discover_pod_ips_returns_empty_on_dns_failure():
+def test_discover_server_ips_returns_empty_on_dns_failure():
     with patch("socket.gethostbyname_ex") as mock_dns:
         mock_dns.side_effect = socket.gaierror
-        ips = discover_pod_ips("nonexistent.svc")
+        ips = discover_server_ips("nonexistent.svc")
         assert ips == []
 
 
-def test_discover_pod_ips_returns_empty_when_no_pods():
+def test_discover_server_ips_returns_empty_when_no_servers():
     with patch("socket.gethostbyname_ex") as mock_dns:
         mock_dns.return_value = ("host", [], [])
-        ips = discover_pod_ips("empty-service.svc")
+        ips = discover_server_ips("empty-service.svc")
         assert ips == []
 
 
@@ -53,15 +53,15 @@ def test_loaded_adapter_dataclass():
 
 
 # =============================================================================
-# Tests for PodState
+# Tests for ServerState
 # =============================================================================
 
 
-def test_pod_state_defaults():
-    pod = PodState(ip="10.0.0.1", url="http://10.0.0.1:8000")
-    assert pod.status == "discovering"
-    assert pod.loaded_adapter is None
-    assert pod.sync_failures == 0
+def test_server_state_defaults():
+    server = ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000")
+    assert server.status == "discovering"
+    assert server.loaded_adapter is None
+    assert server.sync_failures == 0
 
 
 # =============================================================================
@@ -77,7 +77,7 @@ def client_config():
 @pytest.fixture
 def pool(client_config):
     return ElasticInferencePool(
-        headless_service="inference-headless.ns.svc.cluster.local",
+        hostname="inference-headless.ns.svc.cluster.local",
         client_config=client_config,
         base_model="Qwen/Qwen2-0.5B",
         port=8000,
@@ -87,12 +87,12 @@ def pool(client_config):
 
 class TestElasticInferencePoolInit:
     def test_init_sets_attributes(self, pool):
-        assert pool.headless_service == "inference-headless.ns.svc.cluster.local"
+        assert pool.hostname == "inference-headless.ns.svc.cluster.local"
         assert pool.base_model == "Qwen/Qwen2-0.5B"
         assert pool.port == 8000
         assert pool.sync_interval == 5.0
-        assert pool.num_pods == 0
-        assert pool.num_ready_pods == 0
+        assert pool.num_servers == 0
+        assert pool.num_ready_servers == 0
         assert pool.ready_urls == []
 
     def test_build_url(self, pool):
@@ -138,24 +138,24 @@ class TestAdapterMatching:
 
 
 class TestReadyUrls:
-    def test_ready_urls_returns_only_ready_pods(self, pool):
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
-            "10.0.0.2": PodState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="syncing"),
-            "10.0.0.3": PodState(ip="10.0.0.3", url="http://10.0.0.3:8000", status="ready"),
+    def test_ready_urls_returns_only_ready_servers(self, pool):
+        pool._servers = {
+            "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+            "10.0.0.2": ServerState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="syncing"),
+            "10.0.0.3": ServerState(ip="10.0.0.3", url="http://10.0.0.3:8000", status="ready"),
         }
         urls = pool.ready_urls
         assert len(urls) == 2
         assert "http://10.0.0.1:8000/v1" in urls
         assert "http://10.0.0.3:8000/v1" in urls
 
-    def test_num_ready_pods(self, pool):
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
-            "10.0.0.2": PodState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="unhealthy"),
+    def test_num_ready_servers(self, pool):
+        pool._servers = {
+            "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+            "10.0.0.2": ServerState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="unhealthy"),
         }
-        assert pool.num_ready_pods == 1
-        assert pool.num_pods == 2
+        assert pool.num_ready_servers == 1
+        assert pool.num_servers == 2
 
 
 class TestReadyUrlsCallback:
@@ -163,8 +163,8 @@ class TestReadyUrlsCallback:
         callback = MagicMock()
         pool.on_ready_urls_changed = callback
 
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+        pool._servers = {
+            "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
         }
         pool._notify_if_ready_urls_changed()
 
@@ -174,8 +174,8 @@ class TestReadyUrlsCallback:
         callback = MagicMock()
         pool.on_ready_urls_changed = callback
 
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+        pool._servers = {
+            "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
         }
         pool._last_ready_urls = ["http://10.0.0.1:8000/v1"]
         pool._notify_if_ready_urls_changed()
@@ -183,20 +183,20 @@ class TestReadyUrlsCallback:
         callback.assert_not_called()
 
     def test_no_callback_set(self, pool):
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+        pool._servers = {
+            "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
         }
         # Should not raise
         pool._notify_if_ready_urls_changed()
 
 
-class TestPodSync:
-    def test_sync_discovers_new_pods(self, pool):
+class TestServerSync:
+    def test_sync_discovers_new_servers(self, pool):
         async def run_test():
-            with patch("prime_rl.utils.elastic.discover_pod_ips") as mock_discover:
+            with patch("prime_rl.utils.elastic.discover_server_ips") as mock_discover:
                 mock_discover.return_value = ["10.0.0.1", "10.0.0.2"]
 
-                with patch.object(pool, "_add_pod", new_callable=AsyncMock) as mock_add:
+                with patch.object(pool, "_add_server", new_callable=AsyncMock) as mock_add:
                     mock_add.return_value = True
                     added, removed = await pool.sync()
 
@@ -206,17 +206,17 @@ class TestPodSync:
 
         asyncio.run(run_test())
 
-    def test_sync_removes_gone_pods(self, pool):
+    def test_sync_removes_gone_servers(self, pool):
         async def run_test():
-            pool._pods = {
-                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
-                "10.0.0.2": PodState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="ready"),
+            pool._servers = {
+                "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+                "10.0.0.2": ServerState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="ready"),
             }
 
-            with patch("prime_rl.utils.elastic.discover_pod_ips") as mock_discover:
+            with patch("prime_rl.utils.elastic.discover_server_ips") as mock_discover:
                 mock_discover.return_value = ["10.0.0.1"]  # 10.0.0.2 is gone
 
-                with patch.object(pool, "_remove_pod", new_callable=AsyncMock) as mock_remove:
+                with patch.object(pool, "_remove_server", new_callable=AsyncMock) as mock_remove:
                     added, removed = await pool.sync()
 
             assert added == 0
@@ -225,16 +225,16 @@ class TestPodSync:
 
         asyncio.run(run_test())
 
-    def test_sync_resyncs_non_ready_pods(self, pool):
+    def test_sync_resyncs_non_ready_servers(self, pool):
         async def run_test():
-            pool._pods = {
-                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="syncing"),
+            pool._servers = {
+                "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="syncing"),
             }
 
-            with patch("prime_rl.utils.elastic.discover_pod_ips") as mock_discover:
+            with patch("prime_rl.utils.elastic.discover_server_ips") as mock_discover:
                 mock_discover.return_value = ["10.0.0.1"]
 
-                with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock) as mock_sync:
+                with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock) as mock_sync:
                     await pool.sync()
 
             mock_sync.assert_called_once_with("10.0.0.1")
@@ -242,47 +242,47 @@ class TestPodSync:
         asyncio.run(run_test())
 
 
-class TestAddPod:
-    def test_add_pod_success(self, pool):
+class TestAddServer:
+    def test_add_server_success(self, pool):
         async def run_test():
             mock_admin = AsyncMock()
 
             with patch.object(pool, "_create_admin_client", new_callable=AsyncMock) as mock_create:
                 mock_create.return_value = mock_admin
 
-                with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock) as mock_sync:
+                with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock) as mock_sync:
                     mock_sync.return_value = True
-                    result = await pool._add_pod("10.0.0.1")
+                    result = await pool._add_server("10.0.0.1")
 
             assert result is True
-            assert "10.0.0.1" in pool._pods
+            assert "10.0.0.1" in pool._servers
             assert "10.0.0.1" in pool._admin_clients
 
         asyncio.run(run_test())
 
-    def test_add_pod_failure_cleans_up(self, pool):
+    def test_add_server_failure_cleans_up(self, pool):
         async def run_test():
             with patch.object(pool, "_create_admin_client", new_callable=AsyncMock) as mock_create:
                 mock_create.side_effect = Exception("Connection failed")
-                result = await pool._add_pod("10.0.0.1")
+                result = await pool._add_server("10.0.0.1")
 
             assert result is False
-            assert "10.0.0.1" not in pool._pods
+            assert "10.0.0.1" not in pool._servers
             assert "10.0.0.1" not in pool._admin_clients
 
         asyncio.run(run_test())
 
 
-class TestRemovePod:
-    def test_remove_pod_cleans_up(self, pool):
+class TestRemoveServer:
+    def test_remove_server_cleans_up(self, pool):
         async def run_test():
             mock_admin = AsyncMock()
-            pool._pods["10.0.0.1"] = PodState(ip="10.0.0.1", url="http://10.0.0.1:8000")
+            pool._servers["10.0.0.1"] = ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000")
             pool._admin_clients["10.0.0.1"] = mock_admin
 
-            await pool._remove_pod("10.0.0.1")
+            await pool._remove_server("10.0.0.1")
 
-            assert "10.0.0.1" not in pool._pods
+            assert "10.0.0.1" not in pool._servers
             assert "10.0.0.1" not in pool._admin_clients
             mock_admin.aclose.assert_called_once()
 
@@ -292,11 +292,11 @@ class TestRemovePod:
 class TestUpdateWeights:
     def test_update_weights_sets_desired_state(self, pool):
         async def run_test():
-            pool._pods = {
-                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+            pool._servers = {
+                "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
             }
 
-            with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock):
+            with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock):
                 await pool.update_weights(
                     weights_path=Path("/weights/step_100"),
                     lora_name="my-lora",
@@ -309,14 +309,14 @@ class TestUpdateWeights:
 
         asyncio.run(run_test())
 
-    def test_update_weights_syncs_all_pods(self, pool):
+    def test_update_weights_syncs_all_servers(self, pool):
         async def run_test():
-            pool._pods = {
-                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
-                "10.0.0.2": PodState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="ready"),
+            pool._servers = {
+                "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+                "10.0.0.2": ServerState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="ready"),
             }
 
-            with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock) as mock_sync:
+            with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock) as mock_sync:
                 await pool.update_weights(
                     weights_path=Path("/weights/step_100"),
                     lora_name="my-lora",
@@ -331,11 +331,11 @@ class TestUpdateWeights:
         async def run_test():
             callback = MagicMock()
             pool.on_ready_urls_changed = callback
-            pool._pods = {
-                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+            pool._servers = {
+                "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
             }
 
-            with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock):
+            with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock):
                 await pool.update_weights(
                     weights_path=Path("/weights/step_100"),
                     lora_name="my-lora",
@@ -476,29 +476,29 @@ class TestStartStop:
 
 class TestGetMetrics:
     def test_get_metrics_returns_correct_values(self, pool):
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
-            "10.0.0.2": PodState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="syncing"),
+        pool._servers = {
+            "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+            "10.0.0.2": ServerState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="syncing"),
         }
         pool._desired = DesiredAdapterState(lora_name="my-lora", lora_path=Path("/w"), step=100)
 
         metrics = pool.get_metrics()
 
-        assert metrics["elastic/num_pods"] == 2
-        assert metrics["elastic/num_ready_pods"] == 1
+        assert metrics["elastic/num_servers"] == 2
+        assert metrics["elastic/num_ready_servers"] == 1
         assert metrics["elastic/desired_step"] == 100
 
 
 class TestWaitForReady:
-    def test_wait_for_ready_returns_when_enough_pods(self, pool):
+    def test_wait_for_ready_returns_when_enough_servers(self, pool):
         async def run_test():
-            pool._pods = {
-                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+            pool._servers = {
+                "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
             }
 
             with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
                 mock_sync.return_value = (0, 0)
-                await pool.wait_for_ready(min_pods=1, timeout=1.0)
+                await pool.wait_for_ready(min_servers=1, timeout=1.0)
 
             # Should return without timeout
 
@@ -506,13 +506,13 @@ class TestWaitForReady:
 
     def test_wait_for_ready_times_out(self, pool):
         async def run_test():
-            pool._pods = {}
+            pool._servers = {}
 
             with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
                 mock_sync.return_value = (0, 0)
 
                 with pytest.raises(TimeoutError) as exc_info:
-                    await pool.wait_for_ready(min_pods=1, timeout=0.1)
+                    await pool.wait_for_ready(min_servers=1, timeout=0.1)
 
             assert "Timed out" in str(exc_info.value)
 

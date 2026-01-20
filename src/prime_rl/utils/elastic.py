@@ -1,9 +1,15 @@
 """
 Elastic inference pool with DNS-based service discovery.
 
-Discovers inference pods via Kubernetes headless service DNS,
-tracks which pods have the correct LoRA adapter loaded, and
-only exposes ready pods to workers.
+Discovers inference servers via DNS (any hostname that resolves to multiple IPs),
+tracks which servers have the correct LoRA adapter loaded, and
+only exposes ready servers to workers.
+
+Works with:
+- Kubernetes headless services
+- Consul DNS
+- Any DNS with multiple A records
+- Load balancers that expose backend IPs
 """
 
 import asyncio
@@ -19,17 +25,17 @@ from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
-def discover_pod_ips(headless_service: str) -> list[str]:
-    """Discover pod IPs via DNS lookup on headless service.
+def discover_server_ips(hostname: str) -> list[str]:
+    """Discover server IPs via DNS lookup.
 
     Args:
-        headless_service: Kubernetes headless service hostname
+        hostname: DNS hostname that resolves to one or more IP addresses
 
     Returns:
-        List of pod IP addresses (empty if lookup fails or no pods)
+        List of server IP addresses (empty if lookup fails or no records)
     """
     try:
-        _, _, ips = socket.gethostbyname_ex(headless_service)
+        _, _, ips = socket.gethostbyname_ex(hostname)
         return sorted(ips)  # Sort for deterministic ordering
     except socket.gaierror:
         return []
@@ -45,8 +51,8 @@ class LoadedAdapter:
 
 
 @dataclass
-class PodState:
-    """State of an individual inference pod."""
+class ServerState:
+    """State of an individual inference server."""
 
     ip: str
     url: str
@@ -65,21 +71,21 @@ class DesiredAdapterState:
 
 
 class ElasticInferencePool:
-    """Manages inference pods with DNS-based discovery and adapter sync.
+    """Manages inference servers with DNS-based discovery and adapter sync.
 
-    Discovers pods via Kubernetes headless service DNS, tracks which pods
-    have the correct LoRA adapter loaded, and only exposes ready pods.
+    Discovers servers via DNS lookup, tracks which servers have the correct
+    LoRA adapter loaded, and only exposes ready servers to workers.
 
     Key features:
-    - DNS-based pod discovery via headless service
-    - Automatic adapter sync for new pods
-    - Only exposes pods with correct adapter as "ready"
+    - DNS-based server discovery (works with any multi-IP DNS record)
+    - Automatic adapter sync for new servers
+    - Only exposes servers with correct adapter as "ready"
     - Callback notification when ready URLs change
     """
 
     def __init__(
         self,
-        headless_service: str,
+        hostname: str,
         client_config: ClientConfig,
         base_model: str | None = None,
         port: int = 8000,
@@ -88,21 +94,21 @@ class ElasticInferencePool:
         """Initialize the elastic inference pool.
 
         Args:
-            headless_service: Kubernetes headless service hostname
+            hostname: DNS hostname that resolves to inference server IPs
             client_config: Client configuration for creating admin clients
             base_model: Base model name for adapter detection
             port: Port that inference servers listen on
-            sync_interval: How often to check for new/removed pods in seconds
+            sync_interval: How often to check for new/removed servers in seconds
         """
         self.logger = get_logger()
-        self.headless_service = headless_service
+        self.hostname = hostname
         self.client_config = client_config
         self.base_model = base_model
         self.port = port
         self.sync_interval = sync_interval
 
-        # Track pods and their state
-        self._pods: dict[str, PodState] = {}  # ip -> PodState
+        # Track servers and their state
+        self._servers: dict[str, ServerState] = {}  # ip -> ServerState
         self._admin_clients: dict[str, AsyncClient] = {}  # ip -> admin client
         self._lock = asyncio.Lock()
 
@@ -136,8 +142,8 @@ class ElasticInferencePool:
 
     @property
     def ready_urls(self) -> list[str]:
-        """Get list of inference URLs for ready pods (with /v1 suffix)."""
-        return [self._build_inference_url(ip) for ip, pod in self._pods.items() if pod.status == "ready"]
+        """Get list of inference URLs for ready servers (with /v1 suffix)."""
+        return [self._build_inference_url(ip) for ip, server in self._servers.items() if server.status == "ready"]
 
     @property
     def admin_clients(self) -> list[AsyncClient]:
@@ -145,14 +151,14 @@ class ElasticInferencePool:
         return list(self._admin_clients.values())
 
     @property
-    def num_pods(self) -> int:
-        """Get number of discovered pods."""
-        return len(self._pods)
+    def num_servers(self) -> int:
+        """Get number of discovered servers."""
+        return len(self._servers)
 
     @property
-    def num_ready_pods(self) -> int:
-        """Get number of ready pods."""
-        return sum(1 for pod in self._pods.values() if pod.status == "ready")
+    def num_ready_servers(self) -> int:
+        """Get number of ready servers."""
+        return sum(1 for server in self._servers.values() if server.status == "ready")
 
     async def _create_admin_client(self, ip: str) -> AsyncClient:
         """Create an admin client for the given IP."""
@@ -202,7 +208,7 @@ class ElasticInferencePool:
 
     def _adapter_matches_desired(self, loaded: LoadedAdapter | None) -> bool:
         """Check if loaded adapter matches desired state."""
-        # If no adapter desired (base model inference), pod is always ready
+        # If no adapter desired (base model inference), server is always ready
         if self._desired.lora_path is None:
             return True
         if loaded is None:
@@ -210,22 +216,22 @@ class ElasticInferencePool:
         # Match by path or step
         return loaded.path == self._desired.lora_path or loaded.step == self._desired.step
 
-    async def _sync_pod_adapter(self, ip: str) -> bool:
-        """Sync a pod to the desired adapter state."""
-        pod = self._pods.get(ip)
-        if not pod:
+    async def _sync_server_adapter(self, ip: str) -> bool:
+        """Sync a server to the desired adapter state."""
+        server = self._servers.get(ip)
+        if not server:
             return False
 
         # Check current adapter state
         loaded = await self._get_loaded_adapter(ip)
-        pod.loaded_adapter = loaded
+        server.loaded_adapter = loaded
 
         if self._adapter_matches_desired(loaded):
-            pod.status = "ready"
+            server.status = "ready"
             return True
 
         # Need to sync - mark as syncing
-        pod.status = "syncing"
+        server.status = "syncing"
 
         try:
             if self._desired.lora_name and self._desired.lora_path:
@@ -234,38 +240,38 @@ class ElasticInferencePool:
 
             # Verify sync succeeded
             loaded = await self._get_loaded_adapter(ip)
-            pod.loaded_adapter = loaded
+            server.loaded_adapter = loaded
 
             if self._adapter_matches_desired(loaded):
-                pod.status = "ready"
-                pod.sync_failures = 0
-                self.logger.info(f"Successfully synced pod {ip}")
+                server.status = "ready"
+                server.sync_failures = 0
+                self.logger.info(f"Successfully synced server {ip}")
                 return True
 
-            pod.status = "unhealthy"
-            pod.sync_failures += 1
+            server.status = "unhealthy"
+            server.sync_failures += 1
             return False
 
         except Exception as e:
-            pod.status = "unhealthy"
-            pod.sync_failures += 1
-            self.logger.error(f"Failed to sync pod {ip}: {e}")
+            server.status = "unhealthy"
+            server.sync_failures += 1
+            self.logger.error(f"Failed to sync server {ip}: {e}")
             return False
 
-    async def _add_pod(self, ip: str) -> bool:
-        """Add a new pod to the pool."""
-        self.logger.info(f"Discovered new inference pod: {ip}")
+    async def _add_server(self, ip: str) -> bool:
+        """Add a new server to the pool."""
+        self.logger.info(f"Discovered new inference server: {ip}")
 
         try:
             admin_client = await self._create_admin_client(ip)
             self._admin_clients[ip] = admin_client
-            self._pods[ip] = PodState(ip=ip, url=self._build_url(ip), status="discovering")
-            await self._sync_pod_adapter(ip)
+            self._servers[ip] = ServerState(ip=ip, url=self._build_url(ip), status="discovering")
+            await self._sync_server_adapter(ip)
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to add pod {ip}: {e}")
-            self._pods.pop(ip, None)
+            self.logger.error(f"Failed to add server {ip}: {e}")
+            self._servers.pop(ip, None)
             if ip in self._admin_clients:
                 try:
                     await self._admin_clients.pop(ip).aclose()
@@ -273,10 +279,10 @@ class ElasticInferencePool:
                     pass
             return False
 
-    async def _remove_pod(self, ip: str) -> None:
-        """Remove a pod from the pool."""
-        self.logger.info(f"Inference pod removed: {ip}")
-        self._pods.pop(ip, None)
+    async def _remove_server(self, ip: str) -> None:
+        """Remove a server from the pool."""
+        self.logger.info(f"Inference server removed: {ip}")
+        self._servers.pop(ip, None)
         if ip in self._admin_clients:
             try:
                 await self._admin_clients.pop(ip).aclose()
@@ -292,30 +298,30 @@ class ElasticInferencePool:
                 self._on_ready_urls_changed(current_ready)
 
     async def sync(self) -> tuple[int, int]:
-        """Sync the pool with discovered pods."""
+        """Sync the pool with discovered servers."""
         async with self._lock:
             # Run blocking DNS lookup in executor to avoid event loop stalls
             loop = asyncio.get_event_loop()
-            discovered_ips = set(await loop.run_in_executor(None, discover_pod_ips, self.headless_service))
-            known_ips = set(self._pods.keys())
+            discovered_ips = set(await loop.run_in_executor(None, discover_server_ips, self.hostname))
+            known_ips = set(self._servers.keys())
 
             added = 0
             removed = 0
 
-            # Add new pods
+            # Add new servers
             for ip in discovered_ips - known_ips:
-                if await self._add_pod(ip):
+                if await self._add_server(ip):
                     added += 1
 
-            # Remove gone pods
+            # Remove gone servers
             for ip in known_ips - discovered_ips:
-                await self._remove_pod(ip)
+                await self._remove_server(ip)
                 removed += 1
 
-            # Re-sync pods that aren't ready
-            for ip, pod in self._pods.items():
-                if pod.status != "ready":
-                    await self._sync_pod_adapter(ip)
+            # Re-sync servers that aren't ready
+            for ip, server in self._servers.items():
+                if server.status != "ready":
+                    await self._sync_server_adapter(ip)
 
             # Notify if ready URLs changed
             self._notify_if_ready_urls_changed()
@@ -323,14 +329,14 @@ class ElasticInferencePool:
             return added, removed
 
     async def _sync_loop(self) -> None:
-        """Background task that periodically syncs the pod pool."""
+        """Background task that periodically syncs the server pool."""
         while True:
             try:
                 added, removed = await self.sync()
                 if added > 0 or removed > 0:
                     self.logger.info(
-                        f"Elastic pool sync: +{added} -{removed} pods "
-                        f"(total: {self.num_pods}, ready: {self.num_ready_pods})"
+                        f"Elastic pool sync: +{added} -{removed} servers "
+                        f"(total: {self.num_servers}, ready: {self.num_ready_servers})"
                     )
             except Exception as e:
                 self.logger.error(f"Error in elastic sync loop: {e}")
@@ -342,11 +348,11 @@ class ElasticInferencePool:
             return
 
         self.logger.info(
-            f"Starting elastic inference pool (service={self.headless_service}, interval={self.sync_interval}s)"
+            f"Starting elastic inference pool (hostname={self.hostname}, interval={self.sync_interval}s)"
         )
 
         await self.sync()
-        self.logger.info(f"Initial discovery found {self.num_pods} pod(s) ({self.num_ready_pods} ready)")
+        self.logger.info(f"Initial discovery found {self.num_servers} server(s) ({self.num_ready_servers} ready)")
 
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._started = True
@@ -360,15 +366,15 @@ class ElasticInferencePool:
             except asyncio.CancelledError:
                 pass
 
-        for ip in list(self._pods.keys()):
-            await self._remove_pod(ip)
+        for ip in list(self._servers.keys()):
+            await self._remove_server(ip)
 
         self._started = False
 
     async def update_weights(self, weights_path: Path, lora_name: str | None = None, step: int = 0) -> None:
-        """Update weights/adapter on all inference pods.
+        """Update weights/adapter on all inference servers.
 
-        This sets the desired adapter state and syncs all pods. Only pods
+        This sets the desired adapter state and syncs all servers. Only servers
         that successfully load the adapter are marked as ready.
         """
         async with self._lock:
@@ -378,31 +384,31 @@ class ElasticInferencePool:
                 step=step,
             )
 
-            # Sync all pods to new desired state
-            for ip in list(self._pods.keys()):
-                await self._sync_pod_adapter(ip)
+            # Sync all servers to new desired state
+            for ip in list(self._servers.keys()):
+                await self._sync_server_adapter(ip)
 
             # Notify if ready URLs changed
             self._notify_if_ready_urls_changed()
 
-    async def wait_for_ready(self, min_pods: int = 1, timeout: float = 300.0) -> None:
-        """Wait for at least min_pods to be ready."""
+    async def wait_for_ready(self, min_servers: int = 1, timeout: float = 300.0) -> None:
+        """Wait for at least min_servers to be ready."""
         import time
 
         start = time.time()
         while time.time() - start < timeout:
             await self.sync()
-            if self.num_ready_pods >= min_pods:
+            if self.num_ready_servers >= min_servers:
                 return
-            self.logger.debug(f"Waiting for pods: {self.num_ready_pods}/{min_pods} ready")
+            self.logger.debug(f"Waiting for servers: {self.num_ready_servers}/{min_servers} ready")
             await asyncio.sleep(self.sync_interval)
 
-        raise TimeoutError(f"Timed out waiting for {min_pods} ready pods (got {self.num_ready_pods})")
+        raise TimeoutError(f"Timed out waiting for {min_servers} ready servers (got {self.num_ready_servers})")
 
     def get_inference_clients(self) -> list:
-        """Create inference clients for ready pods.
+        """Create inference clients for ready servers.
 
-        Returns AsyncOpenAI clients for all ready pods.
+        Returns AsyncOpenAI clients for all ready servers.
         """
         ready_urls = self.ready_urls
         if not ready_urls:
@@ -419,7 +425,7 @@ class ElasticInferencePool:
     def get_metrics(self) -> dict[str, float]:
         """Get metrics about the elastic pool."""
         return {
-            "elastic/num_pods": self.num_pods,
-            "elastic/num_ready_pods": self.num_ready_pods,
+            "elastic/num_servers": self.num_servers,
+            "elastic/num_ready_servers": self.num_ready_servers,
             "elastic/desired_step": self._desired.step,
         }
