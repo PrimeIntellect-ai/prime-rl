@@ -37,7 +37,12 @@ uv run rl @ configs/thesis/single_turn_math.toml --wandb.name single-turn-math-i
 # baseline: synchronous on-policy RL
 uv run rl @ configs/thesis/wiki_search.toml --max-async-level 0 --wandb.name wiki-search-sync-on-policy
 
-# method 1: fixed-off policy steps
+# fixed off-policy steps without any masking
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 1 --wandb.name wiki-search-1-step-off-policy-no-mask --trainer.loss.token-mask-low 0 --trainer.loss.token-mask-high 1e10 --trainer.loss.sequence-mask-low 0 --trainer.loss.sequence-mask-high 1e10 --trainer.loss.geo-mask-low 0 --trainer.loss.geo-mask-high 1e10 --trainer.loss.sequence-clip-high 1e10
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 8 --wandb.name wiki-search-8-step-off-policy-no-mask --trainer.loss.token-mask-low 0 --trainer.loss.token-mask-high 1e10 --trainer.loss.sequence-mask-low 0 --trainer.loss.sequence-mask-high 1e10 --trainer.loss.geo-mask-low 0 --trainer.loss.geo-mask-high 1e10 --trainer.loss.sequence-clip-high 1e10
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-no-mask --trainer.loss.token-mask-low 0 --trainer.loss.token-mask-high 1e10 --trainer.loss.sequence-mask-low 0 --trainer.loss.sequence-mask-high 1e10 --trainer.loss.geo-mask-low 0 --trainer.loss.geo-mask-high 1e10 --trainer.loss.sequence-clip-high 1e10
+
+# fixed-off policy steps
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 1 --wandb.name wiki-search-1-step-off-policy
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 8 --wandb.name wiki-search-8-step-off-policy
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy
