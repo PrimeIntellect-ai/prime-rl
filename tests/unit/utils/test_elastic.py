@@ -1,3 +1,4 @@
+import asyncio
 import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -190,255 +191,287 @@ class TestReadyUrlsCallback:
 
 
 class TestPodSync:
-    @pytest.mark.asyncio
-    async def test_sync_discovers_new_pods(self, pool):
-        with patch("prime_rl.utils.elastic.discover_pod_ips") as mock_discover:
-            mock_discover.return_value = ["10.0.0.1", "10.0.0.2"]
+    def test_sync_discovers_new_pods(self, pool):
+        async def run_test():
+            with patch("prime_rl.utils.elastic.discover_pod_ips") as mock_discover:
+                mock_discover.return_value = ["10.0.0.1", "10.0.0.2"]
 
-            with patch.object(pool, "_add_pod", new_callable=AsyncMock) as mock_add:
-                mock_add.return_value = True
-                added, removed = await pool.sync()
+                with patch.object(pool, "_add_pod", new_callable=AsyncMock) as mock_add:
+                    mock_add.return_value = True
+                    added, removed = await pool.sync()
 
-        assert added == 2
-        assert removed == 0
-        assert mock_add.call_count == 2
+            assert added == 2
+            assert removed == 0
+            assert mock_add.call_count == 2
 
-    @pytest.mark.asyncio
-    async def test_sync_removes_gone_pods(self, pool):
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
-            "10.0.0.2": PodState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="ready"),
-        }
+        asyncio.run(run_test())
 
-        with patch("prime_rl.utils.elastic.discover_pod_ips") as mock_discover:
-            mock_discover.return_value = ["10.0.0.1"]  # 10.0.0.2 is gone
+    def test_sync_removes_gone_pods(self, pool):
+        async def run_test():
+            pool._pods = {
+                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+                "10.0.0.2": PodState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="ready"),
+            }
 
-            with patch.object(pool, "_remove_pod", new_callable=AsyncMock) as mock_remove:
-                added, removed = await pool.sync()
+            with patch("prime_rl.utils.elastic.discover_pod_ips") as mock_discover:
+                mock_discover.return_value = ["10.0.0.1"]  # 10.0.0.2 is gone
 
-        assert added == 0
-        assert removed == 1
-        mock_remove.assert_called_once_with("10.0.0.2")
+                with patch.object(pool, "_remove_pod", new_callable=AsyncMock) as mock_remove:
+                    added, removed = await pool.sync()
 
-    @pytest.mark.asyncio
-    async def test_sync_resyncs_non_ready_pods(self, pool):
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="syncing"),
-        }
+            assert added == 0
+            assert removed == 1
+            mock_remove.assert_called_once_with("10.0.0.2")
 
-        with patch("prime_rl.utils.elastic.discover_pod_ips") as mock_discover:
-            mock_discover.return_value = ["10.0.0.1"]
+        asyncio.run(run_test())
 
-            with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock) as mock_sync:
-                await pool.sync()
+    def test_sync_resyncs_non_ready_pods(self, pool):
+        async def run_test():
+            pool._pods = {
+                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="syncing"),
+            }
 
-        mock_sync.assert_called_once_with("10.0.0.1")
+            with patch("prime_rl.utils.elastic.discover_pod_ips") as mock_discover:
+                mock_discover.return_value = ["10.0.0.1"]
+
+                with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock) as mock_sync:
+                    await pool.sync()
+
+            mock_sync.assert_called_once_with("10.0.0.1")
+
+        asyncio.run(run_test())
 
 
 class TestAddPod:
-    @pytest.mark.asyncio
-    async def test_add_pod_success(self, pool):
-        mock_admin = AsyncMock()
+    def test_add_pod_success(self, pool):
+        async def run_test():
+            mock_admin = AsyncMock()
 
-        with patch.object(pool, "_create_admin_client", new_callable=AsyncMock) as mock_create:
-            mock_create.return_value = mock_admin
+            with patch.object(pool, "_create_admin_client", new_callable=AsyncMock) as mock_create:
+                mock_create.return_value = mock_admin
 
-            with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock) as mock_sync:
-                mock_sync.return_value = True
+                with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock) as mock_sync:
+                    mock_sync.return_value = True
+                    result = await pool._add_pod("10.0.0.1")
+
+            assert result is True
+            assert "10.0.0.1" in pool._pods
+            assert "10.0.0.1" in pool._admin_clients
+
+        asyncio.run(run_test())
+
+    def test_add_pod_failure_cleans_up(self, pool):
+        async def run_test():
+            with patch.object(pool, "_create_admin_client", new_callable=AsyncMock) as mock_create:
+                mock_create.side_effect = Exception("Connection failed")
                 result = await pool._add_pod("10.0.0.1")
 
-        assert result is True
-        assert "10.0.0.1" in pool._pods
-        assert "10.0.0.1" in pool._admin_clients
+            assert result is False
+            assert "10.0.0.1" not in pool._pods
+            assert "10.0.0.1" not in pool._admin_clients
 
-    @pytest.mark.asyncio
-    async def test_add_pod_failure_cleans_up(self, pool):
-        with patch.object(pool, "_create_admin_client", new_callable=AsyncMock) as mock_create:
-            mock_create.side_effect = Exception("Connection failed")
-            result = await pool._add_pod("10.0.0.1")
-
-        assert result is False
-        assert "10.0.0.1" not in pool._pods
-        assert "10.0.0.1" not in pool._admin_clients
+        asyncio.run(run_test())
 
 
 class TestRemovePod:
-    @pytest.mark.asyncio
-    async def test_remove_pod_cleans_up(self, pool):
-        mock_admin = AsyncMock()
-        pool._pods["10.0.0.1"] = PodState(ip="10.0.0.1", url="http://10.0.0.1:8000")
-        pool._admin_clients["10.0.0.1"] = mock_admin
+    def test_remove_pod_cleans_up(self, pool):
+        async def run_test():
+            mock_admin = AsyncMock()
+            pool._pods["10.0.0.1"] = PodState(ip="10.0.0.1", url="http://10.0.0.1:8000")
+            pool._admin_clients["10.0.0.1"] = mock_admin
 
-        await pool._remove_pod("10.0.0.1")
+            await pool._remove_pod("10.0.0.1")
 
-        assert "10.0.0.1" not in pool._pods
-        assert "10.0.0.1" not in pool._admin_clients
-        mock_admin.aclose.assert_called_once()
+            assert "10.0.0.1" not in pool._pods
+            assert "10.0.0.1" not in pool._admin_clients
+            mock_admin.aclose.assert_called_once()
+
+        asyncio.run(run_test())
 
 
 class TestUpdateWeights:
-    @pytest.mark.asyncio
-    async def test_update_weights_sets_desired_state(self, pool):
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
-        }
+    def test_update_weights_sets_desired_state(self, pool):
+        async def run_test():
+            pool._pods = {
+                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+            }
 
-        with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock):
-            await pool.update_weights(
-                weights_path=Path("/weights/step_100"),
-                lora_name="my-lora",
-                step=100,
-            )
+            with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock):
+                await pool.update_weights(
+                    weights_path=Path("/weights/step_100"),
+                    lora_name="my-lora",
+                    step=100,
+                )
 
-        assert pool._desired.lora_name == "my-lora"
-        assert pool._desired.lora_path == Path("/weights/step_100")
-        assert pool._desired.step == 100
+            assert pool._desired.lora_name == "my-lora"
+            assert pool._desired.lora_path == Path("/weights/step_100")
+            assert pool._desired.step == 100
 
-    @pytest.mark.asyncio
-    async def test_update_weights_syncs_all_pods(self, pool):
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
-            "10.0.0.2": PodState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="ready"),
-        }
+        asyncio.run(run_test())
 
-        with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock) as mock_sync:
-            await pool.update_weights(
-                weights_path=Path("/weights/step_100"),
-                lora_name="my-lora",
-                step=100,
-            )
+    def test_update_weights_syncs_all_pods(self, pool):
+        async def run_test():
+            pool._pods = {
+                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+                "10.0.0.2": PodState(ip="10.0.0.2", url="http://10.0.0.2:8000", status="ready"),
+            }
 
-        assert mock_sync.call_count == 2
+            with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock) as mock_sync:
+                await pool.update_weights(
+                    weights_path=Path("/weights/step_100"),
+                    lora_name="my-lora",
+                    step=100,
+                )
 
-    @pytest.mark.asyncio
-    async def test_update_weights_notifies_callback(self, pool):
-        callback = MagicMock()
-        pool.on_ready_urls_changed = callback
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
-        }
+            assert mock_sync.call_count == 2
 
-        with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock):
-            await pool.update_weights(
-                weights_path=Path("/weights/step_100"),
-                lora_name="my-lora",
-                step=100,
-            )
+        asyncio.run(run_test())
 
-        callback.assert_called_once()
+    def test_update_weights_notifies_callback(self, pool):
+        async def run_test():
+            callback = MagicMock()
+            pool.on_ready_urls_changed = callback
+            pool._pods = {
+                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+            }
+
+            with patch.object(pool, "_sync_pod_adapter", new_callable=AsyncMock):
+                await pool.update_weights(
+                    weights_path=Path("/weights/step_100"),
+                    lora_name="my-lora",
+                    step=100,
+                )
+
+            callback.assert_called_once()
+
+        asyncio.run(run_test())
 
 
 class TestGetLoadedAdapter:
-    @pytest.mark.asyncio
-    async def test_get_loaded_adapter_parses_step_underscore(self, pool):
-        mock_admin = AsyncMock()
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "data": [
-                {
-                    "id": "my-lora",
-                    "parent": "Qwen/Qwen2-0.5B",
-                    "root": "/weights/step_100",
-                }
-            ]
-        }
-        mock_response.raise_for_status = MagicMock()
-        mock_admin.get.return_value = mock_response
+    def test_get_loaded_adapter_parses_step_underscore(self, pool):
+        async def run_test():
+            mock_admin = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "data": [
+                    {
+                        "id": "my-lora",
+                        "parent": "Qwen/Qwen2-0.5B",
+                        "root": "/weights/step_100",
+                    }
+                ]
+            }
+            mock_response.raise_for_status = MagicMock()
+            mock_admin.get.return_value = mock_response
 
-        pool._admin_clients["10.0.0.1"] = mock_admin
+            pool._admin_clients["10.0.0.1"] = mock_admin
 
-        adapter = await pool._get_loaded_adapter("10.0.0.1")
+            adapter = await pool._get_loaded_adapter("10.0.0.1")
 
-        assert adapter is not None
-        assert adapter.name == "my-lora"
-        assert adapter.path == Path("/weights/step_100")
-        assert adapter.step == 100
+            assert adapter is not None
+            assert adapter.name == "my-lora"
+            assert adapter.path == Path("/weights/step_100")
+            assert adapter.step == 100
 
-    @pytest.mark.asyncio
-    async def test_get_loaded_adapter_parses_step_hyphen(self, pool):
-        mock_admin = AsyncMock()
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "data": [
-                {
-                    "id": "my-lora",
-                    "parent": "Qwen/Qwen2-0.5B",
-                    "root": "/weights/step-200",
-                }
-            ]
-        }
-        mock_response.raise_for_status = MagicMock()
-        mock_admin.get.return_value = mock_response
+        asyncio.run(run_test())
 
-        pool._admin_clients["10.0.0.1"] = mock_admin
+    def test_get_loaded_adapter_parses_step_hyphen(self, pool):
+        async def run_test():
+            mock_admin = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "data": [
+                    {
+                        "id": "my-lora",
+                        "parent": "Qwen/Qwen2-0.5B",
+                        "root": "/weights/step-200",
+                    }
+                ]
+            }
+            mock_response.raise_for_status = MagicMock()
+            mock_admin.get.return_value = mock_response
 
-        adapter = await pool._get_loaded_adapter("10.0.0.1")
+            pool._admin_clients["10.0.0.1"] = mock_admin
 
-        assert adapter is not None
-        assert adapter.step == 200
+            adapter = await pool._get_loaded_adapter("10.0.0.1")
 
-    @pytest.mark.asyncio
-    async def test_get_loaded_adapter_returns_none_when_no_adapter(self, pool):
-        mock_admin = AsyncMock()
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"data": [{"id": "base-model", "parent": None}]}
-        mock_response.raise_for_status = MagicMock()
-        mock_admin.get.return_value = mock_response
+            assert adapter is not None
+            assert adapter.step == 200
 
-        pool._admin_clients["10.0.0.1"] = mock_admin
+        asyncio.run(run_test())
 
-        adapter = await pool._get_loaded_adapter("10.0.0.1")
+    def test_get_loaded_adapter_returns_none_when_no_adapter(self, pool):
+        async def run_test():
+            mock_admin = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"data": [{"id": "base-model", "parent": None}]}
+            mock_response.raise_for_status = MagicMock()
+            mock_admin.get.return_value = mock_response
 
-        assert adapter is None
+            pool._admin_clients["10.0.0.1"] = mock_admin
 
-    @pytest.mark.asyncio
-    async def test_get_loaded_adapter_returns_none_on_error(self, pool):
-        mock_admin = AsyncMock()
-        mock_admin.get.side_effect = Exception("Connection failed")
+            adapter = await pool._get_loaded_adapter("10.0.0.1")
 
-        pool._admin_clients["10.0.0.1"] = mock_admin
+            assert adapter is None
 
-        adapter = await pool._get_loaded_adapter("10.0.0.1")
+        asyncio.run(run_test())
 
-        assert adapter is None
+    def test_get_loaded_adapter_returns_none_on_error(self, pool):
+        async def run_test():
+            mock_admin = AsyncMock()
+            mock_admin.get.side_effect = Exception("Connection failed")
+
+            pool._admin_clients["10.0.0.1"] = mock_admin
+
+            adapter = await pool._get_loaded_adapter("10.0.0.1")
+
+            assert adapter is None
+
+        asyncio.run(run_test())
 
 
 class TestStartStop:
-    @pytest.mark.asyncio
-    async def test_start_performs_initial_sync(self, pool):
-        with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
-            mock_sync.return_value = (0, 0)
-            await pool.start()
+    def test_start_performs_initial_sync(self, pool):
+        async def run_test():
+            with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
+                mock_sync.return_value = (0, 0)
+                await pool.start()
 
-        mock_sync.assert_called_once()
-        assert pool._started is True
-        assert pool._sync_task is not None
+            mock_sync.assert_called_once()
+            assert pool._started is True
+            assert pool._sync_task is not None
 
-        # Cleanup
-        await pool.stop()
+            # Cleanup
+            await pool.stop()
 
-    @pytest.mark.asyncio
-    async def test_start_is_idempotent(self, pool):
-        with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
-            mock_sync.return_value = (0, 0)
-            await pool.start()
-            await pool.start()  # Second call should be no-op
+        asyncio.run(run_test())
 
-        mock_sync.assert_called_once()
+    def test_start_is_idempotent(self, pool):
+        async def run_test():
+            with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
+                mock_sync.return_value = (0, 0)
+                await pool.start()
+                await pool.start()  # Second call should be no-op
 
-        # Cleanup
-        await pool.stop()
+            mock_sync.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_stop_cancels_sync_task(self, pool):
-        with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
-            mock_sync.return_value = (0, 0)
-            await pool.start()
+            # Cleanup
+            await pool.stop()
 
-        assert pool._sync_task is not None
-        await pool.stop()
+        asyncio.run(run_test())
 
-        assert pool._started is False
+    def test_stop_cancels_sync_task(self, pool):
+        async def run_test():
+            with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
+                mock_sync.return_value = (0, 0)
+                await pool.start()
+
+            assert pool._sync_task is not None
+            await pool.stop()
+
+            assert pool._started is False
+
+        asyncio.run(run_test())
 
 
 class TestGetMetrics:
@@ -457,26 +490,30 @@ class TestGetMetrics:
 
 
 class TestWaitForReady:
-    @pytest.mark.asyncio
-    async def test_wait_for_ready_returns_when_enough_pods(self, pool):
-        pool._pods = {
-            "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
-        }
+    def test_wait_for_ready_returns_when_enough_pods(self, pool):
+        async def run_test():
+            pool._pods = {
+                "10.0.0.1": PodState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
+            }
 
-        with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
-            mock_sync.return_value = (0, 0)
-            await pool.wait_for_ready(min_pods=1, timeout=1.0)
+            with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
+                mock_sync.return_value = (0, 0)
+                await pool.wait_for_ready(min_pods=1, timeout=1.0)
 
-        # Should return without timeout
+            # Should return without timeout
 
-    @pytest.mark.asyncio
-    async def test_wait_for_ready_times_out(self, pool):
-        pool._pods = {}
+        asyncio.run(run_test())
 
-        with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
-            mock_sync.return_value = (0, 0)
+    def test_wait_for_ready_times_out(self, pool):
+        async def run_test():
+            pool._pods = {}
 
-            with pytest.raises(TimeoutError) as exc_info:
-                await pool.wait_for_ready(min_pods=1, timeout=0.1)
+            with patch.object(pool, "sync", new_callable=AsyncMock) as mock_sync:
+                mock_sync.return_value = (0, 0)
 
-        assert "Timed out" in str(exc_info.value)
+                with pytest.raises(TimeoutError) as exc_info:
+                    await pool.wait_for_ready(min_pods=1, timeout=0.1)
+
+            assert "Timed out" in str(exc_info.value)
+
+        asyncio.run(run_test())
