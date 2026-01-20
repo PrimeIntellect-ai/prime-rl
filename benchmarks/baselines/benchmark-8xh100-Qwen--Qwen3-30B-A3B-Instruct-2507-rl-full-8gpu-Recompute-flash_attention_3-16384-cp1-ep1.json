@@ -11,32 +11,34 @@
     "dry_run": false,
     "timeout": 1500,
     "micro_batches": 2,
-    "docker_image": "primeintellect/prime-rl-jackmin@sha256:5a146f7dfdcdf6b0e90fd3f1ed0874d22a3a0641378dc8dad46ce213d02fa2e6",
+    "ep": 1,
+    "cp": 1,
+    "docker_image": "primeintellect/prime-rl@sha256:d3e9636af265f5ba2e56cd2555534489f5ff64e04a3f645059ca7989508de419",
     "device_name": "NVIDIA H100 80GB HBM3",
     "commit_sha": "unknown",
-    "timestamp": "2026-01-15T22:31:45.516492+00:00",
+    "timestamp": "2026-01-20T02:30:48.239365+00:00",
     "success": true,
     "error_reason": null,
-    "time_taken": 253.7607040289995
+    "time_taken": 593.899837098
   },
   "metrics": {
     "mfu": {
-      "mean": 2.9033962435015255,
-      "std": 0.06185211772693289,
-      "min": 2.8333683904138596,
-      "max": 2.9505657988343432
+      "mean": 2.655155053166542,
+      "std": 0.011417545342777297,
+      "min": 2.647430050820729,
+      "max": 2.6682697754631715
     },
     "throughput": {
-      "mean": 6113.178662139965,
-      "std": 130.23129279813597,
-      "min": 5965.733139259937,
-      "max": 6212.4954260190325
+      "mean": 5590.500177859131,
+      "std": 24.039947947065098,
+      "min": 5574.2349782291785,
+      "max": 5618.113577402197
     },
     "step_time": {
-      "mean": 8.173900715999784,
-      "std": 0.030643063802763774,
-      "min": 8.154543812000156,
-      "max": 8.20923029000005
+      "mean": 8.386751335666682,
+      "std": 0.11004437449555089,
+      "min": 8.28794346199993,
+      "max": 8.505347161000145
     },
     "peak_memory": {
       "gib": 74.587890625,
