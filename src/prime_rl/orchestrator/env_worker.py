@@ -37,6 +37,16 @@ class RolloutRequest:
 
 
 @dataclass
+class UpdateUrlsRequest:
+    """Request to update inference URLs (for elastic scaling).
+
+    Only contains URLs for pods that have the correct adapter loaded.
+    """
+
+    urls: list[str]  # List of ready inference URLs (with /v1 suffix)
+
+
+@dataclass
 class RolloutResponse:
     """Response containing rollout results."""
 
@@ -113,6 +123,7 @@ async def worker_loop(
     response_queue: Queue,
     env: vf.Environment,
     clients: list[AsyncOpenAI],
+    client_config: ClientConfig,
     max_concurrent: int,
     env_id: str,
     example_lookup: dict[int, dict],
@@ -121,7 +132,9 @@ async def worker_loop(
     """Main async loop for processing requests."""
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 
-    client_cycle = cycle(clients)
+    # Mutable client state for elastic URL updates
+    current_clients = clients
+    client_cycle = cycle(current_clients)
     semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)
 
     # Start event loop lag monitor for this worker
@@ -130,6 +143,25 @@ async def worker_loop(
 
     # Track in-flight tasks
     pending_tasks: dict[asyncio.Task, str] = {}
+
+    def handle_url_update(urls: list[str]) -> None:
+        """Handle URL update by recreating clients with new ready URLs."""
+        nonlocal current_clients, client_cycle
+        if not urls:
+            return  # Don't update if empty - keep existing clients
+
+        logger = get_logger()
+        logger.debug(f"Updating inference URLs: {len(urls)} ready pod(s)")
+
+        # Create new clients with updated URLs
+        new_config = ClientConfig(
+            timeout=client_config.timeout,
+            base_url=urls,
+            api_key_var=client_config.api_key_var,
+            headers=client_config.headers,
+        )
+        current_clients = setup_clients(new_config)
+        client_cycle = cycle(current_clients)
 
     def check_for_requests():
         """Non-blocking check for new requests."""
@@ -140,6 +172,9 @@ async def worker_loop(
                 break
             if request is None:  # Shutdown signal
                 return False
+            if isinstance(request, UpdateUrlsRequest):
+                handle_url_update(request.urls)
+                continue
             task = asyncio.create_task(
                 process_request(request, env, client_cycle, semaphore, example_lookup, sampling_args)
             )
@@ -212,6 +247,7 @@ def worker_main(
             response_queue,
             env,
             clients,
+            client_config,
             max_concurrent,
             env_id,
             example_lookup,
@@ -419,6 +455,14 @@ class EnvWorker:
     def update_model_name(self, model_name: str):
         """Update the model name for future requests."""
         self.model_name = model_name
+
+    def update_urls(self, urls: list[str]):
+        """Update inference URLs for elastic scaling.
+
+        Sends only URLs for pods that have the correct adapter loaded.
+        Workers will recreate their clients with these ready URLs.
+        """
+        self.request_queue.put(UpdateUrlsRequest(urls=urls))
 
     @property
     def pending_count(self) -> int:

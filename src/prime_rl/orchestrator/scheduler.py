@@ -7,7 +7,7 @@ Isolates event loop lag from environment execution.
 import asyncio
 import time
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from httpx import AsyncClient
 from tqdm import tqdm
@@ -26,6 +26,9 @@ from prime_rl.utils.utils import (
     get_step_path,
     wait_for_path,
 )
+
+if TYPE_CHECKING:
+    from prime_rl.utils.elastic import ElasticInferencePool
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -60,6 +63,7 @@ class Scheduler:
         strict_async_level: bool,
         lora_name: str | None = None,
         output_dir: Path | None = None,
+        elastic_pool: "ElasticInferencePool | None" = None,
     ):
         self.logger = get_logger()
         self.admin_clients = admin_clients
@@ -76,6 +80,12 @@ class Scheduler:
         self.lora_name = lora_name
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
+
+        # Elastic inference pool (optional) - tracks ready pods and syncs adapters
+        self.elastic_pool = elastic_pool
+        if elastic_pool is not None:
+            # Register callback to update workers when ready URLs change
+            elastic_pool.on_ready_urls_changed = self._on_ready_urls_changed
 
         # Build example lookup dicts per env (example_id -> example)
         self.example_lookups: dict[str, dict[int, dict]] = {}
@@ -129,6 +139,13 @@ class Scheduler:
         # Background tasks
         self._response_collectors: list[asyncio.Task] = []
 
+    def _on_ready_urls_changed(self, urls: list[str]) -> None:
+        """Callback when elastic pool ready URLs change. Updates all workers."""
+        self.logger.info(f"Elastic pool ready URLs changed: {len(urls)} URLs")
+        for workers in self.workers.values():
+            for worker in workers:
+                worker.update_urls(urls)
+
     async def start(self):
         """Start all workers and response collectors."""
         total_workers = sum(len(workers) for workers in self.workers.values())
@@ -139,6 +156,11 @@ class Scheduler:
                 # Start response collector for each worker
                 task = asyncio.create_task(worker.collect_responses())
                 self._response_collectors.append(task)
+
+        # If using elastic pool, send initial ready URLs to workers
+        if self.elastic_pool is not None and self.elastic_pool.ready_urls:
+            self.logger.info(f"Sending initial ready URLs to workers: {len(self.elastic_pool.ready_urls)} URLs")
+            self._on_ready_urls_changed(self.elastic_pool.ready_urls)
 
     async def stop(self):
         """Stop all workers and collectors."""
@@ -200,11 +222,22 @@ class Scheduler:
 
             # Update weights on inference servers
             update_weights_start_time = time.perf_counter()
-            await update_weights(
-                self.admin_clients,
-                get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step),
-                lora_name=self.lora_name,
-            )
+            weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
+
+            if self.elastic_pool is not None:
+                # Use elastic pool - it tracks readiness and only exposes synced pods
+                await self.elastic_pool.update_weights(
+                    weights_path=weights_path,
+                    lora_name=self.lora_name,
+                    step=next_ckpt_step,
+                )
+            else:
+                # Use static admin clients
+                await update_weights(
+                    self.admin_clients,
+                    weights_path,
+                    lora_name=self.lora_name,
+                )
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
@@ -362,5 +395,9 @@ class Scheduler:
                     for metric_name, value in worker.latest_lag_metrics.items():
                         # e.g. "worker_lag/env_0/max"
                         metrics[f"worker_lag/{worker_key}/{metric_name.split('/')[-1]}"] = value
+
+        # Add elastic pool metrics if available
+        if self.elastic_pool is not None:
+            metrics.update(self.elastic_pool.get_metrics())
 
         return metrics

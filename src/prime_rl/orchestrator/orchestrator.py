@@ -44,6 +44,7 @@ from prime_rl.utils.client import (
     setup_clients,
     update_weights,
 )
+from prime_rl.utils.elastic import ElasticInferencePool
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.monitor import setup_monitor
@@ -90,12 +91,32 @@ async def orchestrate(config: OrchestratorConfig):
     for env_id in env_ids_to_install:
         install_env(env_id)
 
-    # Setup client
-    logger.info(
-        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers})"
-    )
-    clients = setup_clients(config.client)
-    admin_clients = setup_admin_clients(config.client)
+    # Setup client (static or elastic mode)
+    elastic_pool = None
+
+    if config.client.is_elastic:
+        logger.info(
+            f"Initializing elastic inference pool (headless_service={config.client.elastic.headless_service}, "
+            f"port={config.client.elastic.port}, sync_interval={config.client.elastic.sync_interval}s)"
+        )
+        elastic_pool = ElasticInferencePool(
+            headless_service=config.client.elastic.headless_service,
+            client_config=config.client,
+            base_model=config.model.name,
+            port=config.client.elastic.port,
+            sync_interval=config.client.elastic.sync_interval,
+        )
+        # Start the elastic pool (discovers initial pods)
+        await elastic_pool.start()
+        clients = elastic_pool.get_inference_clients()
+        admin_clients = elastic_pool.admin_clients
+        logger.info(f"Elastic pool started with {elastic_pool.num_pods} pod(s) ({elastic_pool.num_ready_pods} ready)")
+    else:
+        logger.info(
+            f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers})"
+        )
+        clients = setup_clients(config.client)
+        admin_clients = setup_admin_clients(config.client)
 
     # Setup teacher model client if configured
     teacher_clients = None
@@ -182,6 +203,7 @@ async def orchestrate(config: OrchestratorConfig):
         strict_async_level=config.strict_async_level,
         lora_name=config.model.lora.name if config.model.lora else None,
         output_dir=config.output_dir,
+        elastic_pool=elastic_pool,
     )
 
     if checkpoint_step is not None and config.model.lora is not None:
@@ -194,8 +216,15 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
-    await check_health(admin_clients)
-    await check_has_model(clients, config.model.name)
+    if elastic_pool is not None:
+        # For elastic mode, wait for at least one pod to be ready
+        await elastic_pool.wait_for_ready(min_pods=1, timeout=1800)
+        # Refresh clients after waiting (new pods may have been discovered)
+        clients = elastic_pool.get_inference_clients()
+        admin_clients = elastic_pool.admin_clients
+    else:
+        await check_health(admin_clients)
+        await check_has_model(clients, config.model.name)
     logger.success("Inference pool ready")
 
     # Check health of teacher inference server if configured
@@ -230,11 +259,13 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
 
-        await update_weights(
-            admin_clients,
-            get_weight_dir(config.output_dir, scheduler.ckpt_step),
-            lora_name=config.model.lora.name if config.model.lora else None,
-        )
+        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
+        lora_name = config.model.lora.name if config.model.lora else None
+
+        if elastic_pool is not None:
+            await elastic_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+        else:
+            await update_weights(admin_clients, weights_path, lora_name=lora_name)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         if config.model.lora is None:
@@ -599,6 +630,10 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Stop env workers
     await scheduler.stop()
+
+    # Stop elastic pool if used
+    if elastic_pool is not None:
+        await elastic_pool.stop()
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()

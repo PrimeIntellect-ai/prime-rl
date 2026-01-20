@@ -21,8 +21,40 @@ class ModelConfig(BaseConfig):
 ServerType = Literal["vllm", "openai"]
 
 
+class ElasticConfig(BaseConfig):
+    """Configures elastic inference pool with DNS-based service discovery."""
+
+    headless_service: Annotated[
+        str,
+        Field(
+            description="Kubernetes headless service hostname for DNS-based pod discovery (e.g., 'my-inference-headless.namespace.svc.cluster.local').",
+        ),
+    ]
+
+    port: Annotated[
+        int,
+        Field(
+            description="Port that inference servers listen on.",
+        ),
+    ] = 8000
+
+    sync_interval: Annotated[
+        float,
+        Field(
+            description="How often to check for new/removed pods in seconds.",
+        ),
+    ] = 5.0
+
+
 class ClientConfig(BaseConfig):
-    """Configures the OAI client."""
+    """Configures the OAI client.
+
+    Supports two modes:
+    - Static mode (default): Uses fixed base_url list
+    - Elastic mode: Uses DNS-based service discovery via headless_service
+
+    If elastic config is provided, base_url is ignored and pods are discovered dynamically.
+    """
 
     timeout: Annotated[
         int,
@@ -34,7 +66,7 @@ class ClientConfig(BaseConfig):
     base_url: Annotated[
         list[str],
         Field(
-            description="Base URLs to use for the OpenAI API. By default, it is set to a single server on localhost at port 8000 which matches the default local vLLM server configuration. If you specify more than one URL, the client will round-robin (chat) completion requests across all servers.",
+            description="Base URLs to use for the OpenAI API. By default, it is set to a single server on localhost at port 8000 which matches the default local vLLM server configuration. If you specify more than one URL, the client will round-robin (chat) completion requests across all servers. Ignored if elastic config is provided.",
         ),
     ] = ["http://localhost:8000/v1"]
 
@@ -51,6 +83,18 @@ class ClientConfig(BaseConfig):
             description="Headers to use for the OpenAI API. By default, it is set to an empty dictionary.",
         ),
     ] = {}
+
+    elastic: Annotated[
+        ElasticConfig | None,
+        Field(
+            description="Elastic inference pool configuration for DNS-based service discovery. If provided, base_url is ignored and inference pods are discovered dynamically via Kubernetes headless service.",
+        ),
+    ] = None
+
+    @property
+    def is_elastic(self) -> bool:
+        """Check if elastic mode is enabled."""
+        return self.elastic is not None
 
 
 class LogConfig(BaseConfig):
