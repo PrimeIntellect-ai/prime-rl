@@ -27,7 +27,8 @@ class WorkerServerDiscovery:
     """Lightweight server discovery for env workers.
 
     Unlike ElasticInferencePool, this doesn't manage adapters or admin clients.
-    It just discovers and provides inference clients for rollouts.
+    It just discovers and provides inference clients for rollouts, with
+    round-robin client selection.
     """
 
     def __init__(self, client_config: ClientConfig, model_name: str):
@@ -37,14 +38,23 @@ class WorkerServerDiscovery:
         self._port = client_config.elastic.port
         self._sync_interval = client_config.elastic.sync_interval
         self._clients: list = []
+        self._client_index = 0
         self._last_refresh = 0.0
         self._last_urls: set[str] = set()
         self._logger = get_logger()
 
     @property
-    def clients(self) -> list:
-        """Get current inference clients."""
-        return self._clients
+    def has_clients(self) -> bool:
+        """Check if any clients are available."""
+        return len(self._clients) > 0
+
+    def get_next_client(self):
+        """Get next client in round-robin fashion. Returns None if no clients."""
+        if not self._clients:
+            return None
+        client = self._clients[self._client_index % len(self._clients)]
+        self._client_index += 1
+        return client
 
     async def refresh(self) -> bool:
         """Refresh clients via DNS discovery. Returns True if clients changed."""
@@ -77,6 +87,7 @@ class WorkerServerDiscovery:
                 headers=self._client_config.headers,
             )
         )
+        self._client_index = 0  # Reset round-robin on refresh
         return True
 
     async def close(self) -> None:

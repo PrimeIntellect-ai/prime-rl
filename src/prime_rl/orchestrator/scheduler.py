@@ -168,7 +168,6 @@ class Scheduler:
         future, request_id = await worker.submit_request(
             example_id=example["example_id"],
             rollouts_per_example=self.config.rollouts_per_example,
-            model_name=self.model_name,
         )
 
         self.inflight_group_rollouts[future] = InflightRolloutInfo(
@@ -216,6 +215,10 @@ class Scheduler:
 
             if self.lora_name is not None:
                 self.model_name = self.lora_name
+                # Update model name on all workers so future requests use the LoRA adapter
+                for workers in self.workers.values():
+                    for worker in workers:
+                        worker.update_model_name(self.lora_name)
 
             self.checkpoint_ready.set()
 

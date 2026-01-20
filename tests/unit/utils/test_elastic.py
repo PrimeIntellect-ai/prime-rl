@@ -271,7 +271,28 @@ def test_worker_server_discovery_initialization():
         assert discovery._port == 8000
         assert discovery._sync_interval == 5.0
         assert discovery._model_name == "my-model"
-        assert discovery.clients == []
+        assert discovery.has_clients is False
+        assert discovery.get_next_client() is None
+
+
+def test_worker_server_discovery_round_robin():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+
+        discovery = WorkerServerDiscovery(mock_config, "my-model")
+
+        # Manually set clients to test round-robin
+        client1, client2, client3 = MagicMock(), MagicMock(), MagicMock()
+        discovery._clients = [client1, client2, client3]
+
+        assert discovery.has_clients is True
+        assert discovery.get_next_client() is client1
+        assert discovery.get_next_client() is client2
+        assert discovery.get_next_client() is client3
+        assert discovery.get_next_client() is client1  # wraps around
 
 
 def test_worker_server_discovery_refresh_creates_clients_on_discovery():

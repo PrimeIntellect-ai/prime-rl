@@ -103,13 +103,25 @@ async def worker_loop(
     lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
     lag_monitor_task = asyncio.create_task(lag_monitor.run())
 
-    # Setup client discovery (elastic mode) or use static clients
+    # Setup client discovery (elastic mode) or static client cycle
     discovery = WorkerServerDiscovery(client_config, model_name) if client_config.is_elastic else None
-    client_cycle = cycle(clients) if clients else cycle([None])
+    static_cycle = cycle(clients) if clients else None
 
     # Track in-flight tasks
     pending_tasks: dict[asyncio.Task, str] = {}
     waiting_requests: list[RolloutRequest] = []
+
+    def get_next_client():
+        """Get next client from discovery or static cycle."""
+        if discovery:
+            return discovery.get_next_client()
+        return next(static_cycle) if static_cycle else None
+
+    def has_clients() -> bool:
+        """Check if clients are available."""
+        if discovery:
+            return discovery.has_clients
+        return bool(clients)
 
     async def process_request(request: RolloutRequest, client: AsyncOpenAI) -> RolloutResponse:
         example = example_lookup[request.example_id]
@@ -126,18 +138,13 @@ async def worker_loop(
 
     try:
         while True:
-            # Refresh clients in elastic mode
-            if discovery and await discovery.refresh():
-                current_clients = discovery.clients
-                client_cycle = cycle(current_clients) if current_clients else cycle([None])
-            else:
-                current_clients = discovery.clients if discovery else clients
+            if discovery:
+                await discovery.refresh()
 
             # Process waiting requests if we now have clients
-            if current_clients and waiting_requests:
+            if has_clients() and waiting_requests:
                 for req in waiting_requests:
-                    client = next(client_cycle)
-                    task = asyncio.create_task(process_request(req, client))
+                    task = asyncio.create_task(process_request(req, get_next_client()))
                     pending_tasks[task] = req.request_id
                 waiting_requests.clear()
 
@@ -150,12 +157,11 @@ async def worker_loop(
                 if request is None:  # Shutdown signal
                     return
 
-                if not current_clients:
-                    waiting_requests.append(request)
-                else:
-                    client = next(client_cycle)
-                    task = asyncio.create_task(process_request(request, client))
+                if has_clients():
+                    task = asyncio.create_task(process_request(request, get_next_client()))
                     pending_tasks[task] = request.request_id
+                else:
+                    waiting_requests.append(request)
 
             if not pending_tasks:
                 # No pending tasks, wait a bit for new requests
@@ -167,7 +173,6 @@ async def worker_loop(
             for task in done:
                 pending_tasks.pop(task)
                 response = task.result()
-                # Attach lag metrics to response
                 response.lag_metrics = lag_monitor.get_metrics()
                 response_queue.put(response)
     finally:
@@ -349,11 +354,14 @@ class EnvWorker:
         # Start fresh process
         self.start()
 
+    def update_model_name(self, model_name: str):
+        """Update the model name for future requests."""
+        self.model_name = model_name
+
     async def submit_request(
         self,
         example_id: int,
         rollouts_per_example: int,
-        model_name: str | None = None,
     ) -> tuple[asyncio.Future, str]:
         """Submit a rollout request and return a (future, request_id) tuple."""
         request_id = uuid.uuid4().hex
@@ -361,7 +369,7 @@ class EnvWorker:
             request_id=request_id,
             example_id=example_id,
             rollouts_per_example=rollouts_per_example,
-            model_name=model_name or self.model_name,
+            model_name=self.model_name,
         )
 
         loop = asyncio.get_event_loop()
