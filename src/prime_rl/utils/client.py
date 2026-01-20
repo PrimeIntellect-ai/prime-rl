@@ -206,7 +206,7 @@ async def update_weights(
     weight_dir: Path | None,
     lora_name: str | None = None,
     *,
-    elastic_pool: "ElasticInferencePool | None" = None,
+    elastic_pool: ElasticInferencePool | None = None,
     step: int = 0,
 ) -> None:
     """Update weights on inference servers.

@@ -6,6 +6,8 @@ tracks which servers have the correct LoRA adapter loaded, and
 only exposes ready servers to workers.
 """
 
+from __future__ import annotations
+
 import asyncio
 import socket
 import time
@@ -177,7 +179,7 @@ class ElasticInferencePool:
         self._started = False
 
     @classmethod
-    async def from_config(cls, config: ClientConfig, base_model: str | None = None) -> "ElasticInferencePool":
+    async def from_config(cls, config: ClientConfig, base_model: str | None = None) -> ElasticInferencePool:
         """Create and start an elastic pool from ClientConfig."""
         pool = cls(
             hostname=config.elastic.hostname,
