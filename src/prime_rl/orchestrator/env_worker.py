@@ -158,6 +158,13 @@ async def worker_loop(
 
         logger = get_logger()
 
+        # Close old clients to avoid connection leaks
+        for client in current_clients:
+            try:
+                client.close()
+            except Exception:
+                pass
+
         if not urls:
             # Clear clients when no servers are available to avoid stale requests
             logger.debug("No ready inference servers - clearing clients")

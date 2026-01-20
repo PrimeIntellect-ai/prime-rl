@@ -328,7 +328,8 @@ class ElasticInferencePool:
     def _notify_if_ready_urls_changed(self) -> None:
         """Notify callback if ready URLs have changed."""
         current_ready = self.ready_urls
-        if current_ready != self._last_ready_urls:
+        # Compare as sets to avoid spurious callbacks from order changes
+        if set(current_ready) != set(self._last_ready_urls):
             self._last_ready_urls = current_ready
             if self._on_ready_urls_changed is not None:
                 self._on_ready_urls_changed(current_ready)
