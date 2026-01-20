@@ -3,7 +3,7 @@ from time import time
 
 import zmq
 
-from prime_rl.trainer.runs import get_runs_manager
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
 from prime_rl.transport.config import ZMQTransportConfig
 from prime_rl.transport.types import MicroBatch, TrainingBatch
@@ -57,7 +57,7 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
 
     def __init__(self, transport: ZMQTransportConfig):
         super().__init__()
-        self.runs = get_runs_manager()
+        self.runs = get_multi_run_manager()
         self._last_logged_time = time()
         self._last_logged_ids: list[str] | None = None
         self._waiting_since: float | None = None

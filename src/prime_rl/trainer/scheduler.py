@@ -4,7 +4,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
 from prime_rl.trainer.config import SchedulerConfigType
-from prime_rl.trainer.runs import get_runs_manager
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -126,7 +126,7 @@ class MultiLoRAScheduler:
     ):
         self.scheduler_config = scheduler_config
         self.max_steps = max_steps
-        self.runs = get_runs_manager()
+        self.runs = get_multi_run_manager()
         self.logger = get_logger()
 
         self.schedulers: list[LRScheduler | None] = [None] * self.runs.max_runs

@@ -23,7 +23,7 @@ class Progress:
     total_samples: int = 0
 
 
-class RunsManager:
+class MultiRunManager:
     """This class stores information about the runs in the system."""
 
     # =========================================================================
@@ -135,7 +135,7 @@ class RunsManager:
     def register_module(self, prefix: str, module: "MultiLoRALinear") -> None:
         """Register a MultiLoRALinear module with its FQN prefix.
 
-        This allows RunsManager to manage parameter access, reset, and state dict slicing
+        This allows MultiRunManager to manage parameter access, reset, and state dict slicing
         for multi-adapter LoRA modules.
 
         Args:
@@ -414,21 +414,21 @@ class RunsManager:
         return self.output_dir / self.idx_2_id[idx]
 
     def __repr__(self):
-        return f"RunsManager(max={self.max_runs})[{self.idx_2_id.keys()}]"
+        return f"MultiRunManager(max={self.max_runs})[{self.idx_2_id.keys()}]"
 
 
-# Singleton instance of RunsManager
-_RUNS_MANAGER: RunsManager | None = None
+# Singleton instance of MultiRunManager
+_MULTI_RUN_MANAGER: MultiRunManager | None = None
 
 
-def get_runs_manager() -> RunsManager:
-    """Returns the RunsManager singleton. Must be initialized first via setup_runs_manager()."""
-    global _RUNS_MANAGER
-    if _RUNS_MANAGER is None:
-        raise RuntimeError("RunsManager not initialized. Please call `setup_runs_manager` first.")
-    return _RUNS_MANAGER
+def get_multi_run_manager() -> MultiRunManager:
+    """Returns the MultiRunManager singleton. Must be initialized first via setup_multi_run_manager()."""
+    global _MULTI_RUN_MANAGER
+    if _MULTI_RUN_MANAGER is None:
+        raise RuntimeError("MultiRunManager not initialized. Please call `setup_multi_run_manager` first.")
+    return _MULTI_RUN_MANAGER
 
 
-def setup_runs_manager(output_dir: Path, max_runs: int, device: torch.device):
-    global _RUNS_MANAGER
-    _RUNS_MANAGER = RunsManager(output_dir, max_runs, device)
+def setup_multi_run_manager(output_dir: Path, max_runs: int, device: torch.device):
+    global _MULTI_RUN_MANAGER
+    _MULTI_RUN_MANAGER = MultiRunManager(output_dir, max_runs, device)

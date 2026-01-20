@@ -50,7 +50,7 @@ from prime_rl.trainer.utils import (
     get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.trainer.runs import setup_runs_manager, Progress, get_runs_manager
+from prime_rl.trainer.runs import setup_multi_run_manager, Progress, get_multi_run_manager
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
@@ -108,8 +108,8 @@ def train(config: RLTrainerConfig):
     torch.set_float32_matmul_precision("high")
 
     # Setup runs and offsets
-    setup_runs_manager(config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank))
-    runs = get_runs_manager()
+    setup_multi_run_manager(config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank))
+    runs = get_multi_run_manager()
 
     # Register validation and scaling hooks for LoRA
     if config.model.lora:
@@ -521,7 +521,7 @@ def train(config: RLTrainerConfig):
                 mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
             )
             # Update run/LoRA metrics
-            runs = get_runs_manager()
+            runs = get_multi_run_manager()
             runs_discovered = len(list(config.output_dir.glob("run_*")))
             run_stats = []
             for idx in runs.used_idxs:

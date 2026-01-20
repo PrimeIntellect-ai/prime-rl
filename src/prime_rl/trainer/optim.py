@@ -7,7 +7,7 @@ from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.runs import get_runs_manager
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -21,7 +21,7 @@ def setup_optimizer(
     if lora:
         # Wait for run 0 to be created in the runs system
         # Otherwise, the creation will reset the parameters
-        runs = get_runs_manager()
+        runs = get_multi_run_manager()
         world = get_world()
         logger = get_logger()
         while 0 not in runs.idx_2_id:
@@ -149,14 +149,14 @@ class MultiLoRAOptimizer:
     def __init__(self, config: OptimizerConfigType, parallel_dims: ParallelDims):
         self.config = config
         self.parallel_dims = parallel_dims
-        self.runs = get_runs_manager()
+        self.runs = get_multi_run_manager()
         self.logger = get_logger()
 
         self.optimizers: list[Optimizer | None] = [None] * self.runs.max_runs
         self._post_creation_callbacks: list[Callable[[Optimizer, int], None]] = []
 
         # Register creation hook for optimizer setup
-        # The RunsManager class handles parameter reset internally when new runs are created
+        # The MultiRunManager class handles parameter reset internally when new runs are created
         self.runs.register_creation_hook(self.optimizer_creation_hook)
 
     def register_post_creation_callback(
@@ -174,7 +174,7 @@ class MultiLoRAOptimizer:
             self._post_creation_callbacks.insert(index, callback)
 
     def optimizer_creation_hook(self, idx: int, run_id: str) -> None:
-        # Get named parameters for this run from the RunsManager system
+        # Get named parameters for this run from the MultiRunManager system
         named_params = self.runs.get_named_parameters_for_run(idx)
 
         lr = self.runs.config[idx].optim.lr

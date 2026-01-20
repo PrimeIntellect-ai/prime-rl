@@ -11,7 +11,7 @@ from prime_rl.trainer.lora import save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig
-from prime_rl.trainer.runs import get_runs_manager
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
@@ -31,7 +31,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         self.save_format: Literal["safetensors", "torch"] = config.save_format
         self.save_sharded = config.save_sharded if lora_config is None else False
         self.world = get_world()
-        self.runs = get_runs_manager()
+        self.runs = get_multi_run_manager()
         self.logger.debug(
             f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={self.save_sharded})"
         )
@@ -51,7 +51,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             self.logger.debug(f"Broadcasting weights for run {idx} (ready_to_update={self.runs.ready_to_update[idx]})")
 
             if adapter_only:
-                # For adapter-only, RunsManager creates state dict directly for each run
+                # For adapter-only, MultiRunManager creates state dict directly for each run
                 # All ranks must participate in DTensor gathering, but only master saves
                 state_dict = self.runs.get_state_dict_for_run(idx)
                 for key, value in state_dict.items():

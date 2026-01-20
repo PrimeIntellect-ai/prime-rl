@@ -5,7 +5,7 @@ import pytest
 import tomli_w
 import torch.distributed as dist
 
-from prime_rl.trainer.runs import RunsManager
+from prime_rl.trainer.runs import MultiRunManager
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -51,8 +51,8 @@ def create_run_with_config(
 
 
 def test_initial_state(tmp_path: Path) -> None:
-    """Test that RunsManager initializes correctly."""
-    runs = RunsManager(output_dir=tmp_path, max_runs=5)
+    """Test that MultiRunManager initializes correctly."""
+    runs = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     assert runs.output_dir == tmp_path
     assert runs.max_runs == 5
@@ -64,7 +64,7 @@ def test_initial_state(tmp_path: Path) -> None:
 
 def test_detect_new_runs(tmp_path: Path) -> None:
     """Test that new runs are detected correctly."""
-    runs = RunsManager(output_dir=tmp_path, max_runs=5)
+    runs = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create some run directories with valid configs
     for run_name in ["run_abc123", "run_def456"]:
@@ -93,7 +93,7 @@ def test_detect_new_runs(tmp_path: Path) -> None:
 
 def test_detect_deleted_runs(tmp_path: Path) -> None:
     """Test that deleted runs are detected correctly."""
-    runs = RunsManager(output_dir=tmp_path, max_runs=5)
+    runs = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create run directories with valid configs
     for run_name in ["run_abc123", "run_def456"]:
@@ -129,7 +129,7 @@ def test_detect_deleted_runs(tmp_path: Path) -> None:
 
 def test_max_runs_limit(tmp_path: Path) -> None:
     """Test that only max_runs are tracked."""
-    runs = RunsManager(output_dir=tmp_path, max_runs=2)
+    runs = MultiRunManager(output_dir=tmp_path, max_runs=2)
 
     # Create more runs than max_runs with valid configs
     for run_name in ["run_001", "run_002", "run_003"]:
@@ -157,7 +157,7 @@ def test_max_runs_limit(tmp_path: Path) -> None:
 
 def test_run_dirs(tmp_path: Path) -> None:
     """Test that run_dirs returns correct paths."""
-    runs = RunsManager(output_dir=tmp_path, max_runs=5)
+    runs = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create run directories with valid configs
     for run_name in ["run_abc", "run_def"]:
@@ -173,7 +173,7 @@ def test_run_dirs(tmp_path: Path) -> None:
 
 def test_non_run_directories_ignored(tmp_path: Path) -> None:
     """Test that non-run directories are ignored."""
-    runs = RunsManager(output_dir=tmp_path, max_runs=5)
+    runs = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create mix of run and non-run directories
     create_run_with_config(tmp_path, "run_abc")
@@ -192,7 +192,7 @@ def test_non_run_directories_ignored(tmp_path: Path) -> None:
 
 def test_config_loading(tmp_path: Path) -> None:
     """Test that orchestrator configs are loaded correctly."""
-    runs = RunsManager(output_dir=tmp_path, max_runs=5)
+    runs = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create a run directory with config
     test_config = {
@@ -221,7 +221,7 @@ def test_config_loading(tmp_path: Path) -> None:
 
 def test_config_missing(tmp_path: Path) -> None:
     """Test that runs without configs are skipped and error.txt is created."""
-    runs = RunsManager(output_dir=tmp_path, max_runs=5)
+    runs = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create a run directory without config
     run_dir = tmp_path / "run_noconfig"
@@ -243,7 +243,7 @@ def test_config_missing(tmp_path: Path) -> None:
 
 def test_config_cleanup_on_deletion(tmp_path: Path) -> None:
     """Test that configs are cleaned up when runs are deleted."""
-    runs = RunsManager(output_dir=tmp_path, max_runs=5)
+    runs = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create a run directory with valid config
     test_config = {
@@ -272,7 +272,7 @@ def test_config_cleanup_on_deletion(tmp_path: Path) -> None:
 
 def test_config_invalid(tmp_path: Path) -> None:
     """Test that runs with invalid configs are skipped and error.txt is created."""
-    runs = RunsManager(output_dir=tmp_path, max_runs=5)
+    runs = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create a run directory with invalid config (invalid type for a field)
     # Invalid config - batch_size should be int, not string

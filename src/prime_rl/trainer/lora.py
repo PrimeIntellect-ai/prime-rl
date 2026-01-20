@@ -8,7 +8,7 @@ from prime_rl.trainer.config import LoRAConfig
 from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
 from prime_rl.trainer.models.layers.lora.multi_moe import MultiLoRAGroupedExperts
 from prime_rl.trainer.models.layers.moe import GroupedExperts
-from prime_rl.trainer.runs import get_runs_manager
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger
 
 
@@ -137,7 +137,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         config: LoRA configuration
     """
     logger = get_logger()
-    n_loras = get_runs_manager().max_runs
+    n_loras = get_multi_run_manager().max_runs
 
     from torch.distributed.fsdp import FSDPModule
 
@@ -185,7 +185,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             )
             continue
 
-        lora_module.register_with_runs(get_runs_manager(), module_name)
+        lora_module.register_with_runs(get_multi_run_manager(), module_name)
         _set_module_by_name(model, module_name, lora_module)
 
     freeze_all_except_lora_and_specified(model, config)

@@ -6,7 +6,7 @@ from collections import deque
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.batch import prepare_batch
-from prime_rl.trainer.runs import get_runs_manager
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport import (
     MicroBatchSender,
     TrainingSample,
@@ -31,7 +31,7 @@ class BasePacker(ABC):
         start_step: int = 0,
     ):
         self.logger = get_logger()
-        self.runs = get_runs_manager()
+        self.runs = get_multi_run_manager()
         self.dp_world_size = dp_world_size
         self.seq_len = seq_len
         self.pad_to_multiple_of = pad_to_multiple_of
@@ -259,7 +259,7 @@ def setup_packer(
     transport_config: TransportConfigType,
     start_step: int = 0,
 ) -> BasePacker:
-    runs = get_runs_manager()
+    runs = get_multi_run_manager()
     if runs.max_runs == 1:
         return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
     else:
