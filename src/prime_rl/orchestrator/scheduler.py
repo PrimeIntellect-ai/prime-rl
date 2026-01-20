@@ -314,7 +314,7 @@ class Scheduler:
         for workers in self.workers.values():
             for worker in workers:
                 if worker._fatal_error is not None:
-                    self.logger.error(f"Worker '{worker.worker_name}' permanently failed, crashing orchestrator for K8s reschedule")
+                    self.logger.error(f"Worker '{worker.worker_name}' permanently failed, crashing orchestrator")
                     raise worker._fatal_error
 
     @property

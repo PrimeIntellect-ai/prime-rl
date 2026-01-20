@@ -689,7 +689,7 @@ class OrchestratorConfig(BaseSettings):
         int,
         Field(
             ge=-1,
-            description="Maximum number of automatic restarts for an environment worker that dies unexpectedly. After this limit, the orchestrator will crash to allow K8s to reschedule. Set to -1 for unlimited restarts.",
+            description="Maximum number of automatic restarts for an environment worker that dies unexpectedly. After this limit, the orchestrator will crash. Set to -1 for unlimited restarts.",
         ),
     ] = 5
 
