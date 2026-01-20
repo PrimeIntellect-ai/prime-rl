@@ -8,6 +8,7 @@ import torch
 import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
 
+from prime_rl.trainer.config import LoRAConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -437,6 +438,43 @@ def get_multi_run_manager() -> MultiRunManager:
     return _MULTI_RUN_MANAGER
 
 
-def setup_multi_run_manager(output_dir: Path, max_runs: int, device: torch.device):
+def setup_multi_run_manager(
+    output_dir: Path, max_runs: int, device: torch.device, lora_config: LoRAConfig | None = None
+) -> MultiRunManager:
+    """Initialize the MultiRunManager singleton.
+
+    Args:
+        output_dir: Directory containing run outputs
+        max_runs: Maximum number of concurrent runs
+        device: Device for LoRA tensors
+        lora_config: Optional trainer LoRA config. If provided, registers validation
+            and scaling hooks for LoRA rank and alpha.
+
+    Returns:
+        The initialized MultiRunManager instance.
+    """
     global _MULTI_RUN_MANAGER
     _MULTI_RUN_MANAGER = MultiRunManager(output_dir, max_runs, device)
+
+    # Register validation and scaling hooks for LoRA
+    if lora_config is not None and _MULTI_RUN_MANAGER.world.is_master:
+        trainer_lora = lora_config
+
+        def validate_lora_rank(orch_config: "OrchestratorConfig") -> tuple[bool, str]:
+            # Default to trainer's rank if not specified
+            if orch_config.model.lora.rank is None:
+                orch_config.model.lora.rank = trainer_lora.rank
+            if orch_config.model.lora.rank > trainer_lora.rank:
+                return (
+                    False,
+                    f"model.lora.rank ({orch_config.model.lora.rank}) exceeds trainer max rank ({trainer_lora.rank})",
+                )
+            return True, ""
+
+        def on_run_discovered(idx: int, run_id: str, orch_config: "OrchestratorConfig") -> None:
+            _MULTI_RUN_MANAGER.scaling_factors[idx] = orch_config.model.lora.alpha / orch_config.model.lora.rank
+
+        _MULTI_RUN_MANAGER.register_config_validation_hook(validate_lora_rank)
+        _MULTI_RUN_MANAGER.register_discovered_hook(on_run_discovered)
+
+    return _MULTI_RUN_MANAGER

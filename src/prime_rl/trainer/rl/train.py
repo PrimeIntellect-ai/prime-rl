@@ -107,30 +107,10 @@ def train(config: RLTrainerConfig):
     )
     torch.set_float32_matmul_precision("high")
 
-    # Setup multi run manager and offsets
-    setup_multi_run_manager(config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank))
-    multi_run_manager = get_multi_run_manager()
-
-    # Register validation and scaling hooks for LoRA
-    if config.model.lora and world.is_master:
-        trainer_lora = config.model.lora
-
-        def validate_lora_rank(orch_config) -> tuple[bool, str]:
-            # Default to trainer's rank if not specified
-            if orch_config.model.lora.rank is None:
-                orch_config.model.lora.rank = trainer_lora.rank
-            if orch_config.model.lora.rank > trainer_lora.rank:
-                return (
-                    False,
-                    f"model.lora.rank ({orch_config.model.lora.rank}) exceeds trainer max rank ({trainer_lora.rank})",
-                )
-            return True, ""
-
-        def on_run_discovered(idx: int, run_id: str, orch_config) -> None:
-            multi_run_manager.scaling_factors[idx] = orch_config.model.lora.alpha / orch_config.model.lora.rank
-
-        multi_run_manager.register_config_validation_hook(validate_lora_rank)
-        multi_run_manager.register_discovered_hook(on_run_discovered)
+    # Setup multi run manager and offsets (including LoRA validation/scaling hooks if applicable)
+    multi_run_manager = setup_multi_run_manager(
+        config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank), config.model.lora
+    )
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
