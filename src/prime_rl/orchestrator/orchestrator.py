@@ -96,22 +96,8 @@ async def orchestrate(config: OrchestratorConfig):
     elastic_pool = None
 
     if config.client.is_elastic:
-        logger.info(
-            f"Initializing elastic inference pool (hostname={config.client.elastic.hostname}, "
-            f"port={config.client.elastic.port}, sync_interval_s={config.client.elastic.sync_interval_s})"
-        )
-        elastic_pool = ElasticInferencePool(
-            hostname=config.client.elastic.hostname,
-            client_config=config.client,
-            base_model=config.model.name,
-            port=config.client.elastic.port,
-            sync_interval_s=config.client.elastic.sync_interval_s,
-        )
-        # Start the elastic pool (discovers initial servers)
-        await elastic_pool.start()
-        clients = elastic_pool.get_inference_clients()
-        admin_clients = elastic_pool.admin_clients
-        logger.info(f"Elastic pool started with {elastic_pool.num_servers} server(s) ({elastic_pool.num_ready_servers} ready)")
+        elastic_pool = await ElasticInferencePool.from_config(config.client, base_model=config.model.name)
+        clients, admin_clients = elastic_pool.get_inference_clients(), elastic_pool.admin_clients
     else:
         logger.info(
             f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers})"
@@ -274,11 +260,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
         lora_name = config.model.lora.name if config.model.lora else None
-
-        if elastic_pool is not None:
-            await elastic_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
-        else:
-            await update_weights(admin_clients, weights_path, lora_name=lora_name)
+        await update_weights(admin_clients, weights_path, lora_name=lora_name, elastic_pool=elastic_pool, step=scheduler.ckpt_step)
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         if config.model.lora is None:

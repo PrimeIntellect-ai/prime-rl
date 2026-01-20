@@ -4,6 +4,8 @@ Scheduler that runs environments in subprocesses.
 Isolates event loop lag from environment execution.
 """
 
+from __future__ import annotations
+
 import asyncio
 import time
 from pathlib import Path
@@ -63,7 +65,7 @@ class Scheduler:
         strict_async_level: bool,
         lora_name: str | None = None,
         output_dir: Path | None = None,
-        elastic_pool: "ElasticInferencePool | None" = None,
+        elastic_pool: ElasticInferencePool | None = None,
     ):
         self.logger = get_logger()
         self.admin_clients = admin_clients
@@ -81,11 +83,8 @@ class Scheduler:
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
 
-        # Elastic inference pool (optional) - tracks ready pods and syncs adapters
+        # Elastic inference pool (optional) - used for admin operations (adapter sync)
         self.elastic_pool = elastic_pool
-        if elastic_pool is not None:
-            # Register callback to update workers when ready URLs change
-            elastic_pool.on_ready_urls_changed = self._on_ready_urls_changed
 
         # Build example lookup dicts per env (example_id -> example)
         self.example_lookups: dict[str, dict[int, dict]] = {}
@@ -109,11 +108,13 @@ class Scheduler:
                 env_log_file.parent.mkdir(parents=True, exist_ok=True)
 
             for worker_idx in range(self.workers_per_env):
+                # In elastic mode, use lora_name if set (workers do their own discovery)
+                worker_model_name = self.lora_name if self.lora_name else self.model_name
                 worker = EnvWorker(
                     env_id=env_config.id,
                     env_args=env_config.args,
                     client_config=client_config,
-                    model_name=self.model_name,
+                    model_name=worker_model_name,
                     seq_len=config.seq_len,
                     interleaved_rollouts=config.trajectory_strategy == "interleaved",
                     max_concurrent=config.max_concurrent or -1,
@@ -124,6 +125,9 @@ class Scheduler:
                     vf_log_level=config.log.vf_level,
                     log_file=str(env_log_file) if env_log_file else None,
                     max_restarts=config.max_env_worker_restarts,
+                    elastic_hostname=client_config.elastic.hostname if client_config.is_elastic else None,
+                    elastic_port=client_config.elastic.port if client_config.is_elastic else 8000,
+                    elastic_sync_interval=client_config.elastic.sync_interval if client_config.is_elastic else 5.0,
                 )
                 self.workers[env_name].append(worker)
 
@@ -139,13 +143,6 @@ class Scheduler:
         # Background tasks
         self._response_collectors: list[asyncio.Task] = []
 
-    def _on_ready_urls_changed(self, urls: list[str]) -> None:
-        """Callback when elastic pool ready URLs change. Updates all workers."""
-        self.logger.info(f"Elastic pool ready URLs changed: {len(urls)} URLs")
-        for workers in self.workers.values():
-            for worker in workers:
-                worker.update_urls(urls)
-
     async def start(self):
         """Start all workers and response collectors."""
         total_workers = sum(len(workers) for workers in self.workers.values())
@@ -156,11 +153,6 @@ class Scheduler:
                 # Start response collector for each worker
                 task = asyncio.create_task(worker.collect_responses())
                 self._response_collectors.append(task)
-
-        # If using elastic pool, send initial ready URLs to workers
-        if self.elastic_pool is not None and self.elastic_pool.ready_urls:
-            self.logger.info(f"Sending initial ready URLs to workers: {len(self.elastic_pool.ready_urls)} URLs")
-            self._on_ready_urls_changed(self.elastic_pool.ready_urls)
 
     async def stop(self):
         """Stop all workers and collectors."""
@@ -223,31 +215,18 @@ class Scheduler:
             # Update weights on inference servers
             update_weights_start_time = time.perf_counter()
             weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-
-            if self.elastic_pool is not None:
-                # Use elastic pool - it tracks readiness and only exposes synced servers
-                await self.elastic_pool.update_weights(
-                    weights_path=weights_path,
-                    lora_name=self.lora_name,
-                    step=next_ckpt_step,
-                )
-            else:
-                # Use static admin clients
-                await update_weights(
-                    self.admin_clients,
-                    weights_path,
-                    lora_name=self.lora_name,
-                )
+            await update_weights(
+                self.admin_clients,
+                weights_path,
+                lora_name=self.lora_name,
+                elastic_pool=self.elastic_pool,
+                step=next_ckpt_step,
+            )
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
             if self.lora_name is not None:
                 self.model_name = self.lora_name
-
-            # Update model name on all workers
-            for workers in self.workers.values():
-                for worker in workers:
-                    worker.update_model_name(self.model_name)
 
             self.checkpoint_ready.set()
 

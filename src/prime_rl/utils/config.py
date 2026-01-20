@@ -41,10 +41,10 @@ class ElasticConfig(BaseConfig):
         ),
     ] = 8000
 
-    sync_interval_s: Annotated[
+    sync_interval: Annotated[
         float,
         Field(
-            description="Interval between server discovery checks (seconds).",
+            description="Interval in seconds between server discovery checks.",
         ),
     ] = 5.0
 

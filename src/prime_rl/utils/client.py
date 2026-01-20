@@ -1,6 +1,7 @@
 import asyncio
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 from httpx import AsyncClient
@@ -10,6 +11,9 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.utils.elastic import ElasticInferencePool
 
 
 def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
@@ -109,13 +113,23 @@ async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
     lora_name: str | None = None,
+    *,
+    elastic_pool: "ElasticInferencePool | None" = None,
+    step: int = 0,
 ) -> None:
-    """Make a HTTP post request to the vLLM server to update the weights.
+    """Update weights on inference servers.
+
+    If elastic_pool is provided, uses per-server verification and readiness tracking.
+    Otherwise uses fire-and-forget to admin_clients.
 
     Creates a NCCL_READY marker file before calling the update endpoint to signal
     to the trainer that inference workers are about to enter the receive path.
     This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
     """
+    if elastic_pool is not None:
+        await elastic_pool._sync_weights(weight_dir, lora_name, step)
+        return
+
     logger = get_logger()
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None

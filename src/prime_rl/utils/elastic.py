@@ -11,7 +11,7 @@ import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 from httpx import AsyncClient
 
@@ -87,7 +87,7 @@ class ElasticInferencePool:
         client_config: ClientConfig,
         base_model: str | None = None,
         port: int = 8000,
-        sync_interval_s: float = 5.0,
+        sync_interval: float = 5.0,
     ):
         """Initialize the elastic inference pool.
 
@@ -96,14 +96,14 @@ class ElasticInferencePool:
             client_config: Client configuration for creating admin clients
             base_model: Base model name for adapter detection
             port: Port that inference servers listen on
-            sync_interval_s: How often to check for new/removed servers in seconds
+            sync_interval: How often to check for new/removed servers in seconds
         """
         self.logger = get_logger()
         self.hostname = hostname
         self.client_config = client_config
         self.base_model = base_model
         self.port = port
-        self.sync_interval_s = sync_interval_s
+        self.sync_interval = sync_interval
 
         # Track servers and their state
         self._servers: dict[str, ServerState] = {}  # ip -> ServerState
@@ -113,22 +113,21 @@ class ElasticInferencePool:
         # Desired adapter state
         self._desired: DesiredAdapterState = DesiredAdapterState()
 
-        # Callback when ready URLs change
-        self._on_ready_urls_changed: Callable[[list[str]], None] | None = None
-        self._last_ready_urls: list[str] = []
-
         self._sync_task: asyncio.Task | None = None
         self._started = False
 
-    @property
-    def on_ready_urls_changed(self) -> Callable[[list[str]], None] | None:
-        """Get the callback for when ready URLs change."""
-        return self._on_ready_urls_changed
-
-    @on_ready_urls_changed.setter
-    def on_ready_urls_changed(self, callback: Callable[[list[str]], None] | None) -> None:
-        """Set the callback for when ready URLs change."""
-        self._on_ready_urls_changed = callback
+    @classmethod
+    async def from_config(cls, config: ClientConfig, base_model: str | None = None) -> "ElasticInferencePool":
+        """Create and start an elastic pool from ClientConfig."""
+        pool = cls(
+            hostname=config.elastic.hostname,
+            client_config=config,
+            base_model=base_model,
+            port=config.elastic.port,
+            sync_interval=config.elastic.sync_interval,
+        )
+        await pool.start()
+        return pool
 
     def _build_url(self, ip: str) -> str:
         """Build base URL from IP address."""
@@ -236,30 +235,29 @@ class ElasticInferencePool:
         # Need to sync - mark as syncing
         server.status = "syncing"
 
-        try:
-            if self._desired.lora_name and self._desired.lora_path:
+        if self._desired.lora_name and self._desired.lora_path:
+            try:
                 self.logger.debug(f"Loading adapter {self._desired.lora_name} on {ip}")
                 await load_lora_adapter([self._admin_clients[ip]], self._desired.lora_name, self._desired.lora_path)
+            except Exception as e:
+                server.status = "unhealthy"
+                server.sync_failures += 1
+                self.logger.error(f"Failed to sync server {ip}: {e}")
+                return False
 
-            # Verify sync succeeded
-            loaded = await self._get_loaded_adapter(ip)
-            server.loaded_adapter = loaded
+        # Verify sync succeeded
+        loaded = await self._get_loaded_adapter(ip)
+        server.loaded_adapter = loaded
 
-            if self._adapter_matches_desired(loaded):
-                server.status = "ready"
-                server.sync_failures = 0
-                self.logger.debug(f"Successfully synced server {ip}")
-                return True
+        if self._adapter_matches_desired(loaded):
+            server.status = "ready"
+            server.sync_failures = 0
+            self.logger.debug(f"Successfully synced server {ip}")
+            return True
 
-            server.status = "unhealthy"
-            server.sync_failures += 1
-            return False
-
-        except Exception as e:
-            server.status = "unhealthy"
-            server.sync_failures += 1
-            self.logger.error(f"Failed to sync server {ip}: {e}")
-            return False
+        server.status = "unhealthy"
+        server.sync_failures += 1
+        return False
 
     async def _check_server_health(self, admin_client: AsyncClient, ip: str) -> bool:
         """Check if server is healthy and has the base model loaded."""
@@ -291,46 +289,27 @@ class ElasticInferencePool:
         """Add a new server to the pool."""
         try:
             admin_client = await self._create_admin_client(ip)
-
-            # Check health and base model before announcing discovery
-            if not await self._check_server_health(admin_client, ip):
-                await admin_client.aclose()
-                return False
-
-            self.logger.debug(f"Discovered new inference server: {ip}")
-            self._admin_clients[ip] = admin_client
-            self._servers[ip] = ServerState(ip=ip, url=self._build_url(ip), status="discovering")
-            await self._sync_server_adapter(ip)
-            return True
-
         except Exception as e:
-            self.logger.debug(f"Failed to add server {ip}: {e}")
-            self._servers.pop(ip, None)
-            if ip in self._admin_clients:
-                try:
-                    await self._admin_clients.pop(ip).aclose()
-                except Exception:
-                    pass  # Best-effort cleanup, ignore errors
+            self.logger.debug(f"Failed to create admin client for {ip}: {e}")
             return False
+
+        # Check health and base model before announcing discovery
+        if not await self._check_server_health(admin_client, ip):
+            await admin_client.aclose()
+            return False
+
+        self.logger.debug(f"Discovered new inference server: {ip}")
+        self._admin_clients[ip] = admin_client
+        self._servers[ip] = ServerState(ip=ip, url=self._build_url(ip), status="discovering")
+        await self._sync_server_adapter(ip)
+        return True
 
     async def _remove_server(self, ip: str) -> None:
         """Remove a server from the pool."""
         self.logger.debug(f"Inference server removed: {ip}")
         self._servers.pop(ip, None)
         if ip in self._admin_clients:
-            try:
-                await self._admin_clients.pop(ip).aclose()
-            except Exception:
-                pass  # Best-effort cleanup, ignore errors
-
-    def _notify_if_ready_urls_changed(self) -> None:
-        """Notify callback if ready URLs have changed."""
-        current_ready = self.ready_urls
-        # Compare as sets to avoid spurious callbacks from order changes
-        if set(current_ready) != set(self._last_ready_urls):
-            self._last_ready_urls = current_ready
-            if self._on_ready_urls_changed is not None:
-                self._on_ready_urls_changed(current_ready)
+            await self._admin_clients.pop(ip).aclose()
 
     async def sync(self) -> tuple[int, int]:
         """Sync the pool with discovered servers."""
@@ -365,9 +344,6 @@ class ElasticInferencePool:
                     # Re-sync servers that aren't ready but are healthy
                     await self._sync_server_adapter(ip)
 
-            # Notify if ready URLs changed
-            self._notify_if_ready_urls_changed()
-
             return added, removed
 
     async def _sync_loop(self) -> None:
@@ -382,7 +358,7 @@ class ElasticInferencePool:
                     )
             except Exception as e:
                 self.logger.error(f"Error in elastic sync loop: {e}")
-            await asyncio.sleep(self.sync_interval_s)
+            await asyncio.sleep(self.sync_interval)
 
     async def start(self) -> None:
         """Start the elastic inference pool."""
@@ -390,7 +366,7 @@ class ElasticInferencePool:
             return
 
         self.logger.debug(
-            f"Starting elastic inference pool (hostname={self.hostname}, sync_interval_s={self.sync_interval_s})"
+            f"Starting elastic inference pool (hostname={self.hostname}, sync_interval={self.sync_interval})"
         )
 
         await self.sync()
@@ -413,12 +389,14 @@ class ElasticInferencePool:
 
         self._started = False
 
-    async def update_weights(self, weights_path: Path, lora_name: str | None = None, step: int = 0) -> None:
-        """Update weights/adapter across all inference servers.
+    async def _sync_weights(self, weights_path: Path, lora_name: str | None = None, step: int = 0) -> None:
+        """Internal: sync weights/adapter across all servers with verification.
 
         Sets the desired adapter state, loads the adapter on each server, and verifies
         it was loaded correctly. Only servers that successfully load the adapter are
         marked as ready and will receive inference requests.
+
+        Called by update_weights() in client.py - do not call directly.
         """
         async with self._lock:
             self._desired = DesiredAdapterState(
@@ -431,9 +409,6 @@ class ElasticInferencePool:
             for ip in list(self._servers.keys()):
                 await self._sync_server_adapter(ip)
 
-            # Notify if ready URLs changed
-            self._notify_if_ready_urls_changed()
-
     async def wait_for_ready(self, min_servers: int = 1, timeout: float = 300.0) -> None:
         """Wait for at least min_servers to be ready."""
         start = time.time()
@@ -442,7 +417,7 @@ class ElasticInferencePool:
             if self.num_ready_servers >= min_servers:
                 return
             self.logger.debug(f"Waiting for servers: {self.num_ready_servers}/{min_servers} ready")
-            await asyncio.sleep(self.sync_interval_s)
+            await asyncio.sleep(self.sync_interval)
 
         raise TimeoutError(f"Timed out waiting for {min_servers} ready servers (got {self.num_ready_servers})")
 

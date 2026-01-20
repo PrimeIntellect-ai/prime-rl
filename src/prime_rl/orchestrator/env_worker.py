@@ -6,17 +6,20 @@ Runs environment rollouts in a separate process to isolate event loop lag.
 
 import asyncio
 import queue
+import time
 import uuid
 from dataclasses import dataclass
 from itertools import cycle
 from multiprocessing import Process, Queue
 from pathlib import Path
 
+import httpx
 import verifiers as vf
 from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
+from prime_rl.utils.elastic import discover_server_ips
 from prime_rl.utils.logger import get_logger, intercept_verifiers_logging, reset_logger, setup_logger
 
 
@@ -33,17 +36,7 @@ class RolloutRequest:
     request_id: str
     example_id: int
     rollouts_per_example: int
-    model_name: str  # Model name to use for this request (may change for LoRA)
-
-
-@dataclass
-class UpdateUrlsRequest:
-    """Request to update inference URLs (for elastic scaling).
-
-    Only contains URLs for pods that have the correct adapter loaded.
-    """
-
-    urls: list[str]  # List of ready inference URLs (with /v1 suffix)
+    model_name: str
 
 
 @dataclass
@@ -51,8 +44,49 @@ class RolloutResponse:
     """Response containing rollout results."""
 
     request_id: str
-    results: list[dict]  # Simplified state dicts
-    lag_metrics: dict | None = None  # Event loop lag metrics from worker
+    results: list[dict]
+    lag_metrics: dict | None = None
+
+
+async def _check_server(url: str, model_name: str, timeout: float = 5.0) -> tuple[bool, bool]:
+    """Check server status. Returns (has_model, is_healthy)."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(f"{url}/v1/models")
+            response.raise_for_status()
+            data = response.json()
+            models = [m.get("id") for m in data.get("data", [])]
+            return model_name in models, len(models) > 0
+    except Exception:
+        return False, False
+
+
+async def discover_ready_servers(hostname: str, port: int, model_name: str) -> list[str]:
+    """Discover servers via DNS with majority vote logic.
+
+    - If NO servers have the model: return all healthy servers (base model mode)
+    - If ANY server has the model: return only those with it (adapter mode)
+    """
+    loop = asyncio.get_event_loop()
+    ips = await loop.run_in_executor(None, discover_server_ips, hostname)
+    if not ips:
+        return []
+
+    checks = [_check_server(f"http://{ip}:{port}", model_name) for ip in ips]
+    results = await asyncio.gather(*checks, return_exceptions=True)
+
+    with_model, healthy = [], []
+    for ip, result in zip(ips, results):
+        if isinstance(result, Exception):
+            continue
+        has_model, is_healthy = result
+        url = f"http://{ip}:{port}/v1"
+        if has_model:
+            with_model.append(url)
+        if is_healthy:
+            healthy.append(url)
+
+    return with_model if with_model else healthy
 
 
 def extract_result(state: vf.State) -> dict:
@@ -63,67 +97,27 @@ def extract_result(state: vf.State) -> dict:
     - orchestrator metrics: reward, is_truncated, error, timing, metrics, trajectory
     - interleave_rollout/branch_rollout: trajectory[*]["tokens"] with all token fields
     """
-    # Get trajectory with tokens (needed for training)
     trajectory = []
     for step in state.get("trajectory", []):
         traj_step = {
             "prompt": step.get("prompt"),
             "completion": step.get("completion"),
-            # tokens dict contains: prompt_ids, prompt_mask, completion_ids,
-            # completion_mask, completion_logprobs, is_truncated
             "tokens": step.get("tokens"),
         }
         trajectory.append(traj_step)
 
     return {
-        # Required by buffer
         "example_id": state.get("example_id"),
         "task": state.get("task"),
         "reward": state.get("reward"),
-        # Required by orchestrator metrics
         "is_truncated": state.get("is_truncated", False),
         "error": type(state["error"]).__name__ if state.get("error") else None,
         "timing": dict(state.get("timing", {})),
         "metrics": state.get("metrics", {}),
-        # Required for training examples
         "prompt": state.get("prompt"),
         "completion": state.get("completion"),
         "trajectory": trajectory,
     }
-
-
-class NoServersAvailableError(Exception):
-    """Raised when no inference servers are available."""
-
-    pass
-
-
-async def process_request(
-    request: RolloutRequest,
-    env: vf.Environment,
-    client_cycle: cycle,
-    semaphore: asyncio.Semaphore,
-    example_lookup: dict[int, dict],
-    sampling_args: dict,
-) -> RolloutResponse:
-    """Process a single rollout request."""
-    client = next(client_cycle)
-    if client is None:
-        raise NoServersAvailableError("No inference servers available - waiting for servers to become ready")
-    example = example_lookup[request.example_id]
-    group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
-
-    states = await env.run_group(
-        group_inputs=group_inputs,
-        client=client,
-        model=request.model_name,
-        gen_sampling_args=sampling_args,
-        gen_sem=semaphore,
-        score_sem=semaphore,
-    )
-
-    results = [extract_result(state) for state in states]
-    return RolloutResponse(request_id=request.request_id, results=results)
 
 
 async def worker_loop(
@@ -133,118 +127,121 @@ async def worker_loop(
     clients: list[AsyncOpenAI],
     client_config: ClientConfig,
     max_concurrent: int,
-    env_id: str,
     example_lookup: dict[int, dict],
     sampling_args: dict,
+    model_name: str,
+    elastic_hostname: str | None = None,
+    elastic_port: int = 8000,
+    elastic_sync_interval: float = 5.0,
 ):
-    """Main async loop for processing requests."""
+    """Main async loop for processing rollout requests."""
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 
-    # Mutable client state for elastic URL updates
-    current_clients = clients
-    client_cycle = cycle(current_clients)
+    logger = get_logger()
     semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)
 
-    # Start event loop lag monitor for this worker
-    lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
+    lag_monitor = EventLoopLagMonitor(interval=0.1)
     lag_monitor_task = asyncio.create_task(lag_monitor.run())
 
-    # Track in-flight tasks
+    # Mutable state for elastic mode
+    current_clients = clients
+    client_cycle = cycle(current_clients) if current_clients else cycle([None])
+    last_refresh = 0.0
+    last_urls: set[str] = set()
+
     pending_tasks: dict[asyncio.Task, str] = {}
-
-    def handle_url_update(urls: list[str]) -> None:
-        """Handle URL update by recreating clients with new ready URLs."""
-        nonlocal current_clients, client_cycle
-
-        logger = get_logger()
-
-        # Close old clients to avoid connection leaks
-        for client in current_clients:
-            try:
-                client.close()
-            except Exception:
-                pass  # Best-effort cleanup, ignore errors
-
-        if not urls:
-            # Clear clients when no servers are available to avoid stale requests
-            logger.debug("No ready inference servers - clearing clients")
-            current_clients = []
-            client_cycle = cycle([None])  # Marker: next() returns None
-            return
-
-        logger.debug(f"Updating inference URLs: {len(urls)} ready server(s)")
-
-        # Create new clients with updated URLs
-        new_config = ClientConfig(
-            timeout=client_config.timeout,
-            base_url=urls,
-            api_key_var=client_config.api_key_var,
-            headers=client_config.headers,
-        )
-        current_clients = setup_clients(new_config)
-        client_cycle = cycle(current_clients)
-
-    # Queue for requests that are waiting for servers to become available
     waiting_requests: list[RolloutRequest] = []
 
-    def check_for_requests():
-        """Non-blocking check for new requests."""
-        nonlocal waiting_requests
+    async def refresh_clients():
+        """Refresh clients via DNS discovery in elastic mode."""
+        nonlocal current_clients, client_cycle, last_refresh, last_urls
 
-        # First, try to process waiting requests if we have servers now
-        if current_clients and waiting_requests:
-            for request in waiting_requests:
-                task = asyncio.create_task(
-                    process_request(request, env, client_cycle, semaphore, example_lookup, sampling_args)
-                )
-                pending_tasks[task] = request.request_id
-            waiting_requests = []
+        if not elastic_hostname:
+            return
+        if time.time() - last_refresh < elastic_sync_interval:
+            return
+        last_refresh = time.time()
 
-        while True:
-            try:
-                request = request_queue.get_nowait()
-            except queue.Empty:
-                break
-            if request is None:  # Shutdown signal
-                return False
-            if isinstance(request, UpdateUrlsRequest):
-                handle_url_update(request.urls)
-                continue
+        urls = await discover_ready_servers(elastic_hostname, elastic_port, model_name)
+        if set(urls) == last_urls:
+            return
+        last_urls = set(urls)
 
-            # Queue requests if no servers available (avoid stale client errors)
-            if not current_clients:
-                waiting_requests.append(request)
-                continue
+        for c in current_clients:
+            c.close()
 
-            task = asyncio.create_task(
-                process_request(request, env, client_cycle, semaphore, example_lookup, sampling_args)
+        if not urls:
+            logger.debug("No ready inference servers found")
+            current_clients = []
+            client_cycle = cycle([None])
+            return
+
+        logger.debug(f"Discovered {len(urls)} ready server(s)")
+        current_clients = setup_clients(
+            ClientConfig(
+                timeout=client_config.timeout,
+                base_url=urls,
+                api_key_var=client_config.api_key_var,
+                headers=client_config.headers,
             )
-            pending_tasks[task] = request.request_id
-        return True
+        )
+        client_cycle = cycle(current_clients)
+
+    async def process_request(request: RolloutRequest, client: AsyncOpenAI) -> RolloutResponse:
+        example = example_lookup[request.example_id]
+        group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
+        states = await env.run_group(
+            group_inputs=group_inputs,
+            client=client,
+            model=request.model_name,
+            gen_sampling_args=sampling_args,
+            gen_sem=semaphore,
+            score_sem=semaphore,
+        )
+        return RolloutResponse(request_id=request.request_id, results=[extract_result(s) for s in states])
 
     try:
         while True:
-            # Check for new requests
-            if not check_for_requests():
-                break
+            await refresh_clients()
+
+            # Process waiting requests if we now have clients
+            if current_clients and waiting_requests:
+                for req in waiting_requests:
+                    client = next(client_cycle)
+                    task = asyncio.create_task(process_request(req, client))
+                    pending_tasks[task] = req.request_id
+                waiting_requests.clear()
+
+            # Drain request queue
+            while True:
+                try:
+                    request = request_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if request is None:
+                    return  # Shutdown
+
+                client = next(client_cycle)
+                if client is None:
+                    waiting_requests.append(request)
+                else:
+                    task = asyncio.create_task(process_request(request, client))
+                    pending_tasks[task] = request.request_id
 
             if not pending_tasks:
-                # No pending tasks, wait a bit for new requests
                 await asyncio.sleep(0.01)
                 continue
 
-            # Wait for at least one task to complete
             done, _ = await asyncio.wait(pending_tasks.keys(), timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
-
             for task in done:
                 pending_tasks.pop(task)
                 response = task.result()
-                # Attach lag metrics to response
                 response.lag_metrics = lag_monitor.get_metrics()
                 response_queue.put(response)
     finally:
-        # Cleanup
         lag_monitor_task.cancel()
+        for c in current_clients:
+            c.close()
         for task in pending_tasks:
             task.cancel()
 
@@ -264,24 +261,24 @@ def worker_main(
     vf_log_level: str,
     log_file: str | None,
     worker_name: str | None = None,
+    model_name: str = "",
+    elastic_hostname: str | None = None,
+    elastic_port: int = 8000,
+    elastic_sync_interval: float = 5.0,
 ):
-    """Main entry point for worker process."""
-    # Reset logger inherited from parent process, then setup fresh logger for this worker
+    """Main entry point for worker subprocess."""
     if log_file:
         reset_logger()
         setup_logger(log_level, log_file=Path(log_file), append=True, tag=worker_name)
         intercept_verifiers_logging(level=vf_log_level)
 
-    # Load environment
     env = vf.load_environment(env_id, **env_args)
     env.set_max_seq_len(seq_len)
     env.set_interleaved_rollouts(interleaved_rollouts)
 
-    # Create clients
     client_config = ClientConfig(**client_config_dict)
-    clients = setup_clients(client_config)
+    clients = [] if elastic_hostname else setup_clients(client_config)
 
-    # Run async loop
     asyncio.run(
         worker_loop(
             request_queue,
@@ -290,15 +287,18 @@ def worker_main(
             clients,
             client_config,
             max_concurrent,
-            env_id,
             example_lookup,
             sampling_args,
+            model_name,
+            elastic_hostname,
+            elastic_port,
+            elastic_sync_interval,
         )
     )
 
 
 class EnvWorker:
-    """Manages a worker subprocess for an environment."""
+    """Manages a worker subprocess for environment rollouts."""
 
     def __init__(
         self,
@@ -316,6 +316,9 @@ class EnvWorker:
         vf_log_level: str = "warn",
         log_file: str | None = None,
         max_restarts: int = 5,
+        elastic_hostname: str | None = None,
+        elastic_port: int = 8000,
+        elastic_sync_interval: float = 5.0,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -332,6 +335,11 @@ class EnvWorker:
         self.vf_log_level = vf_log_level
         self.log_file = log_file
         self.max_restarts = max_restarts
+
+        # Elastic mode parameters (worker does its own DNS discovery)
+        self.elastic_hostname = elastic_hostname
+        self.elastic_port = elastic_port
+        self.elastic_sync_interval = elastic_sync_interval
 
         self.request_queue: Queue = Queue()
         self.response_queue: Queue = Queue()
@@ -373,6 +381,10 @@ class EnvWorker:
                 self.vf_log_level,
                 self.log_file,
                 self.worker_name,
+                self.model_name,
+                self.elastic_hostname,
+                self.elastic_port,
+                self.elastic_sync_interval,
             ),
             daemon=True,
         )
@@ -456,7 +468,9 @@ class EnvWorker:
                     # Track successful responses; reset restart count after stable operation
                     self._responses_since_restart += 1
                     if self._responses_since_restart >= 10 and self._restart_count > 0:
-                        logger.debug(f"Worker '{self.worker_name}' stable after {self._responses_since_restart} responses, resetting restart count")
+                        logger.debug(
+                            f"Worker '{self.worker_name}' stable after {self._responses_since_restart} responses, resetting restart count"
+                        )
                         self._restart_count = 0
                         self._responses_since_restart = 0
 
@@ -483,7 +497,9 @@ class EnvWorker:
                     raise error
 
                 # Log warning and restart the worker automatically
-                restart_info = f"{self._restart_count}/{self.max_restarts}" if self.max_restarts >= 0 else f"{self._restart_count}"
+                restart_info = (
+                    f"{self._restart_count}/{self.max_restarts}" if self.max_restarts >= 0 else f"{self._restart_count}"
+                )
                 logger.warning(
                     f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code}). "
                     f"Restarting worker automatically ({restart_info}). In-flight requests will be rescheduled."
@@ -492,18 +508,6 @@ class EnvWorker:
                 self._restart()
 
             await asyncio.sleep(0.01)
-
-    def update_model_name(self, model_name: str):
-        """Update the model name for future requests."""
-        self.model_name = model_name
-
-    def update_urls(self, urls: list[str]):
-        """Update inference URLs for elastic scaling.
-
-        Sends only URLs for pods that have the correct adapter loaded.
-        Workers will recreate their clients with these ready URLs.
-        """
-        self.request_queue.put(UpdateUrlsRequest(urls=urls))
 
     @property
     def pending_count(self) -> int:
