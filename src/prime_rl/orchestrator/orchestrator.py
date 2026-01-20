@@ -249,6 +249,10 @@ async def orchestrate(config: OrchestratorConfig):
     # Start update policy loop
     update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
 
+    # Track consecutive empty batches for retry logic
+    empty_batch_retries = 0
+    max_empty_batch_retries = 5
+
     while True:
         # Check if update_policy_task has failed and propagate the exception
         if update_policy_task.done():
@@ -380,7 +384,24 @@ async def orchestrate(config: OrchestratorConfig):
             temperature=config.sampling.temperature,
             step=progress.step,
         )
-        assert len(training_batch.examples) != 0, "Step with no samples is not allowed"
+
+        # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
+        if len(training_batch.examples) == 0:
+            empty_batch_retries += 1
+            if empty_batch_retries > max_empty_batch_retries:
+                raise RuntimeError(
+                    f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
+                )
+            backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
+            logger.warning(
+                f"Step {progress.step} produced 0 training samples "
+                f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
+            )
+            await asyncio.sleep(backoff)
+            continue
+
+        # Reset retry counter on successful batch
+        empty_batch_retries = 0
         training_batch_sender.send(training_batch)
 
         # Await and process val results
