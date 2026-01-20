@@ -168,7 +168,7 @@ async def worker_loop(
         last_urls = set(urls)
 
         for c in current_clients:
-            c.close()
+            await c.close()
 
         if not urls:
             logger.debug("No ready inference servers found")
@@ -241,7 +241,7 @@ async def worker_loop(
     finally:
         lag_monitor_task.cancel()
         for c in current_clients:
-            c.close()
+            await c.close()
         for task in pending_tasks:
             task.cancel()
 
@@ -430,6 +430,7 @@ class EnvWorker:
         self,
         example_id: int,
         rollouts_per_example: int,
+        model_name: str | None = None,
     ) -> tuple[asyncio.Future, str]:
         """Submit a rollout request and return a (future, request_id) tuple."""
         request_id = uuid.uuid4().hex
@@ -437,7 +438,7 @@ class EnvWorker:
             request_id=request_id,
             example_id=example_id,
             rollouts_per_example=rollouts_per_example,
-            model_name=self.model_name,
+            model_name=model_name or self.model_name,
         )
 
         loop = asyncio.get_event_loop()

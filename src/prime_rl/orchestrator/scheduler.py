@@ -174,6 +174,7 @@ class Scheduler:
         future, request_id = await worker.submit_request(
             example_id=example["example_id"],
             rollouts_per_example=self.config.rollouts_per_example,
+            model_name=self.model_name,
         )
 
         self.inflight_group_rollouts[future] = InflightRolloutInfo(
