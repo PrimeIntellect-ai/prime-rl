@@ -60,7 +60,7 @@ Runs are discovered by scanning the output directory for the pattern `run_*`. Ea
 multi_run_manager.discover_runs()
 
 # All ranks synchronize state (must be called after discover_runs)
-multi_run_manager.sync_runs()
+multi_run_manager.synchronize_state()
 ```
 
 The `discover_runs()` method (master only):
@@ -72,7 +72,7 @@ The `discover_runs()` method (master only):
 5. Updates internal mappings and data structures
 6. Calls `discovered_hook` for new runs (master only)
 
-The `sync_runs()` method (all ranks):
+The `synchronize_state()` method (all ranks):
 
 1. Master broadcasts run state to all ranks via the distributed store
 2. Non-master ranks catch up by calling internal `_delete_run_data` / `_create_run_data`
@@ -140,7 +140,7 @@ flowchart TD
     wait1 --> barrier
     waitN --> barrier
 
-    barrier[["sync_runs()"]]
+    barrier[["synchronize_state()"]]
 
     barrier --> deletion["deletion_hooks"]
     deletion --> creation["creation_hooks"]
@@ -156,7 +156,7 @@ flowchart TD
 multi_run_manager.register_discovered_hook(callback)
 multi_run_manager.register_forgotten_hook(callback)
 
-# These hooks are executed by all ranks in the order they were added during `sync_runs()`
+# These hooks are executed by all ranks in the order they were added during `synchronize_state()`
 # This ensures DTensor creations and other distributed operations happen together
 # Calling torch.dist.barrier() in a hook here should work
 multi_run_manager.register_creation_hook(callback)

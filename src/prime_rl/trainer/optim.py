@@ -27,7 +27,7 @@ def setup_optimizer(
         while 0 not in multi_run_manager.idx_2_id:
             if world.is_master:
                 multi_run_manager.discover_runs()
-            multi_run_manager.sync_runs()
+            multi_run_manager.synchronize_state()
             logger.info(f"Waiting for run 0 to be created {multi_run_manager.id_2_idx=}")
             time.sleep(1)
         named_params = multi_run_manager.get_named_parameters_for_run(0)

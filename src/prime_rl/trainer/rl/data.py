@@ -156,7 +156,7 @@ class DataLoader:
         if self.world.is_master:
             self.packer.pack()
         self.receiver.wait()
-        self.multi_run_manager.sync_runs()
+        self.multi_run_manager.synchronize_state()
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()

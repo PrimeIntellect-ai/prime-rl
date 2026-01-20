@@ -52,7 +52,7 @@ class MultiRunManager:
         # We use the store to keep other ranks in sync with master
         self.store = c10d._get_default_store()
         self.world = get_world()
-        # Track id_2_idx state at last sync_runs to calculate diffs
+        # Track id_2_idx state at last synchronize_state to calculate diffs
         self._last_synced_id_2_idx: dict[str, int] = {}
 
         # Store modules with their FQN prefixes for parameter management
@@ -302,11 +302,11 @@ class MultiRunManager:
     # =========================================================================
 
     def discover_runs(self) -> None:
-        """Detect run changes and update data structures (master only). Must be followed by sync_runs().
+        """Detect run changes and update data structures (master only). Must be followed by synchronize_state().
 
         Scans for new/deleted runs, calls forgotten/discovered hooks (master only),
         and updates internal data structures. Hooks and parameter resets for all ranks
-        are deferred to sync_runs().
+        are deferred to synchronize_state().
         """
         if not self.world.is_master:
             raise RuntimeError("discover_runs() must only be called on the master rank")
@@ -336,7 +336,7 @@ class MultiRunManager:
             except StopIteration:
                 continue
 
-    def sync_runs(self) -> None:
+    def synchronize_state(self) -> None:
         """Sync run state across ranks and execute hooks.
 
         Master calculates what changed since last sync using _last_synced_id_2_idx.
