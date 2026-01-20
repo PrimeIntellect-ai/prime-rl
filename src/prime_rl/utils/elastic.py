@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import httpx
 from httpx import AsyncClient
 
 from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
@@ -49,8 +50,7 @@ async def check_server_model(url: str, model_name: str, timeout: float = 5.0) ->
     Returns:
         Tuple of (has_model, is_healthy) booleans
     """
-    import httpx
-
+    logger = get_logger()
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(f"{url}/v1/models")
@@ -58,7 +58,8 @@ async def check_server_model(url: str, model_name: str, timeout: float = 5.0) ->
             data = response.json()
             models = [m.get("id") for m in data.get("data", [])]
             return model_name in models, len(models) > 0
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to check server {url}: {e}")
         return False, False
 
 
@@ -451,14 +452,12 @@ class ElasticInferencePool:
 
         self._started = False
 
-    async def _sync_weights(self, weights_path: Path, lora_name: str | None = None, step: int = 0) -> None:
-        """Internal: sync weights/adapter across all servers with verification.
+    async def sync_weights(self, weights_path: Path, lora_name: str | None = None, step: int = 0) -> None:
+        """Sync weights/adapter across all servers with verification.
 
         Sets the desired adapter state, loads the adapter on each server, and verifies
         it was loaded correctly. Only servers that successfully load the adapter are
         marked as ready and will receive inference requests.
-
-        Called by update_weights() in client.py - do not call directly.
         """
         async with self._lock:
             self._desired = DesiredAdapterState(
