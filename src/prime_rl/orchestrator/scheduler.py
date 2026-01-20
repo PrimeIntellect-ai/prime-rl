@@ -226,7 +226,7 @@ class Scheduler:
 
             if self.elastic_pool is not None:
                 # Use elastic pool - it tracks readiness and only exposes synced servers
-                await self.elastic_pool.sync_adapter(
+                await self.elastic_pool.update_weights(
                     weights_path=weights_path,
                     lora_name=self.lora_name,
                     step=next_ckpt_step,

@@ -276,7 +276,7 @@ async def orchestrate(config: OrchestratorConfig):
         lora_name = config.model.lora.name if config.model.lora else None
 
         if elastic_pool is not None:
-            await elastic_pool.sync_adapter(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+            await elastic_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
         else:
             await update_weights(admin_clients, weights_path, lora_name=lora_name)
     else:
