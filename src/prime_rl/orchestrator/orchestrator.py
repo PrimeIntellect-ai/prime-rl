@@ -44,7 +44,6 @@ from prime_rl.utils.client import (
     setup_clients,
     update_weights,
 )
-from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.elastic import ElasticInferencePool
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
@@ -177,22 +176,9 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             checkpoint_step = config.ckpt.resume_step
 
-    # Setup scheduler (uses subprocess workers for env execution)
-    # In elastic mode, pass client_config with ready URLs so workers start with correct endpoints
-    # Use empty list if no servers ready yet - workers will queue requests until servers are available
-    if elastic_pool is not None:
-        worker_client_config = ClientConfig(
-            timeout=config.client.timeout,
-            base_url=elastic_pool.ready_urls or [],
-            api_key_var=config.client.api_key_var,
-            headers=config.client.headers,
-        )
-    else:
-        worker_client_config = config.client
-
     scheduler = Scheduler(
         admin_clients=admin_clients,
-        client_config=worker_client_config,
+        client_config=config.client,
         env_configs=config.env,
         buffer=buffer,
         config=config,
@@ -260,7 +246,9 @@ async def orchestrate(config: OrchestratorConfig):
 
         weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
         lora_name = config.model.lora.name if config.model.lora else None
-        await update_weights(admin_clients, weights_path, lora_name=lora_name, elastic_pool=elastic_pool, step=scheduler.ckpt_step)
+        await update_weights(
+            admin_clients, weights_path, lora_name=lora_name, elastic_pool=elastic_pool, step=scheduler.ckpt_step
+        )
     else:
         logger.info("Training from scratch. Resetting weights to base model")
         if config.model.lora is None:
