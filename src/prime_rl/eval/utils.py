@@ -305,7 +305,7 @@ async def generate_and_save_rollout(
         state = await _generate_rollout(client, env, model_name, example, _sampling_args)
     except (RetryError, Exception) as e:
         # IMPORTANT: do not raise here (asyncio.gather would cancel all other rollouts).
-        logger.exception(
+        logger.error(
             f"Rollout generation failed after retries; recording no_response "
             f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx}): {repr(e)}"
         )
@@ -402,14 +402,12 @@ async def generate_and_save_group(
         states = await _generate_group(client, env, model_name, example, rollouts_per_example, _sampling_args)
     except (RetryError, Exception) as e:
         # IMPORTANT: do not raise here (asyncio.gather would cancel other groups).
-        logger.exception(
+        logger.error(
             f"Group generation failed after retries; recording no_response rollouts "
             f"(env={env_name_or_id}, example_id={example.get('example_id')}): {repr(e)}"
         )
         failed_states = [
-            _make_no_response_state(
-                example=example, rollout_idx=rollout_idx, env_name_or_id=env_name_or_id, error=e
-            )
+            _make_no_response_state(example=example, rollout_idx=rollout_idx, env_name_or_id=env_name_or_id, error=e)
             for rollout_idx in range(rollouts_per_example)
         ]
 
@@ -602,8 +600,7 @@ async def run_eval(
             "completion_len": [get_completion_len(state) for state in all_states],
             "is_truncated": [get_is_truncated(state) for state in all_states],
             "rollout_status": [
-                (state.get("info", {}) or {}).get("prime_rl", {}).get("rollout_status", "ok")
-                for state in all_states
+                (state.get("info", {}) or {}).get("prime_rl", {}).get("rollout_status", "ok") for state in all_states
             ],
         }
     )
@@ -632,7 +629,9 @@ async def run_eval(
 
     # Log statistics to console
     eval_time = time.perf_counter() - eval_start_time
-    no_response_rate = float((results_df.rollout_status == "no_response").mean()) if "rollout_status" in results_df else 0.0
+    no_response_rate = (
+        float((results_df.rollout_status == "no_response").mean()) if "rollout_status" in results_df else 0.0
+    )
     message = f"Evaluated {env_name_or_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
@@ -649,7 +648,9 @@ async def run_eval(
     eval_metrics = {
         f"avg@{k}": results_df.reward.mean(),
         "no_response/pct": no_response_rate * 100.0,
-        "no_response/count": int((results_df.rollout_status == "no_response").sum()) if "rollout_status" in results_df else 0,
+        "no_response/count": int((results_df.rollout_status == "no_response").sum())
+        if "rollout_status" in results_df
+        else 0,
         "completion_len/avg": results_df.completion_len.mean().item(),
         "completion_len/max": results_df.completion_len.max().item(),
         "completion_len/min": results_df.completion_len.min().item(),

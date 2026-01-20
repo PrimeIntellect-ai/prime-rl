@@ -32,6 +32,7 @@ from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     compute_temperature,
     get_sampling_args,
+    get_weight_dir,
     print_benchmark,
     set_semaphore,
 )
@@ -50,9 +51,7 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
-    get_broadcast_dir,
     get_env_ids_to_install,
-    get_step_path,
     install_env,
     resolve_latest_ckpt_step,
     to_col_format,
@@ -231,9 +230,10 @@ async def orchestrate(config: OrchestratorConfig):
         if config.eval and config.eval.skip_eval_on_resume:
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
+
         await update_weights(
             admin_clients,
-            get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
+            get_weight_dir(config.output_dir, scheduler.ckpt_step),
             lora_name=config.model.lora.name if config.model.lora else None,
         )
     else:
@@ -249,6 +249,10 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Start update policy loop
     update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
+
+    # Track consecutive empty batches for retry logic
+    empty_batch_retries = 0
+    max_empty_batch_retries = 5
 
     while True:
         # Check if update_policy_task has failed and propagate the exception
@@ -384,7 +388,26 @@ async def orchestrate(config: OrchestratorConfig):
             temperature=temperature,
             step=progress.step,
         )
-        assert len(training_batch.examples) != 0, "Step with no samples is not allowed"
+
+        # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
+        if len(training_batch.examples) == 0:
+            empty_batch_retries += 1
+            if empty_batch_retries >= max_empty_batch_retries:
+                raise RuntimeError(
+                    f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
+                )
+            backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
+            logger.warning(
+                f"Step {progress.step} produced 0 training samples "
+                f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
+            )
+            # Cancel validation task to avoid accumulating background tasks
+            val_task.cancel()
+            await asyncio.sleep(backoff)
+            continue
+
+        # Reset retry counter on successful batch
+        empty_batch_retries = 0
         training_batch_sender.send(training_batch)
 
         # Await and process val results

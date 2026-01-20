@@ -68,6 +68,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     )
                     save_dir.mkdir(parents=True, exist_ok=True)
 
+                    self.logger.debug(f"Saving weights for run {idx} to {save_dir}")
                     save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
                     if adapter_only:
                         save_lora_config(self.lora_config, model, save_dir)

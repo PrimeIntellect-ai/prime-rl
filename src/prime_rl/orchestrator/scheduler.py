@@ -113,6 +113,7 @@ class Scheduler:
                     log_level=config.log.level,
                     vf_log_level=config.log.vf_level,
                     log_file=str(env_log_file) if env_log_file else None,
+                    max_restarts=config.max_env_worker_restarts,
                 )
                 self.workers[env_name].append(worker)
 
@@ -302,8 +303,11 @@ class Scheduler:
 
                 except asyncio.CancelledError:
                     pass  # Request was cancelled, will be rescheduled
-                except WorkerDiedError:
-                    raise  # Re-raise to exit process for K8s restart
+                except WorkerDiedError as e:
+                    # Worker died - check if it will auto-restart or if orchestrator should crash
+                    self.logger.warning(f"Rollout lost due to worker death: {e}")
+                    # Check if any worker has permanently failed (exceeded max restarts)
+                    self._check_for_fatal_worker_errors()
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
 
@@ -311,6 +315,14 @@ class Scheduler:
 
         pbar.close()
         return batch_rollouts
+
+    def _check_for_fatal_worker_errors(self):
+        """Check if any worker has permanently failed and raise the error to crash orchestrator."""
+        for workers in self.workers.values():
+            for worker in workers:
+                if worker._fatal_error is not None:
+                    self.logger.error(f"Worker '{worker.worker_name}' permanently failed, crashing orchestrator")
+                    raise worker._fatal_error
 
     @property
     def max_off_policy_level(self) -> int:

@@ -159,13 +159,19 @@ class MultiLoRAOptimizer:
         # The Runs class handles parameter reset internally when new runs are created
         self.runs.register_creation_hook(self.optimizer_creation_hook)
 
-    def register_post_creation_callback(self, callback: Callable[[Optimizer, int], None]) -> None:
+    def register_post_creation_callback(
+        self, callback: Callable[[Optimizer, int], None], index: int | None = None
+    ) -> None:
         """Register a callback to be called after an optimizer is created.
 
         Args:
             callback: A callable that takes (optimizer: Optimizer, idx: int) as arguments.
+            index: Optional index to insert at. If None, appends to end.
         """
-        self._post_creation_callbacks.append(callback)
+        if index is None:
+            self._post_creation_callbacks.append(callback)
+        else:
+            self._post_creation_callbacks.insert(index, callback)
 
     def optimizer_creation_hook(self, idx: int, run_id: str) -> None:
         # Get named parameters for this run from the Runs system
@@ -174,7 +180,7 @@ class MultiLoRAOptimizer:
         lr = self.runs.config[idx].optim.lr
         self.optimizers[idx] = _create_optimizer(self.config, named_params, self.parallel_dims, lr)
 
-        # Call post-creation callbacks (e.g., for scheduler creation)
+        # Call post-creation callbacks in order
         for callback in self._post_creation_callbacks:
             callback(self.optimizers[idx], idx)
 

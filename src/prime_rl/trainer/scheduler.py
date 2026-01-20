@@ -173,6 +173,6 @@ def setup_multi_scheduler(
 ) -> MultiLoRAScheduler:
     """Create a MultiLoRAScheduler for managing per-run schedulers."""
     scheduler = MultiLoRAScheduler(scheduler_config, max_steps)
-    # Register callback so schedulers are created when optimizers are created
-    optimizer.register_post_creation_callback(scheduler.scheduler_creation_hook)
+    # Register callback at index 0 so schedulers are created before other callbacks
+    optimizer.register_post_creation_callback(scheduler.scheduler_creation_hook, index=0)
     return scheduler

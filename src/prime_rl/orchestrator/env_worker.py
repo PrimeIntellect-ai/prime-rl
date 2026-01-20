@@ -17,7 +17,7 @@ from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
-from prime_rl.utils.logger import intercept_verifiers_logging, reset_logger, setup_logger
+from prime_rl.utils.logger import get_logger, intercept_verifiers_logging, reset_logger, setup_logger
 
 
 class WorkerDiedError(Exception):
@@ -235,6 +235,7 @@ class EnvWorker:
         log_level: str = "warn",
         vf_log_level: str = "warn",
         log_file: str | None = None,
+        max_restarts: int = 5,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -249,6 +250,7 @@ class EnvWorker:
         self.log_level = log_level
         self.vf_log_level = vf_log_level
         self.log_file = log_file
+        self.max_restarts = max_restarts
 
         self.request_queue: Queue = Queue()
         self.response_queue: Queue = Queue()
@@ -264,6 +266,12 @@ class EnvWorker:
         self._stopping = False
         # Track if worker died unexpectedly (prevents scheduler from routing to dead worker)
         self._dead = False
+        # Track restart count to prevent infinite restart loops
+        self._restart_count = 0
+        # Track fatal error when max restarts exceeded (orchestrator should crash)
+        self._fatal_error: Exception | None = None
+        # Track successful responses since last restart (to reset restart count)
+        self._responses_since_restart = 0
 
     def start(self):
         """Start the worker process."""
@@ -299,6 +307,31 @@ class EnvWorker:
             if self.process.is_alive():
                 self.process.terminate()
 
+    def _restart(self):
+        """Restart the worker process after unexpected death."""
+        # Clean up old process if it exists
+        if self.process is not None:
+            if self.process.is_alive():
+                self.process.terminate()
+            # Always join to reap zombie process, even if already dead
+            self.process.join(timeout=5)
+            self.process.close()
+
+        # Clear queues to avoid stale data (drain without blocking)
+        while True:
+            try:
+                self.request_queue.get_nowait()
+            except queue.Empty:
+                break
+        while True:
+            try:
+                self.response_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # Start fresh process
+        self.start()
+
     async def submit_request(
         self,
         example_id: int,
@@ -326,6 +359,7 @@ class EnvWorker:
 
     async def collect_responses(self):
         """Background task to collect responses and resolve futures."""
+        logger = get_logger()
         while True:
             # Drain queue first to salvage any responses before checking for dead worker
             while True:
@@ -341,6 +375,14 @@ class EnvWorker:
                     # Check if future was cancelled (e.g., by update_policy)
                     if not future.done():
                         future.set_result(response.results)
+                    # Track successful responses; reset restart count after stable operation
+                    self._responses_since_restart += 1
+                    if self._responses_since_restart >= 10 and self._restart_count > 0:
+                        logger.debug(
+                            f"Worker '{self.worker_name}' stable after {self._responses_since_restart} responses, resetting restart count"
+                        )
+                        self._restart_count = 0
+                        self._responses_since_restart = 0
 
             # Check if worker process died unexpectedly (but not during intentional shutdown)
             if self.process and not self.process.is_alive() and not self._stopping:
@@ -353,7 +395,27 @@ class EnvWorker:
                     if not future.done():
                         future.set_exception(error)
                 self.pending_futures.clear()
-                raise error
+
+                # Check if we've exceeded max restarts (-1 means unlimited)
+                self._restart_count += 1
+                if self.max_restarts >= 0 and self._restart_count > self.max_restarts:
+                    logger.error(
+                        f"Worker '{self.worker_name}' died {self._restart_count} times, exceeding max restarts ({self.max_restarts}). Giving up."
+                    )
+                    # Store fatal error so orchestrator can detect and crash
+                    self._fatal_error = error
+                    raise error
+
+                # Log warning and restart the worker automatically
+                restart_info = (
+                    f"{self._restart_count}/{self.max_restarts}" if self.max_restarts >= 0 else f"{self._restart_count}"
+                )
+                logger.warning(
+                    f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code}). "
+                    f"Restarting worker automatically ({restart_info}). In-flight requests will be rescheduled."
+                )
+                self._responses_since_restart = 0  # Reset on restart
+                self._restart()
 
             await asyncio.sleep(0.01)
 

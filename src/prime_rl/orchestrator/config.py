@@ -727,6 +727,14 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 1
 
+    max_env_worker_restarts: Annotated[
+        int,
+        Field(
+            ge=-1,
+            description="Maximum number of automatic restarts for an environment worker that dies unexpectedly. After this limit, the orchestrator will crash. Set to -1 for unlimited restarts.",
+        ),
+    ] = 5
+
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
     oversampling_factor: Annotated[
