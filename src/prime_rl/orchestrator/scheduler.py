@@ -225,8 +225,8 @@ class Scheduler:
             weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
 
             if self.elastic_pool is not None:
-                # Use elastic pool - it tracks readiness and only exposes synced pods
-                await self.elastic_pool.update_weights(
+                # Use elastic pool - it tracks readiness and only exposes synced servers
+                await self.elastic_pool.sync_adapter(
                     weights_path=weights_path,
                     lora_name=self.lora_name,
                     step=next_ckpt_step,

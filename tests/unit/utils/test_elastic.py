@@ -420,18 +420,18 @@ def test_remove_server_cleans_up(pool):
 
 
 # =============================================================================
-# Tests for update weights
+# Tests for sync adapter
 # =============================================================================
 
 
-def test_update_weights_sets_desired_state(pool):
+def test_sync_adapter_sets_desired_state(pool):
     async def run_test():
         pool._servers = {
             "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
         }
 
         with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock):
-            await pool.update_weights(
+            await pool.sync_adapter(
                 weights_path=Path("/weights/step_100"),
                 lora_name="my-lora",
                 step=100,
@@ -444,7 +444,7 @@ def test_update_weights_sets_desired_state(pool):
     asyncio.run(run_test())
 
 
-def test_update_weights_syncs_all_servers(pool):
+def test_sync_adapter_syncs_all_servers(pool):
     async def run_test():
         pool._servers = {
             "10.0.0.1": ServerState(ip="10.0.0.1", url="http://10.0.0.1:8000", status="ready"),
@@ -452,7 +452,7 @@ def test_update_weights_syncs_all_servers(pool):
         }
 
         with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock) as mock_sync:
-            await pool.update_weights(
+            await pool.sync_adapter(
                 weights_path=Path("/weights/step_100"),
                 lora_name="my-lora",
                 step=100,
@@ -463,7 +463,7 @@ def test_update_weights_syncs_all_servers(pool):
     asyncio.run(run_test())
 
 
-def test_update_weights_notifies_callback(pool):
+def test_sync_adapter_notifies_callback(pool):
     async def run_test():
         callback = MagicMock()
         pool.on_ready_urls_changed = callback
@@ -472,7 +472,7 @@ def test_update_weights_notifies_callback(pool):
         }
 
         with patch.object(pool, "_sync_server_adapter", new_callable=AsyncMock):
-            await pool.update_weights(
+            await pool.sync_adapter(
                 weights_path=Path("/weights/step_100"),
                 lora_name="my-lora",
                 step=100,

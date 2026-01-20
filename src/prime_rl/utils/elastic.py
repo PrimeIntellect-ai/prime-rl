@@ -413,11 +413,12 @@ class ElasticInferencePool:
 
         self._started = False
 
-    async def update_weights(self, weights_path: Path, lora_name: str | None = None, step: int = 0) -> None:
-        """Update weights/adapter on all inference servers.
+    async def sync_adapter(self, weights_path: Path, lora_name: str | None = None, step: int = 0) -> None:
+        """Sync LoRA adapter state across all inference servers.
 
-        This sets the desired adapter state and syncs all servers. Only servers
-        that successfully load the adapter are marked as ready.
+        Sets the desired adapter state, loads the adapter on each server, and verifies
+        it was loaded correctly. Only servers that successfully load the adapter are
+        marked as ready and will receive inference requests.
         """
         async with self._lock:
             self._desired = DesiredAdapterState(
