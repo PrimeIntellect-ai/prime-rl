@@ -36,6 +36,66 @@ def discover_server_ips(hostname: str) -> list[str]:
         return []
 
 
+async def check_server_model(url: str, model_name: str, timeout: float = 5.0) -> tuple[bool, bool]:
+    """Check if a server has a specific model loaded.
+
+    Args:
+        url: Base URL of the server (without /v1)
+        model_name: Model name to check for
+        timeout: Request timeout in seconds
+
+    Returns:
+        Tuple of (has_model, is_healthy) booleans
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(f"{url}/v1/models")
+            response.raise_for_status()
+            data = response.json()
+            models = [m.get("id") for m in data.get("data", [])]
+            return model_name in models, len(models) > 0
+    except Exception:
+        return False, False
+
+
+async def discover_ready_servers(hostname: str, port: int, model_name: str) -> list[str]:
+    """Discover servers via DNS with majority vote logic.
+
+    - If NO servers have the model: return all healthy servers (base model mode)
+    - If ANY server has the model: return only those with it (adapter mode)
+
+    Args:
+        hostname: DNS hostname to resolve
+        port: Port that servers listen on
+        model_name: Model name to check for
+
+    Returns:
+        List of ready server URLs (with /v1 suffix)
+    """
+    loop = asyncio.get_event_loop()
+    ips = await loop.run_in_executor(None, discover_server_ips, hostname)
+    if not ips:
+        return []
+
+    checks = [check_server_model(f"http://{ip}:{port}", model_name) for ip in ips]
+    results = await asyncio.gather(*checks, return_exceptions=True)
+
+    with_model, healthy = [], []
+    for ip, result in zip(ips, results):
+        if isinstance(result, Exception):
+            continue
+        has_model, is_healthy = result
+        url = f"http://{ip}:{port}/v1"
+        if has_model:
+            with_model.append(url)
+        if is_healthy:
+            healthy.append(url)
+
+    return with_model if with_model else healthy
+
+
 @dataclass
 class LoadedAdapter:
     """Information about a loaded LoRA adapter from /v1/models."""
