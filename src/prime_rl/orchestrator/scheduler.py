@@ -122,9 +122,6 @@ class Scheduler:
                     vf_log_level=config.log.vf_level,
                     log_file=str(env_log_file) if env_log_file else None,
                     max_restarts=config.max_env_worker_restarts,
-                    elastic_hostname=client_config.elastic.hostname if client_config.is_elastic else None,
-                    elastic_port=client_config.elastic.port if client_config.is_elastic else 8000,
-                    elastic_sync_interval=client_config.elastic.sync_interval if client_config.is_elastic else 5.0,
                 )
                 self.workers[env_name].append(worker)
 

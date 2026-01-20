@@ -23,6 +23,69 @@ from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
+class WorkerServerDiscovery:
+    """Lightweight server discovery for env workers.
+
+    Unlike ElasticInferencePool, this doesn't manage adapters or admin clients.
+    It just discovers and provides inference clients for rollouts.
+    """
+
+    def __init__(self, client_config: ClientConfig, model_name: str):
+        self._client_config = client_config
+        self._model_name = model_name
+        self._hostname = client_config.elastic.hostname
+        self._port = client_config.elastic.port
+        self._sync_interval = client_config.elastic.sync_interval
+        self._clients: list = []
+        self._last_refresh = 0.0
+        self._last_urls: set[str] = set()
+        self._logger = get_logger()
+
+    @property
+    def clients(self) -> list:
+        """Get current inference clients."""
+        return self._clients
+
+    async def refresh(self) -> bool:
+        """Refresh clients via DNS discovery. Returns True if clients changed."""
+        if not self._hostname:
+            return False
+        if time.time() - self._last_refresh < self._sync_interval:
+            return False
+        self._last_refresh = time.time()
+
+        urls = await discover_ready_servers(self._hostname, self._port, self._model_name)
+        if set(urls) == self._last_urls:
+            return False
+        self._last_urls = set(urls)
+
+        # Close old clients
+        for c in self._clients:
+            await c.close()
+
+        if not urls:
+            self._logger.debug("No ready inference servers found")
+            self._clients = []
+            return True
+
+        self._logger.debug(f"Discovered {len(urls)} ready server(s)")
+        self._clients = setup_clients(
+            ClientConfig(
+                timeout=self._client_config.timeout,
+                base_url=urls,
+                api_key_var=self._client_config.api_key_var,
+                headers=self._client_config.headers,
+            )
+        )
+        return True
+
+    async def close(self) -> None:
+        """Close all clients."""
+        for c in self._clients:
+            await c.close()
+        self._clients = []
+
+
 def discover_server_ips(hostname: str) -> list[str]:
     """Discover server IPs via DNS lookup.
 

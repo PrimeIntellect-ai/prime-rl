@@ -6,7 +6,6 @@ Runs environment rollouts in a separate process to isolate event loop lag.
 
 import asyncio
 import queue
-import time
 import uuid
 from dataclasses import dataclass
 from itertools import cycle
@@ -18,7 +17,7 @@ from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
-from prime_rl.utils.elastic import discover_ready_servers
+from prime_rl.utils.elastic import WorkerServerDiscovery
 from prime_rl.utils.logger import get_logger, intercept_verifiers_logging, reset_logger, setup_logger
 
 
@@ -94,64 +93,23 @@ async def worker_loop(
     example_lookup: dict[int, dict],
     sampling_args: dict,
     model_name: str,
-    elastic_hostname: str | None = None,
-    elastic_port: int = 8000,
-    elastic_sync_interval: float = 5.0,
 ):
     """Main async loop for processing rollout requests."""
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 
-    logger = get_logger()
     semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)
 
     # Start event loop lag monitor for this worker
     lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
     lag_monitor_task = asyncio.create_task(lag_monitor.run())
 
-    # Mutable state for elastic mode
-    current_clients = clients
-    client_cycle = cycle(current_clients) if current_clients else cycle([None])
-    last_refresh = 0.0
-    last_urls: set[str] = set()
+    # Setup client discovery (elastic mode) or use static clients
+    discovery = WorkerServerDiscovery(client_config, model_name) if client_config.is_elastic else None
+    client_cycle = cycle(clients) if clients else cycle([None])
 
     # Track in-flight tasks
     pending_tasks: dict[asyncio.Task, str] = {}
     waiting_requests: list[RolloutRequest] = []
-
-    async def refresh_clients():
-        """Refresh clients via DNS discovery in elastic mode."""
-        nonlocal current_clients, client_cycle, last_refresh, last_urls
-
-        if not elastic_hostname:
-            return
-        if time.time() - last_refresh < elastic_sync_interval:
-            return
-        last_refresh = time.time()
-
-        urls = await discover_ready_servers(elastic_hostname, elastic_port, model_name)
-        if set(urls) == last_urls:
-            return
-        last_urls = set(urls)
-
-        for c in current_clients:
-            await c.close()
-
-        if not urls:
-            logger.debug("No ready inference servers found")
-            current_clients = []
-            client_cycle = cycle([None])
-            return
-
-        logger.debug(f"Discovered {len(urls)} ready server(s)")
-        current_clients = setup_clients(
-            ClientConfig(
-                timeout=client_config.timeout,
-                base_url=urls,
-                api_key_var=client_config.api_key_var,
-                headers=client_config.headers,
-            )
-        )
-        client_cycle = cycle(current_clients)
 
     async def process_request(request: RolloutRequest, client: AsyncOpenAI) -> RolloutResponse:
         example = example_lookup[request.example_id]
@@ -168,7 +126,12 @@ async def worker_loop(
 
     try:
         while True:
-            await refresh_clients()
+            # Refresh clients in elastic mode
+            if discovery and await discovery.refresh():
+                current_clients = discovery.clients
+                client_cycle = cycle(current_clients) if current_clients else cycle([None])
+            else:
+                current_clients = discovery.clients if discovery else clients
 
             # Process waiting requests if we now have clients
             if current_clients and waiting_requests:
@@ -187,10 +150,10 @@ async def worker_loop(
                 if request is None:  # Shutdown signal
                     return
 
-                client = next(client_cycle)
-                if client is None:
+                if not current_clients:
                     waiting_requests.append(request)
                 else:
+                    client = next(client_cycle)
                     task = asyncio.create_task(process_request(request, client))
                     pending_tasks[task] = request.request_id
 
@@ -210,8 +173,11 @@ async def worker_loop(
     finally:
         # Cleanup
         lag_monitor_task.cancel()
-        for c in current_clients:
-            await c.close()
+        if discovery:
+            await discovery.close()
+        else:
+            for c in clients:
+                await c.close()
         for task in pending_tasks:
             task.cancel()
 
@@ -232,9 +198,6 @@ def worker_main(
     log_file: str | None,
     worker_name: str | None = None,
     model_name: str = "",
-    elastic_hostname: str | None = None,
-    elastic_port: int = 8000,
-    elastic_sync_interval: float = 5.0,
 ):
     """Main entry point for worker subprocess."""
     # Reset logger inherited from parent process, then setup fresh logger for this worker
@@ -250,7 +213,7 @@ def worker_main(
 
     # Create clients (empty list in elastic mode - workers discover servers dynamically)
     client_config = ClientConfig(**client_config_dict)
-    clients = [] if elastic_hostname else setup_clients(client_config)
+    clients = [] if client_config.is_elastic else setup_clients(client_config)
 
     # Run async loop
     asyncio.run(
@@ -264,9 +227,6 @@ def worker_main(
             example_lookup,
             sampling_args,
             model_name,
-            elastic_hostname,
-            elastic_port,
-            elastic_sync_interval,
         )
     )
 
@@ -290,9 +250,6 @@ class EnvWorker:
         vf_log_level: str = "warn",
         log_file: str | None = None,
         max_restarts: int = 5,
-        elastic_hostname: str | None = None,
-        elastic_port: int = 8000,
-        elastic_sync_interval: float = 5.0,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -309,11 +266,6 @@ class EnvWorker:
         self.vf_log_level = vf_log_level
         self.log_file = log_file
         self.max_restarts = max_restarts
-
-        # Elastic mode parameters (worker does its own DNS discovery)
-        self.elastic_hostname = elastic_hostname
-        self.elastic_port = elastic_port
-        self.elastic_sync_interval = elastic_sync_interval
 
         self.request_queue: Queue = Queue()
         self.response_queue: Queue = Queue()
@@ -356,9 +308,6 @@ class EnvWorker:
                 self.log_file,
                 self.worker_name,
                 self.model_name,
-                self.elastic_hostname,
-                self.elastic_port,
-                self.elastic_sync_interval,
             ),
             daemon=True,
         )
