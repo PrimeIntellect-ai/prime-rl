@@ -388,7 +388,7 @@ async def orchestrate(config: OrchestratorConfig):
         # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
         if len(training_batch.examples) == 0:
             empty_batch_retries += 1
-            if empty_batch_retries > max_empty_batch_retries:
+            if empty_batch_retries >= max_empty_batch_retries:
                 raise RuntimeError(
                     f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
                 )
