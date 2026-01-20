@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import functools
 from typing import Optional, Union
 
 import torch
@@ -35,6 +36,16 @@ from .converting_afmoe import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
+
+try:
+    from flash_attn import flash_attn_varlen_func
+except ImportError:
+    flash_attn_varlen_func = None
+
+try:
+    from flash_attn_interface import flash_attn_varlen_func as flash_attn_3_varlen_func
+except ImportError:
+    flash_attn_3_varlen_func = None
 
 
 @dataclass
@@ -135,6 +146,8 @@ class AfmoeSDPAAttention(AfmoeAttentionBase):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
     ) -> tuple[torch.Tensor, None]:
         query_states, key_states, value_states, gate_states, input_shape = self._project_states(
             hidden_states, position_embeddings
@@ -154,8 +167,75 @@ class AfmoeSDPAAttention(AfmoeAttentionBase):
         return self._finalize_output(attn_output, gate_states, input_shape)
 
 
+class AfmoeFlashAttention(AfmoeAttentionBase):
+    """AFMoE attention using Flash Attention."""
+
+    def __init__(self, config: AfmoeAttentionConfig, flash_attn_version: int = 2):
+        super().__init__(config)
+        self.flash_attn_version = flash_attn_version
+        self.func = flash_attn_3_varlen_func if flash_attn_version == 3 else flash_attn_varlen_func
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        attention_mask: torch.Tensor | None = None,
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> tuple[torch.Tensor, None]:
+        if self.func is None:
+            raise ImportError("flash-attn is not installed but flash attention was requested.")
+
+        query_states, key_states, value_states, gate_states, input_shape = self._project_states(
+            hidden_states, position_embeddings
+        )
+
+        query_states = query_states.transpose(1, 2).contiguous()
+        key_states = key_states.transpose(1, 2).contiguous()
+        value_states = value_states.transpose(1, 2).contiguous()
+
+        q = query_states.reshape(-1, self.num_heads, self.head_dim)
+        k = key_states.reshape(-1, self.num_heads, self.head_dim)
+        v = value_states.reshape(-1, self.num_heads, self.head_dim)
+
+        if cu_seqlens is None:
+            batch_size, seq_len = input_shape
+            lengths = torch.full((batch_size,), seq_len, dtype=torch.int32, device=hidden_states.device)
+            cu_seqlens = torch.zeros((batch_size + 1,), dtype=torch.int32, device=hidden_states.device)
+            cu_seqlens[1:] = torch.cumsum(lengths, dim=0)
+            max_seqlen = seq_len
+        elif max_seqlen is None:
+            max_seqlen = int((cu_seqlens[1:] - cu_seqlens[:-1]).max().item())
+
+        dropout_p = self.attention_dropout if self.training else 0.0
+        attn_kwargs = {"causal": True, "dropout_p": dropout_p}
+        if self.is_local_attention and self.sliding_window is not None:
+            attn_kwargs["window_size"] = (self.sliding_window, 0)
+
+        out = self.func(
+            q,
+            k,
+            v,
+            cu_seqlens,
+            cu_seqlens,
+            max_seqlen,
+            max_seqlen,
+            **attn_kwargs,
+        )
+        if isinstance(out, tuple):
+            out = out[0]
+
+        attn_output = out.view(*input_shape, self.num_heads, self.head_dim)
+        attn_output = attn_output.view(*input_shape, -1)
+        attn_output = attn_output * torch.sigmoid(gate_states)
+        attn_output = self.o_proj(attn_output)
+        return attn_output, None
+
+
 AFMOE_ATTN_IMPL2CLASS = {
     "sdpa": AfmoeSDPAAttention,
+    "flash_attention_2": functools.partial(AfmoeFlashAttention, flash_attn_version=2),
+    "flash_attention_3": functools.partial(AfmoeFlashAttention, flash_attn_version=3),
 }
 
 
@@ -195,8 +275,7 @@ def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
         supported = list(AFMOE_ATTN_IMPL2CLASS.keys())
         raise ValueError(
             f"AFMoE attention does not support '{config._attn_implementation}'. "
-            f"Supported implementations: {supported}. "
-            f"Note: flash_attention is not supported for AFMoE due to sliding window + RoPE constraints."
+            f"Supported implementations: {supported}."
         )
 
     return AFMOE_ATTN_IMPL2CLASS[attn_impl](attn_config)
@@ -245,6 +324,8 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        cu_seqlens: Optional[torch.LongTensor] = None,
+        max_seqlen: Optional[int] = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
 
@@ -253,6 +334,8 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             attention_mask=attention_mask,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
         )
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = residual + hidden_states
@@ -280,7 +363,7 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
         "norm",
     ]
     _supports_sdpa = True
-    _supports_flash_attn = False
+    _supports_flash_attn = True
     _supports_flex_attn = False
     _supports_attention_backend = True
     _can_compile_fullgraph = False
@@ -359,19 +442,41 @@ class AfmoeModel(AfmoePreTrainedModel):
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
         cache_position = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
 
+        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3"):
+            flat_position_ids = position_ids.view(-1)
+            seqlens = torch.cat(
+                [
+                    flat_position_ids[0:1],
+                    flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
+                    flat_position_ids[-1:] + 1,
+                ]
+            )
+            max_seqlen = seqlens.max().item()
+            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+            torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        else:
+            max_seqlen = None
+            cu_seqlens = None
+
         if not isinstance(causal_mask_mapping := attention_mask, dict):
-            mask_kwargs = {
-                "config": self.config,
-                "input_embeds": inputs_embeds,
-                "attention_mask": attention_mask,
-                "cache_position": cache_position,
-                "past_key_values": None,
-                "position_ids": position_ids,
-            }
-            causal_mask_mapping = {
-                "full_attention": create_causal_mask(**mask_kwargs),
-                "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
-            }
+            if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3"):
+                causal_mask_mapping = {
+                    "full_attention": None,
+                    "sliding_attention": None,
+                }
+            else:
+                mask_kwargs = {
+                    "config": self.config,
+                    "input_embeds": inputs_embeds,
+                    "attention_mask": attention_mask,
+                    "cache_position": cache_position,
+                    "past_key_values": None,
+                    "position_ids": position_ids,
+                }
+                causal_mask_mapping = {
+                    "full_attention": create_causal_mask(**mask_kwargs),
+                    "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
+                }
 
         hidden_states = inputs_embeds
 
@@ -387,6 +492,8 @@ class AfmoeModel(AfmoePreTrainedModel):
                 hidden_states,
                 attention_mask=mask,
                 position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
             )
 
         hidden_states = self.norm(hidden_states)
