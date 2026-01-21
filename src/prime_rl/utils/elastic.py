@@ -301,6 +301,7 @@ class ElasticInferencePool:
                     step = 0
                 return AdapterState(name=model_id, path=path, step=step)
 
+            self.logger.debug(f"No matching adapter found on {ip} for desired={self._desired.name}")
             return None
         except Exception as e:
             self.logger.warning(f"Failed to query /v1/models on {ip}: {e}")
@@ -329,6 +330,11 @@ class ElasticInferencePool:
             server.status = "ready"
             return True
 
+        # Debug: log why pre-check failed (before attempting load)
+        self.logger.debug(
+            f"Pre-check failed on {ip}: loaded={loaded.path if loaded else None} "
+            f"(step={loaded.step if loaded else None}), desired={self._desired.path} (step={self._desired.step})"
+        )
         server.status = "syncing"
 
         if self._desired.name and self._desired.path:
