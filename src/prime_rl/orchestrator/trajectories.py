@@ -6,7 +6,7 @@ from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 
-def interleave_rollout(state: vf.State, temperature: float | None = None) -> list[TrainingSample] | None:
+def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     """
     Convert vf.State to a *single* trainable rollout by interleaving the trajectory.
 
@@ -35,7 +35,6 @@ def interleave_rollout(state: vf.State, temperature: float | None = None) -> lis
         completion_ids=deepcopy(first_step["tokens"]["completion_ids"]),
         completion_mask=completion_mask,
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
-        temperature=temperature,
         teacher_logprobs=None,  # Populated at the end after full sequence length is known if teacher model is configured
         advantage=None,
     )
@@ -75,7 +74,7 @@ def interleave_rollout(state: vf.State, temperature: float | None = None) -> lis
     return [interleaved_rollout]
 
 
-def branch_rollout(state: vf.State, temperature: float | None = None) -> list[TrainingSample] | None:
+def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
     logger = get_logger()
 
@@ -99,7 +98,6 @@ def branch_rollout(state: vf.State, temperature: float | None = None) -> list[Tr
             completion_ids=deepcopy(tokens["completion_ids"]),
             completion_mask=completion_mask,
             completion_logprobs=deepcopy(tokens["completion_logprobs"]),
-            temperature=temperature,
             advantage=None,
             teacher_logprobs=None,
         )

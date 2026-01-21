@@ -75,7 +75,6 @@ class Scheduler:
         self.strict_async_level = strict_async_level
         self.lora_name = lora_name
         self.sampling_args = get_sampling_args(config.sampling)
-        self.sampling_temperature = self.sampling_args.get("temperature", config.sampling.temperature)
         self.model_name = self.config.model.name
 
         # Build example lookup dicts per env (example_id -> example)
@@ -151,7 +150,6 @@ class Scheduler:
     def set_sampling_args(self, sampling_args: dict) -> None:
         """Update sampling args for future rollout requests."""
         self.sampling_args = sampling_args
-        self.sampling_temperature = sampling_args.get("temperature", self.sampling_temperature)
 
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
@@ -166,7 +164,6 @@ class Scheduler:
             example_id=example["example_id"],
             rollouts_per_example=self.config.rollouts_per_example,
             sampling_args=self.sampling_args,
-            temperature=self.sampling_temperature,
         )
 
         self.inflight_group_rollouts[future] = InflightRolloutInfo(
