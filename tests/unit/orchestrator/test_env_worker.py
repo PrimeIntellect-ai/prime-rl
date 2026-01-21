@@ -152,24 +152,26 @@ def test_update_model_name(env_worker):
 def test_submit_request_uses_current_model_name(env_worker):
     """Test that submit_request uses the current model_name."""
     import asyncio
-    from prime_rl.orchestrator.env_worker import RolloutRequest
+
+    captured_requests = []
+
+    def capture_put(request):
+        captured_requests.append(request)
 
     async def run_test():
-        # Initial model name
-        env_worker.example_lookup = {1: {"task": "test"}}
-        future, request_id = await env_worker.submit_request(example_id=1, rollouts_per_example=1)
+        # Mock the queue put to capture requests
+        env_worker.request_queue.put = capture_put
 
-        # Get the request from the queue
-        request = env_worker.request_queue.get_nowait()
-        assert request.model_name == "test-model"
+        # Initial model name
+        future, request_id = await env_worker.submit_request(example_id=1, rollouts_per_example=1)
+        assert captured_requests[-1].model_name == "test-model"
 
         # Update model name
         env_worker.update_model_name("lora-model")
 
         # New request should use new model name
         future2, request_id2 = await env_worker.submit_request(example_id=1, rollouts_per_example=1)
-        request2 = env_worker.request_queue.get_nowait()
-        assert request2.model_name == "lora-model"
+        assert captured_requests[-1].model_name == "lora-model"
 
     asyncio.run(run_test())
 
