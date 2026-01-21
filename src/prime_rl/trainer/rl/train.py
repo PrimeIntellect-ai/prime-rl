@@ -541,17 +541,17 @@ def train(config: RLTrainerConfig):
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
 
-    # Write final checkpoint
-    if ckpt_manager is not None:
-        logger.info("Writing final checkpoint")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-        ckpt_manager.maybe_clean()
+    # Write final checkpoint (only for single-run mode; multi-run checkpoints are managed by the orchestrator)
+    if config.max_concurrent_runs == 1:
+        if ckpt_manager is not None:
+            logger.info("Writing final checkpoint")
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            ckpt_manager.maybe_clean()
 
-    # Write final checkpoint
-    if weight_ckpt_manager is not None:
-        logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(progress.step, model, tokenizer)
-        weight_ckpt_manager.maybe_clean()
+        if weight_ckpt_manager is not None:
+            logger.info("Writing final weight checkpoint")
+            weight_ckpt_manager.save(progress.step, model, tokenizer)
+            weight_ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("RL trainer finished!")
