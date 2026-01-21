@@ -105,13 +105,12 @@ class Scheduler:
                 env_log_file.parent.mkdir(parents=True, exist_ok=True)
 
             for worker_idx in range(self.workers_per_env):
-                # In elastic mode, use lora_name if set (workers do their own discovery)
-                worker_model_name = self.lora_name if self.lora_name else self.model_name
+                # Start with base model name - workers will be updated after LoRA is loaded
                 worker = EnvWorker(
                     env_id=env_config.id,
                     env_args=env_config.args,
                     client_config=client_config,
-                    model_name=worker_model_name,
+                    model_name=self.model_name,
                     seq_len=config.seq_len,
                     interleaved_rollouts=config.trajectory_strategy == "interleaved",
                     max_concurrent=config.max_concurrent or -1,
@@ -215,6 +214,10 @@ class Scheduler:
 
             if self.lora_name is not None:
                 self.model_name = self.lora_name
+                # Update workers to use LoRA name for future requests
+                for workers in self.workers.values():
+                    for worker in workers:
+                        worker.update_model_name(self.lora_name)
 
             self.checkpoint_ready.set()
 
