@@ -207,8 +207,9 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
         elif max_seqlen is None:
             max_seqlen = int((cu_seqlens[1:] - cu_seqlens[:-1]).max().item())
 
-        dropout_p = self.attention_dropout if self.training else 0.0
-        attn_kwargs = {"causal": True, "dropout_p": dropout_p}
+        # dropout_p = self.attention_dropout if self.training else 0.0
+        assert self.attention_dropout == 0.0, "Dropout is not supported for flash attention"
+        attn_kwargs = {"causal": True}
         if self.is_local_attention and self.sliding_window is not None:
             attn_kwargs["window_size"] = (self.sliding_window, 0)
 
