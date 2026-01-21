@@ -236,6 +236,8 @@ class PrimeMonitor(Monitor):
         if not hasattr(self, "_client"):
             return
 
+        self._flush()
+
         # Close the async client within the event loop
         async def _close_client() -> None:
             await self._client.aclose()
@@ -260,6 +262,7 @@ class PrimeMonitor(Monitor):
         self._thread = Thread(target=self._run_event_loop, daemon=True)
         self._thread.start()
         self._client = httpx.AsyncClient(timeout=30)
+        self._pending_futures: list[asyncio.Future] = []
 
     def _reinit_after_fork(self) -> None:
         """Reinitialize thread and event loop after fork."""
@@ -269,6 +272,23 @@ class PrimeMonitor(Monitor):
         """Run the async event loop in a background thread."""
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
+
+    def _flush(self, timeout: float = 30.0) -> None:
+        """Wait for all pending async requests to complete."""
+        if not self.enabled or not hasattr(self, "_loop"):
+            return
+
+        if not self._pending_futures:
+            return
+
+        self.logger.debug(f"Flushing {len(self._pending_futures)} pending request(s)")
+        for future in self._pending_futures:
+            try:
+                future.result(timeout=timeout)
+            except Exception as e:
+                self.logger.debug(f"Pending request completed with error: {e}")
+
+        self._pending_futures.clear()
 
     async def _make_request_async(self, endpoint: str, data: dict[str, Any], max_retries: int = 3) -> None:
         """Make an async POST request to the Prime Intellect API with retries."""
@@ -306,7 +326,10 @@ class PrimeMonitor(Monitor):
         if not self.enabled:
             return
 
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             self._make_request_async(endpoint, data),
             self._loop,
         )
+        self._pending_futures.append(future)
+        # Clean up completed futures to avoid memory growth
+        self._pending_futures = [f for f in self._pending_futures if not f.done()]

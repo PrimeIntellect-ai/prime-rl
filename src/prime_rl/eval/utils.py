@@ -816,6 +816,7 @@ def _run_evals_in_subprocess(
         )
 
     asyncio.run(_run())
+    get_monitor().close()
     logger.info(f"Eval subprocess finished for checkpoint step {ckpt_step}")
 
 
