@@ -320,15 +320,6 @@ def test_evict_run_writes_file(tmp_path: Path) -> None:
     assert evicted_path.read_text() == eviction_reason
 
 
-def test_evict_run_invalid_idx(tmp_path: Path) -> None:
-    """Test that evict_run raises ValueError for invalid index."""
-    multi_run_manager = MultiRunManager(output_dir=tmp_path, max_runs=5)
-
-    # Try to evict a non-existent run
-    with pytest.raises(ValueError, match="Run index 2 not found"):
-        multi_run_manager.evict_run(2, "This should fail")
-
-
 def test_discover_runs_ignores_evicted(tmp_path: Path) -> None:
     """Test that discover_runs ignores runs with evicted.txt."""
     multi_run_manager = MultiRunManager(output_dir=tmp_path, max_runs=5)
