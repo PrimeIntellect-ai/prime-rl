@@ -345,7 +345,6 @@ class MultiRunManager:
 
         # Filter out evicted runs
         evicted_runs = {run_id for run_id in run_ids if (self.output_dir / run_id / "configs" / "evicted.txt").exists()}
-        self.logger.debug(f"Ignoring evicted runs: {evicted_runs}")
         run_ids = run_ids - evicted_runs
 
         deleted_runs = self.id_2_idx.keys() - run_ids
