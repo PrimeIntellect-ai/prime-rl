@@ -4,7 +4,7 @@ from prime_rl.orchestrator.config import SamplingConfig
 
 
 def compute_temperature(step: int, sampling_config: SamplingConfig, max_steps: int | None) -> float:
-    schedule = sampling_config.temperature_schedule
+    schedule = sampling_config.temp_scheduler
     if schedule is None:
         return sampling_config.temperature
 
@@ -15,11 +15,11 @@ def compute_temperature(step: int, sampling_config: SamplingConfig, max_steps: i
         return start_temp
 
     if schedule.end_temperature is None:
-        raise ValueError("temperature_schedule.end_temperature must be set for linear/cosine schedules")
+        raise ValueError("temp_scheduler.end_temperature must be set for linear/cosine schedules")
 
     total_steps = schedule.total_steps if schedule.total_steps is not None else max_steps
     if total_steps is None:
-        raise ValueError("temperature_schedule.total_steps must be set when max_steps is None")
+        raise ValueError("temp_scheduler.total_steps must be set when max_steps is None")
 
     end_temp = schedule.end_temperature
     if total_steps <= 1:

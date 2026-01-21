@@ -39,7 +39,7 @@ def get_sampling_args(sampling_config: SamplingConfig, temperature: float | None
     # Convert SamplingConfig to vLLM OAI sampling args
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
     sampling_args = dict(sampling_config)
-    sampling_args.pop("temperature_schedule", None)
+    sampling_args.pop("temp_scheduler", None)
     if temperature is not None:
         sampling_args["temperature"] = temperature
     sampling_args["top_p"] = 1.0

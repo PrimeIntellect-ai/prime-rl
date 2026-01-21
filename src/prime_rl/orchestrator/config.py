@@ -113,7 +113,7 @@ class SamplingConfig(BaseConfig):
         ),
     ] = 1.0
 
-    temperature_schedule: Annotated[
+    temp_scheduler: Annotated[
         TemperatureScheduleConfig | None,
         Field(
             description="Optional schedule to grow temperature over training steps.",
@@ -852,19 +852,17 @@ class OrchestratorConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_temperature_schedule(self):
-        if self.sampling.temperature_schedule is not None:
-            schedule = self.sampling.temperature_schedule
+        if self.sampling.temp_scheduler is not None:
+            schedule = self.sampling.temp_scheduler
             if schedule.type in ("linear", "cosine") and schedule.end_temperature is None:
-                raise ValueError("temperature_schedule.end_temperature must be set for linear/cosine schedules")
+                raise ValueError("temp_scheduler.end_temperature must be set for linear/cosine schedules")
             if schedule.type in ("linear", "cosine") and schedule.total_steps is None and self.max_steps is None:
-                raise ValueError("temperature_schedule.total_steps must be set when max_steps is None")
+                raise ValueError("temp_scheduler.total_steps must be set when max_steps is None")
             if schedule.start_temperature is not None and schedule.start_temperature != self.sampling.temperature:
-                raise ValueError(
-                    "temperature_schedule.start_temperature must match sampling.temperature to avoid ambiguity"
-                )
+                raise ValueError("temp_scheduler.start_temperature must match sampling.temperature to avoid ambiguity")
             if schedule.type == "constant" and schedule.end_temperature is not None:
                 if schedule.end_temperature != self.sampling.temperature:
                     raise ValueError(
-                        "temperature_schedule.end_temperature must match sampling.temperature for constant schedule"
+                        "temp_scheduler.end_temperature must match sampling.temperature for constant schedule"
                     )
         return self
