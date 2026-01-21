@@ -17,7 +17,7 @@ from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
-from prime_rl.utils.elastic import WorkerServerDiscovery
+from prime_rl.utils.elastic import ServerDiscovery
 from prime_rl.utils.logger import get_logger, intercept_verifiers_logging, reset_logger, setup_logger
 
 
@@ -104,7 +104,9 @@ async def worker_loop(
     lag_monitor_task = asyncio.create_task(lag_monitor.run())
 
     # Setup client discovery (elastic mode) or static client cycle
-    discovery = WorkerServerDiscovery(client_config, model_name) if client_config.is_elastic else None
+    discovery: ServerDiscovery | None = None
+    if client_config.is_elastic:
+        discovery = ServerDiscovery.from_config(client_config, model_name)
     static_cycle = cycle(clients) if clients else None
 
     # Track in-flight tasks
@@ -158,8 +160,9 @@ async def worker_loop(
                     return
 
                 # Update discovery model name if it changed (e.g., switched to LoRA)
-                if discovery and request.model_name != discovery._model_name:
-                    discovery._model_name = request.model_name
+                if discovery and request.model_name != discovery.model_name:
+                    discovery.model_name = request.model_name
+                    discovery._urls = []  # Force refresh on next call
 
                 if has_clients():
                     task = asyncio.create_task(process_request(request, get_next_client()))
@@ -184,7 +187,7 @@ async def worker_loop(
         # Cleanup
         lag_monitor_task.cancel()
         if discovery:
-            await discovery.close()
+            await discovery.stop()
         else:
             for c in clients:
                 await c.close()

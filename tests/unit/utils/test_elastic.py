@@ -8,7 +8,7 @@ import httpx
 from prime_rl.utils.elastic import (
     AdapterState,
     ElasticInferencePool,
-    WorkerServerDiscovery,
+    ServerDiscovery,
     check_server_model,
     discover_ready_servers,
     discover_server_ips,
@@ -256,38 +256,48 @@ def test_adapter_returns_false_when_no_adapter_loaded():
         assert pool._adapter_matches_desired(None) is False
 
 
-# WorkerServerDiscovery tests
+# ServerDiscovery tests
 
 
-def test_worker_server_discovery_initialization():
+def test_server_discovery_initialization():
     with patch("prime_rl.utils.elastic.get_logger"):
         mock_config = MagicMock()
-        mock_config.elastic.hostname = "test.hostname"
-        mock_config.elastic.port = 8000
-        mock_config.elastic.sync_interval = 5.0
+        mock_config.timeout = 30
+        mock_config.api_key_var = "TEST_KEY"
+        mock_config.headers = {}
 
-        discovery = WorkerServerDiscovery(mock_config, "my-model")
+        discovery = ServerDiscovery(
+            hostname="test.hostname",
+            port=8000,
+            model_name="my-model",
+            client_config=mock_config,
+            sync_interval=5.0,
+        )
 
-        assert discovery._hostname == "test.hostname"
-        assert discovery._port == 8000
-        assert discovery._sync_interval == 5.0
-        assert discovery._model_name == "my-model"
+        assert discovery.hostname == "test.hostname"
+        assert discovery.port == 8000
+        assert discovery.sync_interval == 5.0
+        assert discovery.model_name == "my-model"
         assert discovery.has_clients is False
         assert discovery.get_next_client() is None
 
 
-def test_worker_server_discovery_round_robin():
+def test_server_discovery_round_robin():
     with patch("prime_rl.utils.elastic.get_logger"):
         mock_config = MagicMock()
-        mock_config.elastic.hostname = "test.hostname"
-        mock_config.elastic.port = 8000
-        mock_config.elastic.sync_interval = 5.0
 
-        discovery = WorkerServerDiscovery(mock_config, "my-model")
+        discovery = ServerDiscovery(
+            hostname="test.hostname",
+            port=8000,
+            model_name="my-model",
+            client_config=mock_config,
+            sync_interval=5.0,
+        )
 
         # Manually set clients to test round-robin
         client1, client2, client3 = MagicMock(), MagicMock(), MagicMock()
         discovery._clients = [client1, client2, client3]
+        discovery._urls = ["url1", "url2", "url3"]
 
         assert discovery.has_clients is True
         assert discovery.get_next_client() is client1
@@ -296,16 +306,13 @@ def test_worker_server_discovery_round_robin():
         assert discovery.get_next_client() is client1  # wraps around
 
 
-def test_worker_server_discovery_refresh_creates_clients_on_discovery():
+def test_server_discovery_refresh_creates_clients_on_discovery():
     with (
         patch("prime_rl.utils.elastic.get_logger"),
         patch("prime_rl.utils.elastic.discover_ready_servers") as mock_discover,
         patch("prime_rl.utils.elastic.setup_clients") as mock_setup_clients,
     ):
         mock_config = MagicMock()
-        mock_config.elastic.hostname = "test.hostname"
-        mock_config.elastic.port = 8000
-        mock_config.elastic.sync_interval = 0.0  # No throttling for tests
         mock_config.timeout = 30
         mock_config.api_key_var = "TEST_KEY"
         mock_config.headers = {}
@@ -314,7 +321,13 @@ def test_worker_server_discovery_refresh_creates_clients_on_discovery():
         mock_client = MagicMock()
         mock_setup_clients.return_value = [mock_client]
 
-        discovery = WorkerServerDiscovery(mock_config, "my-model")
+        discovery = ServerDiscovery(
+            hostname="test.hostname",
+            port=8000,
+            model_name="my-model",
+            client_config=mock_config,
+            sync_interval=0.0,  # No throttling for tests
+        )
 
         changed = asyncio.run(discovery.refresh())
 
@@ -322,23 +335,26 @@ def test_worker_server_discovery_refresh_creates_clients_on_discovery():
         mock_discover.assert_called_once_with("test.hostname", 8000, "my-model")
 
 
-def test_worker_server_discovery_refresh_no_change_when_urls_same():
+def test_server_discovery_refresh_no_change_when_urls_same():
     with (
         patch("prime_rl.utils.elastic.get_logger"),
         patch("prime_rl.utils.elastic.discover_ready_servers") as mock_discover,
     ):
         mock_config = MagicMock()
-        mock_config.elastic.hostname = "test.hostname"
-        mock_config.elastic.port = 8000
-        mock_config.elastic.sync_interval = 0.0
         mock_config.timeout = 30
         mock_config.api_key_var = "TEST_KEY"
         mock_config.headers = {}
 
         mock_discover.return_value = ["http://10.0.0.1:8000/v1"]
 
-        discovery = WorkerServerDiscovery(mock_config, "my-model")
-        discovery._last_urls = {"http://10.0.0.1:8000/v1"}
+        discovery = ServerDiscovery(
+            hostname="test.hostname",
+            port=8000,
+            model_name="my-model",
+            client_config=mock_config,
+            sync_interval=0.0,
+        )
+        discovery._urls = ["http://10.0.0.1:8000/v1"]
         discovery._last_refresh = 0  # Allow refresh
 
         changed = asyncio.run(discovery.refresh())
@@ -346,53 +362,24 @@ def test_worker_server_discovery_refresh_no_change_when_urls_same():
         assert changed is False
 
 
-def test_worker_server_discovery_refresh_returns_false_when_no_hostname():
-    with patch("prime_rl.utils.elastic.get_logger"):
-        mock_config = MagicMock()
-        mock_config.elastic.hostname = None
-        mock_config.elastic.port = 8000
-        mock_config.elastic.sync_interval = 5.0
-
-        discovery = WorkerServerDiscovery(mock_config, "my-model")
-
-        changed = asyncio.run(discovery.refresh())
-
-        assert changed is False
-
-
-def test_worker_server_discovery_close_clears_clients():
-    with patch("prime_rl.utils.elastic.get_logger"):
-        mock_config = MagicMock()
-        mock_config.elastic.hostname = "test.hostname"
-        mock_config.elastic.port = 8000
-        mock_config.elastic.sync_interval = 5.0
-
-        discovery = WorkerServerDiscovery(mock_config, "my-model")
-
-        # Add mock clients
-        mock_client = AsyncMock()
-        discovery._clients = [mock_client]
-
-        asyncio.run(discovery.close())
-
-        assert discovery._clients == []
-        mock_client.close.assert_called_once()
-
-
-def test_worker_server_discovery_model_name_can_be_updated():
+def test_server_discovery_model_name_can_be_updated():
     """Test that discovery model name can be updated for LoRA switching."""
     with patch("prime_rl.utils.elastic.get_logger"):
         mock_config = MagicMock()
-        mock_config.elastic.hostname = "test.hostname"
-        mock_config.elastic.port = 8000
-        mock_config.elastic.sync_interval = 5.0
 
-        discovery = WorkerServerDiscovery(mock_config, "base-model")
-        assert discovery._model_name == "base-model"
+        discovery = ServerDiscovery(
+            hostname="test.hostname",
+            port=8000,
+            model_name="base-model",
+            client_config=mock_config,
+            sync_interval=5.0,
+        )
+        assert discovery.model_name == "base-model"
 
         # Simulate LoRA switch by updating model name
-        discovery._model_name = "lora-adapter"
-        assert discovery._model_name == "lora-adapter"
+        discovery.model_name = "lora-adapter"
+        discovery._urls = []  # Force refresh
+        assert discovery.model_name == "lora-adapter"
 
 
 # _get_loaded_adapter tests

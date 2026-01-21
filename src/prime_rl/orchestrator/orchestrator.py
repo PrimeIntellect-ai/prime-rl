@@ -92,6 +92,11 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup inference pool (handles both static and elastic modes)
     inference_pool = await setup_inference_pool(config.client, base_model=config.model.name)
+
+    # Validate elastic mode requires LoRA (fail fast instead of at first checkpoint)
+    if config.client.is_elastic and config.model.lora is None:
+        raise ValueError("Elastic inference pool requires LoRA training (set model.lora config)")
+
     clients = inference_pool.clients
     admin_clients = inference_pool.admin_clients
 
