@@ -299,6 +299,7 @@ def test_worker_server_discovery_refresh_creates_clients_on_discovery():
     with (
         patch("prime_rl.utils.elastic.get_logger"),
         patch("prime_rl.utils.elastic.discover_ready_servers") as mock_discover,
+        patch("prime_rl.utils.elastic.setup_clients") as mock_setup_clients,
     ):
         mock_config = MagicMock()
         mock_config.elastic.hostname = "test.hostname"
@@ -309,17 +310,15 @@ def test_worker_server_discovery_refresh_creates_clients_on_discovery():
         mock_config.headers = {}
 
         mock_discover.return_value = ["http://10.0.0.1:8000/v1"]
+        mock_client = MagicMock()
+        mock_setup_clients.return_value = [mock_client]
 
         discovery = WorkerServerDiscovery(mock_config, "my-model")
 
-        with patch.object(discovery, "_setup_clients") as mock_setup:
-            mock_client = MagicMock()
-            mock_setup.return_value = [mock_client]
+        changed = asyncio.run(discovery.refresh())
 
-            changed = asyncio.run(discovery.refresh())
-
-            assert changed is True
-            mock_discover.assert_called_once_with("test.hostname", 8000, "my-model")
+        assert changed is True
+        mock_discover.assert_called_once_with("test.hostname", 8000, "my-model")
 
 
 def test_worker_server_discovery_refresh_no_change_when_urls_same():
