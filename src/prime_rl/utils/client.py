@@ -219,6 +219,8 @@ async def update_weights(
     This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
     """
     if elastic_pool is not None:
+        if lora_name is None:
+            raise ValueError("Elastic inference pool requires LoRA training (lora_name must be set)")
         await elastic_pool.sync_weights(weight_dir, lora_name, step)
         return
 

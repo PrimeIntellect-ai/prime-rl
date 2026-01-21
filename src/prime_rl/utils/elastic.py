@@ -69,10 +69,6 @@ class WorkerServerDiscovery:
             return False
         self._last_urls = set(urls)
 
-        # Close old clients
-        for c in self._clients:
-            await c.close()
-
         if not urls:
             self._logger.debug("No ready inference servers found")
             self._clients = []
@@ -159,18 +155,18 @@ async def discover_ready_servers(hostname: str, port: int, model_name: str) -> l
     checks = [check_server_model(f"http://{ip}:{port}", model_name) for ip in ips]
     results = await asyncio.gather(*checks, return_exceptions=True)
 
-    with_model, healthy = [], []
+    with_model, healthy = set(), set()
     for ip, result in zip(ips, results):
         if isinstance(result, Exception):
             continue
         has_model, is_healthy = result
         url = f"http://{ip}:{port}/v1"
         if has_model:
-            with_model.append(url)
+            with_model.add(url)
         if is_healthy:
-            healthy.append(url)
+            healthy.add(url)
 
-    return with_model if with_model else healthy
+    return sorted(with_model) if with_model else sorted(healthy)
 
 
 @dataclass
