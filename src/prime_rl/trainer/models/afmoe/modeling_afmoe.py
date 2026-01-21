@@ -207,21 +207,38 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
         elif max_seqlen is None:
             max_seqlen = int((cu_seqlens[1:] - cu_seqlens[:-1]).max().item())
 
-        dropout_p = self.attention_dropout if self.training else 0.0
-        attn_kwargs = {"causal": True, "dropout_p": dropout_p}
+        attn_kwargs = {"causal": True}
         if self.is_local_attention and self.sliding_window is not None:
             attn_kwargs["window_size"] = (self.sliding_window, 0)
 
-        out = self.func(
-            q,
-            k,
-            v,
-            cu_seqlens,
-            cu_seqlens,
-            max_seqlen,
-            max_seqlen,
-            **attn_kwargs,
-        )
+        if self.training and self.attention_dropout > 0:
+            attn_kwargs["dropout_p"] = self.attention_dropout
+
+        try:
+            out = self.func(
+                q,
+                k,
+                v,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                **attn_kwargs,
+            )
+        except TypeError as exc:
+            if "dropout_p" not in attn_kwargs or "dropout_p" not in str(exc):
+                raise
+            attn_kwargs.pop("dropout_p", None)
+            out = self.func(
+                q,
+                k,
+                v,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                **attn_kwargs,
+            )
         if isinstance(out, tuple):
             out = out[0]
 
@@ -443,15 +460,16 @@ class AfmoeModel(AfmoePreTrainedModel):
         cache_position = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
 
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3"):
-            batch_size, seq_len = inputs_embeds.shape[:2]
-            cu_seqlens = torch.arange(
-                0,
-                (batch_size + 1) * seq_len,
-                step=seq_len,
-                dtype=torch.int32,
-                device=inputs_embeds.device,
+            flat_position_ids = position_ids.view(-1)
+            seqlens = torch.cat(
+                [
+                    flat_position_ids[0:1],
+                    flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
+                    flat_position_ids[-1:] + 1,
+                ]
             )
-            max_seqlen = seq_len
+            max_seqlen = seqlens.max().item()
+            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None
