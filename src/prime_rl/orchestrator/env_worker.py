@@ -440,6 +440,7 @@ class EnvWorker:
 
     def update_model_name(self, model_name: str):
         """Update the model name for future requests."""
+        get_logger().debug(f"Worker '{self.worker_name}' switching model: {self.model_name} -> {model_name}")
         self.model_name = model_name
 
     @property
