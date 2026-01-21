@@ -235,10 +235,10 @@ async def orchestrate(config: OrchestratorConfig):
             get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
             lora_name=config.model.lora.name if config.model.lora else None,
         )
-    else:
-        logger.info("Training from scratch. Resetting weights to base model")
-        if config.model.lora is None:
-            await reload_weights(admin_clients)
+    # else:
+    #     logger.info("Training from scratch. Resetting weights to base model")
+    #     if config.model.lora is None:
+    #         await reload_weights(admin_clients)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
