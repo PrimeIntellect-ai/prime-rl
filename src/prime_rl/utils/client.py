@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Protocol, runtime_checkable
 
 import httpx
 from httpx import AsyncClient
@@ -14,98 +14,84 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 
-if TYPE_CHECKING:
-    from prime_rl.utils.elastic import ElasticInferencePool
 
-
-class InferencePool:
-    """Unified interface for static and elastic inference pools.
-
-    Encapsulates the difference between static client list and elastic DNS-based discovery.
-    """
-
-    def __init__(
-        self,
-        clients: list[AsyncOpenAI],
-        admin_clients: list[AsyncClient],
-        elastic_pool: ElasticInferencePool | None = None,
-    ):
-        self._clients = clients
-        self._admin_clients = admin_clients
-        self._elastic_pool = elastic_pool
+@runtime_checkable
+class InferencePool(Protocol):
+    """Protocol for inference pools (static or elastic)."""
 
     @property
     def clients(self) -> list[AsyncOpenAI]:
-        """Get inference clients (refreshed from elastic pool if applicable)."""
-        if self._elastic_pool is not None:
-            return self._elastic_pool.get_inference_clients()
+        """Get inference clients."""
+        ...
+
+    @property
+    def admin_clients(self) -> list[AsyncClient]:
+        """Get admin clients."""
+        ...
+
+    async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
+        """Wait for inference pool to be ready."""
+        ...
+
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        """Update weights on all inference servers."""
+        ...
+
+    def get_metrics(self) -> dict[str, float]:
+        """Get pool metrics."""
+        ...
+
+    async def stop(self) -> None:
+        """Stop the inference pool."""
+        ...
+
+
+class StaticInferencePool:
+    """Static inference pool with fixed client list."""
+
+    def __init__(self, clients: list[AsyncOpenAI], admin_clients: list[AsyncClient]):
+        self._clients = clients
+        self._admin_clients = admin_clients
+
+    @property
+    def clients(self) -> list[AsyncOpenAI]:
         return self._clients
 
     @property
     def admin_clients(self) -> list[AsyncClient]:
-        """Get admin clients (refreshed from elastic pool if applicable)."""
-        if self._elastic_pool is not None:
-            return self._elastic_pool.admin_clients
         return self._admin_clients
 
-    @property
-    def elastic_pool(self) -> ElasticInferencePool | None:
-        """Get underlying elastic pool if in elastic mode."""
-        return self._elastic_pool
-
-    @property
-    def is_elastic(self) -> bool:
-        """Check if running in elastic mode."""
-        return self._elastic_pool is not None
-
     async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
-        """Wait for inference pool to be ready."""
-        if self._elastic_pool is not None:
-            await self._elastic_pool.wait_for_ready(min_servers=1, timeout=timeout)
-        else:
-            await check_health(self._admin_clients, timeout=timeout)
-            await check_has_model(self._clients, model_name)
+        await check_health(self._admin_clients, timeout=timeout)
+        await check_has_model(self._clients, model_name)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        """Update weights on all inference servers."""
-        await update_weights(
-            self._admin_clients, weight_dir, lora_name=lora_name, elastic_pool=self._elastic_pool, step=step
-        )
+        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
 
     def get_metrics(self) -> dict[str, float]:
-        """Get pool metrics (only meaningful for elastic mode)."""
-        if self._elastic_pool is not None:
-            return self._elastic_pool.get_metrics()
         return {}
 
     async def stop(self) -> None:
-        """Stop the inference pool (only needed for elastic mode)."""
-        if self._elastic_pool is not None:
-            await self._elastic_pool.stop()
+        pass
 
 
 async def setup_inference_pool(client_config: ClientConfig, base_model: str | None = None) -> InferencePool:
-    """Create an inference pool from config (handles both static and elastic modes)."""
+    """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
 
     if client_config.is_elastic:
         from prime_rl.utils.elastic import ElasticInferencePool
 
-        elastic_pool = await ElasticInferencePool.from_config(client_config, base_model=base_model)
-        return InferencePool(
-            clients=elastic_pool.get_inference_clients(),
-            admin_clients=elastic_pool.admin_clients,
-            elastic_pool=elastic_pool,
-        )
-    else:
-        logger.info(
-            f"Initializing OpenAI client (base_url={', '.join(client_config.base_url)}, "
-            f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
-        )
-        return InferencePool(
-            clients=setup_clients(client_config),
-            admin_clients=setup_admin_clients(client_config),
-        )
+        return await ElasticInferencePool.from_config(client_config, base_model=base_model)
+
+    logger.info(
+        f"Initializing OpenAI client (base_url={', '.join(client_config.base_url)}, "
+        f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
+    )
+    return StaticInferencePool(
+        clients=setup_clients(client_config),
+        admin_clients=setup_admin_clients(client_config),
+    )
 
 
 def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
@@ -205,25 +191,14 @@ async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
     lora_name: str | None = None,
-    *,
-    elastic_pool: ElasticInferencePool | None = None,
     step: int = 0,
 ) -> None:
-    """Update weights on inference servers.
-
-    If elastic_pool is provided, uses per-server verification and readiness tracking.
-    Otherwise uses fire-and-forget to admin_clients.
+    """Update weights on static inference servers.
 
     Creates a NCCL_READY marker file before calling the update endpoint to signal
     to the trainer that inference workers are about to enter the receive path.
     This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
     """
-    if elastic_pool is not None:
-        if lora_name is None:
-            raise ValueError("Elastic inference pool requires LoRA training (lora_name must be set)")
-        await elastic_pool.sync_weights(weight_dir, lora_name, step)
-        return
-
     logger = get_logger()
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None

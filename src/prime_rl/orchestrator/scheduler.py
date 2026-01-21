@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
-from httpx import AsyncClient
 from tqdm import tqdm
 
 from prime_rl.orchestrator.buffer import Buffer
@@ -51,7 +50,6 @@ class Scheduler:
 
     def __init__(
         self,
-        admin_clients: list[AsyncClient],
         client_config: ClientConfig,
         env_configs: list[EnvConfig],
         buffer: Buffer,
@@ -65,7 +63,6 @@ class Scheduler:
         output_dir: Path | None = None,
     ):
         self.logger = get_logger()
-        self.admin_clients = admin_clients
         self.client_config = client_config
         self.buffer = buffer
         self.config = config

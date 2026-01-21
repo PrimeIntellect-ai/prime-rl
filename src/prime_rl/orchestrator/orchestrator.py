@@ -168,7 +168,6 @@ async def orchestrate(config: OrchestratorConfig):
             checkpoint_step = config.ckpt.resume_step
 
     scheduler = Scheduler(
-        admin_clients=admin_clients,
         client_config=config.client,
         env_configs=config.env,
         buffer=buffer,

@@ -134,10 +134,7 @@ async def check_server_model(url: str, model_name: str, timeout: float = 5.0) ->
 
 
 async def discover_ready_servers(hostname: str, port: int, model_name: str) -> list[str]:
-    """Discover servers via DNS with majority vote logic.
-
-    - If NO servers have the model: return all healthy servers (base model mode)
-    - If ANY server has the model: return only those with it (adapter mode)
+    """Discover servers via DNS that have the requested model loaded.
 
     Args:
         hostname: DNS hostname to resolve
@@ -145,7 +142,7 @@ async def discover_ready_servers(hostname: str, port: int, model_name: str) -> l
         model_name: Model name to check for
 
     Returns:
-        List of ready server URLs (with /v1 suffix)
+        List of server URLs that have the model (with /v1 suffix)
     """
     loop = asyncio.get_event_loop()
     ips = await loop.run_in_executor(None, discover_server_ips, hostname)
@@ -155,27 +152,24 @@ async def discover_ready_servers(hostname: str, port: int, model_name: str) -> l
     checks = [check_server_model(f"http://{ip}:{port}", model_name) for ip in ips]
     results = await asyncio.gather(*checks, return_exceptions=True)
 
-    with_model, healthy = set(), set()
+    with_model = set()
     for ip, result in zip(ips, results):
         if isinstance(result, Exception):
             continue
-        has_model, is_healthy = result
-        url = f"http://{ip}:{port}/v1"
+        has_model, _ = result
         if has_model:
-            with_model.add(url)
-        if is_healthy:
-            healthy.add(url)
+            with_model.add(f"http://{ip}:{port}/v1")
 
-    return sorted(with_model) if with_model else sorted(healthy)
+    return sorted(with_model)
 
 
 @dataclass
-class LoadedAdapter:
-    """Information about a loaded LoRA adapter from /v1/models."""
+class AdapterState:
+    """State of a LoRA adapter (loaded or desired)."""
 
-    name: str
-    path: Path
-    step: int
+    name: str | None = None
+    path: Path | None = None
+    step: int = 0
 
 
 ServerStatus = Literal["discovering", "syncing", "ready", "unhealthy"]
@@ -188,17 +182,8 @@ class ServerState:
     ip: str
     url: str
     status: ServerStatus = "discovering"
-    loaded_adapter: LoadedAdapter | None = None
+    loaded_adapter: AdapterState | None = None
     sync_failures: int = 0
-
-
-@dataclass
-class DesiredAdapterState:
-    """Desired adapter state for all pods."""
-
-    lora_name: str | None = None
-    lora_path: Path | None = None
-    step: int = 0
 
 
 class ElasticInferencePool:
@@ -248,7 +233,7 @@ class ElasticInferencePool:
         self._cached_inference_urls: list[str] = []
 
         # Desired adapter state
-        self._desired: DesiredAdapterState = DesiredAdapterState()
+        self._desired: AdapterState = AdapterState()
 
         self._sync_task: asyncio.Task | None = None
         self._started = False
@@ -280,6 +265,11 @@ class ElasticInferencePool:
         return [self._build_inference_url(ip) for ip, server in self._servers.items() if server.status == "ready"]
 
     @property
+    def clients(self) -> list:
+        """Get inference clients for ready servers (InferencePool protocol)."""
+        return self.get_inference_clients()
+
+    @property
     def admin_clients(self) -> list[AsyncClient]:
         """Get list of all admin clients."""
         return list(self._admin_clients.values())
@@ -306,8 +296,8 @@ class ElasticInferencePool:
         clients = setup_admin_clients(config)
         return clients[0]
 
-    async def _get_loaded_adapter(self, ip: str) -> LoadedAdapter | None:
-        """Query /v1/models to get currently loaded adapter state."""
+    async def _get_loaded_adapter(self, ip: str) -> AdapterState | None:
+        """Query /v1/models to get currently loaded adapter state for our desired adapter."""
         if ip not in self._admin_clients:
             return None
 
@@ -319,20 +309,32 @@ class ElasticInferencePool:
 
             for model in data.get("data", []):
                 parent = model.get("parent")
-                if parent and (self.base_model is None or parent == self.base_model):
-                    root = model.get("root", "")
-                    path = Path(root)
-                    try:
-                        step_part = path.name
-                        if step_part.startswith("step_"):
-                            step = int(step_part.split("_")[1])
-                        elif step_part.startswith("step-"):
-                            step = int(step_part.split("-")[1])
-                        else:
-                            step = 0
-                    except (ValueError, IndexError):
+                model_id = model.get("id", "")
+                # Match by adapter name if we have one, otherwise match by base model
+                if self._desired.name:
+                    # Looking for specific adapter by name
+                    if model_id != self._desired.name:
+                        continue
+                elif not parent:
+                    # No adapter desired, skip adapters (they have parent)
+                    continue
+                elif self.base_model is not None and parent != self.base_model:
+                    # Wrong base model
+                    continue
+
+                root = model.get("root", "")
+                path = Path(root)
+                try:
+                    step_part = path.name
+                    if step_part.startswith("step_"):
+                        step = int(step_part.split("_")[1])
+                    elif step_part.startswith("step-"):
+                        step = int(step_part.split("-")[1])
+                    else:
                         step = 0
-                    return LoadedAdapter(name=model.get("id", ""), path=path, step=step)
+                except (ValueError, IndexError):
+                    step = 0
+                return AdapterState(name=model_id, path=path, step=step)
 
             return None
 
@@ -340,15 +342,15 @@ class ElasticInferencePool:
             self.logger.warning(f"Failed to query /v1/models on {ip}: {e}")
             return None
 
-    def _adapter_matches_desired(self, loaded: LoadedAdapter | None) -> bool:
+    def _adapter_matches_desired(self, loaded: AdapterState | None) -> bool:
         """Check if loaded adapter matches desired state."""
         # If no adapter desired (base model inference), server is always ready
-        if self._desired.lora_path is None:
+        if self._desired.path is None:
             return True
         if loaded is None:
             return False
         # Match by path first
-        if loaded.path == self._desired.lora_path:
+        if loaded.path == self._desired.path:
             return True
         # Only match by step if step > 0 (avoid false match on default step=0)
         if self._desired.step > 0 and loaded.step == self._desired.step:
@@ -372,10 +374,10 @@ class ElasticInferencePool:
         # Need to sync - mark as syncing
         server.status = "syncing"
 
-        if self._desired.lora_name and self._desired.lora_path:
+        if self._desired.name and self._desired.path:
             try:
-                self.logger.debug(f"Loading adapter {self._desired.lora_name} on {ip}")
-                await load_lora_adapter([self._admin_clients[ip]], self._desired.lora_name, self._desired.lora_path)
+                self.logger.debug(f"Loading adapter {self._desired.name} on {ip}")
+                await load_lora_adapter([self._admin_clients[ip]], self._desired.name, self._desired.path)
             except Exception as e:
                 server.status = "unhealthy"
                 server.sync_failures += 1
@@ -534,9 +536,9 @@ class ElasticInferencePool:
         marked as ready and will receive inference requests.
         """
         async with self._lock:
-            self._desired = DesiredAdapterState(
-                lora_name=lora_name,
-                lora_path=weights_path if lora_name else None,
+            self._desired = AdapterState(
+                name=lora_name,
+                path=weights_path if lora_name else None,
                 step=step,
             )
 
@@ -544,8 +546,8 @@ class ElasticInferencePool:
             for ip in list(self._servers.keys()):
                 await self._sync_server_adapter(ip)
 
-    async def wait_for_ready(self, min_servers: int = 1, timeout: float = 300.0) -> None:
-        """Wait for at least min_servers to be ready."""
+    async def wait_for_ready(self, model_name: str = "", timeout: int = 1800, min_servers: int = 1) -> None:
+        """Wait for at least min_servers to be ready (InferencePool protocol)."""
         start = time.time()
         while time.time() - start < timeout:
             await self.sync()
@@ -555,6 +557,12 @@ class ElasticInferencePool:
             await asyncio.sleep(self.sync_interval)
 
         raise TimeoutError(f"Timed out waiting for {min_servers} ready servers (got {self.num_ready_servers})")
+
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        """Update weights on all servers (InferencePool protocol)."""
+        if lora_name is None:
+            raise ValueError("Elastic inference pool requires LoRA training (lora_name must be set)")
+        await self.sync_weights(weight_dir, lora_name, step)
 
     def get_inference_clients(self) -> list:
         """Get inference clients for ready servers.
