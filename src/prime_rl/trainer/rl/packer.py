@@ -118,6 +118,33 @@ class MultiPacker(BasePacker):
         # Reset run state
         self.buffers[idx].clear()
 
+    def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
+        """Validate a sample to ensure it won't crash the trainer."""
+        sample_length = len(sample.prompt_ids) + len(sample.completion_ids)
+        if len(sample.prompt_mask) != len(sample.prompt_ids):
+            return (
+                False,
+                f"Run wrote a sample with prompt mask length != prompt ids length ({len(sample.prompt_mask)} != {len(sample.prompt_ids)})",
+            )
+        if len(sample.completion_mask) != len(sample.completion_ids):
+            return (
+                False,
+                f"Run wrote a sample with completion mask length != completion ids length ({len(sample.completion_mask)} != {len(sample.completion_ids)})",
+            )
+        if len(sample.completion_logprobs) != len(sample.completion_ids):
+            return (
+                False,
+                f"Run wrote a sample with completion logprobs length != completion ids length ({len(sample.completion_logprobs)} != {len(sample.completion_ids)})",
+            )
+        if sample_length == 0:
+            return False, "Run wrote a sample with no tokens"
+        if sample_length > self.seq_len:
+            return (
+                False,
+                f"Run wrote a sample with length {sample_length} which exceeds max sequence length {self.seq_len}",
+            )
+        return True, None
+
     def _get_batch(self) -> None:
         """Receive batches from orchestrator and buffer samples per run."""
         self.multi_run_manager.discover_runs()
@@ -127,8 +154,18 @@ class MultiPacker(BasePacker):
             if batch.run_idx is None:
                 self.logger.warning("Received batch with no run index")
                 continue
+            if len(batch.examples) == 0:
+                self.multi_run_manager.evict_run(batch.run_idx, "Run wrote a batch with no samples")
+                continue
             for sample in batch.examples:
+                valid, reason = self._validate_sample(sample)
+                if not valid:
+                    self.multi_run_manager.evict_run(batch.run_idx, f"Run wrote a sample with invalid data: {reason}")
+                    break
                 self.buffers[batch.run_idx].append((sample, batch.temperature, batch.step))
+
+        # This is necessary to forget evicted runs
+        self.multi_run_manager.discover_runs()
 
     def _count_tokens(self, threshold: int | None = None) -> int:
         tokens = 0
@@ -136,9 +173,10 @@ class MultiPacker(BasePacker):
         for run_idx in self.multi_run_manager.used_idxs:
             buffer = self.buffers[run_idx]
             current_step = self.multi_run_manager.progress[run_idx].step
+
             for sample, _, step in buffer:
                 if step > current_step:
-                    continue
+                    break
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
                 if threshold is not None and tokens >= threshold:
                     return tokens
