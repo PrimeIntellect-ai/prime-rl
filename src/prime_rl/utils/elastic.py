@@ -350,6 +350,12 @@ class ElasticInferencePool:
             self.logger.debug(f"Successfully synced server {ip}")
             return True
 
+        # Debug: log why adapter didn't match after loading
+        self.logger.warning(
+            f"Adapter mismatch on {ip} after loading: "
+            f"loaded={loaded.path if loaded else None} (step={loaded.step if loaded else None}), "
+            f"desired={self._desired.path} (step={self._desired.step})"
+        )
         server.status = "unhealthy"
         server.sync_failures += 1
         return False
@@ -472,8 +478,8 @@ class ElasticInferencePool:
                 path=weights_path if lora_name else None,
                 step=step,
             )
-            for ip in list(self._servers.keys()):
-                await self._sync_server_adapter(ip)
+            # Sync all servers in parallel for faster weight updates
+            await asyncio.gather(*[self._sync_server_adapter(ip) for ip in self._servers.keys()])
 
     async def wait_for_ready(self, model_name: str = "", timeout: int = 1800, min_servers: int = 1) -> None:
         start = time.time()
