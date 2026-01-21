@@ -60,9 +60,9 @@ class Scheduler:
         max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
+        inference_pool: InferencePool,
         lora_name: str | None = None,
         output_dir: Path | None = None,
-        inference_pool: InferencePool | None = None,
     ):
         self.logger = get_logger()
         self.admin_clients = admin_clients
@@ -367,7 +367,6 @@ class Scheduler:
                         metrics[f"worker_lag/{worker_key}/{metric_name.split('/')[-1]}"] = value
 
         # Add inference pool metrics (e.g. elastic pool server counts)
-        if self.inference_pool is not None:
-            metrics.update(self.inference_pool.get_metrics())
+        metrics.update(self.inference_pool.get_metrics())
 
         return metrics
