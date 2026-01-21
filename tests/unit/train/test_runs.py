@@ -297,3 +297,54 @@ def test_config_invalid(tmp_path: Path) -> None:
     assert error_path.exists()
     error_content = error_path.read_text()
     assert "Error parsing orchestrator config" in error_content
+
+
+def test_evict_run_writes_file(tmp_path: Path) -> None:
+    """Test that evict_run writes the eviction reason to the correct file."""
+    multi_run_manager = MultiRunManager(output_dir=tmp_path, max_runs=5)
+
+    # Create a run directory with valid config
+    create_run_with_config(tmp_path, "run_to_evict")
+    multi_run_manager.discover_runs()
+
+    # Get the run index
+    run_idx = multi_run_manager.id_2_idx["run_to_evict"]
+
+    # Evict the run
+    eviction_reason = "Test eviction reason"
+    multi_run_manager.evict_run(run_idx, eviction_reason)
+
+    # Verify evicted.txt was created with the reason
+    evicted_path = tmp_path / "run_to_evict" / "configs" / "evicted.txt"
+    assert evicted_path.exists()
+    assert evicted_path.read_text() == eviction_reason
+
+
+def test_evict_run_invalid_idx(tmp_path: Path) -> None:
+    """Test that evict_run raises ValueError for invalid index."""
+    multi_run_manager = MultiRunManager(output_dir=tmp_path, max_runs=5)
+
+    # Try to evict a non-existent run
+    with pytest.raises(ValueError, match="Run index 2 not found"):
+        multi_run_manager.evict_run(2, "This should fail")
+
+
+def test_discover_runs_ignores_evicted(tmp_path: Path) -> None:
+    """Test that discover_runs ignores runs with evicted.txt."""
+    multi_run_manager = MultiRunManager(output_dir=tmp_path, max_runs=5)
+
+    # Create two run directories
+    create_run_with_config(tmp_path, "run_normal")
+    create_run_with_config(tmp_path, "run_evicted")
+
+    # Mark one as evicted by creating evicted.txt
+    evicted_path = tmp_path / "run_evicted" / "configs" / "evicted.txt"
+    evicted_path.write_text("Previously evicted")
+
+    # Discover runs
+    multi_run_manager.discover_runs()
+
+    # Only the normal run should be discovered
+    assert len(multi_run_manager.id_2_idx) == 1
+    assert "run_normal" in multi_run_manager.id_2_idx
+    assert "run_evicted" not in multi_run_manager.id_2_idx
