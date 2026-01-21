@@ -318,7 +318,8 @@ class MultiRunManager:
             raise RuntimeError("evict_run() must only be called on the master rank")
 
         if idx not in self.idx_2_id:
-            raise ValueError(f"Run index {idx} not found")
+            self.logger.warning(f"Run index {idx} not found, cannot evict")
+            return
 
         run_id = self.idx_2_id[idx]
         run_dir = self.output_dir / run_id
