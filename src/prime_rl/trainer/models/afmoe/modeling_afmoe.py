@@ -211,34 +211,17 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
         if self.is_local_attention and self.sliding_window is not None:
             attn_kwargs["window_size"] = (self.sliding_window, 0)
 
-        if self.training and self.attention_dropout > 0:
-            attn_kwargs["dropout_p"] = self.attention_dropout
+        out = self.func(
+            q,
+            k,
+            v,
+            cu_seqlens,
+            cu_seqlens,
+            max_seqlen,
+            max_seqlen,
+            **attn_kwargs,
+        )
 
-        try:
-            out = self.func(
-                q,
-                k,
-                v,
-                cu_seqlens,
-                cu_seqlens,
-                max_seqlen,
-                max_seqlen,
-                **attn_kwargs,
-            )
-        except TypeError as exc:
-            if "dropout_p" not in attn_kwargs or "dropout_p" not in str(exc):
-                raise
-            attn_kwargs.pop("dropout_p", None)
-            out = self.func(
-                q,
-                k,
-                v,
-                cu_seqlens,
-                cu_seqlens,
-                max_seqlen,
-                max_seqlen,
-                **attn_kwargs,
-            )
         if isinstance(out, tuple):
             out = out[0]
 
@@ -291,8 +274,7 @@ def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
     if attn_impl not in AFMOE_ATTN_IMPL2CLASS:
         supported = list(AFMOE_ATTN_IMPL2CLASS.keys())
         raise ValueError(
-            f"AFMoE attention does not support '{config._attn_implementation}'. "
-            f"Supported implementations: {supported}."
+            f"AFMoE attention does not support '{config._attn_implementation}'. Supported implementations: {supported}."
         )
 
     return AFMOE_ATTN_IMPL2CLASS[attn_impl](attn_config)
