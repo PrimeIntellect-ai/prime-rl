@@ -71,9 +71,9 @@ def check_number_in_range(
     pattern: str = r"Reward:\s*(\d+\.\d{4})",
 ):
     """Helper to assert that a number in step logs is within a threshold"""
-    step_lines = [line for line in lines if "Step" in line]
+    step_lines = [line for line in lines if "SUCCESS" in line and "Step" in line and re.search(pattern, line)]
     assert len(step_lines) > 0, f"No step lines found in output ({lines})"
-    
+
     # Search for the specific step number in the lines
     if step == -1:
         step_line = step_lines[-1]
@@ -82,7 +82,7 @@ def check_number_in_range(
         matching_lines = [line for line in step_lines if re.search(step_pattern, line)]
         assert len(matching_lines) > 0, f"Could not find step {step} in output ({step_lines})"
         step_line = matching_lines[0]
-    
+
     step_reward = re.search(pattern, step_line)
     assert step_reward is not None, f"Could not find reward for step {step}. Line: {step_line} ({lines})"
     step_reward = float(step_reward.group(1))
