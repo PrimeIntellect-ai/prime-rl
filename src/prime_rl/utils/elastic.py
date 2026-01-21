@@ -243,6 +243,10 @@ class ElasticInferencePool:
         self._admin_clients: dict[str, AsyncClient] = {}  # ip -> admin client
         self._lock = asyncio.Lock()
 
+        # Cached inference clients (recreated when ready URLs change)
+        self._inference_clients: list = []
+        self._cached_inference_urls: list[str] = []
+
         # Desired adapter state
         self._desired: DesiredAdapterState = DesiredAdapterState()
 
@@ -553,21 +557,28 @@ class ElasticInferencePool:
         raise TimeoutError(f"Timed out waiting for {min_servers} ready servers (got {self.num_ready_servers})")
 
     def get_inference_clients(self) -> list:
-        """Create inference clients for ready servers.
+        """Get inference clients for ready servers.
 
-        Returns AsyncOpenAI clients for all ready servers.
+        Returns cached AsyncOpenAI clients, recreating only when ready URLs change.
         """
         ready_urls = self.ready_urls
         if not ready_urls:
             return []
 
+        # Return cached clients if URLs haven't changed
+        if ready_urls == self._cached_inference_urls:
+            return self._inference_clients
+
+        # URLs changed - create new clients (old ones will be garbage collected)
         config = ClientConfig(
             timeout=self.client_config.timeout,
             base_url=ready_urls,
             api_key_var=self.client_config.api_key_var,
             headers=self.client_config.headers,
         )
-        return setup_clients(config)
+        self._inference_clients = setup_clients(config)
+        self._cached_inference_urls = ready_urls
+        return self._inference_clients
 
     def get_metrics(self) -> dict[str, float]:
         """Get metrics about the elastic pool."""
