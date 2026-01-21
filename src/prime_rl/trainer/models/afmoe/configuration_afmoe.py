@@ -4,8 +4,10 @@ from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
 
+
 class AfmoeConfig(PretrainedConfig):
     """Configuration for AFMoE."""
+
     model_type = "afmoe"
     base_model_pp_plan = {
         "embed_tokens": (["input_ids"], ["inputs_embeds"]),
@@ -88,7 +90,8 @@ class AfmoeConfig(PretrainedConfig):
         self.layer_types = layer_types
         if self.layer_types is None:
             self.layer_types = [
-                "sliding_attention" if bool((i + 1) % global_attn_every_n_layers) else "full_attention" for i in range(self.num_hidden_layers)
+                "sliding_attention" if bool((i + 1) % global_attn_every_n_layers) else "full_attention"
+                for i in range(self.num_hidden_layers)
             ]
         layer_type_validation(self.layer_types)
 
