@@ -26,8 +26,8 @@ try:
 except:
     from configuration_afmoe import AfmoeConfig
 
-class AfmoeRotaryEmbedding(nn.Module):
 
+class AfmoeRotaryEmbedding(nn.Module):
     def __init__(self, config: AfmoeConfig, device=None):
         super().__init__()
         # BC: "rope_type" was originally "type"
@@ -129,10 +129,9 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(
-        batch, num_key_value_heads, n_rep, slen, head_dim
-    )
+    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
 
 @use_kernel_forward_from_hub("RMSNorm")
 class AfmoeRMSNorm(nn.Module):
@@ -155,7 +154,6 @@ class AfmoeRMSNorm(nn.Module):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
 
-
 def eager_attention_forward(
     module: nn.Module,
     query: torch.Tensor,
@@ -174,12 +172,8 @@ def eager_attention_forward(
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
         attn_weights = attn_weights + causal_mask
 
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
-        query.dtype
-    )
-    attn_weights = nn.functional.dropout(
-        attn_weights, p=dropout, training=module.training
-    )
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
     attn_output = torch.matmul(attn_weights, value_states)
     attn_output = attn_output.transpose(1, 2).contiguous()
 
@@ -212,7 +206,7 @@ class AfmoeTokenChoiceRouter(nn.Module):
         self.score_func = config.score_func
         self.route_norm = config.route_norm
         self.route_scale = config.route_scale
-        self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)     
+        self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)
 
     def forward(self, hidden_states, expert_bias: torch.Tensor | None):
         _, _, hidden_dim = hidden_states.shape
@@ -240,6 +234,7 @@ class AfmoeTokenChoiceRouter(nn.Module):
         top_scores = top_scores * self.route_scale
         return top_scores, selected_experts
 
+
 class AfmoeMoE(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -248,16 +243,11 @@ class AfmoeMoE(nn.Module):
 
         self.shared_experts = None
         if config.num_shared_experts > 0:
-            self.shared_experts = AfmoeMLP(
-                config, config.moe_intermediate_size * config.num_shared_experts
-            )
+            self.shared_experts = AfmoeMLP(config, config.moe_intermediate_size * config.num_shared_experts)
         self.experts = nn.ModuleList(
-            [AfmoeMLP(
-                config, intermediate_size=config.moe_intermediate_size
-            ) for _ in range(config.num_experts)]
+            [AfmoeMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(config.num_experts)]
         )
         self.expert_bias = nn.Parameter(torch.zeros(config.num_experts, dtype=torch.float32), requires_grad=False)
-        
 
     def forward(self, hidden_states):
         batch_size, seq_len, hidden_dim = hidden_states.shape
@@ -279,12 +269,8 @@ class AfmoeMoE(nn.Module):
         token_indices_sorted = token_indices_sorted // self.config.num_experts_per_tok
 
         # Gather input tokens
-        token_indices_expanded = token_indices_sorted.unsqueeze(-1).expand(
-            -1, hidden_dim
-        )
-        routed_input = torch.gather(
-            hidden_states_flat, dim=0, index=token_indices_expanded
-        )
+        token_indices_expanded = token_indices_sorted.unsqueeze(-1).expand(-1, hidden_dim)
+        routed_input = torch.gather(hidden_states_flat, dim=0, index=token_indices_expanded)
 
         routed_output = torch.zeros_like(routed_input)
         for expert_id in range(self.config.num_experts):
@@ -293,15 +279,11 @@ class AfmoeMoE(nn.Module):
                 expert_input = routed_input[mask]
                 expert_out = self.experts[expert_id](expert_input)
                 routed_output[mask] = expert_out
-          
-        routed_output = (
-            routed_output.to(torch.float32) * top_scores_sorted.unsqueeze(-1)
-        ).to(hidden_states.dtype)
+
+        routed_output = (routed_output.to(torch.float32) * top_scores_sorted.unsqueeze(-1)).to(hidden_states.dtype)
 
         # Scatter back to original positions
-        output = shared_output.scatter_add(
-            dim=0, index=token_indices_expanded, src=routed_output
-        )
+        output = shared_output.scatter_add(dim=0, index=token_indices_expanded, src=routed_output)
 
         return output.view(batch_size, seq_len, hidden_dim)
 
@@ -323,25 +305,15 @@ class AfmoeAttention(nn.Module):
         self.is_local_attention = config.layer_types[layer_idx] == "sliding_attention"
         self.sliding_window = config.sliding_window if self.is_local_attention else None
 
-        self.q_proj = nn.Linear(
-            config.hidden_size, self.num_heads * self.head_dim, bias=False
-        )
-        self.k_proj = nn.Linear(
-            config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False
-        )
-        self.v_proj = nn.Linear(
-            config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False
-        )
-        self.o_proj = nn.Linear(
-            self.num_heads * self.head_dim, config.hidden_size, bias=False
-        )
+        self.q_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, config.hidden_size, bias=False)
 
         self.q_norm = AfmoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = AfmoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
-        self.gate_proj = nn.Linear(
-            config.hidden_size, self.num_heads * self.head_dim, bias=False
-        )
+        self.gate_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=False)
 
     def forward(
         self,
@@ -351,8 +323,7 @@ class AfmoeAttention(nn.Module):
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> torch.Tensor:   
-
+    ) -> torch.Tensor:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -363,7 +334,7 @@ class AfmoeAttention(nn.Module):
 
         query_states = self.q_norm(query_states)
         key_states = self.k_norm(key_states)
-        
+
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
@@ -378,9 +349,7 @@ class AfmoeAttention(nn.Module):
 
         attention_interface: Callable = eager_attention_forward
         if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[
-                self.config._attn_implementation
-            ]
+            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
         output, _ = attention_interface(
             self,
@@ -492,14 +461,9 @@ class AfmoeModel(AfmoePreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(
-            config.vocab_size, config.hidden_size, self.padding_idx
-        )
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [
-                AfmoeDecoderLayer(config, layer_idx)
-                for layer_idx in range(config.num_hidden_layers)
-            ]
+            [AfmoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = AfmoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = AfmoeRotaryEmbedding(config=config)
@@ -513,7 +477,6 @@ class AfmoeModel(AfmoePreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-
     def forward(
         self,
         input_ids: torch.LongTensor,
@@ -526,9 +489,7 @@ class AfmoeModel(AfmoePreTrainedModel):
         **kwargs: Unpack[TransformersKwargs],
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError(
-                "You must specify exactly one of input_ids or inputs_embeds"
-            )
+            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache()
@@ -537,9 +498,7 @@ class AfmoeModel(AfmoePreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if cache_position is None:
-            past_seen_tokens = (
-                past_key_values.get_seq_length() if past_key_values is not None else 0
-            )
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
             cache_position = torch.arange(
                 past_seen_tokens,
                 past_seen_tokens + inputs_embeds.shape[1],
@@ -648,17 +607,12 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
 
         hidden_states = outputs.last_hidden_state
         # Only compute necessary logits
-        slice_indices = (
-            slice(-logits_to_keep, None)
-            if isinstance(logits_to_keep, int)
-            else logits_to_keep
-        )
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
 
         loss = None
         if labels is not None:
             loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
-
 
         return MoeCausalLMOutputWithPast(
             loss=loss,

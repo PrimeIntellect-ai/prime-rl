@@ -80,4 +80,3 @@ def setup_monitor(
         _MONITOR = MultiMonitor(monitors)
 
     return _MONITOR
-
