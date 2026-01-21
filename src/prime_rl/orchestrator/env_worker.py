@@ -355,10 +355,6 @@ class EnvWorker:
         # Start fresh process
         self.start()
 
-    def update_model_name(self, model_name: str):
-        """Update the model name for future requests."""
-        self.model_name = model_name
-
     async def submit_request(
         self,
         example_id: int,
@@ -441,6 +437,10 @@ class EnvWorker:
                 self._restart()
 
             await asyncio.sleep(0.01)
+
+    def update_model_name(self, model_name: str):
+        """Update the model name for future requests."""
+        self.model_name = model_name
 
     @property
     def pending_count(self) -> int:
