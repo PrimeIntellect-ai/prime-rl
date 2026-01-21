@@ -254,6 +254,12 @@ async def orchestrate(config: OrchestratorConfig):
     max_empty_batch_retries = 5
 
     while True:
+        # Check if this run has been evicted by the trainer
+        evicted_path = config.output_dir / "configs" / "evicted.txt"
+        if evicted_path.exists():
+            reason = evicted_path.read_text().strip()
+            raise RuntimeError(f"Run evicted by trainer: {reason}")
+
         # Check if update_policy_task has failed and propagate the exception
         if update_policy_task.done():
             # End all other tasks

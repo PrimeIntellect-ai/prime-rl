@@ -299,8 +299,37 @@ class MultiRunManager:
             hook(deleted_idx, deleted_run)
 
     # =========================================================================
-    # Run Discovery and Synchronization
+    # Run Discovery, Synchronization, and Eviction
     # =========================================================================
+
+    def evict_run(self, idx: int, reason: str) -> None:
+        """Evict a run by writing the reason to a file for the orchestrator to read.
+
+        The orchestrator will error and surface this reason. The run will be
+        ignored by future discover_runs() calls.
+        Note that the run is not deleted on master until the next discover_runs() call.
+        And not deleted on other ranks until the next synchronize_state() call.
+
+        Args:
+            idx: The run index to evict
+            reason: The reason for eviction (will be shown to user)
+        """
+        if not self.world.is_master:
+            raise RuntimeError("evict_run() must only be called on the master rank")
+
+        if idx not in self.idx_2_id:
+            raise ValueError(f"Run index {idx} not found")
+
+        run_id = self.idx_2_id[idx]
+        run_dir = self.output_dir / run_id
+        config_dir = run_dir / "configs"
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+        evicted_path = config_dir / "evicted.txt"
+        with open(evicted_path, "w") as f:
+            f.write(reason)
+
+        self.logger.warning(f"Evicted run {run_id} (idx={idx}): {reason}")
 
     def discover_runs(self) -> None:
         """Detect run changes and update data structures (master only). Must be followed by synchronize_state().
@@ -312,6 +341,12 @@ class MultiRunManager:
         if not self.world.is_master:
             raise RuntimeError("discover_runs() must only be called on the master rank")
         run_ids = {run_path.stem for run_path in self.output_dir.glob("run_*")}
+
+        # Filter out evicted runs
+        evicted_runs = {run_id for run_id in run_ids if (self.output_dir / run_id / "configs" / "evicted.txt").exists()}
+        self.logger.debug(f"Ignoring evicted runs: {evicted_runs}")
+        run_ids = run_ids - evicted_runs
+
         deleted_runs = self.id_2_idx.keys() - run_ids
         new_runs = run_ids - self.id_2_idx.keys()
 
