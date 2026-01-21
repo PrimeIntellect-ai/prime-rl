@@ -236,9 +236,14 @@ async def orchestrate(config: OrchestratorConfig):
             lora_name=config.model.lora.name if config.model.lora else None,
         )
     else:
-        logger.info("Training from scratch. Resetting weights to base model")
-        if config.model.lora is None:
-            await reload_weights(admin_clients)
+        if config.reload_weights_on_start:
+            if config.model.lora is None:
+                logger.info("Training from scratch. Resetting weights to base model")
+                await reload_weights(admin_clients)
+            else:
+                logger.info("Training from scratch. Skipping base weight reload because LoRA is enabled")
+        else:
+            logger.info("Training from scratch. Skipping base weight reload")
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
