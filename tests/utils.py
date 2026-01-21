@@ -29,7 +29,7 @@ def check_number_goes_up_or_down(
     go_up: bool = True,
 ):
     """Helper to assert that a number in lines goes up from a specified start to end step"""
-    step_lines = [line for line in lines if "Step" in line]
+    step_lines = [line for line in lines if "SUCCESS" in line and "Step" in line and re.search(pattern, line)]
     assert len(step_lines) > 0, f"No step lines found in output ({lines})"
     try:
         start_step_line = step_lines[start_step]
