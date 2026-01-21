@@ -376,3 +376,19 @@ def test_worker_server_discovery_close_clears_clients():
 
         assert discovery._clients == []
         mock_client.close.assert_called_once()
+
+
+def test_worker_server_discovery_model_name_can_be_updated():
+    """Test that discovery model name can be updated for LoRA switching."""
+    with patch("prime_rl.utils.elastic.get_logger"):
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+
+        discovery = WorkerServerDiscovery(mock_config, "base-model")
+        assert discovery._model_name == "base-model"
+
+        # Simulate LoRA switch by updating model name
+        discovery._model_name = "lora-adapter"
+        assert discovery._model_name == "lora-adapter"

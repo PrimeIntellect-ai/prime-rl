@@ -157,6 +157,10 @@ async def worker_loop(
                 if request is None:  # Shutdown signal
                     return
 
+                # Update discovery model name if it changed (e.g., switched to LoRA)
+                if discovery and request.model_name != discovery._model_name:
+                    discovery._model_name = request.model_name
+
                 if has_clients():
                     task = asyncio.create_task(process_request(request, get_next_client()))
                     pending_tasks[task] = request.request_id
