@@ -281,21 +281,35 @@ def default_dtype(dtype):
         torch.set_default_dtype(prev)
 
 
-def install_env(env_id: str) -> None:
-    """Install an environment in subprocess."""
+def install_env(env_id: str, no_upgrade: bool = False) -> None:
+    """Install an environment in subprocess.
+
+    Args:
+        env_id: Environment ID to install.
+        no_upgrade: If True, don't upgrade existing packages during install.
+    """
     logger = get_logger()
     logger.info(f"Installing environment {env_id}")
     install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
+    if no_upgrade:
+        install_cmd.append("--no-upgrade")
     result = subprocess.run(install_cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to install environment {env_id} (stdout={result.stdout}, stderr={result.stderr})")
     logger.info(f"Successfully installed environment {env_id}")
 
 
-def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -> set[str]:
-    """Get the list of environment IDs to install."""
-    env_ids_to_install = set()
+def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -> dict[str, bool]:
+    """Get the environments to install with their no_upgrade settings.
+
+    Returns:
+        Dict mapping env_id -> no_upgrade. If the same env appears multiple times
+        with different settings, no_upgrade=True takes precedence.
+    """
+    env_ids_to_install: dict[str, bool] = {}
     for env_config in env_configs:
         if "/" in env_config.id:
-            env_ids_to_install.add(env_config.id)
+            # If env already exists, preserve no_upgrade=True if either has it
+            existing = env_ids_to_install.get(env_config.id, False)
+            env_ids_to_install[env_config.id] = existing or env_config.no_upgrade
     return env_ids_to_install
