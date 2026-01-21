@@ -210,9 +210,9 @@ class MultiRunManager:
         Returns None if config doesn't exist, fails to parse, or fails validation.
         Writes error to config dir for orchestrator to consume.
         """
-        config_path = self.output_dir / run_id / "configs" / "orch.toml"
+        config_path = self.output_dir / run_id / "control" / "orch.toml"
         config_dir = config_path.parent
-        error_path = config_dir / "error.txt"
+        error_path = config_dir / "config_validation_error.txt"
 
         if not config_path.exists():
             if not error_path.exists():
@@ -323,7 +323,7 @@ class MultiRunManager:
 
         run_id = self.idx_2_id[idx]
         run_dir = self.output_dir / run_id
-        config_dir = run_dir / "configs"
+        config_dir = run_dir / "control"
         config_dir.mkdir(parents=True, exist_ok=True)
 
         evicted_path = config_dir / "evicted.txt"
@@ -344,7 +344,7 @@ class MultiRunManager:
         run_ids = {run_path.stem for run_path in self.output_dir.glob("run_*")}
 
         # Filter out evicted runs
-        evicted_runs = {run_id for run_id in run_ids if (self.output_dir / run_id / "configs" / "evicted.txt").exists()}
+        evicted_runs = {run_id for run_id in run_ids if (self.output_dir / run_id / "control" / "evicted.txt").exists()}
         run_ids = run_ids - evicted_runs
 
         deleted_runs = self.id_2_idx.keys() - run_ids

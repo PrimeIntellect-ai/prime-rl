@@ -40,10 +40,10 @@ Each run's directory follows this structure:
 ```
 {output_dir}/
 ├── run_abc123/
-│   ├── configs/
-│   │   ├── orch.toml          # Orchestrator configuration
-│   │   ├── error.txt          # Config validation errors (if any)
-│   │   └── evicted.txt        # Eviction reason (if evicted)
+│   ├── control/
+│   │   ├── orch.toml                    # Orchestrator configuration
+│   │   ├── config_validation_error.txt  # Config validation errors (if any)
+│   │   └── evicted.txt                  # Eviction reason (if evicted)
 │   ├── checkpoints/
 │   │   └── step_100/          # Orchestrator checkpoints
 │   ├── rollouts/
@@ -56,7 +56,7 @@ Each run's directory follows this structure:
 
 ```
 
-Runs are discovered by scanning the output directory for the pattern `run_*`. Each run must contain a valid orchestrator config at `{run_dir}/configs/orch.toml` before they are added to the active runs otherwise they are ignored. When the maximum number of runs is reached, new `run_*` directories will not be picked up until old ones are deleted.
+Runs are discovered by scanning the output directory for the pattern `run_*`. Each run must contain a valid orchestrator config at `{run_dir}/control/orch.toml` before they are added to the active runs otherwise they are ignored. When the maximum number of runs is reached, new `run_*` directories will not be picked up until old ones are deleted.
 
 ```python
 # Master rank scans for new/deleted runs
@@ -69,7 +69,7 @@ multi_run_manager.synchronize_state()
 The `discover_runs()` method (master only):
 
 1. Scans the output directory for `run_*` directories
-2. Filters out evicted runs (those with `configs/evicted.txt`)
+2. Filters out evicted runs (those with `control/evicted.txt`)
 3. Detects new runs and deleted runs
 4. Calls `forgotten_hook` for deleted runs (master only)
 5. Loads and validates the orchestrator config for each new run
@@ -95,7 +95,7 @@ multi_run_manager.evict_run(idx=0, reason="Run exceeded memory limits")
 
 The `evict_run()` method (master only):
 
-1. Writes the eviction reason to `{run_dir}/configs/evicted.txt`
+1. Writes the eviction reason to `{run_dir}/control/evicted.txt`
 2. Logs a warning with the eviction details
 3. The run is **not** immediately removed from the manager's data structures
 
