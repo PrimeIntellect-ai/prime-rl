@@ -797,23 +797,52 @@ def _run_evals_in_subprocess(
     intercept_verifiers_logging(level="info")
     logger.info(f"Eval subprocess started for checkpoint step {ckpt_step}")
 
-    # Create fresh clients in subprocess
-    clients = setup_clients(client_config)
     evals_client = setup_evals_client()
 
     async def _run():
         await set_semaphore(max_concurrent)
-        await run_evals(
-            clients=clients,
-            eval_config=eval_config,
-            model_config=model_config,
-            sampling_config=sampling_config,
-            evals_client=evals_client,
-            reasoning_field=reasoning_field,
-            output_dir=Path(output_dir),
-            ckpt_step=ckpt_step,
-            step=step,
-        )
+
+        # Setup client discovery (elastic mode) or static clients (like env workers)
+        discovery = None
+        if client_config.is_elastic:
+            from prime_rl.utils.elastic import ServerDiscovery
+
+            discovery = ServerDiscovery.from_config(client_config, model_config.name)
+
+            # Wait for servers to be discovered (with timeout)
+            max_wait = 60
+            waited = 0
+            while not discovery.has_clients and waited < max_wait:
+                await discovery.refresh()
+                if not discovery.has_clients:
+                    logger.debug(f"Waiting for inference servers... ({waited}s)")
+                    await asyncio.sleep(discovery.sync_interval)
+                    waited += discovery.sync_interval
+
+            if not discovery.has_clients:
+                raise RuntimeError(
+                    f"No inference servers found with model {model_config.name} "
+                    f"via elastic discovery (hostname={client_config.elastic.hostname}) after {max_wait}s"
+                )
+
+        clients = discovery.clients if discovery else setup_clients(client_config)
+        logger.info(f"Using {len(clients)} inference client(s)")
+
+        try:
+            await run_evals(
+                clients=clients,
+                eval_config=eval_config,
+                model_config=model_config,
+                sampling_config=sampling_config,
+                evals_client=evals_client,
+                reasoning_field=reasoning_field,
+                output_dir=Path(output_dir),
+                ckpt_step=ckpt_step,
+                step=step,
+            )
+        finally:
+            if discovery:
+                await discovery.stop()
 
     asyncio.run(_run())
     get_monitor().close()
