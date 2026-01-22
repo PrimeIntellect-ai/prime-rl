@@ -780,30 +780,14 @@ async def run_evals(
         logger.warning(f"Skipped {skipped}/{len(eval_config.env)} environments due to retry exhaustion")
 
 
-async def _discover_clients(client_config: ClientConfig, model_config: ModelConfig) -> tuple[list[AsyncOpenAI], str]:
-    """Discover inference clients via elastic discovery or static config.
-
-    For elastic mode, tries LoRA adapter first if configured, falls back to base model.
-    Returns (clients, inference_model_name).
-    """
+async def _get_clients(client_config: ClientConfig, model_name: str) -> list[AsyncOpenAI]:
+    """Discover inference clients via elastic discovery or static config."""
     logger = get_logger()
 
     if not client_config.is_elastic:
-        return setup_clients(client_config), model_config.name
+        return setup_clients(client_config)
 
-    # If LoRA is configured, try to find servers with LoRA adapter first
-    # Fall back to base model if no servers have the LoRA loaded
-    if model_config.lora:
-        discovery = ServerDiscovery.from_config(client_config, model_config.lora.name)
-        await discovery.refresh()
-
-        if discovery.has_clients:
-            logger.info(f"Found servers with LoRA adapter {model_config.lora.name}")
-            return discovery.clients, model_config.lora.name
-
-        logger.info(f"No servers with LoRA adapter, falling back to base model {model_config.name}")
-
-    discovery = ServerDiscovery.from_config(client_config, model_config.name)
+    discovery = ServerDiscovery.from_config(client_config, model_name)
 
     # Wait for servers to be discovered (with timeout)
     max_wait = 60
@@ -817,11 +801,11 @@ async def _discover_clients(client_config: ClientConfig, model_config: ModelConf
 
     if not discovery.has_clients:
         raise RuntimeError(
-            f"No inference servers found with model {model_config.name} "
+            f"No inference servers found with model {model_name} "
             f"via elastic discovery (hostname={client_config.elastic.hostname}) after {max_wait}s"
         )
 
-    return discovery.clients, model_config.name
+    return discovery.clients
 
 
 def _run_evals_in_subprocess(
@@ -847,7 +831,10 @@ def _run_evals_in_subprocess(
     async def _run():
         await set_semaphore(max_concurrent)
 
-        clients, model_name = await _discover_clients(client_config, model_config)
+        model_name = model_config.name
+        if model_config.lora and ckpt_step > 0:
+            model_name = model_config.lora.name
+        clients = await _get_clients(client_config, model_name)
         logger.info(f"Using {len(clients)} inference client(s) for model {model_name}")
 
         await run_evals(
