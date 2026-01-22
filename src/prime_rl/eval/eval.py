@@ -68,7 +68,7 @@ async def eval(config: OfflineEvalConfig):
         await run_evals(
             clients=clients,
             eval_config=config,
-            model_config=config.model,
+            model_name=config.model.name,
             sampling_config=config.sampling,
             evals_client=evals_client,
             reasoning_field=config.reasoning_field,
@@ -109,7 +109,7 @@ async def eval(config: OfflineEvalConfig):
                 await run_evals(
                     clients=clients,
                     eval_config=config,
-                    model_config=config.model,
+                    model_name=config.model.name,
                     sampling_config=config.sampling,
                     evals_client=evals_client,
                     reasoning_field=config.reasoning_field,

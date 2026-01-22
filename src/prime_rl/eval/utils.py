@@ -515,7 +515,7 @@ async def run_eval(
 
         total_rollouts = len(all_rollouts)
         logger.info(
-            f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) "
+            f"Evaluating {model_name} on {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) "
             f"{'with default args' if env_args == {} else f'with args {env_args}'} and extra_body {sampling_args['extra_body']}\n"
             f"{'Saving results to ' + str(path_to_save) if save_config.stream else 'Results will be saved at end of evaluation'}"
         )
@@ -633,7 +633,7 @@ async def run_eval(
     no_response_rate = (
         float((results_df.rollout_status == "no_response").mean()) if "rollout_status" in results_df else 0.0
     )
-    message = f"Evaluated {env_name_or_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
+    message = f"Evaluated {model_name} on {env_name_or_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
@@ -732,7 +732,6 @@ async def run_evals(
     clients: list[AsyncOpenAI],
     eval_config: EvalConfig | OfflineEvalConfig,
     model_name: str,
-    model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     evals_client: AsyncEvalsClient,
     reasoning_field: str,
