@@ -804,10 +804,26 @@ def _run_evals_in_subprocess(
 
         # Setup client discovery (elastic mode) or static clients (like env workers)
         discovery = None
+        inference_model_name = model_config.name
+
         if client_config.is_elastic:
             from prime_rl.utils.elastic import ServerDiscovery
 
-            discovery = ServerDiscovery.from_config(client_config, model_config.name)
+            # If LoRA is configured, try to find servers with LoRA adapter first
+            # Fall back to base model if no servers have the LoRA loaded
+            if model_config.lora:
+                discovery = ServerDiscovery.from_config(client_config, model_config.lora.name)
+                await discovery.refresh()
+
+                if discovery.has_clients:
+                    inference_model_name = model_config.lora.name
+                    logger.info(f"Found servers with LoRA adapter {model_config.lora.name}")
+                else:
+                    logger.info(f"No servers with LoRA adapter, falling back to base model {model_config.name}")
+                    await discovery.stop()
+                    discovery = ServerDiscovery.from_config(client_config, model_config.name)
+            else:
+                discovery = ServerDiscovery.from_config(client_config, model_config.name)
 
             # Wait for servers to be discovered (with timeout)
             max_wait = 60
@@ -821,18 +837,21 @@ def _run_evals_in_subprocess(
 
             if not discovery.has_clients:
                 raise RuntimeError(
-                    f"No inference servers found with model {model_config.name} "
+                    f"No inference servers found with model {inference_model_name} "
                     f"via elastic discovery (hostname={client_config.elastic.hostname}) after {max_wait}s"
                 )
 
         clients = discovery.clients if discovery else setup_clients(client_config)
-        logger.info(f"Using {len(clients)} inference client(s)")
+        logger.info(f"Using {len(clients)} inference client(s) for model {inference_model_name}")
+
+        # Update model_config.name to use the discovered model for inference
+        eval_model_config = model_config.model_copy(update={"name": inference_model_name})
 
         try:
             await run_evals(
                 clients=clients,
                 eval_config=eval_config,
-                model_config=model_config,
+                model_config=eval_model_config,
                 sampling_config=sampling_config,
                 evals_client=evals_client,
                 reasoning_field=reasoning_field,
