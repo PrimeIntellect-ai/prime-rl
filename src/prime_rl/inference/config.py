@@ -2,8 +2,8 @@ import os
 from argparse import Namespace
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, model_validator
-from pydantic_config import BaseConfig, get_all_fields
+from pydantic import BaseModel, Field, model_validator
+from pydantic_config import BaseConfig
 
 from prime_rl.utils.utils import rgetattr, rsetattr
 
@@ -117,6 +117,22 @@ class WeightBroadcastConfig(BaseConfig):
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)
 # TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
+
+
+def get_all_fields(model: BaseModel | type) -> list[str]:
+    if isinstance(model, BaseModel):
+        model_cls = model.__class__
+    else:
+        model_cls = model
+
+    fields = []
+    for name, field in model_cls.model_fields.items():
+        field_type = field.annotation
+        fields.append(name)
+        if field_type is not None and hasattr(field_type, "model_fields"):
+            sub_fields = get_all_fields(field_type)
+            fields.extend(f"{name}.{sub}" for sub in sub_fields)
+    return fields
 
 
 class InferenceConfig(BaseConfig):

@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 
 import tomli_w
 from pydantic import Field, model_validator
-from pydantic_config import BaseConfig, cli, get_temp_toml_file
+from pydantic_config import BaseConfig, cli
 
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.inference.config import WeightBroadcastConfig as InferenceWeightBroadcastConfig
@@ -544,6 +544,14 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
     except Exception as e:
         error_queue.append(RuntimeError(f"Error monitoring {process_name}: {e}"))
         stop_event.set()
+
+
+def get_temp_toml_file() -> Path:
+    """Create a temporary TOML file path for subprocess config passing."""
+    temp_uuid = str(uuid.uuid4())
+    root_path = Path(".pydantic_config")
+    root_path.mkdir(exist_ok=True)
+    return root_path / f"temp_{temp_uuid}.toml"
 
 
 def rl(config: RLConfig):
