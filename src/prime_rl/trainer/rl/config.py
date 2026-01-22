@@ -114,7 +114,17 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
 
 
-WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+class NIXLWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    """Configures the NIXL weight broadcast for LoRA adapters via RDMA."""
+
+    type: Literal["nixl"] = "nixl"
+    port: Annotated[int, Field(description="Base port for NIXL ParameterServer. Each rank uses port + rank.")] = 6000
+    server_name: Annotated[str, Field(description="Base name for NIXL ParameterServers.")] = "lora_param_server"
+
+
+WeightBroadcastConfigType: TypeAlias = (
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig
+)
 
 
 class RLTrainerConfig(BaseSettings):
@@ -259,6 +269,8 @@ class RLTrainerConfig(BaseSettings):
         if self.model.lora is not None and self.weight_broadcast.type == "nccl":
             # TODO: Support this
             raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+        if self.model.lora is None and self.weight_broadcast.type == "nixl":
+            raise ValueError("NIXL weight broadcast only support LoRA for now.")
         return self
 
     @model_validator(mode="after")
