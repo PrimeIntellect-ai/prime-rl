@@ -21,6 +21,7 @@ monkey_patch_chat_completion_logprobs()
 import pandas as pd
 import verifiers as vf
 from loguru import logger
+from pydantic_config import cli
 from transformers import AutoTokenizer
 
 from prime_rl.eval.utils import run_evals_subprocess
@@ -47,7 +48,6 @@ from prime_rl.utils.client import (
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
     get_env_ids_to_install,
@@ -613,7 +613,8 @@ async def orchestrate(config: OrchestratorConfig):
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
 
-    asyncio.run(orchestrate(parse_argv(OrchestratorConfig)))
+    config = cli(OrchestratorConfig)
+    asyncio.run(orchestrate(config))
 
 
 if __name__ == "__main__":

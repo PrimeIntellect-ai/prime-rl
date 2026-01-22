@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic_config import BaseConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.utils.config import PrimeMonitorConfig, WandbWithExtrasConfig
@@ -7,7 +8,6 @@ from prime_rl.utils.monitor.base import Monitor, NoOpMonitor
 from prime_rl.utils.monitor.multi import MultiMonitor
 from prime_rl.utils.monitor.prime import PrimeMonitor
 from prime_rl.utils.monitor.wandb import WandbMonitor
-from prime_rl.utils.pydantic_config import BaseSettings
 
 __all__ = [
     "Monitor",
@@ -34,7 +34,7 @@ def setup_monitor(
     wandb_config: WandbWithExtrasConfig | None = None,
     output_dir: Path | None = None,
     tokenizer: PreTrainedTokenizer | None = None,
-    run_config: BaseSettings | None = None,
+    run_config: BaseConfig | None = None,
     *,
     prime_config: PrimeMonitorConfig | None = None,
     # Backward compatibility: support old 'config' keyword argument
@@ -80,4 +80,3 @@ def setup_monitor(
         _MONITOR = MultiMonitor(monitors)
 
     return _MONITOR
-

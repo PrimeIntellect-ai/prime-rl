@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
+from pydantic_config import BaseConfig
 
 from prime_rl.trainer.config import (
     AdamWConfig,
@@ -14,7 +15,6 @@ from prime_rl.trainer.config import (
     TokenizerConfig,
 )
 from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
 class BaseDataConfig(BaseModel):
@@ -104,7 +104,7 @@ class SFTDataConfig(BaseDataConfig):
 DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
 
 
-class SFTTrainerConfig(BaseSettings):
+class SFTTrainerConfig(BaseConfig):
     """Configures the SFT trainer"""
 
     # The model configuration

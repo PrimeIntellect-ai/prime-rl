@@ -2,13 +2,13 @@ from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field
+from pydantic_config import BaseConfig
 
 from prime_rl.orchestrator.config import EvalConfig
 from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig
-from prime_rl.utils.pydantic_config import BaseSettings
 
 
-class SynthesizeConfig(EvalConfig, BaseSettings):
+class SynthesizeConfig(EvalConfig, BaseConfig):
     """Configures synthetic data generation."""
 
     # The client configuration

@@ -7,12 +7,12 @@ from typing import Any
 
 import httpx
 import verifiers as vf
+from pydantic_config import BaseConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.utils.config import PrimeMonitorConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
-from prime_rl.utils.pydantic_config import BaseSettings
 
 
 class PrimeMonitor(Monitor):
@@ -23,7 +23,7 @@ class PrimeMonitor(Monitor):
         config: PrimeMonitorConfig | None,
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
-        run_config: BaseSettings | None = None,
+        run_config: BaseConfig | None = None,
     ):
         self.config = config
         self.logger = get_logger()

@@ -3,8 +3,8 @@ from argparse import Namespace
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
+from pydantic_config import BaseConfig, get_all_fields
 
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
@@ -106,7 +106,7 @@ class ModelConfig(BaseConfig):
     ] = None
 
 
-class WeightBroadcastConfig(BaseSettings):
+class WeightBroadcastConfig(BaseConfig):
     """Configures weight broadcast settings."""
 
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
@@ -119,7 +119,7 @@ class WeightBroadcastConfig(BaseSettings):
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
 
-class InferenceConfig(BaseSettings):
+class InferenceConfig(BaseConfig):
     """Configures inference."""
 
     # The server configuration
