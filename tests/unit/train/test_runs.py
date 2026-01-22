@@ -33,7 +33,7 @@ def create_run_with_config(
     """
     run_dir = output_dir / run_name
     run_dir.mkdir()
-    config_dir = run_dir / "configs"
+    config_dir = run_dir / "control"
     config_dir.mkdir()
 
     if config is None:
@@ -220,7 +220,7 @@ def test_config_loading(tmp_path: Path) -> None:
 
 
 def test_config_missing(tmp_path: Path) -> None:
-    """Test that runs without configs are skipped and error.txt is created."""
+    """Test that runs without configs are skipped and config_validation_error.txt is created."""
     multi_run_manager = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create a run directory without config
@@ -234,8 +234,8 @@ def test_config_missing(tmp_path: Path) -> None:
     assert len(multi_run_manager.config) == 0
     assert "run_noconfig" not in multi_run_manager.id_2_idx
 
-    # Verify error.txt was created
-    error_path = run_dir / "configs" / "error.txt"
+    # Verify config_validation_error.txt was created
+    error_path = run_dir / "control" / "config_validation_error.txt"
     assert error_path.exists()
     error_content = error_path.read_text()
     assert "No orchestrator config found" in error_content
@@ -271,7 +271,7 @@ def test_config_cleanup_on_deletion(tmp_path: Path) -> None:
 
 
 def test_config_invalid(tmp_path: Path) -> None:
-    """Test that runs with invalid configs are skipped and error.txt is created."""
+    """Test that runs with invalid configs are skipped and config_validation_error.txt is created."""
     multi_run_manager = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create a run directory with invalid config (invalid type for a field)
@@ -283,7 +283,7 @@ def test_config_invalid(tmp_path: Path) -> None:
         "env": [{"id": "test-env"}],
     }
     run_dir = create_run_with_config(tmp_path, "run_invalid", config=invalid_config)
-    config_dir = run_dir / "configs"
+    config_dir = run_dir / "control"
 
     # Detect the run
     multi_run_manager.discover_runs()
@@ -292,8 +292,50 @@ def test_config_invalid(tmp_path: Path) -> None:
     assert len(multi_run_manager.config) == 0
     assert "run_invalid" not in multi_run_manager.id_2_idx
 
-    # Verify error.txt was created with error details
-    error_path = config_dir / "error.txt"
+    # Verify config_validation_error.txt was created with error details
+    error_path = config_dir / "config_validation_error.txt"
     assert error_path.exists()
     error_content = error_path.read_text()
     assert "Error parsing orchestrator config" in error_content
+
+
+def test_evict_run_writes_file(tmp_path: Path) -> None:
+    """Test that evict_run writes the eviction reason to the correct file."""
+    multi_run_manager = MultiRunManager(output_dir=tmp_path, max_runs=5)
+
+    # Create a run directory with valid config
+    create_run_with_config(tmp_path, "run_to_evict")
+    multi_run_manager.discover_runs()
+
+    # Get the run index
+    run_idx = multi_run_manager.id_2_idx["run_to_evict"]
+
+    # Evict the run
+    eviction_reason = "Test eviction reason"
+    multi_run_manager.evict_run(run_idx, eviction_reason)
+
+    # Verify evicted.txt was created with the reason
+    evicted_path = tmp_path / "run_to_evict" / "control" / "evicted.txt"
+    assert evicted_path.exists()
+    assert evicted_path.read_text() == eviction_reason
+
+
+def test_discover_runs_ignores_evicted(tmp_path: Path) -> None:
+    """Test that discover_runs ignores runs with evicted.txt."""
+    multi_run_manager = MultiRunManager(output_dir=tmp_path, max_runs=5)
+
+    # Create two run directories
+    create_run_with_config(tmp_path, "run_normal")
+    create_run_with_config(tmp_path, "run_evicted")
+
+    # Mark one as evicted by creating evicted.txt
+    evicted_path = tmp_path / "run_evicted" / "control" / "evicted.txt"
+    evicted_path.write_text("Previously evicted")
+
+    # Discover runs
+    multi_run_manager.discover_runs()
+
+    # Only the normal run should be discovered
+    assert len(multi_run_manager.id_2_idx) == 1
+    assert "run_normal" in multi_run_manager.id_2_idx
+    assert "run_evicted" not in multi_run_manager.id_2_idx

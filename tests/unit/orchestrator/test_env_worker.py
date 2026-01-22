@@ -140,6 +140,42 @@ def test_collect_responses_restarts_on_worker_death(env_worker):
     asyncio.run(run_test())
 
 
+def test_update_model_name(env_worker):
+    """Test that update_model_name changes the model used for future requests."""
+    assert env_worker.model_name == "test-model"
+
+    env_worker.update_model_name("new-lora-model")
+
+    assert env_worker.model_name == "new-lora-model"
+
+
+def test_submit_request_uses_current_model_name(env_worker):
+    """Test that submit_request uses the current model_name."""
+    import asyncio
+
+    captured_requests = []
+
+    def capture_put(request):
+        captured_requests.append(request)
+
+    async def run_test():
+        # Mock the queue put to capture requests
+        env_worker.request_queue.put = capture_put
+
+        # Initial model name
+        future, request_id = await env_worker.submit_request(example_id=1, rollouts_per_example=1)
+        assert captured_requests[-1].model_name == "test-model"
+
+        # Update model name
+        env_worker.update_model_name("lora-model")
+
+        # New request should use new model name
+        future2, request_id2 = await env_worker.submit_request(example_id=1, rollouts_per_example=1)
+        assert captured_requests[-1].model_name == "lora-model"
+
+    asyncio.run(run_test())
+
+
 def test_full_restart_cycle(mock_client_config):
     """Test a full restart cycle with actual process management."""
     worker = EnvWorker(
