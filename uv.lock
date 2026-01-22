@@ -1922,6 +1922,35 @@ wheels = [
 ]
 
 [[package]]
+name = "nixl"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nixl-cu12" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3a/f5/a117477cc4f0a8825d525243dd9349350730fbd9d21b23586cfd3d56e972/nixl-0.9.0-py3-none-any.whl", hash = "sha256:b2b7d5ec994137d32c0f63896ba772ea33478adcacb18ebb9e19abd50e0776a3", size = 6670, upload-time = "2026-01-21T18:57:16.245Z" },
+]
+
+[package.optional-dependencies]
+cu12 = [
+    { name = "nixl-cu12" },
+]
+
+[[package]]
+name = "nixl-cu12"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "torch" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/e0/59eafdda5cdeee1119e92cac22eb4a6f8a5e3b6c484bf0f7575835cb6e08/nixl_cu12-0.9.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:94d2cbbebb8aaa6d3b89feb40046dc1a264e46e86626003c70e533a42ac6aa90", size = 42695060, upload-time = "2026-01-21T18:56:16.646Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/df/cf09bee9c99c1fbb4809ed6e185aaffd2b0e86979c8419effba1d044375f/nixl_cu12-0.9.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:c51e114f0b08d1ed308e2cc48389a70e295c13ed62603e08c6b59d7e39eea001", size = 43817052, upload-time = "2026-01-21T18:59:14.859Z" },
+]
+
+[[package]]
 name = "nltk"
 version = "3.9.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2459,6 +2488,7 @@ dependencies = [
     { name = "loguru" },
     { name = "lovely-tensors" },
     { name = "math-verify" },
+    { name = "nixl", extra = ["cu12"] },
     { name = "nltk" },
     { name = "numpy" },
     { name = "openai" },
@@ -2520,6 +2550,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
     { name = "math-verify", specifier = ">=0.8.0" },
+    { name = "nixl", extras = ["cu12"], specifier = ">=0.9.0" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
