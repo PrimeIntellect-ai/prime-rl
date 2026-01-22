@@ -264,7 +264,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    model.to_empty(device="cuda")
+    device = "cpu" if config.fsdp_cpu_offload else "cuda"
+    model.to_empty(device=device)
     torch.distributed.barrier()
 
     logger = get_logger()
