@@ -779,7 +779,7 @@ async def run_evals(
         logger.warning(f"Skipped {skipped}/{len(eval_config.env)} environments due to retry exhaustion")
 
 
-async def _discover_clients(client_config: ClientConfig, model_config: ModelConfig):
+async def _discover_clients(client_config: ClientConfig, model_config: ModelConfig) -> tuple[list[AsyncOpenAI], str]:
     """Discover inference clients via elastic discovery or static config.
 
     For elastic mode, tries LoRA adapter first if configured, falls back to base model.

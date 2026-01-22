@@ -17,6 +17,7 @@ from typing import Literal
 
 import httpx
 from httpx import AsyncClient
+from openai import AsyncOpenAI
 
 from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
 from prime_rl.utils.config import ClientConfig
@@ -94,7 +95,7 @@ class ServerDiscovery:
         self.client_config = client_config
         self.sync_interval = sync_interval
 
-        self._clients: list = []
+        self._clients: list[AsyncOpenAI] = []
         self._urls: list[str] = []
         self._client_index = 0
         self._last_refresh = 0.0
@@ -114,11 +115,11 @@ class ServerDiscovery:
         return len(self._clients) > 0
 
     @property
-    def clients(self) -> list:
+    def clients(self) -> list[AsyncOpenAI]:
         """Get the current list of clients."""
         return self._clients
 
-    def get_next_client(self):
+    def get_next_client(self) -> AsyncOpenAI | None:
         """Get next client in round-robin fashion."""
         if not self._clients:
             return None
@@ -211,7 +212,7 @@ class ElasticInferencePool:
         self._lock = asyncio.Lock()
         self._desired: AdapterState = AdapterState()
 
-        self._clients: list = []
+        self._clients: list[AsyncOpenAI] = []
         self._client_urls: list[str] = []
 
         self._sync_task: asyncio.Task | None = None
@@ -240,7 +241,7 @@ class ElasticInferencePool:
         return [self._build_inference_url(ip) for ip, s in self._servers.items() if s.status == "ready"]
 
     @property
-    def clients(self) -> list:
+    def clients(self) -> list[AsyncOpenAI]:
         urls = self.ready_urls
         if set(urls) != set(self._client_urls):
             self._client_urls = urls
