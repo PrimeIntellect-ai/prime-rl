@@ -789,21 +789,12 @@ async def _get_clients(client_config: ClientConfig, model_name: str) -> list[Asy
 
     discovery = ServerDiscovery.from_config(client_config, model_name)
 
-    # Wait for servers to be discovered (with timeout)
-    max_wait = 60
-    waited = 0
-    while not discovery.has_clients and waited < max_wait:
+    # Wait for servers to be discovered
+    while not discovery.has_clients:
         await discovery.refresh()
         if not discovery.has_clients:
-            logger.debug(f"Waiting for inference servers... ({waited}s)")
+            logger.debug(f"Waiting for inference servers with model {model_name}...")
             await asyncio.sleep(discovery.sync_interval)
-            waited += discovery.sync_interval
-
-    if not discovery.has_clients:
-        raise RuntimeError(
-            f"No inference servers found with model {model_name} "
-            f"via elastic discovery (hostname={client_config.elastic.hostname}) after {max_wait}s"
-        )
 
     return discovery.clients
 
