@@ -26,6 +26,7 @@ from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.synthesize.utils import merge_reasoning_content, save_result
 from prime_rl.utils.client import setup_clients, setup_evals_client
 from prime_rl.utils.config import ClientConfig
+from prime_rl.utils.elastic import ServerDiscovery
 from prime_rl.utils.logger import get_logger, intercept_verifiers_logging, reset_logger, setup_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
@@ -455,7 +456,7 @@ async def run_eval(
     reasoning_field: str,
     output_dir: Path,
     ckpt_step: int,
-    model_config: ModelConfig,
+    model_name: str,
     sampling_config: EvalSamplingConfig,
     save_config: EvalSaveConfig,
     retry_config: RetryConfig,
@@ -481,7 +482,7 @@ async def run_eval(
             # resume_path points to a directory containing results.jsonl
             path_to_save = resume_path / "results.jsonl"
         else:
-            base_path = get_results_path(env_name_or_id, model_config.name, base_path=output_dir)
+            base_path = get_results_path(env_name_or_id, model_name, base_path=output_dir)
             path_to_save = base_path / "results.jsonl"
         path_to_save.parent.mkdir(parents=True, exist_ok=True)
 
@@ -528,7 +529,7 @@ async def run_eval(
                 generate_and_save_rollout(
                     client,
                     env,
-                    model_config.name,
+                    model_name,
                     example,
                     rollout_idx,
                     env_name_or_id,
@@ -575,7 +576,7 @@ async def run_eval(
                 generate_and_save_group(
                     client,
                     env,
-                    model_config.name,
+                    model_name,
                     example,
                     rollouts_per_example,
                     env_name_or_id,
@@ -668,7 +669,7 @@ async def run_eval(
     if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
         outputs = env._prepare_rollout_results(
             all_states=[to_serializable_state(state) for state in all_states],  # type: ignore
-            model=model_config.name,
+            model=model_name,
             client=clients[0],  # We use the first client
             state_columns=None,
             results_path=None,
@@ -701,13 +702,13 @@ async def run_eval(
             )
 
         if save_config.env_hub:
-            eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
+            eval_name = f"{env_id}--{model_name.replace('/', '--')}"
 
             # Create evaluation for environment
             create_response = await evals_client.create_evaluation(
                 name=eval_name,
                 environments=[{"id": env_id}],
-                model_name=model_config.name,
+                model_name=model_name,
                 framework="verifiers",
                 metadata=metadata_dict,
                 metrics=eval_metrics,
@@ -730,6 +731,7 @@ async def run_eval(
 async def run_evals(
     clients: list[AsyncOpenAI],
     eval_config: EvalConfig | OfflineEvalConfig,
+    model_name: str,
     model_config: ModelConfig,
     sampling_config: EvalSamplingConfig,
     evals_client: AsyncEvalsClient,
@@ -753,7 +755,7 @@ async def run_evals(
                 reasoning_field=reasoning_field,
                 rollouts_per_example=env.rollouts_per_example or eval_config.rollouts_per_example,
                 output_dir=output_dir,
-                model_config=model_config,
+                model_name=model_name,
                 sampling_config=sampling_config,
                 save_config=eval_config.save,
                 retry_config=eval_config.retry,
@@ -789,8 +791,6 @@ async def _discover_clients(client_config: ClientConfig, model_config: ModelConf
 
     if not client_config.is_elastic:
         return setup_clients(client_config), model_config.name
-
-    from prime_rl.utils.elastic import ServerDiscovery
 
     # If LoRA is configured, try to find servers with LoRA adapter first
     # Fall back to base model if no servers have the LoRA loaded
@@ -848,16 +848,13 @@ def _run_evals_in_subprocess(
     async def _run():
         await set_semaphore(max_concurrent)
 
-        clients, inference_model_name = await _discover_clients(client_config, model_config)
-        logger.info(f"Using {len(clients)} inference client(s) for model {inference_model_name}")
-
-        # Update model_config.name to use the discovered model for inference
-        eval_model_config = model_config.model_copy(update={"name": inference_model_name})
+        clients, model_name = await _discover_clients(client_config, model_config)
+        logger.info(f"Using {len(clients)} inference client(s) for model {model_name}")
 
         await run_evals(
             clients=clients,
             eval_config=eval_config,
-            model_config=eval_model_config,
+            model_name=model_name,
             sampling_config=sampling_config,
             evals_client=evals_client,
             reasoning_field=reasoning_field,
