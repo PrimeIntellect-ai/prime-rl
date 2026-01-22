@@ -779,6 +779,52 @@ async def run_evals(
         logger.warning(f"Skipped {skipped}/{len(eval_config.env)} environments due to retry exhaustion")
 
 
+async def _discover_clients(client_config: ClientConfig, model_config: ModelConfig):
+    """Discover inference clients via elastic discovery or static config.
+
+    For elastic mode, tries LoRA adapter first if configured, falls back to base model.
+    Returns (clients, inference_model_name).
+    """
+    logger = get_logger()
+
+    if not client_config.is_elastic:
+        return setup_clients(client_config), model_config.name
+
+    from prime_rl.utils.elastic import ServerDiscovery
+
+    # If LoRA is configured, try to find servers with LoRA adapter first
+    # Fall back to base model if no servers have the LoRA loaded
+    if model_config.lora:
+        discovery = ServerDiscovery.from_config(client_config, model_config.lora.name)
+        await discovery.refresh()
+
+        if discovery.has_clients:
+            logger.info(f"Found servers with LoRA adapter {model_config.lora.name}")
+            return discovery.clients, model_config.lora.name
+
+        logger.info(f"No servers with LoRA adapter, falling back to base model {model_config.name}")
+
+    discovery = ServerDiscovery.from_config(client_config, model_config.name)
+
+    # Wait for servers to be discovered (with timeout)
+    max_wait = 60
+    waited = 0
+    while not discovery.has_clients and waited < max_wait:
+        await discovery.refresh()
+        if not discovery.has_clients:
+            logger.debug(f"Waiting for inference servers... ({waited}s)")
+            await asyncio.sleep(discovery.sync_interval)
+            waited += discovery.sync_interval
+
+    if not discovery.has_clients:
+        raise RuntimeError(
+            f"No inference servers found with model {model_config.name} "
+            f"via elastic discovery (hostname={client_config.elastic.hostname}) after {max_wait}s"
+        )
+
+    return discovery.clients, model_config.name
+
+
 def _run_evals_in_subprocess(
     client_config: ClientConfig,
     eval_config: EvalConfig,
@@ -802,66 +848,23 @@ def _run_evals_in_subprocess(
     async def _run():
         await set_semaphore(max_concurrent)
 
-        # Setup client discovery (elastic mode) or static clients (like env workers)
-        discovery = None
-        inference_model_name = model_config.name
-
-        if client_config.is_elastic:
-            from prime_rl.utils.elastic import ServerDiscovery
-
-            # If LoRA is configured, try to find servers with LoRA adapter first
-            # Fall back to base model if no servers have the LoRA loaded
-            if model_config.lora:
-                discovery = ServerDiscovery.from_config(client_config, model_config.lora.name)
-                await discovery.refresh()
-
-                if discovery.has_clients:
-                    inference_model_name = model_config.lora.name
-                    logger.info(f"Found servers with LoRA adapter {model_config.lora.name}")
-                else:
-                    logger.info(f"No servers with LoRA adapter, falling back to base model {model_config.name}")
-                    await discovery.stop()
-                    discovery = ServerDiscovery.from_config(client_config, model_config.name)
-            else:
-                discovery = ServerDiscovery.from_config(client_config, model_config.name)
-
-            # Wait for servers to be discovered (with timeout)
-            max_wait = 60
-            waited = 0
-            while not discovery.has_clients and waited < max_wait:
-                await discovery.refresh()
-                if not discovery.has_clients:
-                    logger.debug(f"Waiting for inference servers... ({waited}s)")
-                    await asyncio.sleep(discovery.sync_interval)
-                    waited += discovery.sync_interval
-
-            if not discovery.has_clients:
-                raise RuntimeError(
-                    f"No inference servers found with model {inference_model_name} "
-                    f"via elastic discovery (hostname={client_config.elastic.hostname}) after {max_wait}s"
-                )
-
-        clients = discovery.clients if discovery else setup_clients(client_config)
+        clients, inference_model_name = await _discover_clients(client_config, model_config)
         logger.info(f"Using {len(clients)} inference client(s) for model {inference_model_name}")
 
         # Update model_config.name to use the discovered model for inference
         eval_model_config = model_config.model_copy(update={"name": inference_model_name})
 
-        try:
-            await run_evals(
-                clients=clients,
-                eval_config=eval_config,
-                model_config=eval_model_config,
-                sampling_config=sampling_config,
-                evals_client=evals_client,
-                reasoning_field=reasoning_field,
-                output_dir=Path(output_dir),
-                ckpt_step=ckpt_step,
-                step=step,
-            )
-        finally:
-            if discovery:
-                await discovery.stop()
+        await run_evals(
+            clients=clients,
+            eval_config=eval_config,
+            model_config=eval_model_config,
+            sampling_config=sampling_config,
+            evals_client=evals_client,
+            reasoning_field=reasoning_field,
+            output_dir=Path(output_dir),
+            ckpt_step=ckpt_step,
+            step=step,
+        )
 
     asyncio.run(_run())
     get_monitor().close()
