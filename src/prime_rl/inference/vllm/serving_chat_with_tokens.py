@@ -97,11 +97,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 )
                 if error_check_ret is not None:
                     return error_check_ret
-                (
-                    conversation,
-                    request_prompts,
-                    engine_prompts,
-                ) = await self._preprocess_chat(
+                conversation, engine_prompts = await self._preprocess_chat(
                     request,
                     tokenizer,
                     request.messages,
@@ -117,11 +113,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 )
             else:
                 # For GPT-OSS.
-                (
-                    conversation,
-                    request_prompts,
-                    engine_prompts,
-                ) = self._make_request_with_harmony(request)
+                conversation, engine_prompts = self._make_request_with_harmony(request)
         except (ValueError, TypeError, RuntimeError, jinja2.TemplateError) as e:
             logger.exception("Error in preprocessing prompt inputs")
             return self.create_error_response(f"{e} {e.__cause__}")
@@ -150,7 +142,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         generators: list[AsyncGenerator[RequestOutput, None]] = []
         try:
             for i, engine_prompt in enumerate(engine_prompts):
-                prompt_text, _, _ = self._get_prompt_components(request_prompts[i])
+                prompt_text, _, _ = self._get_prompt_components(engine_prompts[i])
                 # If we are creating sub requests for multiple prompts, ensure that they
                 # have unique request ids.
                 sub_request_id = request_id if len(engine_prompts) == 1 else f"{request_id}_{i}"
@@ -181,7 +173,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
 
                 self._log_inputs(
                     sub_request_id,
-                    request_prompts[i],
+                    engine_prompts[i],
                     params=sampling_params,
                     lora_request=lora_request,
                 )
