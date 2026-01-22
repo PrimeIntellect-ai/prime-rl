@@ -205,7 +205,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             reshard_after_forward=False,
         )
     else:
-        get_logger().warning("Model is tied word embeddings, so not doing the last layer not resharding optimization")
+        get_logger().warning("Model uses tied word embeddings, so skipping the last-layer resharding optimization.")
 
     fully_shard(
         model,
