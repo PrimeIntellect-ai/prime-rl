@@ -653,7 +653,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Whether to reset inference weights to the base model when starting from scratch."
         ),
-    ] = False
+    ] = True
 
     # The validation configuration
     val: ValConfig | None = None
