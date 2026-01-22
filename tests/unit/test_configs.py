@@ -1,9 +1,8 @@
-import sys
 from pathlib import Path
 
 import pytest
+import tomli
 from pydantic import ValidationError
-from pydantic_config import cli
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.inference.config import InferenceConfig
@@ -30,16 +29,13 @@ def test_load_configs(config_file: Path, monkeypatch: pytest.MonkeyPatch):
     if "intellect_3/evals" in config_file.as_posix():
         pytest.skip("Skipped because uses partial configs, which are not supported by this test.")
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["dummy.py", "@", config_file.as_posix()],
-        raising=False,
-    )
+    with open(config_file, "rb") as f:
+        config = tomli.load(f)
+
     could_parse = []
     for config_cls in CONFIG_CLASSES:
         try:
-            cli(config_cls)
+            config_cls(**config)
             could_parse.append(True)
         except ValidationError:
             could_parse.append(False)
