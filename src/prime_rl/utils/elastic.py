@@ -475,6 +475,13 @@ class ElasticInferencePool:
 
         for ip in list(self._servers.keys()):
             await self._remove_server(ip)
+
+        # Close inference clients (admin clients are closed in _remove_server)
+        for client in self._clients:
+            await client.close()
+        self._clients = []
+        self._client_urls = []
+
         self._started = False
 
     async def sync_weights(self, weights_path: Path, lora_name: str | None = None, step: int = 0) -> None:
