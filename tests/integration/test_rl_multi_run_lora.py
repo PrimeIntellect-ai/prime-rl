@@ -12,7 +12,7 @@ from typing import Generator
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.utils import check_number_goes_up_or_down, check_number_in_range, strip_escape_codes
+from tests.utils import check_number_goes_up_or_down, check_reward_in_range, strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -385,13 +385,11 @@ def test_reward_in_range(multi_run_result: dict[str, ProcessResult], output_dir:
         with open(log_file, "r") as f:
             lines = strip_escape_codes(f.read()).splitlines()
         if name in ["beta", "gamma"]:
-            check_number_in_range(
-                lines, step=7, min_threshold=0.2, max_threshold=0.6, pattern=r"Reward:\s*(\d+\.\d{4})"
-            )
-            check_number_in_range(lines, min_threshold=0.65, pattern=r"Reward:\s*(\d+\.\d{4})")
+            check_reward_in_range(lines, step=7, min_threshold=0.2, max_threshold=0.6)
+            check_reward_in_range(lines, min_threshold=0.65)
         elif name in ["alpha_resume", "beta_resume"]:
-            check_number_in_range(lines, min_threshold=0.65, pattern=r"Reward:\s*(\d+\.\d{4})")
+            check_reward_in_range(lines, min_threshold=0.65)
         elif name == "alpha":  # Only had 10 steps, so it's lower
-            check_number_in_range(lines, min_threshold=0.4, pattern=r"Reward:\s*(\d+\.\d{4})")
+            check_reward_in_range(lines, min_threshold=0.4)
         else:
             pytest.fail(f"Unknown orchestrator {name}")
