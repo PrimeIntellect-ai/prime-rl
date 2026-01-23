@@ -2,6 +2,7 @@ from argparse import Namespace
 from http import HTTPStatus
 
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from vllm.entrypoints.chat_utils import load_chat_template
 from vllm.entrypoints.cli.serve import run_api_server_worker_proc
 from vllm.entrypoints.logger import RequestLogger
@@ -14,6 +15,31 @@ from vllm.entrypoints.chat_utils import load_chat_template
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ChatCompletionResponse, ErrorResponse
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
+
+
+class LoadLoRAAdapterNIXLRequest(BaseModel):
+    """Request body for loading LoRA adapter via NIXL."""
+
+    lora_name: str = Field(
+        ...,
+        description="Name to register the LoRA adapter under",
+        examples=["run_0_step_1000"],
+    )
+    run_idx: int = Field(
+        ...,
+        description="Run index in the MultiRunManager",
+        examples=[0],
+    )
+    trainer_addresses: list[tuple[str, int]] = Field(
+        ...,
+        description="List of (ip, port) tuples, one per trainer rank",
+        examples=[[("192.168.1.10", 6000), ("192.168.1.10", 6001)]],
+    )
+    timeout: float = Field(
+        default=30.0,
+        description="Connection timeout in seconds",
+    )
+
 
 from prime_rl.inference.patches import (
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
@@ -93,41 +119,15 @@ async def init_broadcaster(request: Request):
     return {"status": "ok"}
 
 
-@router.post("/init_nixl_client")
-async def init_nixl_client(request: Request):
-    """Initialize NIXL client connections to ALL trainer ParameterServers.
-
-    Each inference worker connects to all trainer ranks to fetch FSDP shards.
-
-    Request body:
-        server_name: Base name for ParameterServers (e.g., "lora_param_server")
-        trainer_addresses: List of [ip, port] pairs, one per trainer rank
-        timeout: Optional connection timeout (default 30.0)
-    """
-    # TODO: We can probably lazy init in load_lora_adapter_nixl
-    data = await request.json()
-    # Convert list of lists to list of tuples
-    trainer_addresses = [tuple(addr) for addr in data["trainer_addresses"]]
-    await engine_client(request).collective_rpc(
-        "init_nixl_client",
-        args=(trainer_addresses,),
-    )
-    return {"status": "ok"}
-
-
 @router.post("/load_lora_adapter_nixl")
-async def load_lora_adapter_nixl(request: Request):
+async def load_lora_adapter_nixl(request: LoadLoRAAdapterNIXLRequest, raw_request: Request):
     """Fetch LoRA weights via NIXL and load into vLLM.
 
-    Request body:
-        lora_name: Name to register the LoRA adapter under
-        run_id: Run identifier (e.g., "run_0")
-        step: Training step number
+    Creates fresh NIXL client connections, fetches weights, and disconnects.
     """
-    data = await request.json()
-    await engine_client(request).collective_rpc(
+    await engine_client(raw_request).collective_rpc(
         "load_lora_from_nixl",
-        args=(data["lora_name"], data["run_idx"]),
+        args=(request.lora_name, request.run_idx, request.trainer_addresses, request.timeout),
     )
     return {"status": "ok"}
 
