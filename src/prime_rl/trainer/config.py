@@ -249,11 +249,17 @@ class ModelConfig(BaseConfig):
     ] = DebugModelConfig()
 
     fused_lm_head_chunk_size: Annotated[
-        int | None,
+        int | bool,
         Field(
-            description="The chunk size to use for the fused LM head. If None, will not use chunking. RL training auto-sets this to 2048 if not specified (except when impl='liger_kernel').",
+            description=(
+                "The chunk size to use for the fused LM head. "
+                "Three behaviors: "
+                "(1) int >= 512: explicitly set chunk size for fused LM head; "
+                "(2) True: auto-enable (RL training auto-sets to 2048 unless impl='liger_kernel', SFT sets to False); "
+                "(3) False: explicitly disable fused LM head (use vanilla)."
+            ),
         ),
-    ] = None
+    ] = True
 
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
@@ -284,12 +290,21 @@ class ModelConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def fused_lm_head_chunk_size_no_liger(self):
+        if self.fused_lm_head_chunk_size and self.impl == "liger_kernel":
+            raise ValueError(
+                "Fused LM head chunk size is not supported with liger kernel. Please set `model.fused_lm_head_chunk_size` to None"
+            )
+        return self
+
+    @model_validator(mode="after")
     def fused_lm_head_chunk_size_is_valid(self):
-        if self.fused_lm_head_chunk_size is not None:
+        if isinstance(self.fused_lm_head_chunk_size, int):
             low = 512
             if self.fused_lm_head_chunk_size < low:
-                raise ValueError(f"Fused LM head chunk size must be greater than {low}")
-
+                raise ValueError(
+                    f"Fused LM head chunk size must be at least {low}, got {self.fused_lm_head_chunk_size}"
+                )
         return self
 
 
