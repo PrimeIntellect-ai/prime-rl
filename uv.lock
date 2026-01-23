@@ -2528,7 +2528,7 @@ requires-dist = [
     { name = "prime-evals", specifier = ">=0.1.5" },
     { name = "prometheus-client", marker = "extra == 'metrics'", specifier = ">=0.20.0" },
     { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=351b98a62cf159000abe0c48fe25efadc12ca128" },
+    { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=67865b9ced45665649a59e96a0073a933dcd0140" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "pyzmq", specifier = ">=27.1.0" },
@@ -2792,7 +2792,7 @@ email = [
 [[package]]
 name = "pydantic-config"
 version = "0.3.0"
-source = { git = "https://github.com/samsja/pydantic_config.git?rev=351b98a62cf159000abe0c48fe25efadc12ca128#351b98a62cf159000abe0c48fe25efadc12ca128" }
+source = { git = "https://github.com/samsja/pydantic_config.git?rev=67865b9ced45665649a59e96a0073a933dcd0140#67865b9ced45665649a59e96a0073a933dcd0140" }
 dependencies = [
     { name = "pydantic" },
     { name = "tyro" },
@@ -3307,15 +3307,6 @@ wheels = [
 ]
 
 [[package]]
-name = "shtab"
-version = "1.7.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5a/3e/837067b970c1d2ffa936c72f384a63fdec4e186b74da781e921354a94024/shtab-1.7.2.tar.gz", hash = "sha256:8c16673ade76a2d42417f03e57acf239bfb5968e842204c17990cae357d07d6f", size = 45751, upload-time = "2025-04-12T20:28:03.271Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/74/03/3271b7bb470fbab4adf5bd30b0d32143909d96f3608d815b447357f47f2b/shtab-1.7.2-py3-none-any.whl", hash = "sha256:858a5805f6c137bb0cda4f282d27d08fd44ca487ab4a6a36d2a400263cd0b5c1", size = 14214, upload-time = "2025-04-12T20:28:01.82Z" },
-]
-
-[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3802,19 +3793,16 @@ wheels = [
 
 [[package]]
 name = "tyro"
-version = "0.9.31"
+version = "1.0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "docstring-parser" },
-    { name = "rich" },
-    { name = "shtab" },
     { name = "typeguard" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b0/68/807bb16fdf4fe5cdfd70f6e90b0fd78f0d11bee815996ce5c9ae864b3ee1/tyro-0.9.31.tar.gz", hash = "sha256:e858b21f4d179db9fb52b292d3a544aca0bb439399bd59f1943cf96382f15a68", size = 319632, upload-time = "2025-08-30T21:17:35.674Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/34/1e306bacd2917f694fef5aa21ccd9d39dfa6747ddbe7a0f5c9612c734259/tyro-1.0.5.tar.gz", hash = "sha256:5b28c23cc8e844f284286b1043d06be0e62f7acff6f2b1b5b5db75466c6802fc", size = 453403, upload-time = "2026-01-13T20:50:51.016Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9b/c6/c808aed7b41ddb7b25427d53185c12df3daea76a295d061a3c58ac61a313/tyro-0.9.31-py3-none-any.whl", hash = "sha256:565305246fbfe7c288b7c44d5af58782a582b885c662ff223e9933779c1c10a3", size = 131681, upload-time = "2025-08-30T21:17:34.534Z" },
+    { url = "https://files.pythonhosted.org/packages/67/86/eef272685bc6c15a8f79178aa8c6e07d956f0f91d97fab5a4d8af707b21b/tyro-1.0.5-py3-none-any.whl", hash = "sha256:87fcba42a1136cdabef8776a456bb4a05c0d52b81ccc2529e65c75da059ff3cd", size = 181241, upload-time = "2026-01-13T20:50:49.597Z" },
 ]
 
 [[package]]
