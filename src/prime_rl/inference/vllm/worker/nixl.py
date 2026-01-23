@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -43,6 +44,7 @@ class NIXLLoRAWorker(Worker):
         lora_name: str,
         run_idx: int,
         trainer_addresses: list[tuple[str, int]],
+        lora_alpha: float,
         timeout: float = 30.0,
     ) -> str:
         """Fetch LoRA weights from ALL trainers via NIXL and save to disk.
@@ -55,6 +57,7 @@ class NIXLLoRAWorker(Worker):
             lora_name: Name to register the LoRA adapter under
             run_idx: Run index in the MultiRunManager
             trainer_addresses: List of (ip, port) tuples, one per trainer rank
+            lora_alpha: LoRA alpha scaling parameter
             timeout: Connection timeout in seconds
 
         Returns:
@@ -88,7 +91,7 @@ class NIXLLoRAWorker(Worker):
             logger.info(f"Connected to {len(clients)} trainer ParameterServers")
 
             # Fetch weights and save to disk
-            lora_path = self._fetch_and_save_weights(lora_name, run_idx, clients)
+            lora_path = self._fetch_and_save_weights(lora_name, run_idx, clients, lora_alpha)
 
         finally:
             # Always disconnect clients
@@ -106,6 +109,7 @@ class NIXLLoRAWorker(Worker):
         lora_name: str,
         run_idx: int,
         clients: list[ParameterClient],
+        lora_alpha: float,
     ) -> str:
         """Fetch weights from NIXL clients and save to disk.
 
@@ -147,6 +151,9 @@ class NIXLLoRAWorker(Worker):
         lora_dir = NIXL_LORA_CACHE_DIR / lora_name
         lora_dir.mkdir(parents=True, exist_ok=True)
 
+        # Save adapter config
+        self._save_adapter_config(lora_dir, lora_alpha, reassembled_weights)
+
         logger.info(
             f"Saving {[k + ': ' + str(v.shape) for k, v in reassembled_weights.items()]} to {lora_dir / 'adapter_model.safetensors'}"
         )
@@ -154,3 +161,37 @@ class NIXLLoRAWorker(Worker):
         save_file(reassembled_weights, lora_dir / "adapter_model.safetensors")
 
         return str(lora_dir)
+
+    def _save_adapter_config(self, lora_dir: Path, lora_alpha: float, weights: dict[str, torch.Tensor]) -> None:
+        """Save adapter_config.json in PEFT format.
+
+        Infers rank and target_modules from weights, uses provided lora_alpha.
+        """
+        target_modules = set()
+        rank = None
+
+        for key, tensor in weights.items():
+            parts = key.split(".")
+            for i, part in enumerate(parts):
+                if part == "lora_A":
+                    if i > 0:
+                        target_modules.add(parts[i - 1])
+                    if rank is None:
+                        rank = tensor.shape[1]
+                elif part == "lora_B" and i > 0:
+                    target_modules.add(parts[i - 1])
+
+        adapter_config = {
+            "peft_type": "LORA",
+            "task_type": "CAUSAL_LM",
+            "r": rank,
+            "lora_alpha": lora_alpha,
+            "lora_dropout": 0.0,
+            "bias": "none",
+            "target_modules": sorted(list(target_modules)),
+        }
+
+        config_path = lora_dir / "adapter_config.json"
+        with open(config_path, "w") as f:
+            json.dump(adapter_config, f, indent=2)
+        logger.info(f"Saved adapter config to {config_path}")

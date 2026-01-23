@@ -35,6 +35,11 @@ class LoadLoRAAdapterNIXLRequest(BaseModel):
         description="List of (ip, port) tuples, one per trainer rank",
         examples=[[("192.168.1.10", 6000), ("192.168.1.10", 6001)]],
     )
+    lora_alpha: float = Field(
+        ...,
+        description="LoRA alpha scaling parameter",
+        examples=[32.0],
+    )
     timeout: float = Field(
         default=30.0,
         description="Connection timeout in seconds",
@@ -136,7 +141,7 @@ async def load_lora_adapter_nixl(request: LoadLoRAAdapterNIXLRequest, raw_reques
     # Fetch weights from trainers via NIXL - returns the path where weights are saved
     results = await engine_client(raw_request).collective_rpc(
         "load_lora_from_nixl",
-        args=(request.lora_name, request.run_idx, request.trainer_addresses, request.timeout),
+        args=(request.lora_name, request.run_idx, request.trainer_addresses, request.lora_alpha, request.timeout),
     )
 
     # All workers return the same path, just take the first one
