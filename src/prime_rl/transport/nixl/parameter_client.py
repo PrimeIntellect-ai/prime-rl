@@ -12,6 +12,7 @@ receiving data via high-performance RDMA transfers.
 
 import os
 import pickle
+import random
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -21,6 +22,11 @@ from nixl._api import nixl_agent, nixl_agent_config
 from nixl.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _get_random_ephemeral_port() -> int:
+    """Return a random port in the high ephemeral range (49152-65535)."""
+    return random.randint(49152, 65535)
 
 
 def _configure_ucx_transports(tcp_only: bool = False):
@@ -74,6 +80,7 @@ class ParameterClient:
         device: str = "cpu",
         timeout: float = 30.0,
         tcp_only: bool = False,
+        listener_port: Optional[int] = None,
     ):
         """
         Initialize the parameter client and connect to the server.
@@ -87,6 +94,8 @@ class ParameterClient:
             timeout: Timeout in seconds for operations.
             tcp_only: Force TCP transport only (for internet/cross-datacenter).
                       Default False uses RDMA when available with TCP fallback.
+            listener_port: Port for this client's metadata listener. If None,
+                          a random ephemeral port (49152-65535) is chosen.
         """
         self.name = name
         self.server_name = server_name
@@ -98,8 +107,12 @@ class ParameterClient:
         # Configure UCX for best transport with TCP fallback
         _configure_ucx_transports(tcp_only=tcp_only)
 
+        # Pick a random ephemeral port if not specified
+        if listener_port is None:
+            listener_port = _get_random_ephemeral_port()
+
         # Create NIXL agent with listener enabled for responses
-        config = nixl_agent_config(True, True, 0)
+        config = nixl_agent_config(True, True, listener_port)
         self.agent = nixl_agent(name, config)
 
         # Exchange metadata with server
