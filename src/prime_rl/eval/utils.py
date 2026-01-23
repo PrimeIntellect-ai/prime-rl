@@ -782,21 +782,11 @@ async def run_evals(
 
 async def _get_clients(client_config: ClientConfig, model_name: str) -> list[AsyncOpenAI]:
     """Discover inference clients via elastic discovery or static config."""
-    logger = get_logger()
-
     if not client_config.is_elastic:
         return setup_clients(client_config)
 
     discovery = ServerDiscovery.from_config(client_config, model_name)
-
-    # Wait for servers to be discovered
-    while not discovery.has_clients:
-        await discovery.refresh()
-        if not discovery.has_clients:
-            logger.debug(f"Waiting for inference servers with model {model_name}...")
-            await asyncio.sleep(discovery.sync_interval)
-
-    return discovery.clients
+    return await discovery.wait_for_clients()
 
 
 def _run_evals_in_subprocess(

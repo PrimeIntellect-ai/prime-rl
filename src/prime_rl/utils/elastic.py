@@ -154,6 +154,16 @@ class ServerDiscovery:
         self._client_index = 0
         return True
 
+    async def wait_for_clients(self) -> list[AsyncOpenAI]:
+        """Wait for clients to be available and return them."""
+        while not self.has_clients:
+            await self.refresh()
+            if not self.has_clients:
+                self.logger.debug(f"Waiting for inference servers with model {self.model_name}...")
+                await asyncio.sleep(self.sync_interval)
+
+        return self._clients
+
     async def stop(self) -> None:
         for client in self._clients:
             await client.close()
