@@ -91,12 +91,16 @@ class MultiLoRAModule(nn.Module):
         self.register_load_state_dict_pre_hook(self._pre_load_state_dict_hook)
 
     @abstractmethod
-    def reset_parameters(self, index: int | None = None) -> None:
+    def reset_parameters(self, index: int | None = None, lora_rank: int | None = None) -> None:
         """Reset LoRA parameters.
 
         Args:
             index: If provided, reset only the parameters for that adapter index.
                    If None, reset all adapter parameters.
+            lora_rank: If provided, only initialize the first lora_rank dimensions
+                       of lora_A matrices (zero-padding the rest). This enables
+                       lower-rank computation while maintaining tensor shape for batching.
+                       If None, uses the full rank.
         """
         ...
 
