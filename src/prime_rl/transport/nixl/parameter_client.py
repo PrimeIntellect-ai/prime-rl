@@ -313,14 +313,15 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="NIXL Parameter Client")
+    parser.add_argument("--server-name", type=str, required=True, help="Server name")
     parser.add_argument("--server-ip", type=str, required=True, help="Server IP address")
     parser.add_argument("--server-port", type=int, default=5555, help="Server port")
     parser.add_argument("--device", type=str, default="cpu", help="Device (cpu or cuda:N)")
     args = parser.parse_args()
 
     client = ParameterClient(
-        "worker_0",
-        "param_server",
+        "test_client",
+        args.server_name,
         args.server_ip,
         args.server_port,
         device=args.device,
@@ -329,7 +330,8 @@ if __name__ == "__main__":
     print(f"Available tensors: {client.keys()}")
 
     # Fetch individual tensors
-    for key in client.keys():
+    N = 10
+    for key in client.keys()[:N]:
         info = client.get_info(key)
         print(f"\nFetching '{key}' (shape={info.shape}, dtype={info.dtype})...")
         tensor = client.get(key)
