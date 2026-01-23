@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Parameter Client using NIXL for high-performance tensor fetching.
 
@@ -5,6 +10,7 @@ The client connects to a ParameterServer and requests tensors by key,
 receiving data via high-performance RDMA transfers.
 """
 
+import os
 import pickle
 import time
 from dataclasses import dataclass
@@ -15,6 +21,21 @@ from nixl._api import nixl_agent, nixl_agent_config
 from nixl.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _configure_ucx_transports(tcp_only: bool = False):
+    """Configure UCX to use best available transport with TCP fallback.
+
+    Args:
+        tcp_only: If True, force TCP transport only (for internet/cross-datacenter).
+    """
+    if "UCX_TLS" not in os.environ:
+        if tcp_only:
+            os.environ["UCX_TLS"] = "tcp"
+        else:
+            os.environ["UCX_TLS"] = "all"
+    if "UCX_LOG_LEVEL" not in os.environ:
+        os.environ["UCX_LOG_LEVEL"] = "warn"
 
 
 @dataclass
@@ -52,6 +73,7 @@ class ParameterClient:
         server_port: int,
         device: str = "cpu",
         timeout: float = 30.0,
+        tcp_only: bool = False,
     ):
         """
         Initialize the parameter client and connect to the server.
@@ -63,6 +85,8 @@ class ParameterClient:
             server_port: Port of the server.
             device: Device to allocate received tensors on ("cpu" or "cuda:N").
             timeout: Timeout in seconds for operations.
+            tcp_only: Force TCP transport only (for internet/cross-datacenter).
+                      Default False uses RDMA when available with TCP fallback.
         """
         self.name = name
         self.server_name = server_name
@@ -71,7 +95,10 @@ class ParameterClient:
         self.device = torch.device(device)
         self.timeout = timeout
 
-        # Create NIXL agent (no listener needed for client)
+        # Configure UCX for best transport with TCP fallback
+        _configure_ucx_transports(tcp_only=tcp_only)
+
+        # Create NIXL agent with listener enabled for responses
         config = nixl_agent_config(True, True, 0)
         self.agent = nixl_agent(name, config)
 

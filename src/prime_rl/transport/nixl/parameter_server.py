@@ -10,14 +10,43 @@ The server hosts a key-value map (string -> tensor) with memory registered for R
 Clients can request tensors by key and receive data via high-performance RDMA transfers.
 """
 
+import os
 import pickle
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 import torch
 from nixl._api import nixl_agent, nixl_agent_config
 from nixl.logging import get_logger
+
+
+def _configure_ucx_transports(tcp_only: bool = False):
+    """Configure UCX to use best available transport with TCP fallback.
+
+    UCX transport priority (best to worst):
+    - rc_mlx5: Mellanox InfiniBand reliable connection (best for same-rack)
+    - rc_verbs: Generic InfiniBand RC
+    - dc_mlx5: Mellanox dynamically connected
+    - ud_mlx5: Mellanox unreliable datagram
+    - tcp: TCP sockets (works over internet, required for cross-datacenter)
+
+    Args:
+        tcp_only: If True, force TCP transport only (for internet/cross-datacenter).
+                  If False, UCX picks the best available with TCP as fallback.
+    """
+    if "UCX_TLS" not in os.environ:
+        if tcp_only:
+            os.environ["UCX_TLS"] = "tcp"
+        else:
+            # Enable all transports, UCX will pick the best available
+            os.environ["UCX_TLS"] = "all"
+
+    # Reduce logging noise
+    if "UCX_LOG_LEVEL" not in os.environ:
+        os.environ["UCX_LOG_LEVEL"] = "warn"
+
 
 logger = get_logger(__name__)
 
@@ -66,6 +95,7 @@ class ParameterServer:
         self,
         name: str,
         port: int = 5555,
+        tcp_only: bool = False,
     ):
         """
         Initialize the parameter server.
@@ -73,9 +103,14 @@ class ParameterServer:
         Args:
             name: Unique name for this server agent.
             port: Port for metadata exchange and notifications.
+            tcp_only: Force TCP transport only (for internet/cross-datacenter).
+                      Default False uses RDMA when available with TCP fallback.
         """
         self.name = name
         self.running = False
+
+        # Configure UCX for best transport with TCP fallback
+        _configure_ucx_transports(tcp_only=tcp_only)
 
         # Create NIXL agent with listener enabled
         config = nixl_agent_config(True, True, port)
@@ -234,9 +269,25 @@ class ParameterServer:
         self.running = False
         logger.info("ParameterServer '%s' stopping...", self.name)
 
+    def _wait_for_client_metadata(self, client: str, timeout: float = 5.0) -> bool:
+        """Wait until we can reach the client (metadata is loaded)."""
+        start = time.time()
+        while time.time() - start < timeout:
+            if self.agent.check_remote_metadata(client):
+                return True
+            time.sleep(0.01)
+        return False
+
     def _handle_request(self, client: str, msg: bytes):
         """Handle a request from a client."""
         try:
+            # Ensure we can respond to this client before processing
+            if not self.agent.check_remote_metadata(client):
+                logger.debug("Waiting for metadata from client '%s'", client)
+                if not self._wait_for_client_metadata(client):
+                    logger.error("Timeout waiting for metadata from client '%s'", client)
+                    return
+
             if msg == b"CATALOG_REQ":
                 self._handle_catalog_request(client)
             elif msg.startswith(b"DESCS_REQ:"):
