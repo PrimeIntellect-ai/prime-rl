@@ -257,7 +257,7 @@ class ModelConfig(BaseConfig):
                 "(1) int >= 512: explicitly set chunk size for fused LM head; "
                 "(2) True: auto-enable (RL training auto-sets to 2048); "
                 "(3) False: explicitly disable fused LM head (use vanilla)."
-                "This feature isn't supported for SFT training or models where `impl='liger_kernel'`."
+                "Explicitly setting an integer value for this feature isn't supported for SFT training or models where `impl='liger_kernel'`."
             ),
         ),
     ] = True
@@ -292,9 +292,9 @@ class ModelConfig(BaseConfig):
 
     @model_validator(mode="after")
     def fused_lm_head_chunk_size_no_liger(self):
-        if self.fused_lm_head_chunk_size and self.impl == "liger_kernel":
+        if isinstance(self.fused_lm_head_chunk_size, int) and not isinstance(self.fused_lm_head_chunk_size, bool):
             raise ValueError(
-                "Fused LM head chunk size is not supported with liger kernel. Please set `model.fused_lm_head_chunk_size` to False"
+                f"Explicitly setting fused LM head chunk size to {self.fused_lm_head_chunk_size} is not supported. Keep the default value or set to False to disable chunked loss."
             )
         return self
 

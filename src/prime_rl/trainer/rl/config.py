@@ -272,7 +272,11 @@ class RLTrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_fused_lm_head_chunk_size(self):
         if self.model.fused_lm_head_chunk_size is True:
-            self.model.fused_lm_head_chunk_size = 2048
+            if self.model.impl == "liger_kernel":
+                self.model.fused_lm_head_chunk_size = False
+            else:
+                self.model.fused_lm_head_chunk_size = 2048
+
         return self
 
     @model_validator(mode="after")

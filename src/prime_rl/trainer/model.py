@@ -442,6 +442,7 @@ def setup_model(
     lm_head_chunk_size: int | None = None
     if config.fused_lm_head_chunk_size:
         lm_head_chunk_size = config.fused_lm_head_chunk_size
+        assert lm_head_chunk_size >= 512, f"Fused LM head chunk size must be at least 512, got {lm_head_chunk_size}"
 
     inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
 
