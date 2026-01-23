@@ -440,9 +440,8 @@ def setup_model(
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
     lm_head_chunk_size: int | None = None
-    if config.fused_lm_head_chunk_size:
+    if isinstance(config.fused_lm_head_chunk_size, int):
         lm_head_chunk_size = config.fused_lm_head_chunk_size
-        assert lm_head_chunk_size >= 512, f"Fused LM head chunk size must be at least 512, got {lm_head_chunk_size}"
 
     inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
 

@@ -249,18 +249,18 @@ class ModelConfig(BaseConfig):
     ] = DebugModelConfig()
 
     fused_lm_head_chunk_size: Annotated[
-        int | bool,
+        int | Literal["auto", "disabled"],
         Field(
             description=(
                 "The chunk size to use for the fused LM head. "
                 "Three behaviors: "
                 "(1) int >= 512: explicitly set chunk size for fused LM head; "
-                "(2) True: auto-enable (RL training auto-sets to 2048); "
-                "(3) False: explicitly disable fused LM head (use vanilla)."
+                "(2) 'auto': auto-enable (RL training auto-sets to 2048); "
+                "(3) 'disabled': explicitly disable fused LM head (use vanilla)."
                 "Explicitly setting an integer value for this feature isn't supported for SFT training or models where `impl='liger_kernel'`."
             ),
         ),
-    ] = True
+    ] = "auto"
 
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
@@ -291,16 +291,16 @@ class ModelConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def fused_lm_head_chunk_size_no_liger(self):
-        if isinstance(self.fused_lm_head_chunk_size, int) and not isinstance(self.fused_lm_head_chunk_size, bool):
+    def fused_lm_head_chunk_size_not_supported_for_liger(self):
+        if isinstance(self.fused_lm_head_chunk_size, int) and self.impl == "liger_kernel":
             raise ValueError(
-                f"Explicitly setting fused LM head chunk size to {self.fused_lm_head_chunk_size} is not supported. Keep the default value or set to False to disable chunked loss."
+                f"Explicitly setting fused LM head chunk size to {self.fused_lm_head_chunk_size} is not supported for liger_kernel implementation. Keep the default value or set to 'disabled' to disable chunked loss."
             )
         return self
 
     @model_validator(mode="after")
     def fused_lm_head_chunk_size_is_valid(self):
-        if isinstance(self.fused_lm_head_chunk_size, int) and not isinstance(self.fused_lm_head_chunk_size, bool):
+        if isinstance(self.fused_lm_head_chunk_size, int):
             low = 512
             if self.fused_lm_head_chunk_size < low:
                 raise ValueError(
