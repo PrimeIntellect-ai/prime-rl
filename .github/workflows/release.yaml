@@ -2,13 +2,23 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     tags:
       - "*"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment tag (dev/prod)"
+        required: false
+        default: ""
+
 jobs:
   cuda:
     name: Push CUDA image to Docker
     runs-on: image-builder
+    outputs:
+      digest: ${{ steps.docker_build.outputs.digest }}
+      image_tag: ${{ steps.vars.outputs.image_tag }}
     steps:
       - name: Remove unnecessary packages
         run: |
@@ -20,46 +30,90 @@ jobs:
           echo "=== After pruning ==="
           df -h
 
-      # Link to discussion: https://github.com/orgs/community/discussions/25678
-
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Set environment variables
+        id: vars
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+
+          # Determine environment based on branch or input
+          if [[ "${{ github.event.inputs.environment }}" != "" ]]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENV="prod"
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            ENV="dev"
+          else
+            ENV="dev"
+          fi
+
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "env=${ENV}" >> $GITHUB_OUTPUT
+          echo "image_tag=${ENV}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+
       - name: Docker meta
         id: meta
-        uses: crazy-max/ghaction-docker-meta@v2
+        uses: docker/metadata-action@v5
         with:
           images: |
             primeintellect/prime-rl
           tags: |
+            # Environment + short SHA (primary tag for deployments)
+            type=raw,value=${{ steps.vars.outputs.env }}-${{ steps.vars.outputs.short_sha }}
+            # Environment latest (dev-latest or prod-latest)
+            type=raw,value=${{ steps.vars.outputs.env }}-latest
+            # Branch name
             type=ref,event=branch
-            type=ref,event=pr
+            # Full commit SHA for traceability
+            type=sha,prefix=commit-,format=long
+            # Semver for tags
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha,prefix=commit-
+            # Latest only for semver tags
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+
       - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v1
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v1
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
       - name: Build and push
         id: docker_build
-        uses: docker/build-push-action@v2
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile.cuda
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Test import
-        run: docker run --entrypoint python primeintellect/prime-rl:main -c "import prime_rl"
+        if: github.event_name != 'pull_request'
+        run: docker run --entrypoint python primeintellect/prime-rl:${{ steps.vars.outputs.env }}-${{ steps.vars.outputs.short_sha }} -c "import prime_rl"
 
-      - name: Image digest
-        run: echo ${{ steps.docker_build.outputs.digest }}
+      - name: Output image info
+        run: |
+          echo "## Image Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Environment** | ${{ steps.vars.outputs.env }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Tag** | \`${{ steps.vars.outputs.env }}-${{ steps.vars.outputs.short_sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Digest** | \`${{ steps.docker_build.outputs.digest }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pull command" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull primeintellect/prime-rl@${{ steps.docker_build.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
