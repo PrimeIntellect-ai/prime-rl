@@ -1,3 +1,5 @@
+import json
+import socket
 import threading
 import time
 from pathlib import Path
@@ -53,6 +55,13 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.server_thread = threading.Thread(target=self.param_server.run, daemon=True)
         self.server_thread.start()
 
+        # Get host IP for NIXL connections (use config if set, otherwise auto-discover)
+        if config.host is not None:
+            self.host = config.host
+        else:
+            hostname = socket.gethostname()
+            self.host = socket.gethostbyname(hostname)
+
         # Register MultiLoRA parameters for all runs
         for idx in range(self.multi_run_manager.max_runs):
             self._register_multilora_parameters(idx)
@@ -106,14 +115,31 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 current_step,
             )
             save_dir.mkdir(parents=True, exist_ok=True)
-            self._notify_orchestrator(save_dir)
+            self._notify_orchestrator(save_dir, idx)
 
             self.multi_run_manager.ready_to_update[idx] = False
 
         self.logger.debug(f"NIXL weights notified in {time.perf_counter() - start_time:.2f}s")
 
-    def _notify_orchestrator(self, save_dir: Path):
-        """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem."""
+    def _notify_orchestrator(self, save_dir: Path, run_idx: int):
+        """Notify the orchestrator that the weights are ready.
+
+        Writes:
+        - nixl_info.json: Contains run_idx and connection info for NIXL fetch
+        - STABLE: Marker file to signal readiness
+        """
+        # Write NIXL connection info (addresses computed as host:base_port+rank)
+        nixl_info = {
+            "run_idx": run_idx,
+            "host": self.host,
+            "base_port": self.config.port,
+            "world_size": self.world.world_size,
+        }
+        nixl_info_file = save_dir / "nixl_info.json"
+        with open(nixl_info_file, "w") as f:
+            json.dump(nixl_info, f)
+
+        # Write STABLE marker last (orchestrator watches for this)
         stable_file = save_dir / "STABLE"
         stable_file.touch()
 

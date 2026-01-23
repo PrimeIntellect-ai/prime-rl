@@ -118,6 +118,10 @@ class NIXLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Configures the NIXL weight broadcast for LoRA adapters via RDMA."""
 
     type: Literal["nixl"] = "nixl"
+    host: Annotated[
+        str | None,
+        Field(description="Host IP for NIXL connections. If None, auto-discovered via socket.gethostbyname()."),
+    ] = None
     port: Annotated[int, Field(description="Base port for NIXL ParameterServer. Each rank uses port + rank.")] = 6000
     server_name: Annotated[str, Field(description="Base name for NIXL ParameterServers.")] = "lora_param_server"
 
