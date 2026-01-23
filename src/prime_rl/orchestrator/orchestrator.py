@@ -202,7 +202,9 @@ async def orchestrate(config: OrchestratorConfig):
     if teacher_admin_clients is not None:
         logger.info("Waiting for teacher inference pool to be ready")
         await check_health(teacher_admin_clients)
-        await maybe_check_has_model(teacher_clients, teacher_model_name)
+        await maybe_check_has_model(
+            teacher_clients, teacher_model_name, skip_model_check=config.teacher_model.client.skip_model_check
+        )
         logger.success("Teacher inference pool ready")
 
     # Set up weight broadcast backend

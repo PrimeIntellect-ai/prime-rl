@@ -54,7 +54,7 @@ async def eval(config: OfflineEvalConfig):
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(admin_clients)
-    await maybe_check_has_model(clients, config)
+    await maybe_check_has_model(clients, config.model.name, skip_model_check=config.client.skip_model_check)
     logger.success(f"Inference pool is healthy and serves {config.model.name}")
 
     # Reset weights to base model to allow reusing inference server across runs

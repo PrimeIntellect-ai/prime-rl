@@ -43,7 +43,7 @@ async def synthesize(config: SynthesizeConfig):
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(admin_clients)
-    await maybe_check_has_model(clients, config)
+    await maybe_check_has_model(clients, config.model.name, skip_model_check=config.client.skip_model_check)
     logger.success(f"Inference pool is healthy and serves {config.model.name}")
 
     # Set global semaphore
