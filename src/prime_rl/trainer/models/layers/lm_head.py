@@ -32,9 +32,12 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
 
 
 class FusedOutputLinear(torch.nn.Linear):
-    def __init__(self, in_features: int, out_features: int, chunk_size: int):
+    def __init__(
+        self, in_features: int, out_features: int, chunk_size: int, final_logit_softcapping: float | None = None
+    ):
         super().__init__(in_features, out_features, bias=False)
         self.chunk_size = chunk_size
+        self.final_logit_softcapping = final_logit_softcapping
 
     def forward(
         self,
@@ -49,7 +52,9 @@ class FusedOutputLinear(torch.nn.Linear):
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
         labels = labels.reshape(b * s).contiguous()
 
-        logprobs, entropy = _ChunkedLogProbEntropyFn.apply(hidden_states, self.weight, labels, inv_t, self.chunk_size)
+        logprobs, entropy = _ChunkedLogProbEntropyFn.apply(
+            hidden_states, self.weight, labels, inv_t, self.chunk_size, self.final_logit_softcapping
+        )
 
         logprobs = logprobs.reshape(b, s)
         entropy = entropy.reshape(b, s)
@@ -57,13 +62,17 @@ class FusedOutputLinear(torch.nn.Linear):
 
 
 class VanillaOutputLinear(torch.nn.Linear):
-    def __init__(self, in_features: int, out_features: int):
+    def __init__(self, in_features: int, out_features: int, final_logit_softcapping: float | None = None):
         super().__init__(in_features, out_features, bias=False)
+        self.final_logit_softcapping = final_logit_softcapping
 
     def forward(
         self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: float = 1.0
     ) -> PrimeLmOutput:
-        return PrimeLmOutput(logits=super().forward(hidden_states))
+        logits = super().forward(hidden_states)
+        if self.final_logit_softcapping is not None:
+            logits = self.final_logit_softcapping * torch.tanh(logits / self.final_logit_softcapping)
+        return PrimeLmOutput(logits=logits)
 
 
 class _ChunkedLogProbEntropyFn(torch.autograd.Function):
@@ -75,6 +84,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         labels: torch.Tensor,  # [N]
         inv_temperature: float,
         chunk_size: int,
+        final_logit_softcapping: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns (per-token logprobs, per-token entropy) without materializing [N, V].
@@ -103,7 +113,11 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
             end = min(start + chunk_size, vocab)
             w_chunk = weight[start:end]  # [C, H]
             logits = hidden @ w_chunk.t()  # [N, C] (model dtype)
-            logits_f = logits.to(torch.float32).mul_(inv_temperature)  # [N, C] fp32
+            logits_f = logits.to(torch.float32)  # [N, C] fp32
+            # Apply final logit softcapping (Gemma2/3) before temperature
+            if final_logit_softcapping is not None:
+                logits_f = final_logit_softcapping * torch.tanh(logits_f / final_logit_softcapping)
+            logits_f = logits_f.mul_(inv_temperature)
 
             # Shared intermediates for logZ and entropy stats.
             m, s, t = _online_logsumexp_and_weighted_update(m, s, t, logits_f)
@@ -122,6 +136,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         ctx.save_for_backward(hidden, weight, labels, logz)
         ctx.inv_temperature = inv_temperature
         ctx.chunk_size = chunk_size
+        ctx.final_logit_softcapping = final_logit_softcapping
 
         # Return fp32 for numerical stability (matching baseline behavior).
         return logprobs, entropy
@@ -135,6 +150,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         hidden, weight, labels, logz = ctx.saved_tensors
         inv_temperature: float = ctx.inv_temperature
         chunk_size: int = ctx.chunk_size
+        final_logit_softcapping: float | None = ctx.final_logit_softcapping
 
         n, h = hidden.shape
         vocab = weight.shape[0]
@@ -149,7 +165,13 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
             w_chunk = weight[start:end]  # [C, H]
 
             logits = hidden @ w_chunk.t()  # [N, C] (model dtype)
-            logits_f = logits.to(torch.float32).mul_(inv_temperature)  # [N, C] fp32
+            logits_f = logits.to(torch.float32)  # [N, C] fp32
+            # Apply final logit softcapping (Gemma2/3) before temperature
+            tanh_val = None
+            if final_logit_softcapping is not None:
+                tanh_val = torch.tanh(logits_f / final_logit_softcapping)
+                logits_f = final_logit_softcapping * tanh_val
+            logits_f = logits_f.mul_(inv_temperature)
 
             # p = softmax(logits_f) chunk = exp(logits_f - logz)
             p = torch.exp(logits_f - logz.unsqueeze(-1))  # [N, C] fp32
@@ -161,14 +183,17 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
                 idx = (labels[mask] - start).to(torch.long)
                 grad_logits[mask, idx] += g[mask]
 
-            # Chain through temperature scaling: logits_f = logits * inv_temperature
+            # Chain through temperature scaling
             grad_logits.mul_(inv_temperature)
+            # Chain through softcapping: d/dx[c*tanh(x/c)] = 1 - tanh^2(x/c)
+            if final_logit_softcapping is not None:
+                grad_logits = grad_logits * (1 - tanh_val**2)
 
             grad_hidden.add_(grad_logits.to(hidden.dtype) @ w_chunk)
             grad_w_chunk = grad_logits.to(weight.dtype).t() @ hidden  # [C, H]
             grad_weight[start:end].add_(grad_w_chunk)
 
-        return grad_hidden, grad_weight, None, None, None
+        return grad_hidden, grad_weight, None, None, None, None
 
 
 def _online_logsumexp_and_weighted_update(
@@ -214,16 +239,26 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
     )
 
     logger = get_logger()
-    logger.info(f"Injecting Prime LM head with chunk size {chunk_size}")
+    final_logit_softcapping = getattr(model.config, "final_logit_softcapping", None)
+    logger.info(
+        f"Injecting Prime LM head with chunk size {chunk_size}, final_logit_softcapping={final_logit_softcapping}"
+    )
 
     # Replace the lm_head with the appropriate wrapper
     old_lm_head = model.lm_head
     if chunk_size is not None:
         model.lm_head = FusedOutputLinear(
-            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
+            in_features=old_lm_head.in_features,
+            out_features=old_lm_head.out_features,
+            chunk_size=chunk_size,
+            final_logit_softcapping=final_logit_softcapping,
         )
     else:
-        model.lm_head = VanillaOutputLinear(in_features=old_lm_head.in_features, out_features=old_lm_head.out_features)
+        model.lm_head = VanillaOutputLinear(
+            in_features=old_lm_head.in_features,
+            out_features=old_lm_head.out_features,
+            final_logit_softcapping=final_logit_softcapping,
+        )
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
 
