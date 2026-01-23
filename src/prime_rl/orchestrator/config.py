@@ -647,6 +647,14 @@ class OrchestratorConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
+    # Whether to reset inference weights to base model when starting from scratch
+    reload_weights_on_start: Annotated[
+        bool,
+        Field(
+            description="Whether to reset inference weights to the base model when starting from scratch."
+        ),
+    ] = True
+
     # The validation configuration
     val: ValConfig | None = None
 
@@ -686,6 +694,14 @@ class OrchestratorConfig(BaseSettings):
             description="Number of worker subprocesses to spawn per environment. Multiple workers enable isolation of event loop lag - if one worker slows down, others continue at full speed. Uses least-pending routing to distribute load.",
         ),
     ] = 1
+
+    max_env_worker_restarts: Annotated[
+        int,
+        Field(
+            ge=-1,
+            description="Maximum number of automatic restarts for an environment worker that dies unexpectedly. After this limit, the orchestrator will crash. Set to -1 for unlimited restarts.",
+        ),
+    ] = 5
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 

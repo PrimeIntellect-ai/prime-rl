@@ -3,7 +3,7 @@ from time import time
 
 import zmq
 
-from prime_rl.trainer.runs import get_runs
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
 from prime_rl.transport.config import ZMQTransportConfig
 from prime_rl.transport.types import MicroBatch, TrainingBatch
@@ -57,7 +57,7 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
 
     def __init__(self, transport: ZMQTransportConfig):
         super().__init__()
-        self.runs = get_runs()
+        self.multi_run_manager = get_multi_run_manager()
         self._last_logged_time = time()
         self._last_logged_ids: list[str] | None = None
         self._waiting_since: float | None = None
@@ -116,10 +116,10 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
 
         # Track how long we've been waiting for any runnable batch.
         runnable_available = False
-        for idx in self.runs.used_idxs:
-            if self.runs.ready_to_update[idx]:
+        for idx in self.multi_run_manager.used_idxs:
+            if self.multi_run_manager.ready_to_update[idx]:
                 continue
-            run_id = self.runs.idx_2_id[idx].encode("utf-8")
+            run_id = self.multi_run_manager.idx_2_id[idx].encode("utf-8")
             if self._pending.get(run_id):
                 runnable_available = True
                 break
@@ -129,7 +129,7 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
         else:
             self._waiting_since = self._waiting_since or now
 
-        current_ids = [self.runs.idx_2_id[idx] for idx in self.runs.used_idxs]
+        current_ids = [self.multi_run_manager.idx_2_id[idx] for idx in self.multi_run_manager.used_idxs]
         if current_ids != self._last_logged_ids or now - self._last_logged_time > LOG_FREQ_SECONDS:
             if len(current_ids) == 0:
                 self.logger.debug(
@@ -142,9 +142,9 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
             self._last_logged_ids = current_ids
             self._last_logged_time = now
 
-        for idx in list(self.runs.used_idxs):
-            run_id = self.runs.idx_2_id[idx].encode("utf-8")
-            if self.runs.ready_to_update[idx]:
+        for idx in list(self.multi_run_manager.used_idxs):
+            run_id = self.multi_run_manager.idx_2_id[idx].encode("utf-8")
+            if self.multi_run_manager.ready_to_update[idx]:
                 continue
 
             per_id_batches = self._pending.get(run_id)

@@ -249,11 +249,18 @@ class ModelConfig(BaseConfig):
     ] = DebugModelConfig()
 
     fused_lm_head_chunk_size: Annotated[
-        int | None,
+        int | Literal["auto", "disabled"],
         Field(
-            description="The chunk size to use for the fused LM head. If None, will not use chunking. RL training auto-sets this to 2048 if not specified (except when impl='liger_kernel').",
+            description=(
+                "The chunk size to use for the fused LM head. "
+                "Three behaviors: "
+                "(1) int >= 512: explicitly set chunk size for fused LM head; "
+                "(2) 'auto': auto-enable (RL training auto-sets to 2048); "
+                "(3) 'disabled': explicitly disable fused LM head (use vanilla)."
+                "Explicitly setting an integer value for this feature isn't supported for SFT training or models where `impl='liger_kernel'`."
+            ),
         ),
-    ] = None
+    ] = "auto"
 
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
@@ -284,12 +291,21 @@ class ModelConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def fused_lm_head_chunk_size_not_supported_for_liger(self):
+        if isinstance(self.fused_lm_head_chunk_size, int) and self.impl == "liger_kernel":
+            raise ValueError(
+                f"Explicitly setting fused LM head chunk size to {self.fused_lm_head_chunk_size} is not supported for liger_kernel implementation. Keep the default value or set to 'disabled' to disable chunked loss."
+            )
+        return self
+
+    @model_validator(mode="after")
     def fused_lm_head_chunk_size_is_valid(self):
-        if self.fused_lm_head_chunk_size is not None:
+        if isinstance(self.fused_lm_head_chunk_size, int):
             low = 512
             if self.fused_lm_head_chunk_size < low:
-                raise ValueError(f"Fused LM head chunk size must be greater than {low}")
-
+                raise ValueError(
+                    f"Fused LM head chunk size must be at least {low}, got {self.fused_lm_head_chunk_size}"
+                )
         return self
 
 

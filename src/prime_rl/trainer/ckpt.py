@@ -87,18 +87,22 @@ class CheckpointManager:
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
         self.world = get_world()
-        if self.world.is_master:
-            all_steps = get_all_ckpt_steps(self.ckpt_dir)
-            if config.resume_step is not None and config.resume_step >= 0:
-                self.ckpt_steps = [s for s in all_steps if s <= config.resume_step]
-            else:
-                self.ckpt_steps = all_steps
+
+        all_steps = get_all_ckpt_steps(self.ckpt_dir)
+        if config.resume_step is not None and config.resume_step >= 0:
+            self.ckpt_steps = [s for s in all_steps if s <= config.resume_step]
         else:
-            self.ckpt_steps = []
+            self.ckpt_steps = all_steps
 
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
+
+    def mark_stable(self, step: int) -> None:
+        """Write STABLE file to indicate checkpoint is complete (for eval to safely read)."""
+        if self.world.is_master:
+            step_path = get_step_path(self.ckpt_dir, step)
+            (step_path / "STABLE").touch()
 
     def save_to_path(
         self,
@@ -196,8 +200,7 @@ class CheckpointManager:
         )
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
-        if self.world.is_master:
-            self.ckpt_steps.append(step)
+        self.ckpt_steps.append(step)
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
@@ -339,7 +342,7 @@ class WeightCheckpointManager:
             self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
             # Write STABLE file to indicate checkpoint is complete (for eval to safely read)
             (step_path / "STABLE").touch()
-            self.ckpt_steps.append(step)
+        self.ckpt_steps.append(step)
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""

@@ -31,6 +31,7 @@ from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     get_sampling_args,
+    get_weight_dir,
     print_benchmark,
     set_semaphore,
 )
@@ -41,7 +42,7 @@ from prime_rl.utils.client import (
     reload_weights,
     setup_admin_clients,
     setup_clients,
-    update_weights,
+    setup_inference_pool,
 )
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
@@ -49,9 +50,7 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
-    get_broadcast_dir,
     get_env_ids_to_install,
-    get_step_path,
     install_env,
     resolve_latest_ckpt_step,
     to_col_format,
@@ -77,7 +76,7 @@ async def orchestrate(config: OrchestratorConfig):
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Save configs to output directory
-    config_dir = config.output_dir / "configs"
+    config_dir = config.output_dir / "control"
     config_dir.mkdir(parents=True, exist_ok=True)
     with open(config_dir / "orch.toml", "wb") as f:
         tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
@@ -91,12 +90,11 @@ async def orchestrate(config: OrchestratorConfig):
     for env_id in env_ids_to_install:
         install_env(env_id)
 
-    # Setup client
-    logger.info(
-        f"Initializing OpenAI client (base_url={', '.join(config.client.base_url)}, api_key_var={config.client.api_key_var}, headers={config.client.headers})"
-    )
-    clients = setup_clients(config.client)
-    admin_clients = setup_admin_clients(config.client)
+    # Setup inference pool (handles both static and elastic modes)
+    inference_pool = await setup_inference_pool(config.client, base_model=config.model.name)
+
+    clients = inference_pool.clients
+    admin_clients = inference_pool.admin_clients
 
     # Setup teacher model client if configured
     teacher_clients = None
@@ -170,9 +168,7 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             checkpoint_step = config.ckpt.resume_step
 
-    # Setup scheduler (uses subprocess workers for env execution)
     scheduler = Scheduler(
-        admin_clients=admin_clients,
         client_config=config.client,
         env_configs=config.env,
         buffer=buffer,
@@ -183,6 +179,7 @@ async def orchestrate(config: OrchestratorConfig):
         strict_async_level=config.strict_async_level,
         lora_name=config.model.lora.name if config.model.lora else None,
         output_dir=config.output_dir,
+        inference_pool=inference_pool,
     )
 
     if checkpoint_step is not None and config.model.lora is not None:
@@ -193,10 +190,12 @@ async def orchestrate(config: OrchestratorConfig):
 
     await scheduler.start()
 
-    # Check health of the client
+    # Check health of the inference pool
     logger.info("Waiting for inference pool to be ready")
-    await check_health(admin_clients)
-    await check_has_model(clients, config.model.name)
+    await inference_pool.wait_for_ready(config.model.name)
+    # Refresh clients after waiting (elastic mode may have discovered new servers)
+    clients = inference_pool.clients
+    admin_clients = inference_pool.admin_clients
     logger.success("Inference pool ready")
 
     # Check health of teacher inference server if configured
@@ -230,15 +229,19 @@ async def orchestrate(config: OrchestratorConfig):
         if config.eval and config.eval.skip_eval_on_resume:
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
-        await update_weights(
-            admin_clients,
-            get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),
-            lora_name=config.model.lora.name if config.model.lora else None,
-        )
+
+        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
+        lora_name = config.model.lora.name if config.model.lora else None
+        await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
-        logger.info("Training from scratch. Resetting weights to base model")
-        if config.model.lora is None:
-            await reload_weights(admin_clients)
+        if config.reload_weights_on_start:
+            if config.model.lora is None:
+                logger.info("Training from scratch. Resetting weights to base model")
+                await reload_weights(admin_clients)
+            else:
+                logger.info("Training from scratch. Skipping base weight reload because LoRA is enabled")
+        else:
+            logger.info("Training from scratch. Skipping base weight reload")
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
@@ -249,7 +252,17 @@ async def orchestrate(config: OrchestratorConfig):
     # Start update policy loop
     update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
 
+    # Track consecutive empty batches for retry logic
+    empty_batch_retries = 0
+    max_empty_batch_retries = 5
+
     while True:
+        # Check if this run has been evicted by the trainer
+        evicted_path = config.output_dir / "control" / "evicted.txt"
+        if evicted_path.exists():
+            reason = evicted_path.read_text().strip()
+            raise RuntimeError(f"Run evicted by trainer: {reason}")
+
         # Check if update_policy_task has failed and propagate the exception
         if update_policy_task.done():
             # End all other tasks
@@ -380,7 +393,26 @@ async def orchestrate(config: OrchestratorConfig):
             temperature=config.sampling.temperature,
             step=progress.step,
         )
-        assert len(training_batch.examples) != 0, "Step with no samples is not allowed"
+
+        # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
+        if len(training_batch.examples) == 0:
+            empty_batch_retries += 1
+            if empty_batch_retries >= max_empty_batch_retries:
+                raise RuntimeError(
+                    f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
+                )
+            backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
+            logger.warning(
+                f"Step {progress.step} produced 0 training samples "
+                f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
+            )
+            # Cancel validation task to avoid accumulating background tasks
+            val_task.cancel()
+            await asyncio.sleep(backoff)
+            continue
+
+        # Reset retry counter on successful batch
+        empty_batch_retries = 0
         training_batch_sender.send(training_batch)
 
         # Await and process val results
@@ -576,6 +608,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Stop env workers
     await scheduler.stop()
+
+    # Stop inference pool
+    await inference_pool.stop()
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()

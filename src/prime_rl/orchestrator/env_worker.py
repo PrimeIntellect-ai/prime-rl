@@ -17,7 +17,8 @@ from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
-from prime_rl.utils.logger import intercept_verifiers_logging, reset_logger, setup_logger
+from prime_rl.utils.elastic import ServerDiscovery
+from prime_rl.utils.logger import get_logger, intercept_verifiers_logging, reset_logger, setup_logger
 
 
 class WorkerDiedError(Exception):
@@ -83,75 +84,92 @@ def extract_result(state: vf.State) -> dict:
     }
 
 
-async def process_request(
-    request: RolloutRequest,
-    env: vf.Environment,
-    client_cycle: cycle,
-    semaphore: asyncio.Semaphore,
-    example_lookup: dict[int, dict],
-    sampling_args: dict,
-) -> RolloutResponse:
-    """Process a single rollout request."""
-    client = next(client_cycle)
-    example = example_lookup[request.example_id]
-    group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
-
-    states = await env.run_group(
-        group_inputs=group_inputs,
-        client=client,
-        model=request.model_name,
-        gen_sampling_args=sampling_args,
-        gen_sem=semaphore,
-        score_sem=semaphore,
-    )
-
-    results = [extract_result(state) for state in states]
-    return RolloutResponse(request_id=request.request_id, results=results)
-
-
 async def worker_loop(
     request_queue: Queue,
     response_queue: Queue,
     env: vf.Environment,
     clients: list[AsyncOpenAI],
+    client_config: ClientConfig,
     max_concurrent: int,
-    env_id: str,
     example_lookup: dict[int, dict],
     sampling_args: dict,
+    model_name: str,
 ):
-    """Main async loop for processing requests."""
+    """Main async loop for processing rollout requests."""
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 
-    client_cycle = cycle(clients)
     semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)
 
     # Start event loop lag monitor for this worker
     lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
     lag_monitor_task = asyncio.create_task(lag_monitor.run())
 
+    # Setup client discovery (elastic mode) or static client cycle
+    discovery: ServerDiscovery | None = None
+    if client_config.is_elastic:
+        discovery = ServerDiscovery.from_config(client_config, model_name)
+    static_cycle = cycle(clients) if clients else None
+
     # Track in-flight tasks
     pending_tasks: dict[asyncio.Task, str] = {}
+    waiting_requests: list[RolloutRequest] = []
 
-    def check_for_requests():
-        """Non-blocking check for new requests."""
-        while True:
-            try:
-                request = request_queue.get_nowait()
-            except queue.Empty:
-                break
-            if request is None:  # Shutdown signal
-                return False
-            task = asyncio.create_task(
-                process_request(request, env, client_cycle, semaphore, example_lookup, sampling_args)
-            )
-            pending_tasks[task] = request.request_id
-        return True
+    def get_next_client():
+        """Get next client from discovery or static cycle."""
+        if discovery:
+            return discovery.get_next_client()
+        return next(static_cycle) if static_cycle else None
+
+    def has_clients() -> bool:
+        """Check if clients are available."""
+        if discovery:
+            return discovery.has_clients
+        return bool(clients)
+
+    async def process_request(request: RolloutRequest, client: AsyncOpenAI) -> RolloutResponse:
+        example = example_lookup[request.example_id]
+        group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
+        states = await env.run_group(
+            group_inputs=group_inputs,
+            client=client,
+            model=request.model_name,
+            gen_sampling_args=sampling_args,
+            gen_sem=semaphore,
+            score_sem=semaphore,
+        )
+        return RolloutResponse(request_id=request.request_id, results=[extract_result(s) for s in states])
 
     try:
         while True:
-            # Check for new requests
-            if not check_for_requests():
-                break
+            if discovery:
+                await discovery.refresh()
+
+            # Process waiting requests if we now have clients
+            if has_clients() and waiting_requests:
+                for req in waiting_requests:
+                    task = asyncio.create_task(process_request(req, get_next_client()))
+                    pending_tasks[task] = req.request_id
+                waiting_requests.clear()
+
+            # Drain request queue
+            while True:
+                try:
+                    request = request_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if request is None:  # Shutdown signal
+                    return
+
+                # Update discovery model name if it changed (e.g., switched to LoRA)
+                if discovery and request.model_name != discovery.model_name:
+                    discovery.model_name = request.model_name
+                    discovery._urls = []  # Force refresh on next call
+
+                if has_clients():
+                    task = asyncio.create_task(process_request(request, get_next_client()))
+                    pending_tasks[task] = request.request_id
+                else:
+                    waiting_requests.append(request)
 
             if not pending_tasks:
                 # No pending tasks, wait a bit for new requests
@@ -160,7 +178,6 @@ async def worker_loop(
 
             # Wait for at least one task to complete
             done, _ = await asyncio.wait(pending_tasks.keys(), timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
-
             for task in done:
                 pending_tasks.pop(task)
                 response = task.result()
@@ -170,6 +187,11 @@ async def worker_loop(
     finally:
         # Cleanup
         lag_monitor_task.cancel()
+        if discovery:
+            await discovery.stop()
+        else:
+            for c in clients:
+                await c.close()
         for task in pending_tasks:
             task.cancel()
 
@@ -189,8 +211,9 @@ def worker_main(
     vf_log_level: str,
     log_file: str | None,
     worker_name: str | None = None,
+    model_name: str = "",
 ):
-    """Main entry point for worker process."""
+    """Main entry point for worker subprocess."""
     # Reset logger inherited from parent process, then setup fresh logger for this worker
     if log_file:
         reset_logger()
@@ -202,9 +225,9 @@ def worker_main(
     env.set_max_seq_len(seq_len)
     env.set_interleaved_rollouts(interleaved_rollouts)
 
-    # Create clients
+    # Create clients (empty list in elastic mode - workers discover servers dynamically)
     client_config = ClientConfig(**client_config_dict)
-    clients = setup_clients(client_config)
+    clients = [] if client_config.is_elastic else setup_clients(client_config)
 
     # Run async loop
     asyncio.run(
@@ -213,16 +236,17 @@ def worker_main(
             response_queue,
             env,
             clients,
+            client_config,
             max_concurrent,
-            env_id,
             example_lookup,
             sampling_args,
+            model_name,
         )
     )
 
 
 class EnvWorker:
-    """Manages a worker subprocess for an environment."""
+    """Manages a worker subprocess for environment rollouts."""
 
     def __init__(
         self,
@@ -239,6 +263,7 @@ class EnvWorker:
         log_level: str = "warn",
         vf_log_level: str = "warn",
         log_file: str | None = None,
+        max_restarts: int = 5,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -254,6 +279,7 @@ class EnvWorker:
         self.log_level = log_level
         self.vf_log_level = vf_log_level
         self.log_file = log_file
+        self.max_restarts = max_restarts
 
         self.request_queue: Queue = Queue()
         self.response_queue: Queue = Queue()
@@ -269,6 +295,12 @@ class EnvWorker:
         self._stopping = False
         # Track if worker died unexpectedly (prevents scheduler from routing to dead worker)
         self._dead = False
+        # Track restart count to prevent infinite restart loops
+        self._restart_count = 0
+        # Track fatal error when max restarts exceeded (orchestrator should crash)
+        self._fatal_error: Exception | None = None
+        # Track successful responses since last restart (to reset restart count)
+        self._responses_since_restart = 0
 
     def start(self):
         """Start the worker process."""
@@ -289,6 +321,7 @@ class EnvWorker:
                 self.vf_log_level,
                 self.log_file,
                 self.worker_name,
+                self.model_name,
             ),
             daemon=True,
         )
@@ -304,6 +337,31 @@ class EnvWorker:
             self.process.join(timeout=5)
             if self.process.is_alive():
                 self.process.terminate()
+
+    def _restart(self):
+        """Restart the worker process after unexpected death."""
+        # Clean up old process if it exists
+        if self.process is not None:
+            if self.process.is_alive():
+                self.process.terminate()
+            # Always join to reap zombie process, even if already dead
+            self.process.join(timeout=5)
+            self.process.close()
+
+        # Clear queues to avoid stale data (drain without blocking)
+        while True:
+            try:
+                self.request_queue.get_nowait()
+            except queue.Empty:
+                break
+        while True:
+            try:
+                self.response_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # Start fresh process
+        self.start()
 
     async def submit_request(
         self,
@@ -328,6 +386,7 @@ class EnvWorker:
 
     async def collect_responses(self):
         """Background task to collect responses and resolve futures."""
+        logger = get_logger()
         while True:
             # Drain queue first to salvage any responses before checking for dead worker
             while True:
@@ -343,6 +402,14 @@ class EnvWorker:
                     # Check if future was cancelled (e.g., by update_policy)
                     if not future.done():
                         future.set_result(response.results)
+                    # Track successful responses; reset restart count after stable operation
+                    self._responses_since_restart += 1
+                    if self._responses_since_restart >= 10 and self._restart_count > 0:
+                        logger.debug(
+                            f"Worker '{self.worker_name}' stable after {self._responses_since_restart} responses, resetting restart count"
+                        )
+                        self._restart_count = 0
+                        self._responses_since_restart = 0
 
             # Check if worker process died unexpectedly (but not during intentional shutdown)
             if self.process and not self.process.is_alive() and not self._stopping:
@@ -355,12 +422,33 @@ class EnvWorker:
                     if not future.done():
                         future.set_exception(error)
                 self.pending_futures.clear()
-                raise error
+
+                # Check if we've exceeded max restarts (-1 means unlimited)
+                self._restart_count += 1
+                if self.max_restarts >= 0 and self._restart_count > self.max_restarts:
+                    logger.error(
+                        f"Worker '{self.worker_name}' died {self._restart_count} times, exceeding max restarts ({self.max_restarts}). Giving up."
+                    )
+                    # Store fatal error so orchestrator can detect and crash
+                    self._fatal_error = error
+                    raise error
+
+                # Log warning and restart the worker automatically
+                restart_info = (
+                    f"{self._restart_count}/{self.max_restarts}" if self.max_restarts >= 0 else f"{self._restart_count}"
+                )
+                logger.warning(
+                    f"Worker '{self.worker_name}' died unexpectedly (exit code: {exit_code}). "
+                    f"Restarting worker automatically ({restart_info}). In-flight requests will be rescheduled."
+                )
+                self._responses_since_restart = 0  # Reset on restart
+                self._restart()
 
             await asyncio.sleep(0.01)
 
     def update_model_name(self, model_name: str):
         """Update the model name for future requests."""
+        get_logger().debug(f"Worker '{self.worker_name}' switching model: {self.model_name} -> {model_name}")
         self.model_name = model_name
 
     @property

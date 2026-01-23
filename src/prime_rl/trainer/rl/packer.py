@@ -6,7 +6,7 @@ from collections import deque
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.batch import prepare_batch
-from prime_rl.trainer.runs import get_runs
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport import (
     MicroBatchSender,
     TrainingSample,
@@ -31,15 +31,15 @@ class BasePacker(ABC):
         start_step: int = 0,
     ):
         self.logger = get_logger()
-        self.runs = get_runs()
+        self.multi_run_manager = get_multi_run_manager()
         self.dp_world_size = dp_world_size
         self.seq_len = seq_len
         self.pad_to_multiple_of = pad_to_multiple_of
         self.tokenizer = tokenizer
         self.receiver = setup_training_batch_receiver(config)
-        shutil.rmtree(get_rollout_dir(self.runs.output_dir), ignore_errors=True)
+        shutil.rmtree(get_rollout_dir(self.multi_run_manager.output_dir), ignore_errors=True)
         self.sender: MicroBatchSender = setup_micro_batch_sender(
-            self.runs.output_dir, dp_world_size, start_step, config
+            self.multi_run_manager.output_dir, dp_world_size, start_step, config
         )
 
     @abstractmethod
@@ -59,21 +59,21 @@ class SinglePacker(BasePacker):
         start_step: int = 0,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
-        assert self.runs.max_runs == 1, "SinglePacker only supports one run"
+        assert self.multi_run_manager.max_runs == 1, "SinglePacker only supports one run"
 
     def pack(self):
         # Wait for batch to be available
         batches = []
         while len(batches) == 0:
-            self.runs.check_for_changes()
+            self.multi_run_manager.discover_runs()
             batches = self.receiver.receive()
             time.sleep(0.2)
 
         assert len(batches) == 1, "SinglePacker only supports one batch per step"
         batch = batches[0]
 
-        self.runs.ready_to_update[0] = True
-        self.runs.progress[0].step += 1
+        self.multi_run_manager.ready_to_update[0] = True
+        self.multi_run_manager.progress[0].step += 1
         micro_batch_grid = prepare_batch(
             rollouts=batch.examples,
             temperature=batch.temperature,
@@ -81,7 +81,7 @@ class SinglePacker(BasePacker):
             pad_to_multiple_of=self.pad_to_multiple_of,
             num_train_workers=self.dp_world_size,
             idxs=[0] * len(batch.examples),
-            num_loras=self.runs.max_runs,
+            num_loras=self.multi_run_manager.max_runs,
         )
 
         self.sender.send(micro_batch_grid)
@@ -99,14 +99,16 @@ class MultiPacker(BasePacker):
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
         # Per-run buffer: stores (TrainingSample, temperature, step) tuples
-        self.buffers: list[deque[tuple[TrainingSample, float, int]]] = [deque() for _ in range(self.runs.max_runs)]
+        self.buffers: list[deque[tuple[TrainingSample, float, int]]] = [
+            deque() for _ in range(self.multi_run_manager.max_runs)
+        ]
 
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
-        # Register delete_run_data hook for receiver reset (master only, runs during check_for_changes)
+        # Register forgotten hook for receiver reset (master only, called during discover_runs)
         # This must happen when a run is deleted to prevent stale data from remaining
-        self.runs.register_delete_run_data_hook(self._on_run_data_deleted)
+        self.multi_run_manager.register_forgotten_hook(self._on_run_data_deleted)
 
     def _on_run_data_deleted(self, idx: int, run_id: str) -> None:
         """Reset run state when run data is deleted (master only)."""
@@ -116,27 +118,70 @@ class MultiPacker(BasePacker):
         # Reset run state
         self.buffers[idx].clear()
 
+    def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
+        """Validate a sample to ensure it won't crash the trainer."""
+        sample_length = len(sample.prompt_ids) + len(sample.completion_ids)
+        if len(sample.prompt_mask) != len(sample.prompt_ids):
+            return (
+                False,
+                f"Run wrote a sample with prompt mask length != prompt ids length ({len(sample.prompt_mask)} != {len(sample.prompt_ids)})",
+            )
+        if len(sample.completion_mask) != len(sample.completion_ids):
+            return (
+                False,
+                f"Run wrote a sample with completion mask length != completion ids length ({len(sample.completion_mask)} != {len(sample.completion_ids)})",
+            )
+        if len(sample.completion_logprobs) != len(sample.completion_ids):
+            return (
+                False,
+                f"Run wrote a sample with completion logprobs length != completion ids length ({len(sample.completion_logprobs)} != {len(sample.completion_ids)})",
+            )
+        if sample_length == 0:
+            return False, "Run wrote a sample with no tokens"
+        if sample_length > self.seq_len:
+            return (
+                False,
+                f"Run wrote a sample with length {sample_length} which exceeds max sequence length {self.seq_len}",
+            )
+        if sample.teacher_logprobs is not None and len(sample.teacher_logprobs) != sample_length:
+            return (
+                False,
+                f"Run wrote a sample with teacher logprobs length != sample length ({len(sample.teacher_logprobs)} != {sample_length})",
+            )
+        return True, None
+
     def _get_batch(self) -> None:
         """Receive batches from orchestrator and buffer samples per run."""
-        self.runs.check_for_changes()
+        self.multi_run_manager.discover_runs()
         batches = self.receiver.receive()
 
         for batch in batches:
             if batch.run_idx is None:
                 self.logger.warning("Received batch with no run index")
                 continue
+            if len(batch.examples) == 0:
+                self.multi_run_manager.evict_run(batch.run_idx, "Run wrote a batch with no samples")
+                continue
             for sample in batch.examples:
+                valid, reason = self._validate_sample(sample)
+                if not valid:
+                    self.multi_run_manager.evict_run(batch.run_idx, f"Run wrote a sample with invalid data: {reason}")
+                    break
                 self.buffers[batch.run_idx].append((sample, batch.temperature, batch.step))
+
+        # This is necessary to forget evicted runs
+        self.multi_run_manager.discover_runs()
 
     def _count_tokens(self, threshold: int | None = None) -> int:
         tokens = 0
 
-        for run_idx in self.runs.used_idxs:
+        for run_idx in self.multi_run_manager.used_idxs:
             buffer = self.buffers[run_idx]
-            current_step = self.runs.progress[run_idx].step
+            current_step = self.multi_run_manager.progress[run_idx].step
+
             for sample, _, step in buffer:
                 if step > current_step:
-                    continue
+                    break
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
                 if threshold is not None and tokens >= threshold:
                     return tokens
@@ -158,7 +203,7 @@ class MultiPacker(BasePacker):
             for _ in range(len(self.buffers)):
                 if len(self.buffers[self._round_robin_position]) > 0:
                     _, _, step = self.buffers[self._round_robin_position][0]
-                    if step <= self.runs.progress[self._round_robin_position].step:
+                    if step <= self.multi_run_manager.progress[self._round_robin_position].step:
                         break
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
             else:
@@ -167,7 +212,7 @@ class MultiPacker(BasePacker):
                 break
             run_idx = self._round_robin_position
             self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
-            current_step = self.runs.progress[run_idx].step
+            current_step = self.multi_run_manager.progress[run_idx].step
 
             while len(self.buffers[run_idx]) > 0:
                 sample, temperature, step = self.buffers[run_idx][0]
@@ -192,12 +237,15 @@ class MultiPacker(BasePacker):
         # HACK: This fixes the issue with branching rollouts having unpredictable batch size
         # However, it makes us unable to do incremental orchestrator rollouts
         # Removing the len(self.buffers[run_idx]) == 0 check would allow incremental orchestrator rollouts
-        if len(self.buffers[run_idx]) == 0 or self.buffers[run_idx][0][2] > self.runs.progress[run_idx].step:
-            self.runs.progress[run_idx].step += 1
-            self.runs.ready_to_update[run_idx] = True
+        if (
+            len(self.buffers[run_idx]) == 0
+            or self.buffers[run_idx][0][2] > self.multi_run_manager.progress[run_idx].step
+        ):
+            self.multi_run_manager.progress[run_idx].step += 1
+            self.multi_run_manager.ready_to_update[run_idx] = True
 
-        self.runs.progress[run_idx].total_tokens += num_tokens
-        self.runs.progress[run_idx].total_samples += num_samples
+        self.multi_run_manager.progress[run_idx].total_tokens += num_tokens
+        self.multi_run_manager.progress[run_idx].total_samples += num_samples
 
     def pack(self):
         """Pack samples from buffers using round-robin fair scheduling."""
@@ -242,7 +290,7 @@ class MultiPacker(BasePacker):
                 pad_to_multiple_of=self.pad_to_multiple_of,
                 num_train_workers=self.dp_world_size,
                 idxs=[run_idx] * num_samples,
-                num_loras=self.runs.max_runs,
+                num_loras=self.multi_run_manager.max_runs,
             )
 
             for i, micro_batch in enumerate(_micro_batch_grid):
@@ -259,8 +307,8 @@ def setup_packer(
     transport_config: TransportConfigType,
     start_step: int = 0,
 ) -> BasePacker:
-    runs = get_runs()
-    if runs.max_runs == 1:
+    multi_run_manager = get_multi_run_manager()
+    if multi_run_manager.max_runs == 1:
         return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
     else:
         return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)

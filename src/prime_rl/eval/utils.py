@@ -26,6 +26,7 @@ from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.synthesize.utils import merge_reasoning_content, save_result
 from prime_rl.utils.client import setup_clients, setup_evals_client
 from prime_rl.utils.config import ClientConfig
+from prime_rl.utils.elastic import ServerDiscovery
 from prime_rl.utils.logger import get_logger, intercept_verifiers_logging, reset_logger, setup_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
@@ -305,7 +306,7 @@ async def generate_and_save_rollout(
         state = await _generate_rollout(client, env, model_name, example, _sampling_args)
     except (RetryError, Exception) as e:
         # IMPORTANT: do not raise here (asyncio.gather would cancel all other rollouts).
-        logger.exception(
+        logger.error(
             f"Rollout generation failed after retries; recording no_response "
             f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx}): {repr(e)}"
         )
@@ -402,14 +403,12 @@ async def generate_and_save_group(
         states = await _generate_group(client, env, model_name, example, rollouts_per_example, _sampling_args)
     except (RetryError, Exception) as e:
         # IMPORTANT: do not raise here (asyncio.gather would cancel other groups).
-        logger.exception(
+        logger.error(
             f"Group generation failed after retries; recording no_response rollouts "
             f"(env={env_name_or_id}, example_id={example.get('example_id')}): {repr(e)}"
         )
         failed_states = [
-            _make_no_response_state(
-                example=example, rollout_idx=rollout_idx, env_name_or_id=env_name_or_id, error=e
-            )
+            _make_no_response_state(example=example, rollout_idx=rollout_idx, env_name_or_id=env_name_or_id, error=e)
             for rollout_idx in range(rollouts_per_example)
         ]
 
@@ -457,7 +456,7 @@ async def run_eval(
     reasoning_field: str,
     output_dir: Path,
     ckpt_step: int,
-    model_config: ModelConfig,
+    model_name: str,
     sampling_config: EvalSamplingConfig,
     save_config: EvalSaveConfig,
     retry_config: RetryConfig,
@@ -483,7 +482,7 @@ async def run_eval(
             # resume_path points to a directory containing results.jsonl
             path_to_save = resume_path / "results.jsonl"
         else:
-            base_path = get_results_path(env_name_or_id, model_config.name, base_path=output_dir)
+            base_path = get_results_path(env_name_or_id, model_name, base_path=output_dir)
             path_to_save = base_path / "results.jsonl"
         path_to_save.parent.mkdir(parents=True, exist_ok=True)
 
@@ -516,7 +515,7 @@ async def run_eval(
 
         total_rollouts = len(all_rollouts)
         logger.info(
-            f"Evaluating {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) "
+            f"Evaluating {model_name} on {env_name_or_id} ({num_examples=}, {rollouts_per_example=}) "
             f"{'with default args' if env_args == {} else f'with args {env_args}'} and extra_body {sampling_args['extra_body']}\n"
             f"{'Saving results to ' + str(path_to_save) if save_config.stream else 'Results will be saved at end of evaluation'}"
         )
@@ -530,7 +529,7 @@ async def run_eval(
                 generate_and_save_rollout(
                     client,
                     env,
-                    model_config.name,
+                    model_name,
                     example,
                     rollout_idx,
                     env_name_or_id,
@@ -577,7 +576,7 @@ async def run_eval(
                 generate_and_save_group(
                     client,
                     env,
-                    model_config.name,
+                    model_name,
                     example,
                     rollouts_per_example,
                     env_name_or_id,
@@ -602,8 +601,7 @@ async def run_eval(
             "completion_len": [get_completion_len(state) for state in all_states],
             "is_truncated": [get_is_truncated(state) for state in all_states],
             "rollout_status": [
-                (state.get("info", {}) or {}).get("prime_rl", {}).get("rollout_status", "ok")
-                for state in all_states
+                (state.get("info", {}) or {}).get("prime_rl", {}).get("rollout_status", "ok") for state in all_states
             ],
         }
     )
@@ -632,8 +630,10 @@ async def run_eval(
 
     # Log statistics to console
     eval_time = time.perf_counter() - eval_start_time
-    no_response_rate = float((results_df.rollout_status == "no_response").mean()) if "rollout_status" in results_df else 0.0
-    message = f"Evaluated {env_name_or_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
+    no_response_rate = (
+        float((results_df.rollout_status == "no_response").mean()) if "rollout_status" in results_df else 0.0
+    )
+    message = f"Evaluated {model_name} on {env_name_or_id} in {eval_time:.2f}s (Avg@{k}={results_df.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
@@ -649,7 +649,9 @@ async def run_eval(
     eval_metrics = {
         f"avg@{k}": results_df.reward.mean(),
         "no_response/pct": no_response_rate * 100.0,
-        "no_response/count": int((results_df.rollout_status == "no_response").sum()) if "rollout_status" in results_df else 0,
+        "no_response/count": int((results_df.rollout_status == "no_response").sum())
+        if "rollout_status" in results_df
+        else 0,
         "completion_len/avg": results_df.completion_len.mean().item(),
         "completion_len/max": results_df.completion_len.max().item(),
         "completion_len/min": results_df.completion_len.min().item(),
@@ -667,7 +669,7 @@ async def run_eval(
     if save_config.disk is not None or save_config.hf is not None or save_config.env_hub:
         outputs = env._prepare_rollout_results(
             all_states=[to_serializable_state(state) for state in all_states],  # type: ignore
-            model=model_config.name,
+            model=model_name,
             client=clients[0],  # We use the first client
             state_columns=None,
             results_path=None,
@@ -700,13 +702,13 @@ async def run_eval(
             )
 
         if save_config.env_hub:
-            eval_name = f"{env_id}--{model_config.name.replace('/', '--')}"
+            eval_name = f"{env_id}--{model_name.replace('/', '--')}"
 
             # Create evaluation for environment
             create_response = await evals_client.create_evaluation(
                 name=eval_name,
                 environments=[{"id": env_id}],
-                model_name=model_config.name,
+                model_name=model_name,
                 framework="verifiers",
                 metadata=metadata_dict,
                 metrics=eval_metrics,
@@ -729,7 +731,7 @@ async def run_eval(
 async def run_evals(
     clients: list[AsyncOpenAI],
     eval_config: EvalConfig | OfflineEvalConfig,
-    model_config: ModelConfig,
+    model_name: str,
     sampling_config: EvalSamplingConfig,
     evals_client: AsyncEvalsClient,
     reasoning_field: str,
@@ -752,7 +754,7 @@ async def run_evals(
                 reasoning_field=reasoning_field,
                 rollouts_per_example=env.rollouts_per_example or eval_config.rollouts_per_example,
                 output_dir=output_dir,
-                model_config=model_config,
+                model_name=model_name,
                 sampling_config=sampling_config,
                 save_config=eval_config.save,
                 retry_config=eval_config.retry,
@@ -778,6 +780,15 @@ async def run_evals(
         logger.warning(f"Skipped {skipped}/{len(eval_config.env)} environments due to retry exhaustion")
 
 
+async def _get_clients(client_config: ClientConfig, model_name: str) -> list[AsyncOpenAI]:
+    """Discover inference clients via elastic discovery or static config."""
+    if not client_config.is_elastic:
+        return setup_clients(client_config)
+
+    discovery = ServerDiscovery.from_config(client_config, model_name)
+    return await discovery.wait_for_clients()
+
+
 def _run_evals_in_subprocess(
     client_config: ClientConfig,
     eval_config: EvalConfig,
@@ -796,16 +807,21 @@ def _run_evals_in_subprocess(
     intercept_verifiers_logging(level="info")
     logger.info(f"Eval subprocess started for checkpoint step {ckpt_step}")
 
-    # Create fresh clients in subprocess
-    clients = setup_clients(client_config)
     evals_client = setup_evals_client()
 
     async def _run():
         await set_semaphore(max_concurrent)
+
+        model_name = model_config.name
+        if model_config.lora and ckpt_step > 0:
+            model_name = model_config.lora.name
+        clients = await _get_clients(client_config, model_name)
+        logger.info(f"Using {len(clients)} inference client(s) for model {model_name}")
+
         await run_evals(
             clients=clients,
             eval_config=eval_config,
-            model_config=model_config,
+            model_name=model_name,
             sampling_config=sampling_config,
             evals_client=evals_client,
             reasoning_field=reasoning_field,
@@ -815,6 +831,7 @@ def _run_evals_in_subprocess(
         )
 
     asyncio.run(_run())
+    get_monitor().close()
     logger.info(f"Eval subprocess finished for checkpoint step {ckpt_step}")
 
 

@@ -201,7 +201,7 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
 
     Args:
         model: The model to wrap.
-        chunk_size: If provided, use FusedOutputLinear with chunked logprob/entropy computation.
+        chunk_size: If int, use FusedOutputLinear with chunked logprob/entropy computation with the given chunk size.
                     If None, use VanillaOutputLinear which just returns logits.
     """
     # Guards so we have nicer error messages when a non-standard model is used
