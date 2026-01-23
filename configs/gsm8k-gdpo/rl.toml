@@ -32,10 +32,20 @@ max_tokens = 2048
 [[orchestrator.env]]
 id = "gsm8k-multireward"
 name = "gsm8k"
-args = { length_threshold_tokens = 1024, math_verify_max_workers = 64, math_verify_timeout = 30 }
+# gated_length_reward=false: length reward fires independently (for adaptive decay)
+args = { length_threshold_tokens = 384, gated_length_reward = false, math_verify_max_workers = 64, math_verify_timeout = 30 }
 # GDPO: per-reward normalization before aggregation
 reward_keys = ["correct_answer", "length_reward"]
 reward_weights = [1.0, 1.0]
+
+# Adaptive weight decay: decay reward weights as they approach saturation
+[orchestrator.env.adaptive_weights]
+enabled = true
+ema_alpha = 0.1
+saturation_threshold = 0.95
+decay_exponent = 2.0
+min_weight = 0.1
+recovery_rate = 0.01
 
 [orchestrator.advantage]
 batch_normalize = true

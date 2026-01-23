@@ -1,5 +1,5 @@
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import torch
@@ -16,6 +16,7 @@ class Progress:
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0
+    adaptive_weight_states: dict[str, dict] = field(default_factory=dict)
 
 
 class CheckpointManager:

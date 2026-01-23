@@ -297,6 +297,62 @@ class RetryConfig(BaseConfig):
     ] = False
 
 
+class AdaptiveWeightConfig(BaseConfig):
+    """Configuration for adaptive reward weight decay.
+
+    Dynamically decays reward weights as their running mean approaches saturation.
+    Uses a ratchet mechanism with slow leak for stable training.
+    """
+
+    enabled: Annotated[
+        bool,
+        Field(description="Whether to enable adaptive weight decay."),
+    ] = False
+
+    ema_alpha: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="EMA smoothing factor. Higher values give more weight to recent batches.",
+        ),
+    ] = 0.1
+
+    saturation_threshold: Annotated[
+        float,
+        Field(
+            gt=0,
+            le=1,
+            description="Reward value at which to consider the reward saturated (triggers full decay).",
+        ),
+    ] = 0.95
+
+    decay_exponent: Annotated[
+        float,
+        Field(
+            ge=1,
+            description="Controls decay curve steepness. Higher values delay decay until closer to saturation.",
+        ),
+    ] = 2.0
+
+    min_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Minimum weight floor to prevent complete decay.",
+        ),
+    ] = 0.1
+
+    recovery_rate: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Rate at which ratchet allows weight recovery. 0 = pure ratchet, 1 = no ratchet.",
+        ),
+    ] = 0.01
+
+
 class EnvConfig(BaseConfig):
     """Configures an environment for training."""
 
@@ -319,6 +375,12 @@ class EnvConfig(BaseConfig):
             "If None, uses equal weights (1.0) for all rewards."
         ),
     ] = None
+    adaptive_weights: Annotated[
+        AdaptiveWeightConfig,
+        Field(
+            description="Configuration for adaptive reward weight decay based on reward saturation.",
+        ),
+    ] = AdaptiveWeightConfig()
 
 
 class EvalEnvConfig(EnvConfig):
