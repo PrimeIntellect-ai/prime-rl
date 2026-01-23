@@ -2,15 +2,15 @@ name: Release
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     tags:
       - "*"
   workflow_dispatch:
     inputs:
       environment:
-        description: "Environment tag (dev/prod)"
+        description: "Environment tag (dev/prod) - defaults to prod"
         required: false
-        default: ""
+        default: "prod"
 
 jobs:
   cuda:
@@ -38,15 +38,11 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
 
-          # Determine environment based on branch or input
+          # Use input if provided, otherwise default to prod
           if [[ "${{ github.event.inputs.environment }}" != "" ]]; then
             ENV="${{ github.event.inputs.environment }}"
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            ENV="prod"
-          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
-            ENV="dev"
           else
-            ENV="dev"
+            ENV="prod"
           fi
 
           echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
