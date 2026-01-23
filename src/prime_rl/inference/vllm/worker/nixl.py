@@ -1,4 +1,4 @@
-import tempfile
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,6 +19,9 @@ else:
     Worker = object
 
 logger = init_logger("vllm.inference.vllm.worker_nixl")
+
+# Directory for storing fetched LoRA adapters
+NIXL_LORA_CACHE_DIR = Path(os.environ.get("NIXL_LORA_CACHE_DIR", "/tmp/nixl_lora_cache"))
 
 
 class NIXLLoRAWorker(Worker):
@@ -41,18 +44,23 @@ class NIXLLoRAWorker(Worker):
         run_idx: int,
         trainer_addresses: list[tuple[str, int]],
         timeout: float = 30.0,
-    ) -> None:
-        """Fetch LoRA weights from ALL trainers via NIXL and load into vLLM.
+    ) -> str:
+        """Fetch LoRA weights from ALL trainers via NIXL and save to disk.
 
-        Creates fresh NIXL client connections, fetches weights, and disconnects.
+        Creates fresh NIXL client connections, fetches weights, saves to a
+        deterministic path, and disconnects. Returns the path for loading
+        via vLLM's standard LoRA mechanism.
 
         Args:
             lora_name: Name to register the LoRA adapter under
             run_idx: Run index in the MultiRunManager
             trainer_addresses: List of (ip, port) tuples, one per trainer rank
             timeout: Connection timeout in seconds
+
+        Returns:
+            Path to the saved LoRA adapter directory
         """
-        logger.info(f"Loading LoRA adapter '{lora_name}' from NIXL (run_idx={run_idx})")
+        logger.info(f"Fetching LoRA adapter '{lora_name}' from NIXL (run_idx={run_idx})")
 
         tp_rank = get_tp_group().rank
         clients: list[ParameterClient] = []
@@ -79,8 +87,8 @@ class NIXLLoRAWorker(Worker):
 
             logger.info(f"Connected to {len(clients)} trainer ParameterServers")
 
-            # Fetch and load weights
-            self._fetch_and_load_weights(lora_name, run_idx, clients)
+            # Fetch weights and save to disk
+            lora_path = self._fetch_and_save_weights(lora_name, run_idx, clients)
 
         finally:
             # Always disconnect clients
@@ -90,18 +98,20 @@ class NIXLLoRAWorker(Worker):
                 except Exception as e:
                     logger.warning(f"Error disconnecting NIXL client: {e}")
 
-        logger.info(f"Successfully loaded LoRA adapter '{lora_name}' from NIXL")
-        import time
+        logger.info(f"Successfully fetched LoRA adapter '{lora_name}' from NIXL to {lora_path}")
+        return lora_path
 
-        time.sleep(10)
-
-    def _fetch_and_load_weights(
+    def _fetch_and_save_weights(
         self,
         lora_name: str,
         run_idx: int,
         clients: list[ParameterClient],
-    ) -> None:
-        """Fetch weights from NIXL clients and load into vLLM."""
+    ) -> str:
+        """Fetch weights from NIXL clients and save to disk.
+
+        Returns:
+            Path to the saved LoRA adapter directory
+        """
         # Refresh catalogs from all trainers
         for client in clients:
             client.refresh_catalog()
@@ -133,33 +143,14 @@ class NIXLLoRAWorker(Worker):
             full_tensor = torch.cat(shards, dim=0)
             reassembled_weights[param_key[len(param_key_prefix) :]] = full_tensor.cpu()
 
-        # Write to temp directory in safetensors format for vLLM
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = Path(tmpdir)
+        # Save to deterministic path based on lora_name
+        lora_dir = NIXL_LORA_CACHE_DIR / lora_name
+        lora_dir.mkdir(parents=True, exist_ok=True)
 
-            logger.info(f"Saving {[k + ': ' + str(v.shape) for k, v in reassembled_weights.items()]}")
-            # Save weights as safetensors
-            save_file(reassembled_weights, tmpdir_path / "adapter_model.safetensors")
+        logger.info(
+            f"Saving {[k + ': ' + str(v.shape) for k, v in reassembled_weights.items()]} to {lora_dir / 'adapter_model.safetensors'}"
+        )
+        # Save weights as safetensors
+        save_file(reassembled_weights, lora_dir / "adapter_model.safetensors")
 
-            # Load via vLLM's mechanism
-            # self._load_lora_adapter(lora_name, str(tmpdir_path))
-
-    def _load_lora_adapter(self, lora_name: str, lora_path: str) -> None:
-        """Load a LoRA adapter into vLLM using the internal mechanism."""
-        model_runner = self.model_runner
-
-        if hasattr(model_runner, "model") and hasattr(model_runner.model, "load_lora"):
-            model_runner.model.load_lora(lora_name, lora_path)
-        elif hasattr(model_runner, "lora_manager"):
-            from vllm.lora.request import LoRARequest
-
-            lora_request = LoRARequest(
-                lora_name=lora_name,
-                lora_int_id=hash(lora_name) % (2**31),
-                lora_path=lora_path,
-            )
-            model_runner.lora_manager.add_adapter(lora_request)
-        else:
-            raise RuntimeError(
-                f"Could not find LoRA loading mechanism in model_runner. Available attrs: {dir(model_runner)}"
-            )
+        return str(lora_dir)

@@ -119,16 +119,37 @@ async def init_broadcaster(request: Request):
     return {"status": "ok"}
 
 
+def models(request: Request) -> "OpenAIServingModels":
+    return request.app.state.openai_serving_models
+
+
 @router.post("/load_lora_adapter_nixl")
 async def load_lora_adapter_nixl(request: LoadLoRAAdapterNIXLRequest, raw_request: Request):
     """Fetch LoRA weights via NIXL and load into vLLM.
 
-    Creates fresh NIXL client connections, fetches weights, and disconnects.
+    Creates fresh NIXL client connections, fetches weights, saves to disk,
+    and loads via vLLM's standard LoRA mechanism.
     """
-    await engine_client(raw_request).collective_rpc(
+    from vllm.entrypoints.openai.protocol import LoadLoRAAdapterRequest
+    from vllm.entrypoints.openai.serving_models import OpenAIServingModels
+
+    # Fetch weights from trainers via NIXL - returns the path where weights are saved
+    results = await engine_client(raw_request).collective_rpc(
         "load_lora_from_nixl",
         args=(request.lora_name, request.run_idx, request.trainer_addresses, request.timeout),
     )
+
+    # All workers return the same path, just take the first one
+    lora_path = results[0]
+
+    # Load via vLLM's standard handler
+    handler: OpenAIServingModels = models(raw_request)
+    load_request = LoadLoRAAdapterRequest(lora_name=request.lora_name, lora_path=lora_path)
+    response = await handler.load_lora_adapter(load_request)
+
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+
     return {"status": "ok"}
 
 
