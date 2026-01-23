@@ -294,13 +294,13 @@ class ModelConfig(BaseConfig):
     def fused_lm_head_chunk_size_no_liger(self):
         if self.fused_lm_head_chunk_size and self.impl == "liger_kernel":
             raise ValueError(
-                "Fused LM head chunk size is not supported with liger kernel. Please set `model.fused_lm_head_chunk_size` to None"
+                "Fused LM head chunk size is not supported with liger kernel. Please set `model.fused_lm_head_chunk_size` to False"
             )
         return self
 
     @model_validator(mode="after")
     def fused_lm_head_chunk_size_is_valid(self):
-        if isinstance(self.fused_lm_head_chunk_size, int):
+        if isinstance(self.fused_lm_head_chunk_size, int) and not isinstance(self.fused_lm_head_chunk_size, bool):
             low = 512
             if self.fused_lm_head_chunk_size < low:
                 raise ValueError(
