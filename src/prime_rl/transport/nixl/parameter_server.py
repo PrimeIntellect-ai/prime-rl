@@ -136,12 +136,12 @@ class ParameterServer:
                 reg_descs=reg_descs,
             )
 
-            logger.info(
-                "Registered tensor '%s' with shape %s, dtype %s",
-                key,
-                info.shape,
-                info.dtype,
-            )
+            # logger.info(
+            #     "Registered tensor '%s' with shape %s, dtype %s",
+            #     key,
+            #     info.shape,
+            #     info.dtype,
+            # )
 
     def update(self, key: str, tensor: torch.Tensor) -> None:
         """
