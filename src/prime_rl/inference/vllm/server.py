@@ -56,6 +56,7 @@ logger = init_logger("vllm.entrypoints.openai.api_server")
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+    "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLLoRAWorker",
 }
 
 
@@ -88,6 +89,45 @@ async def init_broadcaster(request: Request):
     await engine_client(request).collective_rpc(
         "init_broadcaster",
         args=(host, port, server_rank, num_inference_server, timeout),
+    )
+    return {"status": "ok"}
+
+
+@router.post("/init_nixl_client")
+async def init_nixl_client(request: Request):
+    """Initialize NIXL client connections to ALL trainer ParameterServers.
+
+    Each inference worker connects to all trainer ranks to fetch FSDP shards.
+
+    Request body:
+        server_name: Base name for ParameterServers (e.g., "lora_param_server")
+        trainer_addresses: List of [ip, port] pairs, one per trainer rank
+        timeout: Optional connection timeout (default 30.0)
+    """
+    # TODO: We can probably lazy init in load_lora_adapter_nixl
+    data = await request.json()
+    # Convert list of lists to list of tuples
+    trainer_addresses = [tuple(addr) for addr in data["trainer_addresses"]]
+    await engine_client(request).collective_rpc(
+        "init_nixl_client",
+        args=(trainer_addresses,),
+    )
+    return {"status": "ok"}
+
+
+@router.post("/load_lora_adapter_nixl")
+async def load_lora_adapter_nixl(request: Request):
+    """Fetch LoRA weights via NIXL and load into vLLM.
+
+    Request body:
+        lora_name: Name to register the LoRA adapter under
+        run_id: Run identifier (e.g., "run_0")
+        step: Training step number
+    """
+    data = await request.json()
+    await engine_client(request).collective_rpc(
+        "load_lora_from_nixl",
+        args=(data["lora_name"], data["run_idx"]),
     )
     return {"status": "ok"}
 
