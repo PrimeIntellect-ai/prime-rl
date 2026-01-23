@@ -44,3 +44,29 @@ def test_load_configs(config_file: Path, monkeypatch: pytest.MonkeyPatch):
         except ValidationError:
             could_parse.append(False)
     assert any(could_parse), f"No config class could be parsed from {config_file}"
+
+
+def test_orchestrator_learning_rate_alias():
+    """Tests that the learning_rate alias correctly sets optim.lr."""
+    # Test that learning_rate sets optim.lr
+    config = OrchestratorConfig(learning_rate=0.001)
+    assert config.learning_rate == 0.001
+    assert config.optim.lr == 0.001
+
+    # Test that optim.lr default works when learning_rate is not set
+    config_default = OrchestratorConfig()
+    assert config_default.learning_rate is None
+    assert config_default.optim.lr == 1e-4  # default value
+
+
+def test_orchestrator_learning_rate_cli(monkeypatch: pytest.MonkeyPatch):
+    """Tests that --learning-rate CLI argument sets optim.lr."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["dummy.py", "--learning-rate", "0.002"],
+        raising=False,
+    )
+    config = parse_argv(OrchestratorConfig)
+    assert config.learning_rate == 0.002
+    assert config.optim.lr == 0.002

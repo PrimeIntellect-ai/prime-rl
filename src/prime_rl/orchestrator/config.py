@@ -610,6 +610,15 @@ class OrchestratorConfig(BaseSettings):
     # The optimizer configuration (per-run LR for multi-run training)
     optim: OptimizerConfig = OptimizerConfig()
 
+    # Convenience alias for optim.lr
+    learning_rate: Annotated[
+        float | None,
+        Field(
+            ge=0,
+            description="Top-level alias for optim.lr. If set, overrides optim.lr.",
+        ),
+    ] = None
+
     # The teacher model configuration (optional)
     teacher_model: Annotated[
         TeacherModelConfig | None,
@@ -814,4 +823,11 @@ class OrchestratorConfig(BaseSettings):
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
 
+        return self
+
+    @model_validator(mode="after")
+    def apply_learning_rate_alias(self):
+        """Apply the top-level learning_rate alias to optim.lr if set."""
+        if self.learning_rate is not None:
+            self.optim.lr = self.learning_rate
         return self
