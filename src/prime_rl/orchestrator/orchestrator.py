@@ -603,6 +603,20 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info("Writing final checkpoint")
         ckpt_manager.save(progress, buffer, step=progress.step)
 
+    # Wait for update_policy_loop to finish processing remaining checkpoints (NCCL handshakes)
+    if config.max_steps and config.weight_broadcast.type == "nccl":
+        final_step = config.max_steps - 1
+        while scheduler.ckpt_step < final_step:
+            await asyncio.sleep(0.1)
+        logger.info(f"Checkpoint processing complete (step {scheduler.ckpt_step})")
+
+    # Cancel update_policy_loop
+    update_policy_task.cancel()
+    try:
+        await update_policy_task
+    except asyncio.CancelledError:
+        pass
+
     # Close training batch sender
     training_batch_sender.close()
 
