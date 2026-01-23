@@ -177,7 +177,7 @@ class NIXLLoRAWorker(Worker):
                     if i > 0:
                         target_modules.add(parts[i - 1])
                     if rank is None:
-                        rank = tensor.shape[1]
+                        rank = tensor.shape[0]
                 elif part == "lora_B" and i > 0:
                     target_modules.add(parts[i - 1])
 
