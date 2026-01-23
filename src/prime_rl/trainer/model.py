@@ -268,9 +268,17 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     model.to_empty(device=device)
     torch.distributed.barrier()
 
+    def _init_buffers_post_meta():
+        if isinstance(model, PreTrainedModelPrimeRL):
+            model.init_buffers_post_meta()
+        else:
+            fix_model_post_empty(model)
+
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
+        _init_buffers_post_meta()
+        _move_buffers_to_cuda(model, config)
         return
 
     if not Path(config.name).exists():
@@ -330,10 +338,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
     )
-    if isinstance(model, PreTrainedModelPrimeRL):
-        model.init_buffers_post_meta()
-    else:
-        fix_model_post_empty(model)
+    _init_buffers_post_meta()
+
+    _move_buffers_to_cuda(model, config)
+
     lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
     if lora_modules:
         generator: torch.Generator | None = None
@@ -416,6 +424,15 @@ def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
             )
 
 
+def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
+    """FSDP CPU offloading only manages parameters, not buffers. Move buffers to CUDA."""
+    if not config.fsdp_cpu_offload:
+        return
+    for _, buffer in model.named_buffers():
+        if buffer.device.type == "cpu":
+            buffer.data = buffer.data.to("cuda")
+
+
 def setup_model(
     config: ModelConfig, parallel_dims: ParallelDims, loading_from_checkpoint_later: bool = False
 ) -> nn.Module:
@@ -457,6 +474,9 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
+    if not possible_to_load_to_meta:
+        _move_buffers_to_cuda(model, config)
+
     # 2. if we can load to meta, we either:
     if possible_to_load_to_meta:
         # - load from checkpoint later if needed
@@ -464,12 +484,15 @@ def setup_model(
             logger.warning(
                 "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
             )
-            model.to_empty(device="cuda")
+            device = "cpu" if config.fsdp_cpu_offload else "cuda"
+            model.to_empty(device=device)
             torch.distributed.barrier()
             if isinstance(model, PreTrainedModelPrimeRL):
                 model.init_buffers_post_meta()
             else:
                 fix_model_post_empty(model)
+
+            _move_buffers_to_cuda(model, config)
         # - or load from HF with dcp
         else:
             load_dcp_from_hf(model, config, parallel_dims)
