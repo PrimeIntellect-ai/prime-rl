@@ -17,7 +17,8 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "pylatexenc>=2.10",
     "tomli>=2.2.1",
-    "torch>=2.9.0",
+    "torch>=2.9.0,<2.10.0",
+    "torchvision>=0.24.0,<0.25.0",
     "transformers>=4.56.0",
     "uvloop>=0.21.0",
     "vllm==0.12.0",
@@ -41,6 +42,7 @@ dependencies = [
     "prime>=0.5.0",
     "tenacity>=8.2.0",
     "pyzmq>=27.1.0",
+    "transformer-engine[pytorch]>=2.11.0",
 ]
 
 [project.scripts]
@@ -78,7 +80,8 @@ no-build-isolation-package = ["flash-attn"]
 prerelease = "allow"
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu129" }
+torchvision = { index = "torchvision-cu129" }
 reverse-text = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "209774a" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
@@ -96,8 +99,13 @@ name = "primeintellect"
 url = "https://hub.primeintellect.ai/primeintellect/simple/"
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/test/cu128"
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/test/cu129"
+explicit = true
+
+[[tool.uv.index]]
+name = "torchvision-cu129"
+url = "https://download.pytorch.org/whl/test/cu129"
 explicit = true
 
 [tool.ruff.lint]

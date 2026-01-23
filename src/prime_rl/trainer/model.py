@@ -21,7 +21,13 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, Pretra
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
-from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
+from prime_rl.trainer.config import (
+    ActivationCheckpointConfig,
+    CompileConfig,
+    FP8MoEConfig,
+    ModelConfig,
+    TokenizerConfig,
+)
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -325,6 +331,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     state_dict = strip_lora_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
         del state_dict["lm_head.weight"]
+
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
@@ -333,6 +340,17 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         model.init_buffers_post_meta()
     else:
         fix_model_post_empty(model)
+
+    try:
+        for i, transformer_block in enumerate(model.model.layers):
+            transformer_block.mlp.experts.set_weights(
+                state_dict[f"model.layers.{i}.mlp.experts.w1"],
+                state_dict[f"model.layers.{i}.mlp.experts.w2"],
+                state_dict[f"model.layers.{i}.mlp.experts.w3"],
+            )
+    except Exception as _:
+        pass
+
     lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
     if lora_modules:
         generator: torch.Generator | None = None
@@ -392,7 +410,9 @@ def reshard_module(model: nn.Module):
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     for layer_id, (layer_name, transformer_block) in enumerate(model.model.layers.named_children()):
         if layer_id % ac_config.freq == 0:
-            transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
+            from transformer_engine.pytorch import checkpoint
+
+            transformer_block = checkpoint_wrapper(transformer_block, checkpoint_fn=checkpoint)
         model.model.layers.register_module(layer_name, transformer_block)
     get_logger().info(f"Applied activation checkpointing (freq={ac_config.freq})")
 
@@ -413,6 +433,22 @@ def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
                 device_mesh=parallel_dims.world_mesh["ep"],
                 parallelize_plan=ExpertParallel(),
             )
+
+
+def apply_fp8_moe(model: nn.Module, fp8_config: FP8MoEConfig) -> None:
+    """
+    Convert MoE expert layers to FP8 using Transformer Engine.
+
+    This function replaces GroupedExperts modules with FP8GroupedExperts wrappers
+    that use TE's GroupedLinear with Float8BlockScaling recipe.
+
+    Args:
+        model: The model to convert. Must have transformer blocks with MoE layers.
+        fp8_config: Configuration for FP8 block scaling dimensions.
+    """
+    from prime_rl.trainer.models.layers.fp8_moe import convert_model_moe_to_fp8
+
+    convert_model_moe_to_fp8(model)
 
 
 def setup_model(
@@ -444,6 +480,10 @@ def setup_model(
     # Apply LoRA before FSDP setup
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
+
+    # Apply FP8 MoE conversion before EP so that EP can shard the TE GroupedLinear parameters
+    if config.fp8_moe is not None:
+        apply_fp8_moe(model, config.fp8_moe)
 
     if parallel_dims.ep_enabled:
         apply_ep(model, parallel_dims)

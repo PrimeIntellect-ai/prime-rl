@@ -73,6 +73,37 @@ class DebugModelConfig(BaseConfig):
     ] = False
 
 
+class FP8MoEConfig(BaseConfig):
+    """Configuration for FP8 MoE training using Transformer Engine."""
+
+    x_block_scaling_dim: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=2,
+            description="Block scaling dimension for activations. 1=1x128 (DeepSeek V3 style), 2=128x128.",
+        ),
+    ] = 1
+
+    w_block_scaling_dim: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=2,
+            description="Block scaling dimension for weights. 1=1x128, 2=128x128 (DeepSeek V3 style).",
+        ),
+    ] = 2
+
+    grad_block_scaling_dim: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=2,
+            description="Block scaling dimension for gradients. 1=1x128 (DeepSeek V3 style), 2=128x128.",
+        ),
+    ] = 1
+
+
 class LoRAConfig(BaseConfig):
     """Configuration for LoRA (Low-Rank Adaptation)."""
 
@@ -241,6 +272,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = None
 
+    fp8_moe: Annotated[
+        FP8MoEConfig | None,
+        Field(
+            description="Whether to convert MoE expert layers to FP8 using Transformer Engine. Requires TE and Hopper+ GPU.",
+        ),
+    ] = None
+
     debug: Annotated[
         DebugModelConfig,
         Field(
@@ -290,6 +328,17 @@ class ModelConfig(BaseConfig):
             if self.fused_lm_head_chunk_size < low:
                 raise ValueError(f"Fused LM head chunk size must be greater than {low}")
 
+        return self
+
+    @model_validator(mode="after")
+    def fp8_moe_incompatible_with_ep(self):
+        """FP8 MoE is not compatible with Expert Parallelism."""
+        if self.fp8_moe is not None and self.ep > 1:
+            raise ValueError(
+                "FP8 MoE (via Transformer Engine's GroupedLinear) is not compatible with Expert Parallelism (EP > 1). "
+                "TE GroupedLinear uses individual expert parameters that cannot be sharded with the current ExpertParallel plan. "
+                "Please use either FP8 MoE (ep=1) or Expert Parallelism (fp8_moe=None), but not both."
+            )
         return self
 
 

@@ -56,6 +56,7 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
+from prime_rl.trainer.models.layers.fp8_moe import get_fp8_context_manager
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -302,6 +303,7 @@ def train(config: RLTrainerConfig):
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
         cp_size = parallel_dims.cp
+        maybe_fp8_context_manager = get_fp8_context_manager(config.model.fp8_moe)
 
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -337,7 +339,11 @@ def train(config: RLTrainerConfig):
             temperature = micro_batch["temperature"]
 
             # Forward pass
-            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+            with (
+                maybe_record_function("forward"),
+                maybe_activation_offloading(config.model.ac_offloading),
+                maybe_fp8_context_manager(),
+            ):
                 out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
 
             if out.get("logprobs") is None:
