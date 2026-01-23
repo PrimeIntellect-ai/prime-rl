@@ -255,8 +255,9 @@ class ModelConfig(BaseConfig):
                 "The chunk size to use for the fused LM head. "
                 "Three behaviors: "
                 "(1) int >= 512: explicitly set chunk size for fused LM head; "
-                "(2) True: auto-enable (RL training auto-sets to 2048 unless impl='liger_kernel', SFT sets to False); "
+                "(2) True: auto-enable (RL training auto-sets to 2048); "
                 "(3) False: explicitly disable fused LM head (use vanilla)."
+                "This feature isn't supported for SFT training or models where `impl='liger_kernel'`."
             ),
         ),
     ] = True
