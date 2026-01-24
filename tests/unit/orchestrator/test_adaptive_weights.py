@@ -42,7 +42,8 @@ def test_ema_updates_on_batch(manager):
     assert ema["length_reward"] == pytest.approx(0.05)
 
 
-def test_weight_decays_as_ema_approaches_saturation():
+def test_single_reward_never_decays():
+    """Single reward is always primary, so it never decays."""
     config = AdaptiveWeightConfig(enabled=True, saturation_threshold=1.0, decay_exponent=1.0)
     mgr = AdaptiveWeightManager(config=config, reward_keys=["r"], base_weights=[1.0])
 
@@ -51,21 +52,40 @@ def test_weight_decays_as_ema_approaches_saturation():
         mgr.update({"r": 1.0})
 
     weights = mgr.get_weights_dict()
-    # Weight should have decayed significantly
-    assert weights["r"] < 0.5
+    # Single reward is primary, should NOT decay
+    assert weights["r"] == 1.0
+
+
+def test_auxiliary_weight_decays_as_ema_approaches_saturation():
+    """Auxiliary rewards decay when they approach saturation."""
+    config = AdaptiveWeightConfig(enabled=True, primary_reward="primary", saturation_threshold=1.0, decay_exponent=1.0)
+    mgr = AdaptiveWeightManager(config=config, reward_keys=["primary", "auxiliary"], base_weights=[1.0, 1.0])
+
+    # Simulate high reward for multiple steps
+    for _ in range(50):
+        mgr.update({"primary": 1.0, "auxiliary": 1.0})
+
+    weights = mgr.get_weights_dict()
+    # Primary should NOT decay
+    assert weights["primary"] == 1.0
+    # Auxiliary SHOULD decay significantly
+    assert weights["auxiliary"] < 0.5
 
 
 def test_min_weight_floor_respected():
-    config = AdaptiveWeightConfig(enabled=True, min_weight=0.2, saturation_threshold=0.5)
-    mgr = AdaptiveWeightManager(config=config, reward_keys=["r"], base_weights=[1.0])
+    """Auxiliary rewards should not decay below min_weight * base_weight."""
+    config = AdaptiveWeightConfig(enabled=True, primary_reward="primary", min_weight=0.2, saturation_threshold=0.5)
+    mgr = AdaptiveWeightManager(config=config, reward_keys=["primary", "auxiliary"], base_weights=[1.0, 1.0])
 
-    # Push EMA past saturation
+    # Push EMA past saturation for auxiliary
     for _ in range(100):
-        mgr.update({"r": 1.0})
+        mgr.update({"primary": 1.0, "auxiliary": 1.0})
 
     weights = mgr.get_weights_dict()
-    # Should not go below min_weight * base_weight
-    assert weights["r"] >= 0.2
+    # Primary should not decay
+    assert weights["primary"] == 1.0
+    # Auxiliary should not go below min_weight * base_weight
+    assert weights["auxiliary"] >= 0.2
 
 
 def test_checkpoint_save_and_restore(manager):

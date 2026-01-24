@@ -302,12 +302,23 @@ class AdaptiveWeightConfig(BaseConfig):
 
     Dynamically decays reward weights as their running mean approaches saturation.
     Uses a ratchet mechanism with slow leak for stable training.
+
+    Only auxiliary rewards are decayed. The primary reward always keeps its full
+    weight to ensure gradient signal is never lost.
     """
 
     enabled: Annotated[
         bool,
         Field(description="Whether to enable adaptive weight decay."),
     ] = False
+
+    primary_reward: Annotated[
+        str | None,
+        Field(
+            description="The primary reward key that should never be decayed (always keeps full weight). "
+            "If None, defaults to the first reward in reward_keys."
+        ),
+    ] = None
 
     ema_alpha: Annotated[
         float,
@@ -339,7 +350,7 @@ class AdaptiveWeightConfig(BaseConfig):
         float,
         Field(
             ge=0,
-            description="Minimum weight floor to prevent complete decay.",
+            description="Minimum weight floor to prevent complete decay of auxiliary rewards.",
         ),
     ] = 0.1
 
@@ -738,9 +749,7 @@ class OrchestratorConfig(BaseSettings):
     # Whether to reset inference weights to base model when starting from scratch
     reload_weights_on_start: Annotated[
         bool,
-        Field(
-            description="Whether to reset inference weights to the base model when starting from scratch."
-        ),
+        Field(description="Whether to reset inference weights to the base model when starting from scratch."),
     ] = True
 
     # The validation configuration

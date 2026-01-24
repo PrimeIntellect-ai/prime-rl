@@ -1,9 +1,12 @@
 """Adaptive reward weight decay based on running statistics.
 
 This module implements dynamic weight decay for multi-reward RL training.
-As a reward signal approaches saturation (e.g., correctness approaching 100%),
-its weight is decayed to allow other reward signals (e.g., length) to have
-more influence on the advantage calculation.
+As an auxiliary reward signal approaches saturation, its weight is decayed
+to reduce its influence on the advantage calculation.
+
+The primary reward (e.g., correctness) is never decayed to ensure gradient
+signal is always present. Only auxiliary rewards (e.g., length) are subject
+to adaptive decay.
 
 Uses a ratchet mechanism with slow leak to prevent oscillation while
 allowing gradual recovery if rewards drop.
@@ -15,7 +18,10 @@ from prime_rl.orchestrator.config import AdaptiveWeightConfig
 class AdaptiveWeightManager:
     """Manages adaptive decay of reward weights based on running statistics.
 
-    The decay mechanism follows:
+    Only auxiliary rewards are decayed. The primary reward always keeps its
+    full weight to ensure gradient signal is never lost.
+
+    The decay mechanism for auxiliary rewards follows:
         weight_t = base_weight * decay_factor
         decay_factor = max(0, 1 - (EMA_t / saturation_threshold) ^ decay_exponent)
 
@@ -41,7 +47,11 @@ class AdaptiveWeightManager:
         self.reward_keys = reward_keys
         self.base_weights = {k: w for k, w in zip(reward_keys, base_weights)}
 
-        # Per-reward tracking
+        # Determine primary reward (never decayed)
+        # If not specified, default to first reward key
+        self.primary_reward = config.primary_reward or (reward_keys[0] if reward_keys else None)
+
+        # Per-reward tracking (only for auxiliary rewards, but we track EMA for all for logging)
         self.ema_values: dict[str, float] = {k: 0.0 for k in reward_keys}
         self.current_weights: dict[str, float] = {k: w for k, w in zip(reward_keys, base_weights)}
         self.ratchet_floor: dict[str, float] = {k: w for k, w in zip(reward_keys, base_weights)}
@@ -61,12 +71,18 @@ class AdaptiveWeightManager:
 
             batch_mean = batch_rewards[key]
 
-            # Update EMA
+            # Update EMA (for all rewards, including primary, for logging purposes)
             self.ema_values[key] = (
                 self.config.ema_alpha * batch_mean + (1 - self.config.ema_alpha) * self.ema_values[key]
             )
 
-            # Compute decay factor
+            # Skip decay for primary reward - always keep full weight
+            if key == self.primary_reward:
+                # Primary reward keeps its base weight, no decay applied
+                self.current_weights[key] = self.base_weights[key]
+                continue
+
+            # For auxiliary rewards: compute decay factor
             # normalized is how close we are to saturation (0 = no reward, 1 = saturated)
             normalized = min(1.0, self.ema_values[key] / self.config.saturation_threshold)
             # decay_factor goes from 1 (no decay) to 0 (full decay) as normalized approaches 1
