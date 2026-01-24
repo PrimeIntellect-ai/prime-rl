@@ -703,7 +703,7 @@ class CurriculumSFTDataset(StatefulIterableDataset):
             return None
 
         assert len(input_ids) == len(loss_mask) == len(target_ids), (
-            f"input_ids, loss_mask and target_ids must have the same length"
+            f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
         )
         assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
         assert self.tokenizer.eos_token_id in target_ids, "EOS token ID must be present in target_ids"
