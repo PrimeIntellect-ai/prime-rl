@@ -187,10 +187,13 @@ class PrimeMonitor(Monitor):
 
     def _upload_samples_via_presigned_url(self, samples: list[dict[str, Any]], step: int) -> None:
         """Upload samples using presigned URL flow (fire-and-forget)."""
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             self._upload_samples_via_presigned_url_async(samples, step),
             self._loop,
         )
+        self._pending_futures.append(future)
+        # Clean up completed futures to avoid memory growth
+        self._pending_futures = [f for f in self._pending_futures if not f.done()]
 
     async def _upload_samples_via_presigned_url_async(
         self, samples: list[dict[str, Any]], step: int, max_retries: int = 3
