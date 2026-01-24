@@ -50,7 +50,9 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     clean_exit,
+    get_broadcast_dir,
     get_env_ids_to_install,
+    get_step_path,
     install_env,
     resolve_latest_ckpt_step,
     to_col_format,
@@ -233,11 +235,15 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
 
         # Only load weights from filesystem if using filesystem broadcast
-        # For NCCL, trainer will broadcast weights on first step
+        # For NCCL, trainer will broadcast weights on first step, but we still need to
+        # create the NCCL_READY marker and trigger inference workers on resume.
         if config.weight_broadcast.type == "filesystem":
             weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
             lora_name = config.model.lora.name if config.model.lora else None
             await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+        elif config.weight_broadcast.type == "nccl":
+            weights_path = get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step)
+            await inference_pool.update_weights(weights_path, step=scheduler.ckpt_step)
     else:
         if config.reload_weights_on_start:
             if config.model.lora is None:
