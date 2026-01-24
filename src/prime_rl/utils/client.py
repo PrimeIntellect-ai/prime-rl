@@ -202,6 +202,9 @@ async def update_weights(
     Creates a NCCL_READY marker file before calling the update endpoint to signal
     to the trainer that inference workers are about to enter the receive path.
     This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
+
+    Note: The server-side /update_weights endpoint automatically resets the prefix cache
+    to invalidate any cached KV states computed with the old weights.
     """
     logger = get_logger()
 
@@ -260,6 +263,9 @@ def _is_retryable_lora_error(exception: BaseException) -> bool:
 async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
+    Uses our wrapper endpoint that also resets the prefix cache to invalidate
+    KV states computed with old weights.
+
     Retries with exponential backoff if the adapter files are not found,
     which can happen due to NFS propagation delays.
     """
@@ -275,7 +281,7 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
-            "/v1/load_lora_adapter",
+            "/load_lora_adapter",
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
         )
         response.raise_for_status()

@@ -46,4 +46,10 @@ def supports_custom_impl(model_config: PretrainedConfig) -> bool:
     return type(model_config) in _CUSTOM_CAUSAL_LM_MAPPING
 
 
-__all__ = ["AutoModelForCausalLMPrimeRL", "PreTrainedModelPrimeRL", "supports_custom_impl", "PrimeLmOutput", "cast_float_and_contiguous"]
+__all__ = [
+    "AutoModelForCausalLMPrimeRL",
+    "PreTrainedModelPrimeRL",
+    "supports_custom_impl",
+    "PrimeLmOutput",
+    "cast_float_and_contiguous",
+]

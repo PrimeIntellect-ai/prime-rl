@@ -33,13 +33,7 @@ def prepare_sample(
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
 
-    assert (
-        len(input_ids)
-        == len(advantages)
-        == len(loss_mask)
-        == len(position_ids)
-        == len(inference_logprobs)
-    ), (
+    assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
     )
     if teacher_logprobs is not None:

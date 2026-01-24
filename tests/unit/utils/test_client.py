@@ -42,7 +42,7 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     asyncio.run(load_lora_adapter([mock_client], "test-lora", Path("/test/path")))
 
     mock_client.post.assert_called_once_with(
-        "/v1/load_lora_adapter",
+        "/load_lora_adapter",
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
     )
 

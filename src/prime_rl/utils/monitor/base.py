@@ -6,7 +6,7 @@ import verifiers as vf
 
 class Monitor(ABC):
     """Base class for all monitoring implementations.
-    
+
     Subclasses should initialize a `history` attribute as a list of dictionaries
     to store logged metrics.
     """
@@ -56,4 +56,3 @@ class NoOpMonitor(Monitor):
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         pass
-

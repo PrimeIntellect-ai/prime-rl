@@ -20,3 +20,11 @@ jobs:
           submodules: true
       - name: Run ruff
         uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.13.0"
+          args: "check --config=pyproject.toml"
+      - name: Run ruff format (check)
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.13.0"
+          args: "format --check --config=pyproject.toml"

@@ -27,22 +27,22 @@ def is_moe_layer_tt(state_dict: dict[str, Tensor], layer_idx: int) -> bool:
 
 def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int) -> None:
     """Convert a single MoE layer from HF format to TT format in-place.
-    
+
     Args:
         state_dict: The state dict to modify in-place.
         layer_idx: The layer index to convert.
     """
     prefix = f"model.layers.{layer_idx}.mlp"
-    
+
     # Check if this is a MoE layer (has individual experts)
     is_moe_layer = is_moe_layer_hf(state_dict, layer_idx)
     if not is_moe_layer:
         return  # Dense layer, no conversion needed
-    
+
     num_experts = get_num_experts_from_state_dict(state_dict, layer_idx)
     if num_experts == 0:
         return
-    
+
     # Convert shared experts: shared_experts -> shared_expert, gate_proj/up_proj/down_proj -> w1/w3/w2
     shared_mappings = [
         (f"{prefix}.shared_experts.gate_proj.weight", f"{prefix}.shared_expert.w1"),
@@ -61,14 +61,14 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int) -> Non
         ("down_proj", "w2"),
         ("up_proj", "w3"),
     ]
-    
+
     for hf_name, tt_name in expert_mappings:
         expert_weights = []
         for i in range(num_experts):
             hf_key = f"{prefix}.experts.{i}.{hf_name}.weight"
             if hf_key in state_dict:
                 expert_weights.append(state_dict.pop(hf_key))
-        
+
         if expert_weights:
             # Stack along first dimension: [num_experts, out_dim, in_dim]
             stacked = torch.stack(expert_weights, dim=0)
@@ -77,17 +77,17 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int) -> Non
 
 def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_idx: int) -> None:
     """Convert a single MoE layer from TT format to HF format in-place.
-    
+
     Args:
         state_dict: The state dict to modify in-place.
         layer_idx: The layer index to convert.
     """
     prefix = f"model.layers.{layer_idx}.mlp"
-    
+
     # Check if this is a MoE layer in TT format
     if not is_moe_layer_tt(state_dict, layer_idx):
         return  # Dense layer, no conversion needed
-    
+
     # Convert shared expert: shared_expert -> shared_experts, w1/w2/w3 -> gate_proj/down_proj/up_proj
     shared_mappings = [
         (f"{prefix}.shared_expert.w1", f"{prefix}.shared_experts.gate_proj.weight"),
@@ -97,14 +97,14 @@ def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_idx: int) -> Non
     for tt_key, hf_key in shared_mappings:
         if tt_key in state_dict:
             state_dict[hf_key] = state_dict.pop(tt_key)
-    
+
     # Unstack grouped expert weights into individual experts
     expert_mappings = [
         ("w1", "gate_proj"),
         ("w2", "down_proj"),
         ("w3", "up_proj"),
     ]
-    
+
     for tt_name, hf_name in expert_mappings:
         tt_key = f"{prefix}.experts.{tt_name}"
         if tt_key in state_dict:
@@ -113,7 +113,7 @@ def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_idx: int) -> Non
             for i in range(num_experts):
                 hf_key = f"{prefix}.experts.{i}.{hf_name}.weight"
                 state_dict[hf_key] = stacked[i]
-    
+
     # Remove TT-specific buffers that don't exist in HF
     for key in list(state_dict.keys()):
         if f"{prefix}.tokens_per_expert" in key:

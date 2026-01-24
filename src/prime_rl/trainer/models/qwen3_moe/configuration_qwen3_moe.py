@@ -206,7 +206,7 @@ class Qwen3MoeConfig(PretrainedConfig):
         self.mlp_only_layers = [] if mlp_only_layers is None else mlp_only_layers
         self.load_balance_coeff = load_balance_coeff
         self.use_grouped_mm = use_grouped_mm
-        
+
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
