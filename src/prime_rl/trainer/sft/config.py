@@ -52,6 +52,67 @@ class LossMaskConfig(BaseConfig):
     tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
 
 
+class CurriculumConfig(BaseConfig):
+    """Configures curriculum learning for SFT training with difficulty-based sampling."""
+
+    enabled: Annotated[
+        bool,
+        Field(description="Whether to enable curriculum learning."),
+    ] = False
+
+    difficulty_field: Annotated[
+        str,
+        Field(description="The field in the dataset containing difficulty labels (e.g., 'difficulty')."),
+    ] = "difficulty"
+
+    difficulty_levels: Annotated[
+        list[str],
+        Field(
+            description="Ordered list of difficulty levels from easiest to hardest. "
+            "Examples with levels not in this list will be treated as the highest difficulty."
+        ),
+    ] = ["low", "medium", "high"]
+
+    schedule: Annotated[
+        Literal["linear", "step"],
+        Field(
+            description="How to progress through difficulty levels. "
+            "'linear' gradually increases probability of harder samples. "
+            "'step' unlocks difficulty levels at specific progress thresholds."
+        ),
+    ] = "linear"
+
+    warmup_fraction: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            le=1.0,
+            description="Fraction of training to spend on the easiest difficulty only. "
+            "After this, harder difficulties start being introduced."
+        ),
+    ] = 0.1
+
+    full_difficulty_fraction: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            le=1.0,
+            description="Fraction of training at which all difficulty levels are fully available. "
+            "Must be greater than warmup_fraction."
+        ),
+    ] = 0.5
+
+    min_difficulty_prob: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            le=1.0,
+            description="Minimum sampling probability for the easiest difficulty level. "
+            "Ensures easy examples are still sampled even at full difficulty."
+        ),
+    ] = 0.1
+
+
 class SFTDataConfig(BaseDataConfig):
     """Configures the data used for training."""
 
@@ -80,6 +141,9 @@ class SFTDataConfig(BaseDataConfig):
     # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
 
+    # Curriculum learning configuration
+    curriculum: CurriculumConfig = CurriculumConfig()
+
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
         if self.subsets is not None or self.splits is not None:
@@ -98,6 +162,19 @@ class SFTDataConfig(BaseDataConfig):
                     raise ValueError(
                         "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
                     )
+        return self
+
+    @model_validator(mode="after")
+    def validate_curriculum_config(self):
+        if self.curriculum.enabled:
+            if self.curriculum.full_difficulty_fraction <= self.curriculum.warmup_fraction:
+                raise ValueError(
+                    "full_difficulty_fraction must be greater than warmup_fraction for curriculum learning"
+                )
+            if len(self.curriculum.difficulty_levels) < 2:
+                raise ValueError(
+                    "At least 2 difficulty levels are required for curriculum learning"
+                )
         return self
 
 

@@ -132,7 +132,7 @@ def train(config: SFTTrainerConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp, max_steps=config.max_steps)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
@@ -352,6 +352,24 @@ def train(config: SFTTrainerConfig):
                 },
             )
         monitor.log(progress_metrics, step=progress.step)
+
+        # Log curriculum metrics if curriculum learning is enabled
+        if hasattr(dataset, "curriculum_samples_by_difficulty"):
+            total_curriculum_samples = sum(dataset.curriculum_samples_by_difficulty.values())
+            if total_curriculum_samples > 0:
+                curriculum_metrics = {
+                    f"curriculum/{level}/ratio": count / total_curriculum_samples
+                    for level, count in dataset.curriculum_samples_by_difficulty.items()
+                }
+                curriculum_metrics["step"] = progress.step
+                # Also log current difficulty probabilities if available
+                if hasattr(dataset, "_get_difficulty_probabilities") and hasattr(dataset, "_compute_progress"):
+                    current_progress = dataset._compute_progress()
+                    difficulty_probs = dataset._get_difficulty_probabilities(current_progress)
+                    for level, prob in difficulty_probs.items():
+                        curriculum_metrics[f"curriculum/{level}/target_prob"] = prob
+                    curriculum_metrics["curriculum/training_progress"] = current_progress
+                monitor.log(curriculum_metrics, step=progress.step)
 
         # Log performance metrics
         perf_metrics = {
