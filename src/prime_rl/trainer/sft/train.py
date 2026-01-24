@@ -30,7 +30,7 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.data import CurriculumSFTDataset, setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     export_benchmark_json,
@@ -354,21 +354,20 @@ def train(config: SFTTrainerConfig):
         monitor.log(progress_metrics, step=progress.step)
 
         # Log curriculum metrics if curriculum learning is enabled
-        if hasattr(dataset, "curriculum_samples_by_difficulty"):
+        if isinstance(dataset, CurriculumSFTDataset):
             total_curriculum_samples = sum(dataset.curriculum_samples_by_difficulty.values())
             if total_curriculum_samples > 0:
+                current_progress = dataset._compute_progress()
+                difficulty_probs = dataset._get_difficulty_probabilities(current_progress)
                 curriculum_metrics = {
                     f"curriculum/{level}/ratio": count / total_curriculum_samples
                     for level, count in dataset.curriculum_samples_by_difficulty.items()
                 }
+                curriculum_metrics.update(
+                    {f"curriculum/{level}/target_prob": prob for level, prob in difficulty_probs.items()}
+                )
+                curriculum_metrics["curriculum/training_progress"] = current_progress
                 curriculum_metrics["step"] = progress.step
-                # Also log current difficulty probabilities if available
-                if hasattr(dataset, "_get_difficulty_probabilities") and hasattr(dataset, "_compute_progress"):
-                    current_progress = dataset._compute_progress()
-                    difficulty_probs = dataset._get_difficulty_probabilities(current_progress)
-                    for level, prob in difficulty_probs.items():
-                        curriculum_metrics[f"curriculum/{level}/target_prob"] = prob
-                    curriculum_metrics["curriculum/training_progress"] = current_progress
                 monitor.log(curriculum_metrics, step=progress.step)
 
         # Log performance metrics

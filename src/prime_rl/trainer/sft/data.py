@@ -349,12 +349,7 @@ class SFTDataset(StatefulIterableDataset):
 
 
 class CurriculumSFTDataset(SFTDataset):
-    """A dataset extending SFTDataset with difficulty-based curriculum learning.
-
-    Samples are organized by difficulty level and sampling probabilities change
-    based on training progress, starting with easier samples and gradually
-    introducing harder ones.
-    """
+    """SFTDataset with difficulty-based curriculum learning."""
 
     def __init__(
         self,
@@ -370,7 +365,6 @@ class CurriculumSFTDataset(SFTDataset):
         max_epochs: int | None = None,
         max_steps: int | None = None,
     ):
-        # Initialize parent class (sets up tokenizer, seq_len, loss_mask_config, data_rank, etc.)
         super().__init__(
             dataset=dataset,
             tokenizer=tokenizer,
@@ -383,234 +377,161 @@ class CurriculumSFTDataset(SFTDataset):
             max_epochs=max_epochs,
         )
 
-        # Curriculum-specific configuration
         self.curriculum_config = curriculum_config
         self.max_steps = max_steps
         self.difficulty_field = curriculum_config.difficulty_field
         self.difficulty_levels = curriculum_config.difficulty_levels
-        self.unknown_difficulty_level = self.difficulty_levels[-1]  # Treat unknown as hardest
 
-        # Validate that the difficulty field exists
         if self.difficulty_field not in self.dataset.column_names:
             raise ValueError(
                 f"Difficulty field '{self.difficulty_field}' not found in dataset. "
                 f"Available columns: {self.dataset.column_names}"
             )
 
-        # Organize examples by difficulty level
         self.examples_by_difficulty: dict[str, list[dict]] = {level: [] for level in self.difficulty_levels}
         for i in range(self.num_examples):
             example = cast(dict, self.dataset[i])
             example["__index"] = i
-            difficulty = example.get(self.difficulty_field, self.unknown_difficulty_level)
+            difficulty = example.get(self.difficulty_field, self.difficulty_levels[-1])
             if difficulty not in self.difficulty_levels:
-                self.logger.warning(
-                    f"Unknown difficulty '{difficulty}' for example {i}, treating as '{self.unknown_difficulty_level}'"
-                )
-                difficulty = self.unknown_difficulty_level
+                difficulty = self.difficulty_levels[-1]
             self.examples_by_difficulty[difficulty].append(example)
 
-        # Log difficulty distribution
-        total_examples = sum(len(examples) for examples in self.examples_by_difficulty.values())
         for level in self.difficulty_levels:
             count = len(self.examples_by_difficulty[level])
-            self.logger.info(f"Difficulty level '{level}': {count} examples ({count / total_examples * 100:.1f}%)")
+            self.logger.info(f"Difficulty level '{level}': {count} examples ({count / self.num_examples * 100:.1f}%)")
 
-        # Track curriculum metrics
         self.curriculum_samples_by_difficulty = {level: 0 for level in self.difficulty_levels}
-
-        # Initialize random state for curriculum sampling
         self.rng = random.Random(seed)
 
     def _get_difficulty_probabilities(self, progress: float) -> dict[str, float]:
-        """Compute sampling probabilities for each difficulty level based on training progress.
-
-        Args:
-            progress: Training progress as a fraction [0, 1]
-
-        Returns:
-            Dictionary mapping difficulty levels to sampling probabilities
-        """
+        """Compute sampling probabilities for each difficulty level based on training progress."""
         num_levels = len(self.difficulty_levels)
         warmup = self.curriculum_config.warmup_fraction
         full_diff = self.curriculum_config.full_difficulty_fraction
         min_prob = self.curriculum_config.min_difficulty_prob
 
-        if self.curriculum_config.schedule == "step":
-            # Step schedule: unlock one difficulty level at each threshold
-            probs = {level: 0.0 for level in self.difficulty_levels}
+        probs = {level: 0.0 for level in self.difficulty_levels}
 
+        if self.curriculum_config.schedule == "step":
             if progress < warmup:
-                # Only easiest difficulty
                 probs[self.difficulty_levels[0]] = 1.0
             else:
-                # Calculate how many levels to unlock
-                curriculum_progress = (progress - warmup) / (full_diff - warmup) if full_diff > warmup else 1.0
-                curriculum_progress = min(curriculum_progress, 1.0)
-
-                # Number of levels to unlock (at least 1, at most all)
+                curriculum_progress = min(
+                    1.0, (progress - warmup) / (full_diff - warmup) if full_diff > warmup else 1.0
+                )
                 num_unlocked = max(1, min(num_levels, int(curriculum_progress * num_levels) + 1))
 
-                # Distribute probability evenly among unlocked levels, with min_prob for easiest
                 if num_unlocked == 1:
                     probs[self.difficulty_levels[0]] = 1.0
                 else:
-                    remaining_prob = 1.0 - min_prob
-                    prob_per_level = remaining_prob / (num_unlocked - 1)
+                    prob_per_level = (1.0 - min_prob) / (num_unlocked - 1)
                     probs[self.difficulty_levels[0]] = min_prob
                     for i in range(1, num_unlocked):
                         probs[self.difficulty_levels[i]] = prob_per_level
-
-        else:  # linear schedule
-            probs = {level: 0.0 for level in self.difficulty_levels}
-
+        else:
             if progress < warmup:
                 probs[self.difficulty_levels[0]] = 1.0
             elif progress >= full_diff:
-                if num_levels == 1:
-                    probs[self.difficulty_levels[0]] = 1.0
-                else:
-                    remaining_prob = 1.0 - min_prob
-                    prob_per_level = remaining_prob / (num_levels - 1)
-                    probs[self.difficulty_levels[0]] = min_prob
-                    for i in range(1, num_levels):
-                        probs[self.difficulty_levels[i]] = prob_per_level
+                prob_per_level = (1.0 - min_prob) / (num_levels - 1) if num_levels > 1 else 0.0
+                probs[self.difficulty_levels[0]] = min_prob if num_levels > 1 else 1.0
+                for i in range(1, num_levels):
+                    probs[self.difficulty_levels[i]] = prob_per_level
             else:
                 transition_progress = (progress - warmup) / (full_diff - warmup)
+                easiest_prob = 1.0 - transition_progress * (1.0 - min_prob)
+                probs[self.difficulty_levels[0]] = easiest_prob
 
-                if num_levels == 1:
-                    probs[self.difficulty_levels[0]] = 1.0
-                else:
-                    easiest_prob = 1.0 - transition_progress * (1.0 - min_prob)
-                    probs[self.difficulty_levels[0]] = easiest_prob
+                remaining_prob = 1.0 - easiest_prob
+                level_weights = []
+                for i in range(1, num_levels):
+                    unlock_threshold = (i - 1) / (num_levels - 1)
+                    weight = min(1.0, max(0.0, transition_progress - unlock_threshold) * (num_levels - 1))
+                    level_weights.append(weight)
 
-                    remaining_prob = 1.0 - easiest_prob
-                    level_weights = []
-                    for i in range(1, num_levels):
-                        unlock_threshold = (i - 1) / (num_levels - 1)
-                        if transition_progress >= unlock_threshold:
-                            weight = min(1.0, (transition_progress - unlock_threshold) * (num_levels - 1))
-                        else:
-                            weight = 0.0
-                        level_weights.append(weight)
+                total_weight = sum(level_weights)
+                if total_weight > 0:
+                    for i, weight in enumerate(level_weights):
+                        probs[self.difficulty_levels[i + 1]] = remaining_prob * weight / total_weight
 
-                    total_weight = sum(level_weights)
-                    if total_weight > 0:
-                        for i, weight in enumerate(level_weights):
-                            probs[self.difficulty_levels[i + 1]] = remaining_prob * weight / total_weight
-
-        # Normalize probabilities to account for empty difficulty levels
-        available_probs = {
-            level: prob for level, prob in probs.items() if len(self.examples_by_difficulty.get(level, [])) > 0
-        }
+        available_probs = {level: prob for level, prob in probs.items() if self.examples_by_difficulty[level]}
 
         if not available_probs:
-            non_empty_levels = [
-                level for level in self.difficulty_levels if len(self.examples_by_difficulty.get(level, [])) > 0
-            ]
-            if non_empty_levels:
-                prob = 1.0 / len(non_empty_levels)
-                return {level: prob for level in non_empty_levels}
-            else:
+            non_empty_levels = [level for level in self.difficulty_levels if self.examples_by_difficulty[level]]
+            if not non_empty_levels:
                 raise ValueError("No examples available in any difficulty level")
+            return {level: 1.0 / len(non_empty_levels) for level in non_empty_levels}
 
         total = sum(available_probs.values())
-        if total > 0:
-            return {level: prob / total for level, prob in available_probs.items()}
-
-        return available_probs
+        return {level: prob / total for level, prob in available_probs.items()} if total > 0 else available_probs
 
     def _sample_difficulty_level(self, progress: float) -> str:
-        """Sample a difficulty level based on current progress."""
         probs = self._get_difficulty_probabilities(progress)
-        levels = list(probs.keys())
-        weights = [probs[level] for level in levels]
-        return self.rng.choices(levels, weights=weights, k=1)[0]
+        return self.rng.choices(list(probs.keys()), weights=list(probs.values()))[0]
 
     def _compute_progress(self) -> float:
-        """Compute training progress as a fraction [0, 1]."""
-        if self.max_steps is not None and self.max_steps > 0:
+        if self.max_steps and self.max_steps > 0:
             return min(1.0, self.step / self.max_steps)
-        elif self.max_epochs is not None and self.max_epochs > 0:
+        if self.max_epochs and self.max_epochs > 0:
             return min(1.0, self.epoch / self.max_epochs)
-        else:
-            return 1.0
+        return 1.0
 
     def state_dict(self) -> dict:
-        base_state = super().state_dict()
-        base_state["rng_state"] = self.rng.getstate()
-        base_state["curriculum_samples_by_difficulty"] = self.curriculum_samples_by_difficulty
-        return base_state
+        state = super().state_dict()
+        state["rng_state"] = self.rng.getstate()
+        state["curriculum_samples_by_difficulty"] = self.curriculum_samples_by_difficulty
+        return state
 
     def load_state_dict(self, state_dict: dict):
         super().load_state_dict(state_dict)
-        if "rng_state" in state_dict:
-            self.rng.setstate(state_dict["rng_state"])
-        if "curriculum_samples_by_difficulty" in state_dict:
-            self.curriculum_samples_by_difficulty = state_dict["curriculum_samples_by_difficulty"]
+        self.rng.setstate(state_dict["rng_state"])
+        self.curriculum_samples_by_difficulty = state_dict["curriculum_samples_by_difficulty"]
 
     def __iter__(self):
-        """Iterate through examples using curriculum-based sampling."""
-        # Shuffle examples within each difficulty level
         if self.shuffle:
             for level in self.difficulty_levels:
                 self.rng.shuffle(self.examples_by_difficulty[level])
 
-        # Track indices within each difficulty level
         indices_by_difficulty = {level: 0 for level in self.difficulty_levels}
 
         while True:
             self.step += 1
-
-            # Compute current progress
             progress = self._compute_progress()
 
-            # Check for max epochs
             if self.max_epochs is not None and self.epoch >= self.max_epochs:
                 break
 
-            # Skip samples that don't belong to this data rank
             if (self.step - 1) % self.data_world_size != self.data_rank:
                 continue
 
-            # Sample a difficulty level
             difficulty = self._sample_difficulty_level(progress)
             examples = self.examples_by_difficulty[difficulty]
 
-            if not examples:
-                continue
-
-            # Get the next example from this difficulty level
             idx = indices_by_difficulty[difficulty]
             if idx >= len(examples):
-                # Reshuffle and reset index for this difficulty level
                 if self.shuffle:
                     self.rng.shuffle(examples)
                 idx = 0
                 self.epoch += 1
-                if self.shuffle:
-                    self.rng.seed(self.seed + self.epoch)
+                self.rng.seed(self.seed + self.epoch)
 
             example = examples[idx]
             indices_by_difficulty[difficulty] = idx + 1
 
-            # Process example using inherited _process method
             processed_example = self._process(cast(dict, example))
-
             if processed_example is None:
                 continue
 
-            # Track metrics
             self.curriculum_samples_by_difficulty[difficulty] += 1
             subset_or_split = example.get("__subset") or example.get("__split")
             self.logger.debug(
                 f"Yield example {example.get('__index', '')} (difficulty={difficulty}, progress={progress:.2f})"
                 + (f" from {subset_or_split} " if subset_or_split else " ")
-                + f"with {len(processed_example.get('input_ids', []))} tokens "
-                f"({sum(processed_example.get('loss_mask', []))} trainable tokens)"
+                + f"with {len(processed_example['input_ids'])} tokens "
+                f"({sum(processed_example['loss_mask'])} trainable tokens)"
             )
             self.num_samples[subset_or_split] += 1
-            self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
+            self.num_tokens[subset_or_split] += len(processed_example["input_ids"])
             yield processed_example
 
 
