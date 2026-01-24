@@ -33,7 +33,7 @@ max_tokens = 2048
 id = "gsm8k-multireward"
 name = "gsm8k"
 # gated_length_reward=false: length reward fires independently (for adaptive decay)
-args = { length_threshold_tokens = 160, gated_length_reward = false, math_verify_max_workers = 64, math_verify_timeout = 30 }
+args = { length_threshold_tokens = 384, gated_length_reward = false, math_verify_max_workers = 64, math_verify_timeout = 30 }
 # GDPO: per-reward normalization before aggregation
 reward_keys = ["correct_answer", "length_reward"]
 reward_weights = [1.0, 1.0]
