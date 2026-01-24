@@ -932,6 +932,15 @@ http = [
 ]
 
 [[package]]
+name = "gepa"
+version = "0.0.25"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/82/00ae873129c918fbf4fe5d87b7d1a0be35628854535e6c44d5679584a58d/gepa-0.0.25.tar.gz", hash = "sha256:83c52d1c640f68f049ffa533fc70d0d7216aa8ac99c418ba3441bdac7d037855", size = 136090, upload-time = "2026-01-20T20:43:50.155Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0b/4c/7aa71cac223d72f35e2e0e599de26cff3a648504c18a63e420f6ef164b90/gepa-0.0.25-py3-none-any.whl", hash = "sha256:295dbe8117afb556051da11a99c77c0b338add05dc394dcfba89a27f2c44b9c5", size = 137633, upload-time = "2026-01-20T20:43:48.318Z" },
+]
+
+[[package]]
 name = "gguf"
 version = "0.17.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2511,7 +2520,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.56.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=cb2e80f" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=7d96639" },
     { name = "vllm", specifier = "==0.12.0" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -2539,6 +2548,16 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/59/55/e6c855074af9ef027f3601396d4e5e0b464f26f724c074253dd0dd2f47b7/prime_sandboxes-0.2.9.tar.gz", hash = "sha256:af4ad06d205a95f4c54778ecac8492f3f382c850528072df79252e7fd0f3fa08", size = 45538, upload-time = "2026-01-07T20:24:15.352Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/88/ae/5d38212ff0cbad2c468e9b5cf1e3235af04d123b55c4adaa8812abdeabbb/prime_sandboxes-0.2.9-py3-none-any.whl", hash = "sha256:dab4dd9c1f4f633386593cfb08f7a3dacb2de4eb6e75f4a2ec7f5f1c6ea2207b", size = 18824, upload-time = "2026-01-07T20:24:14.133Z" },
+]
+
+[[package]]
+name = "prime-tunnel"
+version = "0.1.0"
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-tunnel&branch=feature%2Ftunnel#3ba86e0d4cd54c5ee67469d1b012582eb8c120b7" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "tenacity" },
 ]
 
 [[package]]
@@ -3862,9 +3881,10 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.10.dev0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=cb2e80f#cb2e80f9dca81e9ba8d0042628f5338959a1e51b" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=7d96639#7d9663963a0b80ba5d609b4174cd2060ccbea3af" }
 dependencies = [
     { name = "datasets" },
+    { name = "gepa" },
     { name = "jinja2" },
     { name = "math-verify" },
     { name = "mcp" },
@@ -3872,6 +3892,7 @@ dependencies = [
     { name = "openai" },
     { name = "openai-agents" },
     { name = "prime-sandboxes" },
+    { name = "prime-tunnel" },
     { name = "pydantic" },
     { name = "requests" },
     { name = "rich" },
