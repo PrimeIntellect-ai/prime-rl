@@ -46,6 +46,10 @@ class AdaptiveWeightManager:
 
         # Per-reward min_weights (default 0.1 for all if not specified)
         if config.min_weights is not None:
+            if len(config.min_weights) != len(reward_keys):
+                raise ValueError(
+                    f"min_weights length ({len(config.min_weights)}) must match reward_keys length ({len(reward_keys)})"
+                )
             self.min_weights = {k: mw for k, mw in zip(reward_keys, config.min_weights)}
         else:
             self.min_weights = {k: 0.1 for k in reward_keys}
