@@ -75,6 +75,7 @@ class PrimeMonitor(Monitor):
         if config is not None and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
+                self._pending_sample_steps: set[int] = set()
                 self.tokenizer = tokenizer
             if config.log_extras.distributions:
                 self.last_log_distributions_step = -1
@@ -109,6 +110,7 @@ class PrimeMonitor(Monitor):
             return
 
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
+        assert step not in self._pending_sample_steps, f"Step {step} upload already in progress"
         assert self.logger is not None, "Logger is required for sample logging"
 
         self.logger.info(f"Logging samples to Prime Intellect API at step {step}")
@@ -121,12 +123,13 @@ class PrimeMonitor(Monitor):
             self.logger.warning(f"No samples to log at step {step}")
             return
 
+        self._pending_sample_steps.add(step)
+
         # Use presigned URL flow for uploading samples
         self._upload_samples_via_presigned_url(samples, step)
 
-        self.last_log_samples_step = step
         self.logger.debug(
-            f"Logged samples at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
+            f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
     def _prepare_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> list[dict[str, Any]]:
@@ -199,6 +202,10 @@ class PrimeMonitor(Monitor):
                 self.logger.warning(f"Failed to get presigned URL for samples at step {step}")
                 return
 
+            if "presigned_url" not in presign_data or "s3_key" not in presign_data:
+                self.logger.warning(f"Invalid presign response at step {step}")
+                return
+
             presigned_url = presign_data["presigned_url"]
             s3_key = presign_data["s3_key"]
             json_bytes = json.dumps(samples).encode("utf-8")
@@ -210,10 +217,18 @@ class PrimeMonitor(Monitor):
                 self.logger.warning(f"Failed to upload samples to R2 at step {step}")
                 return
 
-            await self._confirm_samples_upload(step, s3_key, len(samples))
+            confirm_success = await self._confirm_samples_upload(step, s3_key, len(samples))
+            if not confirm_success:
+                self.logger.warning(f"Failed to confirm samples upload at step {step}")
+                return
+
+            self.last_log_samples_step = step
+            self.logger.debug(f"Successfully completed samples upload at step {step}")
 
         except Exception as e:
             self.logger.warning(f"Failed to upload samples via presigned URL at step {step}: {type(e).__name__}: {e}")
+        finally:
+            self._pending_sample_steps.discard(step)
 
     async def _request_presigned_url(self, step: int, sample_count: int) -> dict[str, Any] | None:
         """Request a presigned URL from the backend."""
@@ -246,20 +261,31 @@ class PrimeMonitor(Monitor):
                 delay = 2**attempt
                 self.logger.debug(f"Retrying R2 upload in {delay}s (attempt {attempt + 1}/{max_retries})")
                 await asyncio.sleep(delay)
-        return False
 
-    async def _confirm_samples_upload(self, step: int, s3_key: str, sample_count: int) -> None:
-        """Confirm samples upload with the backend."""
+    async def _confirm_samples_upload(
+        self, step: int, s3_key: str, sample_count: int, max_retries: int = 3
+    ) -> bool:
+        """Confirm samples upload with the backend. Returns True on success."""
         headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
-        try:
-            response = await self._client.post(
-                f"{self.base_url}/samples/confirm",
-                headers=headers,
-                json={"run_id": self.run_id, "step": step, "s3_key": s3_key, "sample_count": sample_count},
-            )
-            response.raise_for_status()
-        except Exception as e:
-            self.logger.warning(f"Failed to confirm samples upload: {type(e).__name__}: {e}")
+        for attempt in range(max_retries):
+            try:
+                response = await self._client.post(
+                    f"{self.base_url}/samples/confirm",
+                    headers=headers,
+                    json={"run_id": self.run_id, "step": step, "s3_key": s3_key, "sample_count": sample_count},
+                )
+                response.raise_for_status()
+                return True
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    self.logger.warning(
+                        f"Failed to confirm samples upload after {max_retries} attempts: {type(e).__name__}: {e}"
+                    )
+                    return False
+                delay = 2**attempt
+                self.logger.debug(f"Retrying samples confirm in {delay}s (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(delay)
+        return False
 
     def log_final_samples(self) -> None:
         """Log final samples (no-op - samples are logged per-step only)."""
