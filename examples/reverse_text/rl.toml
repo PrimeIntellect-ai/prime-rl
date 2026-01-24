@@ -21,4 +21,6 @@ id = "reverse-text"
 [trainer.optim]
 lr = 3e-6
 
+[ckpt] # Checkpoint at the end of training
+
 [inference]
