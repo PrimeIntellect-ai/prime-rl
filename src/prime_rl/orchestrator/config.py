@@ -581,7 +581,17 @@ class NCCLWeightBroadcastConfig(BaseModel):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
 
 
-WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+class NIXLWeightBroadcastConfig(BaseModel):
+    """Configures the NIXL weight broadcast for LoRA adapters via RDMA."""
+
+    type: Literal["nixl"] = "nixl"
+
+    timeout: Annotated[float, Field(description="Connection timeout in seconds for NIXL clients.")] = 30.0
+
+
+WeightBroadcastConfigType: TypeAlias = (
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig
+)
 
 
 class TeacherModelConfig(BaseConfig):

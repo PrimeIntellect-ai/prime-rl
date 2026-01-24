@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
 from httpx import AsyncClient
@@ -13,6 +13,9 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.config import WeightBroadcastConfigType as WeightBroadcastConfig
 
 
 @runtime_checkable
@@ -49,9 +52,17 @@ class InferencePool(Protocol):
 class StaticInferencePool:
     """Static inference pool with fixed client list."""
 
-    def __init__(self, clients: list[AsyncOpenAI], admin_clients: list[AsyncClient]):
+    def __init__(
+        self,
+        clients: list[AsyncOpenAI],
+        admin_clients: list[AsyncClient],
+        weight_broadcast_config: "WeightBroadcastConfig | None" = None,
+        lora_alpha: float | None = None,
+    ):
         self._clients = clients
         self._admin_clients = admin_clients
+        self._weight_broadcast_config = weight_broadcast_config
+        self._lora_alpha = lora_alpha
 
     @property
     def clients(self) -> list[AsyncOpenAI]:
@@ -66,7 +77,29 @@ class StaticInferencePool:
         await check_has_model(self._clients, model_name)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+        if self._weight_broadcast_config is not None and self._weight_broadcast_config.type == "nixl":
+            # Read NIXL info from trainer's broadcast directory
+            import json
+
+            nixl_info_path = weight_dir / "nixl_info.json"
+            with open(nixl_info_path) as f:
+                nixl_info = json.load(f)
+
+            # Compute trainer addresses from base_port and world_size
+            trainer_addresses = [
+                (nixl_info["host"], nixl_info["base_port"] + rank) for rank in range(nixl_info["world_size"])
+            ]
+
+            await load_lora_adapter_nixl(
+                self._admin_clients,
+                lora_name,
+                nixl_info["run_idx"],
+                trainer_addresses,
+                self._lora_alpha,
+                self._weight_broadcast_config.timeout,
+            )
+        else:
+            await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
 
     def get_metrics(self) -> dict[str, float]:
         return {}
@@ -75,14 +108,24 @@ class StaticInferencePool:
         pass
 
 
-async def setup_inference_pool(client_config: ClientConfig, base_model: str | None = None) -> InferencePool:
+async def setup_inference_pool(
+    client_config: ClientConfig,
+    base_model: str | None = None,
+    weight_broadcast_config: "WeightBroadcastConfig | None" = None,
+    lora_alpha: float | None = None,
+) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
 
     if client_config.is_elastic:
         from prime_rl.utils.elastic import ElasticInferencePool
 
-        return await ElasticInferencePool.from_config(client_config, base_model=base_model)
+        return await ElasticInferencePool.from_config(
+            client_config,
+            base_model=base_model,
+            weight_broadcast_config=weight_broadcast_config,
+            lora_alpha=lora_alpha,
+        )
 
     logger.info(
         f"Initializing OpenAI client (base_url={', '.join(client_config.base_url)}, "
@@ -91,6 +134,8 @@ async def setup_inference_pool(client_config: ClientConfig, base_model: str | No
     return StaticInferencePool(
         clients=setup_clients(client_config),
         admin_clients=setup_admin_clients(client_config),
+        weight_broadcast_config=weight_broadcast_config,
+        lora_alpha=lora_alpha,
     )
 
 
@@ -322,3 +367,48 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )
+
+
+async def load_lora_adapter_nixl(
+    admin_clients: list[AsyncClient],
+    lora_name: str,
+    run_idx: int,
+    trainer_addresses: list[tuple[str, int]],
+    lora_alpha: float,
+    timeout: float = 30.0,
+) -> None:
+    """Load LoRA adapter via NIXL on inference servers.
+
+    Creates fresh NIXL client connections, fetches weights, and disconnects.
+
+    Args:
+        admin_clients: List of admin HTTP clients for inference servers
+        lora_name: Name to register the LoRA adapter under
+        run_idx: Run index in the MultiRunManager
+        trainer_addresses: List of (ip, port) tuples, one per trainer rank
+        lora_alpha: LoRA alpha scaling parameter
+        timeout: Connection timeout in seconds
+    """
+    logger = get_logger()
+
+    async def _load_lora_adapter_nixl(admin_client: AsyncClient) -> None:
+        logger.debug(f"Loading LoRA adapter '{lora_name}' via NIXL (run_idx={run_idx})")
+        try:
+            response = await admin_client.post(
+                "/load_lora_adapter_nixl",
+                json={
+                    "lora_name": lora_name,
+                    "run_idx": run_idx,
+                    "trainer_addresses": [list(addr) for addr in trainer_addresses],
+                    "lora_alpha": lora_alpha,
+                    "timeout": timeout,
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning("The route /load_lora_adapter_nixl does not exist.")
+                return
+            raise
+
+    await asyncio.gather(*[_load_lora_adapter_nixl(admin_client) for admin_client in admin_clients])

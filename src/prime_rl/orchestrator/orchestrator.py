@@ -91,7 +91,12 @@ async def orchestrate(config: OrchestratorConfig):
         install_env(env_id)
 
     # Setup inference pool (handles both static and elastic modes)
-    inference_pool = await setup_inference_pool(config.client, base_model=config.model.name)
+    inference_pool = await setup_inference_pool(
+        config.client,
+        base_model=config.model.name,
+        weight_broadcast_config=config.weight_broadcast,
+        lora_alpha=config.model.lora.alpha if config.model.lora else None,
+    )
 
     clients = inference_pool.clients
     admin_clients = inference_pool.admin_clients

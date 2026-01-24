@@ -13,14 +13,17 @@ import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 from httpx import AsyncClient
 
-from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
+from prime_rl.utils.client import load_lora_adapter, load_lora_adapter_nixl, setup_admin_clients, setup_clients
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.config import WeightBroadcastConfigType as WeightBroadcastConfig
 
 # --- Shared discovery functions ---
 
@@ -134,12 +137,14 @@ class ServerDiscovery:
         self._urls = urls
         if urls:
             self.logger.debug(f"Discovered {len(urls)} ready server(s)")
-            self._clients = setup_clients(ClientConfig(
-                timeout=self.client_config.timeout,
-                base_url=urls,
-                api_key_var=self.client_config.api_key_var,
-                headers=self.client_config.headers,
-            ))
+            self._clients = setup_clients(
+                ClientConfig(
+                    timeout=self.client_config.timeout,
+                    base_url=urls,
+                    api_key_var=self.client_config.api_key_var,
+                    headers=self.client_config.headers,
+                )
+            )
         else:
             self.logger.debug("No ready inference servers found")
             self._clients = []
@@ -158,6 +163,7 @@ class ServerDiscovery:
 @dataclass
 class AdapterState:
     """State of a LoRA adapter (loaded or desired)."""
+
     name: str | None = None
     path: Path | None = None
     step: int = 0
@@ -169,6 +175,7 @@ ServerStatus = Literal["discovering", "syncing", "ready", "unhealthy"]
 @dataclass
 class ServerState:
     """State of an individual inference server."""
+
     ip: str
     url: str
     status: ServerStatus = "discovering"
@@ -189,6 +196,8 @@ class ElasticInferencePool:
         base_model: str | None = None,
         port: int = 8000,
         sync_interval: float = 5.0,
+        weight_broadcast_config: "WeightBroadcastConfig | None" = None,
+        lora_alpha: float | None = None,
     ):
         self.logger = get_logger()
         self.hostname = hostname
@@ -196,6 +205,8 @@ class ElasticInferencePool:
         self.base_model = base_model
         self.port = port
         self.sync_interval = sync_interval
+        self._weight_broadcast_config = weight_broadcast_config
+        self._lora_alpha = lora_alpha
 
         self._servers: dict[str, ServerState] = {}
         self._admin_clients: dict[str, AsyncClient] = {}
@@ -209,13 +220,21 @@ class ElasticInferencePool:
         self._started = False
 
     @classmethod
-    async def from_config(cls, config: ClientConfig, base_model: str | None = None) -> ElasticInferencePool:
+    async def from_config(
+        cls,
+        config: ClientConfig,
+        base_model: str | None = None,
+        weight_broadcast_config: "WeightBroadcastConfig | None" = None,
+        lora_alpha: float | None = None,
+    ) -> ElasticInferencePool:
         pool = cls(
             hostname=config.elastic.hostname,
             client_config=config,
             base_model=base_model,
             port=config.elastic.port,
             sync_interval=config.elastic.sync_interval,
+            weight_broadcast_config=weight_broadcast_config,
+            lora_alpha=lora_alpha,
         )
         await pool.start()
         return pool
@@ -235,12 +254,18 @@ class ElasticInferencePool:
         urls = self.ready_urls
         if set(urls) != set(self._client_urls):
             self._client_urls = urls
-            self._clients = setup_clients(ClientConfig(
-                timeout=self.client_config.timeout,
-                base_url=urls,
-                api_key_var=self.client_config.api_key_var,
-                headers=self.client_config.headers,
-            )) if urls else []
+            self._clients = (
+                setup_clients(
+                    ClientConfig(
+                        timeout=self.client_config.timeout,
+                        base_url=urls,
+                        api_key_var=self.client_config.api_key_var,
+                        headers=self.client_config.headers,
+                    )
+                )
+                if urls
+                else []
+            )
         return self._clients
 
     @property
@@ -414,9 +439,9 @@ class ElasticInferencePool:
 
     async def sync(self) -> tuple[int, int]:
         async with self._lock:
-            discovered_ips = set(await asyncio.get_event_loop().run_in_executor(
-                None, discover_server_ips, self.hostname
-            ))
+            discovered_ips = set(
+                await asyncio.get_event_loop().run_in_executor(None, discover_server_ips, self.hostname)
+            )
             known_ips = set(self._servers.keys())
 
             added = 0
@@ -508,7 +533,33 @@ class ElasticInferencePool:
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         if lora_name is None:
             raise ValueError("Elastic inference pool requires LoRA training (lora_name must be set)")
-        await self.sync_weights(weight_dir, lora_name, step)
+
+        if self._weight_broadcast_config is not None and self._weight_broadcast_config.type == "nixl":
+            # Read NIXL info from trainer's broadcast directory
+            import json
+
+            nixl_info_path = weight_dir / "nixl_info.json"
+            with open(nixl_info_path) as f:
+                nixl_info = json.load(f)
+
+            # Compute trainer addresses from base_port and world_size
+            trainer_addresses = [
+                (nixl_info["host"], nixl_info["base_port"] + rank) for rank in range(nixl_info["world_size"])
+            ]
+
+            await load_lora_adapter_nixl(
+                self.admin_clients,
+                lora_name,
+                nixl_info["run_idx"],
+                trainer_addresses,
+                self._lora_alpha,
+                self._weight_broadcast_config.timeout,
+            )
+
+            # Update desired state so elastic sync knows what adapter should be loaded
+            self._desired = AdapterState(name=lora_name, path=weight_dir, step=step)
+        else:
+            await self.sync_weights(weight_dir, lora_name, step)
 
     def get_metrics(self) -> dict[str, float]:
         return {
