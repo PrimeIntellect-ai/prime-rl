@@ -19,10 +19,10 @@ monkey_patch_chat_completion_logprobs()
 
 # Import environment before any other imports
 import pandas as pd
-import verifiers as vf
 from loguru import logger
 from transformers import AutoTokenizer
 
+import verifiers as vf
 from prime_rl.eval.utils import run_evals_subprocess
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
@@ -232,9 +232,12 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
 
-        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
-        lora_name = config.model.lora.name if config.model.lora else None
-        await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+        # Only load weights from filesystem if using filesystem broadcast
+        # For NCCL, trainer will broadcast weights on first step
+        if config.weight_broadcast.type == "filesystem":
+            weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
+            lora_name = config.model.lora.name if config.model.lora else None
+            await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
         if config.reload_weights_on_start:
             if config.model.lora is None:
