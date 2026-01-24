@@ -336,6 +336,11 @@ class RLConfig(BaseSettings):
     def auto_setup_model(self):
         # Use the same model for trainer, orchestrator and inference
         if self.model is not None:
+            # Update tokenizer name if it was auto-configured from the old model name
+            # This must happen before updating trainer.model.name
+            if self.trainer.tokenizer.name == self.trainer.model.name:
+                self.trainer.tokenizer.name = self.model.name
+
             self.trainer.model.name = self.model.name
             self.orchestrator.model.name = self.model.name
             if self.inference is not None:
