@@ -196,7 +196,9 @@ class Scheduler:
                 wait_for_ckpt_start_time = time.perf_counter()
                 await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
-                self.logger.info(f"Orchestrator resumed: checkpoint {next_ckpt_step} ready (after {self.wait_for_ckpt_time:.2f}s)")
+                self.logger.info(
+                    f"Orchestrator resumed: checkpoint {next_ckpt_step} ready (after {self.wait_for_ckpt_time:.2f}s)"
+                )
 
             self.logger.debug(
                 f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."

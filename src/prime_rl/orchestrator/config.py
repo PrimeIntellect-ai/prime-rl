@@ -650,9 +650,7 @@ class OrchestratorConfig(BaseSettings):
     # Whether to reset inference weights to base model when starting from scratch
     reload_weights_on_start: Annotated[
         bool,
-        Field(
-            description="Whether to reset inference weights to the base model when starting from scratch."
-        ),
+        Field(description="Whether to reset inference weights to the base model when starting from scratch."),
     ] = True
 
     # The validation configuration
