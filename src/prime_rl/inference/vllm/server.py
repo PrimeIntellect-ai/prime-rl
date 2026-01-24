@@ -83,23 +83,18 @@ async def reload_weights(request: Request):
 
 
 @router.post("/load_lora_adapter")
-async def load_lora_adapter(request: Request):
+async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
     """Load a LoRA adapter and reset the prefix cache.
 
     Wrapper around vLLM's /v1/load_lora_adapter that also resets the prefix cache
     to invalidate KV states computed with old weights.
     """
-    data = await request.json()
-    lora_request = LoadLoRAAdapterRequest(
-        lora_name=data.get("lora_name"),
-        lora_path=data.get("lora_path"),
-    )
-    handler = models(request)
+    handler = models(raw_request)
     response = await handler.load_lora_adapter(lora_request)
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     # Reset prefix cache to invalidate KV states computed with old weights
-    await engine_client(request).reset_prefix_cache()
+    await engine_client(raw_request).reset_prefix_cache()
     return {"status": "ok"}
 
 
