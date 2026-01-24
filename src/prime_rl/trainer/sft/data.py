@@ -429,9 +429,7 @@ class CurriculumSFTDataset(StatefulIterableDataset):
         self.num_examples = total_examples
         for level in self.difficulty_levels:
             count = len(self.examples_by_difficulty[level])
-            self.logger.info(
-                f"Difficulty level '{level}': {count} examples ({count / total_examples * 100:.1f}%)"
-            )
+            self.logger.info(f"Difficulty level '{level}': {count} examples ({count / total_examples * 100:.1f}%)")
 
         # Track curriculum metrics
         self.curriculum_samples_by_difficulty = {level: 0 for level in self.difficulty_levels}
@@ -532,16 +530,13 @@ class CurriculumSFTDataset(StatefulIterableDataset):
 
         # Normalize probabilities to account for empty difficulty levels
         available_probs = {
-            level: prob
-            for level, prob in probs.items()
-            if len(self.examples_by_difficulty.get(level, [])) > 0
+            level: prob for level, prob in probs.items() if len(self.examples_by_difficulty.get(level, [])) > 0
         }
 
         if not available_probs:
             # Fallback: distribute evenly among all non-empty levels
             non_empty_levels = [
-                level for level in self.difficulty_levels
-                if len(self.examples_by_difficulty.get(level, [])) > 0
+                level for level in self.difficulty_levels if len(self.examples_by_difficulty.get(level, [])) > 0
             ]
             if non_empty_levels:
                 prob = 1.0 / len(non_empty_levels)

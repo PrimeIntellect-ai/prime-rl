@@ -88,7 +88,7 @@ class CurriculumConfig(BaseConfig):
             ge=0.0,
             le=1.0,
             description="Fraction of training to spend on the easiest difficulty only. "
-            "After this, harder difficulties start being introduced."
+            "After this, harder difficulties start being introduced.",
         ),
     ] = 0.1
 
@@ -98,7 +98,7 @@ class CurriculumConfig(BaseConfig):
             ge=0.0,
             le=1.0,
             description="Fraction of training at which all difficulty levels are fully available. "
-            "Must be greater than warmup_fraction."
+            "Must be greater than warmup_fraction.",
         ),
     ] = 0.5
 
@@ -108,7 +108,7 @@ class CurriculumConfig(BaseConfig):
             ge=0.0,
             le=1.0,
             description="Minimum sampling probability for the easiest difficulty level. "
-            "Ensures easy examples are still sampled even at full difficulty."
+            "Ensures easy examples are still sampled even at full difficulty.",
         ),
     ] = 0.1
 
@@ -172,9 +172,7 @@ class SFTDataConfig(BaseDataConfig):
                     "full_difficulty_fraction must be greater than warmup_fraction for curriculum learning"
                 )
             if len(self.curriculum.difficulty_levels) < 2:
-                raise ValueError(
-                    "At least 2 difficulty levels are required for curriculum learning"
-                )
+                raise ValueError("At least 2 difficulty levels are required for curriculum learning")
         return self
 
 
