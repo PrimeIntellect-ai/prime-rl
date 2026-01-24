@@ -47,7 +47,7 @@ class AdaptiveWeightManager:
                 self.current_weights[key] = self.base_weights[key]
                 continue
 
-            normalized = min(1.0, self.ema_values[key] / self.config.saturation_threshold)
+            normalized = max(0.0, min(1.0, self.ema_values[key] / self.config.saturation_threshold))
             decay_factor = max(0.0, 1.0 - normalized**self.config.decay_exponent)
 
             base_weight = self.base_weights[key]
