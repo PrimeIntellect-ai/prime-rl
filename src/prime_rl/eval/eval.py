@@ -4,8 +4,8 @@ from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.utils.client import (
-    check_has_model,
     check_health,
+    maybe_check_has_model,
     reload_weights,
     setup_admin_clients,
     setup_clients,
@@ -54,7 +54,7 @@ async def eval(config: OfflineEvalConfig):
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(admin_clients)
-    await check_has_model(clients, config.model.name)
+    await maybe_check_has_model(clients, config.model.name, skip_model_check=config.client.skip_model_check)
     logger.success(f"Inference pool is healthy and serves {config.model.name}")
 
     # Reset weights to base model to allow reusing inference server across runs
@@ -68,7 +68,7 @@ async def eval(config: OfflineEvalConfig):
         await run_evals(
             clients=clients,
             eval_config=config,
-            model_config=config.model,
+            model_name=config.model.name,
             sampling_config=config.sampling,
             evals_client=evals_client,
             reasoning_field=config.reasoning_field,
@@ -109,7 +109,7 @@ async def eval(config: OfflineEvalConfig):
                 await run_evals(
                     clients=clients,
                     eval_config=config,
-                    model_config=config.model,
+                    model_name=config.model.name,
                     sampling_config=config.sampling,
                     evals_client=evals_client,
                     reasoning_field=config.reasoning_field,

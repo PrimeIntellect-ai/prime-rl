@@ -61,6 +61,18 @@ def validate_shared_wandb_config(
     trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
+    if trainer.wandb and not orchestrator.wandb:
+        raise ValueError(
+            "Trainer W&B config is specified, but orchestrator W&B config is not. "
+            "This means only trainer metrics will be logged. Please specify [orchestrator.wandb] to log orchestrator metrics as well, "
+            "or use [wandb] to configure both at once."
+        )
+    if orchestrator.wandb and not trainer.wandb:
+        raise ValueError(
+            "Orchestrator W&B config is specified, but trainer W&B config is not. "
+            "This means only orchestrator metrics will be logged. Please specify [trainer.wandb] to log trainer metrics as well, "
+            "or use [wandb] to configure both at once."
+        )
     if trainer.wandb and orchestrator.wandb:
         if trainer.wandb.project != orchestrator.wandb.project:
             raise ValueError(

@@ -43,7 +43,9 @@ from vllm.entrypoints.openai.api_server import (
     engine_client,
     base,
     init_app_state,
+    models,
 )
+from vllm.entrypoints.openai.protocol import LoadLoRAAdapterRequest
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
@@ -67,12 +69,32 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
 async def update_weights(request: Request):
     data = await request.json()
     await engine_client(request).collective_rpc("update_weights", args=(data.get("weight_dir"),))
+    # Reset prefix cache to invalidate KV states computed with old weights
+    await engine_client(request).reset_prefix_cache()
     return {"status": "ok"}
 
 
 @router.post("/reload_weights")
 async def reload_weights(request: Request):
     await engine_client(request).collective_rpc("reload_weights")
+    # Reset prefix cache to invalidate KV states computed with old weights
+    await engine_client(request).reset_prefix_cache()
+    return {"status": "ok"}
+
+
+@router.post("/load_lora_adapter")
+async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
+    """Load a LoRA adapter and reset the prefix cache.
+
+    Wrapper around vLLM's /v1/load_lora_adapter that also resets the prefix cache
+    to invalidate KV states computed with old weights.
+    """
+    handler = models(raw_request)
+    response = await handler.load_lora_adapter(lora_request)
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    # Reset prefix cache to invalidate KV states computed with old weights
+    await engine_client(raw_request).reset_prefix_cache()
     return {"status": "ok"}
 
 

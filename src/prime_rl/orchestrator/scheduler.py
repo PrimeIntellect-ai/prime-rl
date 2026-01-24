@@ -4,19 +4,20 @@ Scheduler that runs environments in subprocesses.
 Isolates event loop lag from environment execution.
 """
 
+from __future__ import annotations
+
 import asyncio
 import time
 from pathlib import Path
 from typing import NamedTuple
 
-from httpx import AsyncClient
 from tqdm import tqdm
 
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import EnvConfig, OrchestratorConfig
 from prime_rl.orchestrator.env_worker import EnvWorker, WorkerDiedError
 from prime_rl.orchestrator.utils import get_sampling_args
-from prime_rl.utils.client import update_weights
+from prime_rl.utils.client import InferencePool
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_env_worker_log_file
@@ -49,7 +50,6 @@ class Scheduler:
 
     def __init__(
         self,
-        admin_clients: list[AsyncClient],
         client_config: ClientConfig,
         env_configs: list[EnvConfig],
         buffer: Buffer,
@@ -58,11 +58,11 @@ class Scheduler:
         max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
+        inference_pool: InferencePool,
         lora_name: str | None = None,
         output_dir: Path | None = None,
     ):
         self.logger = get_logger()
-        self.admin_clients = admin_clients
         self.client_config = client_config
         self.buffer = buffer
         self.config = config
@@ -76,6 +76,9 @@ class Scheduler:
         self.lora_name = lora_name
         self.sampling_args = get_sampling_args(config.sampling)
         self.model_name = self.config.model.name
+
+        # Inference pool - used for admin operations (adapter sync) and metrics
+        self.inference_pool = inference_pool
 
         # Build example lookup dicts per env (example_id -> example)
         self.example_lookups: dict[str, dict[int, dict]] = {}
@@ -99,6 +102,7 @@ class Scheduler:
                 env_log_file.parent.mkdir(parents=True, exist_ok=True)
 
             for worker_idx in range(self.workers_per_env):
+                # Start with base model name - workers will be updated after LoRA is loaded
                 worker = EnvWorker(
                     env_id=env_config.id,
                     env_args=env_config.args,
@@ -196,7 +200,9 @@ class Scheduler:
                 wait_for_ckpt_start_time = time.perf_counter()
                 await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
-                self.logger.debug(f"Waited for checkpoint {next_ckpt_step} for {self.wait_for_ckpt_time:.2f}s")
+                self.logger.info(
+                    f"Orchestrator resumed: checkpoint {next_ckpt_step} ready (after {self.wait_for_ckpt_time:.2f}s)"
+                )
 
             self.logger.debug(
                 f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
@@ -204,21 +210,17 @@ class Scheduler:
 
             # Update weights on inference servers
             update_weights_start_time = time.perf_counter()
-            await update_weights(
-                self.admin_clients,
-                get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step),
-                lora_name=self.lora_name,
-            )
+            weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
+            await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
             if self.lora_name is not None:
                 self.model_name = self.lora_name
-
-            # Update model name on all workers
-            for workers in self.workers.values():
-                for worker in workers:
-                    worker.update_model_name(self.model_name)
+                # Update workers to use LoRA name for future requests
+                for workers in self.workers.values():
+                    for worker in workers:
+                        worker.update_model_name(self.lora_name)
 
             self.checkpoint_ready.set()
 
@@ -366,5 +368,8 @@ class Scheduler:
                     for metric_name, value in worker.latest_lag_metrics.items():
                         # e.g. "worker_lag/env_0/max"
                         metrics[f"worker_lag/{worker_key}/{metric_name.split('/')[-1]}"] = value
+
+        # Add inference pool metrics (e.g. elastic pool server counts)
+        metrics.update(self.inference_pool.get_metrics())
 
         return metrics

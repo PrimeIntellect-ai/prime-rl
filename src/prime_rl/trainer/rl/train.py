@@ -70,8 +70,6 @@ def train(config: RLTrainerConfig):
         config.log.level,
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
     )
-    logger.info(f"Starting RL trainer in {world}")
-
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Print warning if running in benchmark mode
@@ -542,14 +540,13 @@ def train(config: RLTrainerConfig):
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
 
-    # Write final checkpoint
-    if ckpt_manager is not None:
+    # Write final checkpoint (only for single-run mode; multi-run checkpoints are managed by MultiCheckpointManager)
+    if config.max_concurrent_runs == 1 and ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
 
-    # Write final checkpoint
-    if weight_ckpt_manager is not None:
+    if config.max_concurrent_runs == 1 and weight_ckpt_manager is not None:
         logger.info("Writing final weight checkpoint")
         weight_ckpt_manager.save(progress.step, model, tokenizer)
         weight_ckpt_manager.maybe_clean()

@@ -19,6 +19,7 @@ The `MultiRunManager` object provides:
 - **Distributed synchronization** across ranks via the PyTorch distributed store
 - **LoRA module registration** for multi-adapter parameter management
 - **Creation hooks** for initializing per-run resources (optimizers, schedulers)
+- **Run eviction** for removing runs that are misbehaving
 
 ## **Initialization and run discovery**
 
@@ -39,8 +40,10 @@ Each run's directory follows this structure:
 ```
 {output_dir}/
 ├── run_abc123/
-│   ├── configs/
-│   │   └── orch.toml          # Orchestrator configuration
+│   ├── control/
+│   │   ├── orch.toml                    # Orchestrator configuration
+│   │   ├── config_validation_error.txt  # Config validation errors (if any)
+│   │   └── evicted.txt                  # Eviction reason (if evicted)
 │   ├── checkpoints/
 │   │   └── step_100/          # Orchestrator checkpoints
 │   ├── rollouts/
@@ -53,7 +56,7 @@ Each run's directory follows this structure:
 
 ```
 
-Runs are discovered by scanning the output directory for the pattern `run_*`. Each run must contain a valid orchestrator config at `{run_dir}/configs/orch.toml` before they are added to the active runs otherwise they are ignored. When the maximum number of runs is reached, new `run_*` directories will not be picked up until old ones are deleted.
+Runs are discovered by scanning the output directory for the pattern `run_*`. Each run must contain a valid orchestrator config at `{run_dir}/control/orch.toml` before they are added to the active runs otherwise they are ignored. When the maximum number of runs is reached, new `run_*` directories will not be picked up until old ones are deleted.
 
 ```python
 # Master rank scans for new/deleted runs
@@ -66,11 +69,12 @@ multi_run_manager.synchronize_state()
 The `discover_runs()` method (master only):
 
 1. Scans the output directory for `run_*` directories
-2. Detects new runs and deleted runs
-3. Calls `forgotten_hook` for deleted runs (master only)
-4. Loads and validates the orchestrator config for each new run
-5. Updates internal mappings and data structures
-6. Calls `discovered_hook` for new runs (master only)
+2. Filters out evicted runs (those with `control/evicted.txt`)
+3. Detects new runs and deleted runs
+4. Calls `forgotten_hook` for deleted runs (master only)
+5. Loads and validates the orchestrator config for each new run
+6. Updates internal mappings and data structures
+7. Calls `discovered_hook` for new runs (master only)
 
 The `synchronize_state()` method (all ranks):
 
@@ -78,6 +82,34 @@ The `synchronize_state()` method (all ranks):
 2. Non-master ranks catch up by calling internal `_delete_run_data` / `_create_run_data`
 3. All ranks execute `deletion_hook` for deleted runs
 4. All ranks execute `creation_hook` for new runs (e.g., optimizer setup, LoRA parameter reset)
+
+## Run Eviction
+
+The master proc on the trainer can evict a run using the `evict_run(idx: int, reason: str)` method.
+This is useful when the trainer detects an issue with a run that requires it to be stopped (e.g., invalid data, resource constraints, or policy violations).
+
+```python
+# Evict a run by its index (master only)
+multi_run_manager.evict_run(idx=0, reason="Run exceeded memory limits")
+```
+
+The `evict_run()` method (master only):
+
+1. Writes the eviction reason to `{run_dir}/control/evicted.txt`
+2. Logs a warning with the eviction details
+3. The run is **not** immediately removed from the manager's data structures
+
+The eviction takes effect through two mechanisms:
+
+**On the trainer side:**
+- The next `discover_runs()` call will filter out the evicted run (it checks for `evicted.txt`)
+- The run will then be treated as deleted, triggering forgotten/deletion hooks
+- The run index is returned to the unused pool
+
+**On the orchestrator side:**
+- The orchestrator checks for `evicted.txt` at the start of each iteration in its main loop
+- If found, it raises a `RuntimeError` with the eviction reason, causing the orchestrator to exit
+- This surfaces the eviction reason to the user
 
 ## LoRA Module Registration
 
@@ -182,7 +214,7 @@ def discovered_callback(idx: int, run_id: str, config: OrchestratorConfig) -> No
 
 def forgotten_callback(idx: int, run_id: str) -> None:
     """Called when a run is forgotten/removed (master only).
-    
+
     Args:
         idx: The run's index (0 to max_runs-1)
         run_id: The run's ID (e.g., "run_abc123")
