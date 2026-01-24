@@ -1,0 +1,46 @@
+# GSM8K GRPO Raw Multireward
+#
+# GRPO with ungated length reward, no adaptive weight decay
+# Pure baseline for comparison
+
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
+
+max_steps = 500
+seq_len = 2048
+
+[model]
+name = "meta-llama/Llama-3.2-1B-Instruct"
+
+[wandb]
+project = "gsm8k-multireward"
+name = "grpo-raw"
+
+[ckpt]
+interval = 50
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 8
+
+[orchestrator.sampling]
+temperature = 0.7
+max_tokens = 2048
+
+[[orchestrator.env]]
+id = "gsm8k-multireward"
+name = "gsm8k"
+# gated_length_reward=false: length reward fires independently
+args = { length_threshold_tokens = 384, gated_length_reward = false, math_verify_max_workers = 64, math_verify_timeout = 30 }
+reward_keys = ["correct_answer", "length_reward"]
+reward_weights = [1.0, 1.0]
+
+[orchestrator.advantage]
+batch_normalize = true
+per_reward_normalize = false  # GRPO: aggregate rewards first, then normalize
+std_eps = 1e-8
+
+[trainer.model.ac]
+
+[inference.parallel]
+dp = 6
