@@ -199,8 +199,8 @@ async def update_weights(
     to the trainer that inference workers are about to enter the receive path.
     This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
 
-    After updating weights, resets the prefix cache to invalidate any cached KV states
-    that were computed with the old weights.
+    Note: The server-side /update_weights endpoint automatically resets the prefix cache
+    to invalidate any cached KV states computed with the old weights.
     """
     logger = get_logger()
 
@@ -229,9 +229,6 @@ async def update_weights(
 
         await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
-    # Reset prefix cache after weight update to invalidate cached KV states
-    await reset_prefix_cache(admin_clients)
-
 
 async def reload_weights(admin_clients: list[AsyncClient]) -> None:
     """Make a HTTP post request to the vLLM server to reload weights (reset to base model)."""
@@ -251,28 +248,6 @@ async def reload_weights(admin_clients: list[AsyncClient]) -> None:
     await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
 
 
-async def reset_prefix_cache(admin_clients: list[AsyncClient]) -> None:
-    """Make a HTTP post request to the vLLM server to reset the prefix cache.
-
-    This should be called after weight updates to ensure that cached KV states
-    computed with old weights are invalidated.
-    """
-    logger = get_logger()
-
-    async def _reset_prefix_cache(admin_client: AsyncClient) -> None:
-        logger.debug("Sending request to reset prefix cache")
-        try:
-            response = await admin_client.post("/reset_prefix_cache", json={})
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /reset_prefix_cache does not exist. Skipping prefix cache reset.")
-                return
-            raise
-
-    await asyncio.gather(*[_reset_prefix_cache(admin_client) for admin_client in admin_clients])
-
-
 def _is_retryable_lora_error(exception: BaseException) -> bool:
     """Check if an exception should trigger a retry for LoRA loading."""
     if isinstance(exception, httpx.HTTPStatusError):
@@ -283,6 +258,9 @@ def _is_retryable_lora_error(exception: BaseException) -> bool:
 
 async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
+
+    Uses our wrapper endpoint that also resets the prefix cache to invalidate
+    KV states computed with old weights.
 
     Retries with exponential backoff if the adapter files are not found,
     which can happen due to NFS propagation delays.
@@ -299,7 +277,7 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
-            "/v1/load_lora_adapter",
+            "/load_lora_adapter",
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
         )
         response.raise_for_status()
