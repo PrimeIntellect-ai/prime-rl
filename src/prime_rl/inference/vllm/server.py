@@ -76,6 +76,12 @@ async def reload_weights(request: Request):
     return {"status": "ok"}
 
 
+@router.post("/reset_prefix_cache")
+async def reset_prefix_cache(request: Request):
+    await engine_client(request).reset_prefix_cache()
+    return {"status": "ok"}
+
+
 @router.post("/init_broadcaster")
 async def init_broadcaster(request: Request):
     data = await request.json()

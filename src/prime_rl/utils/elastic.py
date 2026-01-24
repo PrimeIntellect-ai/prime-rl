@@ -19,7 +19,7 @@ import httpx
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 
-from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
+from prime_rl.utils.client import load_lora_adapter, reset_prefix_cache, setup_admin_clients, setup_clients
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 
@@ -367,6 +367,8 @@ class ElasticInferencePool:
             try:
                 self.logger.debug(f"Loading adapter {self._desired.name} on {ip}")
                 await load_lora_adapter([self._admin_clients[ip]], self._desired.name, self._desired.path)
+                # Reset prefix cache after loading new adapter to invalidate cached KV states
+                await reset_prefix_cache([self._admin_clients[ip]])
             except Exception as e:
                 server.status = "unhealthy"
                 server.sync_failures += 1

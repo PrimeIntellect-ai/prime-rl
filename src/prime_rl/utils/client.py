@@ -198,6 +198,9 @@ async def update_weights(
     Creates a NCCL_READY marker file before calling the update endpoint to signal
     to the trainer that inference workers are about to enter the receive path.
     This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
+
+    After updating weights, resets the prefix cache to invalidate any cached KV states
+    that were computed with the old weights.
     """
     logger = get_logger()
 
@@ -226,6 +229,9 @@ async def update_weights(
 
         await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
+    # Reset prefix cache after weight update to invalidate cached KV states
+    await reset_prefix_cache(admin_clients)
+
 
 async def reload_weights(admin_clients: list[AsyncClient]) -> None:
     """Make a HTTP post request to the vLLM server to reload weights (reset to base model)."""
@@ -243,6 +249,28 @@ async def reload_weights(admin_clients: list[AsyncClient]) -> None:
             raise
 
     await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
+
+
+async def reset_prefix_cache(admin_clients: list[AsyncClient]) -> None:
+    """Make a HTTP post request to the vLLM server to reset the prefix cache.
+
+    This should be called after weight updates to ensure that cached KV states
+    computed with old weights are invalidated.
+    """
+    logger = get_logger()
+
+    async def _reset_prefix_cache(admin_client: AsyncClient) -> None:
+        logger.debug("Sending request to reset prefix cache")
+        try:
+            response = await admin_client.post("/reset_prefix_cache", json={})
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning("The route /reset_prefix_cache does not exist. Skipping prefix cache reset.")
+                return
+            raise
+
+    await asyncio.gather(*[_reset_prefix_cache(admin_client) for admin_client in admin_clients])
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
