@@ -38,14 +38,13 @@ args = { length_threshold_tokens = 384, gated_length_reward = false, math_verify
 reward_keys = ["correct_answer", "length_reward"]
 reward_weights = [1.0, 1.0]
 
-# Adaptive weight decay: only decay auxiliary rewards (length), keep primary (correct_answer) at full weight
+# Adaptive weight decay: both rewards can decay to 0.1 (matches current GDPO-ARW run)
 [orchestrator.env.adaptive_weights]
 enabled = true
-primary_reward = "correct_answer"
 ema_alpha = 0.1
 saturation_threshold = 0.95
 decay_exponent = 2.0
-min_weight = 0.1
+min_weights = [0.1, 0.1]  # both can decay
 recovery_rate = 0.01
 
 [orchestrator.advantage]

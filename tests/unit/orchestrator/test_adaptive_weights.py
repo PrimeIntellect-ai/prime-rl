@@ -42,8 +42,8 @@ def test_ema_updates_on_batch(manager):
     assert ema["length_reward"] == pytest.approx(0.05)
 
 
-def test_single_reward_never_decays():
-    """Single reward is always primary, so it never decays."""
+def test_single_reward_decays_without_min_weight_protection():
+    """Single reward decays if min_weight < 1.0."""
     config = AdaptiveWeightConfig(enabled=True, saturation_threshold=1.0, decay_exponent=1.0)
     mgr = AdaptiveWeightManager(config=config, reward_keys=["r"], base_weights=[1.0])
 
@@ -52,13 +52,27 @@ def test_single_reward_never_decays():
         mgr.update({"r": 1.0})
 
     weights = mgr.get_weights_dict()
-    # Single reward is primary, should NOT decay
+    # Default min_weight is 0.1, so it should decay
+    assert weights["r"] < 0.5
+
+
+def test_single_reward_no_decay_with_min_weight_one():
+    """Single reward doesn't decay if min_weight = 1.0."""
+    config = AdaptiveWeightConfig(enabled=True, min_weights=[1.0], saturation_threshold=1.0, decay_exponent=1.0)
+    mgr = AdaptiveWeightManager(config=config, reward_keys=["r"], base_weights=[1.0])
+
+    # Simulate high reward for multiple steps
+    for _ in range(50):
+        mgr.update({"r": 1.0})
+
+    weights = mgr.get_weights_dict()
+    # min_weight=1.0 means no decay
     assert weights["r"] == 1.0
 
 
-def test_auxiliary_weight_decays_as_ema_approaches_saturation():
-    """Auxiliary rewards decay when they approach saturation."""
-    config = AdaptiveWeightConfig(enabled=True, primary_reward="primary", saturation_threshold=1.0, decay_exponent=1.0)
+def test_per_reward_min_weights():
+    """Per-reward min_weights: first reward protected, second decays."""
+    config = AdaptiveWeightConfig(enabled=True, min_weights=[1.0, 0.1], saturation_threshold=1.0, decay_exponent=1.0)
     mgr = AdaptiveWeightManager(config=config, reward_keys=["primary", "auxiliary"], base_weights=[1.0, 1.0])
 
     # Simulate high reward for multiple steps
@@ -66,26 +80,25 @@ def test_auxiliary_weight_decays_as_ema_approaches_saturation():
         mgr.update({"primary": 1.0, "auxiliary": 1.0})
 
     weights = mgr.get_weights_dict()
-    # Primary should NOT decay
+    # Primary has min_weight=1.0, should NOT decay
     assert weights["primary"] == 1.0
-    # Auxiliary SHOULD decay significantly
+    # Auxiliary has min_weight=0.1, SHOULD decay significantly
     assert weights["auxiliary"] < 0.5
 
 
 def test_min_weight_floor_respected():
-    """Auxiliary rewards should not decay below min_weight * base_weight."""
-    config = AdaptiveWeightConfig(enabled=True, primary_reward="primary", min_weight=0.2, saturation_threshold=0.5)
-    mgr = AdaptiveWeightManager(config=config, reward_keys=["primary", "auxiliary"], base_weights=[1.0, 1.0])
+    """Rewards should not decay below min_weight * base_weight."""
+    config = AdaptiveWeightConfig(enabled=True, min_weights=[0.2, 0.2], saturation_threshold=0.5)
+    mgr = AdaptiveWeightManager(config=config, reward_keys=["a", "b"], base_weights=[1.0, 1.0])
 
-    # Push EMA past saturation for auxiliary
+    # Push EMA past saturation
     for _ in range(100):
-        mgr.update({"primary": 1.0, "auxiliary": 1.0})
+        mgr.update({"a": 1.0, "b": 1.0})
 
     weights = mgr.get_weights_dict()
-    # Primary should not decay
-    assert weights["primary"] == 1.0
-    # Auxiliary should not go below min_weight * base_weight
-    assert weights["auxiliary"] >= 0.2
+    # Both should not go below min_weight * base_weight = 0.2
+    assert weights["a"] >= 0.2
+    assert weights["b"] >= 0.2
 
 
 def test_checkpoint_save_and_restore(manager):

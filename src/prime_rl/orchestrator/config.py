@@ -303,22 +303,13 @@ class AdaptiveWeightConfig(BaseConfig):
     Dynamically decays reward weights as their running mean approaches saturation.
     Uses a ratchet mechanism with slow leak for stable training.
 
-    Only auxiliary rewards are decayed. The primary reward always keeps its full
-    weight to ensure gradient signal is never lost.
+    Per-reward min_weights control decay floor. Set to 1.0 to prevent decay for a reward.
     """
 
     enabled: Annotated[
         bool,
         Field(description="Whether to enable adaptive weight decay."),
     ] = False
-
-    primary_reward: Annotated[
-        str | None,
-        Field(
-            description="The primary reward key that should never be decayed (always keeps full weight). "
-            "If None, defaults to the first reward in reward_keys."
-        ),
-    ] = None
 
     ema_alpha: Annotated[
         float,
@@ -346,13 +337,13 @@ class AdaptiveWeightConfig(BaseConfig):
         ),
     ] = 2.0
 
-    min_weight: Annotated[
-        float,
+    min_weights: Annotated[
+        list[float] | None,
         Field(
-            ge=0,
-            description="Minimum weight floor to prevent complete decay of auxiliary rewards.",
+            description="Per-reward minimum weight floors matching reward_keys order. "
+            "Set to 1.0 to prevent decay for a reward. If None, defaults to 0.1 for all."
         ),
-    ] = 0.1
+    ] = None
 
     recovery_rate: Annotated[
         float,

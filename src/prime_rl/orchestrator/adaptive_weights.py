@@ -1,12 +1,10 @@
 """Adaptive reward weight decay based on running statistics.
 
 This module implements dynamic weight decay for multi-reward RL training.
-As an auxiliary reward signal approaches saturation, its weight is decayed
-to reduce its influence on the advantage calculation.
+As a reward signal approaches saturation, its weight is decayed to reduce
+its influence on the advantage calculation.
 
-The primary reward (e.g., correctness) is never decayed to ensure gradient
-signal is always present. Only auxiliary rewards (e.g., length) are subject
-to adaptive decay.
+Per-reward min_weights control the decay floor. Set to 1.0 to prevent decay.
 
 Uses a ratchet mechanism with slow leak to prevent oscillation while
 allowing gradual recovery if rewards drop.
@@ -18,12 +16,11 @@ from prime_rl.orchestrator.config import AdaptiveWeightConfig
 class AdaptiveWeightManager:
     """Manages adaptive decay of reward weights based on running statistics.
 
-    Only auxiliary rewards are decayed. The primary reward always keeps its
-    full weight to ensure gradient signal is never lost.
-
-    The decay mechanism for auxiliary rewards follows:
+    The decay mechanism follows:
         weight_t = base_weight * decay_factor
         decay_factor = max(0, 1 - (EMA_t / saturation_threshold) ^ decay_exponent)
+
+    Per-reward min_weights set the floor for each reward. Set to 1.0 to prevent decay.
 
     A ratchet with slow leak prevents oscillation:
     - Once weight decays, it doesn't immediately recover
@@ -47,11 +44,13 @@ class AdaptiveWeightManager:
         self.reward_keys = reward_keys
         self.base_weights = {k: w for k, w in zip(reward_keys, base_weights)}
 
-        # Determine primary reward (never decayed)
-        # If not specified, default to first reward key
-        self.primary_reward = config.primary_reward or (reward_keys[0] if reward_keys else None)
+        # Per-reward min_weights (default 0.1 for all if not specified)
+        if config.min_weights is not None:
+            self.min_weights = {k: mw for k, mw in zip(reward_keys, config.min_weights)}
+        else:
+            self.min_weights = {k: 0.1 for k in reward_keys}
 
-        # Per-reward tracking (only for auxiliary rewards, but we track EMA for all for logging)
+        # Per-reward tracking
         self.ema_values: dict[str, float] = {k: 0.0 for k in reward_keys}
         self.current_weights: dict[str, float] = {k: w for k, w in zip(reward_keys, base_weights)}
         self.ratchet_floor: dict[str, float] = {k: w for k, w in zip(reward_keys, base_weights)}
@@ -71,18 +70,20 @@ class AdaptiveWeightManager:
 
             batch_mean = batch_rewards[key]
 
-            # Update EMA (for all rewards, including primary, for logging purposes)
+            # Update EMA
             self.ema_values[key] = (
                 self.config.ema_alpha * batch_mean + (1 - self.config.ema_alpha) * self.ema_values[key]
             )
 
-            # Skip decay for primary reward - always keep full weight
-            if key == self.primary_reward:
-                # Primary reward keeps its base weight, no decay applied
+            # Get per-reward min_weight
+            min_weight = self.min_weights[key]
+
+            # Skip decay if min_weight >= 1.0 (no decay for this reward)
+            if min_weight >= 1.0:
                 self.current_weights[key] = self.base_weights[key]
                 continue
 
-            # For auxiliary rewards: compute decay factor
+            # Compute decay factor
             # normalized is how close we are to saturation (0 = no reward, 1 = saturated)
             normalized = min(1.0, self.ema_values[key] / self.config.saturation_threshold)
             # decay_factor goes from 1 (no decay) to 0 (full decay) as normalized approaches 1
@@ -91,7 +92,7 @@ class AdaptiveWeightManager:
             # Apply decay with minimum floor
             base_weight = self.base_weights[key]
             raw_weight = base_weight * decay_factor
-            raw_weight = max(raw_weight, self.config.min_weight * base_weight)
+            raw_weight = max(raw_weight, min_weight * base_weight)
 
             # Ratchet with slow leak
             if raw_weight < self.ratchet_floor[key]:
