@@ -1,3 +1,5 @@
+from loguru import logger
+
 from prime_rl.orchestrator.config import AdaptiveWeightConfig
 
 
@@ -78,7 +80,17 @@ class AdaptiveWeightManager:
         }
 
     def load_state(self, state: dict) -> None:
-        """Load state from checkpoint."""
+        """Load state from checkpoint, validating keys match current config."""
+        saved_keys = set(state.get("ema_values", {}).keys())
+        current_keys = set(self.reward_keys)
+
+        if saved_keys != current_keys:
+            logger.warning(
+                f"Checkpoint reward keys {saved_keys} don't match current config {current_keys}. "
+                "Reinitializing adaptive weight state."
+            )
+            return
+
         self.ema_values = state["ema_values"].copy()
         self.current_weights = state["current_weights"].copy()
         self.ratchet_floor = state["ratchet_floor"].copy()

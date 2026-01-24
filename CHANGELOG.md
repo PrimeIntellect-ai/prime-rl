@@ -45,3 +45,5 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`orchestrator.env.reward_weights`**: Added optional weights for each reward when using multi-reward mode. Defaults to equal weights (2026-01-14)
 - **`orchestrator.advantage.batch_normalize`**: Added flag (default `True`) to apply batch-wise normalization after summing per-reward advantages (2026-01-14)
 - **`orchestrator.advantage.std_eps`**: Added epsilon for numerical stability in standard deviation normalization (default: `1e-8`) (2026-01-14)
+- **`orchestrator.advantage.per_reward_normalize`**: Added flag to control GDPO vs GRPO normalization mode. When `True` (default), normalizes each reward independently before weighted sum (GDPO). When `False`, aggregates rewards first then normalizes (GRPO) (2026-01-24)
+- **`orchestrator.env.adaptive_weights`**: Added adaptive reward weight decay configuration. Dynamically decays reward weights as their running mean approaches saturation. Includes `enabled` (bool), `ema_alpha` (float), `saturation_threshold` (float), `decay_exponent` (float), `min_weights` (list[float]), and `recovery_rate` (float) subfields (2026-01-24)
