@@ -53,10 +53,10 @@ def test_rl_config_updates_tokenizer_name_when_not_explicit():
     config = RLConfig(
         trainer=trainer,
         orchestrator=orchestrator,
-        model={"name": "minpeter/Qwen3-0.6B-Reverse-Text-SFT"},
+        model={"name": "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"},
     )
-    assert config.trainer.model.name == "minpeter/Qwen3-0.6B-Reverse-Text-SFT"
-    assert config.trainer.tokenizer.name == "minpeter/Qwen3-0.6B-Reverse-Text-SFT"
+    assert config.trainer.model.name == "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+    assert config.trainer.tokenizer.name == "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 
 def test_rl_config_preserves_explicit_tokenizer_name():
@@ -65,7 +65,7 @@ def test_rl_config_preserves_explicit_tokenizer_name():
     config = RLConfig(
         trainer=trainer,
         orchestrator=orchestrator,
-        model={"name": "minpeter/Qwen3-0.6B-Reverse-Text-SFT"},
+        model={"name": "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"},
     )
-    assert config.trainer.model.name == "minpeter/Qwen3-0.6B-Reverse-Text-SFT"
+    assert config.trainer.model.name == "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
     assert config.trainer.tokenizer.name == "Qwen/Qwen3-0.6B"
