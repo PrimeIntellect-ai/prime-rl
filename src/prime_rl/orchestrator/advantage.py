@@ -37,11 +37,15 @@ def compute_advantages_multi_reward(
     reward_weights: list[float] | None = None,
 ) -> list[float]:
     """
-    Computes advantages from multiple reward signals with per-reward normalization.
+    Computes advantages from multiple reward signals.
 
-    Each reward is normalized independently within its problem group (mean and std),
-    then the normalized values are combined via weighted sum. Optionally applies
-    batch-wise normalization at the end.
+    Supports two modes controlled by advantage_config.per_reward_normalize:
+    - GDPO (True): Each reward is normalized independently within its problem group,
+      then combined via weighted sum.
+    - GRPO (False): Rewards are aggregated first via weighted sum, then normalized
+      within each problem group.
+
+    Optionally applies batch-wise normalization at the end.
 
     Args:
         metrics: List of metric dicts, one per sample. Each dict contains reward values
@@ -54,27 +58,30 @@ def compute_advantages_multi_reward(
     Returns:
         List of advantage values, one per sample
     """
+    weights = reward_weights if reward_weights is not None else [1.0] * len(reward_keys)
+
     if not advantage_config:
-        weights = reward_weights if reward_weights is not None else [1.0] * len(reward_keys)
         return [sum(m.get(k, 0.0) * w for k, w in zip(reward_keys, weights)) for m in metrics]
 
     num_rewards = len(reward_keys)
     reward_values = torch.tensor([[m.get(k, 0.0) for k in reward_keys] for m in metrics], dtype=torch.float32)
     reward_values = reward_values.view(-1, samples_per_problem, num_rewards)  # [P, S, R]
 
-    # Per-reward normalization within each problem group
-    mean_per_reward = reward_values.mean(dim=1, keepdim=True)  # [P, 1, R]
-    std_per_reward = reward_values.std(dim=1, keepdim=True, correction=0)  # [P, 1, R]
-
     eps = advantage_config.std_eps
-    normalized = (reward_values - mean_per_reward) / (std_per_reward + eps)  # [P, S, R]
+    weights_tensor = torch.tensor(weights, dtype=torch.float32)
 
-    # Weighted sum across rewards
-    if reward_weights is not None:
-        weights = torch.tensor(reward_weights, dtype=torch.float32)
-        advantages = (normalized * weights).sum(dim=-1)  # [P, S]
+    if advantage_config.per_reward_normalize:
+        # GDPO: Per-reward normalization within each problem group, then weighted sum
+        mean_per_reward = reward_values.mean(dim=1, keepdim=True)  # [P, 1, R]
+        std_per_reward = reward_values.std(dim=1, keepdim=True, correction=0)  # [P, 1, R]
+        normalized = (reward_values - mean_per_reward) / (std_per_reward + eps)  # [P, S, R]
+        advantages = (normalized * weights_tensor).sum(dim=-1)  # [P, S]
     else:
-        advantages = normalized.sum(dim=-1)  # [P, S]
+        # GRPO: Weighted sum first, then normalize the aggregate within each problem group
+        aggregated = (reward_values * weights_tensor).sum(dim=-1)  # [P, S]
+        mean_per_problem = aggregated.mean(dim=1, keepdim=True)  # [P, 1]
+        std_per_problem = aggregated.std(dim=1, keepdim=True, correction=0)  # [P, 1]
+        advantages = (aggregated - mean_per_problem) / (std_per_problem + eps)  # [P, S]
 
     # Batch-wise normalization
     if advantage_config.batch_normalize:

@@ -658,6 +658,15 @@ class AdvantageConfig(BaseConfig):
         Field(description="Whether to apply batch-wise normalization after summing per-reward advantages."),
     ] = True
 
+    per_reward_normalize: Annotated[
+        bool,
+        Field(
+            description="Whether to normalize each reward signal independently before aggregation (GDPO). "
+            "If False, rewards are aggregated first then normalized (GRPO). "
+            "Only applies when using reward_keys for multi-reward training."
+        ),
+    ] = True
+
     std_eps: Annotated[
         float,
         Field(description="Epsilon for numerical stability in standard deviation normalization."),

@@ -231,3 +231,70 @@ def test_multi_reward_samples_per_problem_one_no_nan():
     )
     assert len(result) == 3
     assert all(not (v != v) for v in result)  # NaN check
+
+
+# GDPO vs GRPO mode tests
+
+
+def test_grpo_mode_aggregates_then_normalizes(simple_metrics):
+    """GRPO mode (per_reward_normalize=False) should aggregate rewards first."""
+    config = AdvantageConfig(per_reward_normalize=False, batch_normalize=False)
+    result = compute_advantages_multi_reward(
+        simple_metrics,
+        ["correct_answer", "length_reward"],
+        3,
+        config,
+        reward_weights=[1.0, 1.0],
+    )
+    assert len(result) == 6
+    assert all(isinstance(v, float) for v in result)
+
+
+def test_gdpo_and_grpo_produce_different_results(simple_metrics):
+    """GDPO and GRPO modes should produce different advantage values."""
+    gdpo_config = AdvantageConfig(per_reward_normalize=True, batch_normalize=False)
+    grpo_config = AdvantageConfig(per_reward_normalize=False, batch_normalize=False)
+
+    gdpo_result = compute_advantages_multi_reward(
+        simple_metrics,
+        ["correct_answer", "length_reward"],
+        3,
+        gdpo_config,
+        reward_weights=[1.0, 1.0],
+    )
+
+    grpo_result = compute_advantages_multi_reward(
+        simple_metrics,
+        ["correct_answer", "length_reward"],
+        3,
+        grpo_config,
+        reward_weights=[1.0, 1.0],
+    )
+
+    # Results should differ because normalization order matters
+    assert gdpo_result != grpo_result
+
+
+def test_grpo_mode_batch_normalized_sum_is_zero(simple_metrics):
+    """GRPO mode with batch normalization should sum to zero."""
+    config = AdvantageConfig(per_reward_normalize=False, batch_normalize=True)
+    result = compute_advantages_multi_reward(
+        simple_metrics,
+        ["correct_answer", "length_reward"],
+        3,
+        config,
+    )
+    assert abs(sum(result)) < 1e-5
+
+
+def test_grpo_mode_handles_uniform_rewards(uniform_metrics):
+    """GRPO mode should handle uniform rewards without crashing."""
+    config = AdvantageConfig(per_reward_normalize=False)
+    result = compute_advantages_multi_reward(
+        uniform_metrics,
+        ["correct_answer", "length_reward"],
+        3,
+        config,
+    )
+    assert len(result) == 3
+    assert all(abs(v) < 1e-5 for v in result)
