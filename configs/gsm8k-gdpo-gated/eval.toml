@@ -1,0 +1,33 @@
+# GSM8K Test Set Evaluation
+#
+# Evaluates trained model on GSM8K test split (1319 examples)
+
+# Point to weights from training run
+weights_dir = "outputs/weights"
+
+# Evaluate final checkpoint only (set to null to eval all checkpoints)
+steps = [500]
+
+# Don't eval base model (we just want the trained model)
+eval_base = false
+
+[model]
+name = "meta-llama/Llama-3.2-1B-Instruct"
+
+[client]
+base_url = ["http://localhost:8000/v1"]
+timeout = 3600
+
+[sampling]
+temperature = 0.0  # Greedy for eval
+max_tokens = 2048
+
+[wandb]
+project = "gsm8k-multireward"
+name = "gdpo-gated-eval"
+
+[[env]]
+id = "primeintellect/math-env"
+name = "gsm8k-test"
+args = { dataset_name = "openai/gsm8k", dataset_subset = "main", dataset_split = "test", math_verify_max_workers = 64, math_verify_timeout = 30 }
+rollouts_per_example = 1

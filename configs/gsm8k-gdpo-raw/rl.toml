@@ -1,9 +1,9 @@
-# GSM8K GDPO + ARW Experiment
+# GSM8K GDPO Raw Multireward
 #
-# GDPO with multi-reward (per-reward normalized advantages) + adaptive weight decay
-# Ungated length reward (fires independently) for adaptive decay to work
+# GDPO with ungated length reward, no adaptive weight decay
+# Pure baseline for comparison
 #
-# Compare with gsm8k-grpo-arw to see GDPO+ARW vs GRPO+ARW difference
+# Compare with gsm8k-gdpo (ARW) and gsm8k-grpo-raw
 
 inference_gpu_ids = [0,1,2,3,4,5]
 trainer_gpu_ids = [6,7]
@@ -16,7 +16,7 @@ name = "meta-llama/Llama-3.2-1B-Instruct"
 
 [wandb]
 project = "gsm8k-multireward"
-name = "gdpo-arw"
+name = "gdpo-raw"
 
 [ckpt]
 interval = 50
@@ -32,20 +32,10 @@ max_tokens = 2048
 [[orchestrator.env]]
 id = "gsm8k-multireward"
 name = "gsm8k"
-# gated_length_reward=false: length reward fires independently (for adaptive decay)
+# gated_length_reward=false: length reward fires independently
 args = { length_threshold_tokens = 384, gated_length_reward = false, math_verify_max_workers = 64, math_verify_timeout = 30 }
-# GDPO: per-reward normalization before aggregation
 reward_keys = ["correct_answer", "length_reward"]
 reward_weights = [1.0, 1.0]
-
-# Adaptive weight decay: both rewards can decay to 0.1
-[orchestrator.env.adaptive_weights]
-enabled = true
-ema_alpha = 0.1
-saturation_threshold = 0.95
-decay_exponent = 2.0
-min_weights = [0.1, 0.1]  # both can decay
-recovery_rate = 0.01
 
 [orchestrator.advantage]
 batch_normalize = true
