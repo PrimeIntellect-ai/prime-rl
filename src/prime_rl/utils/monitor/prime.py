@@ -265,9 +265,7 @@ class PrimeMonitor(Monitor):
                 self.logger.debug(f"Retrying R2 upload in {delay}s (attempt {attempt + 1}/{max_retries})")
                 await asyncio.sleep(delay)
 
-    async def _confirm_samples_upload(
-        self, step: int, s3_key: str, sample_count: int, max_retries: int = 3
-    ) -> bool:
+    async def _confirm_samples_upload(self, step: int, s3_key: str, sample_count: int, max_retries: int = 3) -> bool:
         """Confirm samples upload with the backend. Returns True on success."""
         headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
         for attempt in range(max_retries):
