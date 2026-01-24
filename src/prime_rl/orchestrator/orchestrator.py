@@ -9,6 +9,7 @@ from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
+from prime_rl.utils.pathing import get_broadcast_dir, get_step_path
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -31,7 +32,6 @@ from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     get_sampling_args,
-    get_weight_dir,
     print_benchmark,
     set_semaphore,
 )
@@ -232,7 +232,7 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
 
-        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
+        weights_path = (get_step_path(get_broadcast_dir(config.output_dir), scheduler.ckpt_step),)
         lora_name = config.model.lora.name if config.model.lora else None
         await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
