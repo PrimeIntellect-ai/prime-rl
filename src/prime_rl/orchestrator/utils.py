@@ -50,6 +50,7 @@ def get_sampling_args(sampling_config: SamplingConfig) -> dict:
     }
     sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
     sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
+    sampling_args["extra_body"]["router_sampling"] = sampling_args.pop("router_sampling")
     return sampling_args
 
 

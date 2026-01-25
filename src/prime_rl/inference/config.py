@@ -84,6 +84,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    enable_return_routed_experts: Annotated[
+        bool,
+        Field(
+            description="Whether to return routed experts. Passed to vLLM as `--enable-return-routed-experts`",
+        ),
+    ] = False
+
     tool_call_parser: Annotated[
         str,
         Field(
@@ -244,6 +251,7 @@ class InferenceConfig(BaseSettings):
             "model.enforce_eager": "enforce_eager",
             "model.trust_remote_code": "trust_remote_code",
             "model.enable_auto_tool_choice": "enable_auto_tool_choice",
+            "model.enable_return_routed_experts": "enable_return_routed_experts",
             "model.tool_call_parser": "tool_call_parser",
             "model.reasoning_parser": "reasoning_parser",
             "model.rope_scaling": "rope_scaling",
