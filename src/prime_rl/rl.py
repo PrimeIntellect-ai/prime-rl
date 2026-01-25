@@ -13,6 +13,7 @@ from typing import Annotated, Literal
 
 import tomli_w
 from pydantic import Field, model_validator
+from pydantic_config import BaseConfig, cli
 
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.inference.config import WeightBroadcastConfig as InferenceWeightBroadcastConfig
@@ -27,7 +28,6 @@ from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLW
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
 from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_free_port,
@@ -45,7 +45,7 @@ from prime_rl.utils.validation import (
 )
 
 
-class SharedLogConfig(BaseSettings):
+class SharedLogConfig(BaseConfig):
     """Configures shared logging."""
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
@@ -53,7 +53,7 @@ class SharedLogConfig(BaseSettings):
     file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
 
 
-class SharedWandbConfig(BaseSettings):
+class SharedWandbConfig(BaseConfig):
     """Configures shared W&B configs."""
 
     project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
@@ -63,7 +63,7 @@ class SharedWandbConfig(BaseSettings):
     offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
 
 
-class SharedCheckpointConfig(BaseSettings):
+class SharedCheckpointConfig(BaseConfig):
     """Configures shared checkpoint configs."""
 
     interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
@@ -89,7 +89,7 @@ class SharedCheckpointConfig(BaseSettings):
     ] = None
 
 
-class SharedModelConfig(BaseSettings):
+class SharedModelConfig(BaseConfig):
     """Configures shared model settings."""
 
     name: Annotated[
@@ -98,7 +98,7 @@ class SharedModelConfig(BaseSettings):
     ] = "Qwen/Qwen3-0.6B"
 
 
-class SharedWeightBroadcastConfig(BaseSettings):
+class SharedWeightBroadcastConfig(BaseConfig):
     """Configures shared weight broadcast settings."""
 
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
@@ -106,7 +106,7 @@ class SharedWeightBroadcastConfig(BaseSettings):
     )
 
 
-class RLConfig(BaseSettings):
+class RLConfig(BaseConfig):
     """Configures an RL training run."""
 
     ### Submodule configurations
@@ -546,6 +546,14 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
         stop_event.set()
 
 
+def get_temp_toml_file() -> Path:
+    """Create a temporary TOML file path for subprocess config passing."""
+    temp_uuid = str(uuid.uuid4())
+    root_path = Path(".pydantic_config")
+    root_path.mkdir(exist_ok=True)
+    return root_path / f"temp_{temp_uuid}.toml"
+
+
 def rl(config: RLConfig):
     # Setup logger
     logger = setup_logger(
@@ -811,7 +819,8 @@ def rl(config: RLConfig):
 
 
 def main():
-    rl(parse_argv(RLConfig))
+    config = cli(RLConfig)
+    rl(config)
 
 
 if __name__ == "__main__":

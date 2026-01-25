@@ -1,5 +1,7 @@
 import asyncio
 
+from pydantic_config import cli
+
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
 from prime_rl.orchestrator.utils import set_semaphore
@@ -14,7 +16,6 @@ from prime_rl.utils.client import (
 )
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, get_step_path, install_env
 
 
@@ -153,7 +154,8 @@ async def eval(config: OfflineEvalConfig):
 
 
 def main():
-    asyncio.run(eval(parse_argv(OfflineEvalConfig)))
+    config = cli(OfflineEvalConfig)
+    asyncio.run(eval(config))
 
 
 if __name__ == "__main__":

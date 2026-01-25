@@ -2,9 +2,9 @@ import os
 from argparse import Namespace
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
+from pydantic_config import BaseConfig
 
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
@@ -106,7 +106,7 @@ class ModelConfig(BaseConfig):
     ] = None
 
 
-class WeightBroadcastConfig(BaseSettings):
+class WeightBroadcastConfig(BaseConfig):
     """Configures weight broadcast settings."""
 
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
@@ -119,7 +119,23 @@ class WeightBroadcastConfig(BaseSettings):
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
 
-class InferenceConfig(BaseSettings):
+def get_all_fields(model: BaseModel | type) -> list[str]:
+    if isinstance(model, BaseModel):
+        model_cls = model.__class__
+    else:
+        model_cls = model
+
+    fields = []
+    for name, field in model_cls.model_fields.items():
+        field_type = field.annotation
+        fields.append(name)
+        if field_type is not None and hasattr(field_type, "model_fields"):
+            sub_fields = get_all_fields(field_type)
+            fields.extend(f"{name}.{sub}" for sub in sub_fields)
+    return fields
+
+
+class InferenceConfig(BaseConfig):
     """Configures inference."""
 
     # The server configuration

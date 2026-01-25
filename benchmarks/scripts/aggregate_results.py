@@ -10,8 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field
-
-from prime_rl.utils.pydantic_config import BaseSettings, parse_argv
+from pydantic_config import BaseConfig, cli
 
 SHORTENED_ATTN_MAPPING = {
     "flash_attention_2": "FA2",
@@ -22,7 +21,7 @@ SHORTENED_ATTN_MAPPING = {
 DEVICE_NAME_STRIP_WORDS = ["NVIDIA", "RTX", "80GB", "40GB"]
 
 
-class AggregateConfig(BaseSettings):
+class AggregateConfig(BaseConfig):
     """Configuration for aggregating benchmark results."""
 
     artifacts_dir: Annotated[Path, Field(description="Directory containing benchmark JSON artifacts")]
@@ -196,7 +195,7 @@ def generate_markdown(
 
 
 def main():
-    config = parse_argv(AggregateConfig)
+    config = cli(AggregateConfig)
 
     results = load_json_dir(config.artifacts_dir)
     print(f"Loaded {len(results)} benchmark results", file=sys.stderr)

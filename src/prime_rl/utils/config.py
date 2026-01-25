@@ -1,8 +1,7 @@
 from typing import Annotated, Literal
 
 from pydantic import Field
-
-from prime_rl.utils.pydantic_config import BaseConfig
+from pydantic_config import BaseConfig
 
 
 class ModelConfig(BaseConfig):

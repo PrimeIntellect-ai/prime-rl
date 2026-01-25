@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic_config import BaseConfig
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
@@ -14,7 +15,6 @@ from prime_rl.utils.config import (
 from prime_rl.utils.config import (
     ModelConfig as BaseModelConfig,
 )
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
 class OptimizerConfig(BaseConfig):
@@ -598,7 +598,7 @@ class TeacherModelConfig(BaseConfig):
     ] = ModelConfig()
 
 
-class OrchestratorConfig(BaseSettings):
+class OrchestratorConfig(BaseConfig):
     """Configures the orchestrator for RL training."""
 
     # The OAI client configuration

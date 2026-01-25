@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
+from pydantic_config import BaseConfig
 
 from prime_rl.trainer.config import (
     AdamWConfig,
@@ -15,7 +16,6 @@ from prime_rl.trainer.config import (
 )
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import HeartbeatConfig, LogConfig, MetricsServerConfig, WandbConfig
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
 class LossConfig(BaseConfig):
@@ -117,7 +117,7 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
-class RLTrainerConfig(BaseSettings):
+class RLTrainerConfig(BaseConfig):
     """Configures the RL trainer"""
 
     # The model configuration
@@ -133,10 +133,10 @@ class RLTrainerConfig(BaseSettings):
     loss: LossConfig = LossConfig()
 
     # The optimizer configuration
-    optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()
+    optim: OptimizerConfigType = AdamWConfig()
 
     # The learning rate scheduler configuration
-    scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
+    scheduler: SchedulerConfigType = ConstantSchedulerConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

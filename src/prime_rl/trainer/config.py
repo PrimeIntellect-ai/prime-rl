@@ -2,8 +2,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
-
-from prime_rl.utils.pydantic_config import BaseConfig
+from pydantic_config import BaseConfig
 
 AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3"]
 

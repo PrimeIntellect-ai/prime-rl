@@ -1,7 +1,7 @@
-import sys
 from pathlib import Path
 
 import pytest
+import tomli
 from pydantic import ValidationError
 
 from prime_rl.eval.config import OfflineEvalConfig
@@ -10,7 +10,6 @@ from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.rl import RLConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.sft.config import SFTTrainerConfig
-from prime_rl.utils.pydantic_config import parse_argv
 
 # All config config classes
 CONFIG_CLASSES = [RLConfig, RLTrainerConfig, SFTTrainerConfig, OrchestratorConfig, InferenceConfig, OfflineEvalConfig]
@@ -30,16 +29,13 @@ def test_load_configs(config_file: Path, monkeypatch: pytest.MonkeyPatch):
     if "intellect_3/evals" in config_file.as_posix():
         pytest.skip("Skipped because uses partial configs, which are not supported by this test.")
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["dummy.py", "@", config_file.as_posix()],
-        raising=False,
-    )
+    with open(config_file, "rb") as f:
+        config = tomli.load(f)
+
     could_parse = []
     for config_cls in CONFIG_CLASSES:
         try:
-            parse_argv(config_cls)
+            config_cls(**config)
             could_parse.append(True)
         except ValidationError:
             could_parse.append(False)

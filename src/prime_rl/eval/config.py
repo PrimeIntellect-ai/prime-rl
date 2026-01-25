@@ -2,13 +2,13 @@ from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, model_validator
+from pydantic_config import BaseConfig
 
 from prime_rl.orchestrator.config import EvalConfig
 from prime_rl.utils.config import ClientConfig, LogConfig, ModelConfig, WandbConfig
-from prime_rl.utils.pydantic_config import BaseSettings
 
 
-class OfflineEvalConfig(EvalConfig, BaseSettings):
+class OfflineEvalConfig(EvalConfig, BaseConfig):
     """Configures evaluation."""
 
     # The client configuration

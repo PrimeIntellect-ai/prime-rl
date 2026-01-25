@@ -1,5 +1,7 @@
 import asyncio
 
+from pydantic_config import cli
+
 from prime_rl.orchestrator.utils import (
     set_semaphore,
 )
@@ -12,7 +14,6 @@ from prime_rl.utils.client import (
     setup_clients,
 )
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
-from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, install_env
 
 
@@ -75,7 +76,8 @@ async def synthesize(config: SynthesizeConfig):
 
 
 def main():
-    asyncio.run(synthesize(parse_argv(SynthesizeConfig)))
+    config = cli(SynthesizeConfig)
+    asyncio.run(synthesize(config))
 
 
 if __name__ == "__main__":
