@@ -44,6 +44,7 @@ def get_sampling_args(sampling_config: SamplingConfig) -> dict:
     sampling_args["extra_body"] = {
         **sampling_config.extra_body,
         "return_token_ids": True,  # Always return token IDs
+        "return_routed_experts": True,  # Requires vLLM --enable-return-routed-experts
         "top_k": -1,
         "min_p": 0.0,
     }
