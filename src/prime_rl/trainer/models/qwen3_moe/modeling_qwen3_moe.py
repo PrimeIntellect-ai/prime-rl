@@ -96,6 +96,8 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        routed_expert_indices: torch.Tensor | None = None,
+        routed_expert_probs: torch.Tensor | None = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -111,7 +113,14 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        if isinstance(self.mlp, MoE) and (routed_expert_indices is not None or routed_expert_probs is not None):
+            hidden_states = self.mlp(
+                hidden_states,
+                forced_expert_indices=routed_expert_indices,
+                forced_expert_probs=routed_expert_probs,
+            )
+        else:
+            hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -201,6 +210,8 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        routed_expert_indices: Optional[torch.Tensor] = None,
+        routed_expert_probs: Optional[torch.Tensor] = None,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -227,12 +238,40 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        sparse_layer_indices = []
+        for layer_idx, layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+            if isinstance(layer.mlp, MoE):
+                sparse_layer_indices.append(layer_idx)
+
+        for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+            layer_expert_indices = None
+            layer_expert_probs = None
+            if self.config.enable_routing_replay and (routed_expert_indices is not None or routed_expert_probs is not None):
+                if isinstance(routed_expert_indices, (list, tuple)):
+                    if len(routed_expert_indices) == self.config.num_hidden_layers:
+                        layer_expert_indices = routed_expert_indices[layer_idx]
+                    elif len(routed_expert_indices) == len(sparse_layer_indices):
+                        if layer_idx in sparse_layer_indices:
+                            layer_expert_indices = routed_expert_indices[sparse_layer_indices.index(layer_idx)]
+                elif isinstance(routed_expert_indices, torch.Tensor) and routed_expert_indices.dim() == 4:
+                    layer_expert_indices = routed_expert_indices[layer_idx]
+
+                if isinstance(routed_expert_probs, (list, tuple)):
+                    if len(routed_expert_probs) == self.config.num_hidden_layers:
+                        layer_expert_probs = routed_expert_probs[layer_idx]
+                    elif len(routed_expert_probs) == len(sparse_layer_indices):
+                        if layer_idx in sparse_layer_indices:
+                            layer_expert_probs = routed_expert_probs[sparse_layer_indices.index(layer_idx)]
+                elif isinstance(routed_expert_probs, torch.Tensor) and routed_expert_probs.dim() == 4:
+                    layer_expert_probs = routed_expert_probs[layer_idx]
+
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                routed_expert_indices=layer_expert_indices,
+                routed_expert_probs=layer_expert_probs,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -355,6 +394,8 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        routed_expert_indices: Optional[torch.Tensor] = None,
+        routed_expert_probs: Optional[torch.Tensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_router_logits: Optional[bool] = None,
@@ -404,6 +445,8 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
+            routed_expert_indices=routed_expert_indices,
+            routed_expert_probs=routed_expert_probs,
         )
 
         hidden_states = outputs.last_hidden_state

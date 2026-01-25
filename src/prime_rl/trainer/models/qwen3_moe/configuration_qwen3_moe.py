@@ -101,6 +101,8 @@ class Qwen3MoeConfig(PretrainedConfig):
         output_router_logits (`bool`, *optional*, defaults to `False`):
             Whether or not the router logits should be returned by the model. Enabling this will also
             allow the model to output the auxiliary loss, including load balancing loss and router z-loss.
+        enable_routing_replay (`bool`, *optional*, defaults to `False`):
+            Whether to allow forced expert routing via routed expert indices/probabilities during training.
         router_aux_loss_coef (`float`, *optional*, defaults to 0.001):
             The aux loss factor for the total loss.
         mlp_only_layers (`list[int]`, *optional*, defaults to `[]`):
@@ -165,6 +167,7 @@ class Qwen3MoeConfig(PretrainedConfig):
         num_experts=128,
         norm_topk_prob=False,
         output_router_logits=False,
+        enable_routing_replay=False,
         router_aux_loss_coef=0.001,
         mlp_only_layers=None,
         load_balance_coeff=None,
@@ -202,6 +205,7 @@ class Qwen3MoeConfig(PretrainedConfig):
         self.num_experts = num_experts
         self.norm_topk_prob = norm_topk_prob
         self.output_router_logits = output_router_logits
+        self.enable_routing_replay = enable_routing_replay
         self.router_aux_loss_coef = router_aux_loss_coef
         self.mlp_only_layers = [] if mlp_only_layers is None else mlp_only_layers
         self.load_balance_coeff = load_balance_coeff
