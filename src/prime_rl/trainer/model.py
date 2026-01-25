@@ -96,6 +96,8 @@ def get_model(
     )
     model_config.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
+    if hasattr(model_config, "enable_routing_replay"):
+        model_config.enable_routing_replay = config.enable_routing_replay
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
 
     if config.debug.num_layers is not None:
@@ -512,8 +514,21 @@ def forward(
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: float | None = None,
+    routed_expert_indices: Tensor | None = None,
+    routed_expert_probs: Tensor | None = None,
 ) -> PrimeLmOutput:
-    out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+    extra_kwargs: dict[str, Tensor | None] = {}
+    if routed_expert_indices is not None or routed_expert_probs is not None:
+        if hasattr(model, "config") and getattr(model.config, "enable_routing_replay", False):
+            extra_kwargs["routed_expert_indices"] = routed_expert_indices
+            extra_kwargs["routed_expert_probs"] = routed_expert_probs
+    out = model(
+        input_ids=input_ids,
+        position_ids=position_ids,
+        labels=labels,
+        temperature=temperature,
+        **extra_kwargs,
+    )
 
     # PrimeLmOutput is a TypedDict (dict at runtime), HF outputs are dataclass-like objects
     if isinstance(out, dict):

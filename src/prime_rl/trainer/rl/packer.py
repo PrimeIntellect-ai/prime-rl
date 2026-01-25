@@ -20,6 +20,36 @@ from prime_rl.utils.pathing import get_rollout_dir
 TIMEOUT_SECONDS = 0.1
 
 
+def _is_nested_expert_list(data: list) -> bool:
+    return bool(data) and isinstance(data[0], list) and bool(data[0]) and isinstance(data[0][0], list)
+
+
+def _validate_expert_metadata_length(
+    data: list | None,
+    expected_len: int,
+    label: str,
+) -> tuple[bool, str | None]:
+    if data is None:
+        return True, None
+    if _is_nested_expert_list(data):
+        if len(data) == expected_len:
+            return True, None
+        for layer_entries in data:
+            if len(layer_entries) != expected_len:
+                return (
+                    False,
+                    f"Run wrote a sample with {label} length != token length "
+                    f"({len(layer_entries)} != {expected_len})",
+                )
+        return True, None
+    if len(data) != expected_len:
+        return (
+            False,
+            f"Run wrote a sample with {label} length != token length ({len(data)} != {expected_len})",
+        )
+    return True, None
+
+
 class BasePacker(ABC):
     def __init__(
         self,
@@ -126,6 +156,20 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with prompt mask length != prompt ids length ({len(sample.prompt_mask)} != {len(sample.prompt_ids)})",
             )
+        valid, reason = _validate_expert_metadata_length(
+            sample.prompt_expert_indices,
+            len(sample.prompt_ids),
+            "prompt expert indices",
+        )
+        if not valid:
+            return False, reason
+        valid, reason = _validate_expert_metadata_length(
+            sample.prompt_expert_probs,
+            len(sample.prompt_ids),
+            "prompt expert probs",
+        )
+        if not valid:
+            return False, reason
         if len(sample.completion_mask) != len(sample.completion_ids):
             return (
                 False,
@@ -136,22 +180,20 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with completion logprobs length != completion ids length ({len(sample.completion_logprobs)} != {len(sample.completion_ids)})",
             )
-        if sample.completion_expert_indices is not None and len(sample.completion_expert_indices) != len(
-            sample.completion_ids
-        ):
-            return (
-                False,
-                "Run wrote a sample with completion expert indices length != completion ids length "
-                f"({len(sample.completion_expert_indices)} != {len(sample.completion_ids)})",
-            )
-        if sample.completion_expert_probs is not None and len(sample.completion_expert_probs) != len(
-            sample.completion_ids
-        ):
-            return (
-                False,
-                "Run wrote a sample with completion expert probs length != completion ids length "
-                f"({len(sample.completion_expert_probs)} != {len(sample.completion_ids)})",
-            )
+        valid, reason = _validate_expert_metadata_length(
+            sample.completion_expert_indices,
+            len(sample.completion_ids),
+            "completion expert indices",
+        )
+        if not valid:
+            return False, reason
+        valid, reason = _validate_expert_metadata_length(
+            sample.completion_expert_probs,
+            len(sample.completion_ids),
+            "completion expert probs",
+        )
+        if not valid:
+            return False, reason
         if sample_length == 0:
             return False, "Run wrote a sample with no tokens"
         if sample_length > self.seq_len:
