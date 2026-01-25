@@ -98,6 +98,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         max_seqlen: int | None = None,
         routed_expert_indices: torch.Tensor | None = None,
         routed_expert_probs: torch.Tensor | None = None,
+        return_router_logprobs: bool = False,
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -118,6 +119,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
                 hidden_states,
                 forced_expert_indices=routed_expert_indices,
                 forced_expert_probs=routed_expert_probs,
+                return_router_logprobs=return_router_logprobs,
             )
         else:
             hidden_states = self.mlp(hidden_states)
@@ -200,6 +202,7 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         )
         self.rotary_emb = RotaryEmbedding(rotary_config)
         self.gradient_checkpointing = False
+        self.last_routed_expert_logprobs: torch.Tensor | None = None
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -243,6 +246,8 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
             if isinstance(layer.mlp, MoE):
                 sparse_layer_indices.append(layer_idx)
 
+        routed_expert_logprobs: list[torch.Tensor] = []
+
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             layer_expert_indices = None
             layer_expert_probs = None
@@ -278,9 +283,18 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
                 max_seqlen=max_seqlen,
                 routed_expert_indices=layer_expert_indices,
                 routed_expert_probs=layer_expert_probs,
+                return_router_logprobs=self.config.enable_routing_replay and layer_expert_indices is not None,
             )
+            if self.config.enable_routing_replay and isinstance(decoder_layer.mlp, MoE):
+                if decoder_layer.mlp.last_router_logprobs is not None:
+                    routed_expert_logprobs.append(decoder_layer.mlp.last_router_logprobs)
 
         hidden_states = self.norm(hidden_states)
+
+        if routed_expert_logprobs:
+            self.last_routed_expert_logprobs = torch.stack(routed_expert_logprobs).sum(dim=0)
+        else:
+            self.last_routed_expert_logprobs = None
 
         return MoeModelOutputWithPast(last_hidden_state=hidden_states)
 
@@ -456,13 +470,17 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         )
 
         hidden_states = outputs.last_hidden_state
+        routed_expert_logprobs = self.model.last_routed_expert_logprobs
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        return self.lm_head(
+        lm_output = self.lm_head(
             hidden_states[:, slice_indices, :],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
         )
+        if routed_expert_logprobs is not None:
+            lm_output["routed_expert_logprobs"] = routed_expert_logprobs[:, slice_indices]
+        return lm_output
 
     def init_buffers_post_meta(self):
         buffer_names = [name for name, _ in self.named_buffers()]

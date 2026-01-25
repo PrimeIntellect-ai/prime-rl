@@ -74,10 +74,24 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
+def compute_routed_expert_logprobs(routed_expert_probs: Tensor | None) -> Tensor | None:
+    """Compute per-token routed expert logprobs from routed expert probabilities."""
+    if routed_expert_probs is None:
+        return None
+    if routed_expert_probs.dim() == 4:
+        layer_logprobs = torch.log(routed_expert_probs.clamp_min(1e-20)).sum(dim=-1)
+        return layer_logprobs.sum(dim=0)
+    if routed_expert_probs.dim() == 3:
+        return torch.log(routed_expert_probs.clamp_min(1e-20)).sum(dim=-1)
+    raise ValueError("Unexpected routed expert metadata shape.")
+
+
 def compute_loss(
     trainer_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
     inference_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
-    teacher_logprobs: Any | None,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths, or None
+    trainer_expert_logprobs: Any | None = None,  # list of Float[Tensor, "seq_i"] with potentially different seq_i
+    inference_expert_logprobs: Any | None = None,  # list of Float[Tensor, "seq_i"] with potentially different seq_i
+    teacher_logprobs: Any | None = None,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
     advantages: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
     loss_mask: Any,  # list of Bool[Tensor, "seq_i"] with potentially different seq_i lengths
     loss_config: LossConfig,
@@ -89,6 +103,8 @@ def compute_loss(
     Args:
         trainer_logprobs: Log probabilities tensor for packed sequences
         inference_logprobs: Old log probabilities tensor for packed sequences
+        trainer_expert_logprobs: Routed expert log probabilities from the trainer, or None if not configured
+        inference_expert_logprobs: Routed expert log probabilities from inference, or None if not configured
         teacher_logprobs: Teacher log probabilities tensor for packed sequences, or None if not configured
         advantages: Advantages tensor for packed sequences
         loss_mask: Loss mask tensor for packed sequences
@@ -115,11 +131,34 @@ def compute_loss(
 
     if teacher_logprobs is None:
         teacher_logprobs = [None] * len(trainer_logprobs)
+    if trainer_expert_logprobs is None or inference_expert_logprobs is None:
+        trainer_expert_logprobs = [None] * len(trainer_logprobs)
+        inference_expert_logprobs = [None] * len(trainer_logprobs)
 
-    for trainer_logprobs, inference_logprobs, teacher_logprobs, advantages, loss_mask in zip(
-        trainer_logprobs, inference_logprobs, teacher_logprobs, advantages, loss_mask
+    for (
+        trainer_logprobs,
+        inference_logprobs,
+        trainer_expert_logprobs,
+        inference_expert_logprobs,
+        teacher_logprobs,
+        advantages,
+        loss_mask,
+    ) in zip(
+        trainer_logprobs,
+        inference_logprobs,
+        trainer_expert_logprobs,
+        inference_expert_logprobs,
+        teacher_logprobs,
+        advantages,
+        loss_mask,
     ):
-        log_importance_ratio = trainer_logprobs - inference_logprobs
+        combined_trainer_logprobs = trainer_logprobs
+        combined_inference_logprobs = inference_logprobs
+        if trainer_expert_logprobs is not None and inference_expert_logprobs is not None:
+            combined_trainer_logprobs = trainer_logprobs + trainer_expert_logprobs
+            combined_inference_logprobs = inference_logprobs + inference_expert_logprobs
+
+        log_importance_ratio = combined_trainer_logprobs - combined_inference_logprobs
         teacher_kl = teacher_logprobs - trainer_logprobs if teacher_logprobs is not None else None
 
         # Trainer-inference mismatch KL per token
@@ -150,7 +189,7 @@ def compute_loss(
         if teacher_logprobs is not None:
             advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
         coeff = importance_ratio * (advantages - loss_config.kl_tau * log_importance_ratio)
-        loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
+        loss = -(coeff.detach() * combined_trainer_logprobs)[keep_mask].sum()
 
         if loss_config.ratio_type == "sequence":
             loss = loss / torch.clamp_min(loss_mask.sum(), 1)
