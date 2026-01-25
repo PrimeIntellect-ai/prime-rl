@@ -61,6 +61,20 @@ from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
 
+def _shard_routed_experts_for_cp(
+    tensor: torch.Tensor | None, cp_rank: int, cp_world_size: int
+) -> torch.Tensor | None:
+    if tensor is None:
+        return None
+    if tensor.dim() == 3:
+        return shard_for_cp(tensor, cp_rank=cp_rank, cp_world_size=cp_world_size)
+    if tensor.dim() == 4:
+        if tensor.shape[1] != 1:
+            raise ValueError("Routed expert metadata expects batch dimension of 1 for context parallelism.")
+        return torch.chunk(tensor, cp_world_size, dim=2)[cp_rank]
+    raise ValueError("Unexpected routed expert metadata shape.")
+
+
 @clean_exit
 @logger.catch(reraise=True)
 def train(config: RLTrainerConfig):
@@ -305,6 +319,16 @@ def train(config: RLTrainerConfig):
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
+            routed_expert_indices = (
+                micro_batch["routed_expert_indices"].to("cuda")
+                if micro_batch.get("routed_expert_indices") is not None
+                else None
+            )
+            routed_expert_probs = (
+                micro_batch["routed_expert_probs"].to("cuda")
+                if micro_batch.get("routed_expert_probs") is not None
+                else None
+            )
             teacher_logprobs = (
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
             )
@@ -314,6 +338,8 @@ def train(config: RLTrainerConfig):
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
+                routed_expert_indices = _shard_routed_experts_for_cp(routed_expert_indices, cp_rank, cp_size)
+                routed_expert_probs = _shard_routed_experts_for_cp(routed_expert_probs, cp_rank, cp_size)
             else:
                 forward_position_ids = position_ids
 
@@ -334,7 +360,15 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
+                out = forward(
+                    model,
+                    input_ids,
+                    forward_position_ids,
+                    labels=labels,
+                    temperature=temperature,
+                    routed_expert_indices=routed_expert_indices,
+                    routed_expert_probs=routed_expert_probs,
+                )
 
             if out.get("logprobs") is None:
                 assert out.get("logits") is not None, "Logits must be provided to compute logprobs"

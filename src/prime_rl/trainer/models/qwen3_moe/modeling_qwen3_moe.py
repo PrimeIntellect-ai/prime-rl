@@ -253,8 +253,11 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
                     elif len(routed_expert_indices) == len(sparse_layer_indices):
                         if layer_idx in sparse_layer_indices:
                             layer_expert_indices = routed_expert_indices[sparse_layer_indices.index(layer_idx)]
-                elif isinstance(routed_expert_indices, torch.Tensor) and routed_expert_indices.dim() == 4:
-                    layer_expert_indices = routed_expert_indices[layer_idx]
+                elif isinstance(routed_expert_indices, torch.Tensor):
+                    if routed_expert_indices.dim() == 4:
+                        layer_expert_indices = routed_expert_indices[layer_idx]
+                    elif routed_expert_indices.dim() == 3:
+                        layer_expert_indices = routed_expert_indices
 
                 if isinstance(routed_expert_probs, (list, tuple)):
                     if len(routed_expert_probs) == self.config.num_hidden_layers:
@@ -262,8 +265,11 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
                     elif len(routed_expert_probs) == len(sparse_layer_indices):
                         if layer_idx in sparse_layer_indices:
                             layer_expert_probs = routed_expert_probs[sparse_layer_indices.index(layer_idx)]
-                elif isinstance(routed_expert_probs, torch.Tensor) and routed_expert_probs.dim() == 4:
-                    layer_expert_probs = routed_expert_probs[layer_idx]
+                elif isinstance(routed_expert_probs, torch.Tensor):
+                    if routed_expert_probs.dim() == 4:
+                        layer_expert_probs = routed_expert_probs[layer_idx]
+                    elif routed_expert_probs.dim() == 3:
+                        layer_expert_probs = routed_expert_probs
 
             hidden_states = decoder_layer(
                 hidden_states,

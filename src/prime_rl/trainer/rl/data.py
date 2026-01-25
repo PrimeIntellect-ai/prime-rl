@@ -21,6 +21,8 @@ class TensorMicroBatch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     advantages: Float[Tensor, "batch seq"]
     inference_logprobs: Float[Tensor, "batch seq"]
+    routed_expert_indices: Int[Tensor, "layers batch seq top_k"] | Int[Tensor, "batch seq top_k"] | None
+    routed_expert_probs: Float[Tensor, "layers batch seq top_k"] | Float[Tensor, "batch seq top_k"] | None
     teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
 
@@ -92,6 +94,8 @@ class FakeDataLoader:
             "position_ids": position_ids.unsqueeze(0),
             "advantages": advantages.unsqueeze(0),
             "inference_logprobs": inference_logprobs.unsqueeze(0),
+            "routed_expert_indices": None,
+            "routed_expert_probs": None,
             "teacher_logprobs": None,
             "temperature": 1.0,
             "loss_mask": loss_mask.unsqueeze(0),
@@ -114,6 +118,8 @@ class FakeDataLoader:
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
             "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
+            "routed_expert_indices": None,
+            "routed_expert_probs": None,
             "teacher_logprobs": None,
             "temperature": 1.0,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
@@ -167,11 +173,15 @@ class DataLoader:
         if micro_batch.lora_num_tokens is None:
             micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
+        routed_expert_indices = self._expert_metadata_to_tensor(micro_batch.routed_expert_indices, torch.long)
+        routed_expert_probs = self._expert_metadata_to_tensor(micro_batch.routed_expert_probs, torch.float)
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
             advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
             inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
+            routed_expert_indices=routed_expert_indices,
+            routed_expert_probs=routed_expert_probs,
             teacher_logprobs=torch.tensor(micro_batch.teacher_logprobs, dtype=torch.float).unsqueeze(0)
             if micro_batch.teacher_logprobs is not None
             else None,
@@ -179,3 +189,17 @@ class DataLoader:
             temperature=micro_batch.temperature,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
         )
+
+    @staticmethod
+    def _expert_metadata_to_tensor(
+        data: list | None, dtype: torch.dtype
+    ) -> torch.Tensor | None:
+        if data is None:
+            return None
+        if not data:
+            return None
+        if isinstance(data[0], list) and data[0] and isinstance(data[0][0], list):
+            tensor = torch.tensor(data, dtype=dtype)
+            return tensor.unsqueeze(1)
+        tensor = torch.tensor(data, dtype=dtype)
+        return tensor.unsqueeze(0)

@@ -3,6 +3,97 @@ import copy
 from prime_rl.transport.types import MicroBatch, TrainingSample
 
 
+def _is_nested_expert_list(data: list) -> bool:
+    return bool(data) and isinstance(data[0], list) and bool(data[0]) and isinstance(data[0][0], list)
+
+
+def _normalize_expert_data(
+    data: list | None, num_tokens: int
+) -> tuple[list[list[int]] | list[list[list[int]]] | None, str | None]:
+    if data is None:
+        return None, None
+    if _is_nested_expert_list(data):
+        if len(data) == num_tokens:
+            num_layers = len(data[0])
+            layer_major: list[list[list[int]]] = [[] for _ in range(num_layers)]
+            for token_entry in data:
+                if len(token_entry) != num_layers:
+                    raise ValueError("Inconsistent number of layers in routed expert metadata.")
+                for layer_idx, layer_entry in enumerate(token_entry):
+                    layer_major[layer_idx].append(layer_entry)
+            return layer_major, "layer"
+        return data, "layer"
+    return data, "token"
+
+
+def _merge_expert_metadata(
+    prompt_data: list | None,
+    completion_data: list | None,
+    prompt_len: int,
+    completion_len: int,
+) -> list | None:
+    if prompt_data is None and completion_data is None:
+        return None
+    if prompt_data is None or completion_data is None:
+        return None
+
+    prompt_norm, prompt_layout = _normalize_expert_data(prompt_data, prompt_len)
+    completion_norm, completion_layout = _normalize_expert_data(completion_data, completion_len)
+
+    if prompt_layout != completion_layout:
+        return None
+
+    if prompt_layout == "token":
+        assert isinstance(prompt_norm, list) and isinstance(completion_norm, list)
+        return prompt_norm + completion_norm
+
+    assert isinstance(prompt_norm, list) and isinstance(completion_norm, list)
+    if len(prompt_norm) != len(completion_norm):
+        return None
+    merged: list[list[list[int]]] = []
+    for prompt_layer, completion_layer in zip(prompt_norm, completion_norm):
+        merged.append(prompt_layer + completion_layer)
+    return merged
+
+
+def _extend_expert_metadata(
+    target: list | None,
+    source: list | None,
+) -> list | None:
+    if source is None:
+        return target
+    if target is None:
+        return copy.deepcopy(source)
+    if _is_nested_expert_list(target):
+        if not _is_nested_expert_list(source):
+            raise ValueError("Routed expert metadata layout mismatch while packing.")
+        if len(target) != len(source):
+            raise ValueError("Routed expert metadata layer count mismatch while packing.")
+        for layer_idx, layer_entries in enumerate(source):
+            target[layer_idx].extend(layer_entries)
+        return target
+    if _is_nested_expert_list(source):
+        raise ValueError("Routed expert metadata layout mismatch while packing.")
+    target.extend(source)
+    return target
+
+
+def _pad_expert_metadata(
+    data: list | None,
+    padding_size: int,
+    pad_value: int | float,
+) -> None:
+    if data is None or padding_size <= 0:
+        return
+    if _is_nested_expert_list(data):
+        for layer_entries in data:
+            top_k = len(layer_entries[0]) if layer_entries else 0
+            layer_entries.extend([[pad_value] * top_k for _ in range(padding_size)])
+    else:
+        top_k = len(data[0]) if data else 0
+        data.extend([[pad_value] * top_k for _ in range(padding_size)])
+
+
 def prepare_sample(
     training_example: TrainingSample,
     seq_len: int,
@@ -23,6 +114,18 @@ def prepare_sample(
     # Teacher logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when a teacher model is configured
     teacher_logprobs = training_example.teacher_logprobs
+    routed_expert_indices = _merge_expert_metadata(
+        training_example.prompt_expert_indices,
+        training_example.completion_expert_indices,
+        len(training_example.prompt_ids),
+        len(training_example.completion_ids),
+    )
+    routed_expert_probs = _merge_expert_metadata(
+        training_example.prompt_expert_probs,
+        training_example.completion_expert_probs,
+        len(training_example.prompt_ids),
+        len(training_example.completion_ids),
+    )
 
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]
@@ -32,12 +135,34 @@ def prepare_sample(
         advantages = advantages[:seq_len]
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
+        if routed_expert_indices is not None:
+            if _is_nested_expert_list(routed_expert_indices):
+                routed_expert_indices = [layer[:seq_len] for layer in routed_expert_indices]
+            else:
+                routed_expert_indices = routed_expert_indices[:seq_len]
+        if routed_expert_probs is not None:
+            if _is_nested_expert_list(routed_expert_probs):
+                routed_expert_probs = [layer[:seq_len] for layer in routed_expert_probs]
+            else:
+                routed_expert_probs = routed_expert_probs[:seq_len]
 
     assert len(input_ids) == len(advantages) == len(loss_mask) == len(position_ids) == len(inference_logprobs), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}"
     )
     if teacher_logprobs is not None:
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
+    if routed_expert_indices is not None:
+        if _is_nested_expert_list(routed_expert_indices):
+            for layer_entries in routed_expert_indices:
+                assert len(layer_entries) == len(input_ids), "Routed expert indices length mismatch"
+        else:
+            assert len(routed_expert_indices) == len(input_ids), "Routed expert indices length mismatch"
+    if routed_expert_probs is not None:
+        if _is_nested_expert_list(routed_expert_probs):
+            for layer_entries in routed_expert_probs:
+                assert len(layer_entries) == len(input_ids), "Routed expert probs length mismatch"
+        else:
+            assert len(routed_expert_probs) == len(input_ids), "Routed expert probs length mismatch"
     return MicroBatch(
         input_ids=input_ids,
         advantages=advantages,
@@ -46,6 +171,8 @@ def prepare_sample(
         inference_logprobs=inference_logprobs,
         teacher_logprobs=teacher_logprobs,
         temperature=temperature,
+        routed_expert_indices=routed_expert_indices,
+        routed_expert_probs=routed_expert_probs,
     )
 
 
@@ -70,6 +197,14 @@ def packed_samples_into_micro_bs(
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
+                bin_content.routed_expert_indices = _extend_expert_metadata(
+                    bin_content.routed_expert_indices,
+                    sample.routed_expert_indices,
+                )
+                bin_content.routed_expert_probs = _extend_expert_metadata(
+                    bin_content.routed_expert_probs,
+                    sample.routed_expert_probs,
+                )
                 if sample.teacher_logprobs is not None:
                     if bin_content.teacher_logprobs is None:
                         bin_content.teacher_logprobs = []
@@ -106,6 +241,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
+    _pad_expert_metadata(micro_batch.routed_expert_indices, padding_size, pad_value=0)
+    _pad_expert_metadata(micro_batch.routed_expert_probs, padding_size, pad_value=0.0)
     if micro_batch.teacher_logprobs is not None:
         micro_batch.teacher_logprobs.extend([0.0] * padding_size)
     micro_batch.lora_num_tokens[-1] += (

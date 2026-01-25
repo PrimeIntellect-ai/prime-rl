@@ -234,6 +234,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = True
 
+    enable_routing_replay: Annotated[
+        bool,
+        Field(
+            description="Whether to enable forced expert routing when routed expert metadata is provided.",
+        ),
+    ] = False
+
     lora: Annotated[
         LoRAConfig | None,
         Field(
