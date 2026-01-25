@@ -2528,7 +2528,7 @@ requires-dist = [
     { name = "prime-evals", specifier = ">=0.1.5" },
     { name = "prometheus-client", marker = "extra == 'metrics'", specifier = ">=0.20.0" },
     { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=67865b9ced45665649a59e96a0073a933dcd0140" },
+    { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=b7d511d" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "pyzmq", specifier = ">=27.1.0" },
@@ -2792,7 +2792,7 @@ email = [
 [[package]]
 name = "pydantic-config"
 version = "0.3.0"
-source = { git = "https://github.com/samsja/pydantic_config.git?rev=67865b9ced45665649a59e96a0073a933dcd0140#67865b9ced45665649a59e96a0073a933dcd0140" }
+source = { git = "https://github.com/samsja/pydantic_config.git?rev=b7d511d#b7d511d4355b9673ba916e31c4d224376fab3fb5" }
 dependencies = [
     { name = "pydantic" },
     { name = "tyro" },
