@@ -17,7 +17,7 @@ from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import EnvConfig, OrchestratorConfig
 from prime_rl.orchestrator.env_worker import EnvWorker, WorkerDiedError
 from prime_rl.orchestrator.utils import get_sampling_args
-from prime_rl.utils.client import InferencePool
+from prime_rl.utils.client import InferencePool, signal_nccl_ready
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_env_worker_log_file
@@ -207,6 +207,10 @@ class Scheduler:
             # Update weights on inference servers
             update_weights_start_time = time.perf_counter()
             weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
+
+            if self.config.weight_broadcast.type == "nccl":
+                signal_nccl_ready(weights_path)
+
             await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")

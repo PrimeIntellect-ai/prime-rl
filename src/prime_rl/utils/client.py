@@ -191,6 +191,24 @@ async def check_health(
 NCCL_READY_MARKER = "NCCL_READY"
 
 
+def signal_nccl_ready(ready_dir: Path) -> None:
+    """Signal that inference workers are ready for NCCL broadcast.
+
+    Creates the NCCL_READY marker file that the trainer waits for before
+    starting the NCCL broadcast. This is separated from update_weights to
+    allow signaling readiness without requiring a weight directory to exist
+    (e.g., when resuming from checkpoint in NCCL mode).
+
+    Args:
+        ready_dir: Directory where the NCCL_READY marker should be created.
+    """
+    logger = get_logger()
+    nccl_ready_file = ready_dir / NCCL_READY_MARKER
+    nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+    nccl_ready_file.touch()
+    logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+
+
 async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
@@ -198,10 +216,6 @@ async def update_weights(
     step: int = 0,
 ) -> None:
     """Update weights on static inference servers.
-
-    Creates a NCCL_READY marker file before calling the update endpoint to signal
-    to the trainer that inference workers are about to enter the receive path.
-    This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
 
     Note: The server-side /update_weights endpoint automatically resets the prefix cache
     to invalidate any cached KV states computed with the old weights.
@@ -223,13 +237,6 @@ async def update_weights(
                     logger.warning("The route /update_weights does not exist. Skipping weight update.")
                     return
                 raise
-
-        # Create ready marker before servers enter receive path (used by NCCL broadcast)
-        if weight_dir is not None:
-            nccl_ready_file = weight_dir / NCCL_READY_MARKER
-            nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
-            nccl_ready_file.touch()
-            logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
         await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
