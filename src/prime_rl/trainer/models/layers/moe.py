@@ -371,10 +371,19 @@ class MoE(nn.Module):
             persistent=False,
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        forced_expert_indices: torch.Tensor | None = None,
+        forced_expert_probs: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
+            forced_expert_indices (torch.Tensor | None): Optional expert indices to force routing,
+                shape ``(bs, slen, top_k)`` or ``(bs*slen, top_k)``.
+            forced_expert_probs (torch.Tensor | None): Optional routing probabilities aligned to
+                ``forced_expert_indices``, shape ``(bs, slen, top_k)`` or ``(bs*slen, top_k)``.
 
         Returns:
             out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
@@ -382,13 +391,48 @@ class MoE(nn.Module):
         bs, slen, dim = x.shape
         x = x.view(-1, dim)
 
-        # top_scores and selected_experts_indices shape (bs*slen*top_k,)
-        # num_tokens_per_expert shape (num_experts,)
-        (
-            top_scores,
-            selected_experts_indices,
-            num_tokens_per_expert,
-        ) = self.router(x, self.expert_bias)
+        if forced_expert_indices is None:
+            # top_scores and selected_experts_indices shape (bs*slen*top_k,)
+            # num_tokens_per_expert shape (num_experts,)
+            (
+                top_scores,
+                selected_experts_indices,
+                num_tokens_per_expert,
+            ) = self.router(x, self.expert_bias)
+        else:
+            if forced_expert_indices.dim() == 3:
+                forced_expert_indices = forced_expert_indices.reshape(-1, forced_expert_indices.shape[-1])
+            elif forced_expert_indices.dim() != 2:
+                raise ValueError("forced_expert_indices must have shape (bs, slen, top_k) or (bs*slen, top_k)")
+            if forced_expert_indices.shape[-1] != self.router.top_k:
+                raise ValueError("forced_expert_indices last dimension must match top_k")
+            if forced_expert_probs is None:
+                top_scores = torch.ones(
+                    forced_expert_indices.shape,
+                    dtype=torch.float32,
+                    device=forced_expert_indices.device,
+                )
+            else:
+                if forced_expert_probs.dim() == 3:
+                    forced_expert_probs = forced_expert_probs.reshape(-1, forced_expert_probs.shape[-1])
+                elif forced_expert_probs.dim() != 2:
+                    raise ValueError("forced_expert_probs must have shape (bs, slen, top_k) or (bs*slen, top_k)")
+                if forced_expert_probs.shape != forced_expert_indices.shape:
+                    raise ValueError("forced_expert_probs must match forced_expert_indices shape")
+                top_scores = forced_expert_probs.to(torch.float32)
+
+            if self.router.route_norm:
+                denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
+                top_scores = top_scores / denominator
+            top_scores = top_scores * self.router.route_scale
+
+            selected_experts_indices = forced_expert_indices
+            num_tokens_per_expert = torch.histc(
+                selected_experts_indices.view(-1),
+                bins=self.router.num_experts,
+                min=0,
+                max=self.router.num_experts,
+            )
 
         # tokens_per_expert will be used to update the expert bias for load balancing.
         # and also to count the expert usage
