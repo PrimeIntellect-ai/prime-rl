@@ -136,6 +136,22 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with completion logprobs length != completion ids length ({len(sample.completion_logprobs)} != {len(sample.completion_ids)})",
             )
+        if sample.completion_expert_indices is not None and len(sample.completion_expert_indices) != len(
+            sample.completion_ids
+        ):
+            return (
+                False,
+                "Run wrote a sample with completion expert indices length != completion ids length "
+                f"({len(sample.completion_expert_indices)} != {len(sample.completion_ids)})",
+            )
+        if sample.completion_expert_probs is not None and len(sample.completion_expert_probs) != len(
+            sample.completion_ids
+        ):
+            return (
+                False,
+                "Run wrote a sample with completion expert probs length != completion ids length "
+                f"({len(sample.completion_expert_probs)} != {len(sample.completion_ids)})",
+            )
         if sample_length == 0:
             return False, "Run wrote a sample with no tokens"
         if sample_length > self.seq_len:
