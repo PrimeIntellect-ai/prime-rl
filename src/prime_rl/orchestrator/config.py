@@ -108,6 +108,16 @@ class SamplingConfig(BaseConfig):
         ),
     ] = None
 
+    router_sampling: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to use router sampling for MoE models. When enabled, the RL config will "
+                "automatically enable inference return_routed_experts."
+            ),
+        ),
+    ] = False
+
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
     extra_body: Annotated[
