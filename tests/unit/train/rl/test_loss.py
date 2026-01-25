@@ -17,8 +17,8 @@ def test_grpo_loss():
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
-        teacher_logprobs,
-        advantages,
+        teacher_logprobs=teacher_logprobs,
+        advantages=advantages,
         loss_mask=loss_mask,
         loss_config=LossConfig(ratio_type="token", token_mask_high=10.0),
         loss_scale=1.0,
@@ -37,13 +37,38 @@ def test_gspo_loss():
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
-        teacher_logprobs,
-        advantages,
+        teacher_logprobs=teacher_logprobs,
+        advantages=advantages,
         loss_mask=loss_mask,
         loss_config=LossConfig(ratio_type="sequence", token_mask_high=10.0),
         loss_scale=1.0,
     )
     assert loss.shape == ()
+
+
+def test_loss_uses_expert_logprobs():
+    trainer_logprobs = [torch.log(torch.tensor([0.2], device="cuda"))]
+    inference_logprobs = [torch.log(torch.tensor([0.1], device="cuda"))]
+    trainer_expert_logprobs = [torch.log(torch.tensor([0.5], device="cuda"))]
+    inference_expert_logprobs = [torch.log(torch.tensor([0.25], device="cuda"))]
+    advantages = [torch.ones(1, device="cuda")]
+    loss_mask = [torch.ones(1, dtype=torch.bool, device="cuda")]
+
+    loss, _ = compute_loss(
+        trainer_logprobs,
+        inference_logprobs,
+        trainer_expert_logprobs=trainer_expert_logprobs,
+        inference_expert_logprobs=inference_expert_logprobs,
+        teacher_logprobs=None,
+        advantages=advantages,
+        loss_mask=loss_mask,
+        loss_config=LossConfig(ratio_type="token", token_mask_high=10.0, kl_tau=0.0),
+        loss_scale=1.0,
+    )
+
+    expected_logprob = torch.log(torch.tensor(0.1, device="cuda"))
+    expected = -(torch.tensor(4.0, device="cuda") * expected_logprob)
+    assert torch.allclose(loss, expected)
 
 
 def test_entropy_loss():

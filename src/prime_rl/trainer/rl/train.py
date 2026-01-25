@@ -27,6 +27,7 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
+    compute_routed_expert_logprobs,
     selective_log_softmax,
     shift_tensor_left,
     shift_tensor_right,
@@ -376,6 +377,9 @@ def train(config: RLTrainerConfig):
                 out["logprobs"] = selective_log_softmax(logits, labels)
                 out["entropy"] = compute_entropy(logits)
 
+            trainer_expert_logprobs = out.get("routed_expert_logprobs")
+            inference_expert_logprobs = compute_routed_expert_logprobs(routed_expert_probs)
+
             if cp_enabled:
                 logprobs = dist_nn.all_gather(out["logprobs"], group=cp_group)
                 out["logprobs"] = torch.cat(logprobs, dim=1)
@@ -383,6 +387,12 @@ def train(config: RLTrainerConfig):
                 entropies = [torch.zeros_like(out["entropy"]) for _ in range(cp_size)]
                 dist.all_gather(entropies, out["entropy"], group=cp_group)
                 out["entropy"] = torch.cat(entropies, dim=1)
+                if trainer_expert_logprobs is not None:
+                    expert_logprobs = dist_nn.all_gather(trainer_expert_logprobs, group=cp_group)
+                    trainer_expert_logprobs = torch.cat(expert_logprobs, dim=1)
+                if inference_expert_logprobs is not None:
+                    expert_logprobs = dist_nn.all_gather(inference_expert_logprobs, group=cp_group)
+                    inference_expert_logprobs = torch.cat(expert_logprobs, dim=1)
 
             vocab_size = model.config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
@@ -398,6 +408,12 @@ def train(config: RLTrainerConfig):
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
+                trainer_expert_logprobs=trainer_expert_logprobs.squeeze().split(response_lengths)
+                if trainer_expert_logprobs is not None
+                else None,
+                inference_expert_logprobs=inference_expert_logprobs.squeeze().split(response_lengths)
+                if inference_expert_logprobs is not None
+                else None,
                 teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
                 if teacher_logprobs is not None
                 else None,

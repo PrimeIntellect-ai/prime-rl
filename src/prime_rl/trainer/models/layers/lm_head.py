@@ -16,6 +16,7 @@ class PrimeLmOutput(TypedDict, total=False):
     logits: Tensor | None
     logprobs: Tensor | None
     entropy: Tensor | None
+    routed_expert_logprobs: Tensor | None
 
 
 def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
@@ -28,6 +29,7 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
         logits=_float_and_contiguous(output.get("logits")),
         logprobs=_float_and_contiguous(output.get("logprobs")),
         entropy=_float_and_contiguous(output.get("entropy")),
+        routed_expert_logprobs=_float_and_contiguous(output.get("routed_expert_logprobs")),
     )
 
 

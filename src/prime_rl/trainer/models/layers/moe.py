@@ -219,16 +219,7 @@ class TokenChoiceTopKRouter(nn.Module):
                 - num_tokens_per_expert (torch.Tensor):
                     Number of tokens assigned to each expert with shape ``(num_experts,)``.
         """
-        # scores shape (bs*slen, num_experts)
-        scores = self.gate(x)
-
-        # By default, sigmoid or softmax is performed in float32 to avoid loss explosion
-        if self.score_func == "sigmoid":
-            scores = torch.sigmoid(scores.to(torch.float32))
-        elif self.score_func == "softmax":
-            scores = F.softmax(scores.to(torch.float32), dim=1)
-        else:
-            raise NotImplementedError(f"Unknown score function {self.score_func}")
+        scores = self.compute_scores(x)
 
         # top scores shape (bs*slen, top_k)
         # NOTE: The expert_bias is only used for routing. The gating value
@@ -253,6 +244,17 @@ class TokenChoiceTopKRouter(nn.Module):
         )
 
         return top_scores, selected_experts_indices, num_tokens_per_expert
+
+    def compute_scores(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute routing scores for all experts without top-k selection."""
+        scores = self.gate(x)
+
+        # By default, sigmoid or softmax is performed in float32 to avoid loss explosion
+        if self.score_func == "sigmoid":
+            return torch.sigmoid(scores.to(torch.float32))
+        if self.score_func == "softmax":
+            return F.softmax(scores.to(torch.float32), dim=1)
+        raise NotImplementedError(f"Unknown score function {self.score_func}")
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
@@ -370,12 +372,14 @@ class MoE(nn.Module):
             torch.zeros(num_experts, dtype=torch.float32),
             persistent=False,
         )
+        self.last_router_logprobs: torch.Tensor | None = None
 
     def forward(
         self,
         x: torch.Tensor,
         forced_expert_indices: torch.Tensor | None = None,
         forced_expert_probs: torch.Tensor | None = None,
+        return_router_logprobs: bool = False,
     ) -> torch.Tensor:
         """
         Args:
@@ -390,6 +394,7 @@ class MoE(nn.Module):
         """
         bs, slen, dim = x.shape
         x = x.view(-1, dim)
+        self.last_router_logprobs = None
 
         if forced_expert_indices is None:
             # top_scores and selected_experts_indices shape (bs*slen*top_k,)
@@ -420,6 +425,17 @@ class MoE(nn.Module):
                 if forced_expert_probs.shape != forced_expert_indices.shape:
                     raise ValueError("forced_expert_probs must match forced_expert_indices shape")
                 top_scores = forced_expert_probs.to(torch.float32)
+
+            if return_router_logprobs:
+                router_scores = self.router.compute_scores(x)
+                router_scores = router_scores.gather(dim=1, index=forced_expert_indices)
+                if self.router.route_norm:
+                    denominator = router_scores.sum(dim=-1, keepdim=True) + 1e-20
+                    router_scores = router_scores / denominator
+                router_scores = router_scores * self.router.route_scale
+                self.last_router_logprobs = (
+                    torch.log(router_scores.clamp_min(1e-20)).sum(dim=-1).reshape(bs, slen)
+                )
 
             if self.router.route_norm:
                 denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
