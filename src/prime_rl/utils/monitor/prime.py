@@ -373,6 +373,8 @@ class PrimeMonitor(Monitor):
         self._thread.start()
         self._client = httpx.AsyncClient(timeout=30)
         self._pending_futures: list[asyncio.Future] = []
+        if hasattr(self, "_pending_sample_steps") and self._pending_sample_steps:
+            self._pending_sample_steps.clear()
 
     def _reinit_after_fork(self) -> None:
         """Reinitialize thread and event loop after fork."""
