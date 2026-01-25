@@ -30,7 +30,7 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset, setup_validation_dataloader
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     export_benchmark_json,
@@ -48,6 +48,89 @@ import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 
 from torchtitan.distributed.utils import clip_grad_norm_
+
+
+def prepare_batch(batch, cp_enabled, cp_rank, cp_size, cp_group):
+    """Move batch to GPU and apply CP sharding if enabled."""
+    input_ids = batch["input_ids"].to("cuda")
+    position_ids = batch["position_ids"].to("cuda")
+    target_ids = batch["target_ids"].to("cuda")
+    loss_mask = batch["loss_mask"].to("cuda")
+
+    if cp_enabled:
+        input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+        target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
+        loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+
+    return input_ids, position_ids, target_ids, loss_mask
+
+
+def compute_loss(model, input_ids, position_ids, target_ids, loss_mask, ce_loss):
+    """Run forward pass and compute masked loss."""
+    out = forward(model, input_ids, position_ids)
+    logits = out["logits"]
+    B, L, V = logits.shape
+
+    loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+    loss = loss[loss_mask].mean()
+
+    del logits
+    return loss, out
+
+
+def validate_step(
+    model,
+    validation_dataloader,
+    ce_loss,
+    parallel_dims,
+    logger,
+):
+    """Run one pass through the validation dataset and return metrics."""
+    model.eval()
+    val_loss = torch.tensor(0.0, device="cuda")
+    num_batches = torch.tensor(0, device="cuda")
+
+    cp_enabled = parallel_dims.cp_enabled
+    cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
+    cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
+    cp_size = parallel_dims.cp
+
+    val_iter = iter(validation_dataloader)
+    with torch.no_grad():
+        while True:
+            val_batch = next(val_iter, None)
+
+            # Check if this rank has real data (not exhausted and not a dummy batch)
+            loss_mask_check = val_batch["loss_mask"] if val_batch is not None else None
+            has_real_data = val_batch is not None and loss_mask_check.any().item()
+            has_real_data_tensor = torch.tensor(1 if has_real_data else 0, device="cuda", dtype=torch.long)
+            dist.all_reduce(has_real_data_tensor, op=dist.ReduceOp.MIN)
+
+            # Stop if any rank has no more real data
+            if has_real_data_tensor.item() == 0:
+                break
+
+            input_ids, position_ids, target_ids, loss_mask = prepare_batch(
+                val_batch, cp_enabled, cp_rank, cp_size, cp_group
+            )
+            loss, _ = compute_loss(model, input_ids, position_ids, target_ids, loss_mask, ce_loss)
+
+            if not torch.isnan(loss):
+                val_loss += loss.detach()
+                num_batches += 1
+
+    dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
+    dist.all_reduce(num_batches, op=dist.ReduceOp.SUM)
+
+    model.train()
+
+    if num_batches > 0:
+        avg_val_loss = (val_loss / num_batches).item()
+    else:
+        avg_val_loss = float("nan")
+        logger.warning("No valid validation batches found")
+
+    return {"val/loss": avg_val_loss, "val/num_batches": num_batches.item()}
 
 
 @clean_exit
@@ -210,6 +293,28 @@ def train(config: SFTTrainerConfig):
         if config.max_steps is not None and progress.step >= config.max_steps:
             break
 
+        if config.validation.enabled and (
+            progress.step % config.validation.interval == 0
+            or (config.max_steps is not None and progress.step == config.max_steps - 1)
+        ):
+            validation_dataloader = setup_validation_dataloader(
+                tokenizer, config.data, config.validation, config.model.cp * config.model.tp
+            )
+            logger.info(f"Running validation at step {progress.step}")
+            val_start_time = time.perf_counter()
+            val_metrics = validate_step(model, validation_dataloader, ce_loss, parallel_dims, logger)
+            val_time = time.perf_counter() - val_start_time
+            val_metrics["val/time"] = val_time
+            val_metrics["step"] = progress.step
+            monitor.log(val_metrics, step=progress.step)
+            logger.success(
+                f"Validation | Loss: {val_metrics['val/loss']:.4f} | Batches: {val_metrics['val/num_batches']} | Time: {val_time:.2f}s"
+            )
+            # Reset the validation dataloader for next validation run
+            validation_dataloader = setup_validation_dataloader(
+                tokenizer, config.data, config.validation, config.model.cp * config.model.tp
+            )
+
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
         )
@@ -222,15 +327,9 @@ def train(config: SFTTrainerConfig):
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
-            input_ids = micro_batch["input_ids"].to("cuda")
-            position_ids = micro_batch["position_ids"].to("cuda")
-            target_ids = micro_batch["target_ids"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
-
-            if cp_enabled:
-                input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
-                target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
-                loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+            input_ids, position_ids, target_ids, loss_mask = prepare_batch(
+                micro_batch, cp_enabled, cp_rank, cp_size, cp_group
+            )
 
             assert input_ids.shape == position_ids.shape == target_ids.shape == loss_mask.shape, (
                 f"input_ids.shape: {input_ids.shape}, position_ids.shape: {position_ids.shape}, target_ids.shape: {target_ids.shape}, loss_mask.shape: {loss_mask.shape}"

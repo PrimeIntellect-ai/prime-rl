@@ -17,6 +17,15 @@ from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
+class ValidationConfig(BaseConfig):
+    """Configures online validation during SFT training."""
+
+    enabled: Annotated[bool, Field(description="Enable online validation during training.")] = False
+    interval: Annotated[int, Field(ge=1, description="Run validation every N training steps.")] = 100
+    split: Annotated[str, Field(description="HuggingFace dataset split to use for validation.")] = "validation"
+    max_samples: Annotated[int | None, Field(ge=1, description="Maximum number of validation samples to use.")] = None
+
+
 class BaseDataConfig(BaseModel):
     """Base config for SFT data."""
 
@@ -115,6 +124,9 @@ class SFTTrainerConfig(BaseSettings):
 
     # The data configuration
     data: Annotated[DataConfigType, Field(discriminator="type")] = SFTDataConfig()
+
+    # The validation configuration
+    validation: ValidationConfig = ValidationConfig()
 
     # The optimizer configuration
     optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()
