@@ -4,7 +4,7 @@
 
 - Avoid try/except blocks unless it's really necessary.  It's fine that a program fails if something goes wrong as this helps us to catch non-obvious bugs and unforeseen side-effects earlier. You can add try catch on code that explicitly aims to be fault tolerant like adding retry mechanisms or explicit and intentional robustness. 
 
-- Do not add unnecessary comments. Epsecially do not try to explain code change that you did in the comments section, do not refer to old code. "the code used to do that but now we are doig this" no this is not a pattern we want. Instead use comments if needed but not mandatory to explain ambiguous code
+- Do not add unnecessary comments. Especially do not try to explain code change that reflect your work process, do not refer to old code. "The code used to do that but now we are doing this" is not a pattern we want. Instead prefer to use targeted comments sparingly to explain ambiguous code.
 
 ## Testing
 
