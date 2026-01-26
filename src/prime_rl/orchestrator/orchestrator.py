@@ -43,6 +43,7 @@ from prime_rl.utils.client import (
     setup_admin_clients,
     setup_clients,
     setup_inference_pool,
+    signal_nccl_ready,
 )
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
@@ -232,9 +233,17 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
 
-        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
-        lora_name = config.model.lora.name if config.model.lora else None
-        await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+        # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
+        check_exists = config.weight_broadcast.type != "nccl"
+        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step, check_exists=check_exists)
+        if config.weight_broadcast.type == "nccl":
+            # Signal readiness for NCCL broadcast - trainer will send weights when it starts
+            signal_nccl_ready(weights_path)
+            logger.info(f"NCCL mode: signaled readiness at {weights_path}, waiting for trainer to broadcast weights")
+        else:
+            # Filesystem mode: load weights from disk
+            lora_name = config.model.lora.name if config.model.lora else None
+            await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
         if config.reload_weights_on_start:
             if config.model.lora is None:
