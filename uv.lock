@@ -2411,7 +2411,7 @@ wheels = [
 
 [[package]]
 name = "prime"
-version = "0.5.0"
+version = "0.5.23"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "build" },
@@ -2425,9 +2425,9 @@ dependencies = [
     { name = "typer" },
     { name = "verifiers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5d/6f/0cd7ee178b600b95b110f88c4c9892dac6668ea5c4eab917bed6bae27c49/prime-0.5.0.tar.gz", hash = "sha256:bb7bade9a0bb36c72a7a6420b5138144c29e8a56c497a9521d133337fbbeca4a", size = 226349, upload-time = "2025-12-02T03:48:24.942Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8b/d0/a0bbde4fc8c1fff5ea780e278c343bfecb7f29c9e258fbfd62243843f41e/prime-0.5.23.tar.gz", hash = "sha256:6d0b229b8825175653c004541c5dbf95f9da2c43c8afb9c4bef7f2150c5b0176", size = 262743, upload-time = "2026-01-26T18:34:30.315Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/a2/e4ac530ad0853e8c190c9ccb17345604c7c6098ed626e8ca8c7c0f9e7d8a/prime-0.5.0-py3-none-any.whl", hash = "sha256:dbf806e65d241446eaf92030d63384bd602b8395fdb7489d5917231f582b416b", size = 78332, upload-time = "2025-12-02T03:48:23.785Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/d8/7d0ed8c84664a35ff1a288af05f80abf4ec2b67ea27e55e04dc745c0eda8/prime-0.5.23-py3-none-any.whl", hash = "sha256:737b60b3a8f034995062b6a4daef0cc59eb8caffe0b52053a2fb44d81e897f3a", size = 115972, upload-time = "2026-01-26T18:34:29.241Z" },
 ]
 
 [[package]]
@@ -2520,7 +2520,7 @@ requires-dist = [
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
-    { name = "prime", specifier = ">=0.5.0" },
+    { name = "prime", specifier = ">=0.5.23" },
     { name = "prime-evals", specifier = ">=0.1.5" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
