@@ -296,6 +296,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.perf_counter()
+        online_eval_time = None
 
         # Run evals BEFORE training (blocking, in subprocess to isolate event loop)
         # This ensures weights don't change during eval and eval doesn't cause event loop lag
@@ -324,6 +325,7 @@ async def orchestrate(config: OrchestratorConfig):
                 max_concurrent=config.max_concurrent or -1,
             )
             eval_time = time.perf_counter() - eval_start_time
+            online_eval_time = eval_time
             logger.success(f"Online evals for checkpoint step {ckpt_step} completed in {eval_time:.2f}s")
 
             # Resume weight updates
@@ -538,6 +540,8 @@ async def orchestrate(config: OrchestratorConfig):
             # W&B axis
             "step": progress.step,
         }
+        if online_eval_time is not None:
+            to_log["time/online_eval"] = online_eval_time
 
         # If more than one env, add per-env metrics
         if results_df.task.nunique() > 1:
