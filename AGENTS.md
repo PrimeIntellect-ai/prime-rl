@@ -1,6 +1,6 @@
 # AGENTS.md
 
-## code guidelines
+## Code Guidelines
 
 - Avoid tryexcept blocks unless its really necessary.  Its fine that a program fails if something goes wrong. You can add try catch on code that expeclity want to be fault tolerant like adding retry mechanisms or robustness. 
 
