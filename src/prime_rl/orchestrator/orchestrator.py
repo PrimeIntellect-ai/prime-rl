@@ -310,6 +310,7 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Pause weight updates during eval
             scheduler.checkpoint_ready.clear()
+            eval_start_time = time.perf_counter()
 
             await run_evals_subprocess(
                 client_config=config.client,
@@ -322,6 +323,8 @@ async def orchestrate(config: OrchestratorConfig):
                 step=progress.step,
                 max_concurrent=config.max_concurrent or -1,
             )
+            eval_time = time.perf_counter() - eval_start_time
+            logger.success(f"Online evals for checkpoint step {ckpt_step} completed in {eval_time:.2f}s")
 
             # Resume weight updates
             scheduler.checkpoint_ready.set()
