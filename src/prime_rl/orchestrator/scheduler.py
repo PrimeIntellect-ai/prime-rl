@@ -187,71 +187,91 @@ class Scheduler:
         )
 
         if next_ckpt_step > self.ckpt_step:
-            if next_ckpt_step == async_away_ckpt_step:
-                self.logger.info(
-                    f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
-                    f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+            initial_ckpt_step = self.ckpt_step
+
+            # Process checkpoints sequentially to avoid skipping NCCL handshakes.
+            # This prevents deadlocks where trainer is waiting for NCCL_READY on checkpoint N
+            # while orchestrator is waiting for STABLE on checkpoint N+1.
+            for ckpt_to_process in range(self.ckpt_step + 1, next_ckpt_step + 1):
+                ckpt_path = get_step_path(get_broadcast_dir(self.config.output_dir), ckpt_to_process)
+                stable_path = ckpt_path / "STABLE"
+
+                # Check if this checkpoint exists yet
+                if not stable_path.exists():
+                    if ckpt_to_process == async_away_ckpt_step:
+                        # This is the checkpoint we need for async enforcement - must wait
+                        self.logger.info(
+                            f"Orchestrator paused: waiting for trainer process to complete checkpoint {ckpt_to_process} "
+                            f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+                        )
+                        self.checkpoint_ready.clear()
+                        wait_for_ckpt_start_time = time.perf_counter()
+                        await wait_for_path(stable_path)
+                        self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
+                        self.logger.info(
+                            f"Orchestrator resumed: checkpoint {ckpt_to_process} ready (after {self.wait_for_ckpt_time:.2f}s)"
+                        )
+                    else:
+                        # Intermediate checkpoint not ready yet, stop here and retry later
+                        self.logger.debug(f"Checkpoint {ckpt_to_process} not ready yet, will retry")
+                        break
+
+                self.logger.debug(
+                    f"Got new policy with step {ckpt_to_process}. Updating weights and cancelling old rollout requests."
                 )
-                self.checkpoint_ready.clear()
-                wait_for_ckpt_start_time = time.perf_counter()
-                await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
-                self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
-                self.logger.info(
-                    f"Orchestrator resumed: checkpoint {next_ckpt_step} ready (after {self.wait_for_ckpt_time:.2f}s)"
-                )
 
-            self.logger.debug(
-                f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
-            )
+                # Update weights on inference servers (this writes NCCL_READY and triggers the broadcast)
+                update_weights_start_time = time.perf_counter()
+                weights_path = ckpt_path
+                await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=ckpt_to_process)
+                self.update_weights_time = time.perf_counter() - update_weights_start_time
+                self.logger.debug(f"Updated weights to step {ckpt_to_process} in {self.update_weights_time:.2f}s")
 
-            # Update weights on inference servers
-            update_weights_start_time = time.perf_counter()
-            weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-            await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
-            self.update_weights_time = time.perf_counter() - update_weights_start_time
-            self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
+                self.ckpt_step = ckpt_to_process
 
-            if self.lora_name is not None:
-                self.model_name = self.lora_name
-                # Update workers to use LoRA name for future requests
-                for workers in self.workers.values():
-                    for worker in workers:
-                        worker.update_model_name(self.lora_name)
+            # Only do post-processing if we actually processed at least one checkpoint
+            num_ckpts_processed = self.ckpt_step - initial_ckpt_step
+            if num_ckpts_processed > 0:
+                if self.lora_name is not None:
+                    self.model_name = self.lora_name
+                    # Update workers to use LoRA name for future requests
+                    for workers in self.workers.values():
+                        for worker in workers:
+                            worker.update_model_name(self.lora_name)
 
-            self.checkpoint_ready.set()
+                self.checkpoint_ready.set()
 
-            # Handle off-policy tracking - cancel old requests
-            futures_to_remove = []
-            futures_to_update = []
+                # Handle off-policy tracking - cancel old requests
+                futures_to_remove = []
+                futures_to_update = []
 
-            for future, info in self.inflight_group_rollouts.items():
-                if info.off_policy_steps > self.max_off_policy_steps:
-                    if not future.done():
-                        future.cancel()
-                    futures_to_remove.append((future, info.worker))
-                else:
-                    futures_to_update.append((future, info.off_policy_steps + 1, info.worker, info.request_id))
+                for future, info in self.inflight_group_rollouts.items():
+                    new_off_policy_steps = info.off_policy_steps + num_ckpts_processed
+                    if new_off_policy_steps > self.max_off_policy_steps:
+                        if not future.done():
+                            future.cancel()
+                        futures_to_remove.append((future, info.worker))
+                    else:
+                        futures_to_update.append((future, new_off_policy_steps, info.worker, info.request_id))
 
-            # Remove cancelled
-            for future, worker in futures_to_remove:
-                self.inflight_group_rollouts.pop(future, None)
-            self.cancelled_rollouts_count += len(futures_to_remove)
+                # Remove cancelled
+                for future, worker in futures_to_remove:
+                    self.inflight_group_rollouts.pop(future, None)
+                self.cancelled_rollouts_count += len(futures_to_remove)
 
-            # Update off-policy steps for remaining
-            for future, off_policy_steps, worker, request_id in futures_to_update:
-                if future in self.inflight_group_rollouts:
-                    self.inflight_group_rollouts[future] = InflightRolloutInfo(
-                        off_policy_steps=off_policy_steps,
-                        worker=worker,
-                        request_id=request_id,
+                # Update off-policy steps for remaining
+                for future, off_policy_steps, worker, request_id in futures_to_update:
+                    if future in self.inflight_group_rollouts:
+                        self.inflight_group_rollouts[future] = InflightRolloutInfo(
+                            off_policy_steps=off_policy_steps,
+                            worker=worker,
+                            request_id=request_id,
+                        )
+
+                if len(futures_to_remove) > 0:
+                    self.logger.warning(
+                        f"Cancelled {len(futures_to_remove)} old rollout requests (will refill naturally). Consider increasing max_off_policy_steps to avoid this."
                     )
-
-            if len(futures_to_remove) > 0:
-                self.logger.warning(
-                    f"Cancelled {len(futures_to_remove)} old rollout requests (will refill naturally). Consider increasing max_off_policy_steps to avoid this."
-                )
-
-            self.ckpt_step = next_ckpt_step
 
     async def generate_batch(self, step: int) -> list[dict]:
         """Generate a batch of rollouts using workers.
