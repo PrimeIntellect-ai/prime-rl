@@ -24,15 +24,16 @@ def init_process_group() -> Generator[None, None, None]:
 def create_run_with_config(output_dir: Path, run_name: str) -> Path:
     run_dir = output_dir / run_name
     run_dir.mkdir()
-    config_dir = run_dir / "configs"
-    config_dir.mkdir()
+    control_dir = run_dir / "control"
+    control_dir.mkdir()
     config = {
         "model": {"name": "test-model"},
         "batch_size": 2,
         "rollouts_per_example": 1,
         "env": [{"id": "test-env"}],
+        "sampling": {"temperature": 1.0},
     }
-    with open(config_dir / "orch.toml", "wb") as f:
+    with open(control_dir / "orch.toml", "wb") as f:
         tomli_w.dump(config, f)
     return run_dir
 
@@ -44,6 +45,7 @@ def make_training_sample() -> TrainingSample:
         completion_ids=[2],
         completion_mask=[True],
         completion_logprobs=[-0.1],
+        completion_temperatures=[1.0],
     )
 
 
