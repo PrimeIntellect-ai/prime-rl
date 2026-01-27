@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Callable
 
@@ -5,7 +6,10 @@ import pytest
 
 from tests.conftest import Command, Environment, ProcessResult
 
-pytestmark = [pytest.mark.slow]
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not os.environ.get("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set"),
+]
 
 
 @pytest.fixture(scope="module")

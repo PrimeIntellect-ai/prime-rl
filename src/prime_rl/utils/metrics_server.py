@@ -12,16 +12,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING
 
 from loguru import logger
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, generate_latest
 
 if TYPE_CHECKING:
     from prime_rl.utils.config import MetricsServerConfig
-
-try:
-    from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, generate_latest
-
-    PROMETHEUS_AVAILABLE = True
-except ImportError:
-    PROMETHEUS_AVAILABLE = False
 
 
 @dataclass
@@ -103,53 +97,48 @@ class MetricsServer(HealthServer):
         super().__init__(config.port, config.host)
         self.config = config
 
-        if PROMETHEUS_AVAILABLE:
-            self._registry = CollectorRegistry()
-            self._step = Gauge("trainer_step", "Current training step", registry=self._registry)
-            self._loss = Gauge("trainer_loss", "Current training loss", registry=self._registry)
-            self._throughput = Gauge(
-                "trainer_throughput_tokens_per_sec", "Training throughput in tokens/sec", registry=self._registry
-            )
-            self._last_step_ts = Gauge(
-                "trainer_last_step_timestamp_seconds", "Unix timestamp of last step", registry=self._registry
-            )
-            self._grad_norm = Gauge("trainer_grad_norm", "Gradient norm", registry=self._registry)
-            self._peak_mem = Gauge("trainer_peak_memory_gib", "Peak GPU memory in GiB", registry=self._registry)
-            self._lr = Gauge("trainer_learning_rate", "Current learning rate", registry=self._registry)
-            self._mfu = Gauge("trainer_mfu_percent", "Model FLOPS utilization %", registry=self._registry)
-            self._entropy = Gauge("trainer_entropy", "Mean entropy", registry=self._registry)
-            self._mismatch_kl = Gauge(
-                "trainer_mismatch_kl", "KL divergence between trainer and inference model", registry=self._registry
-            )
-            # Aggregate run metrics
-            self._runs_discovered = Gauge(
-                "trainer_runs_discovered", "Number of run folders discovered", registry=self._registry
-            )
-            self._runs_active = Gauge(
-                "trainer_runs_active", "Number of runs with assigned slots", registry=self._registry
-            )
-            self._runs_ready = Gauge(
-                "trainer_runs_ready", "Number of runs ready for gradient updates", registry=self._registry
-            )
-            self._runs_max = Gauge("trainer_runs_max", "Maximum run capacity", registry=self._registry)
-            # Per-run metrics with labels
-            self._run_step = Gauge("trainer_run_step", "Training step for run", ["run"], registry=self._registry)
-            self._run_tokens = Gauge(
-                "trainer_run_tokens", "Total tokens processed by run", ["run"], registry=self._registry
-            )
-            self._run_learning_rate = Gauge(
-                "trainer_run_learning_rate", "Current learning rate for run", ["run"], registry=self._registry
-            )
-            self._run_ready = Gauge(
-                "trainer_run_ready",
-                "Whether run is ready for updates (1=ready, 0=not ready)",
-                ["run"],
-                registry=self._registry,
-            )
-            # Track known run labels for cleanup
-            self._known_runs: set[str] = set()
-        else:
-            self._registry = None
+        self._registry = CollectorRegistry()
+        self._step = Gauge("trainer_step", "Current training step", registry=self._registry)
+        self._loss = Gauge("trainer_loss", "Current training loss", registry=self._registry)
+        self._throughput = Gauge(
+            "trainer_throughput_tokens_per_sec", "Training throughput in tokens/sec", registry=self._registry
+        )
+        self._last_step_ts = Gauge(
+            "trainer_last_step_timestamp_seconds", "Unix timestamp of last step", registry=self._registry
+        )
+        self._grad_norm = Gauge("trainer_grad_norm", "Gradient norm", registry=self._registry)
+        self._peak_mem = Gauge("trainer_peak_memory_gib", "Peak GPU memory in GiB", registry=self._registry)
+        self._lr = Gauge("trainer_learning_rate", "Current learning rate", registry=self._registry)
+        self._mfu = Gauge("trainer_mfu_percent", "Model FLOPS utilization %", registry=self._registry)
+        self._entropy = Gauge("trainer_entropy", "Mean entropy", registry=self._registry)
+        self._mismatch_kl = Gauge(
+            "trainer_mismatch_kl", "KL divergence between trainer and inference model", registry=self._registry
+        )
+        # Aggregate run metrics
+        self._runs_discovered = Gauge(
+            "trainer_runs_discovered", "Number of run folders discovered", registry=self._registry
+        )
+        self._runs_active = Gauge("trainer_runs_active", "Number of runs with assigned slots", registry=self._registry)
+        self._runs_ready = Gauge(
+            "trainer_runs_ready", "Number of runs ready for gradient updates", registry=self._registry
+        )
+        self._runs_max = Gauge("trainer_runs_max", "Maximum run capacity", registry=self._registry)
+        # Per-run metrics with labels
+        self._run_step = Gauge("trainer_run_step", "Training step for run", ["run"], registry=self._registry)
+        self._run_tokens = Gauge(
+            "trainer_run_tokens", "Total tokens processed by run", ["run"], registry=self._registry
+        )
+        self._run_learning_rate = Gauge(
+            "trainer_run_learning_rate", "Current learning rate for run", ["run"], registry=self._registry
+        )
+        self._run_ready = Gauge(
+            "trainer_run_ready",
+            "Whether run is ready for updates (1=ready, 0=not ready)",
+            ["run"],
+            registry=self._registry,
+        )
+        # Track known run labels for cleanup
+        self._known_runs: set[str] = set()
 
     def _make_handler(self) -> type[BaseHTTPRequestHandler]:
         """Create handler with /metrics and /health endpoints."""
@@ -167,14 +156,9 @@ class MetricsServer(HealthServer):
 
             def _handle_metrics(self):
                 self.send_response(200)
-                if registry is not None:
-                    self.send_header("Content-Type", CONTENT_TYPE_LATEST)
-                    self.end_headers()
-                    self.wfile.write(generate_latest(registry))
-                else:
-                    self.send_header("Content-Type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"# prometheus_client not installed\n")
+                self.send_header("Content-Type", CONTENT_TYPE_LATEST)
+                self.end_headers()
+                self.wfile.write(generate_latest(registry))
 
             def _handle_health(self):
                 self.send_response(200)
@@ -192,9 +176,6 @@ class MetricsServer(HealthServer):
         if self._started:
             logger.warning("Metrics server already started")
             return
-
-        if not PROMETHEUS_AVAILABLE:
-            logger.warning("prometheus_client not installed. Install with: uv sync --extra metrics")
 
         self._server = HTTPServer((self.host, self.port), self._make_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -216,9 +197,6 @@ class MetricsServer(HealthServer):
         mismatch_kl: float = 0.0,
     ) -> None:
         """Update metrics after a training step."""
-        if not PROMETHEUS_AVAILABLE:
-            return
-
         self._step.set(step)
         self._loss.set(loss)
         self._throughput.set(throughput)
@@ -243,9 +221,6 @@ class MetricsServer(HealthServer):
             runs_max: Maximum run capacity
             run_stats: List of per-run statistics
         """
-        if not PROMETHEUS_AVAILABLE:
-            return
-
         # Update aggregate metrics
         self._runs_discovered.set(runs_discovered)
         self._runs_active.set(len(run_stats))
