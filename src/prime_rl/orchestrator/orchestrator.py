@@ -309,8 +309,10 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step} (blocking, subprocess)")
 
-            # Pause weight updates during eval
+            # Pause weight updates during eval and cancel inflight rollouts
+            # this avoid doing eval across different checkpoints and avoid congestion
             scheduler.checkpoint_ready.clear()
+            scheduler.cancel_all_inflight_rollouts()
 
             await run_evals_subprocess(
                 client_config=config.client,

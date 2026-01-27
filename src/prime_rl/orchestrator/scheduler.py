@@ -157,6 +157,18 @@ class Scheduler:
         """Update sampling args for future rollout requests."""
         self.sampling_args = sampling_args
 
+    def cancel_all_inflight_rollouts(self):
+        """Cancel all in-flight rollout requests.
+
+        Used when weights are updated to discard stale rollouts generated with old weights.
+        """
+        count = len(self.inflight_group_rollouts)
+        for future in list(self.inflight_group_rollouts.keys()):
+            if not future.done():
+                future.cancel()
+        self.inflight_group_rollouts.clear()
+        self.cancelled_rollouts_count += count
+
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
         example = self.buffer.sample_examples(n=1)[0]
