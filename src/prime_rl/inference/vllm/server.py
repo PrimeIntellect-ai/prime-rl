@@ -1,18 +1,30 @@
 from argparse import Namespace
 from http import HTTPStatus
 
+import uvloop
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.datastructures import State
+from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.chat_utils import load_chat_template
 from vllm.entrypoints.cli.serve import run_api_server_worker_proc
 from vllm.entrypoints.logger import RequestLogger
+from vllm.entrypoints.openai.api_server import init_app_state
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionResponse
+from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
+from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+from vllm.entrypoints.openai.engine.serving import OpenAIServing
+from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.openai.utils import validate_json_request
-from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest, ChatCompletionResponse
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
+from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
+from vllm.logger import init_logger
+from vllm.utils.argparse_utils import FlexibleArgumentParser
 
+from prime_rl.inference.config import InferenceConfig
 from prime_rl.inference.patches import (
-    monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
     monkey_patch_load_lora_adapter,
+    monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
 )
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
@@ -24,30 +36,22 @@ monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
 # NOTE: Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
 monkey_patch_load_lora_adapter()
 
-# ruff: noqa
-import vllm.entrypoints.openai.api_server
-
-import uvloop
-import vllm.envs as envs
-from fastapi import Request
-from fastapi import Depends, HTTPException, Request
-from starlette.datastructures import State
-from vllm.engine.protocol import EngineClient
-from vllm.entrypoints.openai.api_server import (
-    router,
-    engine_client,
-    base,
-    init_app_state,
-    models,
-)
-from vllm.entrypoints.openai.protocol import LoadLoRAAdapterRequest
-from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
-from vllm.logger import init_logger
-from vllm.utils.argparse_utils import FlexibleArgumentParser
-
-from prime_rl.inference.config import InferenceConfig
-
 logger = init_logger("vllm.entrypoints.openai.api_server")
+
+# Create our own router for custom endpoints
+router = APIRouter()
+
+
+def engine_client(request: Request) -> EngineClient:
+    return request.app.state.engine_client
+
+
+def base(request: Request) -> OpenAIServing:
+    return request.app.state.openai_serving_tokenization
+
+
+def models(request: Request) -> OpenAIServingModels:
+    return request.app.state.openai_serving_models
 
 
 WORKER_EXTENSION_CLS = {
@@ -138,14 +142,19 @@ async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_reques
     return StreamingResponse(content=generator, media_type="text/event-stream")
 
 
-async def custom_init_app_state(engine_client: EngineClient, state: State, args: Namespace):
+async def custom_init_app_state(
+    engine_client: EngineClient,
+    state: State,
+    args: Namespace,
+    supported_tasks: tuple,
+):
     """
     Modifies init_app_state:
     1. Set up the custom OpenAIServingChatWithTokens state.
     2. Monkey-patch to allow updating lora adapters in-place.
     """
     # Setup the regular app state first (in-place)
-    await init_app_state(engine_client, state, args)
+    await init_app_state(engine_client, state, args, supported_tasks)
 
     # NOTE: Initialize the custom OpenAIServingChatWithTokens state here
     # TODO: Here, we repeat some calls done in init_app_state to be able to
@@ -156,7 +165,6 @@ async def custom_init_app_state(engine_client: EngineClient, state: State, args:
     else:
         request_logger = None
 
-    supported_tasks = await engine_client.get_supported_tasks()
     resolved_chat_template = load_chat_template(args.chat_template)
 
     state.openai_serving_chat_with_tokens = (
@@ -195,13 +203,25 @@ def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=
     run_api_server_worker_proc(listen_address, sock, args, client_config, **uvicorn_kwargs)
 
 
-import vllm.entrypoints.openai.api_server
 import vllm.entrypoints.cli.serve
+import vllm.entrypoints.openai.api_server
+from vllm.entrypoints.openai.api_server import build_app as _original_build_app
+
+
+def custom_build_app(args: Namespace, supported_tasks: tuple):
+    """
+    Wrap build_app to include our custom router.
+    """
+    app = _original_build_app(args, supported_tasks)
+    app.include_router(router)
+    return app
+
 
 # Also monkey patch run_api_server_worker_proc for multi-api-server mode
 # This is needed because worker processes spawned by run_multi_api_server
 # re-import modules and would otherwise use the original run_server_worker
 vllm.entrypoints.openai.api_server.init_app_state = custom_init_app_state
+vllm.entrypoints.openai.api_server.build_app = custom_build_app
 vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_worker_proc
 
 
@@ -209,8 +229,8 @@ vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_wo
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
 def server(config: InferenceConfig, vllm_args: list[str]):
-    from vllm.entrypoints.openai.api_server import run_server
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
+    from vllm.entrypoints.openai.api_server import run_server
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
