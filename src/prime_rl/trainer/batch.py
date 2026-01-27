@@ -46,7 +46,15 @@ def prepare_sample(
         inference_logprobs=inference_logprobs,
         teacher_logprobs=teacher_logprobs,
         temperature=temperature,
+        # Multimodal fields (Qwen3-VL) - passed through without modification
+        pixel_values=training_example.pixel_values,
+        image_grid_thw=training_example.image_grid_thw,
     )
+
+
+def _is_multimodal_sample(sample: MicroBatch) -> bool:
+    """Check if a sample contains multimodal data (images)."""
+    return sample.pixel_values is not None
 
 
 def packed_samples_into_micro_bs(
@@ -55,6 +63,9 @@ def packed_samples_into_micro_bs(
     """
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
+
+    NOTE: Multimodal samples (with pixel_values) are NOT packed together as they have variable-sized
+    vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
     """
     samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
 
@@ -62,8 +73,18 @@ def packed_samples_into_micro_bs(
     micro_batches: list[MicroBatch] = []
 
     for idx, sample in samples:
-        # Try to find a bin that can fit this sequence
+        # Multimodal samples cannot be packed - each becomes its own micro batch
+        if _is_multimodal_sample(sample):
+            sample.lora_num_tokens = [0] * num_loras
+            sample.lora_num_tokens[idx] = len(sample.input_ids)
+            micro_batches.append(sample)
+            continue
+
+        # Try to find a bin that can fit this sequence (only pack text-only samples)
         for bin_content in micro_batches:
+            # Don't pack into multimodal micro batches
+            if _is_multimodal_sample(bin_content):
+                continue
             # Check if sequence fits in this bin
             if len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len:
                 bin_content.input_ids.extend(sample.input_ids)

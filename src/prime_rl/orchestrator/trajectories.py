@@ -29,6 +29,11 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         completion_mask = [False] * len(first_step["tokens"]["completion_mask"])
     else:
         completion_mask = [bool(i) for i in first_step["tokens"]["completion_mask"]]
+
+    # Extract multimodal fields if present (Qwen3-VL)
+    pixel_values = first_step["tokens"].get("pixel_values")
+    image_grid_thw = first_step["tokens"].get("image_grid_thw")
+
     interleaved_rollout = TrainingSample(
         prompt_ids=deepcopy(first_step["tokens"]["prompt_ids"]),
         prompt_mask=[bool(i) for i in first_step["tokens"]["prompt_mask"]],
@@ -37,6 +42,8 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
         teacher_logprobs=None,  # Populated at the end after full sequence length is known if teacher model is configured
         advantage=None,
+        pixel_values=deepcopy(pixel_values) if pixel_values is not None else None,
+        image_grid_thw=deepcopy(image_grid_thw) if image_grid_thw is not None else None,
     )
 
     # Interleave all other trajectory steps into completion
@@ -92,6 +99,11 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
+
+        # Extract multimodal fields if present (Qwen3-VL)
+        pixel_values = tokens.get("pixel_values")
+        image_grid_thw = tokens.get("image_grid_thw")
+
         rollout = TrainingSample(
             prompt_ids=deepcopy(tokens["prompt_ids"]),
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
@@ -100,6 +112,8 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
             completion_logprobs=deepcopy(tokens["completion_logprobs"]),
             advantage=None,
             teacher_logprobs=None,
+            pixel_values=deepcopy(pixel_values) if pixel_values is not None else None,
+            image_grid_thw=deepcopy(image_grid_thw) if image_grid_thw is not None else None,
         )
         rollouts.append(rollout)
     return rollouts

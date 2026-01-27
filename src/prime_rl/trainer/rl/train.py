@@ -309,6 +309,14 @@ def train(config: RLTrainerConfig):
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
             )
 
+            # Multimodal fields (Qwen3-VL) - only present for VLM training
+            pixel_values = (
+                micro_batch["pixel_values"].to("cuda") if micro_batch.get("pixel_values") is not None else None
+            )
+            image_grid_thw = (
+                micro_batch["image_grid_thw"].to("cuda") if micro_batch.get("image_grid_thw") is not None else None
+            )
+
             labels = shift_tensor_left(input_ids)
 
             if cp_enabled:
@@ -334,7 +342,15 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
+                out = forward(
+                    model,
+                    input_ids,
+                    forward_position_ids,
+                    labels=labels,
+                    temperature=temperature,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                )
 
             if out.get("logprobs") is None:
                 assert out.get("logits") is not None, "Logits must be provided to compute logprobs"

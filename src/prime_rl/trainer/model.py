@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from beartype import beartype as typechecker
 from huggingface_hub import snapshot_download
-from jaxtyping import Int, jaxtyped
+from jaxtyping import Float, Int, jaxtyped
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
@@ -53,16 +53,69 @@ DTYPE_MAP = {
     "float32": torch.float32,
 }
 
+# Vision-language model patterns (Qwen3-VL, etc.)
+VLM_MODEL_PATTERNS = [
+    "qwen3-vl",
+    "qwen2-vl",
+]
+
+
+def is_vlm_model(model_name: str) -> bool:
+    """Check if a model name corresponds to a vision-language model."""
+    model_name_lower = model_name.lower()
+    return any(pattern in model_name_lower for pattern in VLM_MODEL_PATTERNS)
+
+
+def freeze_vision_encoder(model: nn.Module) -> None:
+    """Freeze the vision encoder parameters for VLM training.
+
+    For Qwen3-VL, the vision encoder is at model.model.visual.
+    This freezes all parameters in the vision encoder so only the
+    language model (with LoRA) is trained.
+    """
+    logger = get_logger()
+
+    # Qwen3-VL structure: model.model.visual
+    if hasattr(model, "model") and hasattr(model.model, "visual"):
+        vision_encoder = model.model.visual
+        num_frozen = 0
+        for param in vision_encoder.parameters():
+            param.requires_grad = False
+            num_frozen += 1
+        logger.info(f"Froze {num_frozen} parameters in vision encoder (model.model.visual)")
+    # Qwen2-VL structure: model.visual
+    elif hasattr(model, "visual"):
+        vision_encoder = model.visual
+        num_frozen = 0
+        for param in vision_encoder.parameters():
+            param.requires_grad = False
+            num_frozen += 1
+        logger.info(f"Froze {num_frozen} parameters in vision encoder (model.visual)")
+    else:
+        logger.warning("Could not find vision encoder to freeze. Expected model.model.visual or model.visual")
+
 
 def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+
+
+def get_language_model(model: nn.Module) -> nn.Module:
+    """Get the language model component containing transformer layers.
+
+    For VLM models (Qwen3-VL): model.model.language_model
+    For text-only models: model.model
+    """
+    if hasattr(model.model, "language_model"):
+        return model.model.language_model
+    return model.model
 
 
 def get_load_balance_stats(
     model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
-    for transformer_block in model.model.layers:
+    language_model = get_language_model(model)
+    for transformer_block in language_model.layers:
         # This is necessary for models that have mixed dense layers
         if not hasattr(transformer_block.mlp, "tokens_per_expert"):
             continue
@@ -88,6 +141,12 @@ def get_model(
     logger.info(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
+
+    # Check if this is a vision-language model
+    is_vlm = is_vlm_model(config.name)
+    if is_vlm:
+        logger.info(f"Detected vision-language model: {config.name}")
+
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
@@ -95,7 +154,9 @@ def get_model(
         ),
     )
     model_config.use_cache = False
-    model_config.use_grouped_mm = config.moe_use_grouped_mm
+    if not is_vlm:
+        # MoE grouped_mm is for text-only models
+        model_config.use_grouped_mm = config.moe_use_grouped_mm
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
 
     if config.debug.num_layers is not None:
@@ -106,7 +167,11 @@ def get_model(
         model_config.num_hidden_layers = num_hidden_layers
 
     # Determine the implementation to use
-    if config.impl == "auto":
+    # VLM models always use HF implementation (no custom impl support yet)
+    if is_vlm:
+        impl_to_use = "hf"
+        logger.info("VLM models use HF implementation")
+    elif config.impl == "auto":
         impl_to_use = "custom" if supports_custom_impl(model_config) else "hf"
         logger.info(
             f"Auto-selected implementation: {impl_to_use} (custom implementation {'supported' if supports_custom_impl(model_config) else 'not supported'})"
@@ -115,27 +180,39 @@ def get_model(
         impl_to_use = config.impl
 
     with device:
-        match impl_to_use:
-            case "hf":
-                model_cls = AutoModelForCausalLM
-            case "liger_kernel":
-                model_cls = AutoLigerKernelForCausalLM
-            case "custom":
-                model_cls = AutoModelForCausalLMPrimeRL
+        # For VLM models, use AutoModelForVision2Seq or import specific model class
+        if is_vlm:
+            from transformers import AutoModelForVision2Seq
+
+            model_cls = AutoModelForVision2Seq
+        else:
+            match impl_to_use:
+                case "hf":
+                    model_cls = AutoModelForCausalLM
+                case "liger_kernel":
+                    model_cls = AutoLigerKernelForCausalLM
+                case "custom":
+                    model_cls = AutoModelForCausalLMPrimeRL
 
         load_model_start_time = time.perf_counter()
+        # VLM models use standard HF API which requires torch_dtype, custom models use dtype
+        dtype_kwarg = {"torch_dtype": dtype} if is_vlm else {"dtype": dtype}
         if device == torch.device("meta"):
             logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
-            model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
+            model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, **dtype_kwarg)
         else:
             logger.info(f"Loading model {config.name} using {model_cls.__name__} to CPU")
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path=config.name,
                 config=model_config,
                 trust_remote_code=config.trust_remote_code,
-                dtype=dtype,
+                **dtype_kwarg,
             )
         logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
+
+    # For VLM models, freeze the vision encoder
+    if is_vlm:
+        freeze_vision_encoder(model)
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -176,7 +253,35 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
         dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
 
-    for transformer_block in model.model.layers:
+    # For VLM models, shard the frozen vision encoder as a single unit
+    # This allows FSDP to manage the memory while keeping it frozen
+    is_vlm = is_vlm_model(config.name)
+    if is_vlm:
+        vision_encoder = None
+        if hasattr(model, "model") and hasattr(model.model, "visual"):
+            vision_encoder = model.model.visual
+        elif hasattr(model, "visual"):
+            vision_encoder = model.visual
+
+        if vision_encoder is not None:
+            fully_shard(
+                vision_encoder,
+                mesh=hsdp_mesh,
+                **fsdp_config,
+            )
+            get_logger().info("Applied FSDP to frozen vision encoder")
+
+    # Get the language model layers (handle VLM structure)
+    # For Qwen3-VL: model.model.language_model contains the transformer layers
+    # For text-only models: model.model contains the layers directly
+    if is_vlm:
+        language_model = model.model.language_model
+        transformer_layers = language_model.layers
+    else:
+        language_model = model.model
+        transformer_layers = language_model.layers
+
+    for transformer_block in transformer_layers:
         if parallel_dims.ep_enabled and isinstance(transformer_block.mlp, MoE):
             fully_shard(transformer_block.mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
 
@@ -193,12 +298,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     if shard_norm_and_lm_head:
         # This optimization breaks weight tying
         fully_shard(
-            model.model.embed_tokens,
+            language_model.embed_tokens,
             mesh=hsdp_mesh,
             **fsdp_config,
         )
         fully_shard(
-            [model.lm_head, model.model.norm],
+            [model.lm_head, language_model.norm],
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
             offload_policy=offload_policy,
@@ -221,12 +326,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # if EP is enabled, d2h syncs in the dispatch/combine can interfere with FSDP prefetch, that's why we set it below manually
     # the rest of the function handles only that
 
-    transformer_blocks = list(model.model.layers)
+    transformer_blocks = list(language_model.layers)
     next_transformer_blocks = transformer_blocks[1:] + [None]
 
-    if model.model.embed_tokens is not None and len(model.model.layers) > 0:
+    if language_model.embed_tokens is not None and len(language_model.layers) > 0:
         if shard_norm_and_lm_head:
-            model.model.embed_tokens.set_modules_to_forward_prefetch([transformer_blocks[0]])
+            language_model.embed_tokens.set_modules_to_forward_prefetch([transformer_blocks[0]])
 
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
@@ -236,15 +341,15 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 )
             else:
                 transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
-        elif model.model.norm is not None and model.lm_head is not None:
+        elif language_model.norm is not None and model.lm_head is not None:
             if shard_norm_and_lm_head:
-                transformer_block.set_modules_to_forward_prefetch([model.model.norm, model.lm_head])
+                transformer_block.set_modules_to_forward_prefetch([language_model.norm, model.lm_head])
 
     # backward
-    reversed_transformer_blocks = list(reversed(model.model.layers))
+    reversed_transformer_blocks = list(reversed(language_model.layers))
     prev_transformer_blocks = reversed_transformer_blocks[1:] + [None]
 
-    if model.model.norm is not None and model.lm_head is not None and len(model.model.layers) > 0:
+    if language_model.norm is not None and model.lm_head is not None and len(language_model.layers) > 0:
         if shard_norm_and_lm_head:
             model.lm_head.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
         else:
@@ -258,9 +363,9 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 )
             else:
                 transformer_block.set_modules_to_backward_prefetch([prev_transformer_block])
-        elif model.model.embed_tokens is not None:
+        elif language_model.embed_tokens is not None:
             if shard_norm_and_lm_head:
-                transformer_block.set_modules_to_backward_prefetch([model.model.embed_tokens])
+                transformer_block.set_modules_to_backward_prefetch([language_model.embed_tokens])
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
@@ -399,23 +504,26 @@ def reshard_module(model: nn.Module):
 
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
-    for layer_id, (layer_name, transformer_block) in enumerate(model.model.layers.named_children()):
+    language_model = get_language_model(model)
+    for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq == 0:
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
-        model.model.layers.register_module(layer_name, transformer_block)
+        language_model.layers.register_module(layer_name, transformer_block)
     get_logger().info(f"Applied activation checkpointing (freq={ac_config.freq})")
 
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
-    for layer_id in range(len(model.model.layers)):
+    language_model = get_language_model(model)
+    for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        model.model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
-    get_logger().info(f"Compiled {len(model.model.layers)} layers (fullgraph={compile_config.fullgraph})")
+        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
+    get_logger().info(f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
 def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
-    for transformer_block in model.model.layers:
+    language_model = get_language_model(model)
+    for transformer_block in language_model.layers:
         if isinstance(transformer_block.mlp, MoE):
             parallelize_module(
                 transformer_block.mlp.experts,
@@ -512,8 +620,25 @@ def forward(
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: float | None = None,
+    # Multimodal fields (Qwen3-VL)
+    pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
+    image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
 ) -> PrimeLmOutput:
-    out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+    # Build kwargs for model forward
+    kwargs = {
+        "input_ids": input_ids,
+        "position_ids": position_ids,
+        "labels": labels,
+        "temperature": temperature,
+    }
+
+    # Add multimodal inputs if present (Qwen3-VL)
+    if pixel_values is not None:
+        kwargs["pixel_values"] = pixel_values
+    if image_grid_thw is not None:
+        kwargs["image_grid_thw"] = image_grid_thw
+
+    out = model(**kwargs)
 
     # PrimeLmOutput is a TypedDict (dict at runtime), HF outputs are dataclass-like objects
     if isinstance(out, dict):

@@ -53,6 +53,10 @@ def extract_result(state: vf.State) -> dict:
     - Buffer.update(): example_id, task, reward
     - orchestrator metrics: reward, is_truncated, error, timing, metrics, trajectory
     - interleave_rollout/branch_rollout: trajectory[*]["tokens"] with all token fields
+
+    For multimodal (Qwen3-VL), tokens dict may also contain:
+    - pixel_values: flattened image patches [num_patches, patch_dim]
+    - image_grid_thw: grid dimensions [num_images, 3]
     """
     # Get trajectory with tokens (needed for training)
     trajectory = []
@@ -62,6 +66,7 @@ def extract_result(state: vf.State) -> dict:
             "completion": step.get("completion"),
             # tokens dict contains: prompt_ids, prompt_mask, completion_ids,
             # completion_mask, completion_logprobs, is_truncated
+            # For multimodal: also pixel_values, image_grid_thw
             "tokens": step.get("tokens"),
         }
         trajectory.append(traj_step)
