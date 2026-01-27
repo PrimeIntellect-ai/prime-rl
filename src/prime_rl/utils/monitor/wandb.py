@@ -1,4 +1,5 @@
 import json
+import numbers
 import os
 import sys
 import time
@@ -77,7 +78,12 @@ class WandbMonitor(Monitor):
             return
         if not self.enabled:
             return
-        wandb.log(metrics, step=step)
+        log_step = step
+        if log_step is None:
+            metrics_step = metrics.get("step")
+            if isinstance(metrics_step, numbers.Integral):
+                log_step = int(metrics_step)
+        wandb.log(metrics, step=log_step)
 
     def log_samples(self, rollouts: list[vf.State], step: int) -> None:
         """Logs rollouts to W&B table."""
