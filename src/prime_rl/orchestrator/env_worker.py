@@ -47,13 +47,17 @@ class RolloutResponse:
     lag_metrics: dict | None = None  # Event loop lag metrics from worker
 
 
-def extract_result(state: vf.State) -> dict:
+def extract_result(state: vf.State, temperature: float) -> dict:
     """Extract only the fields needed from vf.State for IPC.
 
     The extracted dict must contain all fields needed by:
     - Buffer.update(): example_id, task, reward
     - orchestrator metrics: reward, is_truncated, error, timing, metrics, trajectory
     - interleave_rollout/branch_rollout: trajectory[*]["tokens"] with all token fields
+
+    Args:
+        state: The vf.State from the environment rollout
+        temperature: The temperature used during generation (from sampling args)
     """
     # Get trajectory with tokens (needed for training)
     trajectory = []
@@ -64,6 +68,7 @@ def extract_result(state: vf.State) -> dict:
             # tokens dict contains: prompt_ids, prompt_mask, completion_ids,
             # completion_mask, completion_logprobs, is_truncated
             "tokens": step.get("tokens"),
+            "temperature": temperature,  # Store temperature per-turn for per-token temp support
         }
         trajectory.append(traj_step)
 
@@ -136,7 +141,9 @@ async def worker_loop(
             gen_sem=semaphore,
             score_sem=semaphore,
         )
-        return RolloutResponse(request_id=request.request_id, results=[extract_result(s) for s in states])
+        # Extract temperature from sampling args (source of truth for what was used during generation)
+        temperature = request.sampling_args.get("temperature", 1.0)
+        return RolloutResponse(request_id=request.request_id, results=[extract_result(s, temperature) for s in states])
 
     try:
         while True:

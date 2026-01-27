@@ -40,14 +40,19 @@ class FusedOutputLinear(torch.nn.Linear):
         self,
         hidden_states: torch.Tensor,
         labels: torch.Tensor | None = None,
-        temperature: float = 1.0,
+        temperature: float | Tensor = 1.0,
     ) -> PrimeLmOutput:
         assert labels is not None, "FusedOutputLinear requires labels for chunked logprob computation"
 
-        inv_t = 1.0 / float(temperature)
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
         labels = labels.reshape(b * s).contiguous()
+
+        # Handle both scalar and per-token temperatures
+        if isinstance(temperature, Tensor):
+            inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
+        else:
+            inv_t = 1.0 / float(temperature)  # scalar
 
         logprobs, entropy = _ChunkedLogProbEntropyFn.apply(hidden_states, self.weight, labels, inv_t, self.chunk_size)
 
@@ -61,8 +66,9 @@ class VanillaOutputLinear(torch.nn.Linear):
         super().__init__(in_features, out_features, bias=False)
 
     def forward(
-        self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: float = 1.0
+        self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: float | Tensor = 1.0
     ) -> PrimeLmOutput:
+        # VanillaOutputLinear just returns logits - temperature scaling is done externally in train.py
         return PrimeLmOutput(logits=super().forward(hidden_states))
 
 
@@ -73,7 +79,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         hidden: torch.Tensor,  # [N, H]
         weight: torch.Tensor,  # [V, H]
         labels: torch.Tensor,  # [N]
-        inv_temperature: float,
+        inv_temperature: float | torch.Tensor,  # scalar or [N]
         chunk_size: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -99,11 +105,14 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         t = torch.zeros((n,), device=device, dtype=torch.float32)
         target_logits = torch.zeros((n,), device=device, dtype=torch.float32)
 
+        # Prepare inv_temperature for broadcasting: scalar stays scalar, tensor [N] -> [N, 1]
+        inv_t_broadcast = inv_temperature if isinstance(inv_temperature, float) else inv_temperature.unsqueeze(-1)
+
         for start in range(0, vocab, chunk_size):
             end = min(start + chunk_size, vocab)
             w_chunk = weight[start:end]  # [C, H]
             logits = hidden @ w_chunk.t()  # [N, C] (model dtype)
-            logits_f = logits.to(torch.float32).mul_(inv_temperature)  # [N, C] fp32
+            logits_f = logits.to(torch.float32) * inv_t_broadcast  # [N, C] fp32
 
             # Shared intermediates for logZ and entropy stats.
             m, s, t = _online_logsumexp_and_weighted_update(m, s, t, logits_f)
@@ -120,7 +129,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
 
         # Save for backward (recompute logits per chunk for grad)
         ctx.save_for_backward(hidden, weight, labels, logz)
-        ctx.inv_temperature = inv_temperature
+        ctx.inv_temperature = inv_temperature  # float or Tensor[N]
         ctx.chunk_size = chunk_size
 
         # Return fp32 for numerical stability (matching baseline behavior).
@@ -133,7 +142,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         )
 
         hidden, weight, labels, logz = ctx.saved_tensors
-        inv_temperature: float = ctx.inv_temperature
+        inv_temperature = ctx.inv_temperature  # float or Tensor[N]
         chunk_size: int = ctx.chunk_size
 
         n, h = hidden.shape
@@ -144,12 +153,15 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
 
         g = grad_logprobs.to(torch.float32)  # [N] fp32 for stable scaling
 
+        # Prepare inv_temperature for broadcasting: scalar stays scalar, tensor [N] -> [N, 1]
+        inv_t_broadcast = inv_temperature if isinstance(inv_temperature, float) else inv_temperature.unsqueeze(-1)
+
         for start in range(0, vocab, chunk_size):
             end = min(start + chunk_size, vocab)
             w_chunk = weight[start:end]  # [C, H]
 
             logits = hidden @ w_chunk.t()  # [N, C] (model dtype)
-            logits_f = logits.to(torch.float32).mul_(inv_temperature)  # [N, C] fp32
+            logits_f = logits.to(torch.float32) * inv_t_broadcast  # [N, C] fp32
 
             # p = softmax(logits_f) chunk = exp(logits_f - logz)
             p = torch.exp(logits_f - logz.unsqueeze(-1))  # [N, C] fp32
@@ -162,7 +174,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
                 grad_logits[mask, idx] += g[mask]
 
             # Chain through temperature scaling: logits_f = logits * inv_temperature
-            grad_logits.mul_(inv_temperature)
+            grad_logits = grad_logits * inv_t_broadcast
 
             grad_hidden.add_(grad_logits.to(hidden.dtype) @ w_chunk)
             grad_w_chunk = grad_logits.to(weight.dtype).t() @ hidden  # [C, H]
@@ -235,7 +247,7 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
         logits_to_keep: int = 0,
-        temperature: float = 1.0,
+        temperature: float | torch.Tensor = 1.0,
         **kwargs: object,
     ) -> PrimeLmOutput:
         if position_ids is None:
