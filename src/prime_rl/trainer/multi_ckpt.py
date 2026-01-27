@@ -152,13 +152,18 @@ class MultiCheckpointManager:
                         self.logger.error(
                             f"Broadcast folder not found for run {idx} at step {step}. Looking for it in {broadcast_src}"
                         )
+                dist.barrier()
+                manager.mark_stable(step)
+                manager.ckpt_steps.append(step)
             except FileNotFoundError:
                 self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
             except Exception as e:
                 self.logger.error(f"Error checkpointing run {idx}: {e}")
             dist.barrier()
-            manager.mark_stable(step)
-            manager.ckpt_steps.append(step)
+            # If the run is deleted, remove the run directory
+            # This is avoid the creation of zombie runs when the directory is deleted while we are checkpointing which recreates the directory
+            if self.multi_run_manager.get_orchestrator_config(self.multi_run_manager.idx_2_id[idx]) is None:
+                shutil.rmtree(self.multi_run_manager.get_run_dir(idx))
         dist.barrier()
 
     def load_run(
