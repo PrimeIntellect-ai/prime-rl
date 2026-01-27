@@ -4,7 +4,8 @@ import time
 
 import tomli_w
 
-from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.adaptive_weights import AdaptiveWeightManager
+from prime_rl.orchestrator.advantage import compute_advantages, compute_advantages_multi_reward
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
@@ -157,6 +158,19 @@ async def orchestrate(config: OrchestratorConfig):
     else:
         val_buffer = None
 
+    # Initialize adaptive weight managers per environment
+    adaptive_weight_managers: dict[str, AdaptiveWeightManager] = {}
+    for env_cfg in config.env:
+        env_name = env_cfg.name or env_cfg.id
+        if env_cfg.adaptive_weights.enabled and env_cfg.reward_keys:
+            base_weights = env_cfg.reward_weights or [1.0] * len(env_cfg.reward_keys)
+            adaptive_weight_managers[env_name] = AdaptiveWeightManager(
+                config=env_cfg.adaptive_weights,
+                reward_keys=env_cfg.reward_keys,
+                base_weights=base_weights,
+            )
+            logger.info(f"Initialized adaptive weight manager for '{env_name}' with keys {env_cfg.reward_keys}")
+
     # Get checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
@@ -231,6 +245,11 @@ async def orchestrate(config: OrchestratorConfig):
         if config.eval and config.eval.skip_eval_on_resume:
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
+        # Restore adaptive weight manager states
+        for name, state in progress.adaptive_weight_states.items():
+            if name in adaptive_weight_managers:
+                adaptive_weight_managers[name].load_state(state)
+                logger.info(f"Restored adaptive weight state for '{name}'")
 
         # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
         check_exists = config.weight_broadcast.type != "nccl"
@@ -287,6 +306,8 @@ async def orchestrate(config: OrchestratorConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
+            # Save adaptive weight states to progress before checkpointing
+            progress.adaptive_weight_states = {name: mgr.get_state() for name, mgr in adaptive_weight_managers.items()}
             ckpt_manager.save(progress, buffer, step=progress.step)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
@@ -353,15 +374,65 @@ async def orchestrate(config: OrchestratorConfig):
         generate_completions_time = time.perf_counter() - generate_completions_start_time
         train_rollouts = train_task.result()
 
-        # Compute advantages
+        # Compute advantages (per-env, supporting mixed single/multi-reward configurations)
+        env_config_map = {(env_cfg.name or env_cfg.id): env_cfg for env_cfg in config.env}
+        advantages = [0.0] * len(train_rollouts)
         rewards = [rollout["reward"] for rollout in train_rollouts]
-        completion_lens = [get_completion_len(rollout) for rollout in train_rollouts]
-        advantages = compute_advantages(
-            rewards,
-            completion_lens,
-            config.rollouts_per_example,
-            config.advantage,
-        )
+
+        # Group rollout indices by environment
+        env_indices: dict[str, list[int]] = {}
+        for idx, rollout in enumerate(train_rollouts):
+            env_name = rollout["task"]
+            if env_name not in env_indices:
+                env_indices[env_name] = []
+            env_indices[env_name].append(idx)
+
+        # Compute advantages for each environment separately
+        for env_name, indices in env_indices.items():
+            env_cfg = env_config_map[env_name]
+            env_rollouts = [train_rollouts[i] for i in indices]
+
+            if env_cfg.reward_keys is not None:
+                # Multi-reward path
+                if env_cfg.reward_weights is not None and len(env_cfg.reward_weights) != len(env_cfg.reward_keys):
+                    raise ValueError(
+                        f"reward_weights length ({len(env_cfg.reward_weights)}) must match "
+                        f"reward_keys length ({len(env_cfg.reward_keys)}) for env '{env_name}'"
+                    )
+                metrics = [r["metrics"] for r in env_rollouts]
+
+                # Get current weights (adaptive or static)
+                if env_name in adaptive_weight_managers:
+                    # Collect batch reward means for this environment
+                    batch_rewards = {}
+                    for key in env_cfg.reward_keys:
+                        key_values = [m.get(key, 0.0) for m in metrics]
+                        batch_rewards[key] = sum(key_values) / len(key_values) if key_values else 0.0
+                    current_weights = adaptive_weight_managers[env_name].update(batch_rewards)
+                else:
+                    current_weights = env_cfg.reward_weights
+
+                env_advantages = compute_advantages_multi_reward(
+                    metrics,
+                    env_cfg.reward_keys,
+                    config.rollouts_per_example,
+                    config.advantage,
+                    current_weights,
+                )
+            else:
+                # Single-reward path
+                env_rewards = [r["reward"] for r in env_rollouts]
+                env_completion_lens = [get_completion_len(r) for r in env_rollouts]
+                env_advantages = compute_advantages(
+                    env_rewards,
+                    env_completion_lens,
+                    config.rollouts_per_example,
+                    config.advantage,
+                )
+
+            # Place advantages back in original order
+            for i, adv in zip(indices, env_advantages):
+                advantages[i] = adv
 
         # Update and sample rollouts from the buffer
         make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
@@ -555,6 +626,13 @@ async def orchestrate(config: OrchestratorConfig):
                 per_env_ratio = val_results_df.task.value_counts(normalize=True).to_dict()
                 to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
+        # Log adaptive weight metrics
+        for env_name, mgr in adaptive_weight_managers.items():
+            for key, weight in mgr.get_weights_dict().items():
+                to_log[f"adaptive_weights/{env_name}/{key}"] = weight
+            for key, ema in mgr.get_ema_dict().items():
+                to_log[f"reward_ema/{env_name}/{key}"] = ema
+
         # Log metrics to monitor(s)
         monitor.log(to_log)
 
@@ -605,6 +683,8 @@ async def orchestrate(config: OrchestratorConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
+        # Save adaptive weight states to progress before checkpointing
+        progress.adaptive_weight_states = {name: mgr.get_state() for name, mgr in adaptive_weight_managers.items()}
         ckpt_manager.save(progress, buffer, step=progress.step)
 
     # Close training batch sender

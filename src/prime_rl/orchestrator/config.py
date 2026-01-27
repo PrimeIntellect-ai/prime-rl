@@ -297,12 +297,92 @@ class RetryConfig(BaseConfig):
     ] = False
 
 
+class AdaptiveWeightConfig(BaseConfig):
+    """Configuration for adaptive reward weight decay.
+
+    Dynamically decays reward weights as their running mean approaches saturation.
+    Uses a ratchet mechanism with slow leak for stable training.
+
+    Per-reward min_weights control decay floor. Set to 1.0 to prevent decay for a reward.
+    """
+
+    enabled: Annotated[
+        bool,
+        Field(description="Whether to enable adaptive weight decay."),
+    ] = False
+
+    ema_alpha: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="EMA smoothing factor. Higher values give more weight to recent batches.",
+        ),
+    ] = 0.1
+
+    saturation_threshold: Annotated[
+        float,
+        Field(
+            gt=0,
+            le=1,
+            description="Reward value at which to consider the reward saturated (triggers full decay).",
+        ),
+    ] = 0.95
+
+    decay_exponent: Annotated[
+        float,
+        Field(
+            ge=1,
+            description="Controls decay curve steepness. Higher values delay decay until closer to saturation.",
+        ),
+    ] = 2.0
+
+    min_weights: Annotated[
+        list[float] | None,
+        Field(
+            description="Per-reward minimum weight floors matching reward_keys order. "
+            "Set to 1.0 to prevent decay for a reward. If None, defaults to 0.1 for all."
+        ),
+    ] = None
+
+    recovery_rate: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            description="Rate at which ratchet allows weight recovery. 0 = pure ratchet, 1 = no ratchet.",
+        ),
+    ] = 0.01
+
+
 class EnvConfig(BaseConfig):
     """Configures an environment for training."""
 
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
     name: Annotated[str | None, Field(description="Name of the environment to use.")] = None
+    reward_keys: Annotated[
+        list[str] | None,
+        Field(
+            description="List of metric keys to use as separate reward signals for per-reward "
+            "normalized advantage calculation. Example: ['correct_answer', 'length_reward']. "
+            "If None, uses the single aggregated reward."
+        ),
+    ] = None
+    reward_weights: Annotated[
+        list[float] | None,
+        Field(
+            description="Weights for each reward when summing normalized advantages. "
+            "Must match length of reward_keys. Example: [1.0, 0.5]. "
+            "If None, uses equal weights (1.0) for all rewards."
+        ),
+    ] = None
+    adaptive_weights: Annotated[
+        AdaptiveWeightConfig,
+        Field(
+            description="Configuration for adaptive reward weight decay based on reward saturation.",
+        ),
+    ] = AdaptiveWeightConfig()
 
 
 class EvalEnvConfig(EnvConfig):
@@ -563,6 +643,25 @@ class BufferConfig(BaseConfig):
 
 class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False
+
+    batch_normalize: Annotated[
+        bool,
+        Field(description="Whether to apply batch-wise normalization after summing per-reward advantages."),
+    ] = True
+
+    per_reward_normalize: Annotated[
+        bool,
+        Field(
+            description="Whether to normalize each reward signal independently before aggregation (GDPO). "
+            "If False, rewards are aggregated first then normalized (GRPO). "
+            "Only applies when using reward_keys for multi-reward training."
+        ),
+    ] = True
+
+    std_eps: Annotated[
+        float,
+        Field(description="Epsilon for numerical stability in standard deviation normalization."),
+    ] = 1e-8
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):

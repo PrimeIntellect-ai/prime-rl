@@ -196,3 +196,8 @@ debug_I2_zero_band
 .idea
 
 outputs/
+.claude/
+local/
+# Local experiment configs
+configs/gsm8k-*/
+configs/deepscaler-multireward/
