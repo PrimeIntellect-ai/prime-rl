@@ -251,7 +251,9 @@ async def orchestrate(config: OrchestratorConfig):
                 adaptive_weight_managers[name].load_state(state)
                 logger.info(f"Restored adaptive weight state for '{name}'")
 
-        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
+        # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
+        check_exists = config.weight_broadcast.type != "nccl"
+        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step, check_exists=check_exists)
         lora_name = config.model.lora.name if config.model.lora else None
         await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:

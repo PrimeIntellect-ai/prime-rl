@@ -45,6 +45,8 @@ online_difficulty_filtering = true
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"
 
+[ckpt] # Checkpoint at the end of training
+
 [inference.model]
 enable_auto_tool_choice = true
 tool_call_parser = "hermes"

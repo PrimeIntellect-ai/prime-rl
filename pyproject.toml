@@ -59,9 +59,6 @@ flash-attn = [
 flash-attn-3 = [
     "flash_attn_3 @ https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl",
 ]
-metrics = [
-    "prometheus_client>=0.20.0",
-]
 
 [dependency-groups]
 dev = [
