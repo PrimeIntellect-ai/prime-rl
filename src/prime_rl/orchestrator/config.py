@@ -68,36 +68,36 @@ class ModelConfig(BaseModelConfig):
 
 
 class TemperatureScheduleConfig(BaseConfig):
-    """Configures temperature growth over training steps."""
+    """Configures temperature scheduling over training steps. Use this OR sampling.temperature, not both."""
 
     type: Annotated[
-        Literal["constant", "linear", "cosine"],
+        Literal["linear", "cosine"],
         Field(
-            description="Schedule shape. Cosine uses a smooth, monotonic increase from start to end.",
+            description="Schedule shape. Linear interpolates linearly; cosine uses smooth, monotonic curve.",
         ),
     ] = "linear"
 
-    end_temperature: Annotated[
-        float | None,
-        Field(
-            ge=0,
-            description="Final temperature when the schedule completes (required for linear/cosine; optional for constant).",
-        ),
-    ] = None
-
     start_temperature: Annotated[
-        float | None,
+        float,
         Field(
             ge=0,
-            description="Starting temperature. If None, defaults to sampling.temperature.",
+            description="Temperature at step 0.",
         ),
-    ] = None
+    ]
+
+    end_temperature: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Temperature at final step.",
+        ),
+    ]
 
     total_steps: Annotated[
         int | None,
         Field(
             ge=1,
-            description="Number of steps to reach end_temperature (inclusive of step 0). Ignored for constant; defaults to orchestrator max_steps if None.",
+            description="Number of steps to reach end_temperature. Defaults to orchestrator max_steps if None.",
         ),
     ] = None
 
@@ -106,17 +106,17 @@ class SamplingConfig(BaseConfig):
     """Configures how tokens are sampled from the model for training. Largely follows the vLLM sampling parameters."""
 
     temperature: Annotated[
-        float,
+        float | None,
         Field(
             ge=0,
-            description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
+            description="Constant temperature for sampling. Defaults to 1.0 if neither this nor temp_scheduler is set. Cannot be set together with temp_scheduler.",
         ),
-    ] = 1.0
+    ] = None
 
     temp_scheduler: Annotated[
         TemperatureScheduleConfig | None,
         Field(
-            description="Optional schedule to grow temperature over training steps.",
+            description="Temperature schedule over training steps. Set this OR temperature, not both.",
         ),
     ] = None
 
@@ -857,18 +857,20 @@ class OrchestratorConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_temperature_schedule(self):
-        if self.sampling.temp_scheduler is not None:
+    def validate_temperature_config(self):
+        has_temp = self.sampling.temperature is not None
+        has_scheduler = self.sampling.temp_scheduler is not None
+
+        if has_temp and has_scheduler:
+            raise ValueError("Set either sampling.temperature OR sampling.temp_scheduler, not both")
+
+        # Default to temperature=1.0 if neither is set
+        if not has_temp and not has_scheduler:
+            self.sampling.temperature = 1.0
+
+        if has_scheduler:
             schedule = self.sampling.temp_scheduler
-            if schedule.type in ("linear", "cosine") and schedule.end_temperature is None:
-                raise ValueError("temp_scheduler.end_temperature must be set for linear/cosine schedules")
-            if schedule.type in ("linear", "cosine") and schedule.total_steps is None and self.max_steps is None:
+            if schedule.total_steps is None and self.max_steps is None:
                 raise ValueError("temp_scheduler.total_steps must be set when max_steps is None")
-            if schedule.start_temperature is not None and schedule.start_temperature != self.sampling.temperature:
-                raise ValueError("temp_scheduler.start_temperature must match sampling.temperature to avoid ambiguity")
-            if schedule.type == "constant" and schedule.end_temperature is not None:
-                if schedule.end_temperature != self.sampling.temperature:
-                    raise ValueError(
-                        "temp_scheduler.end_temperature must match sampling.temperature for constant schedule"
-                    )
+
         return self

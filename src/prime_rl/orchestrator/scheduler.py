@@ -21,6 +21,7 @@ from prime_rl.utils.client import InferencePool
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_env_worker_log_file
+from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
@@ -74,7 +75,8 @@ class Scheduler:
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
         self.lora_name = lora_name
-        self.sampling_args = get_sampling_args(config.sampling)
+        initial_temp = compute_temperature(step=0, sampling_config=config.sampling, max_steps=config.max_steps)
+        self.sampling_args = get_sampling_args(config.sampling, temperature=initial_temp)
         self.model_name = self.config.model.name
 
         # Inference pool - used for admin operations (adapter sync) and metrics
