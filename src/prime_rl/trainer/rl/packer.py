@@ -8,6 +8,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport import (
+    MicroBatch,
     MicroBatchSender,
     TrainingSample,
     TransportConfigType,
@@ -267,12 +268,14 @@ class MultiPacker(BasePacker):
         selected_samples = self._select_samples_round_robin(token_budget)
         assert selected_samples, "No samples selected"
 
-        samples: list[TrainingSample] = []
-        idxs: list[int] = []
+        # Group samples by run_idx - each microbatch must contain samples from only ONE run
+        # because MultiLoRAGroupedExperts (MoE) only supports one adapter per microbatch
+        samples_by_run: dict[int, list[TrainingSample]] = {}
         per_run_stats: dict[int, tuple[int, int]] = {}
         for run_idx, sample, step in selected_samples:
-            samples.append(sample)
-            idxs.append(run_idx)
+            if run_idx not in samples_by_run:
+                samples_by_run[run_idx] = []
+            samples_by_run[run_idx].append(sample)
 
             num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
             if run_idx in per_run_stats:
@@ -284,16 +287,23 @@ class MultiPacker(BasePacker):
         for run_idx, (num_samples, num_tokens) in per_run_stats.items():
             self._update_run_progress(run_idx, num_samples, num_tokens)
 
-        micro_batch_grid = prepare_batch(
-            rollouts=samples,
-            seq_len=self.seq_len,
-            pad_to_multiple_of=self.pad_to_multiple_of,
-            num_train_workers=self.dp_world_size,
-            idxs=idxs,
-            num_loras=self.multi_run_manager.max_runs,
-        )
+        # Pack each run separately to ensure no mixing of runs in microbatches
+        all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]
+        for run_idx in sorted(samples_by_run.keys()):
+            run_samples = samples_by_run[run_idx]
+            run_micro_batch_grid = prepare_batch(
+                rollouts=run_samples,
+                seq_len=self.seq_len,
+                pad_to_multiple_of=self.pad_to_multiple_of,
+                num_train_workers=self.dp_world_size,
+                idxs=[run_idx] * len(run_samples),
+                num_loras=self.multi_run_manager.max_runs,
+            )
+            # Merge into combined grid
+            for worker_idx, worker_batches in enumerate(run_micro_batch_grid):
+                all_micro_batches[worker_idx].extend(worker_batches)
 
-        self.sender.send(micro_batch_grid)
+        self.sender.send(all_micro_batches)
 
 
 def setup_packer(
