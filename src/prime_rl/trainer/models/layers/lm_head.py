@@ -266,7 +266,7 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
         return self.lm_head(
             hidden_states[:, slice_indices, :],
             labels[:, slice_indices] if labels is not None else None,
-            temperature=temperature,
+            temperature=temperature[:, slice_indices] if temperature is not None else None,
         )
 
     # Bind the new forward to the model
