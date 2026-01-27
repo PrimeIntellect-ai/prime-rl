@@ -16,7 +16,6 @@ from prime_rl.transport import (
 )
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
-from prime_rl.utils.temp_scheduling import compute_temperature
 
 TIMEOUT_SECONDS = 0.1
 
@@ -75,13 +74,8 @@ class SinglePacker(BasePacker):
 
         self.multi_run_manager.ready_to_update[0] = True
         self.multi_run_manager.progress[0].step += 1
-        run_config = self.multi_run_manager.config.get(0)
-        if run_config is None:
-            raise RuntimeError("Missing run config for run_idx=0")
-        temperature = compute_temperature(batch.step, run_config.sampling, run_config.max_steps)
         micro_batch_grid = prepare_batch(
             rollouts=batch.examples,
-            temperatures=[temperature] * len(batch.examples),
             seq_len=self.seq_len,
             pad_to_multiple_of=self.pad_to_multiple_of,
             num_train_workers=self.dp_world_size,
@@ -269,16 +263,10 @@ class MultiPacker(BasePacker):
         assert selected_samples, "No samples selected"
 
         samples: list[TrainingSample] = []
-        temperatures: list[float] = []
         idxs: list[int] = []
         per_run_stats: dict[int, tuple[int, int]] = {}
         for run_idx, sample, step in selected_samples:
-            run_config = self.multi_run_manager.config.get(run_idx)
-            if run_config is None:
-                raise RuntimeError(f"Missing run config for run_idx={run_idx}")
-            temperature = compute_temperature(step, run_config.sampling, run_config.max_steps)
             samples.append(sample)
-            temperatures.append(temperature)
             idxs.append(run_idx)
 
             num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
@@ -293,7 +281,6 @@ class MultiPacker(BasePacker):
 
         micro_batch_grid = prepare_batch(
             rollouts=samples,
-            temperatures=temperatures,
             seq_len=self.seq_len,
             pad_to_multiple_of=self.pad_to_multiple_of,
             num_train_workers=self.dp_world_size,

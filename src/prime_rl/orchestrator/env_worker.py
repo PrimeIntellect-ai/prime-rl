@@ -141,8 +141,7 @@ async def worker_loop(
             gen_sem=semaphore,
             score_sem=semaphore,
         )
-        # Extract temperature from sampling args (source of truth for what was used during generation)
-        temperature = request.sampling_args.get("temperature", 1.0)
+        temperature = request.sampling_args["temperature"]
         return RolloutResponse(request_id=request.request_id, results=[extract_result(s, temperature) for s in states])
 
     try:

@@ -3,33 +3,20 @@ import copy
 from prime_rl.transport.types import MicroBatch, TrainingSample
 
 
-def prepare_sample(
-    training_example: TrainingSample,
-    seq_len: int,
-    temperature: float,
-) -> MicroBatch:
+def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
     Tokenize and prepare tensors.
     """
-    # Prepare input_ids, loss_mask, position_ids, inference_logprobs, and advantages
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = training_example.prompt_mask + training_example.completion_mask
-    # Inference logprobs only cover completion tokens, so prepend zeros for prompt tokens
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
 
-    # Per-token temperatures from completion_temperatures if available, otherwise use the passed temperature
-    if training_example.completion_temperatures is not None:
-        # Use first completion temp for prompt tokens (doesn't affect loss since prompt is masked)
-        prompt_temp = (
-            training_example.completion_temperatures[0] if training_example.completion_temperatures else temperature
-        )
-        temperatures = [prompt_temp] * len(training_example.prompt_ids) + training_example.completion_temperatures
-    else:
-        # Fallback to uniform temperature for all tokens
-        temperatures = [temperature] * len(input_ids)
+    # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
+    prompt_temp = training_example.completion_temperatures[0]
+    temperatures = [prompt_temp] * len(training_example.prompt_ids) + training_example.completion_temperatures
 
     # Teacher logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when a teacher model is configured
@@ -140,7 +127,6 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
 
 def prepare_batch(
     rollouts: list[TrainingSample],
-    temperatures: list[float],
     seq_len: int,
     num_train_workers: int,
     idxs: list[int],
@@ -151,16 +137,9 @@ def prepare_batch(
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, seq_len], the number of samples is not fixed per micro batch.
     """
-    max_seq_len = seq_len
+    all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
-    if len(rollouts) != len(temperatures):
-        raise ValueError("rollouts and temperatures must be the same length")
-
-    all_samples = [
-        (idx, prepare_sample(rollout, max_seq_len, temp)) for idx, rollout, temp in zip(idxs, rollouts, temperatures)
-    ]
-
-    micro_batches = packed_samples_into_micro_bs(all_samples, max_seq_len, num_loras)
+    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
     num_padding_batch = -len(micro_batches) % num_train_workers

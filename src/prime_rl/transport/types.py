@@ -10,7 +10,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_ids: list[int]
     completion_mask: list[bool]
     completion_logprobs: list[float]
-    completion_temperatures: list[float] | None = None  # Per-token temperatures used during generation
+    completion_temperatures: list[float]  # Per-token temperatures used during generation
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None
     reward: float | None = None

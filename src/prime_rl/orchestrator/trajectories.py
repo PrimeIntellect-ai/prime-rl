@@ -25,8 +25,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
 
     # Initialize the rollout with prompt and completion from first trajectory step
     first_step = trajectory[0]
-    # Extract temperature for this turn (source of truth from sampling args, stored per-turn)
-    temperature = first_step.get("temperature", 1.0)
+    temperature = first_step["temperature"]
     if has_error:
         completion_mask = [False] * len(first_step["tokens"]["completion_mask"])
     else:
@@ -47,7 +46,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     prefix_tokens = first_step["tokens"]["prompt_ids"] + first_step["tokens"]["completion_ids"]
     for step_idx, step in enumerate(trajectory[1:], start=2):
         tokens = step["tokens"]
-        step_temperature = step.get("temperature", 1.0)
+        step_temperature = step["temperature"]
         assert tokens is not None
         prev_trajectory_and_new_prompt_ids = tokens["prompt_ids"]
 
@@ -95,8 +94,7 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
     for step in state["trajectory"]:
         assert "tokens" in step
         tokens = step["tokens"]
-        # Extract temperature for this turn (source of truth from sampling args, stored per-turn)
-        temperature = step.get("temperature", 1.0)
+        temperature = step["temperature"]
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:

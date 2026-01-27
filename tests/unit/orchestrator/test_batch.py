@@ -31,7 +31,6 @@ def test_prepare_batch_balances_micro_batches_across_workers(
 
     batches_per_gpu = prepare_batch(
         rollouts=examples,
-        temperatures=[0.5] * rollout_count,
         seq_len=4,
         num_train_workers=num_train_workers,
         idxs=[0] * rollout_count,
@@ -58,13 +57,11 @@ def test_prepare_batch_balances_micro_batches_across_workers(
 
 def test_prepare_batch_packs_different_temperatures(make_training_example):
     """With per-token temperatures, samples can be packed together regardless of their temperature values."""
-    # Create examples with different temperatures embedded in completion_temperatures
     example1 = make_training_example(temperature=0.7)
     example2 = make_training_example(temperature=1.1)
 
     batches_per_gpu = prepare_batch(
         rollouts=[example1, example2],
-        temperatures=[0.7, 1.1],  # These are used as fallback if completion_temperatures is None
         seq_len=16,
         num_train_workers=1,
         idxs=[0, 0],
@@ -75,9 +72,8 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     # With per-token temperatures, samples can now be packed together
     assert len(flat_batches) == 1
     # Each sample has 4 tokens (2 prompt + 2 completion), so 8 total tokens
-    # Temperatures list should contain per-token values
     assert len(flat_batches[0].temperatures) == 8
-    # First sample (4 tokens): prompt gets first completion temp, completion gets its temps
+    # First sample (4 tokens): all get temp 0.7
     assert flat_batches[0].temperatures[:4] == [0.7, 0.7, 0.7, 0.7]
-    # Second sample (4 tokens): prompt gets first completion temp, completion gets its temps
+    # Second sample (4 tokens): all get temp 1.1
     assert flat_batches[0].temperatures[4:8] == [1.1, 1.1, 1.1, 1.1]
