@@ -162,8 +162,16 @@ class MultiCheckpointManager:
             dist.barrier()
             # If the run is deleted, remove the run directory
             # This is avoid the creation of zombie runs when the directory is deleted while we are checkpointing which recreates the directory
-            if self.multi_run_manager.get_orchestrator_config(self.multi_run_manager.idx_2_id[idx]) is None:
-                shutil.rmtree(self.multi_run_manager.get_run_dir(idx))
+            # Ideally we move this to discover but lets have here for now
+            if (
+                self.multi_run_manager.get_orchestrator_config(self.multi_run_manager.idx_2_id[idx]) is None
+                and self.world.is_master
+            ):
+                try:
+                    self.logger.warning(f"Run {idx} deleted during checkpoint, removing run directory")
+                    shutil.rmtree(self.multi_run_manager.get_run_dir(idx))
+                except Exception as e:
+                    self.logger.error(f"Error removing run directory for run {idx}: {e}")
         dist.barrier()
 
     def load_run(
