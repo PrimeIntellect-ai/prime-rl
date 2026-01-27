@@ -40,19 +40,15 @@ class FusedOutputLinear(torch.nn.Linear):
         self,
         hidden_states: torch.Tensor,
         labels: torch.Tensor | None = None,
-        temperature: float | Tensor = 1.0,
+        temperature: Tensor | None = None,
     ) -> PrimeLmOutput:
         assert labels is not None, "FusedOutputLinear requires labels for chunked logprob computation"
+        assert temperature is not None, "FusedOutputLinear requires per-token temperatures"
 
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
         labels = labels.reshape(b * s).contiguous()
-
-        # Handle both scalar and per-token temperatures
-        if isinstance(temperature, Tensor):
-            inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
-        else:
-            inv_t = 1.0 / float(temperature)  # scalar
+        inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
 
         logprobs, entropy = _ChunkedLogProbEntropyFn.apply(hidden_states, self.weight, labels, inv_t, self.chunk_size)
 
@@ -66,7 +62,7 @@ class VanillaOutputLinear(torch.nn.Linear):
         super().__init__(in_features, out_features, bias=False)
 
     def forward(
-        self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: float | Tensor = 1.0
+        self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: Tensor | None = None
     ) -> PrimeLmOutput:
         # VanillaOutputLinear just returns logits - temperature scaling is done externally in train.py
         return PrimeLmOutput(logits=super().forward(hidden_states))
@@ -79,7 +75,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         hidden: torch.Tensor,  # [N, H]
         weight: torch.Tensor,  # [V, H]
         labels: torch.Tensor,  # [N]
-        inv_temperature: float | torch.Tensor,  # scalar or [N]
+        inv_temperature: torch.Tensor,  # [N]
         chunk_size: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -91,8 +87,10 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         assert hidden.dim() == 2, f"expected hidden [N,H], got {tuple(hidden.shape)}"
         assert weight.dim() == 2, f"expected weight [V,H], got {tuple(weight.shape)}"
         assert labels.dim() == 1, f"expected labels [N], got {tuple(labels.shape)}"
+        assert inv_temperature.dim() == 1, f"expected inv_temperature [N], got {tuple(inv_temperature.shape)}"
         assert hidden.shape[0] == labels.shape[0], "hidden/labels N mismatch"
         assert hidden.shape[1] == weight.shape[1], "hidden/weight H mismatch"
+        assert hidden.shape[0] == inv_temperature.shape[0], "hidden/inv_temperature N mismatch"
         assert chunk_size > 0
 
         device = hidden.device
@@ -105,8 +103,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         t = torch.zeros((n,), device=device, dtype=torch.float32)
         target_logits = torch.zeros((n,), device=device, dtype=torch.float32)
 
-        # Prepare inv_temperature for broadcasting: scalar stays scalar, tensor [N] -> [N, 1]
-        inv_t_broadcast = inv_temperature if isinstance(inv_temperature, float) else inv_temperature.unsqueeze(-1)
+        inv_t_broadcast = inv_temperature.unsqueeze(-1)  # [N, 1]
 
         for start in range(0, vocab, chunk_size):
             end = min(start + chunk_size, vocab)
@@ -142,7 +139,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         )
 
         hidden, weight, labels, logz = ctx.saved_tensors
-        inv_temperature = ctx.inv_temperature  # float or Tensor[N]
+        inv_temperature: torch.Tensor = ctx.inv_temperature  # [N]
         chunk_size: int = ctx.chunk_size
 
         n, h = hidden.shape
@@ -153,8 +150,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
 
         g = grad_logprobs.to(torch.float32)  # [N] fp32 for stable scaling
 
-        # Prepare inv_temperature for broadcasting: scalar stays scalar, tensor [N] -> [N, 1]
-        inv_t_broadcast = inv_temperature if isinstance(inv_temperature, float) else inv_temperature.unsqueeze(-1)
+        inv_t_broadcast = inv_temperature.unsqueeze(-1)  # [N, 1]
 
         for start in range(0, vocab, chunk_size):
             end = min(start + chunk_size, vocab)
@@ -247,7 +243,7 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
         logits_to_keep: int = 0,
-        temperature: float | torch.Tensor = 1.0,
+        temperature: torch.Tensor | None = None,
         **kwargs: object,
     ) -> PrimeLmOutput:
         if position_ids is None:

@@ -438,15 +438,15 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         token_type_ids: Optional[torch.Tensor] = None,  # will be ignored
-        temperature: Optional[float] = 1.0,
+        temperature: Optional[torch.Tensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
             If not provided, the wrapped LM head returns logits only.
-        temperature (`float`, *optional*, defaults to 1.0):
-            Temperature used for the logprobs/entropy computation when `labels` are provided.
+        temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Per-token temperatures for logprobs/entropy computation when `labels` are provided.
         """
         assert use_cache is None, "use_cache is not supported for custom afmoe for now"
         assert past_key_values is None, "past_key_values is not supported for custom afmoe for now"
