@@ -23,9 +23,11 @@ from prime_rl.utils.pathing import (
     get_eval_dir,
     get_log_dir,
     get_rollout_dir,
+    get_stable_ckpt_steps,
     get_step_path,
     get_weights_dir,
     resolve_latest_ckpt_step,
+    resolve_latest_multi_run_trainer_ckpt_step,
     sync_wait_for_path,
     wait_for_path,
 )

@@ -43,6 +43,12 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
+def get_stable_ckpt_steps(ckpt_dir: Path) -> list[int]:
+    """Gets checkpoint steps that have STABLE file, sorted in ascending order."""
+    steps = get_all_ckpt_steps(ckpt_dir)
+    return [s for s in steps if (ckpt_dir / f"step_{s}" / "STABLE").exists()]
+
+
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
     steps = get_all_ckpt_steps(ckpt_dir)
@@ -53,6 +59,23 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     latest_step = steps[-1]
     logger = get_logger()
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
+    return latest_step
+
+
+def resolve_latest_multi_run_trainer_ckpt_step(ckpt_dir: Path) -> int | None:
+    """Gets the latest stable checkpoint step for multi-run trainer checkpoints.
+
+    Multi-run trainer checkpoints use STABLE files to mark completed checkpoints.
+    Returns None if no stable checkpoints are found.
+    """
+    steps = get_stable_ckpt_steps(ckpt_dir)
+    if len(steps) == 0:
+        logger = get_logger()
+        logger.warning(f"No stable checkpoints found in {ckpt_dir}. Starting from scratch.")
+        return None
+    latest_step = steps[-1]
+    logger = get_logger()
+    logger.info(f"Found latest stable checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
 
 
