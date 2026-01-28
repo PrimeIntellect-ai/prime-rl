@@ -319,6 +319,10 @@ def train(config: RLTrainerConfig):
 
             labels = shift_tensor_left(input_ids)
 
+            # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
+            if cp_enabled and pixel_values is not None:
+                raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
+
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)

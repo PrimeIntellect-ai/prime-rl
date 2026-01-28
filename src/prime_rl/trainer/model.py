@@ -623,6 +623,7 @@ def forward(
     # For multimodal (VLM), don't pass position_ids - let the model compute MRoPE internally
     # using image_grid_thw. Qwen3-VL only computes proper MRoPE when position_ids is None.
     if pixel_values is not None:
+        assert image_grid_thw is not None, "pixel_values requires image_grid_thw for MRoPE computation"
         kwargs["pixel_values"] = pixel_values
         kwargs["image_grid_thw"] = image_grid_thw
     else:
