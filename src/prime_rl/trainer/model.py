@@ -616,16 +616,17 @@ def forward(
     # Build kwargs for model forward
     kwargs = {
         "input_ids": input_ids,
-        "position_ids": position_ids,
         "labels": labels,
         "temperature": temperature,
     }
 
-    # Add multimodal inputs if present (Qwen3-VL)
+    # For multimodal (VLM), don't pass position_ids - let the model compute MRoPE internally
+    # using image_grid_thw. Qwen3-VL only computes proper MRoPE when position_ids is None.
     if pixel_values is not None:
         kwargs["pixel_values"] = pixel_values
-    if image_grid_thw is not None:
         kwargs["image_grid_thw"] = image_grid_thw
+    else:
+        kwargs["position_ids"] = position_ids
 
     out = model(**kwargs)
 
