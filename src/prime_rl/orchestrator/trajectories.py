@@ -1,5 +1,3 @@
-from copy import deepcopy
-
 import verifiers as vf
 
 from prime_rl.transport import TrainingSample
@@ -33,13 +31,13 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
-            completion_mask = [bool(i) for i in tokens["completion_mask"]]
+            completion_mask = list(tokens["completion_mask"])
         return TrainingSample(
-            prompt_ids=deepcopy(tokens["prompt_ids"]),
-            prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
-            completion_ids=deepcopy(tokens["completion_ids"]),
+            prompt_ids=list(tokens["prompt_ids"]),
+            prompt_mask=list(tokens["prompt_mask"]),
+            completion_ids=list(tokens["completion_ids"]),
             completion_mask=completion_mask,
-            completion_logprobs=deepcopy(tokens["completion_logprobs"]),
+            completion_logprobs=list(tokens["completion_logprobs"]),
             teacher_logprobs=None,
             advantage=None,
         )
@@ -59,7 +57,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         if has_error:
             sample.completion_mask.extend([False] * len(tokens["completion_mask"]))
         else:
-            sample.completion_mask.extend([bool(i) for i in tokens["completion_mask"]])
+            sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
 
     # Start with first trajectory step
@@ -69,7 +67,6 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
 
     for step_idx, step in enumerate(trajectory[1:], start=2):
         tokens = step["tokens"]
-        assert tokens is not None
         step_prompt_ids = tokens["prompt_ids"]
 
         # Check extension property: does new prompt start with our accumulated prefix?
