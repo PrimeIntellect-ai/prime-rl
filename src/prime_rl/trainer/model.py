@@ -608,7 +608,7 @@ def forward(
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
-    temperature: float | None = None,
+    temperature: Tensor | None = None,
     # Multimodal fields (Qwen3-VL)
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
     image_grid_thw: Int[Tensor, "num_images 3"] | None = None,

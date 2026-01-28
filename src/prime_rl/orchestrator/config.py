@@ -67,16 +67,58 @@ class ModelConfig(BaseModelConfig):
     ] = None
 
 
+class TemperatureScheduleConfig(BaseConfig):
+    """Configures temperature scheduling over training steps. Use this OR sampling.temperature, not both."""
+
+    type: Annotated[
+        Literal["linear", "cosine"],
+        Field(
+            description="Schedule shape. Linear interpolates linearly; cosine uses smooth, monotonic curve.",
+        ),
+    ] = "linear"
+
+    start_temperature: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Temperature at step 0.",
+        ),
+    ]
+
+    end_temperature: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Temperature at final step.",
+        ),
+    ]
+
+    total_steps: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of steps to reach end_temperature. Defaults to orchestrator max_steps if None.",
+        ),
+    ] = None
+
+
 class SamplingConfig(BaseConfig):
     """Configures how tokens are sampled from the model for training. Largely follows the vLLM sampling parameters."""
 
     temperature: Annotated[
-        float,
+        float | None,
         Field(
             ge=0,
-            description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
+            description="Constant temperature for sampling. Defaults to 1.0 if neither this nor temp_scheduler is set. Cannot be set together with temp_scheduler.",
         ),
-    ] = 1.0
+    ] = None
+
+    temp_scheduler: Annotated[
+        TemperatureScheduleConfig | None,
+        Field(
+            description="Temperature schedule over training steps. Set this OR temperature, not both.",
+        ),
+    ] = None
 
     repetition_penalty: Annotated[
         float,
@@ -811,5 +853,24 @@ class OrchestratorConfig(BaseSettings):
                 self.wandb.log_extras = None
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_temperature_config(self):
+        has_temp = self.sampling.temperature is not None
+        has_scheduler = self.sampling.temp_scheduler is not None
+
+        if has_temp and has_scheduler:
+            raise ValueError("Set either sampling.temperature OR sampling.temp_scheduler, not both")
+
+        # Default to temperature=1.0 if neither is set
+        if not has_temp and not has_scheduler:
+            self.sampling.temperature = 1.0
+
+        if has_scheduler:
+            schedule = self.sampling.temp_scheduler
+            if schedule.total_steps is None and self.max_steps is None:
+                raise ValueError("temp_scheduler.total_steps must be set when max_steps is None")
 
         return self

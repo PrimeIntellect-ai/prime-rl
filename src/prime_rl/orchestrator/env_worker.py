@@ -35,6 +35,7 @@ class RolloutRequest:
     example_id: int
     rollouts_per_example: int
     model_name: str  # Model name to use for this request (may change for LoRA)
+    sampling_args: dict
 
 
 @dataclass
@@ -46,7 +47,7 @@ class RolloutResponse:
     lag_metrics: dict | None = None  # Event loop lag metrics from worker
 
 
-def extract_result(state: vf.State) -> dict:
+def extract_result(state: vf.State, temperature: float) -> dict:
     """Extract only the fields needed from vf.State for IPC.
 
     The extracted dict must contain all fields needed by:
@@ -57,6 +58,10 @@ def extract_result(state: vf.State) -> dict:
     For multimodal (Qwen3-VL), tokens dict may also contain:
     - pixel_values: flattened image patches [num_patches, patch_dim]
     - image_grid_thw: grid dimensions [num_images, 3]
+
+    Args:
+        state: The vf.State from the environment rollout
+        temperature: The temperature used during generation (from sampling args)
     """
     # Get trajectory with tokens (needed for training)
     trajectory = []
@@ -68,6 +73,7 @@ def extract_result(state: vf.State) -> dict:
             # completion_mask, completion_logprobs, is_truncated
             # For multimodal: also pixel_values, image_grid_thw
             "tokens": step.get("tokens"),
+            "temperature": temperature,  # Store temperature per-turn for per-token temp support
         }
         trajectory.append(traj_step)
 
@@ -96,7 +102,6 @@ async def worker_loop(
     client_config: ClientConfig,
     max_concurrent: int,
     example_lookup: dict[int, dict],
-    sampling_args: dict,
     model_name: str,
 ):
     """Main async loop for processing rollout requests."""
@@ -137,11 +142,12 @@ async def worker_loop(
             group_inputs=group_inputs,
             client=client,
             model=request.model_name,
-            gen_sampling_args=sampling_args,
+            gen_sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
             gen_sem=semaphore,
             score_sem=semaphore,
         )
-        return RolloutResponse(request_id=request.request_id, results=[extract_result(s) for s in states])
+        temperature = request.sampling_args["temperature"]
+        return RolloutResponse(request_id=request.request_id, results=[extract_result(s, temperature) for s in states])
 
     try:
         while True:
@@ -210,7 +216,6 @@ def worker_main(
     interleaved_rollouts: bool,
     max_concurrent: int,
     example_lookup: dict[int, dict],
-    sampling_args: dict,
     log_level: str,
     vf_log_level: str,
     log_file: str | None,
@@ -243,7 +248,6 @@ def worker_main(
             client_config,
             max_concurrent,
             example_lookup,
-            sampling_args,
             model_name,
         )
     )
@@ -262,7 +266,6 @@ class EnvWorker:
         interleaved_rollouts: bool,
         max_concurrent: int,
         example_lookup: dict[int, dict],
-        sampling_args: dict,
         worker_name: str | None = None,
         log_level: str = "warn",
         vf_log_level: str = "warn",
@@ -277,7 +280,6 @@ class EnvWorker:
         self.interleaved_rollouts = interleaved_rollouts
         self.max_concurrent = max_concurrent
         self.example_lookup = example_lookup
-        self.sampling_args = sampling_args
         self.worker_name = worker_name or env_id
 
         self.log_level = log_level
@@ -320,7 +322,6 @@ class EnvWorker:
                 self.interleaved_rollouts,
                 self.max_concurrent,
                 self.example_lookup,
-                self.sampling_args,
                 self.log_level,
                 self.vf_log_level,
                 self.log_file,
@@ -371,6 +372,7 @@ class EnvWorker:
         self,
         example_id: int,
         rollouts_per_example: int,
+        sampling_args: dict,
     ) -> tuple[asyncio.Future, str]:
         """Submit a rollout request and return a (future, request_id) tuple."""
         request_id = uuid.uuid4().hex
@@ -379,6 +381,7 @@ class EnvWorker:
             example_id=example_id,
             rollouts_per_example=rollouts_per_example,
             model_name=self.model_name,
+            sampling_args=sampling_args,
         )
 
         loop = asyncio.get_event_loop()

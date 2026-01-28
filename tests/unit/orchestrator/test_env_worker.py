@@ -44,7 +44,6 @@ def env_worker(mock_client_config):
         interleaved_rollouts=False,
         max_concurrent=1,
         example_lookup={},
-        sampling_args={},
         worker_name="test_worker",
     )
     return worker
@@ -163,14 +162,18 @@ def test_submit_request_uses_current_model_name(env_worker):
         env_worker.request_queue.put = capture_put
 
         # Initial model name
-        future, request_id = await env_worker.submit_request(example_id=1, rollouts_per_example=1)
+        future, request_id = await env_worker.submit_request(
+            example_id=1, rollouts_per_example=1, sampling_args={"temperature": 1.0}
+        )
         assert captured_requests[-1].model_name == "test-model"
 
         # Update model name
         env_worker.update_model_name("lora-model")
 
         # New request should use new model name
-        future2, request_id2 = await env_worker.submit_request(example_id=1, rollouts_per_example=1)
+        future2, request_id2 = await env_worker.submit_request(
+            example_id=1, rollouts_per_example=1, sampling_args={"temperature": 1.0}
+        )
         assert captured_requests[-1].model_name == "lora-model"
 
     asyncio.run(run_test())
@@ -187,7 +190,6 @@ def test_full_restart_cycle(mock_client_config):
         interleaved_rollouts=False,
         max_concurrent=1,
         example_lookup={},
-        sampling_args={},
         worker_name="test_worker",
     )
 

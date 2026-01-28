@@ -306,6 +306,7 @@ def interleave_rollout(
 
     # Initialize the rollout with prompt and completion from first trajectory step
     first_step = trajectory[0]
+    temperature = first_step["temperature"]
     if has_error:
         completion_mask = [False] * len(first_step["tokens"]["completion_mask"])
     else:
@@ -323,12 +324,14 @@ def interleave_rollout(
 
     # Use list() instead of deepcopy() for flat lists - much faster
     # pixel_values/image_grid_thw are from cache and not modified, so no copy needed
+    completion_ids = list(first_step["tokens"]["completion_ids"])
     interleaved_rollout = TrainingSample(
         prompt_ids=list(first_step["tokens"]["prompt_ids"]),
         prompt_mask=[bool(i) for i in first_step["tokens"]["prompt_mask"]],
-        completion_ids=list(first_step["tokens"]["completion_ids"]),
+        completion_ids=completion_ids,
         completion_mask=completion_mask,
         completion_logprobs=list(first_step["tokens"]["completion_logprobs"]),
+        completion_temperatures=[temperature] * len(completion_ids),  # Per-token temperatures
         teacher_logprobs=None,  # Populated at the end after full sequence length is known if teacher model is configured
         advantage=None,
         pixel_values=pixel_values,
@@ -339,6 +342,7 @@ def interleave_rollout(
     prefix_tokens = first_step["tokens"]["prompt_ids"] + first_step["tokens"]["completion_ids"]
     for step_idx, step in enumerate(trajectory[1:], start=2):
         tokens = step["tokens"]
+        step_temperature = step["temperature"]
         assert tokens is not None
         prev_trajectory_and_new_prompt_ids = tokens["prompt_ids"]
 
@@ -348,11 +352,12 @@ def interleave_rollout(
                 f"Found mismatch in prefix tokens for example {state['example_id']} at trajectory step {step_idx}"
             )
 
-        # Extend the completion with the new prompt
-        prompt_ids = prev_trajectory_and_new_prompt_ids[len(prefix_tokens) :]
+        # Extend the completion with the new prompt (use step's temperature for prompt tokens too)
+        prompt_ids = list(prev_trajectory_and_new_prompt_ids[len(prefix_tokens) :])
         interleaved_rollout.completion_ids.extend(prompt_ids)
         interleaved_rollout.completion_mask.extend([False] * len(prompt_ids))
         interleaved_rollout.completion_logprobs.extend([0.0] * len(prompt_ids))
+        interleaved_rollout.completion_temperatures.extend([step_temperature] * len(prompt_ids))
 
         # Extend the completion with the new completion tokens
         completion_ids = tokens["completion_ids"]
@@ -363,6 +368,7 @@ def interleave_rollout(
         else:
             interleaved_rollout.completion_mask.extend([bool(i) for i in tokens["completion_mask"]])
         interleaved_rollout.completion_logprobs.extend(completion_logprobs)
+        interleaved_rollout.completion_temperatures.extend([step_temperature] * len(completion_ids))
 
         # New prefix is the current prompt and completion ids concatenated
         prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
@@ -399,6 +405,7 @@ def branch_rollout(
     for step in state["trajectory"]:
         assert "tokens" in step
         tokens = step["tokens"]
+        temperature = step["temperature"]
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
@@ -416,12 +423,14 @@ def branch_rollout(
 
         # Use list() instead of deepcopy() for flat lists - much faster
         # pixel_values/image_grid_thw are from cache and not modified, so no copy needed
+        completion_ids = list(tokens["completion_ids"])
         rollout = TrainingSample(
             prompt_ids=list(tokens["prompt_ids"]),
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
-            completion_ids=list(tokens["completion_ids"]),
+            completion_ids=completion_ids,
             completion_mask=completion_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
+            completion_temperatures=[temperature] * len(completion_ids),  # Per-token temperatures
             advantage=None,
             teacher_logprobs=None,
             pixel_values=pixel_values,
