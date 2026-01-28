@@ -265,8 +265,14 @@ class MultiRunManager:
 
         # Get progress from stable checkpoints (only checkpoints with STABLE file are considered)
         self.progress[new_id] = Progress()
-        stable_steps = get_stable_ckpt_steps(self.get_run_dir(new_id) / "checkpoints")
-        self.progress[new_id].step = max(stable_steps) if stable_steps else 0
+        if self.max_runs == 1:
+            prev_ckpt_steps = [
+                int(i.stem.split("_")[-1]) for i in (self.get_run_dir(new_id) / "checkpoints").glob("step_*")
+            ]
+            self.progress[new_id].step = max(prev_ckpt_steps) if prev_ckpt_steps else 0
+        else:
+            stable_steps = get_stable_ckpt_steps(self.get_run_dir(new_id) / "checkpoints")
+            self.progress[new_id].step = max(stable_steps) if stable_steps else 0
 
         # Store the parsed config
         self.config[new_id] = config
