@@ -126,166 +126,125 @@ Qwen3VLForConditionalGeneration
 - [x] Review TRL's Qwen3-VL GRPO implementation
 - [x] Document findings in this spec
 
-### Phase 2: Inference Path (vLLM)
+### Phase 2: Inference Path (vLLM) ✅
 **Goal**: Verify vLLM can do multimodal inference with our setup
 
-- [ ] Test vLLM with Qwen3-VL and image inputs manually
-- [ ] Verify OpenAI-compatible API accepts base64 images
-- [ ] Confirm logprobs are returned correctly for all tokens
-- [ ] Document any config changes needed
+- [x] Test vLLM with Qwen3-VL and image inputs manually
+- [x] Verify OpenAI-compatible API accepts base64 images
+- [x] Confirm logprobs are returned correctly for all tokens
+- [x] Document any config changes needed
 
-### Phase 3: Transport Types
+**Note**: vLLM handles multimodal inference internally. Images are passed as base64 data URLs in the OpenAI-compatible chat format. vLLM processes `pixel_values` and `image_grid_thw` internally but does not return them in the response.
+
+### Phase 3: Transport Types ✅
 **Goal**: Add multimodal fields to data structures
 
-**Files to modify:**
+**Files modified:**
 
 | File | Change |
 |------|--------|
-| `src/prime_rl/transport/types.py` | Add image fields to `TrainingSample` |
+| `src/prime_rl/transport/types.py` | Added `pixel_values` and `image_grid_thw` to `TrainingSample` and `MicroBatch` |
 
-```python
-class TrainingSample(msgspec.Struct):
-    # ... existing fields ...
+- [x] Add `pixel_values` and `image_grid_thw` to `TrainingSample`
+- [x] Update any serialization/deserialization as needed
 
-    # Multimodal fields (Qwen3-VL)
-    pixel_values: list[list[float]] | None = None  # [num_patches, 1176] flattened
-    image_grid_thw: list[list[int]] | None = None  # [num_images, 3] - T, H, W per image
-```
-
-- [ ] Add `pixel_values` and `image_grid_thw` to `TrainingSample`
-- [ ] Update any serialization/deserialization as needed
-
-### Phase 4: Orchestrator Integration
+### Phase 4: Orchestrator Integration ✅
 **Goal**: Orchestrator extracts and preprocesses images
 
-**Files to modify:**
+**Files modified:**
 
 | File | Change |
 |------|--------|
-| `src/prime_rl/orchestrator/trajectories.py` | Extract images, call HF processor |
-| `src/prime_rl/orchestrator/env_worker.py` | Pass image data through |
+| `src/prime_rl/orchestrator/trajectories.py` | Added `extract_images_from_prompt()` and `preprocess_images()` |
+| `src/prime_rl/orchestrator/orchestrator.py` | Load `AutoProcessor` for VLM models, pass to rollout functions |
+| `src/prime_rl/utils/vlm.py` | **New file** - VLM model whitelist and `is_vlm_model()` |
 
-**Key logic:**
+**Implementation:**
 ```python
-from transformers import AutoProcessor
+# src/prime_rl/utils/vlm.py
+SUPPORTED_VLM_PATTERNS = ["Qwen/Qwen3-VL*"]
 
-processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-4B-Instruct")
+def is_vlm_model(model_name: str) -> bool:
+    return any(fnmatch.fnmatch(model_name.lower(), p.lower()) for p in SUPPORTED_VLM_PATTERNS)
 
-def process_multimodal_sample(messages: list[dict], images: list[Image]) -> dict:
-    # Processor handles both text and images together
-    inputs = processor(
-        text=processor.apply_chat_template(messages, add_generation_prompt=True),
-        images=images,
-        return_tensors="pt"
-    )
-    return {
-        "input_ids": inputs["input_ids"],
-        "pixel_values": inputs["pixel_values"],
-        "image_grid_thw": inputs["image_grid_thw"],
-    }
+# src/prime_rl/orchestrator/trajectories.py
+def extract_images_from_prompt(prompt: list[dict]) -> list[Image.Image]:
+    """Extract PIL images from OpenAI-format messages with base64 image_urls."""
+    ...
+
+def preprocess_images(images: list[Image.Image], processor) -> tuple[list | None, list | None]:
+    """Use HF processor.image_processor to get pixel_values and image_grid_thw."""
+    processed = processor.image_processor(images=images, return_tensors="pt")
+    return processed["pixel_values"].tolist(), processed["image_grid_thw"].tolist()
 ```
 
-- [ ] Add image extraction from OAI-spec messages
-- [ ] Use HF `AutoProcessor` for preprocessing
-- [ ] Store `pixel_values` and `image_grid_thw` in `TrainingSample`
+- [x] Add image extraction from OAI-spec messages (base64 data URLs)
+- [x] Use HF `AutoProcessor` for preprocessing
+- [x] Store `pixel_values` and `image_grid_thw` in `TrainingSample`
 
-### Phase 5: Trainer - Model Loading
+### Phase 5: Trainer - Model Loading ✅
 **Goal**: Load full Qwen3-VL model with frozen vision encoder
 
-**Files to modify:**
+**Files modified:**
 
 | File | Change |
 |------|--------|
-| `src/prime_rl/trainer/model.py` | Load VLM, freeze vision encoder |
+| `src/prime_rl/trainer/model.py` | VLM detection, `AutoModelForVision2Seq`, `freeze_vision_encoder()`, FSDP for vision encoder |
+| `src/prime_rl/trainer/perf.py` | Handle nested `text_config` for VLM models |
 
+**Implementation:**
 ```python
-from transformers import Qwen3VLForConditionalGeneration
+# Uses shared is_vlm_model() from utils/vlm.py
+from prime_rl.utils.vlm import is_vlm_model
 
 def get_model(config):
-    if is_vision_model(config.model.name):
-        model = Qwen3VLForConditionalGeneration.from_pretrained(
-            config.model.name,
-            torch_dtype=torch.bfloat16,
-        )
-        # Freeze vision encoder
-        for param in model.model.visual.parameters():
-            param.requires_grad = False
+    if is_vlm_model(config.name):
+        from transformers import AutoModelForVision2Seq
+        model = AutoModelForVision2Seq.from_pretrained(...)
+        freeze_vision_encoder(model)
         return model
-    else:
-        return AutoModelForCausalLM.from_pretrained(...)
+    ...
+
+def freeze_vision_encoder(model):
+    # Handles both Qwen3-VL (model.model.visual) and Qwen2-VL (model.visual)
+    ...
 ```
 
-**LoRA config (language model only):**
-```python
-from peft import LoraConfig
+- [x] Add VLM model loading path
+- [x] Freeze vision encoder parameters
+- [x] Configure LoRA for language model layers only
+- [x] Handle FSDP wrapping (vision encoder as frozen unit)
 
-peft_config = LoraConfig(
-    r=8,
-    lora_alpha=32,
-    lora_dropout=0.1,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],  # LM attention layers
-)
-```
-
-- [ ] Add VLM model loading path
-- [ ] Freeze vision encoder parameters
-- [ ] Configure LoRA for language model layers only
-- [ ] Handle FSDP wrapping (vision encoder as frozen unit)
-
-### Phase 6: Trainer - Forward Pass
+### Phase 6: Trainer - Forward Pass ✅
 **Goal**: Forward with pixel_values, let model handle DeepStack
 
-**Files to modify:**
+**Files modified:**
 
 | File | Change |
 |------|--------|
+| `src/prime_rl/trainer/model.py` | `forward()` accepts `pixel_values` and `image_grid_thw` |
 | `src/prime_rl/trainer/rl/train.py` | Pass multimodal inputs to model |
-| `src/prime_rl/trainer/rl/data.py` | Handle variable-size batches (no packing) |
+| `src/prime_rl/trainer/rl/data.py` | `TensorMicroBatch` handles multimodal fields |
+| `src/prime_rl/trainer/batch.py` | `_is_multimodal_sample()` - no packing for VLM samples |
 
-**Forward pass:**
-```python
-# Model handles everything internally:
-# 1. Vision encoder: pixel_values → image_embeds + deepstack_features
-# 2. Scatter image_embeds into inputs_embeds
-# 3. Forward through LM with DeepStack injection
-outputs = model(
-    input_ids=batch["input_ids"],
-    attention_mask=batch["attention_mask"],
-    pixel_values=batch["pixel_values"],
-    image_grid_thw=batch["image_grid_thw"],
-)
-logits = outputs.logits
-```
+- [x] Update forward pass to include `pixel_values` and `image_grid_thw`
+- [x] Handle variable batch sizes (no packing for multimodal samples)
+- [x] Verify gradients flow through LoRA layers only
 
-**Batching without packing:**
-```python
-# For now, process samples individually or with simple padding
-# Variable pixel_values shapes prevent efficient packing
-for sample in samples:
-    outputs = model(
-        input_ids=sample.input_ids.unsqueeze(0),
-        pixel_values=sample.pixel_values,
-        image_grid_thw=sample.image_grid_thw,
-    )
-    # ... compute loss ...
-```
-
-- [ ] Update forward pass to include `pixel_values` and `image_grid_thw`
-- [ ] Handle variable batch sizes (no packing initially)
-- [ ] Verify gradients flow through LoRA layers only
-
-### Phase 7: End-to-End Integration
+### Phase 7: End-to-End Integration 🔄
 **Goal**: Full RL training loop works with multimodal
 
-**Files to create/modify:**
+**Files created:**
 
-| File | Change |
+| File | Status |
 |------|--------|
-| `configs/multimodal/rl.toml` | Example config for Qwen3-VL |
-| `tests/integration/test_multimodal.py` | Integration test |
+| `configs/multimodal/rl.toml` | ✅ Created |
+| `configs/multimodal/infer.toml` | ✅ Created |
+| `environments/openmmreasoner.py` | ✅ Created (uses WeMath dataset) |
+| `environments/mathvista.py` | ✅ Created |
 
-- [ ] Create example config at `configs/multimodal/rl.toml`
-- [ ] Test with [multimodal-open-r1-8k-verified](https://huggingface.co/datasets/lmms-lab/multimodal-open-r1-8k-verified) dataset
+- [x] Create example config at `configs/multimodal/rl.toml`
+- [ ] Test with WeMath dataset (OpenMMReasoner-RL-74K)
 - [ ] Evaluate on MathVista benchmark
 - [ ] Verify metrics (loss, rewards, etc.)
 - [ ] Profile memory usage and throughput
@@ -428,10 +387,21 @@ loss.backward()
 | Memory usage with vision encoder | Vision encoder is ~300M params, acceptable overhead |
 | FSDP with mixed frozen/trainable | Wrap vision encoder as single frozen unit |
 | Image tokens in loss | Mask `<\|image_pad\|>` tokens in loss computation |
+| Duplicate image preprocessing | vLLM processes images for inference, orchestrator re-processes for training. See `CONSIDERATIONS.md` for potential optimization via vLLM returning `pixel_values` |
+| vLLM multiprocessing + CUDA | Use `VLLM_WORKER_MULTIPROC_METHOD=spawn` (already set in verifiers) |
 
 ---
 
 ## Future Improvements
+
+### vLLM Returning Multimodal Data
+
+Currently, vLLM processes images internally but doesn't return `pixel_values` and `image_grid_thw` in the response. The orchestrator re-extracts and re-processes images from prompts.
+
+A potential optimization is to modify `serving_chat_with_tokens.py` to return these tensors, avoiding duplicate preprocessing. See `CONSIDERATIONS.md` for detailed trade-off analysis including:
+- Response size concerns (multi-image prompts can have huge `pixel_values`)
+- Serialization options (JSON vs compressed binary)
+- Shared memory alternatives for same-node deployments
 
 ### Adding Packing Later
 
@@ -466,10 +436,11 @@ If we need to train the vision encoder:
 
 ## Out of Scope (For Now)
 
-- Support for VLMs other than Qwen3-VL
+- Support for VLMs other than Qwen3-VL (add to `SUPPORTED_VLM_PATTERNS` in `utils/vlm.py` when ready)
 - Video input support (Qwen3-VL supports it, but we skip for now)
 - Sequence packing for multimodal samples
 - Vision encoder fine-tuning
+- vLLM returning `pixel_values` in response (see `CONSIDERATIONS.md` for future exploration)
 
 ---
 
