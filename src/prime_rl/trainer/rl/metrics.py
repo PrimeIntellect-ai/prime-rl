@@ -28,17 +28,27 @@ class TrainerPrometheusMetrics:
         self.lr = Gauge("trainer_learning_rate", "Current learning rate", registry=registry)
         self.mfu = Gauge("trainer_mfu_percent", "Model FLOPS utilization %", registry=registry)
         self.entropy = Gauge("trainer_entropy", "Mean entropy", registry=registry)
-        self.mismatch_kl = Gauge("trainer_mismatch_kl", "KL divergence", registry=registry)
+        self.mismatch_kl = Gauge(
+            "trainer_mismatch_kl", "KL divergence between trainer and inference model", registry=registry
+        )
+
+        # Aggregate run metrics
         self.runs_discovered = Gauge("trainer_runs_discovered", "Number of run folders discovered", registry=registry)
         self.runs_active = Gauge("trainer_runs_active", "Number of runs with assigned slots", registry=registry)
         self.runs_ready = Gauge("trainer_runs_ready", "Number of runs ready for gradient updates", registry=registry)
         self.runs_max = Gauge("trainer_runs_max", "Maximum run capacity", registry=registry)
+
+        # Per-run metrics with labels
         self.run_step = Gauge("trainer_run_step", "Training step for run", ["run"], registry=registry)
         self.run_tokens = Gauge("trainer_run_tokens", "Total tokens processed by run", ["run"], registry=registry)
         self.run_learning_rate = Gauge(
             "trainer_run_learning_rate", "Current learning rate for run", ["run"], registry=registry
         )
-        self.run_ready = Gauge("trainer_run_ready", "Whether run is ready (1/0)", ["run"], registry=registry)
+        self.run_ready = Gauge(
+            "trainer_run_ready", "Whether run is ready for updates (1=ready, 0=not ready)", ["run"], registry=registry
+        )
+
+        # Track known run labels for cleanup
         self._known_runs: set[str] = set()
 
     def update(
@@ -53,6 +63,7 @@ class TrainerPrometheusMetrics:
         entropy: float = 0.0,
         mismatch_kl: float = 0.0,
     ) -> None:
+        """Update metrics after a training step."""
         self.step.set(step)
         self.loss.set(loss)
         self.throughput.set(throughput)
@@ -65,6 +76,12 @@ class TrainerPrometheusMetrics:
         self.last_step_ts.set(time.time())
 
     def update_runs(self, runs_discovered: int, runs_max: int, run_stats: list[RunStats]) -> None:
+        """Update run/LoRA metrics.
+        Args:
+            runs_discovered: Number of run_* folders found in output directory
+            runs_max: Maximum run capacity
+            run_stats: List of per-run statistics
+        """
         self.runs_discovered.set(runs_discovered)
         self.runs_active.set(len(run_stats))
         self.runs_ready.set(sum(1 for r in run_stats if r.ready))
