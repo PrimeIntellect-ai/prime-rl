@@ -18,7 +18,7 @@ dependencies = [
     "pylatexenc>=2.10",
     "tomli>=2.2.1",
     "torch>=2.9.0",
-    "transformers",
+    "transformers>=5.0.0",
     "uvloop>=0.21.0",
     "vllm",
     "wandb>=0.20.1",
@@ -84,7 +84,6 @@ verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = 
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eebbd950a6ff11d9b5f806282e33df83df9d" }
 vllm = { index = "vllm-nightly" }
-transformers = { git = "https://github.com/huggingface/transformers.git", rev = "76732b4e7120808ff989edbd16401f61fa6a0afa" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

@@ -2542,7 +2542,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
-    { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=76732b4e7120808ff989edbd16401f61fa6a0afa" },
+    { name = "transformers", specifier = ">=5.0.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=209774a" },
     { name = "vllm", index = "https://wheels.vllm.ai/nightly" },
@@ -3920,7 +3920,7 @@ wheels = [
 
 [[package]]
 name = "vllm"
-version = "0.15.0rc2.dev11+g83fb2d09e"
+version = "0.15.0rc2.dev25+g706f123b2"
 source = { registry = "https://wheels.vllm.ai/nightly" }
 dependencies = [
     { name = "aiohttp" },
@@ -3985,8 +3985,8 @@ dependencies = [
     { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'" },
 ]
 wheels = [
-    { url = "https://wheels.vllm.ai/83fb2d09e8f6f70e99c68521b5a0218119cf5cfb/vllm-0.15.0rc2.dev11%2Bg83fb2d09e-cp38-abi3-manylinux_2_31_aarch64.whl" },
-    { url = "https://wheels.vllm.ai/83fb2d09e8f6f70e99c68521b5a0218119cf5cfb/vllm-0.15.0rc2.dev11%2Bg83fb2d09e-cp38-abi3-manylinux_2_31_x86_64.whl" },
+    { url = "https://wheels.vllm.ai/706f123b23b75097da9a3f51ce538bd784fdc75b/vllm-0.15.0rc2.dev25%2Bg706f123b2-cp38-abi3-manylinux_2_31_aarch64.whl" },
+    { url = "https://wheels.vllm.ai/706f123b23b75097da9a3f51ce538bd784fdc75b/vllm-0.15.0rc2.dev25%2Bg706f123b2-cp38-abi3-manylinux_2_31_x86_64.whl" },
 ]
 
 [[package]]
