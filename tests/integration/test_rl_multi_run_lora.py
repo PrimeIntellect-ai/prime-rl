@@ -92,20 +92,37 @@ def wandb_name(branch_name: str) -> str:
     return f"test-rl-multi-run-{branch_name}"
 
 
+INFERENCE_PORTS = [8000, 8001]
+INFERENCE_BASE_URLS = [f"http://localhost:{port}/v1" for port in INFERENCE_PORTS]
+
+
 def start_inference_and_trainer(
     log_dir: Path, output_dir: Path, wandb_project: str, wandb_name: str
-) -> tuple[subprocess.Popen, subprocess.Popen]:
-    # Start inference server
-    inference_log = log_dir / "inference.stdout"
-    with open(inference_log, "w") as f:
-        inference_proc = subprocess.Popen(
-            ["uv", "run", "inference", "@", "configs/ci/integration/rl_multi_run/inference.toml"],
-            stdout=f,
-            stderr=f,
-            env={**os.environ, "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True", "CUDA_VISIBLE_DEVICES": "0"},
-        )
+) -> tuple[subprocess.Popen, list[subprocess.Popen]]:
+    # Start inference servers (one per GPU on ports 8000 and 8001)
+    inference_procs: list[subprocess.Popen] = []
+    inference_logs: list[Path] = []
+    for i, port in enumerate(INFERENCE_PORTS):
+        inference_log = log_dir / f"inference_{i}.stdout"
+        inference_logs.append(inference_log)
+        with open(inference_log, "w") as f:
+            inference_proc = subprocess.Popen(
+                [
+                    "uv",
+                    "run",
+                    "inference",
+                    "@",
+                    "configs/ci/integration/rl_multi_run/inference.toml",
+                    "--server.port",
+                    str(port),
+                ],
+                stdout=f,
+                stderr=f,
+                env={**os.environ, "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True", "CUDA_VISIBLE_DEVICES": str(i)},
+            )
+            inference_procs.append(inference_proc)
 
-    # Start trainer
+    # Start trainer with 2 GPUs
     trainer_log = log_dir / "trainer.stdout"
     with open(trainer_log, "w") as f:
         trainer_proc = subprocess.Popen(
@@ -114,7 +131,7 @@ def start_inference_and_trainer(
                 "run",
                 "torchrun",
                 "--nproc-per-node",
-                "1",
+                "2",
                 "-m",
                 "prime_rl.trainer.rl.train",
                 "@",
@@ -130,22 +147,24 @@ def start_inference_and_trainer(
             ],
             stdout=f,
             stderr=f,
-            env={**os.environ, "CUDA_VISIBLE_DEVICES": "1"},
+            env={**os.environ, "CUDA_VISIBLE_DEVICES": "2,3"},
         )
 
-    # Wait for inference to be ready
+    # Wait for all inference servers to be ready
     ready_indicators = ["Application startup complete", "Uvicorn running on", "Started server process"]
-    start_time = time.time()
-    while time.time() - start_time < 300:
-        if inference_log.exists():
-            content = inference_log.read_text()
-            if any(ind in content for ind in ready_indicators):
-                break
-        time.sleep(2)
-    else:
-        trainer_proc.terminate()
-        inference_proc.terminate()
-        pytest.fail("Inference server did not start in time")
+    for i, inference_log in enumerate(inference_logs):
+        start_time = time.time()
+        while time.time() - start_time < 300:
+            if inference_log.exists():
+                content = inference_log.read_text()
+                if any(ind in content for ind in ready_indicators):
+                    break
+            time.sleep(2)
+        else:
+            trainer_proc.terminate()
+            for proc in inference_procs:
+                proc.terminate()
+            pytest.fail(f"Inference server {i} did not start in time")
 
     # Wait for trainer to be ready
     ready_indicators = ["Starting training loop"]
@@ -158,10 +177,11 @@ def start_inference_and_trainer(
         time.sleep(2)
     else:
         trainer_proc.terminate()
-        inference_proc.terminate()
+        for proc in inference_procs:
+            proc.terminate()
         pytest.fail("Trainer did not start in time")
 
-    return trainer_proc, inference_proc
+    return trainer_proc, inference_procs
 
 
 def start_orchestrator(
@@ -175,25 +195,30 @@ def start_orchestrator(
     orch_log_dir = run_dir / "logs"
     orch_log_dir.mkdir(parents=True, exist_ok=True)
 
+    # Build command with multiple inference server URLs
+    cmd = [
+        "uv",
+        "run",
+        "orchestrator",
+        "@",
+        "configs/ci/integration/rl_multi_run/orchestrator.toml",
+        "--output-dir",
+        run_dir.as_posix(),
+        "--max-steps",
+        str(max_steps),
+        "--model.lora.name",
+        name,
+        "--wandb.project",
+        wandb_project,
+        "--wandb.name",
+        f"{wandb_name}-{proc_name}",
+    ]
+    for base_url in INFERENCE_BASE_URLS:
+        cmd.extend(["--client.base-url", base_url])
+
     with open(orch_log_dir / "orchestrator.stdout", "w") as f:
         proc = subprocess.Popen(
-            [
-                "uv",
-                "run",
-                "orchestrator",
-                "@",
-                "configs/ci/integration/rl_multi_run/orchestrator.toml",
-                "--output-dir",
-                run_dir.as_posix(),
-                "--max-steps",
-                str(max_steps),
-                "--model.lora.name",
-                name,
-                "--wandb.project",
-                wandb_project,
-                "--wandb.name",
-                f"{wandb_name}-{proc_name}",
-            ],
+            cmd,
             stdout=f,
             stderr=f,
         )
@@ -213,9 +238,9 @@ def multi_run_result(
 
     processes: list[subprocess.Popen] = []
 
-    trainer_proc, inference_proc = start_inference_and_trainer(log_dir, output_dir, wandb_project, wandb_name)
+    trainer_proc, inference_procs = start_inference_and_trainer(log_dir, output_dir, wandb_project, wandb_name)
     processes.append(trainer_proc)
-    processes.append(inference_proc)
+    processes.extend(inference_procs)
 
     # ===========================================
     # Start alpha, beta, and gamma orchestrators
