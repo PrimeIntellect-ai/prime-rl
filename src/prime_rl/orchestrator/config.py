@@ -8,6 +8,7 @@ from prime_rl.utils.config import (
     ClientConfig,
     HeartbeatConfig,
     LogConfig,
+    MetricsServerConfig,
     PrimeMonitorConfig,
     WandbWithExtrasConfig,
 )
@@ -823,6 +824,11 @@ class OrchestratorConfig(BaseSettings):
 
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
+    ] = None
+
+    metrics_server: Annotated[
+        MetricsServerConfig | None,
+        Field(description="Prometheus metrics server config. If set, exposes /metrics endpoint."),
     ] = None
 
     @model_validator(mode="after")
