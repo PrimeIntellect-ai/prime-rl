@@ -5,10 +5,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import tomli_w
+from prometheus_client import CollectorRegistry
 
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
+from prime_rl.orchestrator.metrics import OrchestratorPrometheusMetrics
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
@@ -55,6 +57,7 @@ from prime_rl.utils.client import (
 )
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.metrics_server import MetricsServer
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
@@ -157,6 +160,15 @@ async def orchestrate(config: OrchestratorConfig):
     if config.heartbeat is not None:
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat.url)
+
+    metrics_server = None
+    orchestrator_metrics = None
+    if config.metrics_server is not None:
+        logger.info(f"Initializing metrics server on port {config.metrics_server.port}")
+        registry = CollectorRegistry()
+        orchestrator_metrics = OrchestratorPrometheusMetrics(registry)
+        metrics_server = MetricsServer(config.metrics_server, registry=registry)
+        metrics_server.start()
 
     # Load environment and extract dataset
     logger.info(
@@ -731,6 +743,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Log metrics to monitor(s)
         monitor.log(to_log, step=progress.step)
 
+        if orchestrator_metrics is not None:
+            orchestrator_metrics.update(to_log)
+
         # Log samples to monitor(s) if enabled
         subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
         monitor.log_samples(subset_train_rollouts, step=progress.step)
@@ -807,6 +822,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
+
+    if metrics_server is not None:
+        metrics_server.stop()
 
     # Shutdown env processes
     for process in env_processes:
