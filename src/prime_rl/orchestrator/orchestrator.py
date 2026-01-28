@@ -18,10 +18,12 @@ monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()
 
 # Import environment before any other imports
+from functools import partial
+
 import pandas as pd
 import verifiers as vf
 from loguru import logger
-from transformers import AutoTokenizer
+from transformers import AutoProcessor, AutoTokenizer
 
 from prime_rl.eval.utils import run_evals_subprocess
 from prime_rl.orchestrator.buffer import Buffer
@@ -56,6 +58,7 @@ from prime_rl.utils.utils import (
     to_col_format,
 )
 from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len, get_seq_len
+from prime_rl.utils.vlm import is_vlm_model
 
 
 @clean_exit
@@ -109,9 +112,16 @@ async def orchestrate(config: OrchestratorConfig):
         teacher_admin_clients = setup_admin_clients(config.teacher_model.client)
         teacher_model_name = config.teacher_model.model.name
 
-    # Load tokenizer
+    # Load tokenizer and processor (for VLM models)
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+
+    # Try to load processor for VLM models (e.g., Qwen3-VL)
+    # The processor is used to preprocess images from prompts for training
+    processor = None
+    if is_vlm_model(config.model.name):
+        logger.info(f"Detected VLM model. Loading processor for {config.model.name}")
+        processor = AutoProcessor.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
 
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -364,7 +374,11 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
         # Update and sample rollouts from the buffer
-        make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
+        # Use partial to bind the processor for VLM models
+        if config.trajectory_strategy == "interleaved":
+            make_train_example = partial(interleave_rollout, processor=processor)
+        else:
+            make_train_example = partial(branch_rollout, processor=processor)
         train_examples: list[TrainingSample] = []
         for train_rollout, advantage in zip(train_rollouts, advantages):
             train_example = make_train_example(train_rollout)

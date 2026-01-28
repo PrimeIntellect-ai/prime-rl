@@ -40,6 +40,7 @@ from prime_rl.trainer.weights import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature
+from prime_rl.utils.vlm import is_vlm_model
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
@@ -52,18 +53,6 @@ DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
     "float32": torch.float32,
 }
-
-# Vision-language model patterns (Qwen3-VL, etc.)
-VLM_MODEL_PATTERNS = [
-    "qwen3-vl",
-    "qwen2-vl",
-]
-
-
-def is_vlm_model(model_name: str) -> bool:
-    """Check if a model name corresponds to a vision-language model."""
-    model_name_lower = model_name.lower()
-    return any(pattern in model_name_lower for pattern in VLM_MODEL_PATTERNS)
 
 
 def freeze_vision_encoder(model: nn.Module) -> None:
