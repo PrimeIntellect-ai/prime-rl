@@ -131,6 +131,8 @@ def compute_loss(
     total_geo_masked_high = []
     total_geo_seq_ratio = []
     total_teacher_kl = []
+    total_is_clipped_low = []
+    total_is_clipped_high = []
 
     if teacher_logprobs is None:
         teacher_logprobs = [None] * len(trainer_logprobs)
@@ -163,7 +165,16 @@ def compute_loss(
         is_masked = token_mask_low | token_mask_high | geo_mask_low | geo_mask_high | seq_mask_low | seq_mask_high
         keep_mask = loss_mask & ~is_masked
 
-        importance_ratio = seq_importance_ratio if loss_config.ratio_type == "sequence" else token_importance_ratio
+        # tis: clamp is ratio (independent of masking)
+        token_clip_low = token_importance_ratio < loss_config.token_clip_low
+        token_clip_high = token_importance_ratio > loss_config.token_clip_high
+        clipped_token_importance_ratio = torch.clamp(
+            token_importance_ratio, min=loss_config.token_clip_low, max=loss_config.token_clip_high
+        )
+
+        importance_ratio = (
+            seq_importance_ratio if loss_config.ratio_type == "sequence" else clipped_token_importance_ratio
+        )
 
         advantages = loss_config.adv_tau * advantages
         if teacher_logprobs is not None:
@@ -188,6 +199,8 @@ def compute_loss(
         total_geo_masked_low.append(geo_mask_low.float())
         total_geo_masked_high.append(geo_mask_high.float())
         total_geo_seq_ratio.append(geo_seq_ratio)
+        total_is_clipped_low.append(_safe_mean(token_clip_low, keep_mask))
+        total_is_clipped_high.append(_safe_mean(token_clip_high, keep_mask))
         if teacher_logprobs is not None:
             total_teacher_kl.append(_safe_mean(teacher_kl, loss_mask))
 
@@ -206,6 +219,8 @@ def compute_loss(
         "geo_masked_low": torch.stack(total_geo_masked_low),
         "geo_masked_high": torch.stack(total_geo_masked_high),
         "geo_seq_ratio": torch.stack(total_geo_seq_ratio),
+        "is_clipped_low": torch.stack(total_is_clipped_low),
+        "is_clipped_high": torch.stack(total_is_clipped_high),
     }
     if total_teacher_kl:
         result["teacher_kl"] = torch.stack(total_teacher_kl)

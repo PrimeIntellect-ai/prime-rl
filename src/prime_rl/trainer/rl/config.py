@@ -50,6 +50,21 @@ class LossConfig(BaseConfig):
         ),
     ] = 100.0
 
+    token_clip_low: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="The low threshold for clamping token importance ratio (TIS). Applied after masking. Set to 0.0 to disable.",
+        ),
+    ] = 0.0
+    token_clip_high: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="The high threshold for clamping token importance ratio (TIS). Applied after masking. Set to inf to disable.",
+        ),
+    ] = float("inf")
+
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
@@ -67,6 +82,10 @@ class LossConfig(BaseConfig):
         if self.sequence_mask_low >= self.sequence_mask_high:
             raise ValueError(
                 f"sequence_mask_low ({self.sequence_mask_low}) must be less than sequence_mask_high ({self.sequence_mask_high})"
+            )
+        if self.token_clip_low >= self.token_clip_high:
+            raise ValueError(
+                f"token_clip_low ({self.token_clip_low}) must be less than token_clip_high ({self.token_clip_high})"
             )
         return self
 
