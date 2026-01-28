@@ -382,6 +382,7 @@ loss.backward()
 
 | Challenge | Mitigation |
 |-----------|------------|
+| Conv3d slow with torch 2.9 + cuDNN 9.8-9.14 | Override `nvidia-cudnn-cu12>=9.15` in pyproject.toml (see below) |
 | Variable `pixel_values` shapes | Skip packing initially, process samples individually |
 | DeepStack requires full model | Keep vision encoder in trainer (frozen) |
 | Memory usage with vision encoder | Vision encoder is ~300M params, acceptable overhead |
@@ -389,6 +390,41 @@ loss.backward()
 | Image tokens in loss | Mask `<\|image_pad\|>` tokens in loss computation |
 | Duplicate image preprocessing | vLLM processes images for inference, orchestrator re-processes for training. See `CONSIDERATIONS.md` for potential optimization via vLLM returning `pixel_values` |
 | vLLM multiprocessing + CUDA | Use `VLLM_WORKER_MULTIPROC_METHOD=spawn` (already set in verifiers) |
+
+### Conv3d Performance Regression (torch 2.9 + cuDNN 9.8-9.14)
+
+**Problem**: Qwen3-VL's vision encoder uses `nn.Conv3d` for patch embedding. PyTorch 2.9 disabled the fast cuDNN kernel for Conv3d due to bugs in cuDNN versions 9.8-9.14, falling back to a much slower `vol2col` kernel. This caused ~40x slowdown in vision encoder forward pass.
+
+```python
+# From transformers/models/qwen3_vl/modeling_qwen3_vl.py:68
+self.proj = nn.Conv3d(self.in_channels, self.embed_dim, kernel_size=kernel_size, stride=kernel_size, bias=True)
+```
+
+**Root cause**:
+- torch 2.9.1+cu128 bundles cuDNN 9.10.2 (in the buggy range)
+- PyTorch's `use_cudnn()` check in `aten/src/ATen/native/Convolution.cpp` disables cuDNN for these versions
+- Conv3d falls back to slow CPU-based `vol2col` kernel
+
+**Fix**: cuDNN 9.15+ fixes the bug. We override torch's pinned dependency:
+
+```toml
+# pyproject.toml
+[tool.uv]
+override-dependencies = ["nvidia-cudnn-cu12>=9.15"]
+```
+
+**Verification**:
+```python
+import torch
+print(torch.backends.cudnn.version())  # Should be 91801+ (9.18.x), not 91002 (9.10.2)
+```
+
+**Alternative for CUDA 13**: torch 2.10+cu130 bundles cuDNN 9.15.1, so no override needed. But vLLM currently requires torch 2.9, blocking this path.
+
+**References**:
+- [LlamaFactory Blog: Issues Related to Qwen3-VL](https://github.com/hiyouga/LLaMA-Factory)
+- [PyTorch Issue #166122: Conv3d slow with torch 2.9](https://github.com/pytorch/pytorch/issues/166122)
+- [PyTorch Issue #166790: Conv3d OOM regression](https://github.com/pytorch/pytorch/issues/166790)
 
 ---
 

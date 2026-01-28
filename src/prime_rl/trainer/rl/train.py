@@ -366,7 +366,7 @@ def train(config: RLTrainerConfig):
                 dist.all_gather(entropies, out["entropy"], group=cp_group)
                 out["entropy"] = torch.cat(entropies, dim=1)
 
-            vocab_size = model.config.vocab_size
+            vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
             out["logprobs"] = shift_tensor_right(
                 out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()

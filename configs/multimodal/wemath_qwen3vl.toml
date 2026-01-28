@@ -1,29 +1,38 @@
-# WeMath + Qwen3-VL-4B-Instruct training configuration
+# WeMath + Qwen3-VL-8B training configuration (8 GPUs)
 
-trainer_gpu_ids = [0]
-inference_gpu_ids = [1]
+inference_gpu_ids = [0, 1, 2, 3]
+trainer_gpu_ids = [4, 5, 6, 7]
 
 max_steps = 500
 seq_len = 4096  # VLM needs longer context for image tokens
 
 [wandb]
-project = "wemath-qwen3vl"
-name = "wemath-qwen3vl-4b"
+project = "hallerite-multimodal"
+name = "wemath-qwen3vl-8b"
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 10
 
 [model]
-name = "Qwen/Qwen3-VL-4B-Instruct"
+name = "Qwen/Qwen3-VL-8B-Instruct"
+
+[ckpt]
+interval = 100
 
 [orchestrator]
-batch_size = 256  # Smaller batch due to larger sequence length
+batch_size = 512
 rollouts_per_example = 8
 
 [orchestrator.sampling]
+temperature = 1.0
 max_tokens = 2048
 
 [[orchestrator.env]]
 id = "wemath"
 name = "wemath-standard"
-args = { configs = ["wemath_standard"], format = "qwen3vl", image_max_size = 512 }
+args = { configs = ["wemath_standard"], image_max_size = 512 }
 
 [orchestrator.buffer]
 easy_threshold = 1.0
@@ -33,19 +42,7 @@ hard_threshold = 0.0
 interval = 5
 num_examples = 64
 
-[orchestrator.eval]
-interval = 10
+[trainer.model.ac]  # Enable activation checkpointing for memory efficiency
 
-[orchestrator.eval.sampling]
-max_tokens = 2048
-
-[[orchestrator.eval.env]]
-id = "wemath"
-name = "wemath-eval"
-args = { configs = ["wemath_standard"], format = "qwen3vl", image_max_size = 512, eval_max_examples = 100 }
-num_examples = 100
-rollouts_per_example = 4
-
-[trainer]  # Default trainer config
-
-[inference]  # Default inference config
+[inference.parallel]
+dp = 4
