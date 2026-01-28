@@ -53,9 +53,9 @@ class SharedLogConfig(BaseSettings):
     file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
 
     json: Annotated[
-        bool | None,
+        bool,
         Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
-    ] = None
+    ] = False
 
 
 class SharedWandbConfig(BaseSettings):
@@ -252,9 +252,8 @@ class RLConfig(BaseSettings):
             if self.log.file is not None:
                 self.trainer.log.file = self.log.file
                 self.orchestrator.log.file = self.log.file
-            if self.log.json is not None:
-                self.trainer.log.json = self.log.json
-                self.orchestrator.log.json = self.log.json
+            self.trainer.log.json = self.log.json
+            self.orchestrator.log.json = self.log.json
 
         return self
 
