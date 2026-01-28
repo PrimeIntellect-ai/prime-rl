@@ -67,7 +67,9 @@ from prime_rl.utils.vlm import is_vlm_model
 async def orchestrate(config: OrchestratorConfig):
     # Initialize the logger
     logger = setup_logger(
-        config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
+        config.log.level,
+        log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
+        json=config.log.json,
     )
     intercept_verifiers_logging(level=config.log.vf_level)
     logger.info("Starting orchestrator")

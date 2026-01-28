@@ -27,7 +27,13 @@ class _VerifiersInterceptHandler(logging.Handler):
         logger.opt(depth=depth, exception=record.exc_info).log(level, f"[verifiers] {record.getMessage()}")
 
 
-def setup_logger(log_level: str, log_file: Path | None = None, append: bool = False, tag: str | None = None):
+def setup_logger(
+    log_level: str,
+    log_file: Path | None = None,
+    append: bool = False,
+    tag: str | None = None,
+    json: bool = False,
+):
     global _LOGGER
     if _LOGGER is not None:
         raise RuntimeError("Logger already set. Please call `setup_logger` only once.")
@@ -68,13 +74,19 @@ def setup_logger(log_level: str, log_file: Path | None = None, append: bool = Fa
     )
 
     # Install console handler
-    logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
+    if json:
+        logger.add(sys.stdout, level=log_level.upper(), serialize=True)
+    else:
+        logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
 
     # If specified, install file handler
     if log_file is not None:
         if not append and log_file.exists():
             log_file.unlink()
-        logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
+        if json:
+            logger.add(log_file, level=log_level.upper(), serialize=True)
+        else:
+            logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
 
     # Disable critical logging
     logger.critical = lambda _: None
