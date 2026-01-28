@@ -51,12 +51,14 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_multi_run_manager, Progress, get_multi_run_manager
+from prime_rl.trainer.rl.metrics import RunStats, TrainerPrometheusMetrics
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
+from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
+from prometheus_client import CollectorRegistry
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -89,10 +91,13 @@ def train(config: TrainerConfig):
     # Setup metrics server (full on master, health-only on other nodes' local rank 0)
     metrics_server = None
     health_server = None
+    trainer_metrics = None
     if config.metrics_server is not None and world.local_rank == 0:
         if world.is_master:
             logger.info(f"Initializing metrics server on port {config.metrics_server.port}")
-            metrics_server = MetricsServer(config.metrics_server)
+            registry = CollectorRegistry()
+            trainer_metrics = TrainerPrometheusMetrics(registry)
+            metrics_server = MetricsServer(config.metrics_server, registry=registry)
             metrics_server.start()
         else:
             logger.info(f"Initializing health server on port {config.metrics_server.port}")
@@ -533,8 +538,8 @@ def train(config: TrainerConfig):
         monitor.log(disk_metrics, step=progress.step)
 
         # Update Prometheus metrics if configured
-        if metrics_server is not None:
-            metrics_server.update(
+        if trainer_metrics is not None:
+            trainer_metrics.update(
                 step=progress.step,
                 loss=tensor_stats["loss/mean"],
                 throughput=throughput,
@@ -565,7 +570,7 @@ def train(config: TrainerConfig):
                         ready=multi_run_manager.ready_to_update[idx],
                     )
                 )
-            metrics_server.update_runs(
+            trainer_metrics.update_runs(
                 runs_discovered=runs_discovered,
                 runs_max=multi_run_manager.max_runs,
                 run_stats=run_stats,
