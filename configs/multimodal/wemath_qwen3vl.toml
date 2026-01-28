@@ -42,7 +42,11 @@ hard_threshold = 0.0
 interval = 5
 num_examples = 64
 
-[trainer.model.ac]  # Enable activation checkpointing for memory efficiency
+[trainer.model]
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.model.ac]  # AC actually helps with FSDP - reduces communication overhead
 
 [inference.parallel]
 dp = 4

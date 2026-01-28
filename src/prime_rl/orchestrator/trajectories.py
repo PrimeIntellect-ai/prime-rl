@@ -1,4 +1,6 @@
 import base64
+import threading
+import time
 from copy import deepcopy
 from io import BytesIO
 
@@ -7,6 +9,12 @@ from PIL import Image
 
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
+
+# Timing accumulators for profiling image preprocessing (thread-safe)
+_IMAGE_TIMING_LOCK = threading.Lock()
+_IMAGE_EXTRACT_TIME = 0.0
+_IMAGE_PREPROCESS_TIME = 0.0
+_IMAGE_COUNT = 0
 
 
 def extract_images_from_prompt(prompt: list[dict]) -> list[Image.Image]:
@@ -19,7 +27,10 @@ def extract_images_from_prompt(prompt: list[dict]) -> list[Image.Image]:
     Returns:
         List of PIL.Image.Image objects extracted from the prompt
     """
+    global _IMAGE_EXTRACT_TIME, _IMAGE_COUNT
+    start = time.perf_counter()
     images = []
+    img_count = 0
     for msg in prompt:
         content = msg.get("content", [])
         if isinstance(content, list):
@@ -30,8 +41,13 @@ def extract_images_from_prompt(prompt: list[dict]) -> list[Image.Image]:
                         # Extract base64 data after the comma
                         b64_data = url.split(",", 1)[1]
                         img_bytes = base64.b64decode(b64_data)
+                        img_count += 1
                         img = Image.open(BytesIO(img_bytes))
                         images.append(img)
+    elapsed = time.perf_counter() - start
+    with _IMAGE_TIMING_LOCK:
+        _IMAGE_EXTRACT_TIME += elapsed
+        _IMAGE_COUNT += img_count
     return images
 
 
@@ -46,13 +62,39 @@ def preprocess_images(images: list[Image.Image], processor) -> tuple[list | None
     Returns:
         Tuple of (pixel_values, image_grid_thw) as lists, or (None, None) if no images
     """
+    global _IMAGE_PREPROCESS_TIME
     if not images or processor is None:
         return None, None
+    start = time.perf_counter()
 
     processed = processor.image_processor(images=images, return_tensors="pt")
     pixel_values = processed["pixel_values"].tolist()
     image_grid_thw = processed["image_grid_thw"].tolist()
+    elapsed = time.perf_counter() - start
+    with _IMAGE_TIMING_LOCK:
+        _IMAGE_PREPROCESS_TIME += elapsed
     return pixel_values, image_grid_thw
+
+
+def get_image_timing_stats() -> dict:
+    """Get accumulated image processing timing stats."""
+    with _IMAGE_TIMING_LOCK:
+        return {
+            "extract_time": _IMAGE_EXTRACT_TIME,
+            "preprocess_time": _IMAGE_PREPROCESS_TIME,
+            "image_count": _IMAGE_COUNT,
+            "avg_extract_ms": (_IMAGE_EXTRACT_TIME / _IMAGE_COUNT * 1000) if _IMAGE_COUNT > 0 else 0,
+            "avg_preprocess_ms": (_IMAGE_PREPROCESS_TIME / _IMAGE_COUNT * 1000) if _IMAGE_COUNT > 0 else 0,
+        }
+
+
+def reset_image_timing_stats():
+    """Reset timing accumulators."""
+    global _IMAGE_EXTRACT_TIME, _IMAGE_PREPROCESS_TIME, _IMAGE_COUNT
+    with _IMAGE_TIMING_LOCK:
+        _IMAGE_EXTRACT_TIME = 0.0
+        _IMAGE_PREPROCESS_TIME = 0.0
+        _IMAGE_COUNT = 0
 
 
 def interleave_rollout(state: vf.State, processor=None) -> list[TrainingSample] | None:

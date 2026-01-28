@@ -1,13 +1,19 @@
 import asyncio
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
+from prime_rl.orchestrator.trajectories import (
+    branch_rollout,
+    get_image_timing_stats,
+    interleave_rollout,
+    reset_image_timing_stats,
+)
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -306,6 +312,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.perf_counter()
+        reset_image_timing_stats()  # Reset per-step image timing
 
         # Run evals BEFORE training (blocking, in subprocess to isolate event loop)
         # This ensures weights don't change during eval and eval doesn't cause event loop lag
@@ -379,16 +386,29 @@ async def orchestrate(config: OrchestratorConfig):
             make_train_example = partial(interleave_rollout, processor=processor)
         else:
             make_train_example = partial(branch_rollout, processor=processor)
+
+        # Parallelize trajectory processing (image preprocessing is CPU-bound)
+        num_workers = min(32, len(train_rollouts))  # Cap at 32 workers
+        loop = asyncio.get_event_loop()
+        parallel_preprocess_start = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Run all make_train_example calls in parallel
+            futures = [
+                loop.run_in_executor(executor, make_train_example, train_rollout) for train_rollout in train_rollouts
+            ]
+            train_example_results = await asyncio.gather(*futures)
+        parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
+
+        # Collect results and assign advantages
         train_examples: list[TrainingSample] = []
-        for train_rollout, advantage in zip(train_rollouts, advantages):
-            train_example = make_train_example(train_rollout)
+        for train_rollout, advantage, train_example in zip(train_rollouts, advantages, train_example_results):
             if train_example is not None:
                 for te in train_example:
                     te.advantage = advantage
                     te.reward = train_rollout["reward"]
                 train_examples.extend(train_example)
         logger.debug(
-            f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
+            f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy (parallel with {num_workers} workers)"
         )
 
         # Compute teacher logprobs if teacher model is configured
@@ -540,6 +560,9 @@ async def orchestrate(config: OrchestratorConfig):
             "time/generate_completions": generate_completions_time,
             "time/teacher_logprobs": teacher_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
+            "time/parallel_preprocess": parallel_preprocess_time,
+            # Image preprocessing timing (VLM only) - note: accumulated thread time, not wall clock
+            **{f"time/image_{k}": v for k, v in get_image_timing_stats().items()},
             # Scheduler metrics
             **scheduler.get_metrics(),
             # Buffer metrics
@@ -587,6 +610,13 @@ async def orchestrate(config: OrchestratorConfig):
 
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
+
+        # Log image preprocessing timing for VLM profiling
+        img_stats = get_image_timing_stats()
+        if img_stats["image_count"] > 0:
+            logger.info(
+                f"Image preprocessing: {img_stats['image_count']} images | Wall clock: {parallel_preprocess_time:.2f}s | Thread time: {img_stats['preprocess_time']:.2f}s | Speedup: {img_stats['preprocess_time'] / parallel_preprocess_time:.1f}x"
+            )
 
         # Increment step
         progress.step += 1
