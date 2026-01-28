@@ -9,7 +9,7 @@ dependencies = [
     "cydifflib>=1.2.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
-    "liger-kernel>=0.5.10",
+    "liger-kernel",
     "loguru>=0.7.3",
     "numpy>=2.2.6",
     "openai>=1.106.1",
@@ -18,9 +18,9 @@ dependencies = [
     "pylatexenc>=2.10",
     "tomli>=2.2.1",
     "torch>=2.9.0",
-    "transformers>=4.57.6",
+    "transformers>=5.0.0",
     "uvloop>=0.21.0",
-    "vllm==0.14.0",
+    "vllm==0.14.1",
     "wandb>=0.20.1",
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
@@ -73,6 +73,7 @@ dev = [
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]
 prerelease = "allow"
+override-dependencies = ["transformers>=5.0.0"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
@@ -80,6 +81,7 @@ reverse-text = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "209774a" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eebbd950a6ff11d9b5f806282e33df83df9d" }
+liger-kernel = { git = "https://github.com/linkedin/Liger-Kernel.git" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
