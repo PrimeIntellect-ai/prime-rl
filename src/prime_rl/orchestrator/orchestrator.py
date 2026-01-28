@@ -120,15 +120,16 @@ async def orchestrate(config: OrchestratorConfig):
         teacher_admin_clients = setup_admin_clients(config.teacher_model.client)
         teacher_model_name = config.teacher_model.model.name
 
-    # Load tokenizer and processor (for VLM models)
+    # Check if this is a vision-language model (used throughout for VLM-specific paths)
+    is_vlm = is_vlm_model(config.model.name)
+
+    # Load tokenizer and processor (processor only for VLM models)
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
 
-    # Try to load processor for VLM models (e.g., Qwen3-VL)
-    # The processor is used to preprocess images from prompts for training
     processor = None
-    if is_vlm_model(config.model.name):
-        logger.info(f"Detected VLM model. Loading processor for {config.model.name}")
+    if is_vlm:
+        logger.info(f"Loading VLM processor for {config.model.name}")
         processor = AutoProcessor.from_pretrained(
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
         )
@@ -414,7 +415,7 @@ async def orchestrate(config: OrchestratorConfig):
         num_unique = len(unique_examples)
 
         extract_start = time.perf_counter()
-        if processor is not None:
+        if is_vlm:
             # Extract all images first (mainly base64 decoding - can be done synchronously, it's fast)
             all_images, images_per_example = extract_images_from_examples(unique_examples)
             extract_time = time.perf_counter() - extract_start
@@ -446,7 +447,7 @@ async def orchestrate(config: OrchestratorConfig):
         rollout_time = time.perf_counter() - rollout_start
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
 
-        if processor is not None:
+        if is_vlm:
             logger.info(
                 f"VLM timing: extract={extract_time:.2f}s, preprocess={preprocess_time:.2f}s, rollout={rollout_time:.2f}s, total={parallel_preprocess_time:.2f}s"
             )
