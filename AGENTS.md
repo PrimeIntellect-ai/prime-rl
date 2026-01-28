@@ -6,6 +6,12 @@
 
 - Do not add unnecessary comments. Especially do not try to explain code change that reflect your work process, do not refer to old code. "The code used to do that but now we are doing this" is not a pattern we want. Instead prefer to use targeted comments sparingly to explain ambiguous code.
 
+
+## Running code
+
+- All code should be runnable with `uv run` or `uv run <command>`.
+- All dependencies should already be installed and pin in the lock file. If not, add it to pyproject.toml and run `uv sync --all-extras` to install it.
+
 ## Testing
 
 Write tests as plain functions with pytest fixtures. Don't use class-based tests.
