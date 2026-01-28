@@ -24,17 +24,17 @@ class LossConfig(BaseConfig):
 
     token_mask_high: Annotated[
         float, Field(ge=0, description="The high threshold for token importance ratio to mask.")
-    ] = 8.0
+    ] = float("inf")
     token_mask_low: Annotated[
         float, Field(ge=0, description="The low threshold for token importance ratio to mask.")
-    ] = 0.125
+    ] = 0.0
     sequence_clip_high: Annotated[
         float, Field(ge=0, description="The high threshold for sequence importance ratio to clip.")
-    ] = 10.0
+    ] = float("inf")
     geo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for geo importance ratio to mask.")] = (
-        10.0
+        float("inf")
     )
-    geo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for geo importance ratio to mask.")] = 0.1
+    geo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for geo importance ratio to mask.")] = 0.0
     sequence_mask_low: Annotated[
         float,
         Field(
@@ -48,7 +48,7 @@ class LossConfig(BaseConfig):
             ge=0,
             description="If set, masks entire sequences when any generated token has an importance ratio above this value.",
         ),
-    ] = 100.0
+    ] = float("inf")
 
     token_clip_low: Annotated[
         float,
