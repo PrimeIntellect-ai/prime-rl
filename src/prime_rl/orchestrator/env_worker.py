@@ -52,7 +52,7 @@ def extract_result(state: vf.State) -> dict:
     The extracted dict must contain all fields needed by:
     - Buffer.update(): example_id, task, reward
     - orchestrator metrics: reward, is_truncated, error, timing, metrics, trajectory
-    - interleave_rollout/branch_rollout: trajectory[*]["tokens"] with all token fields
+    - interleave_rollout: trajectory[*]["tokens"] with all token fields
     """
     # Get trajectory with tokens (needed for training)
     trajectory = []

@@ -665,7 +665,7 @@ class OrchestratorConfig(BaseSettings):
     trajectory_strategy: Annotated[
         Literal["interleaved", "branching"],
         Field(
-            description="Strategy to use for building training examples from multi-turn rollouts. If interleaved, will try to concatenate consecutive trajectory steps into a single training example. If branching, will create a separate training example for each trajectory step."
+            description="DEPRECATED: This option is ignored. Interleaving now automatically handles extension breaks by starting a new sample when the prefix doesn't match, achieving best-of-both behavior."
         ),
     ] = "interleaved"
 
