@@ -212,9 +212,6 @@ class MultiCheckpointManager:
             state_dict = torch.load(ckpt_path / f"rank_{self.world.rank}.pt")
             run_state.load_state_dict(state_dict)
 
-            # Set progress.step to match the loaded checkpoint
-            self.multi_run_manager.progress[idx].step = step
-
             self.logger.info(f"Resumed run {self.multi_run_manager.idx_2_id[idx]} from step {step}")
             return True
         except Exception as e:
