@@ -20,7 +20,9 @@ from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, install_env
 async def synthesize(config: SynthesizeConfig):
     # Initialize the logger
     logger = setup_logger(
-        config.log.level, log_file=config.output_dir / "logs" / "synthesize.log" if config.log.file else None
+        config.log.level,
+        log_file=config.output_dir / "logs" / "synthesize.log" if config.log.file else None,
+        json=config.log.json,
     )
     intercept_verifiers_logging(level=config.log.vf_level)
 
