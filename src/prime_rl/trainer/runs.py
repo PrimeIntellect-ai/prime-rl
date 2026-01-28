@@ -11,6 +11,7 @@ import torch.distributed.distributed_c10d as c10d
 from prime_rl.trainer.config import LoRAConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import get_stable_ckpt_steps
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.config import OrchestratorConfig
@@ -262,8 +263,10 @@ class MultiRunManager:
         self.unused_idxs.remove(new_id)
         self.idx_2_id[new_id] = new_run
 
-        # Initialize progress to 0; checkpoint loading will set the correct step if resuming
+        # Get progress from stable checkpoints (only checkpoints with STABLE file are considered)
         self.progress[new_id] = Progress()
+        stable_steps = get_stable_ckpt_steps(self.get_run_dir(new_id) / "checkpoints")
+        self.progress[new_id].step = max(stable_steps) if stable_steps else 0
 
         # Store the parsed config
         self.config[new_id] = config

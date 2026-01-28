@@ -62,23 +62,6 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     return latest_step
 
 
-def resolve_latest_multi_run_trainer_ckpt_step(ckpt_dir: Path) -> int | None:
-    """Gets the latest stable checkpoint step for multi-run trainer checkpoints.
-
-    Multi-run trainer checkpoints use STABLE files to mark completed checkpoints.
-    Returns None if no stable checkpoints are found.
-    """
-    steps = get_stable_ckpt_steps(ckpt_dir)
-    if len(steps) == 0:
-        logger = get_logger()
-        logger.warning(f"No stable checkpoints found in {ckpt_dir}. Starting from scratch.")
-        return None
-    latest_step = steps[-1]
-    logger = get_logger()
-    logger.info(f"Found latest stable checkpoint in {ckpt_dir}: {latest_step}")
-    return latest_step
-
-
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0
