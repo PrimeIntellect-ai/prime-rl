@@ -20,7 +20,7 @@ dependencies = [
     "torch>=2.9.0",
     "transformers>=4.57.6",
     "uvloop>=0.21.0",
-    "vllm==0.14.0",
+    "vllm",
     "wandb>=0.20.1",
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
@@ -80,6 +80,7 @@ reverse-text = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "209774a" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eebbd950a6ff11d9b5f806282e33df83df9d" }
+vllm = { index = "vllm-nightly" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -95,6 +96,11 @@ url = "https://hub.primeintellect.ai/primeintellect/simple/"
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/test/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "vllm-nightly"
+url = "https://wheels.vllm.ai/nightly"
 explicit = true
 
 [tool.ruff.lint]
