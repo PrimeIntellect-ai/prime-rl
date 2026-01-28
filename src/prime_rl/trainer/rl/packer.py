@@ -8,6 +8,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport import (
+    MicroBatch,
     MicroBatchSender,
     TrainingSample,
     TransportConfigType,
@@ -76,7 +77,6 @@ class SinglePacker(BasePacker):
         self.multi_run_manager.progress[0].step += 1
         micro_batch_grid = prepare_batch(
             rollouts=batch.examples,
-            temperature=batch.temperature,
             seq_len=self.seq_len,
             pad_to_multiple_of=self.pad_to_multiple_of,
             num_train_workers=self.dp_world_size,
@@ -98,8 +98,8 @@ class MultiPacker(BasePacker):
         start_step: int = 0,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
-        # Per-run buffer: stores (TrainingSample, temperature, step) tuples
-        self.buffers: list[deque[tuple[TrainingSample, float, int]]] = [
+        # Per-run buffer: stores (TrainingSample, step) tuples
+        self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
         ]
 
@@ -136,6 +136,11 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with completion logprobs length != completion ids length ({len(sample.completion_logprobs)} != {len(sample.completion_ids)})",
             )
+        if len(sample.completion_temperatures) != len(sample.completion_ids):
+            return (
+                False,
+                f"Run wrote a sample with completion temperatures length != completion ids length ({len(sample.completion_temperatures)} != {len(sample.completion_ids)})",
+            )
         if sample_length == 0:
             return False, "Run wrote a sample with no tokens"
         if sample_length > self.seq_len:
@@ -167,7 +172,7 @@ class MultiPacker(BasePacker):
                 if not valid:
                     self.multi_run_manager.evict_run(batch.run_idx, f"Run wrote a sample with invalid data: {reason}")
                     break
-                self.buffers[batch.run_idx].append((sample, batch.temperature, batch.step))
+                self.buffers[batch.run_idx].append((sample, batch.step))
 
         # This is necessary to forget evicted runs
         self.multi_run_manager.discover_runs()
@@ -179,7 +184,7 @@ class MultiPacker(BasePacker):
             buffer = self.buffers[run_idx]
             current_step = self.multi_run_manager.progress[run_idx].step
 
-            for sample, _, step in buffer:
+            for sample, step in buffer:
                 if step > current_step:
                     break
                 tokens += len(sample.prompt_ids) + len(sample.completion_ids)
@@ -193,16 +198,16 @@ class MultiPacker(BasePacker):
         threshold = self.seq_len * self.dp_world_size
         return self._count_tokens(threshold) >= threshold
 
-    def _select_samples_round_robin(self, token_budget: int) -> list[tuple[int, TrainingSample, float]]:
+    def _select_samples_round_robin(self, token_budget: int) -> list[tuple[int, TrainingSample, int]]:
         """Select samples using round-robin from runs with buffered work."""
-        selected: list[tuple[int, TrainingSample, float]] = []
+        selected: list[tuple[int, TrainingSample, int]] = []
         tokens_collected = 0
 
         while tokens_collected < token_budget:
             # Round-robin until we find a run with work for the current step
             for _ in range(len(self.buffers)):
                 if len(self.buffers[self._round_robin_position]) > 0:
-                    _, _, step = self.buffers[self._round_robin_position][0]
+                    _, step = self.buffers[self._round_robin_position][0]
                     if step <= self.multi_run_manager.progress[self._round_robin_position].step:
                         break
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
@@ -215,7 +220,7 @@ class MultiPacker(BasePacker):
             current_step = self.multi_run_manager.progress[run_idx].step
 
             while len(self.buffers[run_idx]) > 0:
-                sample, temperature, step = self.buffers[run_idx][0]
+                sample, step = self.buffers[run_idx][0]
                 if step > current_step:
                     # Samples from different steps should be consumed later
                     break
@@ -227,7 +232,7 @@ class MultiPacker(BasePacker):
                         self.buffers[run_idx].popleft()
                         continue
                     return selected
-                selected.append((run_idx, sample, temperature))
+                selected.append((run_idx, sample, step))
                 self.buffers[run_idx].popleft()
 
         return selected
@@ -239,7 +244,7 @@ class MultiPacker(BasePacker):
         # Removing the len(self.buffers[run_idx]) == 0 check would allow incremental orchestrator rollouts
         if (
             len(self.buffers[run_idx]) == 0
-            or self.buffers[run_idx][0][2] > self.multi_run_manager.progress[run_idx].step
+            or self.buffers[run_idx][0][1] > self.multi_run_manager.progress[run_idx].step
         ):
             self.multi_run_manager.progress[run_idx].step += 1
             self.multi_run_manager.ready_to_update[run_idx] = True
@@ -263,40 +268,42 @@ class MultiPacker(BasePacker):
         selected_samples = self._select_samples_round_robin(token_budget)
         assert selected_samples, "No samples selected"
 
-        # Group by run for prepare_batch (MultiLoRAMoE requires same run_idx in microbatch)
-        samples_by_run: dict[int, list[tuple[TrainingSample, float]]] = {}
-        for run_idx, sample, temperature in selected_samples:
+        # Group samples by run_idx - each microbatch must contain samples from only ONE run
+        # because MultiLoRAGroupedExperts (MoE) only supports one adapter per microbatch
+        samples_by_run: dict[int, list[TrainingSample]] = {}
+        per_run_stats: dict[int, tuple[int, int]] = {}
+        for run_idx, sample, step in selected_samples:
             if run_idx not in samples_by_run:
                 samples_by_run[run_idx] = []
-            samples_by_run[run_idx].append((sample, temperature))
+            samples_by_run[run_idx].append(sample)
 
-        micro_batch_grid = [[] for _ in range(self.dp_world_size)]
+            num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
+            if run_idx in per_run_stats:
+                cur_samples, cur_tokens = per_run_stats[run_idx]
+                per_run_stats[run_idx] = (cur_samples + 1, cur_tokens + num_tokens)
+            else:
+                per_run_stats[run_idx] = (1, num_tokens)
 
-        for run_idx, sample_temp_pairs in samples_by_run.items():
-            samples = [s for s, _ in sample_temp_pairs]
-            # We don't support dynamic temperatures in orchestrator yet
-            # So this works for now
-            temperature = sample_temp_pairs[0][1]
-
-            num_samples = len(samples)
-            num_tokens = sum(len(s.prompt_ids) + len(s.completion_ids) for s in samples)
-
+        for run_idx, (num_samples, num_tokens) in per_run_stats.items():
             self._update_run_progress(run_idx, num_samples, num_tokens)
 
-            _micro_batch_grid = prepare_batch(
-                rollouts=samples,
-                temperature=temperature,
+        # Pack each run separately to ensure no mixing of runs in microbatches
+        all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]
+        for run_idx in sorted(samples_by_run.keys()):
+            run_samples = samples_by_run[run_idx]
+            run_micro_batch_grid = prepare_batch(
+                rollouts=run_samples,
                 seq_len=self.seq_len,
                 pad_to_multiple_of=self.pad_to_multiple_of,
                 num_train_workers=self.dp_world_size,
-                idxs=[run_idx] * num_samples,
+                idxs=[run_idx] * len(run_samples),
                 num_loras=self.multi_run_manager.max_runs,
             )
+            # Merge into combined grid
+            for worker_idx, worker_batches in enumerate(run_micro_batch_grid):
+                all_micro_batches[worker_idx].extend(worker_batches)
 
-            for i, micro_batch in enumerate(_micro_batch_grid):
-                micro_batch_grid[i].extend(micro_batch)
-
-        self.sender.send(micro_batch_grid)
+        self.sender.send(all_micro_batches)
 
 
 def setup_packer(

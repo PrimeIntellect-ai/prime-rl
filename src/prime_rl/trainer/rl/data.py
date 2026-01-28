@@ -23,9 +23,9 @@ class TensorMicroBatch(TypedDict):
     inference_logprobs: Float[Tensor, "batch seq"]
     teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
+    temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
 
     # Batch level
-    temperature: float
     lora_num_tokens: Int[Tensor, "n_loras"]
 
 
@@ -93,7 +93,7 @@ class FakeDataLoader:
             "advantages": advantages.unsqueeze(0),
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "teacher_logprobs": None,
-            "temperature": 1.0,
+            "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
         }
@@ -115,7 +115,7 @@ class FakeDataLoader:
             "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "teacher_logprobs": None,
-            "temperature": 1.0,
+            "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
         }
@@ -176,6 +176,6 @@ class DataLoader:
             if micro_batch.teacher_logprobs is not None
             else None,
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
-            temperature=micro_batch.temperature,
+            temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
         )

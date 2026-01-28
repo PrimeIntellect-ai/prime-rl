@@ -28,16 +28,19 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     def make_sample(step: dict) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         tokens = step["tokens"]
+        temperature = step["temperature"]
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
             completion_mask = list(tokens["completion_mask"])
+        completion_ids = list(tokens["completion_ids"])
         return TrainingSample(
             prompt_ids=list(tokens["prompt_ids"]),
             prompt_mask=list(tokens["prompt_mask"]),
-            completion_ids=list(tokens["completion_ids"]),
+            completion_ids=completion_ids,
             completion_mask=completion_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
+            completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
             advantage=None,
         )
@@ -45,20 +48,24 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     def extend_sample(sample: TrainingSample, step: dict, prefix_len: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = step["tokens"]
+        temperature = step["temperature"]
 
         # Extend with new prompt tokens (mask=False, no gradient)
         new_prompt_ids = tokens["prompt_ids"][prefix_len:]
         sample.completion_ids.extend(new_prompt_ids)
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
+        sample.completion_temperatures.extend([temperature] * len(new_prompt_ids))
 
         # Extend with new completion tokens
-        sample.completion_ids.extend(tokens["completion_ids"])
+        completion_ids = tokens["completion_ids"]
+        sample.completion_ids.extend(completion_ids)
         if has_error:
             sample.completion_mask.extend([False] * len(tokens["completion_mask"]))
         else:
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
+        sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
     # Start with first trajectory step
     samples: list[TrainingSample] = []

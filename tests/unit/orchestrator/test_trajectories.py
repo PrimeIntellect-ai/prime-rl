@@ -26,6 +26,7 @@ def single_step_trajectory_state():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             )
         ],
         error=None,
@@ -53,6 +54,7 @@ def multi_step_trajectory_state():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
             vf.TrajectoryStep(
                 prompt=[
@@ -74,6 +76,7 @@ def multi_step_trajectory_state():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
         ],
         error=None,
@@ -101,6 +104,7 @@ def multi_step_trajectory_with_tool_calls():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
             vf.TrajectoryStep(
                 prompt=[
@@ -122,6 +126,7 @@ def multi_step_trajectory_with_tool_calls():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
         ],
         reward=1.0,
@@ -158,6 +163,7 @@ def multi_step_trajectory_extension_never_holds():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
             vf.TrajectoryStep(
                 prompt=[
@@ -180,6 +186,7 @@ def multi_step_trajectory_extension_never_holds():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
         ],
         error=None,
@@ -209,6 +216,7 @@ def multi_step_trajectory_with_tool_calls_extension_never_holds():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
             vf.TrajectoryStep(
                 prompt=[
@@ -231,6 +239,7 @@ def multi_step_trajectory_with_tool_calls_extension_never_holds():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
         ],
         reward=1.0,
@@ -253,6 +262,7 @@ def test_branching_equivalent_single_step_trajectory(single_step_trajectory_stat
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
+    assert rollout.completion_temperatures == [1.0, 1.0]
 
 
 def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extension_never_holds):
@@ -267,6 +277,7 @@ def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extens
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
+    assert rollout.completion_temperatures == [1.0, 1.0]
 
     # second step
     rollout = rollouts[1]
@@ -275,6 +286,7 @@ def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extens
     assert rollout.completion_ids == [7, 8]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.3, -0.4]
+    assert rollout.completion_temperatures == [1.0, 1.0]
 
 
 def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
@@ -291,6 +303,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
+    assert rollout.completion_temperatures == [1.0, 1.0]
 
     # second step
     rollout = rollouts[1]
@@ -299,6 +312,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
     assert rollout.completion_ids == [7, 8]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.3, -0.4]
+    assert rollout.completion_temperatures == [1.0, 1.0]
 
 
 def test_interleave_rollout_single_step_trajectory(single_step_trajectory_state):
@@ -311,6 +325,7 @@ def test_interleave_rollout_single_step_trajectory(single_step_trajectory_state)
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
+    assert rollout.completion_temperatures == [1.0, 1.0]
 
 
 def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_state):
@@ -323,6 +338,8 @@ def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_state):
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
     assert rollout.completion_mask == [True, True, False, False, True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
+    # Temperatures: 2 completion tokens at temp 1.0, then 2 prompt tokens at temp 1.0, then 2 completion tokens at temp 1.0
+    assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
 
 def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_trajectory_with_tool_calls):
@@ -368,6 +385,7 @@ def five_step_trajectory_with_extension_break():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
             # Step 2: extends step 1 (prefix [1,2,3,4] matches)
             vf.TrajectoryStep(
@@ -390,6 +408,7 @@ def five_step_trajectory_with_extension_break():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
             # Step 3: extends step 2 (prefix [1,2,3,4,5,6,7,8] matches)
             vf.TrajectoryStep(
@@ -414,6 +433,7 @@ def five_step_trajectory_with_extension_break():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
             # Step 4: EXTENSION BREAKS - different prefix (e.g. thinking stripped, context compacted)
             vf.TrajectoryStep(
@@ -440,6 +460,7 @@ def five_step_trajectory_with_extension_break():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
             # Step 5: extends step 4 (prefix [100,101,102,103,104,105] matches)
             vf.TrajectoryStep(
@@ -468,6 +489,7 @@ def five_step_trajectory_with_extension_break():
                 reward=None,
                 advantage=None,
                 extras={},
+                temperature=1.0,
             ),
         ],
         error=None,

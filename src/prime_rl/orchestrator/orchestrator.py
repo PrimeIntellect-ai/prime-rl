@@ -48,6 +48,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
+from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
     get_env_ids_to_install,
@@ -329,6 +330,8 @@ async def orchestrate(config: OrchestratorConfig):
             scheduler.checkpoint_ready.set()
 
         # Schedule generating the training batch
+        temperature = compute_temperature(progress.step, config.sampling, config.max_steps)
+        scheduler.set_sampling_args(get_sampling_args(config.sampling, temperature=temperature))
         generate_completions_start_time = time.perf_counter()
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
@@ -343,7 +346,7 @@ async def orchestrate(config: OrchestratorConfig):
                     model_name=config.model.name,
                     examples=val_examples,
                     rollouts_per_example=config.val.rollouts_per_example,
-                    sampling_args=get_sampling_args(config.sampling),
+                    sampling_args=get_sampling_args(config.sampling, temperature=temperature),
                     pbar_description="Generating rollouts (val)",
                 )
             )
@@ -393,7 +396,6 @@ async def orchestrate(config: OrchestratorConfig):
 
         training_batch = TrainingBatch(
             examples=train_examples,
-            temperature=config.sampling.temperature,
             step=progress.step,
         )
 
@@ -508,6 +510,7 @@ async def orchestrate(config: OrchestratorConfig):
             "perf/throughput": throughput,
             # Train reward
             "reward/mean": results_df.reward.mean(),
+            "sampling/temperature": temperature,
             # Batch metrics
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,

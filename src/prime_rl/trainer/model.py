@@ -511,7 +511,7 @@ def forward(
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
-    temperature: float | None = None,
+    temperature: Tensor | None = None,
 ) -> PrimeLmOutput:
     out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
 
