@@ -799,11 +799,12 @@ def _run_evals_in_subprocess(
     ckpt_step: int,
     step: int | None,
     max_concurrent: int,
+    json_logging: bool = False,
 ):
     """Entry point for eval subprocess. Creates its own event loop and clients."""
     # Setup logger for subprocess (reset first since we inherit parent's global state when forked)
     reset_logger()
-    logger = setup_logger("info")
+    logger = setup_logger("info", json=json_logging)
     intercept_verifiers_logging(level="info")
     logger.info(f"Eval subprocess started for checkpoint step {ckpt_step}")
 
@@ -845,6 +846,7 @@ async def run_evals_subprocess(
     ckpt_step: int,
     step: int | None = None,
     max_concurrent: int = -1,
+    json_logging: bool = False,
 ):
     """Run evals in a separate subprocess to isolate the event loop.
 
@@ -866,6 +868,7 @@ async def run_evals_subprocess(
             ckpt_step,
             step,
             max_concurrent,
+            json_logging,
         ),
         daemon=True,
     )
