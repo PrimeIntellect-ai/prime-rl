@@ -340,6 +340,7 @@ async def orchestrate(config: OrchestratorConfig):
                 ckpt_step=ckpt_step,
                 step=progress.step,
                 max_concurrent=config.max_concurrent or -1,
+                json_logging=config.log.json,
             )
 
             # Resume weight updates
@@ -644,6 +645,7 @@ async def orchestrate(config: OrchestratorConfig):
             ckpt_step=scheduler.ckpt_step,
             step=progress.step,
             max_concurrent=config.max_concurrent or -1,
+            json_logging=config.log.json,
         )
 
     # Log final (immutable) samples and distributions to monitor(s)
