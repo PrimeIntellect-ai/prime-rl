@@ -248,8 +248,7 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
 
 
 def _patch_model_forward(model: nn.Module) -> None:
-    """Patch the forward method to use the new lm_head with labels and temperature."""
-
+    # Patch the forward method to use the new lm_head with labels and temperature
     def new_forward(
         self: nn.Module,
         input_ids: torch.Tensor | None = None,
