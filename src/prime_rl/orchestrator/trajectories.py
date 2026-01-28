@@ -9,102 +9,15 @@ from PIL import Image
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
-# =============================================================================
-# CONSIDERATIONS: Why we use list() instead of deepcopy() for TrainingSample fields
-# =============================================================================
-#
-# Previously, this code used deepcopy() for all list fields (token IDs, logprobs,
-# pixel_values, etc.) which caused ~97s overhead per batch (512 rollouts).
-#
-# We removed deepcopy() based on the following analysis:
-#
-# 1. FLAT LISTS (prompt_ids, completion_ids, completion_logprobs):
-#    - These are lists of primitives (int/float)
-#    - list() creates a shallow copy, which equals deep copy for flat lists
-#    - Safe because primitives are immutable
-#
-# 2. NESTED LISTS (pixel_values, image_grid_thw):
-#    - These are shared among 8 rollouts of the same example (GRPO-style)
-#    - We don't copy them at all - multiple TrainingSamples reference the same list
-#    - This is safe because:
-#      a) Nothing in the orchestrator mutates pixel_values after creation
-#      b) msgspec.msgpack serialization creates independent copies for the trainer
-#      c) torch.tensor() in the trainer creates a new tensor without mutating the list
-#
-# VERIFICATION NEEDED if you change the data flow:
-#    - Ensure nothing mutates pixel_values/image_grid_thw between creation and serialization
-#    - Ensure serialization (msgspec.msgpack) still creates independent copies
-#    - Test: mutation via shallow copy affects original (list()[0].append() propagates)
-#
-# If bugs appear related to corrupted pixel_values across rollouts, consider:
-#    - Adding back deepcopy() for pixel_values/image_grid_thw only
-#    - Or use: [list(inner) for inner in pixel_values] for one-level-deep copy
-# =============================================================================
+# We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
+# primitives are immutable. pixel_values/image_grid_thw are shared across rollouts of the
+# same example (not copied) which is safe since nothing mutates them after creation.
 
 # Timing accumulators for profiling image preprocessing (thread-safe)
 _IMAGE_TIMING_LOCK = threading.Lock()
 _IMAGE_EXTRACT_TIME = 0.0
 _IMAGE_PREPROCESS_TIME = 0.0
 _IMAGE_COUNT = 0
-
-
-def extract_images_from_prompt(prompt: list[dict]) -> list[Image.Image]:
-    """
-    Extract PIL images from OpenAI-format messages containing base64-encoded image_urls.
-
-    Args:
-        prompt: List of message dicts in OpenAI chat format
-
-    Returns:
-        List of PIL.Image.Image objects extracted from the prompt
-    """
-    global _IMAGE_EXTRACT_TIME, _IMAGE_COUNT
-    start = time.perf_counter()
-    images = []
-    img_count = 0
-    for msg in prompt:
-        content = msg.get("content", [])
-        if isinstance(content, list):
-            for item in content:
-                if item.get("type") == "image_url":
-                    url = item.get("image_url", {}).get("url", "")
-                    if url.startswith("data:image"):
-                        # Extract base64 data after the comma
-                        b64_data = url.split(",", 1)[1]
-                        img_bytes = base64.b64decode(b64_data)
-                        img_count += 1
-                        img = Image.open(BytesIO(img_bytes))
-                        images.append(img)
-    elapsed = time.perf_counter() - start
-    with _IMAGE_TIMING_LOCK:
-        _IMAGE_EXTRACT_TIME += elapsed
-        _IMAGE_COUNT += img_count
-    return images
-
-
-def preprocess_images(images: list[Image.Image], processor) -> tuple[list | None, list | None]:
-    """
-    Preprocess images using HuggingFace processor's image_processor.
-
-    Args:
-        images: List of PIL images
-        processor: HuggingFace processor with image_processor attribute
-
-    Returns:
-        Tuple of (pixel_values, image_grid_thw) as lists, or (None, None) if no images
-    """
-    global _IMAGE_PREPROCESS_TIME
-    if not images or processor is None:
-        return None, None
-    start = time.perf_counter()
-
-    processed = processor.image_processor(images=images, return_tensors="pt")
-    pixel_values = processed["pixel_values"].tolist()
-    image_grid_thw = processed["image_grid_thw"].tolist()
-    elapsed = time.perf_counter() - start
-    with _IMAGE_TIMING_LOCK:
-        _IMAGE_PREPROCESS_TIME += elapsed
-    return pixel_values, image_grid_thw
 
 
 def get_image_timing_stats() -> dict:
@@ -126,36 +39,6 @@ def reset_image_timing_stats():
         _IMAGE_EXTRACT_TIME = 0.0
         _IMAGE_PREPROCESS_TIME = 0.0
         _IMAGE_COUNT = 0
-
-
-def preprocess_example_images(state: vf.State, processor) -> tuple[list | None, list | None]:
-    """
-    Preprocess images for a single example/rollout state.
-
-    Args:
-        state: vf.State containing trajectory data with prompt
-        processor: HuggingFace processor with image_processor attribute
-
-    Returns:
-        Tuple of (pixel_values, image_grid_thw) as lists, or (None, None) if no images
-    """
-    if processor is None:
-        return None, None
-
-    trajectory = state.get("trajectory", [])
-    if not trajectory:
-        return None, None
-
-    first_step = trajectory[0]
-    prompt = first_step.get("prompt")
-    if not prompt or not isinstance(prompt, list):
-        return None, None
-
-    images = extract_images_from_prompt(prompt)
-    if not images:
-        return None, None
-
-    return preprocess_images(images, processor)
 
 
 def extract_images_from_examples(
@@ -276,7 +159,7 @@ def preprocess_images_batched(
 
 def interleave_rollout(
     state: vf.State,
-    processor=None,
+    processor=None,  # Unused, kept for API compatibility
     cached_pixel_values: list | None = None,
     cached_image_grid_thw: list | None = None,
 ) -> list[TrainingSample] | None:
@@ -285,15 +168,13 @@ def interleave_rollout(
 
     NOTE:
     - This requires that consecutive trajectory steps share token prefixes (incremental tokenization)
-    - This approach is suceptible to introduce subtle difference due to re-tokenization in multi-turn environments.
+    - This approach is susceptible to subtle differences due to re-tokenization in multi-turn environments.
 
     Args:
         state: vf.State containing trajectory data
-        processor: Optional HuggingFace processor for VLM models (e.g., Qwen3VLProcessor).
-            If provided and images are found in the prompt, they will be preprocessed
-            to extract pixel_values and image_grid_thw for training.
-        cached_pixel_values: Pre-computed pixel values (to avoid redundant preprocessing)
-        cached_image_grid_thw: Pre-computed image grid thw (to avoid redundant preprocessing)
+        processor: Unused, kept for API compatibility
+        cached_pixel_values: Pre-computed pixel values for VLM training
+        cached_image_grid_thw: Pre-computed image grid thw for VLM training
     """
     logger = get_logger()
 
@@ -312,18 +193,6 @@ def interleave_rollout(
     else:
         completion_mask = [bool(i) for i in first_step["tokens"]["completion_mask"]]
 
-    # Use cached image data if provided, otherwise extract and preprocess
-    pixel_values = cached_pixel_values
-    image_grid_thw = cached_image_grid_thw
-    if pixel_values is None and processor is not None:
-        prompt = first_step.get("prompt")
-        if prompt and isinstance(prompt, list):
-            images = extract_images_from_prompt(prompt)
-            if images:
-                pixel_values, image_grid_thw = preprocess_images(images, processor)
-
-    # Use list() instead of deepcopy() for flat lists - much faster
-    # pixel_values/image_grid_thw are from cache and not modified, so no copy needed
     completion_ids = list(first_step["tokens"]["completion_ids"])
     interleaved_rollout = TrainingSample(
         prompt_ids=list(first_step["tokens"]["prompt_ids"]),
@@ -331,11 +200,11 @@ def interleave_rollout(
         completion_ids=completion_ids,
         completion_mask=completion_mask,
         completion_logprobs=list(first_step["tokens"]["completion_logprobs"]),
-        completion_temperatures=[temperature] * len(completion_ids),  # Per-token temperatures
-        teacher_logprobs=None,  # Populated at the end after full sequence length is known if teacher model is configured
+        completion_temperatures=[temperature] * len(completion_ids),
+        teacher_logprobs=None,
         advantage=None,
-        pixel_values=pixel_values,
-        image_grid_thw=image_grid_thw,
+        pixel_values=cached_pixel_values,
+        image_grid_thw=cached_image_grid_thw,
     )
 
     # Interleave all other trajectory steps into completion
@@ -378,7 +247,7 @@ def interleave_rollout(
 
 def branch_rollout(
     state: vf.State,
-    processor=None,
+    processor=None,  # Unused, kept for API compatibility
     cached_pixel_values: list | None = None,
     cached_image_grid_thw: list | None = None,
 ) -> list[TrainingSample] | None:
@@ -387,11 +256,9 @@ def branch_rollout(
 
     Args:
         state: vf.State containing trajectory data
-        processor: Optional HuggingFace processor for VLM models (e.g., Qwen3VLProcessor).
-            If provided and images are found in the prompt, they will be preprocessed
-            to extract pixel_values and image_grid_thw for training.
-        cached_pixel_values: Pre-computed pixel values (to avoid redundant preprocessing)
-        cached_image_grid_thw: Pre-computed image grid thw (to avoid redundant preprocessing)
+        processor: Unused, kept for API compatibility
+        cached_pixel_values: Pre-computed pixel values for VLM training
+        cached_image_grid_thw: Pre-computed image grid thw for VLM training
     """
     logger = get_logger()
 
@@ -402,8 +269,7 @@ def branch_rollout(
         return None
 
     has_error = state["error"] is not None
-    for step in state["trajectory"]:
-        assert "tokens" in step
+    for step in trajectory:
         tokens = step["tokens"]
         temperature = step["temperature"]
         if has_error:
@@ -411,18 +277,6 @@ def branch_rollout(
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
 
-        # Use cached image data if provided, otherwise extract and preprocess
-        pixel_values = cached_pixel_values
-        image_grid_thw = cached_image_grid_thw
-        if pixel_values is None and processor is not None:
-            prompt = step.get("prompt")
-            if prompt and isinstance(prompt, list):
-                images = extract_images_from_prompt(prompt)
-                if images:
-                    pixel_values, image_grid_thw = preprocess_images(images, processor)
-
-        # Use list() instead of deepcopy() for flat lists - much faster
-        # pixel_values/image_grid_thw are from cache and not modified, so no copy needed
         completion_ids = list(tokens["completion_ids"])
         rollout = TrainingSample(
             prompt_ids=list(tokens["prompt_ids"]),
@@ -430,11 +284,11 @@ def branch_rollout(
             completion_ids=completion_ids,
             completion_mask=completion_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
-            completion_temperatures=[temperature] * len(completion_ids),  # Per-token temperatures
+            completion_temperatures=[temperature] * len(completion_ids),
             advantage=None,
             teacher_logprobs=None,
-            pixel_values=pixel_values,
-            image_grid_thw=image_grid_thw,
+            pixel_values=cached_pixel_values,
+            image_grid_thw=cached_image_grid_thw,
         )
         rollouts.append(rollout)
     return rollouts

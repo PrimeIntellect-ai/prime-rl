@@ -446,9 +446,10 @@ async def orchestrate(config: OrchestratorConfig):
         rollout_time = time.perf_counter() - rollout_start
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
 
-        logger.info(
-            f"Timing breakdown: extract={extract_time:.2f}s, preprocess={preprocess_time:.2f}s, rollout={rollout_time:.2f}s, total={parallel_preprocess_time:.2f}s"
-        )
+        if processor is not None:
+            logger.info(
+                f"VLM timing: extract={extract_time:.2f}s, preprocess={preprocess_time:.2f}s, rollout={rollout_time:.2f}s, total={parallel_preprocess_time:.2f}s"
+            )
 
         # Collect results and assign advantages
         train_examples: list[TrainingSample] = []
