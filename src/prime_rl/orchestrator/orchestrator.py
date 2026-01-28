@@ -48,6 +48,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
+from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
     get_env_ids_to_install,
@@ -232,7 +233,9 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
 
-        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step)
+        # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
+        check_exists = config.weight_broadcast.type != "nccl"
+        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step, check_exists=check_exists)
         lora_name = config.model.lora.name if config.model.lora else None
         await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
@@ -306,8 +309,10 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step} (blocking, subprocess)")
 
-            # Pause weight updates during eval
+            # Pause weight updates during eval and cancel inflight rollouts
+            # this avoid doing eval across different checkpoints and avoid congestion
             scheduler.checkpoint_ready.clear()
+            scheduler.cancel_all_inflight_rollouts()
 
             await run_evals_subprocess(
                 client_config=config.client,
@@ -325,6 +330,8 @@ async def orchestrate(config: OrchestratorConfig):
             scheduler.checkpoint_ready.set()
 
         # Schedule generating the training batch
+        temperature = compute_temperature(progress.step, config.sampling, config.max_steps)
+        scheduler.set_sampling_args(get_sampling_args(config.sampling, temperature=temperature))
         generate_completions_start_time = time.perf_counter()
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
@@ -339,7 +346,7 @@ async def orchestrate(config: OrchestratorConfig):
                     model_name=config.model.name,
                     examples=val_examples,
                     rollouts_per_example=config.val.rollouts_per_example,
-                    sampling_args=get_sampling_args(config.sampling),
+                    sampling_args=get_sampling_args(config.sampling, temperature=temperature),
                     pbar_description="Generating rollouts (val)",
                 )
             )
@@ -392,7 +399,6 @@ async def orchestrate(config: OrchestratorConfig):
 
         training_batch = TrainingBatch(
             examples=train_examples,
-            temperature=config.sampling.temperature,
             step=progress.step,
         )
 
@@ -507,6 +513,7 @@ async def orchestrate(config: OrchestratorConfig):
             "perf/throughput": throughput,
             # Train reward
             "reward/mean": results_df.reward.mean(),
+            "sampling/temperature": temperature,
             # Batch metrics
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,

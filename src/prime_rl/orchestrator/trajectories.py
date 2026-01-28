@@ -25,16 +25,19 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
 
     # Initialize the rollout with prompt and completion from first trajectory step
     first_step = trajectory[0]
+    temperature = first_step["temperature"]
     if has_error:
         completion_mask = [False] * len(first_step["tokens"]["completion_mask"])
     else:
         completion_mask = [bool(i) for i in first_step["tokens"]["completion_mask"]]
+    completion_ids = deepcopy(first_step["tokens"]["completion_ids"])
     interleaved_rollout = TrainingSample(
         prompt_ids=deepcopy(first_step["tokens"]["prompt_ids"]),
         prompt_mask=[bool(i) for i in first_step["tokens"]["prompt_mask"]],
-        completion_ids=deepcopy(first_step["tokens"]["completion_ids"]),
+        completion_ids=completion_ids,
         completion_mask=completion_mask,
         completion_logprobs=deepcopy(first_step["tokens"]["completion_logprobs"]),
+        completion_temperatures=[temperature] * len(completion_ids),  # Per-token temperatures
         teacher_logprobs=None,  # Populated at the end after full sequence length is known if teacher model is configured
         advantage=None,
     )
@@ -43,6 +46,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     prefix_tokens = first_step["tokens"]["prompt_ids"] + first_step["tokens"]["completion_ids"]
     for step_idx, step in enumerate(trajectory[1:], start=2):
         tokens = step["tokens"]
+        step_temperature = step["temperature"]
         assert tokens is not None
         prev_trajectory_and_new_prompt_ids = tokens["prompt_ids"]
 
@@ -52,11 +56,12 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
                 f"Found mismatch in prefix tokens for example {state['example_id']} at trajectory step {step_idx}"
             )
 
-        # Extend the completion with the new prompt
+        # Extend the completion with the new prompt (use step's temperature for prompt tokens too)
         prompt_ids = deepcopy(prev_trajectory_and_new_prompt_ids[len(prefix_tokens) :])
         interleaved_rollout.completion_ids.extend(prompt_ids)
         interleaved_rollout.completion_mask.extend([False] * len(prompt_ids))
         interleaved_rollout.completion_logprobs.extend([0.0] * len(prompt_ids))
+        interleaved_rollout.completion_temperatures.extend([step_temperature] * len(prompt_ids))
 
         # Extend the completion with the new completion tokens
         completion_ids = deepcopy(tokens["completion_ids"])
@@ -67,6 +72,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         else:
             interleaved_rollout.completion_mask.extend([bool(i) for i in tokens["completion_mask"]])
         interleaved_rollout.completion_logprobs.extend(completion_logprobs)
+        interleaved_rollout.completion_temperatures.extend([step_temperature] * len(completion_ids))
 
         # New prefix is the current prompt and completion ids concatenated
         prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
@@ -88,16 +94,19 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
     for step in state["trajectory"]:
         assert "tokens" in step
         tokens = step["tokens"]
+        temperature = step["temperature"]
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
+        completion_ids = deepcopy(tokens["completion_ids"])
         rollout = TrainingSample(
             prompt_ids=deepcopy(tokens["prompt_ids"]),
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
-            completion_ids=deepcopy(tokens["completion_ids"]),
+            completion_ids=completion_ids,
             completion_mask=completion_mask,
             completion_logprobs=deepcopy(tokens["completion_logprobs"]),
+            completion_temperatures=[temperature] * len(completion_ids),  # Per-token temperatures
             advantage=None,
             teacher_logprobs=None,
         )

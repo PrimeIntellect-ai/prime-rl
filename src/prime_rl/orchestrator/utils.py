@@ -35,10 +35,12 @@ async def get_semaphore() -> AsyncContextManager:
     return SEMAPHORE
 
 
-def get_sampling_args(sampling_config: SamplingConfig) -> dict:
+def get_sampling_args(sampling_config: SamplingConfig, temperature: float) -> dict:
     # Convert SamplingConfig to vLLM OAI sampling args
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
     sampling_args = dict(sampling_config)
+    sampling_args.pop("temp_scheduler", None)
+    sampling_args["temperature"] = temperature
     sampling_args["top_p"] = 1.0
     sampling_args["logprobs"] = True
     sampling_args["extra_body"] = {
@@ -167,13 +169,23 @@ async def compute_teacher_logprobs(
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 
 
-def get_weight_dir(output_dir: Path, step: int) -> Path:
-    """Get the weight directory for a given checkpoint step."""
+def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True) -> Path:
+    """Get the weight directory for a given checkpoint step.
+
+    Args:
+        output_dir: The output directory for the run.
+        step: The checkpoint step.
+        check_exists: If True, raises FileNotFoundError if no weight directory exists.
+            If False, returns the broadcast directory path without checking existence
+            (useful for NCCL mode where weights are broadcasted, not stored on disk).
+    """
     ckpt_weight_dir = get_step_path(get_ckpt_dir(output_dir), step) / "weight"
     broadcast_weight_dir = get_step_path(get_broadcast_dir(output_dir), step)
     if ckpt_weight_dir.exists():
         return ckpt_weight_dir
     if broadcast_weight_dir.exists():
+        return broadcast_weight_dir
+    if not check_exists:
         return broadcast_weight_dir
     raise FileNotFoundError(
         f"No weight directory found for checkpoint step {step}. Expected to find it in {ckpt_weight_dir} or {broadcast_weight_dir}."

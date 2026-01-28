@@ -11,10 +11,12 @@ from prime_rl.utils.utils import default_dtype
 
 
 def _baseline_logprobs_and_entropy(
-    hidden: torch.Tensor, weight: torch.Tensor, labels: torch.Tensor, *, temperature: float
+    hidden: torch.Tensor, weight: torch.Tensor, labels: torch.Tensor, *, temperature: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Baseline logprobs and entropy with per-token temperature tensor."""
     logits = hidden @ weight.t()
-    logits = logits / float(temperature)
+    # temperature is [b, s], logits is [b, s, v]
+    logits = logits / temperature.unsqueeze(-1)
     logp = torch.log_softmax(logits, dim=-1).gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
     ent = compute_entropy(logits)
     return logp, ent
@@ -23,7 +25,7 @@ def _baseline_logprobs_and_entropy(
 def test_fused_lm_head_matches_full_logits_forward_and_backward_cpu():
     torch.manual_seed(0)
     b, s, h, v = 2, 4, 8, 37
-    temperature = 1.7
+    temperature = torch.full((b, s), 1.7, dtype=torch.float32)
     chunk_size = 11
 
     hidden0 = torch.randn(b, s, h, dtype=torch.float32, requires_grad=True)
@@ -66,12 +68,13 @@ def test_fused_lm_head_requires_labels():
 
     hidden = torch.randn(b, s, h, dtype=torch.float32)
     weight = torch.randn(v, h, dtype=torch.float32)
+    temperature = torch.full((b, s), 1.0, dtype=torch.float32)
 
     lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=5)
     lm.weight = torch.nn.Parameter(weight)
 
     with pytest.raises(AssertionError, match="FusedOutputLinear requires labels"):
-        lm(hidden, labels=None, temperature=1.0)
+        lm(hidden, labels=None, temperature=temperature)
 
 
 def test_vanilla_lm_head_returns_logits():
@@ -85,7 +88,8 @@ def test_vanilla_lm_head_returns_logits():
     lm = VanillaOutputLinear(in_features=h, out_features=v)
     lm.weight = torch.nn.Parameter(weight)
 
-    out = lm(hidden, labels=None, temperature=1.0)
+    # VanillaOutputLinear doesn't use temperature - it just returns logits
+    out = lm(hidden, labels=None, temperature=None)
     assert out.get("logits") is not None
     assert out.get("logprobs") is None
     assert out.get("entropy") is None
@@ -98,7 +102,8 @@ def test_fused_vs_vanilla_integration():
     """Integration test comparing fused and vanilla outputs after postprocessing."""
     torch.manual_seed(42)
     b, s, h, v = 2, 4, 8, 37
-    temperature = 1.7
+    temp_value = 1.7
+    temperature = torch.full((b, s), temp_value, dtype=torch.float32)
     chunk_size = 11
 
     hidden = torch.randn(b, s, h, dtype=torch.float16)
@@ -108,10 +113,10 @@ def test_fused_vs_vanilla_integration():
     # Vanilla path: get logits, compute logprobs manually
     vanilla_lm = VanillaOutputLinear(in_features=h, out_features=v)
     vanilla_lm.weight = torch.nn.Parameter(weight.clone())
-    vanilla_out = cast_float_and_contiguous(vanilla_lm(hidden, labels=None, temperature=temperature))
+    vanilla_out = cast_float_and_contiguous(vanilla_lm(hidden, labels=None, temperature=None))
 
     assert vanilla_out.get("logits") is not None
-    logits = vanilla_out["logits"] / float(temperature)
+    logits = vanilla_out["logits"] / temp_value
     vanilla_logprobs = torch.log_softmax(logits, dim=-1).gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
     vanilla_entropy = compute_entropy(logits)
 
@@ -167,13 +172,14 @@ def test_full_model_fused_vs_vanilla():
     # Run a few training steps
     num_steps = 3
     batch_size, seq_len = 2, 64
-    temperature = 1.5
+    temp_value = 1.5
 
     for step in range(num_steps):
         # Generate random batch
         with torch.device("cuda"):
             labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
             position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
+            temperature = torch.full((batch_size, seq_len), temp_value, dtype=torch.float32, device="cuda")
 
         # Vanilla forward (returns logits, compute logprobs/entropy using RL train functions)
         optimizer_vanilla.zero_grad()
@@ -182,7 +188,7 @@ def test_full_model_fused_vs_vanilla():
         )
         if out_vanilla.get("logprobs") is None:
             assert out_vanilla.get("logits") is not None
-            logits = out_vanilla["logits"] / float(temperature)
+            logits = out_vanilla["logits"] / temp_value
             out_vanilla["logprobs"] = selective_log_softmax(logits, labels)
             out_vanilla["entropy"] = compute_entropy(logits)
         loss_vanilla = -out_vanilla["logprobs"].mean()
@@ -194,7 +200,7 @@ def test_full_model_fused_vs_vanilla():
         out_fused = cast_float_and_contiguous(model_fused(labels, position_ids, labels=labels, temperature=temperature))
         if out_fused.get("logprobs") is None:
             assert out_fused.get("logits") is not None
-            logits = out_fused["logits"] / float(temperature)
+            logits = out_fused["logits"] / temp_value
             out_fused["logprobs"] = selective_log_softmax(logits, labels)
             out_fused["entropy"] = compute_entropy(logits)
         loss_fused = -out_fused["logprobs"].mean()
@@ -222,7 +228,8 @@ def test_fused_lm_head_correct_shift():
     """
     torch.manual_seed(999)
     b, s, h, v = 2, 16, 32, 50
-    temperature = 1.5
+    temp_value = 1.5
+    temperature = torch.full((b, s), temp_value, dtype=torch.float32)
     chunk_size = 13
 
     hidden = torch.randn(b, s, h, dtype=torch.float32)
@@ -240,7 +247,7 @@ def test_fused_lm_head_correct_shift():
 
     # === Inference convention (baseline) ===
     logits = hidden @ weight.t()
-    logits = logits / temperature
+    logits = logits / temp_value
     # Shift logits right (prepend zeros, drop last) to get inference convention
     shifted_logits = torch.cat([torch.zeros(b, 1, v, dtype=logits.dtype), logits[:, :-1, :]], dim=1)
     inference_logprobs = (
@@ -289,12 +296,12 @@ def test_inject_prime_lm_head_vanilla():
 
     # Test forward with labels and temperature
     batch_size, seq_len = 2, 64
-    temperature = 1.5
 
     with torch.device("cuda"):
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
         position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
         labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+        temperature = torch.full((batch_size, seq_len), 1.5, dtype=torch.float32)
 
     with torch.autocast("cuda", dtype=torch.bfloat16):
         out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
@@ -336,12 +343,12 @@ def test_inject_prime_lm_head_fused():
 
     # Test forward with labels and temperature
     batch_size, seq_len = 2, 64
-    temperature = 1.5
 
     with torch.device("cuda"):
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
         position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
         labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+        temperature = torch.full((batch_size, seq_len), 1.5, dtype=torch.float32)
 
     with torch.autocast("cuda", dtype=torch.bfloat16):
         out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
@@ -387,12 +394,13 @@ def test_hf_model_fused_vs_vanilla_matches():
 
     # Test data
     batch_size, seq_len = 2, 64
-    temperature = 1.5
+    temp_value = 1.5
 
     with torch.device("cuda"):
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
         position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
         labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+        temperature = torch.full((batch_size, seq_len), temp_value, dtype=torch.float32)
 
     # Run vanilla model
     with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -401,7 +409,7 @@ def test_hf_model_fused_vs_vanilla_matches():
         )
 
     # Compute logprobs and entropy from vanilla logits
-    logits = out_vanilla["logits"].float() / float(temperature)
+    logits = out_vanilla["logits"].float() / temp_value
     vanilla_logprobs = selective_log_softmax(logits, labels)
     vanilla_entropy = compute_entropy(logits)
 

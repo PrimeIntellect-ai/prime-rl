@@ -2411,7 +2411,7 @@ wheels = [
 
 [[package]]
 name = "prime"
-version = "0.5.0"
+version = "0.5.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "build" },
@@ -2425,9 +2425,9 @@ dependencies = [
     { name = "typer" },
     { name = "verifiers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5d/6f/0cd7ee178b600b95b110f88c4c9892dac6668ea5c4eab917bed6bae27c49/prime-0.5.0.tar.gz", hash = "sha256:bb7bade9a0bb36c72a7a6420b5138144c29e8a56c497a9521d133337fbbeca4a", size = 226349, upload-time = "2025-12-02T03:48:24.942Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0c/2d/34bca0e5c89c878e6c55e5b09cc138f19b884ddc1029ca8e5bad6dda4c78/prime-0.5.24.tar.gz", hash = "sha256:e50549b6bbade836b802af92065f1914157f130053d903e731eaaaef3917b7b6", size = 262874, upload-time = "2026-01-27T05:31:31.109Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/a2/e4ac530ad0853e8c190c9ccb17345604c7c6098ed626e8ca8c7c0f9e7d8a/prime-0.5.0-py3-none-any.whl", hash = "sha256:dbf806e65d241446eaf92030d63384bd602b8395fdb7489d5917231f582b416b", size = 78332, upload-time = "2025-12-02T03:48:23.785Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/f6/69729926e31164da3756078727b3c6766035e00233fa9d27f3ba07e236ed/prime-0.5.24-py3-none-any.whl", hash = "sha256:acdbd5e1950cd7688294ac2f325ace10acc8721d2074f1474e892214974a3ec7", size = 116123, upload-time = "2026-01-27T05:31:29.443Z" },
 ]
 
 [[package]]
@@ -2520,7 +2520,7 @@ requires-dist = [
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
-    { name = "prime", specifier = ">=0.5.0" },
+    { name = "prime", specifier = ">=0.5.24" },
     { name = "prime-evals", specifier = ">=0.1.5" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
@@ -2537,7 +2537,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
-    { name = "transformers", specifier = ">=4.56.0" },
+    { name = "transformers", specifier = ">=4.57.6" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=209774a" },
     { name = "vllm", specifier = "==0.14.0" },
@@ -3683,7 +3683,7 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "4.56.1"
+version = "4.57.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
@@ -3697,9 +3697,9 @@ dependencies = [
     { name = "tokenizers" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/89/21/dc88ef3da1e49af07ed69386a11047a31dcf1aaf4ded3bc4b173fbf94116/transformers-4.56.1.tar.gz", hash = "sha256:0d88b1089a563996fc5f2c34502f10516cad3ea1aa89f179f522b54c8311fe74", size = 9855473, upload-time = "2025-09-04T20:47:13.14Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/35/67252acc1b929dc88b6602e8c4a982e64f31e733b804c14bc24b47da35e6/transformers-4.57.6.tar.gz", hash = "sha256:55e44126ece9dc0a291521b7e5492b572e6ef2766338a610b9ab5afbb70689d3", size = 10134912, upload-time = "2026-01-16T10:38:39.284Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/7c/283c3dd35e00e22a7803a0b2a65251347b745474a82399be058bde1c9f15/transformers-4.56.1-py3-none-any.whl", hash = "sha256:1697af6addfb6ddbce9618b763f4b52d5a756f6da4899ffd1b4febf58b779248", size = 11608197, upload-time = "2025-09-04T20:47:04.895Z" },
+    { url = "https://files.pythonhosted.org/packages/03/b8/e484ef633af3887baeeb4b6ad12743363af7cce68ae51e938e00aaa0529d/transformers-4.57.6-py3-none-any.whl", hash = "sha256:4c9e9de11333ddfe5114bc872c9f370509198acf0b87a832a0ab9458e2bd0550", size = 11993498, upload-time = "2026-01-16T10:38:31.289Z" },
 ]
 
 [[package]]

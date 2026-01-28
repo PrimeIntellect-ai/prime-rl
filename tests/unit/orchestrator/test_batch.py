@@ -6,13 +6,14 @@ from prime_rl.transport.types import TrainingSample
 
 @pytest.fixture
 def make_training_example():
-    def _make_training_example() -> TrainingSample:
+    def _make_training_example(temperature: float = 1.0) -> TrainingSample:
         return TrainingSample(
             prompt_ids=[1, 2],
             prompt_mask=[False, False],
             completion_ids=[3, 4],
             completion_mask=[True, True],
             completion_logprobs=[-0.1, -0.2],
+            completion_temperatures=[temperature, temperature],  # Per-token temperatures
             teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
         )
@@ -30,7 +31,6 @@ def test_prepare_batch_balances_micro_batches_across_workers(
 
     batches_per_gpu = prepare_batch(
         rollouts=examples,
-        temperature=0.5,
         seq_len=4,
         num_train_workers=num_train_workers,
         idxs=[0] * rollout_count,
@@ -53,3 +53,27 @@ def test_prepare_batch_balances_micro_batches_across_workers(
     for batch in flat_batches[len(examples) :]:
         assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 0
         assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0
+
+
+def test_prepare_batch_packs_different_temperatures(make_training_example):
+    """With per-token temperatures, samples can be packed together regardless of their temperature values."""
+    example1 = make_training_example(temperature=0.7)
+    example2 = make_training_example(temperature=1.1)
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[example1, example2],
+        seq_len=16,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+    )
+
+    flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
+    # With per-token temperatures, samples can now be packed together
+    assert len(flat_batches) == 1
+    # Each sample has 4 tokens (2 prompt + 2 completion), so 8 total tokens
+    assert len(flat_batches[0].temperatures) == 8
+    # First sample (4 tokens): all get temp 0.7
+    assert flat_batches[0].temperatures[:4] == [0.7, 0.7, 0.7, 0.7]
+    # Second sample (4 tokens): all get temp 1.1
+    assert flat_batches[0].temperatures[4:8] == [1.1, 1.1, 1.1, 1.1]
