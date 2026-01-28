@@ -222,6 +222,15 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
     )
 
     logger = get_logger()
+
+    # Check for Gemma-style softcapping - dispatch to specialized implementation
+    final_logit_softcapping = getattr(model.config, "final_logit_softcapping", None)
+    if final_logit_softcapping is not None:
+        from prime_rl.trainer.models.layers.lm_head_gemma import inject_gemma_lm_head
+
+        inject_gemma_lm_head(model, chunk_size, final_logit_softcapping)
+        return
+
     logger.info(f"Injecting Prime LM head with chunk size {chunk_size}")
 
     # Replace the lm_head with the appropriate wrapper
@@ -235,7 +244,12 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
 
-    # Patch the forward method to use the new lm_head with labels and temperature
+    _patch_model_forward(model)
+
+
+def _patch_model_forward(model: nn.Module) -> None:
+    """Patch the forward method to use the new lm_head with labels and temperature."""
+
     def new_forward(
         self: nn.Module,
         input_ids: torch.Tensor | None = None,
