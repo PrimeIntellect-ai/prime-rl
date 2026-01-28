@@ -10,8 +10,10 @@ from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import (
     branch_rollout,
+    extract_images_from_examples,
     get_image_timing_stats,
     interleave_rollout,
+    preprocess_images_batched,
     reset_image_timing_stats,
 )
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
@@ -24,7 +26,6 @@ monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()
 
 # Import environment before any other imports
-from functools import partial
 
 import pandas as pd
 import verifiers as vf
@@ -127,7 +128,9 @@ async def orchestrate(config: OrchestratorConfig):
     processor = None
     if is_vlm_model(config.model.name):
         logger.info(f"Detected VLM model. Loading processor for {config.model.name}")
-        processor = AutoProcessor.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+        processor = AutoProcessor.from_pretrained(
+            config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
+        )
 
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -276,6 +279,9 @@ async def orchestrate(config: OrchestratorConfig):
     empty_batch_retries = 0
     max_empty_batch_retries = 5
 
+    # Persistent ThreadPoolExecutor for image preprocessing (avoid recreation overhead)
+    preprocess_executor = ThreadPoolExecutor(max_workers=64)
+
     while True:
         # Check if this run has been evicted by the trainer
         evicted_path = config.output_dir / "control" / "evicted.txt"
@@ -344,7 +350,6 @@ async def orchestrate(config: OrchestratorConfig):
             scheduler.checkpoint_ready.set()
 
         # Schedule generating the training batch
-        generate_completions_start_time = time.perf_counter()
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
         # Schedule running validation at the specified interval
@@ -367,7 +372,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Await train rollouts, process results and write batch to disk to consume by trainer
         await train_task
-        generate_completions_time = time.perf_counter() - generate_completions_start_time
+        generate_completions_time = scheduler.last_batch_generation_time
         train_rollouts = train_task.result()
 
         # Compute advantages
@@ -381,23 +386,64 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
         # Update and sample rollouts from the buffer
-        # Use partial to bind the processor for VLM models
+        # Select rollout function based on strategy
         if config.trajectory_strategy == "interleaved":
-            make_train_example = partial(interleave_rollout, processor=processor)
+            rollout_fn = interleave_rollout
         else:
-            make_train_example = partial(branch_rollout, processor=processor)
+            rollout_fn = branch_rollout
 
-        # Parallelize trajectory processing (image preprocessing is CPU-bound)
-        num_workers = min(32, len(train_rollouts))  # Cap at 32 workers
         loop = asyncio.get_event_loop()
         parallel_preprocess_start = time.perf_counter()
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            # Run all make_train_example calls in parallel
-            futures = [
-                loop.run_in_executor(executor, make_train_example, train_rollout) for train_rollout in train_rollouts
-            ]
-            train_example_results = await asyncio.gather(*futures)
+
+        # Step 1: Group rollouts by example_id to avoid redundant image preprocessing
+        # With rollouts_per_example=8, we only need to preprocess 1/8th of the images
+        example_id_to_rollouts: dict[int, list[tuple[int, vf.State]]] = {}
+        for idx, rollout in enumerate(train_rollouts):
+            example_id = rollout["example_id"]
+            if example_id not in example_id_to_rollouts:
+                example_id_to_rollouts[example_id] = []
+            example_id_to_rollouts[example_id].append((idx, rollout))
+
+        # Step 2: Extract and preprocess images in a SINGLE batched call
+        unique_examples = [(eid, rollouts[0][1]) for eid, rollouts in example_id_to_rollouts.items()]
+        num_unique = len(unique_examples)
+
+        extract_start = time.perf_counter()
+        if processor is not None:
+            # Extract all images first (mainly base64 decoding - can be done synchronously, it's fast)
+            all_images, images_per_example = extract_images_from_examples(unique_examples)
+            extract_time = time.perf_counter() - extract_start
+
+            # Single batched call to processor for all images
+            preprocess_start = time.perf_counter()
+            if all_images:
+                image_cache = preprocess_images_batched(all_images, images_per_example, processor)
+            else:
+                image_cache = {eid: (None, None) for eid in images_per_example}
+            preprocess_time = time.perf_counter() - preprocess_start
+        else:
+            image_cache = {}
+            extract_time = 0
+            preprocess_time = 0
+
+        # Step 3: Process all rollouts with cached images (no image preprocessing needed)
+        def process_rollout_with_cache(rollout: vf.State) -> list[TrainingSample] | None:
+            example_id = rollout["example_id"]
+            cached = image_cache.get(example_id, (None, None))
+            return rollout_fn(rollout, processor=None, cached_pixel_values=cached[0], cached_image_grid_thw=cached[1])
+
+        rollout_start = time.perf_counter()
+        rollout_futures = [
+            loop.run_in_executor(preprocess_executor, process_rollout_with_cache, train_rollout)
+            for train_rollout in train_rollouts
+        ]
+        train_example_results = await asyncio.gather(*rollout_futures)
+        rollout_time = time.perf_counter() - rollout_start
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
+
+        logger.info(
+            f"Timing breakdown: extract={extract_time:.2f}s, preprocess={preprocess_time:.2f}s, rollout={rollout_time:.2f}s, total={parallel_preprocess_time:.2f}s"
+        )
 
         # Collect results and assign advantages
         train_examples: list[TrainingSample] = []
@@ -408,7 +454,7 @@ async def orchestrate(config: OrchestratorConfig):
                     te.reward = train_rollout["reward"]
                 train_examples.extend(train_example)
         logger.debug(
-            f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy (parallel with {num_workers} workers)"
+            f"Converted {len(train_rollouts)} rollouts ({num_unique} unique examples) to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
 
         # Compute teacher logprobs if teacher model is configured
@@ -653,6 +699,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Close training batch sender
     training_batch_sender.close()
+
+    # Shutdown preprocessing executor
+    preprocess_executor.shutdown(wait=False)
 
     # Stop env workers
     await scheduler.stop()

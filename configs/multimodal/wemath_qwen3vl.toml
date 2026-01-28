@@ -1,4 +1,4 @@
-# WeMath + Qwen3-VL-8B training configuration (8 GPUs)
+# WeMath + Qwen3-VL-2B training configuration (8 GPUs)
 
 inference_gpu_ids = [0, 1, 2, 3]
 trainer_gpu_ids = [4, 5, 6, 7]
@@ -8,7 +8,7 @@ seq_len = 4096  # VLM needs longer context for image tokens
 
 [wandb]
 project = "hallerite-multimodal"
-name = "wemath-qwen3vl-8b"
+name = "wemath-qwen3vl-2b"
 
 [orchestrator.wandb.log_extras]
 samples = true
@@ -16,7 +16,7 @@ distributions = true
 interval = 10
 
 [model]
-name = "Qwen/Qwen3-VL-8B-Instruct"
+name = "Qwen/Qwen3-VL-2B-Instruct"
 
 [ckpt]
 interval = 100
@@ -31,12 +31,13 @@ max_tokens = 2048
 
 [[orchestrator.env]]
 id = "wemath"
-name = "wemath-standard"
-args = { configs = ["wemath_standard"], image_max_size = 512 }
+name = "wemath-full"
+args = { configs = ["wemath_standard", "wemath_pro"], image_max_size = 512 }
 
 [orchestrator.buffer]
-easy_threshold = 1.0
-hard_threshold = 0.0
+# Reward scale is 0-6 (formatting: 0-2, correctness: 0-4)
+easy_threshold = 5.5  # Only filter if nearly always fully correct
+hard_threshold = 0.5  # Only filter if can't even format properly
 
 [orchestrator.val]
 interval = 5
