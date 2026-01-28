@@ -18,6 +18,7 @@ from prime_rl.trainer.config import CheckpointConfig
 from prime_rl.trainer.runs import Progress, get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import get_stable_ckpt_steps
 
 if TYPE_CHECKING:
     from prime_rl.trainer.optim import MultiLoRAOptimizer
@@ -191,9 +192,10 @@ class MultiCheckpointManager:
 
         step = self.multi_run_manager.config[idx].ckpt.resume_step
         if step == -1:
-            step = self.multi_run_manager.progress[idx].step
-            if step == 0:
+            stable_steps = get_stable_ckpt_steps(manager.ckpt_dir)
+            if not stable_steps:
                 return False
+            step = max(stable_steps)
 
         try:
             model_state_dict = dict(self.multi_run_manager.get_named_parameters_for_run(idx))
