@@ -24,7 +24,7 @@ async def eval(config: OfflineEvalConfig):
     logger = setup_logger(
         config.log.level,
         log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None,
-        json=config.log.json,
+        json=config.log.json_logging,
     )
     intercept_verifiers_logging(level=config.log.vf_level)
 
