@@ -168,6 +168,12 @@ def get_model(
     else:
         impl_to_use = config.impl
 
+    if is_vlm and impl_to_use != "hf":
+        raise ValueError(
+            f"VLM models only support impl='hf', but got impl='{config.impl}' (resolved to '{impl_to_use}'). "
+            f"Set impl='hf' or impl='auto' in your model config."
+        )
+
     with device:
         # For VLM models, use AutoModelForVision2Seq or import specific model class
         if is_vlm:
