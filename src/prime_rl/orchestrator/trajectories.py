@@ -16,15 +16,20 @@ def extract_images_from_examples(
     examples: list[tuple[int, vf.State]],
 ) -> tuple[list[Image.Image], dict[int, int]]:
     """
-    Extract all images from multiple examples.
+    Extract all images from the first trajectory step of each example.
+
+    Parses OpenAI-style message content looking for image_url items with base64 data URLs
+    (e.g., "data:image/png;base64,..."). Only the first trajectory step's prompt is checked,
+    as images are assumed to be provided in the initial prompt.
 
     Args:
-        examples: List of (example_id, state) tuples
+        examples: List of (example_id, state) tuples where state contains a "trajectory"
+            list with steps that have "prompt" messages in OpenAI chat format.
 
     Returns:
         Tuple of (all_images, images_per_example)
-        - all_images: flat list of all PIL images in order
-        - images_per_example: dict mapping example_id to number of images
+        - all_images: flat list of decoded PIL images, ordered by example then by appearance
+        - images_per_example: dict mapping example_id to number of images for that example
     """
     all_images = []
     images_per_example = {}
