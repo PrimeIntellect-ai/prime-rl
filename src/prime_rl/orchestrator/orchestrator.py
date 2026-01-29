@@ -8,12 +8,7 @@ import tomli_w
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import (
-    branch_rollout,
-    extract_images_from_examples,
-    interleave_rollout,
-    preprocess_images_batched,
-)
+from prime_rl.orchestrator.trajectories import branch_rollout, build_vlm_image_cache, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -279,8 +274,8 @@ async def orchestrate(config: OrchestratorConfig):
     empty_batch_retries = 0
     max_empty_batch_retries = 5
 
-    # Persistent ThreadPoolExecutor for image preprocessing (avoid recreation overhead)
-    preprocess_executor = ThreadPoolExecutor(max_workers=64)
+    # Persistent ThreadPoolExecutor for parallel rollout processing
+    rollout_executor = ThreadPoolExecutor(max_workers=64)
 
     while True:
         # Check if this run has been evicted by the trainer
@@ -388,77 +383,45 @@ async def orchestrate(config: OrchestratorConfig):
             config.advantage,
         )
 
-        # Update and sample rollouts from the buffer
-        # Select rollout function based on strategy
-        if config.trajectory_strategy == "interleaved":
-            rollout_fn = interleave_rollout
-        else:
-            rollout_fn = branch_rollout
-
-        loop = asyncio.get_event_loop()
+        # Convert rollouts to training samples
+        rollout_fn = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
         parallel_preprocess_start = time.perf_counter()
 
-        # Step 1: Group rollouts by example_id to avoid redundant image preprocessing
-        # With rollouts_per_example=8, we only need to preprocess 1/8th of the images
-        example_id_to_rollouts: dict[int, list[tuple[int, vf.State]]] = {}
-        for idx, rollout in enumerate(train_rollouts):
-            example_id = rollout["example_id"]
-            if example_id not in example_id_to_rollouts:
-                example_id_to_rollouts[example_id] = []
-            example_id_to_rollouts[example_id].append((idx, rollout))
-
-        # Step 2: Extract and preprocess images in a SINGLE batched call
-        unique_examples = [(eid, rollouts[0][1]) for eid, rollouts in example_id_to_rollouts.items()]
-        num_unique = len(unique_examples)
-
-        extract_start = time.perf_counter()
+        # VLM: build image cache for efficient batched preprocessing
         if is_vlm:
-            # Extract all images first (mainly base64 decoding - can be done synchronously, it's fast)
-            all_images, images_per_example = extract_images_from_examples(unique_examples)
-            extract_time = time.perf_counter() - extract_start
-
-            # Single batched call to processor for all images
-            preprocess_start = time.perf_counter()
-            if all_images:
-                image_cache = preprocess_images_batched(all_images, images_per_example, processor)
-            else:
-                image_cache = {eid: (None, None) for eid in images_per_example}
-            preprocess_time = time.perf_counter() - preprocess_start
-        else:
-            image_cache = {}
-            extract_time = 0
-            preprocess_time = 0
-
-        # Step 3: Process all rollouts with cached images (no image preprocessing needed)
-        def process_rollout_with_cache(rollout: vf.State) -> list[TrainingSample] | None:
-            example_id = rollout["example_id"]
-            cached = image_cache.get(example_id, (None, None))
-            return rollout_fn(rollout, processor=None, cached_pixel_values=cached[0], cached_image_grid_thw=cached[1])
-
-        rollout_start = time.perf_counter()
-        rollout_futures = [
-            loop.run_in_executor(preprocess_executor, process_rollout_with_cache, train_rollout)
-            for train_rollout in train_rollouts
-        ]
-        train_example_results = await asyncio.gather(*rollout_futures)
-        rollout_time = time.perf_counter() - rollout_start
-        parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
-
-        if is_vlm:
+            vlm_cache = build_vlm_image_cache(train_rollouts, processor)
+            num_unique = vlm_cache.num_unique_examples
             logger.info(
-                f"VLM timing: extract={extract_time:.2f}s, preprocess={preprocess_time:.2f}s, rollout={rollout_time:.2f}s, total={parallel_preprocess_time:.2f}s"
+                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s"
             )
+        else:
+            vlm_cache = None
+            num_unique = len({r["example_id"] for r in train_rollouts})
+
+        # Process rollouts in parallel
+        def process_rollout(rollout: vf.State) -> list[TrainingSample] | None:
+            if vlm_cache is not None:
+                cached = vlm_cache.get(rollout["example_id"])
+                return rollout_fn(rollout, cached_pixel_values=cached[0], cached_image_grid_thw=cached[1])
+            return rollout_fn(rollout)
+
+        loop = asyncio.get_event_loop()
+        futures = [loop.run_in_executor(rollout_executor, process_rollout, r) for r in train_rollouts]
+        results = await asyncio.gather(*futures)
 
         # Collect results and assign advantages
         train_examples: list[TrainingSample] = []
-        for train_rollout, advantage, train_example in zip(train_rollouts, advantages, train_example_results):
-            if train_example is not None:
-                for te in train_example:
-                    te.advantage = advantage
-                    te.reward = train_rollout["reward"]
-                train_examples.extend(train_example)
+        for rollout, advantage, samples in zip(train_rollouts, advantages, results):
+            if samples is not None:
+                for sample in samples:
+                    sample.advantage = advantage
+                    sample.reward = rollout["reward"]
+                train_examples.extend(samples)
+
+        parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
-            f"Converted {len(train_rollouts)} rollouts ({num_unique} unique examples) to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
+            f"Converted {len(train_rollouts)} rollouts ({num_unique} unique examples) "
+            f"to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
 
         # Compute teacher logprobs if teacher model is configured
@@ -695,8 +658,8 @@ async def orchestrate(config: OrchestratorConfig):
     # Close training batch sender
     training_batch_sender.close()
 
-    # Shutdown preprocessing executor
-    preprocess_executor.shutdown(wait=False)
+    # Shutdown rollout executor
+    rollout_executor.shutdown(wait=False)
 
     # Stop env workers
     await scheduler.stop()
