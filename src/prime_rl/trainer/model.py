@@ -143,9 +143,7 @@ def get_model(
         ),
     )
     model_config.use_cache = False
-    if not is_vlm:
-        # MoE grouped_mm is for text-only models
-        model_config.use_grouped_mm = config.moe_use_grouped_mm
+    model_config.use_grouped_mm = config.moe_use_grouped_mm
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
 
     if config.debug.num_layers is not None:
@@ -156,11 +154,7 @@ def get_model(
         model_config.num_hidden_layers = num_hidden_layers
 
     # Determine the implementation to use
-    # VLM models always use HF implementation (no custom impl support yet)
-    if is_vlm:
-        impl_to_use = "hf"
-        logger.info("VLM models use HF implementation")
-    elif config.impl == "auto":
+    if config.impl == "auto":
         impl_to_use = "custom" if supports_custom_impl(model_config) else "hf"
         logger.info(
             f"Auto-selected implementation: {impl_to_use} (custom implementation {'supported' if supports_custom_impl(model_config) else 'not supported'})"
@@ -246,19 +240,19 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # This allows FSDP to manage the memory while keeping it frozen
     is_vlm = is_vlm_model(config.name)
     if is_vlm:
-        vision_encoder = None
         if hasattr(model, "model") and hasattr(model.model, "visual"):
             vision_encoder = model.model.visual
         elif hasattr(model, "visual"):
             vision_encoder = model.visual
+        else:
+            raise ValueError(f"VLM model {config.name} does not have a recognized vision encoder attribute")
 
-        if vision_encoder is not None:
-            fully_shard(
-                vision_encoder,
-                mesh=hsdp_mesh,
-                **fsdp_config,
-            )
-            get_logger().info("Applied FSDP to frozen vision encoder")
+        fully_shard(
+            vision_encoder,
+            mesh=hsdp_mesh,
+            **fsdp_config,
+        )
+        get_logger().info("Applied FSDP to frozen vision encoder")
 
     # Get the language model layers (handle VLM structure)
     # For Qwen3-VL: model.model.language_model contains the transformer layers
