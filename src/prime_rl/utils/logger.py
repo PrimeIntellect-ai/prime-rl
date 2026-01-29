@@ -1,5 +1,7 @@
+import json as json_module
 import logging
 import sys
+import traceback
 from pathlib import Path
 
 # Global logger instance
@@ -9,8 +11,48 @@ NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
 
+def _build_log_entry(record) -> dict:
+    """Build a flat JSON log entry from a loguru record."""
+    log_entry = {
+        "timestamp": record["time"].isoformat(),
+        "level": record["level"].name,
+        "message": record["message"],
+        "module": record["module"],
+        "function": record["function"],
+        "line": record["line"],
+    }
+    if record["exception"] is not None:
+        exc = record["exception"]
+        log_entry["exception"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
+    if record["extra"]:
+        log_entry["extra"] = record["extra"]
+    return log_entry
+
+
+def _json_sink(message) -> None:
+    """Sink that outputs flat JSON to stdout for log aggregation (Loki, Grafana, etc.)."""
+    log_entry = _build_log_entry(message.record)
+    sys.stdout.write(json_module.dumps(log_entry) + "\n")
+    sys.stdout.flush()
+
+
+class _JsonFileSink:
+    """File sink that keeps the handle open and writes flat JSON lines."""
+
+    def __init__(self, log_file: Path):
+        self._file = open(log_file, "a")
+
+    def write(self, message) -> None:
+        log_entry = _build_log_entry(message.record)
+        self._file.write(json_module.dumps(log_entry) + "\n")
+        self._file.flush()
+
+    def close(self) -> None:
+        self._file.close()
+
+
 class _VerifiersInterceptHandler(logging.Handler):
-    """Intercept stdlib logging from verifiers and route to loguru with [verifiers] tag."""
+    """Intercept stdlib logging from verifiers and route to loguru."""
 
     def emit(self, record: logging.LogRecord) -> None:
         logger = get_logger()
@@ -24,10 +66,16 @@ class _VerifiersInterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(level, f"[verifiers] {record.getMessage()}")
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
-def setup_logger(log_level: str, log_file: Path | None = None, append: bool = False, tag: str | None = None):
+def setup_logger(
+    log_level: str,
+    log_file: Path | None = None,
+    append: bool = False,
+    tag: str | None = None,
+    json: bool = False,
+):
     global _LOGGER
     if _LOGGER is not None:
         raise RuntimeError("Logger already set. Please call `setup_logger` only once.")
@@ -67,14 +115,21 @@ def setup_logger(log_level: str, log_file: Path | None = None, append: bool = Fa
         extra={},
     )
 
-    # Install console handler
-    logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
+    # Install console handler (enqueue=True for non-blocking in async contexts)
+    if json:
+        logger.add(_json_sink, level=log_level.upper(), enqueue=True)
+    else:
+        logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True, enqueue=True)
 
     # If specified, install file handler
     if log_file is not None:
         if not append and log_file.exists():
             log_file.unlink()
-        logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
+        if json:
+            file_sink = _JsonFileSink(log_file)
+            logger.add(file_sink.write, level=log_level.upper(), enqueue=True)
+        else:
+            logger.add(log_file, format=format, level=log_level.upper(), colorize=True, enqueue=True)
 
     # Disable critical logging
     logger.critical = lambda _: None
@@ -107,7 +162,7 @@ def reset_logger():
 
 
 def intercept_verifiers_logging(level: str = "DEBUG"):
-    """Intercept all verifiers stdlib logging and route through prime-rl loguru with [verifiers] tag."""
+    """Intercept all verifiers stdlib logging and route through prime-rl loguru."""
     vf_logger = logging.getLogger("verifiers")
     vf_logger.handlers.clear()
     vf_logger.addHandler(_VerifiersInterceptHandler())
