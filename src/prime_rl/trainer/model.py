@@ -141,14 +141,9 @@ def get_model(
     model_config.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
 
-    # For VLM models, propagate dtype to text_config only (not vision_config)
-    # The vision encoder should stay in its default dtype (typically bf16) since it's frozen
-    # and we want consistent embeddings. Only the language model needs optimization_dtype.
-    if is_vlm:
-        text_config = getattr(model_config, "text_config", None)
-        if text_config is not None:
-            text_config.dtype = dtype
-            logger.info(f"Set text_config.dtype = {dtype}")
+    # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
+    # The model should load in its default dtype (bf16) to match vLLM inference.
+    # The FSDP MixedPrecisionPolicy handles compute dtype separately.
 
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
 

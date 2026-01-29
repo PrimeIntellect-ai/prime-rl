@@ -26,8 +26,8 @@ num_examples = 64
 [trainer]
 
 [trainer.model]
-optimization_dtype = "float32"
-reduce_dtype = "float32"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
 
 [trainer.optim]
 lr = 3e-6
