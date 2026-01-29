@@ -5,8 +5,8 @@ import jinja2
 from fastapi import Request
 from pydantic import Field
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest, ChatCompletionResponse
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.utils import get_max_tokens
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
@@ -95,7 +95,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                     return error_check_ret
                 conversation, engine_prompts = await self._preprocess_chat(
                     request,
-                    tokenizer,
+                    self.renderer,
                     request.messages,
                     chat_template=request.chat_template or self.chat_template,
                     chat_template_content_format=self.chat_template_content_format,
