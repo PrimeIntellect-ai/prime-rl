@@ -28,6 +28,12 @@ class TensorMicroBatch(TypedDict):
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
 
+    # Multimodal fields (Qwen3-VL)
+    # pixel_values: flattened image patches [num_patches, patch_dim] where patch_dim=1176 for Qwen3-VL
+    pixel_values: Float[Tensor, "num_patches patch_dim"] | None
+    # image_grid_thw: grid dimensions [num_images, 3] where each entry is [temporal, height, width]
+    image_grid_thw: Int[Tensor, "num_images 3"] | None
+
 
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
@@ -96,6 +102,8 @@ class FakeDataLoader:
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "pixel_values": None,
+            "image_grid_thw": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -118,6 +126,8 @@ class FakeDataLoader:
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "pixel_values": None,
+            "image_grid_thw": None,
         }
 
 
@@ -178,4 +188,11 @@ class DataLoader:
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
+            # Multimodal fields - no batch dimension for these as they are variable-sized
+            pixel_values=torch.tensor(micro_batch.pixel_values, dtype=torch.float)
+            if micro_batch.pixel_values is not None
+            else None,
+            image_grid_thw=torch.tensor(micro_batch.image_grid_thw, dtype=torch.long)
+            if micro_batch.image_grid_thw is not None
+            else None,
         )

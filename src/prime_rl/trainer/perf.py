@@ -82,6 +82,10 @@ class PerfCounter:
     @staticmethod
     def get_active_mm_params(config: PretrainedConfig) -> float:
         """Get number of active parameters per token involved in matmuls"""
+        # Handle VLM models with nested text_config (e.g., Qwen3-VL)
+        if hasattr(config, "text_config"):
+            config = config.text_config
+
         vocab_size = config.vocab_size
         hidden_size = config.hidden_size
         intermediate_size = config.intermediate_size
@@ -142,6 +146,10 @@ class PerfCounter:
         return q_params + kv_params + o_params + dense_mlp_params + sparse_mlp_params + lm_head_params
 
     def _get_num_flop_per_token(self, model_config: PretrainedConfig, seq_len: int) -> int:
+        # Handle VLM models with nested text_config (e.g., Qwen3-VL)
+        if hasattr(model_config, "text_config"):
+            model_config = model_config.text_config
+
         l, h, q, t = (  # noqa: E741
             model_config.num_hidden_layers,
             model_config.num_attention_heads,
