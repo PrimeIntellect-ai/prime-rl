@@ -11,9 +11,8 @@ NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
 
-def _json_sink(message) -> None:
-    """Sink that outputs flat JSON for log aggregation (Loki, Grafana, etc.)."""
-    record = message.record
+def _build_log_entry(record) -> dict:
+    """Build a flat JSON log entry from a loguru record."""
     log_entry = {
         "timestamp": record["time"].isoformat(),
         "level": record["level"].name,
@@ -22,39 +21,34 @@ def _json_sink(message) -> None:
         "function": record["function"],
         "line": record["line"],
     }
-    # Add exception info if present
     if record["exception"] is not None:
         exc = record["exception"]
         log_entry["exception"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
-    # Add any extra fields
     if record["extra"]:
         log_entry["extra"] = record["extra"]
+    return log_entry
+
+
+def _json_sink(message) -> None:
+    """Sink that outputs flat JSON to stdout for log aggregation (Loki, Grafana, etc.)."""
+    log_entry = _build_log_entry(message.record)
     sys.stdout.write(json_module.dumps(log_entry) + "\n")
     sys.stdout.flush()
 
 
-def _make_json_file_sink(log_file: Path):
-    """Create a JSON file sink."""
+class _JsonFileSink:
+    """File sink that keeps the handle open and writes flat JSON lines."""
 
-    def sink(message) -> None:
-        record = message.record
-        log_entry = {
-            "timestamp": record["time"].isoformat(),
-            "level": record["level"].name,
-            "message": record["message"],
-            "module": record["module"],
-            "function": record["function"],
-            "line": record["line"],
-        }
-        if record["exception"] is not None:
-            exc = record["exception"]
-            log_entry["exception"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
-        if record["extra"]:
-            log_entry["extra"] = record["extra"]
-        with open(log_file, "a") as f:
-            f.write(json_module.dumps(log_entry) + "\n")
+    def __init__(self, log_file: Path):
+        self._file = open(log_file, "a")
 
-    return sink
+    def write(self, message) -> None:
+        log_entry = _build_log_entry(message.record)
+        self._file.write(json_module.dumps(log_entry) + "\n")
+        self._file.flush()
+
+    def close(self) -> None:
+        self._file.close()
 
 
 class _VerifiersInterceptHandler(logging.Handler):
@@ -121,20 +115,21 @@ def setup_logger(
         extra={},
     )
 
-    # Install console handler
+    # Install console handler (enqueue=True for non-blocking in async contexts)
     if json:
-        logger.add(_json_sink, level=log_level.upper())
+        logger.add(_json_sink, level=log_level.upper(), enqueue=True)
     else:
-        logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
+        logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True, enqueue=True)
 
     # If specified, install file handler
     if log_file is not None:
         if not append and log_file.exists():
             log_file.unlink()
         if json:
-            logger.add(_make_json_file_sink(log_file), level=log_level.upper())
+            file_sink = _JsonFileSink(log_file)
+            logger.add(file_sink.write, level=log_level.upper(), enqueue=True)
         else:
-            logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
+            logger.add(log_file, format=format, level=log_level.upper(), colorize=True, enqueue=True)
 
     # Disable critical logging
     logger.critical = lambda _: None
