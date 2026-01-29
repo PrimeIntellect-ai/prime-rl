@@ -58,7 +58,7 @@ def _make_json_file_sink(log_file: Path):
 
 
 class _VerifiersInterceptHandler(logging.Handler):
-    """Intercept stdlib logging from verifiers and route to loguru with [verifiers] tag."""
+    """Intercept stdlib logging from verifiers and route to loguru."""
 
     def emit(self, record: logging.LogRecord) -> None:
         logger = get_logger()
@@ -72,7 +72,7 @@ class _VerifiersInterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(level, f"[verifiers] {record.getMessage()}")
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 def setup_logger(
