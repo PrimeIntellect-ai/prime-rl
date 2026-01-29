@@ -191,6 +191,13 @@ class WandbConfig(BaseConfig):
         ),
     ] = None
 
+    weave: Annotated[
+        bool,
+        Field(
+            description="Whether to initialize W&B Weave for LLM call tracing. Only takes effect when wandb is enabled.",
+        ),
+    ] = False
+
 
 class WandbWithExtrasConfig(WandbConfig):
     """Configures logging to Weights and Biases with extras."""
