@@ -67,21 +67,17 @@ def freeze_vision_encoder(model: nn.Module) -> None:
     # Qwen3-VL structure: model.model.visual
     if hasattr(model, "model") and hasattr(model.model, "visual"):
         vision_encoder = model.model.visual
-        num_frozen = 0
-        for param in vision_encoder.parameters():
-            param.requires_grad = False
-            num_frozen += 1
-        logger.info(f"Froze {num_frozen} parameters in vision encoder (model.model.visual)")
     # Qwen2-VL structure: model.visual
     elif hasattr(model, "visual"):
         vision_encoder = model.visual
-        num_frozen = 0
-        for param in vision_encoder.parameters():
-            param.requires_grad = False
-            num_frozen += 1
-        logger.info(f"Froze {num_frozen} parameters in vision encoder (model.visual)")
     else:
-        logger.warning("Could not find vision encoder to freeze. Expected model.model.visual or model.visual")
+        raise ValueError("Could not find vision encoder to freeze. Expected model.model.visual or model.visual")
+
+    num_frozen = 0
+    for param in vision_encoder.parameters():
+        param.requires_grad = False
+        num_frozen += 1
+    logger.info(f"Froze {num_frozen} parameters in vision encoder")
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
