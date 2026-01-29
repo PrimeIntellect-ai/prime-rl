@@ -167,7 +167,7 @@ def reset_logger():
 
 
 def intercept_verifiers_logging(level: str = "DEBUG"):
-    """Intercept all verifiers stdlib logging and route through prime-rl loguru with [verifiers] tag."""
+    """Intercept all verifiers stdlib logging and route through prime-rl loguru."""
     vf_logger = logging.getLogger("verifiers")
     vf_logger.handlers.clear()
     vf_logger.addHandler(_VerifiersInterceptHandler())
