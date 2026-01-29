@@ -577,6 +577,7 @@ def check_gpus_available(gpu_ids: list[int]) -> None:
     """Raise error if there are existing processes on the specified GPUs."""
     try:
         import pynvml
+
         pynvml.nvmlInit()
     except Exception:
         return  # pynvml not available, skip check
@@ -610,11 +611,7 @@ def rl(config: RLConfig):
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
     # Check for existing processes on GPUs
-    all_gpu_ids = list(set(
-        config.inference_gpu_ids +
-        config.trainer_gpu_ids +
-        (config.teacher_gpu_ids or [])
-    ))
+    all_gpu_ids = list(set(config.inference_gpu_ids + config.trainer_gpu_ids + (config.teacher_gpu_ids or [])))
     check_gpus_available(all_gpu_ids)
 
     # Prepare paths to communicate with the trainer
