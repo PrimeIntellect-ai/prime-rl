@@ -573,6 +573,33 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
         stop_event.set()
 
 
+def check_gpus_available(gpu_ids: list[int]) -> None:
+    """Raise error if there are existing processes on the specified GPUs."""
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+    except Exception:
+        return  # pynvml not available, skip check
+
+    occupied = []
+    for gpu_id in gpu_ids:
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+            processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
+            if processes:
+                pids = [p.pid for p in processes]
+                occupied.append((gpu_id, pids))
+        except Exception:
+            continue
+
+    if occupied:
+        msg = "Existing processes found on GPUs:\n"
+        for gpu_id, pids in occupied:
+            msg += f"  GPU {gpu_id}: PIDs {pids}\n"
+        msg += "Kill these processes or use different GPUs."
+        raise RuntimeError(msg)
+
+
 def rl(config: RLConfig):
     # Setup logger
     logger = setup_logger(
@@ -581,6 +608,14 @@ def rl(config: RLConfig):
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
+
+    # Check for existing processes on GPUs
+    all_gpu_ids = list(set(
+        config.inference_gpu_ids +
+        config.trainer_gpu_ids +
+        (config.teacher_gpu_ids or [])
+    ))
+    check_gpus_available(all_gpu_ids)
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
