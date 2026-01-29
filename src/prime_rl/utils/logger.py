@@ -24,8 +24,14 @@ def _build_log_entry(record) -> dict:
     if record["exception"] is not None:
         exc = record["exception"]
         log_entry["exception"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
-    if record["extra"]:
-        log_entry["extra"] = record["extra"]
+    # Extract tag from extra if present (used by workers to identify themselves)
+    extra = record["extra"]
+    if extra:
+        if "tag" in extra:
+            log_entry["tag"] = extra["tag"]
+            extra = {k: v for k, v in extra.items() if k != "tag"}
+        if extra:
+            log_entry["extra"] = extra
     return log_entry
 
 
@@ -111,6 +117,10 @@ def setup_logger(
         patchers=[],
         extra={},
     )
+
+    # Bind tag to logger context for JSON mode (in non-JSON mode, tag is in the format string)
+    if json and tag:
+        logger = logger.bind(tag=tag)
 
     # Install console handler (enqueue=True for non-blocking in async contexts)
     if json:
