@@ -10,6 +10,8 @@ Prime-RL has experimental support for training vision-language models (VLMs) lik
 
 - **Vision encoder is frozen**: The vision encoder is automatically frozen during training. Only the language model is trained.
 
+- **No multimodal-safe truncation**: Token sequences are truncated to `seq_len`, but `pixel_values` and `image_grid_thw` are passed through unchanged. If a multimodal sample exceeds `seq_len`, image tokens can be dropped while image tensors still describe the full set of images. Ensure `seq_len` covers your longest VLM samples or avoid overlong rollouts.
+
 ## vLLM Configuration
 
 When using vLLM for inference with VLM models, you must set these environment variables to avoid issues with multimodal models:
