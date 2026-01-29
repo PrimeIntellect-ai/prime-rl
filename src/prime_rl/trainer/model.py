@@ -140,6 +140,16 @@ def get_model(
     )
     model_config.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
+
+    # For VLM models, propagate dtype to sub_configs (mirrors from_pretrained behavior)
+    # This is needed because from_config doesn't propagate dtype to nested configs
+    if is_vlm:
+        for sub_config_key in getattr(model_config, "sub_configs", {}):
+            sub_config = getattr(model_config, sub_config_key, None)
+            if sub_config is not None:
+                sub_config.dtype = dtype
+                logger.info(f"Set {sub_config_key}.dtype = {dtype}")
+
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
 
     if config.debug.num_layers is not None:

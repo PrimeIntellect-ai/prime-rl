@@ -1,14 +1,11 @@
 inference_gpu_ids = [0]
 trainer_gpu_ids = [1]
 
-max_steps = 100
+max_steps = 30
 seq_len = 4096
 
 [model]
 name = "Qwen/Qwen3-VL-4B-Instruct"
-
-[ckpt]
-interval = 50
 
 [orchestrator]
 batch_size = 128
@@ -24,13 +21,13 @@ args = { base_env = "reverse-text", seed = 42, font_path = "/usr/share/fonts/tru
 
 [orchestrator.val]
 interval = 1
-num_examples = 16
+num_examples = 64
 
 [trainer]
 
 [trainer.model]
-optimization_dtype = "bfloat16"
-reduce_dtype = "bfloat16"
+optimization_dtype = "float32"
+reduce_dtype = "float32"
 
 [trainer.optim]
 lr = 3e-6
