@@ -141,7 +141,7 @@ class LogConfig(BaseConfig):
         ),
     ] = False
 
-    json: Annotated[
+    json_logging: Annotated[
         bool,
         Field(
             description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.).",

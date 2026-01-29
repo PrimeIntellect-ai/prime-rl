@@ -52,7 +52,7 @@ class SharedLogConfig(BaseSettings):
 
     file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
 
-    json: Annotated[
+    json_logging: Annotated[
         bool,
         Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
     ] = False
@@ -252,8 +252,8 @@ class RLConfig(BaseSettings):
             if self.log.file is not None:
                 self.trainer.log.file = self.log.file
                 self.orchestrator.log.file = self.log.file
-            self.trainer.log.json = self.log.json
-            self.orchestrator.log.json = self.log.json
+            self.trainer.log.json_logging = self.log.json_logging
+            self.orchestrator.log.json_logging = self.log.json_logging
 
         return self
 
@@ -558,7 +558,7 @@ def rl(config: RLConfig):
     logger = setup_logger(
         config.log.level or "info",
         log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None,
-        json=config.log.json,
+        json=config.log.json_logging,
     )
     start_command = sys.argv
     logger.info("Starting RL run")
