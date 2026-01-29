@@ -1,6 +1,4 @@
 import base64
-import threading
-import time
 from io import BytesIO
 
 import verifiers as vf
@@ -12,33 +10,6 @@ from prime_rl.utils.logger import get_logger
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. pixel_values/image_grid_thw are shared across rollouts of the
 # same example (not copied) which is safe since nothing mutates them after creation.
-
-# Timing accumulators for profiling image preprocessing (thread-safe)
-_IMAGE_TIMING_LOCK = threading.Lock()
-_IMAGE_EXTRACT_TIME = 0.0
-_IMAGE_PREPROCESS_TIME = 0.0
-_IMAGE_COUNT = 0
-
-
-def get_image_timing_stats() -> dict:
-    """Get accumulated image processing timing stats."""
-    with _IMAGE_TIMING_LOCK:
-        return {
-            "extract_time": _IMAGE_EXTRACT_TIME,
-            "preprocess_time": _IMAGE_PREPROCESS_TIME,
-            "image_count": _IMAGE_COUNT,
-            "avg_extract_ms": (_IMAGE_EXTRACT_TIME / _IMAGE_COUNT * 1000) if _IMAGE_COUNT > 0 else 0,
-            "avg_preprocess_ms": (_IMAGE_PREPROCESS_TIME / _IMAGE_COUNT * 1000) if _IMAGE_COUNT > 0 else 0,
-        }
-
-
-def reset_image_timing_stats():
-    """Reset timing accumulators."""
-    global _IMAGE_EXTRACT_TIME, _IMAGE_PREPROCESS_TIME, _IMAGE_COUNT
-    with _IMAGE_TIMING_LOCK:
-        _IMAGE_EXTRACT_TIME = 0.0
-        _IMAGE_PREPROCESS_TIME = 0.0
-        _IMAGE_COUNT = 0
 
 
 def extract_images_from_examples(
@@ -55,9 +26,6 @@ def extract_images_from_examples(
         - all_images: flat list of all PIL images in order
         - images_per_example: dict mapping example_id to number of images
     """
-    global _IMAGE_EXTRACT_TIME, _IMAGE_COUNT
-    start = time.perf_counter()
-
     all_images = []
     images_per_example = {}
 
@@ -73,7 +41,6 @@ def extract_images_from_examples(
             images_per_example[eid] = 0
             continue
 
-        # Extract without timing (we'll time the whole batch)
         images = []
         for msg in prompt:
             content = msg.get("content", [])
@@ -89,11 +56,6 @@ def extract_images_from_examples(
 
         images_per_example[eid] = len(images)
         all_images.extend(images)
-
-    elapsed = time.perf_counter() - start
-    with _IMAGE_TIMING_LOCK:
-        _IMAGE_EXTRACT_TIME += elapsed
-        _IMAGE_COUNT += len(all_images)
 
     return all_images, images_per_example
 
@@ -114,22 +76,13 @@ def preprocess_images_batched(
     Returns:
         Dict mapping example_id to (pixel_values, image_grid_thw)
     """
-    global _IMAGE_PREPROCESS_TIME
-
-    # Handle empty case
     if not images or processor is None:
         return {eid: (None, None) for eid in images_per_example}
-
-    start = time.perf_counter()
 
     # Single batched call to processor
     processed = processor.image_processor(images=images, return_tensors="pt")
     all_pixel_values = processed["pixel_values"]  # (total_patches, patch_dim)
     all_grid_thw = processed["image_grid_thw"]  # (num_images, 3)
-
-    elapsed = time.perf_counter() - start
-    with _IMAGE_TIMING_LOCK:
-        _IMAGE_PREPROCESS_TIME += elapsed
 
     # Distribute results back to examples
     result = {}

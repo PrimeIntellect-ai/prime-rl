@@ -11,10 +11,8 @@ from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs,
 from prime_rl.orchestrator.trajectories import (
     branch_rollout,
     extract_images_from_examples,
-    get_image_timing_stats,
     interleave_rollout,
     preprocess_images_batched,
-    reset_image_timing_stats,
 )
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 
@@ -320,7 +318,6 @@ async def orchestrate(config: OrchestratorConfig):
 
         logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.perf_counter()
-        reset_image_timing_stats()  # Reset per-step image timing
 
         # Run evals BEFORE training (blocking, in subprocess to isolate event loop)
         # This ensures weights don't change during eval and eval doesn't cause event loop lag
@@ -614,8 +611,6 @@ async def orchestrate(config: OrchestratorConfig):
             "time/teacher_logprobs": teacher_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
             "time/parallel_preprocess": parallel_preprocess_time,
-            # Image preprocessing timing (VLM only) - note: accumulated thread time, not wall clock
-            **{f"time/image_{k}": v for k, v in get_image_timing_stats().items()},
             # Scheduler metrics
             **scheduler.get_metrics(),
             # Buffer metrics
@@ -663,13 +658,6 @@ async def orchestrate(config: OrchestratorConfig):
 
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
-
-        # Log image preprocessing timing for VLM profiling
-        img_stats = get_image_timing_stats()
-        if img_stats["image_count"] > 0:
-            logger.info(
-                f"Image preprocessing: {img_stats['image_count']} images | Wall clock: {parallel_preprocess_time:.2f}s | Thread time: {img_stats['preprocess_time']:.2f}s | Speedup: {img_stats['preprocess_time'] / parallel_preprocess_time:.1f}x"
-            )
 
         # Increment step
         progress.step += 1
