@@ -1,6 +1,7 @@
 import json as json_module
 import logging
 import sys
+import traceback
 from pathlib import Path
 
 # Global logger instance
@@ -23,7 +24,8 @@ def _json_sink(message) -> None:
     }
     # Add exception info if present
     if record["exception"] is not None:
-        log_entry["exception"] = "".join(record["exception"].format())
+        exc = record["exception"]
+        log_entry["exception"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
     # Add any extra fields
     if record["extra"]:
         log_entry["extra"] = record["extra"]
@@ -45,7 +47,8 @@ def _make_json_file_sink(log_file: Path):
             "line": record["line"],
         }
         if record["exception"] is not None:
-            log_entry["exception"] = "".join(record["exception"].format())
+            exc = record["exception"]
+            log_entry["exception"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
         if record["extra"]:
             log_entry["extra"] = record["extra"]
         with open(log_file, "a") as f:
