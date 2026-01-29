@@ -47,9 +47,6 @@ class _JsonFileSink:
         self._file.write(json_module.dumps(log_entry) + "\n")
         self._file.flush()
 
-    def close(self) -> None:
-        self._file.close()
-
 
 class _VerifiersInterceptHandler(logging.Handler):
     """Intercept stdlib logging from verifiers and route to loguru."""
