@@ -513,6 +513,33 @@ class RLConfig(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_client_port_matches_inference(self):
+        """Validate that orchestrator.client.base_url port matches inference.server.port."""
+        if self.inference is None:
+            return self
+
+        base_urls = self.orchestrator.client.base_url
+        if not base_urls:
+            return self
+
+        from urllib.parse import urlparse
+
+        parsed = urlparse(base_urls[0])
+        client_port = parsed.port
+        if client_port is None:
+            return self
+
+        expected_port = self.inference.server.port
+        if client_port != expected_port:
+            raise ValueError(
+                f"orchestrator.client.base_url port ({client_port}) does not match "
+                f"inference.server.port ({expected_port}). "
+                f"Update the base_url to use port {expected_port} to match the inference server."
+            )
+
+        return self
+
 
 def cleanup_threads(threads: list[Thread]):
     for thread in threads:
