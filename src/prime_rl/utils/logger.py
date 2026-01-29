@@ -1,3 +1,4 @@
+import json as json_module
 import logging
 import sys
 from pathlib import Path
@@ -7,6 +8,50 @@ _LOGGER = None
 
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
+
+
+def _json_sink(message) -> None:
+    """Sink that outputs flat JSON for log aggregation (Loki, Grafana, etc.)."""
+    record = message.record
+    log_entry = {
+        "timestamp": record["time"].isoformat(),
+        "level": record["level"].name,
+        "message": record["message"],
+        "module": record["module"],
+        "function": record["function"],
+        "line": record["line"],
+    }
+    # Add exception info if present
+    if record["exception"] is not None:
+        log_entry["exception"] = "".join(record["exception"].format())
+    # Add any extra fields
+    if record["extra"]:
+        log_entry["extra"] = record["extra"]
+    sys.stdout.write(json_module.dumps(log_entry) + "\n")
+    sys.stdout.flush()
+
+
+def _make_json_file_sink(log_file: Path):
+    """Create a JSON file sink."""
+
+    def sink(message) -> None:
+        record = message.record
+        log_entry = {
+            "timestamp": record["time"].isoformat(),
+            "level": record["level"].name,
+            "message": record["message"],
+            "module": record["module"],
+            "function": record["function"],
+            "line": record["line"],
+        }
+        if record["exception"] is not None:
+            log_entry["exception"] = "".join(record["exception"].format())
+        if record["extra"]:
+            log_entry["extra"] = record["extra"]
+        with open(log_file, "a") as f:
+            f.write(json_module.dumps(log_entry) + "\n")
+
+    return sink
 
 
 class _VerifiersInterceptHandler(logging.Handler):
@@ -75,7 +120,7 @@ def setup_logger(
 
     # Install console handler
     if json:
-        logger.add(sys.stdout, level=log_level.upper(), serialize=True)
+        logger.add(_json_sink, level=log_level.upper())
     else:
         logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
 
@@ -84,7 +129,7 @@ def setup_logger(
         if not append and log_file.exists():
             log_file.unlink()
         if json:
-            logger.add(log_file, level=log_level.upper(), serialize=True)
+            logger.add(_make_json_file_sink(log_file), level=log_level.upper())
         else:
             logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
 
