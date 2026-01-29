@@ -14,11 +14,6 @@ interval = 50
 batch_size = 128
 rollouts_per_example = 16
 
-[orchestrator.wandb.log_extras]
-samples = true
-distributions = true
-interval = 5
-
 [orchestrator.sampling]
 max_tokens = 128
 
