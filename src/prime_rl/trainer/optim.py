@@ -1,6 +1,7 @@
 import time
 from typing import Callable
 
+import torch
 from dion import Muon
 from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
@@ -10,6 +11,104 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+
+
+class CPUOffloadOptimizer:
+    """Wraps an optimizer to keep states on CPU, moving to GPU only for step().
+
+    This allows saving GPU memory by storing optimizer states (momentum, variance, etc.)
+    on CPU, while keeping model parameters on GPU. States are moved to GPU before
+    the optimizer step and back to CPU after.
+
+    Unlike FSDP's CPUOffload which also offloads weights (requiring H2D all-gather),
+    this only offloads optimizer states, avoiding the weight transfer overhead.
+
+    Note: There is significant overhead from transferring many small state tensors.
+    This is best suited for memory-constrained scenarios where the memory savings
+    outweigh the throughput cost.
+    """
+
+    def __init__(self, optimizer: Optimizer, pin_memory: bool = True):
+        self.optimizer = optimizer
+        self.pin_memory = pin_memory
+        self._initialized = False
+
+    def _move_states(self, device: str):
+        from torch.distributed.tensor import DTensor
+
+        for p in self.optimizer.state:
+            state = self.optimizer.state[p]
+            for k, v in state.items():
+                if isinstance(v, DTensor):
+                    local_tensor = v._local_tensor
+                    if device == "cpu":
+                        new_local = local_tensor.to("cpu", non_blocking=True)
+                        if self.pin_memory and not new_local.is_pinned():
+                            new_local = new_local.pin_memory()
+                        v._local_tensor = new_local
+                    else:
+                        target_device = torch.device("cuda")
+                        if isinstance(p, DTensor):
+                            target_device = p._local_tensor.device
+                        v._local_tensor = local_tensor.to(target_device, non_blocking=True)
+                elif isinstance(v, torch.Tensor):
+                    if device == "cpu":
+                        cpu_tensor = v.to("cpu", non_blocking=True)
+                        if self.pin_memory and not cpu_tensor.is_pinned():
+                            cpu_tensor = cpu_tensor.pin_memory()
+                        state[k] = cpu_tensor
+                    else:
+                        target_device = p.device if hasattr(p, "device") else "cuda"
+                        state[k] = v.to(target_device, non_blocking=True)
+
+    def step(self, closure=None):
+        # First step initializes states on GPU - offload after
+        if not self._initialized:
+            result = self.optimizer.step(closure)
+            self._move_states("cpu")
+            self._initialized = True
+            return result
+
+        # Move states to GPU
+        self._move_states("cuda")
+
+        # Run optimizer step
+        result = self.optimizer.step(closure)
+
+        # Move states back to CPU
+        self._move_states("cpu")
+
+        return result
+
+    def zero_grad(self, set_to_none: bool = True):
+        self.optimizer.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        # Move to GPU temporarily for consistent state dict
+        if self._initialized:
+            self._move_states("cuda")
+            torch.cuda.synchronize()
+        sd = self.optimizer.state_dict()
+        if self._initialized:
+            self._move_states("cpu")
+        return sd
+
+    def load_state_dict(self, state_dict):
+        self.optimizer.load_state_dict(state_dict)
+        self._move_states("cpu")
+        self._initialized = True
+
+    @property
+    def param_groups(self):
+        return self.optimizer.param_groups
+
+    @param_groups.setter
+    def param_groups(self, value):
+        self.optimizer.param_groups = value
+
+    @property
+    def state(self):
+        return self.optimizer.state
 
 
 def setup_optimizer(

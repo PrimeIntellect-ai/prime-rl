@@ -167,6 +167,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    optim_cpu_offload: Annotated[
+        bool,
+        Field(
+            description="Whether to enable optimizer state CPU offloading. Unlike fsdp_cpu_offload, this only moves optimizer states (momentum, variance) to CPU, keeping weights on GPU. This avoids the H2D all-gather overhead while still saving GPU memory.",
+        ),
+    ] = False
+
     reshard_after_forward: Annotated[
         bool, Field(description="Whether to reshard the model after each forward pass.")
     ] = True
