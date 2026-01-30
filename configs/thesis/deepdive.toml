@@ -21,12 +21,12 @@ temperature = 1.1
 [[orchestrator.env]]
 id = "deepdive"
 
+[trainer.model]
+fsdp_cpu_offload = true
+
 [trainer.model.compile]
 
 [trainer.model.ac]
-
-[trainer.optim]
-type = "sgd"
 
 [inference]
 gpu_memory_utilization = 0.8

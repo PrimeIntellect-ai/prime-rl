@@ -23,12 +23,12 @@ temperature = 1.1
 id = "math-env"
 args = { python_tool = true, sandbox_client_max_workers = 128, sandbox_timeout_minutes = 60, max_startup_wait_seconds = 180, sandbox_labels = ["math-env", "mika"] }
 
+[trainer.model]
+fsdp_cpu_offload = true
+
 [trainer.model.compile]
 
 [trainer.model.ac]
-
-[trainer.optim]
-type = "sgd"
 
 [inference]
 gpu_memory_utilization = 0.8
