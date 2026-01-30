@@ -605,6 +605,15 @@ class BufferConfig(BaseConfig):
 
 class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False
+    token_weight_dampen: Annotated[
+        float,
+        Field(
+            description=(
+                "Dampening factor for per-token advantage weights (1.0 = no change, 0.0 = uniform). "
+                "Applied as 1 + dampen * (w - 1) on normalized weights."
+            )
+        ),
+    ] = 1.0
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):

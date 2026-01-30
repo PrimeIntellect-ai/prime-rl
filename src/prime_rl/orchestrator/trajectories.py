@@ -28,6 +28,24 @@ def _normalize_completion_weights(
     return [0.0 if not m else (w / mean_weight) for w, m in zip(raw_weights, completion_mask)]
 
 
+def _apply_weight_dampen(
+    weights: list[float],
+    completion_mask: list[bool],
+    dampen: float,
+) -> list[float]:
+    if not weights or dampen == 1.0:
+        return weights
+    if len(weights) != len(completion_mask):
+        return weights
+    scaled: list[float] = []
+    for w, m in zip(weights, completion_mask):
+        if not m:
+            scaled.append(0.0)
+        else:
+            scaled.append(1.0 + dampen * (w - 1.0))
+    return scaled
+
+
 def _get_turn_scores(turn_scores: list[float] | None, num_steps: int, logger) -> list[float] | None:
     if turn_scores is None:
         return None
@@ -39,7 +57,11 @@ def _get_turn_scores(turn_scores: list[float] | None, num_steps: int, logger) ->
     return turn_scores
 
 
-def interleave_rollout(state: vf.State, turn_scores: list[float] | None = None) -> list[TrainingSample] | None:
+def interleave_rollout(
+    state: vf.State,
+    turn_scores: list[float] | None = None,
+    weight_dampen: float = 1.0,
+) -> list[TrainingSample] | None:
     """
     Convert vf.State to a *single* trainable rollout by interleaving the trajectory.
 
@@ -123,12 +145,18 @@ def interleave_rollout(state: vf.State, turn_scores: list[float] | None = None) 
     if completion_weights is not None:
         normalized = _normalize_completion_weights(completion_weights, interleaved_rollout.completion_mask, logger)
         if normalized and len(normalized) == len(interleaved_rollout.completion_ids):
-            interleaved_rollout.advantage_weights = normalized
+            interleaved_rollout.advantage_weights = _apply_weight_dampen(
+                normalized, interleaved_rollout.completion_mask, weight_dampen
+            )
 
     return [interleaved_rollout]
 
 
-def branch_rollout(state: vf.State, turn_scores: list[float] | None = None) -> list[TrainingSample] | None:
+def branch_rollout(
+    state: vf.State,
+    turn_scores: list[float] | None = None,
+    weight_dampen: float = 1.0,
+) -> list[TrainingSample] | None:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
     logger = get_logger()
 
@@ -165,6 +193,6 @@ def branch_rollout(state: vf.State, turn_scores: list[float] | None = None) -> l
             raw_weights = [1.0 + turn_scores[step_idx]] * len(completion_ids)
             normalized = _normalize_completion_weights(raw_weights, completion_mask, logger)
             if normalized and len(normalized) == len(completion_ids):
-                rollout.advantage_weights = normalized
+                rollout.advantage_weights = _apply_weight_dampen(normalized, completion_mask, weight_dampen)
         rollouts.append(rollout)
     return rollouts
