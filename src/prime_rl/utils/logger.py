@@ -46,6 +46,7 @@ class _JsonFileSink:
     """File sink that keeps the handle open and writes flat JSON lines."""
 
     def __init__(self, log_file: Path):
+        log_file.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(log_file, "a")
 
     def write(self, message) -> None:
