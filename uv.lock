@@ -1732,6 +1732,16 @@ wheels = [
 ]
 
 [[package]]
+name = "math-env"
+version = "0.1.2"
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmath_env&rev=be1f9af#be1f9af15b7b010fbd76b1ae83913d8e3e02a70d" }
+dependencies = [
+    { name = "math-verify" },
+    { name = "prime-sandboxes" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "math-verify"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2715,6 +2725,7 @@ dependencies = [
     { name = "liger-kernel" },
     { name = "loguru" },
     { name = "lovely-tensors" },
+    { name = "math-env" },
     { name = "math-verify" },
     { name = "nltk" },
     { name = "numpy" },
@@ -2770,6 +2781,7 @@ requires-dist = [
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
+    { name = "math-env", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmath_env&rev=be1f9af" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
@@ -3376,7 +3388,7 @@ dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@f5644269/reverse_text-0.1.4-py2.py3-none-any.whl", hash = "sha256:0adc3abcb6ceba3fa82709258c732e95c90400bc899230dce47a2e0f31a74aec" },
+    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@efe79870/reverse_text-0.1.4-py2.py3-none-any.whl", hash = "sha256:0adc3abcb6ceba3fa82709258c732e95c90400bc899230dce47a2e0f31a74aec" },
 ]
 
 [[package]]
