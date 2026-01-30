@@ -4,14 +4,11 @@ from typing import ClassVar, Optional, Union
 import jinja2
 from fastapi import Request
 from pydantic import Field
-from vllm.entrypoints.openai.protocol import (
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    ErrorResponse,
-    RequestResponseMetadata,
-)
-from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest, ChatCompletionResponse
+from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.utils import get_max_tokens
+from vllm.inputs.parse import get_prompt_components
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import BeamSearchParams, SamplingParams
@@ -59,7 +56,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
 
             model_name = self.models.model_name(lora_request)
 
-            tokenizer = await self.engine_client.get_tokenizer()
+            tokenizer = self.engine_client.get_tokenizer()
 
             tool_parser = self.tool_parser
 
@@ -99,7 +96,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                     return error_check_ret
                 conversation, engine_prompts = await self._preprocess_chat(
                     request,
-                    tokenizer,
+                    self.renderer,
                     request.messages,
                     chat_template=request.chat_template or self.chat_template,
                     chat_template_content_format=self.chat_template_content_format,
@@ -142,7 +139,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         generators: list[AsyncGenerator[RequestOutput, None]] = []
         try:
             for i, engine_prompt in enumerate(engine_prompts):
-                prompt_text, _, _ = self._get_prompt_components(engine_prompts[i])
+                prompt_text, _, _ = get_prompt_components(engine_prompts[i])
                 # If we are creating sub requests for multiple prompts, ensure that they
                 # have unique request ids.
                 sub_request_id = request_id if len(engine_prompts) == 1 else f"{request_id}_{i}"
@@ -153,7 +150,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 max_tokens = get_max_tokens(
                     max_model_len=self.max_model_len,
                     request=request,
-                    input_length=len(engine_prompt["prompt_token_ids"]),
+                    prompt=engine_prompt,
                     default_sampling_params=self.default_sampling_params,
                 )
 
