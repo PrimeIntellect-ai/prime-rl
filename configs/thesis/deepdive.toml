@@ -16,7 +16,7 @@ batch_size = 512
 rollouts_per_example = 16
 
 [orchestrator.sampling]
-temperature = 1.1
+temperature = 1.0
 
 [[orchestrator.env]]
 id = "deepdive"
@@ -27,6 +27,7 @@ id = "deepdive"
 
 [trainer.optim]
 type = "muon"
+lr = 2e-6
 
 [inference]
 gpu_memory_utilization = 0.8
