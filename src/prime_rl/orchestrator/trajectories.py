@@ -19,8 +19,12 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     where the extension property holds.
 
     When consecutive steps share token prefixes (extension property), they are
-    merged into a single sample for O(T) compute. When extension breaks (e.g.,
-    due to context compaction or re-rendering), a new sample is started.
+    merged into a single sample. When extension breaks (e.g., due to context
+    compaction or a change in control-flow), a new sample is started.
+
+    Supports multi-prefix matching to handle interleaved agents. For example,
+    [agent1-step1, agent1-step2, agent2-step1, agent1-step3] produces two samples:
+    agent1 steps merged together, agent2 step separate.
 
     Returns a list of samples - could be 1 (extension always held) or up to T
     (extension never held).
@@ -76,32 +80,39 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
-    # Start with first trajectory step
-    samples: list[TrainingSample] = []
-    current_sample = make_sample(trajectory[0])
-    prefix_tokens = trajectory[0]["tokens"]["prompt_ids"] + trajectory[0]["tokens"]["completion_ids"]
+    # Track multiple active (prefix, sample) pairs to handle interleaved agents
+    # Each entry is [prefix_tokens, sample] where prefix_tokens is the accumulated token sequence
+    active_samples: list[list] = []
+
+    first_tokens = trajectory[0]["tokens"]
+    first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
+    active_samples.append([first_prefix, make_sample(trajectory[0])])
 
     for step_idx, step in enumerate(trajectory[1:], start=2):
         tokens = step["tokens"]
         step_prompt_ids = tokens["prompt_ids"]
 
-        # Check extension property: does new prompt start with our accumulated prefix?
-        if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
-            # Extension holds - merge into current sample
-            extend_sample(current_sample, step, len(prefix_tokens))
+        # Check if this step extends ANY active prefix
+        matched_idx = None
+        for idx, (prefix_tokens, _) in enumerate(active_samples):
+            if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
+                matched_idx = idx
+                break
+
+        if matched_idx is not None:
+            # Extension holds - merge into matched sample
+            prefix_tokens, sample = active_samples[matched_idx]
+            extend_sample(sample, step, len(prefix_tokens))
+            # Update prefix for this sample
+            active_samples[matched_idx][0] = tokens["prompt_ids"] + tokens["completion_ids"]
         else:
-            # Extension breaks - finalize current sample and start fresh
+            # No prefix matches - start a new sample
             logger.debug(
                 f"Extension property broke at step {step_idx} for example {state['example_id']}. "
-                f"Starting new sample (prefix_len={len(prefix_tokens)}, step_prompt_len={len(step_prompt_ids)})."
+                f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
-            samples.append(current_sample)
-            current_sample = make_sample(step)
+            new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
+            active_samples.append([new_prefix, make_sample(step)])
 
-        # Update prefix for next iteration
-        prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
-
-    # Finalize the last sample
-    samples.append(current_sample)
-
-    return samples
+    # Return all samples
+    return [sample for _, sample in active_samples]

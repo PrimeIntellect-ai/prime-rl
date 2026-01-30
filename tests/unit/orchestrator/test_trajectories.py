@@ -529,3 +529,136 @@ def test_interleave_rollout_extension_break_creates_multiple_samples(five_step_t
     # completion_mask: step4 [T,T] + step5 prompt [F,F] + step5 completion [T,T]
     assert sample2.completion_mask == [True, True, False, False, True, True]
     assert sample2.completion_logprobs == [-0.7, -0.8, 0, 0, -0.9, -1.0]
+
+
+@pytest.fixture
+def interleaved_agents_trajectory():
+    """
+    Trajectory with interleaved agents: agent1 steps, then agent2 step, then agent1 continues.
+    This tests multi-prefix tracking where agent1-step3 should merge back with agent1 sample.
+
+    agent1-step1: prompt=[1,2], completion=[3,4]
+    agent1-step2: prompt=[1,2,3,4,5,6], completion=[7,8]  (extends agent1-step1)
+    agent2-step1: prompt=[100,101], completion=[102,103]  (different prefix, new sample)
+    agent1-step3: prompt=[1,2,3,4,5,6,7,8,9,10], completion=[11,12]  (extends agent1-step2!)
+    """
+    state = vf.State(
+        example_id=1,
+        task="test",
+        trajectory=[
+            # agent1-step1
+            vf.TrajectoryStep(
+                prompt="agent1 turn 1",
+                completion="response 1",
+                response=None,
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="traj1",
+                extras={},
+                temperature=1.0,
+            ),
+            # agent1-step2 (extends agent1-step1)
+            vf.TrajectoryStep(
+                prompt="agent1 turn 2",
+                completion="response 2",
+                response=None,
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3, 4, 5, 6],
+                    prompt_mask=[0, 0, 0, 0, 0, 0],
+                    completion_ids=[7, 8],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.3, -0.4],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="traj1",
+                extras={},
+                temperature=1.0,
+            ),
+            # agent2-step1 (different prefix, starts new sample)
+            vf.TrajectoryStep(
+                prompt="agent2 turn 1",
+                completion="agent2 response",
+                response=None,
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[100, 101],
+                    prompt_mask=[0, 0],
+                    completion_ids=[102, 103],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.5, -0.6],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="traj2",
+                extras={},
+                temperature=1.0,
+            ),
+            # agent1-step3 (extends agent1-step2, should merge back!)
+            vf.TrajectoryStep(
+                prompt="agent1 turn 3",
+                completion="response 3",
+                response=None,
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                    prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    completion_ids=[11, 12],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.7, -0.8],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="traj1",
+                extras={},
+                temperature=1.0,
+            ),
+        ],
+        error=None,
+    )
+    return state
+
+
+def test_interleave_rollout_interleaved_agents(interleaved_agents_trajectory):
+    """
+    When agents are interleaved (agent1, agent1, agent2, agent1), the multi-prefix
+    tracking should merge agent1-step3 back into the agent1 sample, not start a new one.
+    """
+    rollouts = interleave_rollout(interleaved_agents_trajectory)
+
+    assert len(rollouts) == 2, "Should produce 2 samples (agent1 merged, agent2 separate)"
+
+    # First sample: agent1 steps 1, 2, 3 merged
+    agent1_sample = rollouts[0]
+    assert agent1_sample.prompt_ids == [1, 2]
+    assert agent1_sample.prompt_mask == [False, False]
+    # completion_ids: step1 [3,4] + step2 new prompt [5,6] + step2 completion [7,8]
+    #                 + step3 new prompt [9,10] + step3 completion [11,12]
+    assert agent1_sample.completion_ids == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    assert agent1_sample.completion_mask == [True, True, False, False, True, True, False, False, True, True]
+    assert agent1_sample.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4, 0, 0, -0.7, -0.8]
+
+    # Second sample: agent2 step 1 only
+    agent2_sample = rollouts[1]
+    assert agent2_sample.prompt_ids == [100, 101]
+    assert agent2_sample.prompt_mask == [False, False]
+    assert agent2_sample.completion_ids == [102, 103]
+    assert agent2_sample.completion_mask == [True, True]
+    assert agent2_sample.completion_logprobs == [-0.5, -0.6]
