@@ -706,6 +706,19 @@ wheels = [
 ]
 
 [[package]]
+name = "deepdive"
+version = "0.2.2"
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fdeepdive&rev=be1f9af#be1f9af15b7b010fbd76b1ae83913d8e3e02a70d" }
+dependencies = [
+    { name = "aiofiles" },
+    { name = "aiohttp" },
+    { name = "datasets" },
+    { name = "diskcache" },
+    { name = "pdfminer-six" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "depyf"
 version = "0.20.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2596,6 +2609,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pdfminer-six"
+version = "20260107"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "charset-normalizer" },
+    { name = "cryptography" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/34/a4/5cec1112009f0439a5ca6afa8ace321f0ab2f48da3255b7a1c8953014670/pdfminer_six-20260107.tar.gz", hash = "sha256:96bfd431e3577a55a0efd25676968ca4ce8fd5b53f14565f85716ff363889602", size = 8512094, upload-time = "2026-01-07T13:29:12.937Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/8b/28c4eaec9d6b036a52cb44720408f26b1a143ca9bce76cc19e8f5de00ab4/pdfminer_six-20260107-py3-none-any.whl", hash = "sha256:366585ba97e80dffa8f00cebe303d2f381884d8637af4ce422f1df3ef38111a9", size = 6592252, upload-time = "2026-01-07T13:29:10.742Z" },
+]
+
+[[package]]
 name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2720,6 +2746,7 @@ dependencies = [
     { name = "blobfile" },
     { name = "cydifflib" },
     { name = "datasets" },
+    { name = "deepdive" },
     { name = "dion" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
@@ -2775,6 +2802,7 @@ requires-dist = [
     { name = "blobfile", specifier = ">=3.0.0" },
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=4.0.0" },
+    { name = "deepdive", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fdeepdive&rev=be1f9af" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl" },
     { name = "jaxtyping", specifier = ">=0.3.2" },

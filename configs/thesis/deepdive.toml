@@ -1,0 +1,43 @@
+inference_gpu_ids = [0,1,2,3]
+trainer_gpu_ids = [4,5,6,7]
+
+max_steps = 300
+seq_len = 16384
+
+[wandb]
+project = "mika-thesis"
+name = "deepdive"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+max_concurrent = 128
+
+[orchestrator.sampling]
+temperature = 1.1
+
+[[orchestrator.env]]
+id = "deepdive"
+
+[trainer.model.compile]
+
+[trainer.model.ac]
+
+[trainer.optim]
+type = "sgd"
+
+[inference]
+gpu_memory_utilization = 0.8
+
+[inference.parallel]
+tp = 2
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+
+[log]
+level = "debug"
