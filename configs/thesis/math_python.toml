@@ -9,7 +9,7 @@ project = "mika-thesis"
 name = "math-python"
 
 [model]
-name = "Qwen/Qwen3-4B-Thinking-2507"
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 
 [weight_broadcast]
 type = "nccl"
