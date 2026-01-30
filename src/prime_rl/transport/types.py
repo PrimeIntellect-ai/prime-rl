@@ -14,6 +14,9 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None
     reward: float | None = None
+    # Optional per-token weights aligned to completion_ids length.
+    # If provided, the trainer scales advantages per token using these weights.
+    advantage_weights: list[float] | None = None
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):

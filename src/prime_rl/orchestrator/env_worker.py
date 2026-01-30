@@ -72,6 +72,20 @@ def extract_result(state: vf.State, temperature: float) -> dict:
         }
         trajectory.append(traj_step)
 
+    turn_scores = state.get("turn_scores")
+    if turn_scores is None:
+        extracted_scores: list[float | None] = []
+        any_found = False
+        for step in state.get("trajectory", []):
+            extras = step.get("extras") if isinstance(step, dict) else None
+            if isinstance(extras, dict) and "turn_score" in extras:
+                any_found = True
+                extracted_scores.append(extras.get("turn_score"))
+            else:
+                extracted_scores.append(None)
+        if any_found:
+            turn_scores = [0.0 if s is None else float(s) for s in extracted_scores]
+
     return {
         # Required by buffer
         "example_id": state.get("example_id"),
@@ -86,6 +100,7 @@ def extract_result(state: vf.State, temperature: float) -> dict:
         "prompt": state.get("prompt"),
         "completion": state.get("completion"),
         "trajectory": trajectory,
+        "turn_scores": turn_scores,
     }
 
 

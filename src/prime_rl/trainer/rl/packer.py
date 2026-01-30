@@ -141,6 +141,11 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with completion temperatures length != completion ids length ({len(sample.completion_temperatures)} != {len(sample.completion_ids)})",
             )
+        if sample.advantage_weights is not None and len(sample.advantage_weights) != len(sample.completion_ids):
+            return (
+                False,
+                f"Run wrote a sample with advantage weights length != completion ids length ({len(sample.advantage_weights)} != {len(sample.completion_ids)})",
+            )
         if sample_length == 0:
             return False, "Run wrote a sample with no tokens"
         if sample_length > self.seq_len:
