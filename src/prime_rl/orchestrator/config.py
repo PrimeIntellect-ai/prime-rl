@@ -704,13 +704,6 @@ class OrchestratorConfig(BaseSettings):
 
     rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
 
-    trajectory_strategy: Annotated[
-        Literal["interleaved", "branching"],
-        Field(
-            description="DEPRECATED: This option is ignored. Interleaving now automatically handles extension breaks by starting a new sample when the prefix doesn't match, achieving best-of-both behavior."
-        ),
-    ] = "interleaved"
-
     output_dir: Annotated[
         Path,
         Field(

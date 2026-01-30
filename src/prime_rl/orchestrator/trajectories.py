@@ -1,7 +1,16 @@
+from typing import TypedDict
+
 import verifiers as vf
 
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
+
+
+class TrajectoryStepWithTemp(TypedDict):
+    """Trajectory step with temperature field added by prime-rl's extract_result."""
+
+    tokens: vf.TrajectoryStepTokens
+    temperature: float
 
 
 def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
@@ -25,7 +34,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
 
     has_error = state["error"] is not None
 
-    def make_sample(step: dict) -> TrainingSample:
+    def make_sample(step: TrajectoryStepWithTemp) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         tokens = step["tokens"]
         temperature = step["temperature"]
@@ -45,7 +54,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
             advantage=None,
         )
 
-    def extend_sample(sample: TrainingSample, step: dict, prefix_len: int) -> None:
+    def extend_sample(sample: TrainingSample, step: TrajectoryStepWithTemp, prefix_len: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = step["tokens"]
         temperature = step["temperature"]

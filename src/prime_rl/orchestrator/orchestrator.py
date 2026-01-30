@@ -140,9 +140,8 @@ async def orchestrate(config: OrchestratorConfig):
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
     )
     env.set_max_seq_len(config.seq_len)
-    if config.trajectory_strategy == "interleaved":
-        logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
-        env.set_interleaved_rollouts(True)
+    logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
+    env.set_interleaved_rollouts(True)
     if config.buffer.skip_verification:
         logger.info("Skipping verification (rewards will be set to 0)")
         env.set_score_rollouts(False)
