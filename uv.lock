@@ -10,7 +10,7 @@ resolution-markers = [
 prerelease-mode = "allow"
 
 [manifest]
-overrides = [{ name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=76732b4e7120808ff989edbd16401f61fa6a0afa" }]
+overrides = [{ name = "transformers", specifier = "==5.0.0" }]
 
 [[package]]
 name = "absl-py"
@@ -1716,7 +1716,7 @@ wheels = [
 
 [[package]]
 name = "mistral-common"
-version = "1.8.8"
+version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema" },
@@ -1728,9 +1728,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/bb/6fc2e46d9920c80f0d053d58be5b0546c18010ff3a5f9b9d91299226e989/mistral_common-1.8.8.tar.gz", hash = "sha256:8ae28b3f88bce1b9396f5d1107e5ea87e4130486b9f6d811df6d5ac07bff2186", size = 6337014, upload-time = "2025-12-22T10:51:47.245Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/5b/60bb9f8c424c9ec7708396096f92e34f77eca94d55f99326b72b5a322482/mistral_common-1.9.0.tar.gz", hash = "sha256:5f90ec606d1826a20a97d24aefb9bfff7f4cd4cd576b622d4857708c0577e6c2", size = 6337103, upload-time = "2026-01-29T00:28:07.982Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/73/02/c1866598c8e94a4d0593b73e6dec0afea722227b9b3223bf6bb8ab269fa7/mistral_common-1.8.8-py3-none-any.whl", hash = "sha256:f63ce79b1867b3fc7c8b66fcaedab3b07966185567558038dc02321c17e4f39f", size = 6518005, upload-time = "2025-12-22T10:51:44.88Z" },
+    { url = "https://files.pythonhosted.org/packages/64/12/8a3c9aaf58b49383d24f533edb2f81f073b59822317bd56bd66d0850caae/mistral_common-1.9.0-py3-none-any.whl", hash = "sha256:e25ed2f8c73f66cf3b1a48b2ddd649e044a0db7b9d9dd1af819eeb20ee1a6d94", size = 6517668, upload-time = "2026-01-29T00:28:04.96Z" },
 ]
 
 [package.optional-dependencies]
@@ -3689,8 +3689,8 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "5.0.0.dev0"
-source = { git = "https://github.com/huggingface/transformers.git?rev=76732b4e7120808ff989edbd16401f61fa6a0afa#76732b4e7120808ff989edbd16401f61fa6a0afa" }
+version = "5.0.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
     { name = "huggingface-hub" },
@@ -3698,11 +3698,14 @@ dependencies = [
     { name = "packaging" },
     { name = "pyyaml" },
     { name = "regex" },
-    { name = "requests" },
     { name = "safetensors" },
     { name = "tokenizers" },
     { name = "tqdm" },
     { name = "typer-slim" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bc/79/845941711811789c85fb7e2599cea425a14a07eda40f50896b9d3fda7492/transformers-5.0.0.tar.gz", hash = "sha256:5f5634efed6cf76ad068cc5834c7adbc32db78bbd6211fb70df2325a9c37dec8", size = 8424830, upload-time = "2026-01-26T10:46:46.813Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/52/f3/ac976fa8e305c9e49772527e09fbdc27cc6831b8a2f6b6063406626be5dd/transformers-5.0.0-py3-none-any.whl", hash = "sha256:587086f249ce64c817213cf36afdb318d087f790723e9b3d4500b97832afd52d", size = 10142091, upload-time = "2026-01-26T10:46:43.88Z" },
 ]
 
 [[package]]
@@ -3920,7 +3923,7 @@ wheels = [
 
 [[package]]
 name = "vllm"
-version = "0.15.0rc2.dev25+g706f123b2"
+version = "0.15.0rc2.dev96+g133765760"
 source = { registry = "https://wheels.vllm.ai/nightly" }
 dependencies = [
     { name = "aiohttp" },
@@ -3985,8 +3988,8 @@ dependencies = [
     { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'" },
 ]
 wheels = [
-    { url = "https://wheels.vllm.ai/706f123b23b75097da9a3f51ce538bd784fdc75b/vllm-0.15.0rc2.dev25%2Bg706f123b2-cp38-abi3-manylinux_2_31_aarch64.whl" },
-    { url = "https://wheels.vllm.ai/706f123b23b75097da9a3f51ce538bd784fdc75b/vllm-0.15.0rc2.dev25%2Bg706f123b2-cp38-abi3-manylinux_2_31_x86_64.whl" },
+    { url = "https://wheels.vllm.ai/133765760b21fde228bf1ca19fa4b35b5c206359/vllm-0.15.0rc2.dev96%2Bg133765760-cp38-abi3-manylinux_2_31_aarch64.whl" },
+    { url = "https://wheels.vllm.ai/133765760b21fde228bf1ca19fa4b35b5c206359/vllm-0.15.0rc2.dev96%2Bg133765760-cp38-abi3-manylinux_2_31_x86_64.whl" },
 ]
 
 [[package]]

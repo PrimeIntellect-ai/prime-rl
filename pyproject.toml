@@ -74,7 +74,7 @@ dev = [
 no-build-isolation-package = ["flash-attn"]
 prerelease = "allow"
 override-dependencies = [
-    "transformers @ git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa",
+    "transformers==5.0.0",
 ]
 
 [tool.uv.sources]
