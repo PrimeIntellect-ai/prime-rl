@@ -21,7 +21,6 @@ max_concurrent = 128
 
 [orchestrator.sampling]
 temperature = 1.1
-max_tokens = 4096
 
 [[orchestrator.env]]
 id = "math-env"
