@@ -11,6 +11,7 @@ import torch.distributed.distributed_c10d as c10d
 from prime_rl.trainer.config import LoRAConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import get_stable_ckpt_steps
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.config import OrchestratorConfig
@@ -215,10 +216,6 @@ class MultiRunManager:
         error_path = config_dir / "config_validation_error.txt"
 
         if not config_path.exists():
-            if not error_path.exists():
-                config_dir.mkdir(parents=True, exist_ok=True)
-                with open(error_path, "w") as f:
-                    f.write(f"No orchestrator config found at {config_path}\n")
             self.logger.error(f"Run {run_id}: No orchestrator config found at {config_path}")
             return None
 
@@ -230,9 +227,9 @@ class MultiRunManager:
 
             config = OrchestratorConfig(**config_dict)
         except Exception as e:
-            config_dir.mkdir(parents=True, exist_ok=True)
-            with open(error_path, "w") as f:
-                f.write(f"Error parsing orchestrator config:\n{str(e)}\n")
+            if error_path.parent.exists():
+                with open(error_path, "w") as f:
+                    f.write(f"Error parsing orchestrator config:\n{str(e)}\n")
             self.logger.error(f"Run {run_id}: Error parsing orchestrator config: {e}")
             return None
 
@@ -241,9 +238,9 @@ class MultiRunManager:
             is_valid, error_message = hook(config)
             if not is_valid:
                 self.logger.error(f"Run {run_id}: {error_message}")
-                config_dir.mkdir(parents=True, exist_ok=True)
-                with open(error_path, "w") as f:
-                    f.write(f"{error_message}\n")
+                if error_path.parent.exists():
+                    with open(error_path, "w") as f:
+                        f.write(f"{error_message}\n")
                 return None
 
         # Config is valid, remove any stale error file
@@ -262,13 +259,16 @@ class MultiRunManager:
         self.unused_idxs.remove(new_id)
         self.idx_2_id[new_id] = new_run
 
-        # Get progress
+        # Get progress from stable checkpoints (only checkpoints with STABLE file are considered)
         self.progress[new_id] = Progress()
-
-        prev_ckpt_steps = [
-            int(i.stem.split("_")[-1]) for i in (self.get_run_dir(new_id) / "checkpoints").glob("step_*")
-        ]
-        self.progress[new_id].step = max(prev_ckpt_steps) if prev_ckpt_steps else 0
+        if self.max_runs == 1:
+            prev_ckpt_steps = [
+                int(i.stem.split("_")[-1]) for i in (self.get_run_dir(new_id) / "checkpoints").glob("step_*")
+            ]
+            self.progress[new_id].step = max(prev_ckpt_steps) if prev_ckpt_steps else 0
+        else:
+            stable_steps = get_stable_ckpt_steps(self.get_run_dir(new_id) / "checkpoints")
+            self.progress[new_id].step = max(stable_steps) if stable_steps else 0
 
         # Store the parsed config
         self.config[new_id] = config

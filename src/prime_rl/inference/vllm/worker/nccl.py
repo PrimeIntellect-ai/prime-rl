@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Generator, cast
 import torch
 from torch.nn import Module
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-from vllm.distributed.parallel_state import get_tp_group
+from vllm.distributed.parallel_state import get_dp_group, get_tp_group
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
@@ -90,11 +90,13 @@ class NCCLWeightUpdateWorker(Worker):
         """Initialize the NCCL broadcast receiver."""
         tp_size = get_tp_group().world_size
         tp_rank = get_tp_group().rank
-        global_rank_inference = (server_rank * tp_size) + tp_rank
-        global_inference_world_size = num_inference_server * tp_size
+        dp_size = get_dp_group().world_size
+        dp_rank = get_dp_group().rank
+        global_rank_inference = (server_rank * tp_size * dp_size) + (dp_rank * tp_size) + tp_rank
+        global_inference_world_size = num_inference_server * tp_size * dp_size
 
         logger.info(
-            f"Worker [tp={tp_rank} server_rank={server_rank}] -> [global_rank={global_rank_inference} global_world_size={global_inference_world_size}]"
+            f"Worker [tp={tp_rank} dp={dp_rank} server_rank={server_rank}] -> [global_rank={global_rank_inference} global_world_size={global_inference_world_size}]"
         )
 
         self.nccl_broadcast_receiver = NCCLWeightBroadcastReceiver(

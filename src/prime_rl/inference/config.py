@@ -189,12 +189,6 @@ class InferenceConfig(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def nccl_and_dp(self):
-        if self.weight_broadcast.type == "nccl" and self.parallel.dp != 1:
-            raise ValueError("NCCL broadcast backend requires data parallel size to be 1")
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_dynamic_lora_updating(self):
         if self.enable_lora:
             os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"

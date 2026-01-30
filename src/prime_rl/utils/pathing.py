@@ -43,6 +43,12 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
+def get_stable_ckpt_steps(ckpt_dir: Path) -> list[int]:
+    """Gets checkpoint steps that have STABLE file, sorted in ascending order."""
+    steps = get_all_ckpt_steps(ckpt_dir)
+    return [s for s in steps if (ckpt_dir / f"step_{s}" / "STABLE").exists()]
+
+
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
     steps = get_all_ckpt_steps(ckpt_dir)

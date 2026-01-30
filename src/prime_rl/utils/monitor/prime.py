@@ -116,13 +116,12 @@ class PrimeMonitor(Monitor):
         # Prepare samples for API
         samples = []
         for rollout in rollouts:
-            # Extract prompt and completion separately from the last trajectory step
-            trajectory = rollout["trajectory"]
-            if not trajectory:
+            # Extract prompt and completion from the rollout state, which includes final_env_response
+            prompt_messages = rollout.get("prompt")
+            completion_messages = rollout.get("completion")
+            trajectory = rollout.get("trajectory") or []
+            if prompt_messages is None or completion_messages is None or not trajectory:
                 continue
-            last_step = trajectory[-1]
-            prompt_messages = last_step["prompt"]
-            completion_messages = last_step["completion"]
 
             # Serialize full trajectory array (excluding large response objects and token arrays)
             trajectory_data = []
