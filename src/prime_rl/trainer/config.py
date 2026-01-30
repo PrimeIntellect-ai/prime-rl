@@ -1,4 +1,3 @@
-import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -208,11 +207,11 @@ class ModelConfig(BaseConfig):
     ] = 1
 
     impl: Annotated[
-        Literal["hf", "liger_kernel", "custom", "auto"],
+        Literal["hf", "custom", "auto"],
         Field(
             description=(
                 "Model implementation to use. 'auto' (default) selects 'custom' if supported by the model, "
-                "otherwise 'hf'. 'liger_kernel' is deprecated and falls back to 'hf'."
+                "otherwise 'hf'."
             ),
         ),
     ] = "auto"
@@ -274,21 +273,10 @@ class ModelConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def deprecate_liger_kernel_impl(self):
-        if self.impl == "liger_kernel":
-            warnings.warn(
-                "Model implementation 'liger_kernel' is deprecated; HF model loading will be used. "
-                "Use impl='hf' or impl='custom' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        return self
-
-    @model_validator(mode="after")
     def trust_remote_code_only_with_hf(self):
         """Trust remote code only if the model is from HF."""
         if self.trust_remote_code:
-            if self.impl not in ("hf", "auto", "liger_kernel"):
+            if self.impl not in ("hf", "auto"):
                 raise ValueError("Trust remote code is only supported with the HF implementation or auto mode.")
         return self
 

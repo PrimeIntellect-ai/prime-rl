@@ -117,11 +117,6 @@ def get_model(
         match impl_to_use:
             case "hf":
                 model_cls = AutoModelForCausalLM
-            case "liger_kernel":
-                logger.warning(
-                    "Model implementation 'liger_kernel' is deprecated and now uses HF AutoModelForCausalLM."
-                )
-                model_cls = AutoModelForCausalLM
             case "custom":
                 model_cls = AutoModelForCausalLMPrimeRL
 
