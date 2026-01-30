@@ -9,12 +9,11 @@ project = "mika-thesis"
 name = "deepdive"
 
 [model]
-name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
-max_concurrent = 128
 
 [orchestrator.sampling]
 temperature = 1.1
