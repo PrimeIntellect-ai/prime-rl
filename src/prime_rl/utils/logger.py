@@ -56,7 +56,7 @@ class _JsonFileSink:
 
 
 class _VerifiersInterceptHandler(logging.Handler):
-    """Intercept stdlib logging from verifiers and route to loguru."""
+    """Intercept stdlib logging from verifiers and route to loguru with [verifiers] prefix."""
 
     def emit(self, record: logging.LogRecord) -> None:
         logger = get_logger()
@@ -70,7 +70,7 @@ class _VerifiersInterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        logger.opt(depth=depth, exception=record.exc_info).log(level, f"[verifiers] {record.getMessage()}")
 
 
 def setup_logger(
@@ -170,7 +170,7 @@ def reset_logger():
 
 
 def intercept_verifiers_logging(level: str = "DEBUG"):
-    """Intercept all verifiers stdlib logging and route through prime-rl loguru."""
+    """Intercept all verifiers stdlib logging and route through prime-rl loguru with [verifiers] prefix."""
     vf_logger = logging.getLogger("verifiers")
     vf_logger.handlers.clear()
     vf_logger.addHandler(_VerifiersInterceptHandler())
