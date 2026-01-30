@@ -24,7 +24,7 @@ temperature = 1.1
 
 [[orchestrator.env]]
 id = "math-env"
-args = { python_tool = true, sandbox_client_max_workers = 128, max_startup_wait_seconds = 180, sandbox_labels = ["math-env", "mika"] }
+args = { python_tool = true, sandbox_client_max_workers = 128, sandbox_timeout_minutes = 60, max_startup_wait_seconds = 180, sandbox_labels = ["math-env", "mika"] }
 
 [trainer.model.compile]
 
