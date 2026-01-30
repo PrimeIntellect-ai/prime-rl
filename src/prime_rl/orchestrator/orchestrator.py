@@ -64,7 +64,9 @@ from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len
 async def orchestrate(config: OrchestratorConfig):
     # Initialize the logger
     logger = setup_logger(
-        config.log.level, log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None
+        config.log.level,
+        log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
+        json=config.log.json_logging,
     )
     intercept_verifiers_logging(level=config.log.vf_level)
     logger.info("Starting orchestrator")
@@ -324,6 +326,7 @@ async def orchestrate(config: OrchestratorConfig):
                 ckpt_step=ckpt_step,
                 step=progress.step,
                 max_concurrent=config.max_concurrent or -1,
+                json_logging=config.log.json_logging,
             )
 
             # Resume weight updates
@@ -601,6 +604,7 @@ async def orchestrate(config: OrchestratorConfig):
             ckpt_step=scheduler.ckpt_step,
             step=progress.step,
             max_concurrent=config.max_concurrent or -1,
+            json_logging=config.log.json_logging,
         )
 
     # Log final (immutable) samples and distributions to monitor(s)

@@ -141,6 +141,13 @@ class LogConfig(BaseConfig):
         ),
     ] = False
 
+    json_logging: Annotated[
+        bool,
+        Field(
+            description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.).",
+        ),
+    ] = False
+
 
 class LogExtrasConfig(BaseConfig):
     """Configures extra logging for monitoring platforms."""
