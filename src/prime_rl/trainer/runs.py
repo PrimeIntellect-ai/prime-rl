@@ -227,6 +227,9 @@ class MultiRunManager:
 
             config = OrchestratorConfig(**config_dict)
         except Exception as e:
+            if error_path.parent.exists():
+                with open(error_path, "w") as f:
+                    f.write(f"Error parsing orchestrator config:\n{str(e)}\n")
             self.logger.error(f"Run {run_id}: Error parsing orchestrator config: {e}")
             return None
 
