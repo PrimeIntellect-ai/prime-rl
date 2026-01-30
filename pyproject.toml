@@ -9,7 +9,7 @@ dependencies = [
     "cydifflib>=1.2.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
-    "liger-kernel>=0.5.10",
+    "liger-kernel>=0.6.4",
     "loguru>=0.7.3",
     "numpy>=2.2.6",
     "openai>=1.106.1",
@@ -17,10 +17,11 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "pylatexenc>=2.10",
     "tomli>=2.2.1",
-    "torch>=2.9.0",
-    "transformers>=4.57.6",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "transformers>=5.0.0",
     "uvloop>=0.21.0",
-    "vllm==0.14.0",
+    "vllm",
     "wandb>=0.20.1",
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
@@ -54,7 +55,7 @@ synthesize = "prime_rl.synthesize.synthesize:main"
 
 [project.optional-dependencies]
 flash-attn = [
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.12/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl",
 ]
 flash-attn-3 = [
     "flash_attn_3 @ https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl",
@@ -71,13 +72,17 @@ dev = [
 
 
 [tool.uv]
-no-build-isolation-package = ["flash-attn"]
+no-build-isolation-package = ["flash-attn", "vllm"]
 prerelease = "allow"
+# Override vLLM's constraints - we need transformers 5.0+ for GLM-4.7-Flash and torch 2.10+ for liger-kernel
+override-dependencies = ["transformers>=5.0.0", "torch>=2.10.0", "torchvision>=0.25.0"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "209774a" }
+vllm = { git = "https://github.com/vllm-project/vllm.git", rev = "586a57ad7ede5c5132a70d021fc48fe05b10f5c3" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eebbd950a6ff11d9b5f806282e33df83df9d" }
 
