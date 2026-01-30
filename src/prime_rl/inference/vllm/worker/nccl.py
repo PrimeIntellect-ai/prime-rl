@@ -89,9 +89,9 @@ class NCCLWeightUpdateWorker(Worker):
     def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int) -> None:
         """Initialize the NCCL broadcast receiver."""
         tp_size = get_tp_group().world_size
-        tp_rank = get_tp_group().rank
+        tp_rank = get_tp_group().rank_in_group
         dp_size = get_dp_group().world_size
-        dp_rank = get_dp_group().rank
+        dp_rank = get_dp_group().rank_in_group
         global_rank_inference = (server_rank * tp_size * dp_size) + (dp_rank * tp_size) + tp_rank
         global_inference_world_size = num_inference_server * tp_size * dp_size
 
