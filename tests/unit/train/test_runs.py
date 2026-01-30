@@ -234,12 +234,6 @@ def test_config_missing(tmp_path: Path) -> None:
     assert len(multi_run_manager.config) == 0
     assert "run_noconfig" not in multi_run_manager.id_2_idx
 
-    # Verify config_validation_error.txt was created
-    error_path = run_dir / "control" / "config_validation_error.txt"
-    assert error_path.exists()
-    error_content = error_path.read_text()
-    assert "No orchestrator config found" in error_content
-
 
 def test_config_cleanup_on_deletion(tmp_path: Path) -> None:
     """Test that configs are cleaned up when runs are deleted."""

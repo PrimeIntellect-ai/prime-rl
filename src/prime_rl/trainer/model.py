@@ -8,7 +8,6 @@ import torch.nn as nn
 from beartype import beartype as typechecker
 from huggingface_hub import snapshot_download
 from jaxtyping import Float, Int, jaxtyped
-from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
@@ -179,8 +178,6 @@ def get_model(
             match impl_to_use:
                 case "hf":
                     model_cls = AutoModelForCausalLM
-                case "liger_kernel":
-                    model_cls = AutoLigerKernelForCausalLM
                 case "custom":
                     model_cls = AutoModelForCausalLMPrimeRL
 
@@ -474,6 +471,11 @@ def can_reinit_empty_buffers(model: nn.Module):
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
         return True
 
+    # Gemma3 model (has embed_scale and local rotary emb)
+    gemma3_buffers = {"model.embed_tokens.embed_scale", "model.rotary_emb.inv_freq", "model.rotary_emb_local.inv_freq"}
+    if set(buffer_names) == gemma3_buffers:
+        return True
+
     get_logger().warning(f"Model cannot be loaded using meta device because of buffers: {buffer_names}")
     return False
 
@@ -485,6 +487,17 @@ def fix_model_post_empty(model: nn.Module):
         rotary_emb = model.model.rotary_emb
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
+    # Gemma3 local rotary emb
+    if "model.rotary_emb_local.inv_freq" in buffer_names:
+        rotary_emb_local = model.model.rotary_emb_local
+        inv_freq_local, rotary_emb_local.attention_scaling = rotary_emb_local.rope_init_fn(
+            rotary_emb_local.config, rotary_emb_local.inv_freq.device
+        )
+        rotary_emb_local.inv_freq.copy_(inv_freq_local)
+    # Gemma3 embed_scale (scalar computed from hidden_size)
+    if "model.embed_tokens.embed_scale" in buffer_names:
+        embed_scale = model.config.hidden_size**0.5
+        model.model.embed_tokens.embed_scale.fill_(embed_scale)
 
 
 def reshard_module(model: nn.Module):

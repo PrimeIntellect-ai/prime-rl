@@ -53,13 +53,6 @@ class MultiLoRALinear(MultiLoRAModule):
         if rank <= 0 or n_adapters <= 0:
             raise ValueError("rank and n_adapters must be > 0")
 
-        # Set use_grouped_mm to False if CUDA compute capability < 9.0
-        if torch.cuda.is_available():
-            cc_major, _ = torch.cuda.get_device_capability()
-            if cc_major != 9:
-                use_grouped_mm = False
-        else:
-            use_grouped_mm = False
         if rank % 8 != 0 or base_layer.in_features % 8 != 0 or base_layer.out_features % 8 != 0:
             use_grouped_mm = False
 
