@@ -16,16 +16,9 @@ from prime_rl.utils.logger import get_logger
 class CPUOffloadOptimizer:
     """Wraps an optimizer to keep states on CPU, moving to GPU only for step().
 
-    This allows saving GPU memory by storing optimizer states (momentum, variance, etc.)
-    on CPU, while keeping model parameters on GPU. States are moved to GPU before
-    the optimizer step and back to CPU after.
-
-    Unlike FSDP's CPUOffload which also offloads weights (requiring H2D all-gather),
-    this only offloads optimizer states, avoiding the weight transfer overhead.
-
-    Note: There is significant overhead from transferring many small state tensors.
-    This is best suited for memory-constrained scenarios where the memory savings
-    outweigh the throughput cost.
+    Unlike FSDP's CPUOffload which offloads weights too, this keeps weights on GPU.
+    With activation checkpointing, activations and optimizer states are never on GPU
+    at the same time: peak memory becomes max(activations, opt_states) instead of sum.
     """
 
     def __init__(self, optimizer: Optimizer, pin_memory: bool = True):
