@@ -116,7 +116,8 @@ def setup_optimizer(
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     lora: bool = False,
-) -> Optimizer:
+    cpu_offload: bool = False,
+) -> Optimizer | CPUOffloadOptimizer:
     if lora:
         # Wait for run 0 to be created in the multi run manager
         # Otherwise, the creation will reset the parameters
@@ -131,7 +132,13 @@ def setup_optimizer(
             time.sleep(1)
         named_params = multi_run_manager.get_named_parameters_for_run(0)
 
-    return _create_optimizer(config, named_params, parallel_dims)
+    optimizer = _create_optimizer(config, named_params, parallel_dims)
+
+    if cpu_offload:
+        get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
+        return CPUOffloadOptimizer(optimizer)
+
+    return optimizer
 
 
 def _create_optimizer(
