@@ -4,13 +4,15 @@ from typing import ClassVar, Optional, Union
 import jinja2
 from fastapi import Request
 from pydantic import Field
-from vllm.entrypoints.openai.protocol import (
+from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionRequest,
     ChatCompletionResponse,
+)
+from vllm.entrypoints.openai.engine.protocol import (
     ErrorResponse,
     RequestResponseMetadata,
 )
-from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
+from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
 from vllm.entrypoints.utils import get_max_tokens
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput

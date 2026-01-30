@@ -8,7 +8,7 @@ import torch.nn as nn
 from beartype import beartype as typechecker
 from huggingface_hub import snapshot_download
 from jaxtyping import Int, jaxtyped
-from liger_kernel.transformers import AutoLigerKernelForCausalLM
+# from liger_kernel.transformers import AutoLigerKernelForCausalLM  # Removed: incompatible with transformers 5.0
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
@@ -58,27 +58,83 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
 
+def _is_nemotron_h(model: nn.Module) -> bool:
+    archs = getattr(getattr(model, 'config', None), 'architectures', []) or []
+    return 'NemotronH' in str(archs)
+
+
+def patch_model_compat(model: nn.Module) -> None:
+    """Add model.model alias for NemotronH which uses backbone."""
+    if _is_nemotron_h(model):
+        model.model = model.backbone
+        model.__class__._supports_flash_attn_2 = True
+        model.__class__._supports_sdpa = True
+
+
+def get_inner_model(model: nn.Module) -> nn.Module:
+    if _is_nemotron_h(model):
+        return model.backbone
+    return model.model
+
+
+def get_embed_tokens(model: nn.Module) -> nn.Module:
+    inner = get_inner_model(model)
+    if _is_nemotron_h(model):
+        return inner.embeddings
+    return inner.embed_tokens
+
+
+def get_final_norm(model: nn.Module) -> nn.Module:
+    inner = get_inner_model(model)
+    if _is_nemotron_h(model):
+        return inner.norm_f
+    return inner.norm
+
+
+def get_layers(model: nn.Module) -> nn.ModuleList:
+    return get_inner_model(model).layers
+
+
+def get_ffn(block: nn.Module) -> nn.Module | None:
+    return getattr(block, 'mlp', None)
+
+
 def get_load_balance_stats(
     model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
-    for transformer_block in model.model.layers:
+    for transformer_block in get_layers(model):
+        ffn = get_ffn(transformer_block)
         # This is necessary for models that have mixed dense layers
-        if not hasattr(transformer_block.mlp, "tokens_per_expert"):
+        if ffn is None or not hasattr(ffn, "tokens_per_expert"):
             continue
-        tokens_per_expert: torch.Tensor = transformer_block.mlp.tokens_per_expert
+        tokens_per_expert: torch.Tensor = ffn.tokens_per_expert
         if try_to_avoid_padding_experts:
             tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[
-                transformer_block.mlp.router.top_k :
+                ffn.router.top_k :
             ]
         balanced_load = tokens_per_expert.mean()
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.item())
         if reset_stats:
-            transformer_block.mlp.tokens_per_expert.zero_()
+            ffn.tokens_per_expert.zero_()
     if len(per_layer_max_vio) == 0:
         return {"max_vio": None}
     return {"max_vio": torch.tensor(per_layer_max_vio, device=torch.device("cuda"))}
+
+
+def _patch_model_class_for_flash_attn(model_config: PretrainedConfig, model_path: str) -> None:
+    """Patch NemotronH to declare flash attention support."""
+    arch = getattr(model_config, 'architectures', [None])[0]
+    if not (arch and 'NemotronH' in arch):
+        return
+    try:
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+        for cls_name in ('modeling_nemotron_h.NemotronHForCausalLM', 'modeling_nemotron_h.NemotronHModel'):
+            cls = get_class_from_dynamic_module(cls_name, model_path)
+            cls._supports_flash_attn_2 = cls._supports_sdpa = True
+    except Exception:
+        pass
 
 
 def get_model(
@@ -94,8 +150,15 @@ def get_model(
             config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
         ),
     )
+
+    # Patch model class for flash attention support before loading
+    if config.attn == 'flash_attention_2':
+        _patch_model_class_for_flash_attn(model_config, config.name)
     model_config.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
+    # Disable rescale_prenorm_residual to prevent HF from reinitializing out_proj weights after loading
+    if getattr(model_config, 'rescale_prenorm_residual', False):
+        model_config.rescale_prenorm_residual = False
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
 
     if config.debug.num_layers is not None:
@@ -119,7 +182,8 @@ def get_model(
             case "hf":
                 model_cls = AutoModelForCausalLM
             case "liger_kernel":
-                model_cls = AutoLigerKernelForCausalLM
+                logger.warning("liger_kernel impl requested but disabled due to transformers 5.0 incompatibility, falling back to hf")
+                model_cls = AutoModelForCausalLM
             case "custom":
                 model_cls = AutoModelForCausalLMPrimeRL
 
@@ -176,11 +240,13 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
         dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
 
-    for transformer_block in model.model.layers:
-        if parallel_dims.ep_enabled and isinstance(transformer_block.mlp, MoE):
-            fully_shard(transformer_block.mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
+    layers = get_layers(model)
+    for transformer_block in layers:
+        ffn = get_ffn(transformer_block)
+        if parallel_dims.ep_enabled and ffn is not None and isinstance(ffn, MoE):
+            fully_shard(ffn.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
 
-            transformer_block.mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+            ffn.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
 
         fully_shard(
             transformer_block,
@@ -189,16 +255,18 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         )
 
     shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings
+    embed_tokens = get_embed_tokens(model)
+    final_norm = get_final_norm(model)
 
     if shard_norm_and_lm_head:
         # This optimization breaks weight tying
         fully_shard(
-            model.model.embed_tokens,
+            embed_tokens,
             mesh=hsdp_mesh,
             **fsdp_config,
         )
         fully_shard(
-            [model.lm_head, model.model.norm],
+            [model.lm_head, final_norm],
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
             offload_policy=offload_policy,
@@ -221,30 +289,31 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # if EP is enabled, d2h syncs in the dispatch/combine can interfere with FSDP prefetch, that's why we set it below manually
     # the rest of the function handles only that
 
-    transformer_blocks = list(model.model.layers)
+    transformer_blocks = list(layers)
     next_transformer_blocks = transformer_blocks[1:] + [None]
 
-    if model.model.embed_tokens is not None and len(model.model.layers) > 0:
+    if embed_tokens is not None and len(layers) > 0:
         if shard_norm_and_lm_head:
-            model.model.embed_tokens.set_modules_to_forward_prefetch([transformer_blocks[0]])
+            embed_tokens.set_modules_to_forward_prefetch([transformer_blocks[0]])
 
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
-            if isinstance(next_transformer_block.mlp, MoE):
+            next_ffn = get_ffn(next_transformer_block)
+            if next_ffn is not None and isinstance(next_ffn, MoE):
                 transformer_block.set_modules_to_forward_prefetch(
-                    [next_transformer_block, next_transformer_block.mlp.experts]
+                    [next_transformer_block, next_ffn.experts]
                 )
             else:
                 transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
-        elif model.model.norm is not None and model.lm_head is not None:
+        elif final_norm is not None and model.lm_head is not None:
             if shard_norm_and_lm_head:
-                transformer_block.set_modules_to_forward_prefetch([model.model.norm, model.lm_head])
+                transformer_block.set_modules_to_forward_prefetch([final_norm, model.lm_head])
 
     # backward
-    reversed_transformer_blocks = list(reversed(model.model.layers))
+    reversed_transformer_blocks = list(reversed(layers))
     prev_transformer_blocks = reversed_transformer_blocks[1:] + [None]
 
-    if model.model.norm is not None and model.lm_head is not None and len(model.model.layers) > 0:
+    if final_norm is not None and model.lm_head is not None and len(layers) > 0:
         if shard_norm_and_lm_head:
             model.lm_head.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
         else:
@@ -252,15 +321,16 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
-            if isinstance(prev_transformer_block.mlp, MoE):
+            prev_ffn = get_ffn(prev_transformer_block)
+            if prev_ffn is not None and isinstance(prev_ffn, MoE):
                 transformer_block.set_modules_to_backward_prefetch(
-                    [prev_transformer_block, prev_transformer_block.mlp.experts]
+                    [prev_transformer_block, prev_ffn.experts]
                 )
             else:
                 transformer_block.set_modules_to_backward_prefetch([prev_transformer_block])
-        elif model.model.embed_tokens is not None:
+        elif embed_tokens is not None:
             if shard_norm_and_lm_head:
-                transformer_block.set_modules_to_backward_prefetch([model.model.embed_tokens])
+                transformer_block.set_modules_to_backward_prefetch([embed_tokens])
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
@@ -387,7 +457,7 @@ def fix_model_post_empty(model: nn.Module):
     buffer_names = [name for name, _ in model.named_buffers()]
     # HF standard transformer model
     if "model.rotary_emb.inv_freq" in buffer_names:
-        rotary_emb = model.model.rotary_emb
+        rotary_emb = get_inner_model(model).rotary_emb
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
 
@@ -399,26 +469,29 @@ def reshard_module(model: nn.Module):
 
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
-    for layer_id, (layer_name, transformer_block) in enumerate(model.model.layers.named_children()):
+    layers = get_layers(model)
+    for layer_id, (layer_name, transformer_block) in enumerate(layers.named_children()):
         if layer_id % ac_config.freq == 0:
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
-        model.model.layers.register_module(layer_name, transformer_block)
+        layers.register_module(layer_name, transformer_block)
     get_logger().info(f"Applied activation checkpointing (freq={ac_config.freq})")
 
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
-    for layer_id in range(len(model.model.layers)):
+    layers = get_layers(model)
+    for layer_id in range(len(layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        model.model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
-    get_logger().info(f"Compiled {len(model.model.layers)} layers (fullgraph={compile_config.fullgraph})")
+        layers[layer_id].compile(fullgraph=compile_config.fullgraph)
+    get_logger().info(f"Compiled {len(layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
 def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
-    for transformer_block in model.model.layers:
-        if isinstance(transformer_block.mlp, MoE):
+    for transformer_block in get_layers(model):
+        ffn = get_ffn(transformer_block)
+        if ffn is not None and isinstance(ffn, MoE):
             parallelize_module(
-                transformer_block.mlp.experts,
+                ffn.experts,
                 device_mesh=parallel_dims.world_mesh["ep"],
                 parallelize_plan=ExpertParallel(),
             )
@@ -445,6 +518,9 @@ def setup_model(
     # 1. We load to meta device by default
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
 
+    # Patch models with non-standard naming (e.g., NemotronH)
+    patch_model_compat(model)
+
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
     if config.debug.random_init and not possible_to_load_to_meta:
@@ -456,6 +532,7 @@ def setup_model(
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+        patch_model_compat(model)
 
     lm_head_chunk_size: int | None = None
     if isinstance(config.fused_lm_head_chunk_size, int):
@@ -505,6 +582,125 @@ def setup_model(
     return model
 
 
+def _get_segment_boundaries(position_ids: Tensor) -> list[tuple[int, int]]:
+    """Find segment boundaries where position_ids resets to 0."""
+    position_ids = position_ids.flatten()
+    boundaries = []
+    start = 0
+
+    for i in range(1, len(position_ids)):
+        if position_ids[i] == 0 and position_ids[i-1] != 0:
+            boundaries.append((start, i))
+            start = i
+
+    boundaries.append((start, len(position_ids)))
+    return boundaries
+
+
+def _forward_mamba_segmented(
+    model: nn.Module,
+    input_ids: Tensor,
+    position_ids: Tensor,
+    labels: Tensor | None = None,
+    temperature: Tensor | None = None,
+) -> PrimeLmOutput:
+    """
+    Forward pass for Mamba-hybrid models with packed sequences.
+
+    Splits input at position_id boundaries and processes as batch so each segment
+    has independent Mamba state. This matches inference behavior where each sample
+    was generated with fresh state.
+    """
+    boundaries = _get_segment_boundaries(position_ids)
+
+    # If only one segment, use regular forward
+    if len(boundaries) == 1:
+        out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+        if isinstance(out, dict):
+            return cast_float_and_contiguous(out)
+        return cast_float_and_contiguous(PrimeLmOutput(logits=out.logits))
+
+    # Split into segments
+    segments_input = []
+    segments_position = []
+    segments_labels = []
+    segments_temp = []
+    max_len = 0
+
+    for start, end in boundaries:
+        seg_len = end - start
+        max_len = max(max_len, seg_len)
+        segments_input.append(input_ids[0, start:end])
+        segments_position.append(position_ids[0, start:end])
+        if labels is not None:
+            segments_labels.append(labels[0, start:end])
+        if temperature is not None and isinstance(temperature, Tensor) and temperature.numel() > 1:
+            segments_temp.append(temperature[0, start:end] if temperature.dim() > 1 else temperature[start:end])
+
+    # Pad and batch
+    device = input_ids.device
+    dtype = input_ids.dtype
+    n_segments = len(segments_input)
+
+    batched_input = torch.zeros(n_segments, max_len, dtype=dtype, device=device)
+    batched_position = torch.zeros(n_segments, max_len, dtype=dtype, device=device)
+    batched_labels = torch.zeros(n_segments, max_len, dtype=dtype, device=device) if labels is not None else None
+    batched_temp = None
+    if segments_temp:
+        batched_temp = torch.ones(n_segments, max_len, dtype=segments_temp[0].dtype, device=device)
+
+    segment_lengths = []
+    for i, (seg_in, seg_pos) in enumerate(zip(segments_input, segments_position)):
+        seg_len = len(seg_in)
+        segment_lengths.append(seg_len)
+        batched_input[i, :seg_len] = seg_in
+        batched_position[i, :seg_len] = seg_pos
+        if batched_labels is not None:
+            batched_labels[i, :seg_len] = segments_labels[i]
+        if batched_temp is not None:
+            batched_temp[i, :seg_len] = segments_temp[i]
+
+    # Forward with batched segments (each has independent Mamba state)
+    out = model(
+        input_ids=batched_input,
+        position_ids=batched_position,
+        labels=batched_labels,
+        temperature=batched_temp,
+    )
+
+    if isinstance(out, dict):
+        logits = out.get('logits')
+        logprobs = out.get('logprobs')
+        entropy = out.get('entropy')
+    else:
+        logits = getattr(out, 'logits', None)
+        logprobs = getattr(out, 'logprobs', None)
+        entropy = getattr(out, 'entropy', None)
+
+    # Build result dict, reassembling whichever outputs exist
+    result = {}
+
+    if logits is not None:
+        reassembled = []
+        for i, seg_len in enumerate(segment_lengths):
+            reassembled.append(logits[i, :seg_len])
+        result['logits'] = torch.cat(reassembled, dim=0).unsqueeze(0)
+
+    if logprobs is not None:
+        reassembled = []
+        for i, seg_len in enumerate(segment_lengths):
+            reassembled.append(logprobs[i, :seg_len])
+        result['logprobs'] = torch.cat(reassembled, dim=0).unsqueeze(0)
+
+    if entropy is not None:
+        reassembled = []
+        for i, seg_len in enumerate(segment_lengths):
+            reassembled.append(entropy[i, :seg_len])
+        result['entropy'] = torch.cat(reassembled, dim=0).unsqueeze(0)
+
+    return cast_float_and_contiguous(result)
+
+
 @jaxtyped(typechecker=typechecker)
 def forward(
     model: nn.Module,
@@ -513,6 +709,10 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
 ) -> PrimeLmOutput:
+    # For Mamba-hybrid models with packed sequences (batch=1), use segmented forward
+    if input_ids.shape[0] == 1 and _is_nemotron_h(model):
+        return _forward_mamba_segmented(model, input_ids, position_ids, labels, temperature)
+
     out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
 
     # PrimeLmOutput is a TypedDict (dict at runtime), HF outputs are dataclass-like objects

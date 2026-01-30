@@ -213,8 +213,10 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
                     If None, use VanillaOutputLinear which just returns logits.
     """
     # Guards so we have nicer error messages when a non-standard model is used
-    assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
-    assert isinstance(model.model, nn.Module), f"model.model is not a nn.Module: {type(model.model)}\n{model}"
+    # Use get_inner_model to handle models with 'backbone' instead of 'model' (e.g., NemotronH)
+    from prime_rl.trainer.model import get_inner_model
+    inner_model = get_inner_model(model)
+    assert isinstance(inner_model, nn.Module), f"inner model is not a nn.Module: {type(inner_model)}\n{model}"
     assert hasattr(model, "lm_head"), f"model doesnt have lm_head in model.lm_head:\n{model}"
     assert isinstance(model.lm_head, nn.Linear), f"model.lm_head is not a nn.Linear: {type(model.lm_head)}\n{model}"
     assert not hasattr(model.lm_head, "bias") or model.lm_head.bias is None, (
@@ -249,7 +251,10 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
         if position_ids is None:
             reference_tensor = input_ids if input_ids is not None else inputs_embeds
             position_ids = torch.arange(1, reference_tensor.shape[1] + 1, device=reference_tensor.device).unsqueeze(0)
-        outputs = self.model(
+        # Use get_inner_model to handle models with 'backbone' instead of 'model' (e.g., NemotronH)
+        from prime_rl.trainer.model import get_inner_model
+        inner_model = get_inner_model(self)
+        outputs = inner_model(
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,

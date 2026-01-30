@@ -137,6 +137,15 @@ def gather_weights_on_master(
     if any(".base_layer." in key or "lora_A" in key or "lora_B" in key for key in cpu_state.keys()):
         cpu_state = clean_lora_state_dict(cpu_state)
 
+    # Deduplicate aliased keys (e.g., NemotronH has both backbone.* and model.* due to aliasing)
+    # Keep model.* keys (vLLM convention), remove backbone.* duplicates
+    backbone_keys = [k for k in cpu_state.keys() if k.startswith("backbone.")]
+    for bk in backbone_keys:
+        model_key = "model." + bk[len("backbone."):]
+        if model_key in cpu_state:
+            # Both exist - remove the backbone.* version
+            del cpu_state[bk]
+
     return cpu_state
 
 
