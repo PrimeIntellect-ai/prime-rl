@@ -129,6 +129,7 @@ class Scheduler:
         self.checkpoint_ready.set()
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.cancelled_rollouts_count = 0
+        self.last_batch_generation_time = 0.0
 
         # Background tasks
         self._response_collectors: list[asyncio.Task] = []
@@ -276,6 +277,7 @@ class Scheduler:
         Returns list of result dicts (not vf.State, since those stay in workers).
         """
         self.step = step
+        batch_start_time = time.perf_counter()
 
         # Schedule initial tasks
         self.logger.debug("Starting to generate batch rollouts")
@@ -326,6 +328,7 @@ class Scheduler:
                 await self.schedule_group_rollout()
 
         pbar.close()
+        self.last_batch_generation_time = time.perf_counter() - batch_start_time
         return batch_rollouts
 
     def _check_for_fatal_worker_errors(self):

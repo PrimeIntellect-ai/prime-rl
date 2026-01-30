@@ -55,6 +55,10 @@ def extract_result(state: vf.State, temperature: float) -> dict:
     - orchestrator metrics: reward, is_truncated, error, timing, metrics, trajectory
     - interleave_rollout: trajectory[*]["tokens"] with all token fields
 
+    For multimodal (Qwen3-VL), tokens dict may also contain:
+    - pixel_values: flattened image patches [num_patches, patch_dim]
+    - image_grid_thw: grid dimensions [num_images, 3]
+
     Args:
         state: The vf.State from the environment rollout
         temperature: The temperature used during generation (from sampling args)
@@ -67,6 +71,7 @@ def extract_result(state: vf.State, temperature: float) -> dict:
             "completion": step.get("completion"),
             # tokens dict contains: prompt_ids, prompt_mask, completion_ids,
             # completion_mask, completion_logprobs, is_truncated
+            # For multimodal: also pixel_values, image_grid_thw
             "tokens": step.get("tokens"),
             "temperature": temperature,  # Store temperature per-turn for per-token temp support
         }
