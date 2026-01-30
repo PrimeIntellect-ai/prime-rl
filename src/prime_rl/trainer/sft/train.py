@@ -19,7 +19,7 @@ from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.runs import Progress
 from prime_rl.utils.logger import setup_logger
-from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim import CPUOffloadOptimizer, setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -119,9 +119,15 @@ def train(config: SFTTrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = setup_optimizer(config.optim, list(model.named_parameters()), parallel_dims)
+    base_optimizer = setup_optimizer(config.optim, list(model.named_parameters()), parallel_dims)
 
-    # Set up the learning rate scheduler
+    if config.model.optim_cpu_offload:
+        logger.info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
+        optimizer = CPUOffloadOptimizer(base_optimizer)
+    else:
+        optimizer = base_optimizer
+
+    # Set up the learning rate scheduler (uses base_optimizer for scheduler compatibility)
     scheduler_steps = (
         config.max_steps - config.ckpt.resume_step
         if config.max_steps is not None
@@ -129,7 +135,7 @@ def train(config: SFTTrainerConfig):
         else config.max_steps
     )
     logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
-    scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+    scheduler = setup_scheduler(base_optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
