@@ -8,7 +8,6 @@ import torch.nn as nn
 from beartype import beartype as typechecker
 from huggingface_hub import snapshot_download
 from jaxtyping import Int, jaxtyped
-from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
@@ -119,7 +118,10 @@ def get_model(
             case "hf":
                 model_cls = AutoModelForCausalLM
             case "liger_kernel":
-                model_cls = AutoLigerKernelForCausalLM
+                logger.warning(
+                    "Model implementation 'liger_kernel' is deprecated and now uses HF AutoModelForCausalLM."
+                )
+                model_cls = AutoModelForCausalLM
             case "custom":
                 model_cls = AutoModelForCausalLMPrimeRL
 
