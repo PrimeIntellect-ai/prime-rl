@@ -155,10 +155,10 @@ def compute_loss(
             residual = advantages.detach() - loss_config.kl_tau * log_importance_ratio
             loss = (residual[keep_mask] ** 2).sum()
         else:
-            # Kimi k1.5 style: REINFORCE + separate k2 estimator
+            # Kimi K2.5 style: REINFORCE + additive squared KL penalty
             coeff = importance_ratio * advantages
             pg_loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
-            kl_loss = 0.5 * loss_config.kl_tau * (log_importance_ratio[keep_mask] ** 2).sum()
+            kl_loss = loss_config.kl_tau * (log_importance_ratio[loss_mask] ** 2).sum()
             loss = pg_loss + kl_loss
 
         if loss_config.ratio_type == "sequence":
