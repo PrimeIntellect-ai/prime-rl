@@ -4,6 +4,7 @@ from typing import Callable
 import torch
 from dion import Muon
 from torch import nn
+from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
@@ -27,8 +28,6 @@ class CPUOffloadOptimizer:
         self._initialized = False
 
     def _move_states(self, device: str):
-        from torch.distributed.tensor import DTensor
-
         for p in self.optimizer.state:
             state = self.optimizer.state[p]
             for k, v in state.items():
