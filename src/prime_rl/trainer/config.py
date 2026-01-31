@@ -298,6 +298,12 @@ class ModelConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def cpu_offload_mutual_exclusion(self):
+        if self.fsdp_cpu_offload and self.optim_cpu_offload:
+            raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
+        return self
+
+    @model_validator(mode="after")
     def fused_lm_head_chunk_size_not_supported_for_liger(self):
         if isinstance(self.fused_lm_head_chunk_size, int) and self.impl == "liger_kernel":
             raise ValueError(
