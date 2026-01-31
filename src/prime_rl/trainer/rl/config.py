@@ -54,6 +54,12 @@ class LossConfig(BaseConfig):
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
+    kl_loss_type: Annotated[
+        Literal["k1.5", "k2"],
+        Field(
+            description="KL loss type: 'k1.5' uses REINFORCE + separate k2 estimator, 'k2' uses direct squared loss."
+        ),
+    ] = "k1.5"
 
     @model_validator(mode="after")
     def validate_mask_bounds(self):
