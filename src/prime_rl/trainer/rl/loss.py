@@ -149,8 +149,13 @@ def compute_loss(
         advantages = loss_config.adv_tau * advantages
         if teacher_logprobs is not None:
             advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
-        coeff = importance_ratio * (advantages - loss_config.kl_tau * (log_importance_ratio**2))
-        loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
+        coeff = importance_ratio * advantages
+        pg_loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
+
+        # Squared KL loss (Kimi k1.5 k2 estimator)
+        kl_loss = 0.5 * loss_config.kl_tau * (log_importance_ratio[keep_mask] ** 2).sum()
+
+        loss = pg_loss + kl_loss
 
         if loss_config.ratio_type == "sequence":
             loss = loss / torch.clamp_min(loss_mask.sum(), 1)
