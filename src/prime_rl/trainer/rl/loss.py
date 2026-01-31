@@ -149,7 +149,7 @@ def compute_loss(
         advantages = loss_config.adv_tau * advantages
         if teacher_logprobs is not None:
             advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
-        coeff = importance_ratio * (advantages - loss_config.kl_tau * log_importance_ratio)
+        coeff = importance_ratio * (advantages - loss_config.kl_tau * (log_importance_ratio**2))
         loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
 
         if loss_config.ratio_type == "sequence":
