@@ -32,17 +32,21 @@ def _apply_weight_dampen(
     weights: list[float],
     completion_mask: list[bool],
     dampen: float,
+    advantage: float | None,
 ) -> list[float]:
     if not weights or dampen == 1.0:
         return weights
     if len(weights) != len(completion_mask):
         return weights
+    # Flip redistribution for negative advantages so "good" turns
+    # are down-weighted (less negative) and "bad" turns are up-weighted.
+    sign = -1.0 if (advantage or 0.0) < 0.0 else 1.0
     scaled: list[float] = []
     for w, m in zip(weights, completion_mask):
         if not m:
             scaled.append(0.0)
         else:
-            scaled.append(1.0 + dampen * (w - 1.0))
+            scaled.append(1.0 + sign * dampen * (w - 1.0))
     return scaled
 
 
@@ -60,6 +64,7 @@ def _get_turn_scores(turn_scores: list[float] | None, num_steps: int, logger) ->
 def interleave_rollout(
     state: vf.State,
     turn_scores: list[float] | None = None,
+    advantage: float | None = None,
     weight_dampen: float = 1.0,
 ) -> list[TrainingSample] | None:
     """
@@ -146,7 +151,7 @@ def interleave_rollout(
         normalized = _normalize_completion_weights(completion_weights, interleaved_rollout.completion_mask, logger)
         if normalized and len(normalized) == len(interleaved_rollout.completion_ids):
             interleaved_rollout.advantage_weights = _apply_weight_dampen(
-                normalized, interleaved_rollout.completion_mask, weight_dampen
+                normalized, interleaved_rollout.completion_mask, weight_dampen, advantage
             )
 
     return [interleaved_rollout]
@@ -155,6 +160,7 @@ def interleave_rollout(
 def branch_rollout(
     state: vf.State,
     turn_scores: list[float] | None = None,
+    advantage: float | None = None,
     weight_dampen: float = 1.0,
 ) -> list[TrainingSample] | None:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
@@ -193,6 +199,6 @@ def branch_rollout(
             raw_weights = [1.0 + turn_scores[step_idx]] * len(completion_ids)
             normalized = _normalize_completion_weights(raw_weights, completion_mask, logger)
             if normalized and len(normalized) == len(completion_ids):
-                rollout.advantage_weights = _apply_weight_dampen(normalized, completion_mask, weight_dampen)
+                rollout.advantage_weights = _apply_weight_dampen(normalized, completion_mask, weight_dampen, advantage)
         rollouts.append(rollout)
     return rollouts

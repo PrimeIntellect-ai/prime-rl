@@ -376,6 +376,7 @@ async def orchestrate(config: OrchestratorConfig):
             train_example = make_train_example(
                 train_rollout,
                 turn_scores=train_rollout.get("turn_scores"),
+                advantage=advantage,
                 weight_dampen=weight_dampen,
             )
             if train_example is not None:
