@@ -112,6 +112,7 @@ addopts = "--strict-markers"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
+    "benchmark: marks tests as benchmark regression tests (deselect with '-m \"not benchmark\"')",
 ]
 
 [build-system]
