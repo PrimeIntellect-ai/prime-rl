@@ -9,11 +9,7 @@ from vllm.entrypoints.openai.utils import validate_json_request
 from vllm.entrypoints.openai.protocol import ChatCompletionResponse, ErrorResponse
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
 
-from fastapi.responses import JSONResponse, StreamingResponse
-from vllm.entrypoints.chat_utils import load_chat_template
-from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ChatCompletionResponse, ErrorResponse
-from vllm.entrypoints.utils import load_aware_call, with_cancellation
 
 from prime_rl.inference.patches import (
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
