@@ -34,7 +34,8 @@ class CPUOffloadOptimizer:
                 if isinstance(v, DTensor):
                     local_tensor = v._local_tensor
                     if device == "cpu":
-                        new_local = local_tensor.to("cpu", non_blocking=True)
+                        non_blocking = not self.pin_memory
+                        new_local = local_tensor.to("cpu", non_blocking=non_blocking)
                         if self.pin_memory and not new_local.is_pinned():
                             new_local = new_local.pin_memory()
                         v._local_tensor = new_local
@@ -45,7 +46,8 @@ class CPUOffloadOptimizer:
                         v._local_tensor = local_tensor.to(target_device, non_blocking=True)
                 elif isinstance(v, torch.Tensor):
                     if device == "cpu":
-                        cpu_tensor = v.to("cpu", non_blocking=True)
+                        non_blocking = not self.pin_memory
+                        cpu_tensor = v.to("cpu", non_blocking=non_blocking)
                         if self.pin_memory and not cpu_tensor.is_pinned():
                             cpu_tensor = cpu_tensor.pin_memory()
                         state[k] = cpu_tensor
