@@ -452,6 +452,23 @@ async def orchestrate(config: OrchestratorConfig):
         # Gather individual reward function metrics
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
 
+        # Aggregate per-turn judge scores if present
+        turn_score_sums: dict[int, float] = {}
+        turn_score_counts: dict[int, int] = {}
+        for rollout in train_rollouts:
+            scores = rollout.get("turn_scores") or []
+            if not isinstance(scores, list):
+                continue
+            for idx, score in enumerate(scores):
+                if score is None:
+                    continue
+                try:
+                    value = float(score)
+                except (TypeError, ValueError):
+                    continue
+                turn_score_sums[idx] = turn_score_sums.get(idx, 0.0) + value
+                turn_score_counts[idx] = turn_score_counts.get(idx, 0) + 1
+
         val_results_df = (
             pd.DataFrame(
                 {
@@ -545,6 +562,13 @@ async def orchestrate(config: OrchestratorConfig):
             # W&B axis
             "step": progress.step,
         }
+
+        # Log per-turn judge score means (turn index -> avg score)
+        for idx in sorted(turn_score_sums):
+            count = turn_score_counts[idx]
+            if count > 0:
+                to_log[f"turn_score/turn_{idx}_mean"] = turn_score_sums[idx] / count
+                to_log[f"turn_score/turn_{idx}_n"] = count
 
         # If more than one env, add per-env metrics
         if results_df.task.nunique() > 1:
