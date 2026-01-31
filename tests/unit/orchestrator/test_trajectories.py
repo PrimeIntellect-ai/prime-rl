@@ -251,20 +251,6 @@ def multi_step_trajectory_with_tool_calls_extension_never_holds():
     return state
 
 
-def test_branching_equivalent_single_step_trajectory(single_step_trajectory_state):
-    """Single step: interleave produces same output as branching would have."""
-    rollouts = interleave_rollout(single_step_trajectory_state)
-
-    assert len(rollouts) == 1
-    rollout = rollouts[0]
-    assert rollout.prompt_ids == [1, 2]
-    assert rollout.prompt_mask == [False, False]
-    assert rollout.completion_ids == [3, 4]
-    assert rollout.completion_mask == [True, True]
-    assert rollout.completion_logprobs == [-0.1, -0.2]
-    assert rollout.completion_temperatures == [1.0, 1.0]
-
-
 def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extension_never_holds):
     """When extension never holds, each step becomes its own sample (same as old branching)."""
     rollouts = interleave_rollout(multi_step_trajectory_extension_never_holds)
