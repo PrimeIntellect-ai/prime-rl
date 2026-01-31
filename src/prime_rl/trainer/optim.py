@@ -1,3 +1,4 @@
+import copy
 import time
 from typing import Callable
 
@@ -38,12 +39,14 @@ class CPUOffloadOptimizer:
                         new_local = local_tensor.to("cpu", non_blocking=non_blocking)
                         if self.pin_memory and not new_local.is_pinned():
                             new_local = new_local.pin_memory()
-                        v._local_tensor = new_local
                     else:
                         target_device = torch.device("cuda")
                         if isinstance(p, DTensor):
                             target_device = p._local_tensor.device
-                        v._local_tensor = local_tensor.to(target_device, non_blocking=True)
+                        new_local = local_tensor.to(target_device, non_blocking=True)
+                    new_dtensor = copy.copy(v)
+                    new_dtensor._local_tensor = new_local
+                    state[k] = new_dtensor
                 elif isinstance(v, torch.Tensor):
                     if device == "cpu":
                         non_blocking = not self.pin_memory
