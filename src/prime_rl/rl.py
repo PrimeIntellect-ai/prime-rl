@@ -11,6 +11,7 @@ from subprocess import Popen
 from threading import Event, Thread
 from typing import Annotated, Literal
 
+import pynvml
 import tomli_w
 from pydantic import Field, model_validator
 
@@ -516,21 +517,16 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_client_port_matches_inference(self):
         """Validate that orchestrator.client.base_url port matches inference.server.port."""
-        if self.inference is None:
-            return self
-
-        base_urls = self.orchestrator.client.base_url
-        if not base_urls:
+        if self.orchestrator.client.is_elastic:
             return self
 
         from urllib.parse import urlparse
 
-        parsed = urlparse(base_urls[0])
+        base_url = self.orchestrator.client.base_url[0]
+        parsed = urlparse(base_url)
         client_port = parsed.port
-        if client_port is None:
-            return self
-
         expected_port = self.inference.server.port
+
         if client_port != expected_port:
             raise ValueError(
                 f"orchestrator.client.base_url port ({client_port}) does not match "
@@ -575,23 +571,15 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
 
 def check_gpus_available(gpu_ids: list[int]) -> None:
     """Raise error if there are existing processes on the specified GPUs."""
-    try:
-        import pynvml
-
-        pynvml.nvmlInit()
-    except Exception:
-        return  # pynvml not available, skip check
+    pynvml.nvmlInit()
 
     occupied = []
     for gpu_id in gpu_ids:
-        try:
-            handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
-            processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
-            if processes:
-                pids = [p.pid for p in processes]
-                occupied.append((gpu_id, pids))
-        except Exception:
-            continue
+        handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+        processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
+        if processes:
+            pids = [p.pid for p in processes]
+            occupied.append((gpu_id, pids))
 
     if occupied:
         msg = "Existing processes found on GPUs:\n"
