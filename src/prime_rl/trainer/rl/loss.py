@@ -112,6 +112,7 @@ def compute_loss(
     total_geo_masked_high = []
     total_geo_seq_ratio = []
     total_teacher_kl = []
+    total_squared_kl = []
 
     if teacher_logprobs is None:
         teacher_logprobs = [None] * len(trainer_logprobs)
@@ -150,6 +151,9 @@ def compute_loss(
         if teacher_logprobs is not None:
             advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
 
+        # Squared KL: (log π_θ/π_old)² per token
+        squared_kl = _safe_mean(log_importance_ratio**2, loss_mask)
+
         if loss_config.kl_loss_type == "k2":
             # Kimi K2 style: direct squared loss (advantages - τ·log_ratio)²
             residual = advantages.detach() - loss_config.kl_tau * log_importance_ratio
@@ -178,6 +182,7 @@ def compute_loss(
         total_geo_masked_low.append(geo_mask_low.float())
         total_geo_masked_high.append(geo_mask_high.float())
         total_geo_seq_ratio.append(geo_seq_ratio)
+        total_squared_kl.append(squared_kl)
         if teacher_logprobs is not None:
             total_teacher_kl.append(_safe_mean(teacher_kl, loss_mask))
 
@@ -196,6 +201,7 @@ def compute_loss(
         "geo_masked_low": torch.stack(total_geo_masked_low),
         "geo_masked_high": torch.stack(total_geo_masked_high),
         "geo_seq_ratio": torch.stack(total_geo_seq_ratio),
+        "squared_kl": torch.stack(total_squared_kl),
     }
     if total_teacher_kl:
         result["teacher_kl"] = torch.stack(total_teacher_kl)
