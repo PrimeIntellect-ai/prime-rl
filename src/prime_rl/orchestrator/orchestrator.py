@@ -8,7 +8,7 @@ import tomli_w
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import branch_rollout, build_vlm_image_cache, interleave_rollout
+from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -383,7 +383,6 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
         # Convert rollouts to training samples
-        rollout_fn = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
         parallel_preprocess_start = time.perf_counter()
 
         # VLM: build image cache for efficient batched preprocessing
@@ -401,8 +400,8 @@ async def orchestrate(config: OrchestratorConfig):
         def process_rollout(rollout: vf.State) -> list[TrainingSample] | None:
             if vlm_cache is not None:
                 cached = vlm_cache.get(rollout["example_id"])
-                return rollout_fn(rollout, cached_pixel_values=cached[0], cached_image_grid_thw=cached[1])
-            return rollout_fn(rollout)
+                return interleave_rollout(rollout, cached_pixel_values=cached[0], cached_image_grid_thw=cached[1])
+            return interleave_rollout(rollout)
 
         loop = asyncio.get_event_loop()
         futures = [loop.run_in_executor(rollout_executor, process_rollout, r) for r in train_rollouts]
@@ -420,7 +419,7 @@ async def orchestrate(config: OrchestratorConfig):
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
             f"Converted {len(train_rollouts)} rollouts ({num_unique} unique examples) "
-            f"to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
+            f"to {len(train_examples)} training examples"
         )
 
         # Compute teacher logprobs if teacher model is configured

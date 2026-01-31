@@ -1,12 +1,21 @@
 import base64
 import time
 from io import BytesIO
+from typing import TypedDict
 
 import verifiers as vf
 from PIL import Image
 
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
+
+
+class TrajectoryStepWithTemp(TypedDict):
+    """Trajectory step with temperature field added by prime-rl's extract_result."""
+
+    tokens: vf.TrajectoryStepTokens
+    temperature: float
+
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. pixel_values/image_grid_thw are shared across rollouts of the
@@ -47,7 +56,7 @@ def interleave_rollout(
 
     has_error = state["error"] is not None
 
-    def make_sample(step: dict) -> TrainingSample:
+    def make_sample(step: TrajectoryStepWithTemp) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         tokens = step["tokens"]
         temperature = step["temperature"]
@@ -69,7 +78,7 @@ def interleave_rollout(
             image_grid_thw=cached_image_grid_thw,
         )
 
-    def extend_sample(sample: TrainingSample, step: dict, prefix_len: int) -> None:
+    def extend_sample(sample: TrainingSample, step: TrajectoryStepWithTemp, prefix_len: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = step["tokens"]
         temperature = step["temperature"]
@@ -127,53 +136,6 @@ def interleave_rollout(
 
     # Return all samples
     return [sample for _, sample in active_samples]
-
-
-def branch_rollout(
-    state: vf.State,
-    cached_pixel_values: list | None = None,
-    cached_image_grid_thw: list | None = None,
-) -> list[TrainingSample] | None:
-    """
-    Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy.
-
-    Args:
-        state: vf.State containing trajectory data
-        cached_pixel_values: Pre-computed pixel values for VLM training
-        cached_image_grid_thw: Pre-computed image grid thw for VLM training
-    """
-    logger = get_logger()
-
-    rollouts = []
-    trajectory = state["trajectory"]
-    if len(trajectory) == 0:
-        logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
-        return None
-
-    has_error = state["error"] is not None
-    for step in trajectory:
-        tokens = step["tokens"]
-        temperature = step["temperature"]
-        if has_error:
-            completion_mask = [False] * len(tokens["completion_mask"])
-        else:
-            completion_mask = [bool(i) for i in tokens["completion_mask"]]
-
-        completion_ids = list(tokens["completion_ids"])
-        rollout = TrainingSample(
-            prompt_ids=list(tokens["prompt_ids"]),
-            prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
-            completion_ids=completion_ids,
-            completion_mask=completion_mask,
-            completion_logprobs=list(tokens["completion_logprobs"]),
-            completion_temperatures=[temperature] * len(completion_ids),
-            advantage=None,
-            teacher_logprobs=None,
-            pixel_values=cached_pixel_values,
-            image_grid_thw=cached_image_grid_thw,
-        )
-        rollouts.append(rollout)
-    return rollouts
 
 
 # =============================================================================
