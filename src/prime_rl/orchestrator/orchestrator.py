@@ -494,6 +494,8 @@ async def orchestrate(config: OrchestratorConfig):
         chinese_stats = []
         for rollout in train_rollouts:
             trajectory = rollout["trajectory"]
+            if not trajectory:
+                continue
             last_step = trajectory[-1]
             tokens = last_step["tokens"]
             completion_text = tokenizer.decode(tokens["completion_ids"])
