@@ -300,3 +300,28 @@ def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -
         if "/" in env_config.id:
             env_ids_to_install.add(env_config.id)
     return env_ids_to_install
+
+
+def is_chinese_char(char: str) -> bool:
+    """Check if a character is Chinese (CJK Unified Ideographs and extensions)."""
+    code_point = ord(char)
+    return (
+        0x4E00 <= code_point <= 0x9FFF  # CJK Unified Ideographs
+        or 0x3400 <= code_point <= 0x4DBF  # CJK Extension A
+        or 0x20000 <= code_point <= 0x2A6DF  # CJK Extension B
+        or 0x2A700 <= code_point <= 0x2B73F  # CJK Extension C
+        or 0x2B740 <= code_point <= 0x2B81F  # CJK Extension D
+        or 0x2B820 <= code_point <= 0x2CEAF  # CJK Extension E
+        or 0xF900 <= code_point <= 0xFAFF  # CJK Compatibility Ideographs
+        or 0x2F800 <= code_point <= 0x2FA1F  # CJK Compatibility Ideographs Supplement
+    )
+
+
+def count_chinese_chars(text: str) -> tuple[int, int]:
+    """Count Chinese characters in text.
+
+    Returns:
+        Tuple of (chinese_char_count, total_char_count)
+    """
+    chinese_count = sum(1 for char in text if is_chinese_char(char))
+    return chinese_count, len(text)
