@@ -127,9 +127,9 @@ async def eval(config: OfflineEvalConfig):
             await _eval_ckpt(ckpt_step)
 
         if config.watcher:
-            # Keep watcher behavior consistent with previous versions: after evaluating all currently-stable
-            # checkpoints, watch for new ones and evaluate them as they appear.
-            already_evaluated_ckpt_steps = list(ckpt_steps)
+            # After evaluating all currently-stable checkpoints, watch for new ones and evaluate them as they appear.
+            # Only checkpoints with step > max_evaluated_step will be picked up (strictly increasing order).
+            max_evaluated_step = max(ckpt_steps) if ckpt_steps else -1
             while True:
                 # Only include checkpoints that have a STABLE file (indicating save completed)
                 all_ckpt_steps = sorted(
@@ -139,12 +139,12 @@ async def eval(config: OfflineEvalConfig):
                         if (step_path / "STABLE").exists()
                     ]
                 )
-                new_ckpt_steps = [step for step in all_ckpt_steps if step not in already_evaluated_ckpt_steps]
+                new_ckpt_steps = [step for step in all_ckpt_steps if step > max_evaluated_step]
                 if len(new_ckpt_steps) > 0:
                     logger.info(f"New checkpoints to evaluate: {', '.join(map(str, new_ckpt_steps))}")
                     for ckpt_step in new_ckpt_steps:
                         await _eval_ckpt(ckpt_step)
-                        already_evaluated_ckpt_steps.append(ckpt_step)
+                        max_evaluated_step = max(max_evaluated_step, ckpt_step)
                 else:
                     logger.info("No new checkpoints to evaluate, waiting for 10 seconds")
                     await asyncio.sleep(10)
