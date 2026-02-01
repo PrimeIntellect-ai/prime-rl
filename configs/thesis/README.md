@@ -110,3 +110,23 @@ uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 64 --wandb.name wiki-search-64-step-off-policy-kl-tau-1e-0 --trainer.loss.kl-tau 1
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 128 --wandb.name wiki-search-128-step-off-policy-kl-tau-1e-0 --trainer.loss.kl-tau 1
 ```
+
+## DeepDive
+
+```bash
+# baseline
+uv run rl @ configs/thesis/deepdive.toml
+```
+
+```bash
+# 16-step off-policy
+uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy
+
+# 16-step off-policy (tis-0-4)
+uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy-tis-0-4 --trainer.loss.token-clip-high 4
+
+# 16-step off-policy (mis-0.125-8)
+uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy-mis-0.125-8 --trainer.loss.token-mask-low 0.125 --trainer.loss.token-mask-high 8
+
+# ...
+```
