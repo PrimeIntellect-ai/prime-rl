@@ -142,7 +142,7 @@ async def worker_loop(
             group_inputs=group_inputs,
             client=client,
             model=request.model_name,
-            gen_sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
+            sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
             gen_sem=semaphore,
             score_sem=semaphore,
         )
