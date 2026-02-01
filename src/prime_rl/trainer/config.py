@@ -207,9 +207,12 @@ class ModelConfig(BaseConfig):
     ] = 1
 
     impl: Annotated[
-        Literal["hf", "liger_kernel", "custom", "auto"],
+        Literal["hf", "custom", "auto"],
         Field(
-            description="Model implementation to use. 'auto' (default) selects 'custom' if supported by the model, otherwise 'hf'.",
+            description=(
+                "Model implementation to use. 'auto' (default) selects 'custom' if supported by the model, "
+                "otherwise 'hf'."
+            ),
         ),
     ] = "auto"
 
@@ -256,8 +259,8 @@ class ModelConfig(BaseConfig):
                 "Three behaviors: "
                 "(1) int >= 512: explicitly set chunk size for fused LM head; "
                 "(2) 'auto': auto-enable (RL training auto-sets to 2048); "
-                "(3) 'disabled': explicitly disable fused LM head (use vanilla)."
-                "Explicitly setting an integer value for this feature isn't supported for SFT training or models where `impl='liger_kernel'`."
+                "(3) 'disabled': explicitly disable fused LM head (use vanilla). "
+                "Explicitly setting an integer value for this feature isn't supported for SFT training."
             ),
         ),
     ] = "auto"
@@ -288,14 +291,6 @@ class ModelConfig(BaseConfig):
         """Automatically enable activation checkpointing when activation offloading is enabled."""
         if self.ac_offloading is not None and self.ac is None:
             self.ac = ActivationCheckpointConfig()
-        return self
-
-    @model_validator(mode="after")
-    def fused_lm_head_chunk_size_not_supported_for_liger(self):
-        if isinstance(self.fused_lm_head_chunk_size, int) and self.impl == "liger_kernel":
-            raise ValueError(
-                f"Explicitly setting fused LM head chunk size to {self.fused_lm_head_chunk_size} is not supported for liger_kernel implementation. Keep the default value or set to 'disabled' to disable chunked loss."
-            )
         return self
 
     @model_validator(mode="after")

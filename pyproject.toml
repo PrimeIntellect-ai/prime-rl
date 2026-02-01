@@ -18,7 +18,7 @@ dependencies = [
     "pylatexenc>=2.10",
     "tomli>=2.2.1",
     "torch>=2.9.0",
-    "transformers>=4.56.0",
+    "transformers>=4.57.6",
     "uvloop>=0.21.0",
     "vllm==0.14.0",
     "wandb>=0.20.1",
@@ -38,7 +38,7 @@ dependencies = [
     "verifiers>=0.1.8",
     "prime-evals>=0.1.5",
     "ring-flash-attn>=0.1.8",
-    "prime>=0.5.0",
+    "prime>=0.5.24",
     "tenacity>=8.2.0",
     "pyzmq>=27.1.0",
 ]
@@ -73,6 +73,9 @@ dev = [
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]
 prerelease = "allow"
+# Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
+# See: https://github.com/pytorch/pytorch/issues/166122
+override-dependencies = ["nvidia-cudnn-cu12>=9.15"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }

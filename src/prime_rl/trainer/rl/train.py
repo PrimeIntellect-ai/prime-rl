@@ -309,7 +309,19 @@ def train(config: RLTrainerConfig):
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
             )
 
+            # Multimodal fields (Qwen3-VL) - only present for VLM training
+            pixel_values = (
+                micro_batch["pixel_values"].to("cuda") if micro_batch.get("pixel_values") is not None else None
+            )
+            image_grid_thw = (
+                micro_batch["image_grid_thw"].to("cuda") if micro_batch.get("image_grid_thw") is not None else None
+            )
+
             labels = shift_tensor_left(input_ids)
+
+            # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
+            if cp_enabled and pixel_values is not None:
+                raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
 
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
@@ -330,17 +342,33 @@ def train(config: RLTrainerConfig):
                     )
                 set_lora_num_tokens(lora_num_tokens)
 
-            temperature = micro_batch["temperature"]
+            temperatures = micro_batch["temperatures"].to("cuda")
 
-            # Forward pass
+            # Shard temperatures for context parallelism if enabled
+            if cp_enabled:
+                temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
+
+            # Forward pass with per-token temperatures
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
+                out = forward(
+                    model,
+                    input_ids,
+                    forward_position_ids,
+                    labels=labels,
+                    temperature=temperatures,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                )
 
             if out.get("logprobs") is None:
+                # VanillaOutputLinear was used - need to compute logprobs externally with per-token temps
                 assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
-                logits = out["logits"] / float(temperature)
-                out["logprobs"] = selective_log_softmax(logits, labels)
-                out["entropy"] = compute_entropy(logits)
+                logits = out["logits"]
+                # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
+                scaled_logits = logits / temperatures.unsqueeze(-1)
+                out["logprobs"] = selective_log_softmax(scaled_logits, labels)
+                out["entropy"] = compute_entropy(scaled_logits)
+            # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:
                 logprobs = dist_nn.all_gather(out["logprobs"], group=cp_group)
@@ -350,7 +378,7 @@ def train(config: RLTrainerConfig):
                 dist.all_gather(entropies, out["entropy"], group=cp_group)
                 out["entropy"] = torch.cat(entropies, dim=1)
 
-            vocab_size = model.config.vocab_size
+            vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
             out["logprobs"] = shift_tensor_right(
                 out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()

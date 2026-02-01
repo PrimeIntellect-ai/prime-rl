@@ -80,6 +80,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         n_adapters: int,
         alpha: float = 32.0,
         dropout: float = 0.0,
+        use_grouped_mm: bool = True,
     ):
         super().__init__(base_layer)
         if rank <= 0 or n_adapters <= 0:
@@ -88,12 +89,6 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         self.num_experts = base_layer.num_experts
         self.dim = base_layer.w1.shape[2]
         self.hidden_dim = base_layer.w1.shape[1]
-
-        use_grouped_mm = False
-        if torch.cuda.is_available():
-            cc_major, _ = torch.cuda.get_device_capability()
-            if cc_major == 9:  # Hopper GPUs (H100, H200)
-                use_grouped_mm = True
 
         # grouped_mm requires 8-byte alignment
         if rank % 8 != 0 or self.dim % 8 != 0 or self.hidden_dim % 8 != 0:

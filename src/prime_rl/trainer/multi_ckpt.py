@@ -18,7 +18,7 @@ from prime_rl.trainer.config import CheckpointConfig
 from prime_rl.trainer.runs import Progress, get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import get_stable_ckpt_steps
 
 if TYPE_CHECKING:
     from prime_rl.trainer.optim import MultiLoRAOptimizer
@@ -152,13 +152,26 @@ class MultiCheckpointManager:
                         self.logger.error(
                             f"Broadcast folder not found for run {idx} at step {step}. Looking for it in {broadcast_src}"
                         )
+                dist.barrier()
+                manager.mark_stable(step)
+                manager.ckpt_steps.append(step)
             except FileNotFoundError:
                 self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
             except Exception as e:
                 self.logger.error(f"Error checkpointing run {idx}: {e}")
             dist.barrier()
-            manager.mark_stable(step)
-            manager.ckpt_steps.append(step)
+            # If the run is deleted, remove the run directory
+            # This is avoid the creation of zombie runs when the directory is deleted while we are checkpointing which recreates the directory
+            # Ideally we move this to discover but lets have here for now
+            if (
+                self.multi_run_manager.get_orchestrator_config(self.multi_run_manager.idx_2_id[idx]) is None
+                and self.world.is_master
+            ):
+                try:
+                    self.logger.warning(f"Run {idx} deleted during checkpoint, removing run directory")
+                    shutil.rmtree(self.multi_run_manager.get_run_dir(idx))
+                except Exception as e:
+                    self.logger.error(f"Error removing run directory for run {idx}: {e}")
         dist.barrier()
 
     def load_run(
@@ -179,9 +192,10 @@ class MultiCheckpointManager:
 
         step = self.multi_run_manager.config[idx].ckpt.resume_step
         if step == -1:
-            step = resolve_latest_ckpt_step(manager.ckpt_dir)
-            if step is None:
+            stable_steps = get_stable_ckpt_steps(manager.ckpt_dir)
+            if not stable_steps:
                 return False
+            step = max(stable_steps)
 
         try:
             model_state_dict = dict(self.multi_run_manager.get_named_parameters_for_run(idx))

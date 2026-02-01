@@ -21,6 +21,7 @@ from prime_rl.utils.client import InferencePool
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_env_worker_log_file
+from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
@@ -74,7 +75,8 @@ class Scheduler:
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
         self.lora_name = lora_name
-        self.sampling_args = get_sampling_args(config.sampling)
+        initial_temp = compute_temperature(step=0, sampling_config=config.sampling, max_steps=config.max_steps)
+        self.sampling_args = get_sampling_args(config.sampling, temperature=initial_temp)
         self.model_name = self.config.model.name
 
         # Inference pool - used for admin operations (adapter sync) and metrics
@@ -112,7 +114,6 @@ class Scheduler:
                     interleaved_rollouts=config.trajectory_strategy == "interleaved",
                     max_concurrent=config.max_concurrent or -1,
                     example_lookup=self.example_lookups[env_name],
-                    sampling_args=self.sampling_args,
                     worker_name=f"{env_name}_{worker_idx}",
                     log_level=config.log.level,
                     vf_log_level=config.log.vf_level,
@@ -129,6 +130,7 @@ class Scheduler:
         self.checkpoint_ready.set()
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.cancelled_rollouts_count = 0
+        self.last_batch_generation_time = 0.0
 
         # Background tasks
         self._response_collectors: list[asyncio.Task] = []
@@ -152,6 +154,22 @@ class Scheduler:
             for worker in workers:
                 worker.stop()
 
+    def set_sampling_args(self, sampling_args: dict) -> None:
+        """Update sampling args for future rollout requests."""
+        self.sampling_args = sampling_args
+
+    def cancel_all_inflight_rollouts(self):
+        """Cancel all in-flight rollout requests.
+
+        Used when weights are updated to discard stale rollouts generated with old weights.
+        """
+        count = len(self.inflight_group_rollouts)
+        for future in list(self.inflight_group_rollouts.keys()):
+            if not future.done():
+                future.cancel()
+        self.inflight_group_rollouts.clear()
+        self.cancelled_rollouts_count += count
+
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
         example = self.buffer.sample_examples(n=1)[0]
@@ -164,6 +182,7 @@ class Scheduler:
         future, request_id = await worker.submit_request(
             example_id=example["example_id"],
             rollouts_per_example=self.config.rollouts_per_example,
+            sampling_args=self.sampling_args,
         )
 
         self.inflight_group_rollouts[future] = InflightRolloutInfo(
@@ -259,6 +278,7 @@ class Scheduler:
         Returns list of result dicts (not vf.State, since those stay in workers).
         """
         self.step = step
+        batch_start_time = time.perf_counter()
 
         # Schedule initial tasks
         self.logger.debug("Starting to generate batch rollouts")
@@ -309,6 +329,7 @@ class Scheduler:
                 await self.schedule_group_rollout()
 
         pbar.close()
+        self.last_batch_generation_time = time.perf_counter() - batch_start_time
         return batch_rollouts
 
     def _check_for_fatal_worker_errors(self):
@@ -347,6 +368,8 @@ class Scheduler:
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,
             "batch/async_level": self.async_level,
+            "batch/inflight_rollouts": len(self.inflight_group_rollouts),
+            "batch/inflight_samples": len(self.inflight_group_rollouts) * self.rollouts_per_example,
             "batch/off_policy_level/max": self.max_off_policy_level,
             "batch/off_policy_level/mean": self.mean_off_policy_level,
             "batch/off_policy_level/min": self.min_off_policy_level,
