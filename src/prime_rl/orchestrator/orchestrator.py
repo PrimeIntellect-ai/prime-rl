@@ -97,7 +97,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup inference pool (handles both static and elastic modes)
     inference_pool = await setup_inference_pool(config.client, base_model=config.model.name)
 
-    clients = inference_pool.clients
     admin_clients = inference_pool.admin_clients
 
     # Setup teacher model client if configured
@@ -208,7 +207,6 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info("Waiting for inference pool to be ready")
     await inference_pool.wait_for_ready(config.model.name)
     # Refresh clients after waiting (elastic mode may have discovered new servers)
-    clients = inference_pool.clients
     admin_clients = inference_pool.admin_clients
     logger.success("Inference pool ready")
 
@@ -356,7 +354,7 @@ async def orchestrate(config: OrchestratorConfig):
             val_examples = val_buffer.sample_examples(config.val.num_examples)
             val_task = asyncio.create_task(
                 generate_batch(
-                    clients=clients,
+                    clients=inference_pool.clients,
                     env=env,
                     model_name=config.model.name,
                     examples=val_examples,
