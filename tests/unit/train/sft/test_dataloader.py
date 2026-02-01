@@ -10,6 +10,42 @@ from prime_rl.trainer.world import reset_world
 pytestmark = [pytest.mark.gpu]
 
 
+def test_fake_dataset_single_pack_function():
+    """Tests the single pack function which yields one sample per batch with padding."""
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+    config = FakeDataConfig(length="variable", input_ids="increasing", batch_size=1, pack_function="single")
+    dataset = setup_dataset(tokenizer, config)
+    dataloader = setup_dataloader(dataset, config)
+    dataiter = iter(dataloader)
+
+    for _ in range(4):
+        micro_batch = next(dataiter)
+        # Each micro batch should have exactly seq_len tokens
+        assert micro_batch["input_ids"].shape == (1, 128)
+        assert micro_batch["target_ids"].shape == (1, 128)
+        assert micro_batch["position_ids"].shape == (1, 128)
+        assert micro_batch["loss_mask"].shape == (1, 128)
+
+
+def test_fake_dataset_single_pack_function_micro_batch():
+    """Tests the single pack function with micro_batch_size > 1."""
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+    config = FakeDataConfig(
+        length="variable", input_ids="increasing", batch_size=4, micro_batch_size=2, pack_function="single"
+    )
+    dataset = setup_dataset(tokenizer, config)
+    dataloader = setup_dataloader(dataset, config)
+    dataiter = iter(dataloader)
+
+    for _ in range(4):
+        micro_batch = next(dataiter)
+        # Each micro batch should have micro_batch_size samples
+        assert micro_batch["input_ids"].shape == (2, 128)
+        assert micro_batch["target_ids"].shape == (2, 128)
+        assert micro_batch["position_ids"].shape == (2, 128)
+        assert micro_batch["loss_mask"].shape == (2, 128)
+
+
 def test_fake_dataset_single_rank_state():
     # Setup stateful dataloader
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")

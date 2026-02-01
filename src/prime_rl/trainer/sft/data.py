@@ -381,6 +381,48 @@ class CatDataset(StatefulIterableDataset):
                 packed_samples, seq_len = defaultdict(list), 0
 
 
+class SingleSampleDataset(StatefulIterableDataset):
+    """A dataset that yields single samples padded to a fixed length.
+
+    Unlike CatDataset which concatenates multiple samples, this yields one sample
+    per iteration, padding the rest of the sequence. This means each microbatch
+    contains only 1 actual sample.
+    """
+
+    def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
+        self.logger = get_logger()
+        self.dataset = dataset
+        self.seq_len = seq_len
+
+    def state_dict(self) -> dict:
+        return {"dataset": self.dataset.state_dict()}
+
+    def load_state_dict(self, state_dict: dict):
+        self.dataset.load_state_dict(state_dict["dataset"])
+
+    def __iter__(self):
+        for sample in self.dataset:
+            sample_len = len(sample["input_ids"])
+
+            if sample_len > self.seq_len:
+                for key, value in sample.items():
+                    assert isinstance(value, list), f"Value for key {key} must be a list"
+                    sample[key] = value[: self.seq_len]
+                yield sample
+            elif sample_len < self.seq_len:
+                pad_len = self.seq_len - sample_len
+                padded_sample = {}
+                for key, value in sample.items():
+                    assert isinstance(value, list), f"Value for key {key} must be a list"
+                    if key == "loss_mask":
+                        padded_sample[key] = value + [False] * pad_len
+                    else:
+                        padded_sample[key] = value + [0] * pad_len
+                yield padded_sample
+            else:
+                yield sample
+
+
 class StackDataset(StatefulIterableDataset):
     """A dataset that stacks samples into batch with a fixed area"""
 
@@ -603,6 +645,9 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfigType) -
     elif config.pack_function == "cat":
         packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
         return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
+    elif config.pack_function == "single":
+        single_dataset = SingleSampleDataset(dataset, config.seq_len)
+        return StatefulDataLoader(single_dataset, batch_size=config.micro_batch_size, collate_fn=cat_collate)
     else:
         raise ValueError(f"Invalid pack function: {config.pack_function}")
 

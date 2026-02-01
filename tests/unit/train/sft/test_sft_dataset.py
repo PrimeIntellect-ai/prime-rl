@@ -4,7 +4,7 @@ import pytest
 from datasets import Dataset, interleave_datasets
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.data import SFTDataset
+from prime_rl.trainer.sft.data import FakeDataset, SFTDataset, SingleSampleDataset
 from prime_rl.trainer.utils import print_sample
 
 
@@ -260,3 +260,97 @@ def test_multiturn_loss_mask_with_tools():
     dataset = SFTDataset(dataset, tokenizer=tokenizer, max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
+
+
+def test_single_sample_dataset_padding():
+    """Tests that SingleSampleDataset pads samples shorter than seq_len."""
+    seq_len = 128
+    fake_dataset = FakeDataset(vocab_size=10000, seq_len=32, length="fixed")
+    single_dataset = SingleSampleDataset(fake_dataset, seq_len=seq_len)
+    dataiter = iter(single_dataset)
+
+    sample = next(dataiter)
+    assert len(sample["input_ids"]) == seq_len
+    assert len(sample["target_ids"]) == seq_len
+    assert len(sample["position_ids"]) == seq_len
+    assert len(sample["loss_mask"]) == seq_len
+
+    # Verify padding: loss_mask should be False for padded positions
+    assert sample["loss_mask"][:32] == [True] * 32
+    assert sample["loss_mask"][32:] == [False] * (seq_len - 32)
+
+    # Verify padding values are 0 for input_ids, target_ids, position_ids
+    assert sample["input_ids"][32:] == [0] * (seq_len - 32)
+    assert sample["target_ids"][32:] == [0] * (seq_len - 32)
+    assert sample["position_ids"][32:] == [0] * (seq_len - 32)
+
+
+def test_single_sample_dataset_truncation():
+    """Tests that SingleSampleDataset truncates samples longer than seq_len."""
+    seq_len = 64
+    fake_dataset = FakeDataset(vocab_size=10000, seq_len=128, length="fixed")
+    single_dataset = SingleSampleDataset(fake_dataset, seq_len=seq_len)
+    dataiter = iter(single_dataset)
+
+    sample = next(dataiter)
+    assert len(sample["input_ids"]) == seq_len
+    assert len(sample["target_ids"]) == seq_len
+    assert len(sample["position_ids"]) == seq_len
+    assert len(sample["loss_mask"]) == seq_len
+
+
+def test_single_sample_dataset_exact_length():
+    """Tests that SingleSampleDataset handles samples with exact seq_len."""
+    seq_len = 128
+    fake_dataset = FakeDataset(vocab_size=10000, seq_len=seq_len, length="fixed")
+    single_dataset = SingleSampleDataset(fake_dataset, seq_len=seq_len)
+    dataiter = iter(single_dataset)
+
+    sample = next(dataiter)
+    assert len(sample["input_ids"]) == seq_len
+    assert len(sample["target_ids"]) == seq_len
+    assert len(sample["position_ids"]) == seq_len
+    assert len(sample["loss_mask"]) == seq_len
+
+
+def test_single_sample_dataset_state():
+    """Tests that SingleSampleDataset correctly delegates state management."""
+    fake_dataset = FakeDataset(vocab_size=10000, seq_len=32, length="fixed")
+    single_dataset = SingleSampleDataset(fake_dataset, seq_len=128)
+
+    # Initial state
+    state = single_dataset.state_dict()
+    assert state == {"dataset": {"step": 0, "epoch": 0}}
+
+    # Iterate and check state
+    dataiter = iter(single_dataset)
+    next(dataiter)
+    state = single_dataset.state_dict()
+    assert state == {"dataset": {"step": 1, "epoch": 0}}
+
+    next(dataiter)
+    state = single_dataset.state_dict()
+    assert state == {"dataset": {"step": 2, "epoch": 0}}
+
+
+def test_single_sample_dataset_resume():
+    """Tests that SingleSampleDataset can resume from checkpoint."""
+    fake_dataset = FakeDataset(vocab_size=10000, seq_len=32, length="fixed", input_ids="increasing")
+    single_dataset = SingleSampleDataset(fake_dataset, seq_len=128)
+    dataiter = iter(single_dataset)
+
+    # Get first sample
+    sample1 = next(dataiter)
+    sample2 = next(dataiter)
+    state_dict = single_dataset.state_dict()
+
+    # Create new dataset and resume
+    fake_dataset2 = FakeDataset(vocab_size=10000, seq_len=32, length="fixed", input_ids="increasing")
+    single_dataset2 = SingleSampleDataset(fake_dataset2, seq_len=128)
+    single_dataset2.load_state_dict(state_dict)
+    dataiter2 = iter(single_dataset2)
+
+    # Should continue from where we left off
+    sample3 = next(dataiter2)
+    assert sample3["input_ids"][:32] != sample1["input_ids"][:32]
+    assert sample3["input_ids"][:32] != sample2["input_ids"][:32]

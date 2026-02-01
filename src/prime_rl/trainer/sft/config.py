@@ -31,7 +31,7 @@ class BaseDataConfig(BaseModel):
 
     batch_size: Annotated[int, Field(ge=1)] = 128
     seq_len: Annotated[int, Field(ge=1)] = 128
-    pack_function: Literal["cat", "stack"] = "cat"
+    pack_function: Literal["cat", "stack", "single"] = "cat"
     micro_batch_size: Annotated[int, Field(ge=1)] = 1
 
     @model_validator(mode="after")
