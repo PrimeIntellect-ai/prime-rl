@@ -151,7 +151,7 @@ def compute_loss(
             advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
         coeff = importance_ratio * advantages * keep_mask
         pg_loss = coeff.detach() * trainer_logprobs
-        kl_loss = log_importance_ratio ** 2
+        kl_loss = log_importance_ratio**2
         loss = (loss_config.kl_tau * kl_loss * loss_mask - pg_loss).sum()
 
         if loss_config.ratio_type == "sequence":
