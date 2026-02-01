@@ -325,12 +325,17 @@ def build_vlm_image_cache(rollouts: list[vf.State], processor) -> VLMImageCache:
     Groups rollouts by example_id to avoid redundant preprocessing (with rollouts_per_example=8,
     we only preprocess 1/8th of the images).
     """
-    # Group rollouts by example_id
+    # Group rollouts by example_id, keeping the longest trajectory for each
     example_id_to_rollout: dict[int, vf.State] = {}
     for rollout in rollouts:
         example_id = rollout["example_id"]
         if example_id not in example_id_to_rollout:
             example_id_to_rollout[example_id] = rollout
+        else:
+            current_len = len(example_id_to_rollout[example_id].get("trajectory", []))
+            new_len = len(rollout.get("trajectory", []))
+            if new_len > current_len:
+                example_id_to_rollout[example_id] = rollout
 
     unique_examples = [(eid, rollout) for eid, rollout in example_id_to_rollout.items()]
 

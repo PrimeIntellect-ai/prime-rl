@@ -11,6 +11,7 @@ from prime_rl.orchestrator.trajectories import (
     _extract_images_from_examples,
     _extract_images_from_messages,
     branch_rollout,
+    build_vlm_image_cache,
     interleave_rollout,
 )
 
@@ -553,3 +554,75 @@ def test_interleave_rollout_with_vlm_cache():
     # Interleaved rollout should have ALL images (from last step)
     assert rollouts[0].pixel_values == [[1.0], [2.0]]
     assert rollouts[0].image_grid_thw == [[1, 2, 3], [1, 4, 4]]
+
+
+def test_build_vlm_image_cache_uses_longest_rollout():
+    """
+    Test that build_vlm_image_cache uses the longest trajectory when multiple rollouts
+    exist for the same example_id, ensuring all steps have image data.
+    """
+    import torch
+
+    red_url = _create_test_image("red")
+    green_url = _create_test_image("green")
+
+    # Short rollout: 1 trajectory step
+    short_rollout = vf.State(
+        example_id=1,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[_create_image_message(red_url, "What color?")],
+                completion=[{"role": "assistant", "content": "Red"}],
+                response=MagicMock(),
+                tokens=MagicMock(),
+                temperature=1.0,
+            ),
+        ],
+        error=None,
+    )
+
+    # Long rollout: 2 trajectory steps (same example_id)
+    long_rollout = vf.State(
+        example_id=1,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[_create_image_message(red_url, "What color?")],
+                completion=[{"role": "assistant", "content": "Red"}],
+                response=MagicMock(),
+                tokens=MagicMock(),
+                temperature=1.0,
+            ),
+            vf.TrajectoryStep(
+                prompt=[
+                    _create_image_message(red_url, "What color?"),
+                    {"role": "assistant", "content": "Red"},
+                    _create_image_message(green_url, "And this one?"),
+                ],
+                completion=[{"role": "assistant", "content": "Green"}],
+                response=MagicMock(),
+                tokens=MagicMock(),
+                temperature=1.0,
+            ),
+        ],
+        error=None,
+    )
+
+    # Mock processor that returns predictable tensors
+    mock_processor = MagicMock()
+    mock_processor.image_processor = MagicMock(
+        return_value={
+            "pixel_values": torch.tensor([1.0, 2.0]),  # 2 patches
+            "image_grid_thw": torch.tensor([[1, 1, 1], [1, 1, 1]]),  # 2 images
+        }
+    )
+
+    # Short rollout appears first, but cache should use the longer one
+    rollouts = [short_rollout, long_rollout]
+    cache = build_vlm_image_cache(rollouts, mock_processor)
+
+    # Both steps should have image data
+    pv, grid = cache.get_for_step(1, 0)
+    assert pv is not None, "Step 0 should have image data"
+
+    pv, grid = cache.get_for_step(1, 1)
+    assert pv is not None, "Step 1 should have image data"
