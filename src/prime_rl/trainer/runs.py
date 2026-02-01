@@ -259,16 +259,15 @@ class MultiRunManager:
         self.unused_idxs.remove(new_id)
         self.idx_2_id[new_id] = new_run
 
-        # Get progress from stable checkpoints (only checkpoints with STABLE file are considered)
+        # Set progress based on resume_step config (match orchestrator behavior)
         self.progress[new_id] = Progress()
-        if self.max_runs == 1:
-            prev_ckpt_steps = [
-                int(i.stem.split("_")[-1]) for i in (self.get_run_dir(new_id) / "checkpoints").glob("step_*")
-            ]
-            self.progress[new_id].step = max(prev_ckpt_steps) if prev_ckpt_steps else 0
-        else:
+        if config.ckpt is None or config.ckpt.resume_step is None:
+            self.progress[new_id].step = 0
+        elif config.ckpt.resume_step == -1:
             stable_steps = get_stable_ckpt_steps(self.get_run_dir(new_id) / "checkpoints")
             self.progress[new_id].step = max(stable_steps) if stable_steps else 0
+        else:
+            self.progress[new_id].step = config.ckpt.resume_step
 
         # Store the parsed config
         self.config[new_id] = config
