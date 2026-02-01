@@ -190,7 +190,7 @@ def compute_loss(
         "geo_masked_low": torch.stack(total_geo_masked_low),
         "geo_masked_high": torch.stack(total_geo_masked_high),
         "geo_seq_ratio": torch.stack(total_geo_seq_ratio),
-        "kl_loss": torch.stack(total_kl_loss),
+        "kl_loss": torch.cat(total_kl_loss),
     }
     if total_teacher_kl:
         result["teacher_kl"] = torch.stack(total_teacher_kl)
