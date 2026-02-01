@@ -27,7 +27,7 @@ BASELINE_FILE_1GPU = Path(
     "benchmarks/baselines/benchmark-1xa6000-Qwen--Qwen3-0.6B-rl-full-1gpu-Recompute-flash_attention_2-65536-cp1-ep1.json"
 )
 BASELINE_FILE_4GPU = Path(
-    "benchmarks/baselines/benchmark-4xa6000-Qwen--Qwen3-0.6B-rl-full-1gpu-Recompute-flash_attention_2-65536-cp1-ep1.json"
+    "benchmarks/baselines/benchmark-4xa6000-Qwen--Qwen3-0.6B-rl-full-4gpu-Recompute-flash_attention_2-65536-cp1-ep1.json"
 )
 
 
