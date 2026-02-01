@@ -47,7 +47,7 @@ class RolloutResponse:
     lag_metrics: dict | None = None  # Event loop lag metrics from worker
 
 
-def extract_result(state: vf.State, temperature: float) -> dict:
+def extract_result(state: vf.RolloutOutput, temperature: float) -> dict:
     """Extract only the fields needed from vf.State for IPC.
 
     The extracted dict must contain all fields needed by:
@@ -84,7 +84,7 @@ def extract_result(state: vf.State, temperature: float) -> dict:
         "reward": state.get("reward"),
         # Required by orchestrator metrics
         "is_truncated": state.get("is_truncated", False),
-        "error": type(state["error"]).__name__ if state.get("error") else None,
+        "error": state["error"]["error"] if state.get("error") else None,
         "timing": dict(state.get("timing", {})),
         "metrics": state.get("metrics", {}),
         # Required for training examples
@@ -106,8 +106,6 @@ async def worker_loop(
 ):
     """Main async loop for processing rollout requests."""
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
-
-    semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)
 
     # Start event loop lag monitor for this worker
     lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
@@ -142,9 +140,7 @@ async def worker_loop(
             group_inputs=group_inputs,
             client=client,
             model=request.model_name,
-            gen_sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
-            gen_sem=semaphore,
-            score_sem=semaphore,
+            sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
         )
         temperature = request.sampling_args["temperature"]
         return RolloutResponse(request_id=request.request_id, results=[extract_result(s, temperature) for s in states])
