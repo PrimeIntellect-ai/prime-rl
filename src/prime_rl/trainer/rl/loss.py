@@ -99,7 +99,8 @@ def compute_loss(
         Tuple of (scaled_loss, aggregated_loss_tensors)
     """
 
-    total_loss = 0.0
+    total_pg_loss = 0.0
+    total_kl_loss = 0.0
     total_mismatch_kl = []
     total_masked_mismatch_kl = []
     total_unmasked_mismatch_kl = []
@@ -151,24 +152,20 @@ def compute_loss(
         if teacher_logprobs is not None:
             advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
 
-        # Squared KL: (log π_θ/π_old)² per token
-        squared_kl = _safe_mean(log_importance_ratio**2, loss_mask)
-
-        if loss_config.kl_loss_type == "k2":
-            # Kimi K2 style: direct squared loss (advantages - τ·log_ratio)²
-            residual = advantages.detach() - loss_config.kl_tau * log_importance_ratio
-            loss = (residual[keep_mask] ** 2).sum()
-        else:
-            # Kimi K2.5 style: REINFORCE + additive squared KL penalty
-            coeff = importance_ratio * advantages
-            pg_loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
-            kl_loss = loss_config.kl_tau * (log_importance_ratio[loss_mask] ** 2).sum()
-            loss = pg_loss + kl_loss
+        # Kimi K2.5 style: REINFORCE + additive squared KL penalty
+        coeff = importance_ratio * advantages
+        pg_loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
+        kl_loss = (log_importance_ratio[loss_mask] ** 2).sum()
 
         if loss_config.ratio_type == "sequence":
-            loss = loss / torch.clamp_min(loss_mask.sum(), 1)
+            pg_loss = pg_loss / torch.clamp_min(loss_mask.sum(), 1)
+            kl_loss = kl_loss / torch.clamp_min(loss_mask.sum(), 1)
 
-        total_loss = total_loss + loss
+        total_pg_loss = total_pg_loss + pg_loss
+        total_kl_loss = total_kl_loss + kl_loss
+
+        # Squared KL metric: mean (log ratio)² per sequence
+        squared_kl = _safe_mean(log_importance_ratio**2, loss_mask)
 
         # Aggregate loss tensors
         total_mismatch_kl.append(_safe_mean(token_mismatch_kl, loss_mask))
@@ -186,7 +183,8 @@ def compute_loss(
         if teacher_logprobs is not None:
             total_teacher_kl.append(_safe_mean(teacher_kl, loss_mask))
 
-    # Apply loss scaling
+    # Combine losses and apply scaling
+    total_loss = total_pg_loss + loss_config.kl_tau * total_kl_loss
     scaled_loss = total_loss / loss_scale
 
     result = {
