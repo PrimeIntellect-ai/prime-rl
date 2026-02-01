@@ -400,10 +400,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Process rollouts in parallel
         def process_rollout(rollout: vf.State) -> list[TrainingSample] | None:
-            if vlm_cache is not None:
-                cached = vlm_cache.get(rollout["example_id"])
-                return rollout_fn(rollout, cached_pixel_values=cached[0], cached_image_grid_thw=cached[1])
-            return rollout_fn(rollout)
+            return rollout_fn(rollout, vlm_cache=vlm_cache)
 
         loop = asyncio.get_event_loop()
         futures = [loop.run_in_executor(rollout_executor, process_rollout, r) for r in train_rollouts]

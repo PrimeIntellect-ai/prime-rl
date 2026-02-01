@@ -6,8 +6,6 @@ Prime-RL has experimental support for training vision-language models (VLMs) lik
 
 - **No SFT support**: Supervised fine-tuning is not yet supported for VLM models. Only RL training is available.
 
-- **No multi-turn images**: Images are only extracted from the first turn of a trajectory. Multi-turn environments that introduce new images in later turns are not supported yet.
-
 - **Vision encoder is frozen**: The vision encoder is automatically frozen during training. Only the language model is trained.
 
 - **No multimodal-safe truncation**: Token sequences are truncated to `seq_len`, but `pixel_values` and `image_grid_thw` are passed through unchanged. If a multimodal sample exceeds `seq_len`, image tokens can be dropped while image tensors still describe the full set of images. Ensure `seq_len` covers your longest VLM samples or avoid overlong rollouts.
