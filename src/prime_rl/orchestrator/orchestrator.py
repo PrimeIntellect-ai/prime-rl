@@ -498,7 +498,9 @@ async def orchestrate(config: OrchestratorConfig):
             tokens = last_step["tokens"]
             completion_text = tokenizer.decode(tokens["completion_ids"])
             chinese_count, total_count = count_chinese_chars(completion_text)
-            chinese_stats.append({"chinese_chars": chinese_count, "total_chars": total_count, "has_chinese": chinese_count > 0})
+            chinese_stats.append(
+                {"chinese_chars": chinese_count, "total_chars": total_count, "has_chinese": chinese_count > 0}
+            )
         chinese_df = pd.DataFrame(chinese_stats)
 
         val_results_df = (
