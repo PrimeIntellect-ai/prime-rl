@@ -53,7 +53,7 @@ def extract_result(state: vf.State, temperature: float) -> dict:
     The extracted dict must contain all fields needed by:
     - Buffer.update(): example_id, task, reward
     - orchestrator metrics: reward, is_truncated, error, timing, metrics, trajectory
-    - interleave_rollout/branch_rollout: trajectory[*]["tokens"] with all token fields
+    - interleave_rollout: trajectory[*]["tokens"] with all token fields
 
     For multimodal (Qwen3-VL), tokens dict may also contain:
     - pixel_values: flattened image patches [num_patches, patch_dim]
@@ -213,7 +213,6 @@ def worker_main(
     env_args: dict,
     client_config_dict: dict,
     seq_len: int,
-    interleaved_rollouts: bool,
     max_concurrent: int,
     example_lookup: dict[int, dict],
     log_level: str,
@@ -232,7 +231,7 @@ def worker_main(
     # Load environment
     env = vf.load_environment(env_id, **env_args)
     env.set_max_seq_len(seq_len)
-    env.set_interleaved_rollouts(interleaved_rollouts)
+    env.set_interleaved_rollouts(True)
 
     # Create clients (empty list in elastic mode - workers discover servers dynamically)
     client_config = ClientConfig(**client_config_dict)
@@ -263,7 +262,6 @@ class EnvWorker:
         client_config: ClientConfig,
         model_name: str,
         seq_len: int,
-        interleaved_rollouts: bool,
         max_concurrent: int,
         example_lookup: dict[int, dict],
         worker_name: str | None = None,
@@ -277,7 +275,6 @@ class EnvWorker:
         self.client_config = client_config
         self.model_name = model_name
         self.seq_len = seq_len
-        self.interleaved_rollouts = interleaved_rollouts
         self.max_concurrent = max_concurrent
         self.example_lookup = example_lookup
         self.worker_name = worker_name or env_id
@@ -319,7 +316,6 @@ class EnvWorker:
                 self.env_args,
                 self.client_config.model_dump(),
                 self.seq_len,
-                self.interleaved_rollouts,
                 self.max_concurrent,
                 self.example_lookup,
                 self.log_level,
