@@ -2,7 +2,7 @@
 
 Automated benchmark results for prime-rl using `--bench` flag.
 
-**Last Updated:** 2026-02-01 00:39 UTC  
+**Last Updated:** 2026-02-01 00:43 UTC  
 **Commit:** `unknown`  
 **Docker Image:** `primeintellect/prime-rl-jackmin@sha256:5a146f7dfdcdf6b0e90fd3f1ed0874d22a3a0641378dc8dad46ce213d02fa2e6`
 
@@ -31,7 +31,7 @@ Automated benchmark results for prime-rl using `--bench` flag.
 | RL Full | 65536 | Recompute | FA3 | 1 | 1 | 1xH100 HBM3 | 26.8% | 10.15k | 6.46s | 19.6 GiB |
 | RL Full | 65536 | Offload | FA3 | 1 | 1 | 1xH100 HBM3 | 26.4% | 9.98k | 6.57s | 16.1 GiB |
 | RL Full | 65536 | Recompute | FA2 | 1 | 1 | 4xA6000 | 16.2% | 7.72k | 33.94s | 12.4 GiB |
-| RL Full | 65536 | Recompute | FA2 | 1 | 1 | 1xA6000 | 17.4% | 2.08k | 31.46s | 19.5 GiB |
+| RL Full | 65536 | Recompute | FA2 | 1 | 1 | 1xA6000 | 17.1% | 2.04k | 32.12s | 19.5 GiB |
 | RL LoRA(r=16) | 16384 | Recompute | FA3 | 1 | 1 | 1xH100 HBM3 | 10.9% | 13.34k | 1.23s | 5.1 GiB |
 | RL LoRA(r=16) | 16384 | Recompute | FA2 | 1 | 1 | 1xA6000 | 6.3% | 2.41k | 6.79s | 5.1 GiB |
 | RL LoRA(r=16) | 65536 | Recompute | FA3 | 1 | 1 | 1xH100 HBM3 | 25.2% | 9.97k | 6.58s | 11.5 GiB |
