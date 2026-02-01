@@ -149,10 +149,10 @@ def compute_loss(
         advantages = loss_config.adv_tau * advantages
         if teacher_logprobs is not None:
             advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
-        coeff = importance_ratio * advantages
-        pg_loss = coeff.detach() * trainer_logprobs[keep_mask]
-        kl_loss = log_importance_ratio[loss_mask] ** 2
-        loss = (loss_config.kl_tau * kl_loss - pg_loss).sum()
+        coeff = importance_ratio * advantages * keep_mask
+        pg_loss = coeff.detach() * trainer_logprobs
+        kl_loss = log_importance_ratio ** 2
+        loss = (loss_config.kl_tau * kl_loss * loss_mask - pg_loss).sum()
 
         if loss_config.ratio_type == "sequence":
             loss = loss / torch.clamp_min(loss_mask.sum(), 1)
@@ -171,7 +171,7 @@ def compute_loss(
         total_geo_masked_low.append(geo_mask_low.float())
         total_geo_masked_high.append(geo_mask_high.float())
         total_geo_seq_ratio.append(geo_seq_ratio)
-        total_kl_loss.append(kl_loss)
+        total_kl_loss.append(kl_loss[loss_mask])
         if teacher_logprobs is not None:
             total_teacher_kl.append(_safe_mean(teacher_kl, loss_mask))
 
