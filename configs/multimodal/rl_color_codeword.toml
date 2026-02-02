@@ -1,0 +1,38 @@
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
+max_steps = 30
+seq_len = 4096
+
+[model]
+name = "Qwen/Qwen3-VL-4B-Instruct"
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 16
+trajectory_strategy = "branching"  # Required for multi-turn VLM
+
+[orchestrator.sampling]
+max_tokens = 64
+
+[[orchestrator.env]]
+id = "primeintellect/color-codeword"
+args = { images_per_turn = 1, max_turns = 3, num_examples = 1000, seed = 42 }
+
+[orchestrator.val]
+interval = 1
+num_examples = 100
+
+[trainer]
+
+[trainer.model]
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+
+[inference.parallel]
+dp = 1
