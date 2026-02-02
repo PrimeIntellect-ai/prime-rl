@@ -136,35 +136,35 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]
 
 
 # TODO: Move to verifiers to avoid code drift
-def make_result(state: vf.State, reasoning_field: str, rollout_idx: int) -> dict:
+def make_result(output: vf.RolloutOutput, reasoning_field: str, rollout_idx: int) -> dict:
     """Translates a finished rollout state to a synthetic dataset row."""
-    completion = merge_reasoning_content(state["completion"], state["trajectory"], reasoning_field)
+    completion = merge_reasoning_content(output["completion"], output["trajectory"], reasoning_field)
     result_dict = {
-        "example_id": state["example_id"],
+        "example_id": output["example_id"],
         "rollout_idx": rollout_idx,
-        "prompt": state["prompt"],
+        "prompt": output["prompt"],
         "completion": completion,
-        "task": state["task"],
-        "reward": state["reward"],
-        "generation_ms": state["timing"]["generation_ms"],
-        "scoring_ms": state["timing"]["scoring_ms"],
-        "total_ms": state["timing"]["total_ms"],
-        "info": state.get("info", {}),
-        "answer": state.get("answer", ""),
-        "completion_len": get_completion_len(state),
-        "is_truncated": get_is_truncated(state),
+        "task": output["task"],
+        "reward": output["reward"],
+        "generation_ms": output["timing"]["generation_ms"],
+        "scoring_ms": output["timing"]["scoring_ms"],
+        "total_ms": output["timing"]["total_ms"],
+        "info": output.get("info", {}),
+        "answer": output.get("answer", ""),
+        "completion_len": get_completion_len(output),
+        "is_truncated": get_is_truncated(output),
     }
-    for metric_name, metric_value in state["metrics"].items():
+    for metric_name, metric_value in output["metrics"].items():
         result_dict[metric_name] = metric_value
 
-    result_dict["oai_tools"] = json.dumps(state.get("oai_tools", []))
+    result_dict["oai_tools"] = output.get("oai_tools", [])
 
     return result_dict
 
 
-async def make_and_save_result(state: vf.State, save_file: Path, reasoning_field: str, rollout_idx: int):
+async def make_and_save_result(output: vf.RolloutOutput, save_file: Path, reasoning_field: str, rollout_idx: int):
     """Translates and saves a finished rollout state to a synthetic dataset row."""
-    result_dict = await asyncio.to_thread(make_result, state, reasoning_field, rollout_idx)
+    result_dict = await asyncio.to_thread(make_result, output, reasoning_field, rollout_idx)
     await save_result(result_dict, save_file)
 
 
@@ -316,6 +316,8 @@ async def run_eval(
             base_path = get_results_path(env_name_or_id, model_name, base_path=output_dir)
             path_to_save = base_path / "results.jsonl"
         path_to_save.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        path_to_save = None
 
     # Create shared structure for tracking rewards
     rewards_accumulator: list = []
@@ -330,6 +332,7 @@ async def run_eval(
 
         # Filter out already-completed rollouts on resume
         if resume_path is not None:
+            assert path_to_save is not None
             existing_rollout_ids = read_existing_rollout_ids(path_to_save)
             original_count = len(all_rollouts)
             all_rollouts = [
@@ -365,7 +368,7 @@ async def run_eval(
                     rollout_idx,
                     env_name_or_id,
                     sampling_args,
-                    path_to_save if save_config.stream else None,
+                    path_to_save,
                     reasoning_field,
                     retry_config,
                     pbar,
@@ -439,6 +442,7 @@ async def run_eval(
 
     # If resuming, combine with existing results for accurate metrics
     if resume_path is not None:
+        assert path_to_save is not None
         existing_results_df = read_existing_results(path_to_save)
         results_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
         logger.info(
@@ -575,34 +579,26 @@ async def run_evals(
 
     async def run_eval_safe(env):
         """Wrapper to catch RetryError and skip env."""
-        try:
-            await run_eval(
-                clients=clients,
-                env_id=env.id,
-                env_name=env.name,
-                env_args=env.args,
-                num_examples=env.num_examples or eval_config.num_examples,
-                reasoning_field=reasoning_field,
-                rollouts_per_example=env.rollouts_per_example or eval_config.rollouts_per_example,
-                output_dir=output_dir,
-                model_name=model_name,
-                sampling_config=sampling_config,
-                save_config=eval_config.save,
-                retry_config=eval_config.retry,
-                evals_client=evals_client,
-                per_rollout=eval_config.per_rollout,
-                ckpt_step=ckpt_step,
-                step=step,
-                resume_path=resume_path,
-            )
-            return True
-        except RetryError as e:
-            env_name = env.name or env.id
-            logger.warning(
-                f"Env '{env_name}' exhausted {eval_config.retry.max_attempts} retry attempts, skipping. "
-                f"Last error: {e.last_attempt.exception()}"
-            )
-            return None
+        await run_eval(
+            clients=clients,
+            env_id=env.id,
+            env_name=env.name,
+            env_args=env.args,
+            num_examples=env.num_examples or eval_config.num_examples,
+            reasoning_field=reasoning_field,
+            rollouts_per_example=env.rollouts_per_example or eval_config.rollouts_per_example,
+            output_dir=output_dir,
+            model_name=model_name,
+            sampling_config=sampling_config,
+            save_config=eval_config.save,
+            retry_config=eval_config.retry,
+            evals_client=evals_client,
+            per_rollout=eval_config.per_rollout,
+            ckpt_step=ckpt_step,
+            step=step,
+            resume_path=resume_path,
+        )
+        return True
 
     results = await asyncio.gather(*[run_eval_safe(env) for env in eval_config.env])
 
