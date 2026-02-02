@@ -16,6 +16,7 @@ async def generate_group(
     example: dict,
     rollouts_per_example: int,
     sampling_args: dict,
+    max_retries: int = 0,
     state_columns: list[str] = ["trajectory"],
 ) -> list[vf.RolloutOutput]:
     """Asynchronously generate and score rollouts for a single group."""
@@ -25,6 +26,7 @@ async def generate_group(
         client=client,
         model=model_name,
         sampling_args=sampling_args,
+        max_retries=max_retries,
         state_columns=state_columns,
     )
 
@@ -35,11 +37,14 @@ async def generate_rollout(
     model_name: str,
     example: dict,
     sampling_args: dict,
+    max_retries: int = 0,
     state_columns: list[str] = ["trajectory"],
 ) -> vf.RolloutOutput:
     """Asynchronously generate and score a single rollout."""
     rollout_input = vf.RolloutInput(**example)
-    return await env.run_rollout(rollout_input, client, model_name, sampling_args, state_columns=state_columns)
+    return await env.run_rollout(
+        rollout_input, client, model_name, sampling_args, max_retries=max_retries, state_columns=state_columns
+    )
 
 
 async def generate_batch(
