@@ -14,6 +14,7 @@ from pathlib import Path
 
 import verifiers as vf
 from openai import AsyncOpenAI
+from verifiers.utils.async_utils import maybe_semaphore
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
@@ -102,14 +103,14 @@ async def worker_loop(
     env: vf.Environment,
     clients: list[AsyncOpenAI],
     client_config: ClientConfig,
-    max_concurrent: int,
+    max_concurrent_groups: int,
     example_lookup: dict[int, dict],
     model_name: str,
 ):
     """Main async loop for processing rollout requests."""
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 
-    semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
+    semaphore = await maybe_semaphore(max_concurrent_groups)
 
     # Start event loop lag monitor for this worker
     lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
@@ -140,19 +141,14 @@ async def worker_loop(
     async def process_request(request: RolloutRequest, client: AsyncOpenAI) -> RolloutResponse:
         example = example_lookup[request.example_id]
         group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
-        if semaphore:
-            for _ in range(request.rollouts_per_example):
-                await semaphore.acquire()
-        outputs = await env.run_group(
-            group_inputs=group_inputs,
-            client=client,
-            model=request.model_name,
-            sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
-            state_columns=["trajectory"],
-        )
-        if semaphore:
-            for _ in range(request.rollouts_per_example):
-                semaphore.release()
+        async with semaphore:
+            outputs = await env.run_group(
+                group_inputs=group_inputs,
+                client=client,
+                model=request.model_name,
+                sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
+                state_columns=["trajectory"],
+            )
         temperature = request.sampling_args["temperature"]
         return RolloutResponse(request_id=request.request_id, results=[extract_result(o, temperature) for o in outputs])
 
@@ -221,7 +217,7 @@ def worker_main(
     client_config_dict: dict,
     seq_len: int,
     interleaved_rollouts: bool,
-    max_concurrent: int,
+    max_concurrent_groups: int,
     example_lookup: dict[int, dict],
     log_level: str,
     vf_log_level: str,
@@ -254,7 +250,7 @@ def worker_main(
             env,
             clients,
             client_config,
-            max_concurrent,
+            max_concurrent_groups,
             example_lookup,
             model_name,
         )
@@ -272,7 +268,7 @@ class EnvWorker:
         model_name: str,
         seq_len: int,
         interleaved_rollouts: bool,
-        max_concurrent: int,
+        max_concurrent_groups: int,
         example_lookup: dict[int, dict],
         worker_name: str | None = None,
         log_level: str = "warn",
@@ -287,7 +283,7 @@ class EnvWorker:
         self.model_name = model_name
         self.seq_len = seq_len
         self.interleaved_rollouts = interleaved_rollouts
-        self.max_concurrent = max_concurrent
+        self.max_concurrent_groups = max_concurrent_groups
         self.example_lookup = example_lookup
         self.worker_name = worker_name or env_id
 
@@ -330,7 +326,7 @@ class EnvWorker:
                 self.client_config.model_dump(),
                 self.seq_len,
                 self.interleaved_rollouts,
-                self.max_concurrent,
+                self.max_concurrent_groups,
                 self.example_lookup,
                 self.log_level,
                 self.vf_log_level,

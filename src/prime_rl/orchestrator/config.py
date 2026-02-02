@@ -721,7 +721,7 @@ class OrchestratorConfig(BaseSettings):
     max_concurrent: Annotated[
         int | None,
         Field(
-            description="Maximum number of concurrent rollouts to generate and score. If None, will not limit concurrency.",
+            description="Maximum number of concurrent rollouts to generate and score per-environment. If None, will not limit concurrency.",
         ),
     ] = None
 

@@ -111,7 +111,9 @@ class Scheduler:
                     model_name=self.model_name,
                     seq_len=config.seq_len,
                     interleaved_rollouts=config.trajectory_strategy == "interleaved",
-                    max_concurrent=config.max_concurrent or -1,
+                    max_concurrent_groups=(config.max_concurrent // self.rollouts_per_example)
+                    if config.max_concurrent is not None
+                    else -1,
                     example_lookup=self.example_lookups[env_name],
                     worker_name=f"{env_name}_{worker_idx}",
                     log_level=config.log.level,

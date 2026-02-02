@@ -42,7 +42,7 @@ def env_worker(mock_client_config):
         model_name="test-model",
         seq_len=1024,
         interleaved_rollouts=False,
-        max_concurrent=1,
+        max_concurrent_groups=1,
         example_lookup={},
         worker_name="test_worker",
     )
@@ -188,7 +188,7 @@ def test_full_restart_cycle(mock_client_config):
         model_name="test-model",
         seq_len=1024,
         interleaved_rollouts=False,
-        max_concurrent=1,
+        max_concurrent_groups=1,
         example_lookup={},
         worker_name="test_worker",
     )
