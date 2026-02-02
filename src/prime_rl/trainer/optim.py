@@ -29,6 +29,7 @@ class CPUOffloadOptimizer:
         self._initialized = False
 
     def _move_states(self, device: str):
+        """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
         for p in self.optimizer.state:
             state = self.optimizer.state[p]
             for k, v in state.items():
