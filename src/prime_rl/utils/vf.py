@@ -5,9 +5,9 @@ from typing import Any, cast
 import verifiers as vf
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
-from tqdm import tqdm
 
 from prime_rl.orchestrator.utils import get_semaphore
+from prime_rl.utils.logger import ProgressTracker
 
 
 async def generate_group(
@@ -59,7 +59,7 @@ async def generate_batch(
     """Asynchronously generate and score rollouts for a list of groups (batch)."""
 
     total_rollouts = len(examples) * rollouts_per_example
-    pbar = tqdm(total=total_rollouts, desc=pbar_description)
+    pbar = ProgressTracker(total=total_rollouts, desc=pbar_description)
 
     async def generate_group_with_progress(client, example):
         """Generate rollouts for one problem and update progress."""

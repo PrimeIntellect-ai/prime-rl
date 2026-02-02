@@ -6,6 +6,7 @@ from pathlib import Path
 
 # Global logger instance
 _LOGGER = None
+_JSON_LOGGING = False
 
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
@@ -80,9 +81,10 @@ def setup_logger(
     tag: str | None = None,
     json_logging: bool = False,
 ):
-    global _LOGGER
+    global _LOGGER, _JSON_LOGGING
     if _LOGGER is not None:
         raise RuntimeError("Logger already set. Please call `setup_logger` only once.")
+    _JSON_LOGGING = json_logging
 
     # Format message with optional tag prefix
     tag_prefix = f"[{tag}] " if tag else ""
@@ -165,8 +167,65 @@ def get_logger():
 
 def reset_logger():
     """Reset the global logger. Useful mainly in test to clear loggers between tests."""
-    global _LOGGER
+    global _LOGGER, _JSON_LOGGING
     _LOGGER = None
+    _JSON_LOGGING = False
+
+
+def is_json_logging() -> bool:
+    """Check if JSON logging is enabled."""
+    return _JSON_LOGGING
+
+
+class ProgressTracker:
+    """Progress tracker that uses tqdm or logs progress when JSON logging is enabled."""
+
+    def __init__(self, total: int, desc: str, json_logging: bool | None = None, log_every_percent: int = 10):
+        self.total = total
+        self.desc = desc
+        self.json_logging = json_logging if json_logging is not None else _JSON_LOGGING
+        self.log_every_percent = log_every_percent
+        self.current = 0
+        self._last_logged_percent = -log_every_percent
+        self._postfix: dict = {}
+
+        if self.json_logging:
+            self._pbar = None
+            self._log_progress()
+        else:
+            from tqdm import tqdm
+
+            self._pbar = tqdm(total=total, desc=desc)
+
+    def update(self, n: int = 1):
+        self.current += n
+        if self._pbar is not None:
+            self._pbar.update(n)
+        else:
+            self._log_progress()
+
+    def set_postfix(self, postfix: dict):
+        self._postfix = postfix
+        if self._pbar is not None:
+            self._pbar.set_postfix(postfix)
+
+    def _log_progress(self):
+        percent = int(100 * self.current / self.total) if self.total > 0 else 0
+        if percent >= self._last_logged_percent + self.log_every_percent or self.current >= self.total:
+            postfix_str = ", ".join(f"{k}={v}" for k, v in self._postfix.items()) if self._postfix else ""
+            msg = f"{self.desc}: {self.current}/{self.total} ({percent}%)"
+            if postfix_str:
+                msg += f" [{postfix_str}]"
+            get_logger().info(msg)
+            self._last_logged_percent = percent
+
+    def close(self):
+        if self._pbar is not None:
+            self._pbar.close()
+        elif self.current > 0 and self.current < self.total:
+            percent = int(100 * self.current / self.total)
+            if percent > self._last_logged_percent:
+                get_logger().info(f"{self.desc}: {self.current}/{self.total} ({percent}%)")
 
 
 def intercept_verifiers_logging(level: str = "DEBUG"):

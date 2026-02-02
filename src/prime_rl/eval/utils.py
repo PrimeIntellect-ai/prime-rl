@@ -15,7 +15,6 @@ from huggingface_hub import whoami
 from openai import AsyncOpenAI, BadRequestError
 from prime_evals import AsyncEvalsClient
 from tenacity import RetryCallState, RetryError, retry, stop_after_attempt, wait_exponential
-from tqdm.asyncio import tqdm
 from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
 from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
@@ -27,7 +26,7 @@ from prime_rl.synthesize.utils import merge_reasoning_content, save_result
 from prime_rl.utils.client import setup_clients, setup_evals_client
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.elastic import ServerDiscovery
-from prime_rl.utils.logger import get_logger, intercept_verifiers_logging, reset_logger, setup_logger
+from prime_rl.utils.logger import ProgressTracker, get_logger, intercept_verifiers_logging, reset_logger, setup_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
 from prime_rl.utils.vf import (
@@ -257,7 +256,7 @@ async def generate_and_save_rollout(
     save_file: Path | None,
     reasoning_field: str,
     retry_config: RetryConfig,
-    pbar: tqdm,
+    pbar: ProgressTracker,
     rewards_accumulator: list,
     rewards_lock: asyncio.Lock,
 ) -> vf.State:
@@ -352,7 +351,7 @@ async def generate_and_save_group(
     save_file: Path | None,
     reasoning_field: str,
     retry_config: RetryConfig,
-    pbar: tqdm,
+    pbar: ProgressTracker,
     rewards_accumulator: list,
     rewards_lock: asyncio.Lock,
 ) -> list[vf.State]:
@@ -520,7 +519,7 @@ async def run_eval(
             f"{'Saving results to ' + str(path_to_save) if save_config.stream else 'Results will be saved at end of evaluation'}"
         )
 
-        pbar = tqdm(total=total_rollouts, desc="Evaluating")
+        pbar = ProgressTracker(total=total_rollouts, desc="Evaluating")
         if rewards_accumulator:
             pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
 
@@ -567,7 +566,7 @@ async def run_eval(
             f"{'Saving results to ' + str(path_to_save) if save_config.stream else 'Results will be saved at end of evaluation'}"
         )
 
-        pbar = tqdm(total=total_rollouts, desc="Evaluating")
+        pbar = ProgressTracker(total=total_rollouts, desc="Evaluating")
         if rewards_accumulator:
             pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
 
