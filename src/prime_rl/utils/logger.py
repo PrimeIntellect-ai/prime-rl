@@ -161,7 +161,7 @@ def setup_logger(
 def get_logger():
     """
     Get the global logger. This function is shared across submodules such as
-    training and inference to accesst the global logger instance. Raises if the
+    training and inference to access the global logger instance. Raises if the
     logger has not been set.
 
     Returns:
