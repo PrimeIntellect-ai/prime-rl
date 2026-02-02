@@ -287,7 +287,7 @@ class Scheduler:
 
         batch_rollouts: list[dict] = []
         pbar = ProgressTracker(
-            total=self.config.batch_size, desc="Generating rollouts (train)", json_logging=self.json_logging
+            total=self.config.batch_size, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
         )
 
         while len(batch_rollouts) < self.config.batch_size:

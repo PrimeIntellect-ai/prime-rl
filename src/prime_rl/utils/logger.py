@@ -183,9 +183,17 @@ def reset_logger():
 class ProgressTracker:
     """Progress tracker that uses tqdm or logs progress when JSON logging is enabled."""
 
-    def __init__(self, total: int, desc: str, json_logging: bool | None = None, log_every_percent: int = 10):
+    def __init__(
+        self,
+        total: int,
+        desc: str,
+        json_logging: bool | None = None,
+        log_every_percent: int = 10,
+        step: int | None = None,
+    ):
         self.total = total
         self.desc = desc
+        self.step = step
         self.json_logging = json_logging if json_logging is not None else _JSON_LOGGING
         self.log_every_percent = log_every_percent
         self.current = 0
@@ -194,11 +202,12 @@ class ProgressTracker:
 
         if self.json_logging:
             self._pbar = None
-            self._log_progress()
+            # Don't log 0% on init - only log on actual progress
         else:
             from tqdm import tqdm
 
-            self._pbar = tqdm(total=total, desc=desc)
+            step_suffix = f" [step {step}]" if step is not None else ""
+            self._pbar = tqdm(total=total, desc=f"{desc}{step_suffix}")
 
     def update(self, n: int = 1):
         self.current += n
@@ -230,13 +239,16 @@ class ProgressTracker:
                 "total": self.total,
                 "percent": percent,
             }
+            if self.step is not None:
+                entry["step"] = self.step
             if self._postfix:
                 entry["extra"] = self._postfix
             sys.stdout.write(json_module.dumps(entry) + "\n")
             sys.stdout.flush()
         else:
             postfix_str = ", ".join(f"{k}={v}" for k, v in self._postfix.items()) if self._postfix else ""
-            msg = f"{self.desc}: {self.current}/{self.total} ({percent}%)"
+            step_str = f" [step {self.step}]" if self.step is not None else ""
+            msg = f"{self.desc}{step_str}: {self.current}/{self.total} ({percent}%)"
             if postfix_str:
                 msg += f" [{postfix_str}]"
             get_logger().info(msg)
