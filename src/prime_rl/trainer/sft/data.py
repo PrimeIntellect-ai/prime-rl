@@ -244,6 +244,7 @@ class SFTDataset(StatefulIterableDataset):
                         and messages[i + 1]["role"] == "assistant"
                     )
                     else False,
+                    return_dict=False,
                     **example.get("chat_template_kwargs", {}),
                 )
                 assert prev_ids == cur_ids[:prev_len], (
@@ -260,6 +261,7 @@ class SFTDataset(StatefulIterableDataset):
             self.tokenizer.apply_chat_template(
                 prompt + completion,
                 tools=tools,
+                return_dict=False,
                 **example.get("chat_template_kwargs", {}),
             ),
         )
