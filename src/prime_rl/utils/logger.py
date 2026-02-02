@@ -2,16 +2,13 @@ import atexit
 import json as json_module
 import logging
 import sys
-import threading
 import traceback
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 # Global logger instance
 _LOGGER = None
 _JSON_LOGGING = False
-_STDOUT_LOCK = threading.Lock()
 
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
@@ -19,6 +16,22 @@ RESET = "\033[0m"
 
 def _build_log_entry(record) -> dict:
     """Build a flat JSON log entry from a loguru record."""
+    extra = record["extra"]
+
+    # Handle progress events specially - emit structured progress format
+    if extra.get("_progress"):
+        return {
+            "timestamp": record["time"].isoformat(),
+            "type": "progress",
+            "desc": extra["desc"],
+            "current": extra["current"],
+            "total": extra["total"],
+            "percent": extra["percent"],
+            **({"step": extra["step"]} if extra.get("step") is not None else {}),
+            **({"extra": extra["postfix"]} if extra.get("postfix") else {}),
+        }
+
+    # Standard log entry
     log_entry = {
         "timestamp": record["time"].isoformat(),
         "level": record["level"].name,
@@ -31,7 +44,6 @@ def _build_log_entry(record) -> dict:
         exc = record["exception"]
         log_entry["exception"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
     # Extract tag from extra if present (used by workers to identify themselves)
-    extra = record["extra"]
     if extra:
         if "tag" in extra:
             log_entry["tag"] = extra["tag"]
@@ -44,9 +56,8 @@ def _build_log_entry(record) -> dict:
 def _json_sink(message) -> None:
     """Sink that outputs flat JSON to stdout for log aggregation (Loki, Grafana, etc.)."""
     log_entry = _build_log_entry(message.record)
-    with _STDOUT_LOCK:
-        sys.stdout.write(json_module.dumps(log_entry) + "\n")
-        sys.stdout.flush()
+    sys.stdout.write(json_module.dumps(log_entry) + "\n")
+    sys.stdout.flush()
 
 
 class _JsonFileSink:
@@ -230,22 +241,16 @@ class ProgressTracker:
             self._last_logged_percent = percent
 
     def _emit_progress(self, percent: int):
-        """Emit progress as structured JSON (only called in JSON logging mode)."""
-        entry: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "type": "progress",
-            "desc": self.desc,
-            "current": self.current,
-            "total": self.total,
-            "percent": percent,
-        }
-        if self.step is not None:
-            entry["step"] = self.step
-        if self._postfix:
-            entry["extra"] = self._postfix
-        with _STDOUT_LOCK:
-            sys.stdout.write(json_module.dumps(entry) + "\n")
-            sys.stdout.flush()
+        """Emit progress as structured JSON through loguru (only called in JSON logging mode)."""
+        get_logger().bind(
+            _progress=True,
+            desc=self.desc,
+            current=self.current,
+            total=self.total,
+            percent=percent,
+            step=self.step,
+            postfix=self._postfix if self._postfix else None,
+        ).info("progress")
 
     def close(self):
         if self._pbar is not None:
