@@ -22,6 +22,7 @@ def _build_log_entry(record) -> dict:
     if extra.get("_progress"):
         return {
             "timestamp": record["time"].isoformat(),
+            "level": record["level"].name,
             "type": "progress",
             "desc": extra["desc"],
             "current": extra["current"],
