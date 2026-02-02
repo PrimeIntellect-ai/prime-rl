@@ -2,6 +2,7 @@ import atexit
 import json as json_module
 import logging
 import sys
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 # Global logger instance
 _LOGGER = None
 _JSON_LOGGING = False
+_STDOUT_LOCK = threading.Lock()
 
 NO_BOLD = "\033[22m"
 RESET = "\033[0m"
@@ -42,8 +44,9 @@ def _build_log_entry(record) -> dict:
 def _json_sink(message) -> None:
     """Sink that outputs flat JSON to stdout for log aggregation (Loki, Grafana, etc.)."""
     log_entry = _build_log_entry(message.record)
-    sys.stdout.write(json_module.dumps(log_entry) + "\n")
-    sys.stdout.flush()
+    with _STDOUT_LOCK:
+        sys.stdout.write(json_module.dumps(log_entry) + "\n")
+        sys.stdout.flush()
 
 
 class _JsonFileSink:
@@ -240,8 +243,9 @@ class ProgressTracker:
             entry["step"] = self.step
         if self._postfix:
             entry["extra"] = self._postfix
-        sys.stdout.write(json_module.dumps(entry) + "\n")
-        sys.stdout.flush()
+        with _STDOUT_LOCK:
+            sys.stdout.write(json_module.dumps(entry) + "\n")
+            sys.stdout.flush()
 
     def close(self):
         if self._pbar is not None:
