@@ -133,11 +133,11 @@ def setup_logger(
     if json_logging and tag:
         logger = logger.bind(tag=tag)
 
-    # Install console handler (enqueue=True for non-blocking in async contexts)
+    # Install console handler (enqueue=True only for JSON mode to avoid blocking in async contexts)
     if json_logging:
         logger.add(_json_sink, level=log_level.upper(), enqueue=True)
     else:
-        logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True, enqueue=True)
+        logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
 
     # If specified, install file handler
     if log_file is not None:
@@ -147,7 +147,7 @@ def setup_logger(
             file_sink = _JsonFileSink(log_file)
             logger.add(file_sink.write, level=log_level.upper(), enqueue=True)
         else:
-            logger.add(log_file, format=format, level=log_level.upper(), colorize=True, enqueue=True)
+            logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
 
     # Disable critical logging
     logger.critical = lambda _: None
