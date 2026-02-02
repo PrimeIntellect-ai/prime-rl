@@ -206,8 +206,7 @@ class ProgressTracker:
         else:
             from tqdm import tqdm
 
-            step_suffix = f" [step {step}]" if step is not None else ""
-            self._pbar = tqdm(total=total, desc=f"{desc}{step_suffix}")
+            self._pbar = tqdm(total=total, desc=desc)
 
     def update(self, n: int = 1):
         self.current += n
@@ -247,8 +246,7 @@ class ProgressTracker:
             sys.stdout.flush()
         else:
             postfix_str = ", ".join(f"{k}={v}" for k, v in self._postfix.items()) if self._postfix else ""
-            step_str = f" [step {self.step}]" if self.step is not None else ""
-            msg = f"{self.desc}{step_str}: {self.current}/{self.total} ({percent}%)"
+            msg = f"{self.desc}: {self.current}/{self.total} ({percent}%)"
             if postfix_str:
                 msg += f" [{postfix_str}]"
             get_logger().info(msg)
