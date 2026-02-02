@@ -6,11 +6,11 @@
 #SBATCH --gres=gpu:8
 #SBATCH --partition=cluster
 #SBATCH --exclusive                 # Get the ENTIRE node exclusively
-#SBATCH --output=/shared/logs/job_%j.log
-#SBATCH --error=/shared/logs/job_%j.log
+#SBATCH --output=/shared/mika/job_%j.log
+#SBATCH --error=/shared/mika/job_%j.log
 
 # Configs
-export EXPERIMENT_NAME=${EXPERIMENT_NAME}
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-""}
 
 # Ensure experiment name is set
 if [ -z "$EXPERIMENT_NAME" ]; then
@@ -20,7 +20,7 @@ fi
 
 export BASE_DIR=${BASE_DIR:-"/home/mika/prime-rl"}
 export OUTPUT_DIR=${OUTPUT_DIR:-"/shared/mika/$EXPERIMENT_NAME"}
-export TRAIN_CMD="uv run rl @ configs/thesis/wiki_search.toml"
+export TRAIN_CMD=${TRAIN_CMD:-"uv run rl @ configs/thesis/wiki_search.toml"}
 
 # General
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -28,8 +28,7 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 
 # Cleanup
-srun bash -c 'pkill -9 -f torchrun || true && fuser -k ${MASTER_PORT}/tcp || true'
-srun bash -c 'pkill -9 -f prime-rl || true'
+srun bash -c 'pkill -9 -f torchrun || true && fuser -k 29500/tcp || true'
 srun bash -c 'pkill -9 -f VLLM || true && fuser -k 8000/tcp || true'
 
 # Install environment
