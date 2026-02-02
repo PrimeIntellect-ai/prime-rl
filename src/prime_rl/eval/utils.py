@@ -159,7 +159,7 @@ def make_result(state: vf.State, reasoning_field: str, rollout_idx: int) -> dict
     for metric_name, metric_value in state["metrics"].items():
         result_dict[metric_name] = metric_value
 
-    result_dict["oai_tools"] = json.dumps(state["oai_tools"])
+    result_dict["oai_tools"] = json.dumps(state.get("oai_tools", "[]"))
 
     return result_dict
 
