@@ -133,6 +133,7 @@ def compute_loss(
     total_teacher_kl = []
     total_is_clipped_low = []
     total_is_clipped_high = []
+    total_kl_loss = []
 
     if teacher_logprobs is None:
         teacher_logprobs = [None] * len(trainer_logprobs)
@@ -179,8 +180,10 @@ def compute_loss(
         advantages = loss_config.adv_tau * advantages
         if teacher_logprobs is not None:
             advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
-        coeff = importance_ratio * (advantages - loss_config.kl_tau * log_importance_ratio)
-        loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
+        coeff = importance_ratio * advantages * keep_mask
+        pg_loss = coeff.detach() * trainer_logprobs
+        kl_loss = log_importance_ratio**2
+        loss = (loss_config.kl_tau * kl_loss * loss_mask - pg_loss).sum()
 
         if loss_config.ratio_type == "sequence":
             loss = loss / torch.clamp_min(loss_mask.sum(), 1)
@@ -201,6 +204,7 @@ def compute_loss(
         total_geo_seq_ratio.append(geo_seq_ratio)
         total_is_clipped_low.append(_safe_mean(token_clip_low, keep_mask))
         total_is_clipped_high.append(_safe_mean(token_clip_high, keep_mask))
+        total_kl_loss.append(kl_loss[loss_mask])
         if teacher_logprobs is not None:
             total_teacher_kl.append(_safe_mean(teacher_kl, loss_mask))
 
@@ -221,6 +225,7 @@ def compute_loss(
         "geo_seq_ratio": torch.stack(total_geo_seq_ratio),
         "is_clipped_low": torch.stack(total_is_clipped_low),
         "is_clipped_high": torch.stack(total_is_clipped_high),
+        "kl_loss": torch.cat(total_kl_loss),
     }
     if total_teacher_kl:
         result["teacher_kl"] = torch.stack(total_teacher_kl)
