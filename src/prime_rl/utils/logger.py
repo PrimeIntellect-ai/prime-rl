@@ -1,8 +1,11 @@
+import atexit
 import json as json_module
 import logging
 import sys
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # Global logger instance
 _LOGGER = None
@@ -49,6 +52,11 @@ class _JsonFileSink:
     def __init__(self, log_file: Path):
         log_file.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(log_file, "a")
+        atexit.register(self._close)
+
+    def _close(self):
+        if self._file and not self._file.closed:
+            self._file.close()
 
     def write(self, message) -> None:
         log_entry = _build_log_entry(message.record)
@@ -172,11 +180,6 @@ def reset_logger():
     _JSON_LOGGING = False
 
 
-def is_json_logging() -> bool:
-    """Check if JSON logging is enabled."""
-    return _JSON_LOGGING
-
-
 class ProgressTracker:
     """Progress tracker that uses tqdm or logs progress when JSON logging is enabled."""
 
@@ -187,7 +190,7 @@ class ProgressTracker:
         self.log_every_percent = log_every_percent
         self.current = 0
         self._last_logged_percent = -log_every_percent
-        self._postfix: dict = {}
+        self._postfix: dict[str, Any] = {}
 
         if self.json_logging:
             self._pbar = None
@@ -204,7 +207,7 @@ class ProgressTracker:
         else:
             self._log_progress()
 
-    def set_postfix(self, postfix: dict):
+    def set_postfix(self, postfix: dict[str, Any]):
         self._postfix = postfix
         if self._pbar is not None:
             self._pbar.set_postfix(postfix)
@@ -212,12 +215,31 @@ class ProgressTracker:
     def _log_progress(self):
         percent = int(100 * self.current / self.total) if self.total > 0 else 0
         if percent >= self._last_logged_percent + self.log_every_percent or self.current >= self.total:
+            self._emit_progress(percent)
+            self._last_logged_percent = percent
+
+    def _emit_progress(self, percent: int):
+        """Emit progress as structured JSON or human-readable log."""
+        if self.json_logging:
+            # Emit structured progress event directly for frontend consumption
+            entry: dict[str, Any] = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "type": "progress",
+                "desc": self.desc,
+                "current": self.current,
+                "total": self.total,
+                "percent": percent,
+            }
+            if self._postfix:
+                entry["extra"] = self._postfix
+            sys.stdout.write(json_module.dumps(entry) + "\n")
+            sys.stdout.flush()
+        else:
             postfix_str = ", ".join(f"{k}={v}" for k, v in self._postfix.items()) if self._postfix else ""
             msg = f"{self.desc}: {self.current}/{self.total} ({percent}%)"
             if postfix_str:
                 msg += f" [{postfix_str}]"
             get_logger().info(msg)
-            self._last_logged_percent = percent
 
     def close(self):
         if self._pbar is not None:
@@ -225,7 +247,7 @@ class ProgressTracker:
         elif self.current > 0 and self.current < self.total:
             percent = int(100 * self.current / self.total)
             if percent > self._last_logged_percent:
-                get_logger().info(f"{self.desc}: {self.current}/{self.total} ({percent}%)")
+                self._emit_progress(percent)
 
 
 def intercept_verifiers_logging(level: str = "DEBUG"):
