@@ -141,7 +141,7 @@ def get_model(
     model_config.use_grouped_mm = config.moe_use_grouped_mm
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it)
-    if not hasattr(model_config, 'pad_token_id') or model_config.pad_token_id is None:
+    if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
         model_config.pad_token_id = model_config.eos_token_id
 
     # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
