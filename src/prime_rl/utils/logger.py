@@ -227,29 +227,21 @@ class ProgressTracker:
             self._last_logged_percent = percent
 
     def _emit_progress(self, percent: int):
-        """Emit progress as structured JSON or human-readable log."""
-        if self.json_logging:
-            # Emit structured progress event directly for frontend consumption
-            entry: dict[str, Any] = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "type": "progress",
-                "desc": self.desc,
-                "current": self.current,
-                "total": self.total,
-                "percent": percent,
-            }
-            if self.step is not None:
-                entry["step"] = self.step
-            if self._postfix:
-                entry["extra"] = self._postfix
-            sys.stdout.write(json_module.dumps(entry) + "\n")
-            sys.stdout.flush()
-        else:
-            postfix_str = ", ".join(f"{k}={v}" for k, v in self._postfix.items()) if self._postfix else ""
-            msg = f"{self.desc}: {self.current}/{self.total} ({percent}%)"
-            if postfix_str:
-                msg += f" [{postfix_str}]"
-            get_logger().info(msg)
+        """Emit progress as structured JSON (only called in JSON logging mode)."""
+        entry: dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "progress",
+            "desc": self.desc,
+            "current": self.current,
+            "total": self.total,
+            "percent": percent,
+        }
+        if self.step is not None:
+            entry["step"] = self.step
+        if self._postfix:
+            entry["extra"] = self._postfix
+        sys.stdout.write(json_module.dumps(entry) + "\n")
+        sys.stdout.flush()
 
     def close(self):
         if self._pbar is not None:
