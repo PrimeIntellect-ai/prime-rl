@@ -85,6 +85,7 @@ def compute_loss(
     loss_scale: int,
     step: int | None = None,
     rank: int | None = None,
+    output_dir: Path | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -105,7 +106,8 @@ def compute_loss(
     """
     # Save debug tensors if step and rank are provided
     if step is not None and rank is not None and step % 10 == 0:
-        output_dir = Path("outputs/loss") / f"step_{step}"
+        assert output_dir is not None
+        output_dir = output_dir / "loss" / f"step_{step}"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_file = output_dir / f"rank_{rank}.bin"
         torch.save(

@@ -361,6 +361,7 @@ def train(config: RLTrainerConfig):
                 loss_scale=loss_scale,
                 step=progress.step,
                 rank=world.rank,
+                output_dir=config.output_dir,
             )
 
             # Backward pass
