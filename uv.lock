@@ -707,8 +707,8 @@ wheels = [
 
 [[package]]
 name = "deepdive"
-version = "0.2.2"
-source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fdeepdive&rev=be1f9af#be1f9af15b7b010fbd76b1ae83913d8e3e02a70d" }
+version = "0.2.3"
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fdeepdive&rev=81c91d9#81c91d93886e2f7dec4e0f889245e1369a888e49" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
@@ -2802,7 +2802,7 @@ requires-dist = [
     { name = "blobfile", specifier = ">=3.0.0" },
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "deepdive", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fdeepdive&rev=be1f9af" },
+    { name = "deepdive", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fdeepdive&rev=81c91d9" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=main" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
