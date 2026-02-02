@@ -7,12 +7,11 @@ from typing import Any
 import aiofiles
 import verifiers as vf
 from openai import AsyncOpenAI
-from tqdm.asyncio import tqdm
 from verifiers import load_environment
 from verifiers.envs.environment import get_results_path
 
 from prime_rl.orchestrator.config import ClientConfig, EvalSamplingConfig, ModelConfig
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.vf import generate_group
 
 WRITE_LOCK = asyncio.Lock()
@@ -118,7 +117,7 @@ async def generate_and_save_group(
     sampling_args: dict,
     save_file: Path,
     reasoning_field: str,
-    pbar: tqdm,
+    pbar: ProgressTracker,
 ) -> None:
     logger = get_logger()
     try:
@@ -166,7 +165,7 @@ async def generate_synthetic_data(
     )
 
     total_rollouts = len(dataset) * rollouts_per_example
-    pbar = tqdm(total=total_rollouts, desc="Generating synthetic data")
+    pbar = ProgressTracker(total=total_rollouts, desc="Generating synthetic data")
 
     await asyncio.gather(
         *[

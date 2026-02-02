@@ -221,12 +221,13 @@ def worker_main(
     log_file: str | None,
     worker_name: str | None = None,
     model_name: str = "",
+    json_logging: bool = False,
 ):
     """Main entry point for worker subprocess."""
     # Reset logger inherited from parent process, then setup fresh logger for this worker
     if log_file:
         reset_logger()
-        setup_logger(log_level, log_file=Path(log_file), append=True, tag=worker_name)
+        setup_logger(log_level, log_file=Path(log_file), append=True, tag=worker_name, json_logging=json_logging)
         intercept_verifiers_logging(level=vf_log_level)
 
     # Load environment
@@ -271,6 +272,7 @@ class EnvWorker:
         vf_log_level: str = "warn",
         log_file: str | None = None,
         max_restarts: int = 5,
+        json_logging: bool = False,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -286,6 +288,7 @@ class EnvWorker:
         self.vf_log_level = vf_log_level
         self.log_file = log_file
         self.max_restarts = max_restarts
+        self.json_logging = json_logging
 
         self.request_queue: Queue = Queue()
         self.response_queue: Queue = Queue()
@@ -327,6 +330,7 @@ class EnvWorker:
                 self.log_file,
                 self.worker_name,
                 self.model_name,
+                self.json_logging,
             ),
             daemon=True,
         )
