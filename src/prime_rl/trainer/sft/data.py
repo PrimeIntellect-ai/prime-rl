@@ -12,7 +12,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.sft.config import DataConfigType, LossMaskConfig, SFTDataConfig, ValidationConfig
+from prime_rl.trainer.sft.config import DataConfigType, LossMaskConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -381,48 +381,6 @@ class CatDataset(StatefulIterableDataset):
                 packed_samples, seq_len = defaultdict(list), 0
 
 
-class SingleSampleDataset(StatefulIterableDataset):
-    """A dataset that yields single samples padded to a fixed length.
-
-    Unlike CatDataset which concatenates multiple samples, this yields one sample
-    per iteration, padding the rest of the sequence. This means each microbatch
-    contains only 1 actual sample.
-    """
-
-    def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
-        self.logger = get_logger()
-        self.dataset = dataset
-        self.seq_len = seq_len
-
-    def state_dict(self) -> dict:
-        return {"dataset": self.dataset.state_dict()}
-
-    def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict["dataset"])
-
-    def __iter__(self):
-        for sample in self.dataset:
-            sample_len = len(sample["input_ids"])
-
-            if sample_len > self.seq_len:
-                for key, value in sample.items():
-                    assert isinstance(value, list), f"Value for key {key} must be a list"
-                    sample[key] = value[: self.seq_len]
-                yield sample
-            elif sample_len < self.seq_len:
-                pad_len = self.seq_len - sample_len
-                padded_sample = {}
-                for key, value in sample.items():
-                    assert isinstance(value, list), f"Value for key {key} must be a list"
-                    if key == "loss_mask":
-                        padded_sample[key] = value + [False] * pad_len
-                    else:
-                        padded_sample[key] = value + [0] * pad_len
-                yield padded_sample
-            else:
-                yield sample
-
-
 class StackDataset(StatefulIterableDataset):
     """A dataset that stacks samples into batch with a fixed area"""
 
@@ -645,96 +603,5 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfigType) -
     elif config.pack_function == "cat":
         packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
         return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
-    elif config.pack_function == "single":
-        single_dataset = SingleSampleDataset(dataset, config.seq_len)
-        return StatefulDataLoader(single_dataset, batch_size=config.micro_batch_size, collate_fn=cat_collate)
     else:
         raise ValueError(f"Invalid pack function: {config.pack_function}")
-
-
-class ValidationCatDataset(StatefulIterableDataset):
-    """Like CatDataset but yields the last batch even if not full (padded)."""
-
-    def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
-        self.logger = get_logger()
-        self.dataset = dataset
-        self.seq_len = seq_len
-
-    def state_dict(self) -> dict:
-        return {"dataset": self.dataset.state_dict()}
-
-    def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict["dataset"])
-
-    def __iter__(self):
-        packed_samples, cur_len = defaultdict(list), 0
-
-        for sample in self.dataset:
-            for key, value in sample.items():
-                assert isinstance(value, list), f"Value for key {key} must be a list"
-                packed_samples[key].extend(value)
-
-            cur_len += len(sample["input_ids"])
-
-            if cur_len >= self.seq_len:
-                for key, value in packed_samples.items():
-                    packed_samples[key] = value[: self.seq_len]
-                yield packed_samples
-                packed_samples, cur_len = defaultdict(list), 0
-
-        if cur_len > 0:
-            for key, value in packed_samples.items():
-                pad_len = self.seq_len - len(value)
-                if pad_len > 0:
-                    if key == "loss_mask":
-                        packed_samples[key] = value + [False] * pad_len
-                    else:
-                        packed_samples[key] = value + [0] * pad_len
-            yield packed_samples
-        else:
-            self.logger.warning("No samples yielded, yielding dummy batch")
-            yield {
-                "input_ids": [0] * self.seq_len,
-                "position_ids": list(range(self.seq_len)),
-                "target_ids": [0] * self.seq_len,
-                "loss_mask": [False] * self.seq_len,
-            }
-
-
-def setup_validation_dataloader(
-    tokenizer: PreTrainedTokenizer,
-    data_config: SFTDataConfig,
-    validation_config: ValidationConfig,
-    non_dp_size: int = 1,
-) -> StatefulDataLoader:
-    """Set up a validation dataloader using the same dataset but with the validation split."""
-    logger = get_logger()
-    logger.info(
-        f"Setting up validation dataloader (split={validation_config.split}, max_samples={validation_config.max_samples})"
-    )
-
-    # Load the validation split
-    dataset = setup_and_interleave_datasets(
-        dataset_name=data_config.name,
-        subsets_and_splits=[(None, validation_config.split)],
-        probabilities=None,
-        stopping_strategy="all_exhausted",
-        seed=data_config.seed,
-    )
-
-    # Create SFT dataset without shuffle and with max_epochs=1
-    val_dataset = SFTDataset(
-        dataset,
-        tokenizer,
-        shuffle=False,
-        seed=data_config.seed,
-        seq_len=data_config.seq_len,
-        loss_mask_config=data_config.loss_mask,
-        max_examples=validation_config.max_samples,
-        max_epochs=1,  # Only iterate once through validation set
-        non_dp_size=non_dp_size,
-    )
-
-    # Use ValidationCatDataset which yields the last partial batch (padded)
-    packed_dataset = ValidationCatDataset(val_dataset, data_config.seq_len * data_config.micro_batch_size)
-    return StatefulDataLoader(packed_dataset, batch_size=1, collate_fn=cat_collate)
