@@ -22,7 +22,7 @@ async def synthesize(config: SynthesizeConfig):
     logger = setup_logger(
         config.log.level,
         log_file=config.output_dir / "logs" / "synthesize.log" if config.log.file else None,
-        json=config.log.json_logging,
+        json_logging=config.log.json_logging,
     )
     intercept_verifiers_logging(level=config.log.vf_level)
 

@@ -227,7 +227,7 @@ def worker_main(
     # Reset logger inherited from parent process, then setup fresh logger for this worker
     if log_file:
         reset_logger()
-        setup_logger(log_level, log_file=Path(log_file), append=True, tag=worker_name, json=json_logging)
+        setup_logger(log_level, log_file=Path(log_file), append=True, tag=worker_name, json_logging=json_logging)
         intercept_verifiers_logging(level=vf_log_level)
 
     # Load environment

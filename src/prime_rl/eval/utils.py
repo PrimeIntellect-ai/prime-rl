@@ -804,7 +804,7 @@ def _run_evals_in_subprocess(
     """Entry point for eval subprocess. Creates its own event loop and clients."""
     # Setup logger for subprocess (reset first since we inherit parent's global state when forked)
     reset_logger()
-    logger = setup_logger("info", json=json_logging)
+    logger = setup_logger("info", json_logging=json_logging)
     intercept_verifiers_logging(level="info")
     logger.info(f"Eval subprocess started for checkpoint step {ckpt_step}")
 

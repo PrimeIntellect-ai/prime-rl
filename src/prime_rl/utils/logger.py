@@ -78,7 +78,7 @@ def setup_logger(
     log_file: Path | None = None,
     append: bool = False,
     tag: str | None = None,
-    json: bool = False,
+    json_logging: bool = False,
 ):
     global _LOGGER
     if _LOGGER is not None:
@@ -120,11 +120,11 @@ def setup_logger(
     )
 
     # Bind tag to logger context for JSON mode (in non-JSON mode, tag is in the format string)
-    if json and tag:
+    if json_logging and tag:
         logger = logger.bind(tag=tag)
 
     # Install console handler (enqueue=True for non-blocking in async contexts)
-    if json:
+    if json_logging:
         logger.add(_json_sink, level=log_level.upper(), enqueue=True)
     else:
         logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True, enqueue=True)
@@ -133,7 +133,7 @@ def setup_logger(
     if log_file is not None:
         if not append and log_file.exists():
             log_file.unlink()
-        if json:
+        if json_logging:
             file_sink = _JsonFileSink(log_file)
             logger.add(file_sink.write, level=log_level.upper(), enqueue=True)
         else:

@@ -558,7 +558,7 @@ def rl(config: RLConfig):
     logger = setup_logger(
         config.log.level or "info",
         log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None,
-        json=config.log.json_logging,
+        json_logging=config.log.json_logging,
     )
     start_command = sys.argv
     logger.info("Starting RL run")
