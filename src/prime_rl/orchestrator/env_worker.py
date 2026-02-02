@@ -14,7 +14,6 @@ from pathlib import Path
 
 import verifiers as vf
 from openai import AsyncOpenAI
-from verifiers.utils.async_utils import maybe_semaphore
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
@@ -110,7 +109,7 @@ async def worker_loop(
     """Main async loop for processing rollout requests."""
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 
-    semaphore = await maybe_semaphore(max_concurrent)
+    semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
 
     # Start event loop lag monitor for this worker
     lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
@@ -141,14 +140,19 @@ async def worker_loop(
     async def process_request(request: RolloutRequest, client: AsyncOpenAI) -> RolloutResponse:
         example = example_lookup[request.example_id]
         group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
-        async with semaphore:
-            outputs = await env.run_group(
-                group_inputs=group_inputs,
-                client=client,
-                model=request.model_name,
-                sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
-                state_columns=["trajectory"],
-            )
+        if semaphore:
+            for _ in range(request.rollouts_per_example):
+                await semaphore.acquire()
+        outputs = await env.run_group(
+            group_inputs=group_inputs,
+            client=client,
+            model=request.model_name,
+            sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
+            state_columns=["trajectory"],
+        )
+        if semaphore:
+            for _ in range(request.rollouts_per_example):
+                semaphore.release()
         temperature = request.sampling_args["temperature"]
         return RolloutResponse(request_id=request.request_id, results=[extract_result(o, temperature) for o in outputs])
 

@@ -721,7 +721,7 @@ class OrchestratorConfig(BaseSettings):
     max_concurrent: Annotated[
         int | None,
         Field(
-            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
+            description="Maximum number of concurrent rollouts to generate and score. If None, will not limit concurrency.",
         ),
     ] = None
 
@@ -821,6 +821,12 @@ class OrchestratorConfig(BaseSettings):
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
+
+    @model_validator(mode="after")
+    def validate_max_concurrent(self):
+        if self.max_concurrent is not None and self.max_concurrent < self.rollouts_per_example:
+            raise ValueError("max_concurrent must be at least the number of rollouts per example")
+        return self
 
     @model_validator(mode="after")
     def nccl_max_async_level(self):
