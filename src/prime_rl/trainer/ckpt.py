@@ -20,6 +20,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.config import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
+from prime_rl.trainer.optim import CPUOffloadOptimizer
 from prime_rl.trainer.runs import Progress
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
@@ -53,9 +54,20 @@ class AppState(Stateful):
         self.scheduler = scheduler
         self.progress = progress
 
+    def _get_base_optimizers(self) -> list[Optimizer]:
+        """Extract base optimizers from wrappers like CPUOffloadOptimizer."""
+        return [opt.base_optimizer if isinstance(opt, CPUOffloadOptimizer) else opt for opt in self.optimizers]
+
     def state_dict(self) -> dict[str, Any]:
+        # Move CPU-offloaded states to GPU before checkpointing
+        for opt in self.optimizers:
+            if isinstance(opt, CPUOffloadOptimizer) and opt._initialized:
+                opt._move_states("cuda")
+                torch.cuda.synchronize()
+
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
-        model_state_dict, optimizer_state_dict = get_state_dict(self.model, self.optimizers)
+        base_optimizers = self._get_base_optimizers()
+        model_state_dict, optimizer_state_dict = get_state_dict(self.model, base_optimizers)
         state_dict = {
             "model": model_state_dict,
             "optimizers": optimizer_state_dict,
@@ -66,12 +78,26 @@ class AppState(Stateful):
         if self.progress is not None:
             progress_state_dict = asdict(self.progress)
             state_dict["progress"] = progress_state_dict
+
+        # Move states back to CPU
+        for opt in self.optimizers:
+            if isinstance(opt, CPUOffloadOptimizer) and opt._initialized:
+                opt._move_states("cpu")
+
         return state_dict
 
     def load_state_dict(self, state_dict: dict[str, Any]):
+        base_optimizers = self._get_base_optimizers()
         set_state_dict(
-            self.model, self.optimizers, model_state_dict=state_dict["model"], optim_state_dict=state_dict["optimizers"]
+            self.model, base_optimizers, model_state_dict=state_dict["model"], optim_state_dict=state_dict["optimizers"]
         )
+
+        # Re-initialize CPU offload wrappers after loading
+        for opt in self.optimizers:
+            if isinstance(opt, CPUOffloadOptimizer):
+                opt._move_states("cpu")
+                opt._initialized = True
+
         if self.scheduler is not None:
             self.scheduler.load_state_dict(state_dict["scheduler"])
         if self.progress is not None:

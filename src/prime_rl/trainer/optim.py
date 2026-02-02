@@ -107,6 +107,10 @@ class CPUOffloadOptimizer:
     def state(self):
         return self.optimizer.state
 
+    @property
+    def base_optimizer(self) -> Optimizer:
+        return self.optimizer
+
 
 def setup_optimizer(
     config: OptimizerConfigType,
