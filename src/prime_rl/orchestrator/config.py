@@ -824,8 +824,11 @@ class OrchestratorConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_max_concurrent(self):
-        if self.max_concurrent is not None and self.max_concurrent < self.rollouts_per_example:
-            raise ValueError("max_concurrent must be at least the number of rollouts per example")
+        min_concurrent = self.rollouts_per_example * (self.workers_per_env or 1)
+        if self.max_concurrent is not None and self.max_concurrent < min_concurrent:
+            raise ValueError(
+                f"max_concurrent must be at least rollouts_per_example * workers_per_env ({min_concurrent})"
+            )
         return self
 
     @model_validator(mode="after")
