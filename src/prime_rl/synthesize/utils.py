@@ -8,7 +8,7 @@ import aiofiles
 import verifiers as vf
 from openai import AsyncOpenAI
 from verifiers import load_environment
-from verifiers.envs.environment import get_results_path
+from verifiers.utils.path_utils import get_results_path
 
 from prime_rl.orchestrator.config import ClientConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.utils.logger import ProgressTracker, get_logger

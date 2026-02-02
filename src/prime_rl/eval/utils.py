@@ -16,8 +16,8 @@ from openai import AsyncOpenAI, BadRequestError
 from prime_evals import AsyncEvalsClient
 from tenacity import RetryCallState, RetryError, retry, stop_after_attempt, wait_exponential
 from verifiers import load_environment
-from verifiers.envs.environment import get_results_path
-from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
+from verifiers.utils.path_utils import get_results_path
+from verifiers.utils.save_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig, RetryConfig
