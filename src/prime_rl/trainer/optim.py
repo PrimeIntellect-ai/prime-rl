@@ -41,10 +41,7 @@ class CPUOffloadOptimizer:
                         if self.pin_memory and not new_local.is_pinned():
                             new_local = new_local.pin_memory()
                     else:
-                        target_device = torch.device("cuda")
-                        if isinstance(p, DTensor):
-                            target_device = p._local_tensor.device
-                        new_local = local_tensor.to(target_device, non_blocking=True)
+                        new_local = local_tensor.to(device, non_blocking=True)
                     new_dtensor = copy.copy(v)
                     new_dtensor._local_tensor = new_local
                     state[k] = new_dtensor
@@ -56,8 +53,7 @@ class CPUOffloadOptimizer:
                             cpu_tensor = cpu_tensor.pin_memory()
                         state[k] = cpu_tensor
                     else:
-                        target_device = p.device if hasattr(p, "device") else "cuda"
-                        state[k] = v.to(target_device, non_blocking=True)
+                        state[k] = v.to(device, non_blocking=True)
 
     def step(self, closure=None):
         # First step initializes states on GPU - offload after
