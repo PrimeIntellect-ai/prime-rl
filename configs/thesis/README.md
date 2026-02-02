@@ -69,11 +69,11 @@ uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-mis-0.5-2 --trainer.loss.token-mask-low 0.5 --trainer.loss.token-mask-high 2
 
 # kl
-uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-1e-4 --trainer.loss.kl-tau 1e-4
-uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-2e-3 --trainer.loss.kl-tau 2e-3
-uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
-uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-1e-1 --trainer.loss.kl-tau 1e-1
-uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-tau-1 --trainer.loss.kl-tau 1
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-1e-4 --trainer.loss.kl-tau 1e-4
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-1e-3 --trainer.loss.kl-tau 1e-3
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-1e-2 --trainer.loss.kl-tau 1e-2
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-1e-1 --trainer.loss.kl-tau 1e-1
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-1e-0 --trainer.loss.kl-tau 1
 
 # kl + mis (1/8, 8)
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-mis-0.125-8-kl-tau-1e-4 --trainer.loss.kl-tau 1e-4 --trainer.loss.token-mask-low 0.125 --trainer.loss.token-mask-high 8
