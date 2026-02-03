@@ -1,14 +1,19 @@
-from typing import TYPE_CHECKING
+from __future__ import annotations
 
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
 from prime_rl.trainer.config import SchedulerConfigType
+from prime_rl.trainer.optim import CPUOffloadOptimizer, MultiLoRAOptimizer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger
 
-if TYPE_CHECKING:
-    from prime_rl.trainer.optim import MultiLoRAOptimizer
+
+def _get_base_optimizer(optimizer: Optimizer | CPUOffloadOptimizer) -> Optimizer:
+    """Extract the base optimizer from a potentially wrapped optimizer."""
+    if isinstance(optimizer, CPUOffloadOptimizer):
+        return optimizer.optimizer
+    return optimizer
 
 
 def setup_constant_scheduler(optimizer: Optimizer) -> LRScheduler:
@@ -82,18 +87,23 @@ def setup_cosine_scheduler(
 
 
 def setup_scheduler(
-    optimizer: Optimizer,
+    optimizer: Optimizer | CPUOffloadOptimizer,
     scheduler_config: SchedulerConfigType,
     max_steps: int | None,
     lr: float,
 ) -> LRScheduler:
-    """Create learning rate scheduler based on config."""
+    """Create learning rate scheduler based on config.
+
+    Handles CPUOffloadOptimizer by extracting the base optimizer for the scheduler.
+    """
+    base_optimizer = _get_base_optimizer(optimizer)
+
     match scheduler_config.type:
         case "constant":
-            return setup_constant_scheduler(optimizer)
+            return setup_constant_scheduler(base_optimizer)
         case "linear":
             return setup_linear_scheduler(
-                optimizer,
+                base_optimizer,
                 max_steps=max_steps,
                 warmup_steps=scheduler_config.warmup_steps,
                 decay_steps=scheduler_config.decay_steps,
@@ -102,7 +112,7 @@ def setup_scheduler(
             )
         case "cosine":
             return setup_cosine_scheduler(
-                optimizer,
+                base_optimizer,
                 max_steps=max_steps,
                 warmup_steps=scheduler_config.warmup_steps,
                 lr=lr,
@@ -167,7 +177,7 @@ class MultiLoRAScheduler:
 
 
 def setup_multi_scheduler(
-    optimizer: "MultiLoRAOptimizer",
+    optimizer: MultiLoRAOptimizer,
     scheduler_config: SchedulerConfigType,
     max_steps: int | None,
 ) -> MultiLoRAScheduler:

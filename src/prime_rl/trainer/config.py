@@ -167,6 +167,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
+    optim_cpu_offload: Annotated[
+        bool,
+        Field(
+            description="Whether to enable optimizer state CPU offloading. Unlike fsdp_cpu_offload, this only moves optimizer states (momentum, variance) to CPU, keeping weights on GPU. This avoids the H2D all-gather overhead while still saving GPU memory.",
+        ),
+    ] = False
+
     reshard_after_forward: Annotated[
         bool, Field(description="Whether to reshard the model after each forward pass.")
     ] = True
@@ -291,6 +298,12 @@ class ModelConfig(BaseConfig):
         """Automatically enable activation checkpointing when activation offloading is enabled."""
         if self.ac_offloading is not None and self.ac is None:
             self.ac = ActivationCheckpointConfig()
+        return self
+
+    @model_validator(mode="after")
+    def cpu_offload_mutual_exclusion(self):
+        if self.fsdp_cpu_offload and self.optim_cpu_offload:
+            raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
         return self
 
     @model_validator(mode="after")
