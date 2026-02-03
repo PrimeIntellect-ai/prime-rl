@@ -59,21 +59,29 @@ got crashing run with 16 step off-policy and otherwise defaults.
 
 ```bash
 # tis
-uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-tis-0-2 --trainer.loss.token-clip-high 2
-uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-tis-0-4 --trainer.loss.token-clip-high 4
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-tis-0-16 --trainer.loss.token-clip-high 16
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-tis-0-8 --trainer.loss.token-clip-high 8
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-tis-0-4 --trainer.loss.token-clip-high 4
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-tis-0-2 --trainer.loss.token-clip-high 2
 
 # mis
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-mis-0.0625-16 --trainer.loss.token-mask-low 0.0625 --trainer.loss.token-mask-high 16
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-mis-0.125-8 --trainer.loss.token-mask-low 0.125 --trainer.loss.token-mask-high 8
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-mis-0.25-4 --trainer.loss.token-mask-low 0.25 --trainer.loss.token-mask-high 4
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-mis-0.5-2 --trainer.loss.token-mask-low 0.5 --trainer.loss.token-mask-high 2
 
-# kl
+# kl (k2-style)
+# git checkout a2b6df330151320214668a110a0f302c88d4d0f2 (thesis-old-kl)
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-old-kl-1e-4 --trainer.loss.kl-tau 1e-4
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-old-kl-1e-3 --trainer.loss.kl-tau 1e-3
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-old-kl-1e-2 --trainer.loss.kl-tau 1e-2
+uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-old-kl-1e-1 --trainer.loss.kl-tau 1e-1
+
+# kl (k2.5-style)
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-1e-4 --trainer.loss.kl-tau 1e-4
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-1e-3 --trainer.loss.kl-tau 1e-3
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-1e-2 --trainer.loss.kl-tau 1e-2
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-1e-1 --trainer.loss.kl-tau 1e-1
-uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-kl-1e-0 --trainer.loss.kl-tau 1
 
 # kl + mis (1/8, 8)
 uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name wiki-search-16-step-off-policy-mis-0.125-8-kl-tau-1e-4 --trainer.loss.kl-tau 1e-4 --trainer.loss.token-mask-low 0.125 --trainer.loss.token-mask-high 8

@@ -16,6 +16,7 @@ echo "=== Running on $(hostname) ==="
 echo "=== Job ID: $SLURM_JOB_ID ==="
 
 # Configs
+export GIT_REF=${GIT_REF:-"thesis"}
 export EXPERIMENT_NAME=${EXPERIMENT_NAME:-"job_${SLURM_JOB_ID}"}
 export BASE_DIR=${BASE_DIR:-"/home/mika/prime-rl"}
 export OUTPUT_DIR=${OUTPUT_DIR:-"/shared/mika/$EXPERIMENT_NAME"}
@@ -40,6 +41,7 @@ srun bash -c 'pkill -9 -f VLLM || true && fuser -k 8000/tcp || true' || true
 # Install environment
 echo "=== Setting up environment ==="
 cd $BASE_DIR
+git checkout $GIT_REF
 source /home/mika/.env
 source .venv/bin/activate
 
@@ -53,6 +55,7 @@ srun bash -c '
     set -euxo pipefail
     # Setup environment
     cd $BASE_DIR
+    git checkout $GIT_REF
     source /home/mika/.env
     source .venv/bin/activate
 
