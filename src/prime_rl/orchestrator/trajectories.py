@@ -171,7 +171,7 @@ def _extract_images_from_messages(messages: list) -> list[Image.Image]:
 
 
 def _extract_images_from_examples(
-    examples: list[tuple[int, vf.State]],
+    examples: list[tuple[int, vf.RolloutOutput]],
 ) -> tuple[list[Image.Image], dict[int, list[int]]]:
     """
     Extract images from all trajectory steps of each example.
@@ -306,7 +306,7 @@ class VLMImageCache:
         return steps[-1]
 
 
-def build_vlm_image_cache(rollouts: list[vf.State], processor) -> VLMImageCache:
+def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMImageCache:
     """
     Build image cache for VLM training by extracting and preprocessing images.
 

@@ -242,7 +242,7 @@ class Buffer:
             self.num_rollouts_per_step[env_name]["normal"] += len(example_rollouts)
             self.rollout_buffer.extend(example_rollouts)
 
-    def sample_rollouts(self, n: int) -> list[vf.State]:
+    def sample_rollouts(self, n: int) -> list[vf.RolloutOutput]:
         """Samples the latest n rollouts from the buffer."""
         n = min(n, len(self.rollout_buffer))
         sampled_rollouts = self.rollout_buffer[-n:]

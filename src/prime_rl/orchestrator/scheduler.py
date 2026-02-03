@@ -199,7 +199,7 @@ class Scheduler:
 
             self.ckpt_step = next_ckpt_step
 
-    async def generate_batch(self, step: int) -> list[dict]:
+    async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
         """Generate a batch of rollouts using workers.
 
         Returns list of result dicts (not vf.State, since those stay in workers).
@@ -212,7 +212,7 @@ class Scheduler:
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
             await self.schedule_group_rollout()
 
-        batch_rollouts: list[dict] = []
+        batch_rollouts: list[vf.RolloutOutput] = []
         pbar = ProgressTracker(
             total=self.config.batch_size, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
         )

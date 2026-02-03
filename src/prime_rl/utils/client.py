@@ -97,14 +97,14 @@ class StaticInferencePool:
         pass
 
 
-async def setup_inference_pool(client_config: ClientConfig, base_model: str | None = None) -> InferencePool:
+async def setup_inference_pool(client_config: ClientConfig, model_name: str) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
 
     if client_config.is_elastic:
         from prime_rl.utils.elastic import ElasticInferencePool
 
-        return await ElasticInferencePool.from_config(client_config, base_model=base_model)
+        return await ElasticInferencePool.from_config(client_config, model_name=model_name)
 
     logger.info(
         f"Initializing OpenAI client (base_url={', '.join(client_config.base_url)}, "

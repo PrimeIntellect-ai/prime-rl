@@ -2,6 +2,7 @@ import asyncio
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import tomli_w
 
@@ -41,12 +42,8 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.vf_utils import generate, get_completion_len, get_prompt_len, get_seq_len
 from prime_rl.utils.client import (
-    check_health,
     init_nccl_broadcast,
-    maybe_check_has_model,
     reload_weights,
-    setup_admin_clients,
-    setup_clients,
     setup_inference_pool,
 )
 from prime_rl.utils.heartbeat import Heartbeat
@@ -100,22 +97,19 @@ async def orchestrate(config: OrchestratorConfig):
         install_env(env_id)
 
     # Setup inference pool (handles both static and elastic modes)
-    inference_pool = await setup_inference_pool(config.client, base_model=config.model.name)
+    inference_pool = await setup_inference_pool(config.client, model_name=config.model.name)
 
-    admin_clients = inference_pool.admin_clients
-
-    # Setup teacher model client if configured
-    teacher_clients = None
-    teacher_admin_clients = None
-    teacher_model_name = None
+    # Setup teacher inference pool if configured
     if config.teacher_model:
         logger.info(
-            f"Initializing teacher OpenAI client (base_url={', '.join(config.teacher_model.client.base_url)}, "
+            f"Initializing teacher inference pool (base_url={', '.join(config.teacher_model.client.base_url)}, "
             f"model={config.teacher_model.model.name})"
         )
-        teacher_clients = setup_clients(config.teacher_model.client)
-        teacher_admin_clients = setup_admin_clients(config.teacher_model.client)
-        teacher_model_name = config.teacher_model.model.name
+        teacher_inference_pool = await setup_inference_pool(
+            config.teacher_model.client, model_name=config.teacher_model.model.name
+        )
+    else:
+        teacher_inference_pool = None
 
     # Check if this is a vision-language model (used throughout for VLM-specific paths)
     is_vlm = is_vlm_model(config.model.name)
@@ -178,7 +172,7 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info("Skipping verification (rewards will be set to 0)")
         train_env_group.set_score_rollouts(False)
 
-    if config.eval is not None:
+    if config.eval:
         eval_envs = [vf.load_environment(env.id, **env.args) for env in config.eval.env]
         eval_env_names = [env.name or env.id for env in config.eval.env]
         eval_sampling_args = get_eval_sampling_args(config.eval.sampling)
@@ -230,29 +224,27 @@ async def orchestrate(config: OrchestratorConfig):
     )
 
     if checkpoint_step is not None and config.model.lora is not None:
-        scheduler.model_name = config.model.lora.name
+        scheduler.model_name = config.model.lora.name or ""
 
     # Check health of the inference pool
     logger.info("Waiting for inference pool to be ready")
     await inference_pool.wait_for_ready(config.model.name)
-    # Refresh clients after waiting (elastic mode may have discovered new servers)
-    admin_clients = inference_pool.admin_clients
     logger.success("Inference pool ready")
 
     # Check health of teacher inference server if configured
-    if teacher_admin_clients is not None:
+    if config.teacher_model and teacher_inference_pool:
         logger.info("Waiting for teacher inference pool to be ready")
-        await check_health(teacher_admin_clients)
-        await maybe_check_has_model(
-            teacher_clients, teacher_model_name, skip_model_check=config.teacher_model.client.skip_model_check
-        )
+        await teacher_inference_pool.wait_for_ready(config.teacher_model.model.name)
         logger.success("Teacher inference pool ready")
 
     # Set up weight broadcast backend
     logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
     if config.weight_broadcast.type == "nccl":
         await init_nccl_broadcast(
-            admin_clients, config.weight_broadcast.host, config.weight_broadcast.port, config.weight_broadcast.timeout
+            inference_pool.admin_clients,
+            config.weight_broadcast.host,
+            config.weight_broadcast.port,
+            config.weight_broadcast.timeout,
         )
 
     # Setup training batch sender for sending training examples to trainer
@@ -282,7 +274,7 @@ async def orchestrate(config: OrchestratorConfig):
         if config.reload_weights_on_start:
             if config.model.lora is None:
                 logger.info("Training from scratch. Resetting weights to base model")
-                await reload_weights(admin_clients)
+                await reload_weights(inference_pool.admin_clients)
             else:
                 logger.info("Training from scratch. Skipping base weight reload because LoRA is enabled")
         else:
@@ -379,7 +371,8 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Schedule generating the training batch
         temperature = compute_temperature(progress.step, config.sampling, config.max_steps)
-        scheduler.set_sampling_args(get_sampling_args(config.sampling, temperature=temperature))
+        sampling_args = get_sampling_args(config.sampling, temperature=temperature)
+        scheduler.set_sampling_args(sampling_args)
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
         # Schedule running validation at the specified interval
@@ -393,7 +386,7 @@ async def orchestrate(config: OrchestratorConfig):
                     model_name=config.model.name,
                     examples=val_examples,
                     rollouts_per_example=config.val.rollouts_per_example,
-                    sampling_args=get_sampling_args(config.sampling, temperature=temperature),
+                    sampling_args=sampling_args,
                     pbar_description="Generating rollouts (val)",
                 )
             )
@@ -406,8 +399,9 @@ async def orchestrate(config: OrchestratorConfig):
         train_rollouts = train_task.result()
 
         # Compute advantages
-        rewards = [rollout["reward"] for rollout in train_rollouts]
-        completion_lens = [get_completion_len(rollout) for rollout in train_rollouts]
+        example_ids = [r["example_id"] for r in train_rollouts]
+        rewards = [r["reward"] for r in train_rollouts]
+        completion_lens = [get_completion_len(r) for r in train_rollouts]
         advantages = compute_advantages(
             rewards,
             completion_lens,
@@ -417,8 +411,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
-
-        num_unique_examples = len({r["example_id"] for r in train_rollouts})
+        num_unique_examples = len(set(example_ids))
 
         # VLM: build image cache for efficient batched preprocessing
         if is_vlm:
@@ -430,23 +423,18 @@ async def orchestrate(config: OrchestratorConfig):
             vlm_cache = None
 
         # Process rollouts in parallel
-        if config.trajectory_strategy == "interleaved":
-
-            def process_rollout(rollout: vf.State) -> list[TrainingSample] | None:
-                return interleave_rollout(rollout)
-        else:
-
-            def process_rollout(rollout: vf.State, rollout_idx: int) -> list[TrainingSample] | None:
-                return branch_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
-
         loop = asyncio.get_event_loop()
+
         if config.trajectory_strategy == "interleaved":
-            futures = [loop.run_in_executor(rollout_executor, process_rollout, r) for r in train_rollouts]
+            futures = [loop.run_in_executor(rollout_executor, interleave_rollout, r) for r in train_rollouts]
         else:
             futures = [
-                loop.run_in_executor(rollout_executor, process_rollout, r, rollout_idx)
-                for rollout_idx, r in enumerate(train_rollouts)
+                loop.run_in_executor(
+                    rollout_executor, partial(branch_rollout, vlm_cache=vlm_cache), rollout, rollout_idx
+                )
+                for rollout_idx, rollout in enumerate(train_rollouts)
             ]
+
         results = await asyncio.gather(*futures)
 
         # Collect results and assign advantages
@@ -466,12 +454,12 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0
-        if config.teacher_model is not None:
+        if config.teacher_model and teacher_inference_pool:
             logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
             teacher_logprobs_start_time = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs(
-                clients=teacher_clients,
-                model_name=teacher_model_name,
+                clients=teacher_inference_pool.clients,
+                model_name=config.teacher_model.model.name,
                 samples=train_examples,
             )
             for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
