@@ -13,6 +13,7 @@ from multiprocessing import Process, Queue
 from pathlib import Path
 
 import verifiers as vf
+from aiolimiter import AsyncLimiter
 from openai import AsyncOpenAI
 from verifiers.utils.async_utils import maybe_semaphore
 
@@ -104,6 +105,7 @@ async def worker_loop(
     clients: list[AsyncOpenAI],
     client_config: ClientConfig,
     max_concurrent_groups: int,
+    tasks_per_minute: int,
     example_lookup: dict[int, dict],
     model_name: str,
 ):
@@ -111,6 +113,7 @@ async def worker_loop(
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 
     semaphore = await maybe_semaphore(max_concurrent_groups)
+    rate_limiter = AsyncLimiter(tasks_per_minute, 60) if tasks_per_minute > 0 else None
 
     # Start event loop lag monitor for this worker
     lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
@@ -139,6 +142,8 @@ async def worker_loop(
         return bool(clients)
 
     async def process_request(request: RolloutRequest, client: AsyncOpenAI) -> RolloutResponse:
+        if rate_limiter:
+            await rate_limiter.acquire()
         example = example_lookup[request.example_id]
         group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
         async with semaphore:
@@ -218,6 +223,7 @@ def worker_main(
     seq_len: int,
     interleaved_rollouts: bool,
     max_concurrent_groups: int,
+    tasks_per_minute: int,
     example_lookup: dict[int, dict],
     log_level: str,
     vf_log_level: str,
@@ -251,6 +257,7 @@ def worker_main(
             clients,
             client_config,
             max_concurrent_groups,
+            tasks_per_minute,
             example_lookup,
             model_name,
         )
@@ -269,6 +276,7 @@ class EnvWorker:
         seq_len: int,
         interleaved_rollouts: bool,
         max_concurrent_groups: int,
+        tasks_per_minute: int,
         example_lookup: dict[int, dict],
         worker_name: str | None = None,
         log_level: str = "warn",
@@ -284,6 +292,7 @@ class EnvWorker:
         self.seq_len = seq_len
         self.interleaved_rollouts = interleaved_rollouts
         self.max_concurrent_groups = max_concurrent_groups
+        self.tasks_per_minute = tasks_per_minute
         self.example_lookup = example_lookup
         self.worker_name = worker_name or env_id
 
@@ -327,6 +336,7 @@ class EnvWorker:
                 self.seq_len,
                 self.interleaved_rollouts,
                 self.max_concurrent_groups,
+                self.tasks_per_minute,
                 self.example_lookup,
                 self.log_level,
                 self.vf_log_level,
