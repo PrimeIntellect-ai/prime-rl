@@ -18,7 +18,6 @@ from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.utils.client import InferencePool
-from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
@@ -51,20 +50,18 @@ class Scheduler:
     def __init__(
         self,
         env: vf.Environment,
-        client_config: ClientConfig,
+        inference_pool: InferencePool,
         buffer: Buffer,
         config: OrchestratorConfig,
         oversampling_factor: float,
         max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
-        inference_pool: InferencePool,
         lora_name: str | None = None,
         output_dir: Path | None = None,
     ):
         self.logger = get_logger()
         self.env = env
-        self.client_config = client_config
         self.buffer = buffer
         self.config = config
         self.batch_size = config.batch_size
@@ -94,19 +91,7 @@ class Scheduler:
         self.cancelled_rollouts_count = 0
         self.last_batch_generation_time = 0.0
 
-        self.client_configs = [
-            vf.ClientConfig(
-                client_idx=client_idx,
-                api_base_url=base_url,
-                api_key_var=client_config.api_key_var,
-                timeout=client_config.timeout,
-                extra_headers=client_config.headers,
-                max_connections=8192,
-                max_keepalive_connections=8192,
-            )
-            for client_idx, base_url in enumerate(client_config.base_url)
-        ]
-        self.client_config_cycle = cycle(self.client_configs)
+        self.client_config_cycle = cycle(inference_pool.clients)
 
     async def start(self):
         """Start the scheduler."""
@@ -116,6 +101,13 @@ class Scheduler:
         """Stop the scheduler."""
         if self.update_policy_task is not None:
             self.update_policy_task.cancel()
+
+        for task in list(self.inflight_group_rollouts.keys()):
+            if not task.done():
+                task.cancel()
+        if self.inflight_group_rollouts:
+            await asyncio.gather(*self.inflight_group_rollouts.keys(), return_exceptions=True)
+        self.inflight_group_rollouts.clear()
 
     def set_sampling_args(self, sampling_args: dict) -> None:
         """Update sampling args for future rollout requests."""

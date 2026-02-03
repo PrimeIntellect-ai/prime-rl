@@ -200,16 +200,15 @@ async def orchestrate(config: OrchestratorConfig):
 
     scheduler = Scheduler(
         env=train_env_group,
-        client_config=config.client,
         buffer=buffer,
-        config=config,
+        inference_pool=inference_pool,
         oversampling_factor=config.oversampling_factor,
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
         lora_name=config.model.lora.name if config.model.lora else None,
         output_dir=config.output_dir,
-        inference_pool=inference_pool,
+        config=config,
     )
 
     if checkpoint_step is not None and config.model.lora is not None:

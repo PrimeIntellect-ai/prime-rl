@@ -3,15 +3,13 @@ from itertools import cycle
 from typing import Any, cast
 
 import verifiers as vf
-from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
-from verifiers.types import ClientConfig
 
 from prime_rl.utils.logger import ProgressTracker
 
 
 async def generate_group(
-    client: AsyncOpenAI | ClientConfig,
+    client: vf.ClientConfig,
     env: vf.Environment,
     model_name: str,
     example: dict,
@@ -33,7 +31,7 @@ async def generate_group(
 
 
 async def generate_rollout(
-    client: AsyncOpenAI,
+    client: vf.ClientConfig,
     env: vf.Environment,
     model_name: str,
     example: dict,
@@ -49,7 +47,7 @@ async def generate_rollout(
 
 
 async def generate_batch(
-    clients: list[AsyncOpenAI],
+    clients: list[vf.ClientConfig],
     env: vf.Environment,
     model_name: str,
     examples: list[dict],
