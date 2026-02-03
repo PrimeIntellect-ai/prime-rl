@@ -180,6 +180,7 @@ class Scheduler:
 
             if self.lora_name is not None:
                 self.model_name = self.lora_name
+                self.inference_pool.update_model_name(self.model_name)
 
             self.checkpoint_ready.set()
 

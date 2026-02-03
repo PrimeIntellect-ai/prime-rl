@@ -31,6 +31,10 @@ class InferencePool(Protocol):
         """Get admin clients."""
         ...
 
+    def update_model_name(self, model_name: str) -> None:
+        """Update the model name."""
+        ...
+
     async def get_next_client(self) -> vf.ClientConfig:
         """Get next client in round-robin fashion."""
         ...
@@ -63,6 +67,7 @@ class StaticInferencePool:
         self._skip_model_check = skip_model_check
         self._idx_to_client = {client.client_idx: client for client in clients}
         self._client_cycle = cycle(clients)
+        self.model_name = None  # unused
 
     @property
     def clients(self) -> list[vf.ClientConfig]:
@@ -71,6 +76,9 @@ class StaticInferencePool:
     @property
     def admin_clients(self) -> list[AsyncClient]:
         return self._admin_clients
+
+    def update_model_name(self, model_name: str) -> None:
+        self.model_name = model_name
 
     async def get_next_client(self) -> vf.ClientConfig:
         return next(self._client_cycle)

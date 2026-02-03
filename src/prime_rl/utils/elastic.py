@@ -206,14 +206,14 @@ class ElasticInferencePool:
         self,
         hostname: str,
         client_config: ClientConfig,
-        base_model: str | None = None,
+        model_name: str,
         port: int = 8000,
         sync_interval: float = 5.0,
     ):
         self.logger = get_logger()
         self.hostname = hostname
         self.client_config = client_config
-        self.base_model = base_model
+        self.model_name = model_name
         self.port = port
         self.sync_interval = sync_interval
 
@@ -230,18 +230,21 @@ class ElasticInferencePool:
         self._started = False
 
     @classmethod
-    async def from_config(cls, config: ClientConfig, base_model: str | None = None) -> ElasticInferencePool:
+    async def from_config(cls, config: ClientConfig, model_name: str) -> ElasticInferencePool:
         if config.elastic is None:
             raise ValueError("Elastic inference pool requires elastic config")
         pool = cls(
             hostname=config.elastic.hostname,
             client_config=config,
-            base_model=base_model,
+            model_name=model_name,
             port=config.elastic.port,
             sync_interval=config.elastic.sync_interval,
         )
         await pool.start()
         return pool
+
+    def update_model_name(self, model_name: str) -> None:
+        self.model_name = model_name
 
     def _build_url(self, ip: str) -> str:
         return f"http://{ip}:{self.port}"
@@ -326,7 +329,7 @@ class ElasticInferencePool:
                         continue
                 elif not parent:
                     continue
-                elif self.base_model is not None and parent != self.base_model:
+                elif parent != self.model_name:
                     continue
 
                 root = model.get("root", "")
@@ -422,8 +425,8 @@ class ElasticInferencePool:
             data = response.json()
             models = [m.get("id") for m in data.get("data", [])]
 
-            if self.base_model is not None and self.base_model not in models:
-                self.logger.debug(f"Server {ip} does not have base model {self.base_model}")
+            if self.model_name not in models:
+                self.logger.debug(f"Server {ip} does not have model {self.model_name}")
                 return False
         except Exception as e:
             self.logger.debug(f"Server {ip} model check failed: {e}")
