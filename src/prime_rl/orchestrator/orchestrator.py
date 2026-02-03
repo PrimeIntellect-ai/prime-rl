@@ -153,27 +153,35 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(
         f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
     )
-    env = vf.EnvGroup(
+    train_env_group = vf.EnvGroup(
         envs=[vf.load_environment(env.id, **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
     )
-    env.set_max_seq_len(config.seq_len)
+    await train_env_group.start_servers(
+        log_level=config.log.vf_level,
+        log_file=[
+            (config.output_dir / "logs" / "envs" / "train" / f"{env_name}.log").as_posix()
+            for env_name in train_env_group.env_names
+        ],
+        startup_timeout=30,
+    )
+    train_env_group.set_max_seq_len(config.seq_len)
     if config.trajectory_strategy == "interleaved":
         logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
-        env.set_interleaved_rollouts(True)
+        train_env_group.set_interleaved_rollouts(True)
     if config.buffer.skip_verification:
         logger.info("Skipping verification (rewards will be set to 0)")
-        env.set_score_rollouts(False)
+        train_env_group.set_score_rollouts(False)
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
-    train_dataset = env.get_dataset(seed=config.buffer.seed)
-    buffer = Buffer(train_dataset, env.env_names, config.buffer)
+    train_dataset = train_env_group.get_dataset(seed=config.buffer.seed)
+    buffer = Buffer(train_dataset, train_env_group.env_names, config.buffer)
     if config.val is not None:
         val_buffer_config = BufferConfig(env_ratios=config.buffer.env_ratios)
-        val_dataset = env.get_eval_dataset(seed=val_buffer_config.seed)
-        val_buffer = Buffer(val_dataset, env.env_names, val_buffer_config)
+        val_dataset = train_env_group.get_eval_dataset(seed=val_buffer_config.seed)
+        val_buffer = Buffer(val_dataset, train_env_group.env_names, val_buffer_config)
     else:
         val_buffer = None
 
@@ -363,7 +371,7 @@ async def orchestrate(config: OrchestratorConfig):
             val_task = asyncio.create_task(
                 generate_batch(
                     clients=inference_pool.clients,
-                    env=env,
+                    env=train_env_group,
                     model_name=config.model.name,
                     examples=val_examples,
                     rollouts_per_example=config.val.rollouts_per_example,
