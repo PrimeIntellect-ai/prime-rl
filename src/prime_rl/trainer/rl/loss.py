@@ -1,4 +1,5 @@
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import torch
 from beartype import beartype as typechecker
@@ -6,7 +7,34 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.trainer.rl.config import LossConfig
-from prime_rl.trainer.rl.loss_interface import LossFn, LossInputs, LossOutputs
+
+
+@dataclass
+class LossInputs:
+    """Inputs for computing loss on a single sample."""
+
+    trainer_logprobs: Float[Tensor, " seq"]
+    inference_logprobs: Float[Tensor, " seq"]
+    teacher_logprobs: Float[Tensor, " seq"] | None
+    advantages: Float[Tensor, " seq"]
+    loss_mask: Bool[Tensor, " seq"]
+
+
+@dataclass
+class LossOutputs:
+    """Outputs from computing loss on a single sample."""
+
+    loss: Float[Tensor, ""]
+    metrics: dict[str, Tensor]
+
+
+LossFn = Callable[..., LossOutputs]
+"""Type for a per-sample loss function.
+
+Expected signature:
+    def my_loss(inputs: LossInputs, **kwargs) -> LossOutputs:
+        ...
+"""
 
 
 @jaxtyped(typechecker=typechecker)
@@ -75,21 +103,8 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
-def grpo_loss(
-    inputs: LossInputs,
-    ratio_type: str = "token",
-    token_mask_high: float = 8.0,
-    token_mask_low: float = 0.125,
-    sequence_clip_high: float = 10.0,
-    geo_mask_high: float = 10.0,
-    geo_mask_low: float = 0.1,
-    sequence_mask_low: float = 0.0,
-    sequence_mask_high: float = 100.0,
-    adv_tau: float = 1.0,
-    teacher_tau: float = 0.0,
-    kl_tau: float = 0.0,
-) -> LossOutputs:
-    """GRPO loss for a single sequence."""
+def prime_rl_loss(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
+    """Prime RL loss for a single sample."""
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
     teacher_logprobs = inputs.teacher_logprobs
@@ -104,18 +119,18 @@ def grpo_loss(
     token_mismatch_kl = token_importance_ratio - log_importance_ratio - 1
 
     seq_log_importance_ratio = torch.clamp(log_importance_ratio[loss_mask].sum().detach(), max=10.0)
-    seq_importance_ratio = torch.clamp(torch.exp(seq_log_importance_ratio), max=sequence_clip_high)
+    seq_importance_ratio = torch.clamp(torch.exp(seq_log_importance_ratio), max=loss_config.sequence_clip_high)
 
     seq_min_ratio = torch.where(loss_mask, token_importance_ratio, torch.inf).min()
     seq_max_ratio = torch.where(loss_mask, token_importance_ratio, -torch.inf).max()
-    seq_mask_low = seq_min_ratio < sequence_mask_low
-    seq_mask_high = seq_max_ratio > sequence_mask_high
+    seq_mask_low = seq_min_ratio < loss_config.sequence_mask_low
+    seq_mask_high = seq_max_ratio > loss_config.sequence_mask_high
 
-    token_mask_low_mask = token_importance_ratio < token_mask_low
-    token_mask_high_mask = token_importance_ratio > token_mask_high
+    token_mask_low_mask = token_importance_ratio < loss_config.token_mask_low
+    token_mask_high_mask = token_importance_ratio > loss_config.token_mask_high
 
-    geo_mask_low_mask = geo_seq_ratio < geo_mask_low
-    geo_mask_high_mask = geo_seq_ratio > geo_mask_high
+    geo_mask_low_mask = geo_seq_ratio < loss_config.geo_mask_low
+    geo_mask_high_mask = geo_seq_ratio > loss_config.geo_mask_high
 
     is_masked = (
         token_mask_low_mask
@@ -127,15 +142,15 @@ def grpo_loss(
     )
     keep_mask = loss_mask & ~is_masked
 
-    importance_ratio = seq_importance_ratio if ratio_type == "sequence" else token_importance_ratio
+    importance_ratio = seq_importance_ratio if loss_config.ratio_type == "sequence" else token_importance_ratio
 
-    advantages = adv_tau * advantages
+    advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:
-        advantages = advantages + teacher_tau * teacher_kl.detach()
-    coeff = importance_ratio * (advantages - kl_tau * log_importance_ratio)
+        advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
+    coeff = importance_ratio * (advantages - loss_config.kl_tau * log_importance_ratio)
     loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
 
-    if ratio_type == "sequence":
+    if loss_config.ratio_type == "sequence":
         loss = loss / torch.clamp_min(loss_mask.sum(), 1)
 
     metrics = {
@@ -161,20 +176,7 @@ def setup_loss_fn(loss_config: LossConfig) -> LossFn:
     """Setup the loss function based on config."""
 
     def loss_fn(inputs: LossInputs) -> LossOutputs:
-        return grpo_loss(
-            inputs,
-            ratio_type=loss_config.ratio_type,
-            token_mask_high=loss_config.token_mask_high,
-            token_mask_low=loss_config.token_mask_low,
-            sequence_clip_high=loss_config.sequence_clip_high,
-            geo_mask_high=loss_config.geo_mask_high,
-            geo_mask_low=loss_config.geo_mask_low,
-            sequence_mask_low=loss_config.sequence_mask_low,
-            sequence_mask_high=loss_config.sequence_mask_high,
-            adv_tau=loss_config.adv_tau,
-            teacher_tau=loss_config.teacher_tau,
-            kl_tau=loss_config.kl_tau,
-        )
+        return prime_rl_loss(inputs, loss_config)
 
     return loss_fn
 
