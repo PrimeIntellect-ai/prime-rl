@@ -67,7 +67,7 @@ class ModelConfig(BaseModelConfig):
     ] = None
 
 
-class TemperatureScheduleConfig(BaseConfig):
+class TemperatureSchedulerConfig(BaseConfig):
     """Configures temperature scheduling over training steps. Use this OR sampling.temperature, not both."""
 
     type: Annotated[
@@ -114,7 +114,7 @@ class SamplingConfig(BaseConfig):
     ] = None
 
     temp_scheduler: Annotated[
-        TemperatureScheduleConfig | None,
+        TemperatureSchedulerConfig | None,
         Field(
             description="Temperature schedule over training steps. Set this OR temperature, not both.",
         ),
@@ -238,17 +238,6 @@ class EvalSamplingConfig(BaseConfig):
     ] = {}
 
 
-class EvalSaveDiskConfig(BaseConfig):
-    """Configures how to save the eval results to disk."""
-
-    path: Annotated[
-        Path | None,
-        Field(
-            description="The path to save the eval results to. If None, will default to <output_dir>/evals/<step_path>/<env_id> for online evals and the verifiers default for offline evals."
-        ),
-    ] = None
-
-
 class EvalSaveHFConfig(BaseConfig):
     """Configures how to save the eval results to HF."""
 
@@ -276,66 +265,6 @@ class EvalSaveHFConfig(BaseConfig):
     private: Annotated[
         bool,
         Field(description="Whether to save the eval results to a private HF dataset."),
-    ] = False
-
-
-class EvalSaveConfig(BaseConfig):
-    disk: EvalSaveDiskConfig | None = None
-    hf: EvalSaveHFConfig | None = None
-    env_hub: Annotated[
-        bool,
-        Field(
-            description="Whether to push eval results to Prime Environment Hub. Automatically pushes all evaluated environments. Requires PRIME_API_KEY and authorization for the environments."
-        ),
-    ] = False
-    stream: Annotated[
-        bool,
-        Field(
-            description="Whether to save results incrementally as rollouts complete.",
-        ),
-    ] = False
-
-
-class RetryConfig(BaseConfig):
-    """Configures retry behavior for rollout generation."""
-
-    max_attempts: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Maximum number of retry attempts.",
-        ),
-    ] = 10
-
-    wait_multiplier: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="Multiplier for exponential backoff wait time.",
-        ),
-    ] = 1.0
-
-    wait_min: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="Minimum wait time in seconds between retries.",
-        ),
-    ] = 1.0
-
-    wait_max: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="Maximum wait time in seconds between retries.",
-        ),
-    ] = 60.0
-
-    reraise: Annotated[
-        bool,
-        Field(
-            description="Whether to reraise the original exception after all retries are exhausted. If False, raises tenacity.RetryError instead.",
-        ),
     ] = False
 
 
@@ -391,34 +320,10 @@ class EvalConfig(BaseConfig):
         default_factory=EvalSamplingConfig,
         description="Shared sampling configuration for evals; can differ from training sampling.",
     )
-    save: EvalSaveConfig = Field(
-        default_factory=EvalSaveConfig,
-        description="Configures how to save the eval results.",
-    )
-    retry: RetryConfig = Field(
-        default_factory=RetryConfig,
-        description="Configures retry behavior for rollout generation.",
-    )
     num_examples: Annotated[int, Field(description="Number of examples to evaluate per environment.")] = -1
     rollouts_per_example: Annotated[
         int, Field(ge=1, description="Number of samples to generate per example for each environment.")
     ] = 1
-    reasoning_field: Annotated[
-        str,
-        Field(
-            description="The field in the raw model response that contains the reasoning content. Defaults to 'reasoning_content', which is the default for vLLM when serving a model with a reasoning parser. Other APIs (e.g. DeepSeek, GLM, etc.) may use different field names.",
-        ),
-    ] = "reasoning_content"
-    per_rollout: Annotated[
-        bool,
-        Field(
-            description="Schedule rollouts individually instead of as groups. Enables live progress updates and per-rollout resume, but incompatible with group-based rubrics.",
-        ),
-    ] = False
-
-
-class OnlineEvalConfig(EvalConfig):
-    """Configures online evaluation."""
 
     interval: Annotated[
         int,
@@ -669,7 +574,7 @@ class OrchestratorConfig(BaseSettings):
     env: list[EnvConfig] = [EnvConfig()]
 
     # The evaluation configuration
-    eval: OnlineEvalConfig | None = None
+    eval: EvalConfig | None = None
 
     # Data buffer configuration
     buffer: BufferConfig = BufferConfig()
@@ -824,11 +729,8 @@ class OrchestratorConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_max_concurrent(self):
-        min_concurrent = self.rollouts_per_example * (self.workers_per_env or 1)
-        if self.max_concurrent is not None and self.max_concurrent < min_concurrent:
-            raise ValueError(
-                f"max_concurrent must be at least rollouts_per_example * workers_per_env ({min_concurrent})"
-            )
+        if self.max_concurrent is not None and self.max_concurrent < self.rollouts_per_example:
+            raise ValueError("max_concurrent must be at least the number of rollouts per example")
         return self
 
     @model_validator(mode="after")
@@ -878,8 +780,8 @@ class OrchestratorConfig(BaseSettings):
             self.sampling.temperature = 1.0
 
         if has_scheduler:
-            schedule = self.sampling.temp_scheduler
-            if schedule.total_steps is None and self.max_steps is None:
+            scheduler = self.sampling.temp_scheduler
+            if scheduler.total_steps is None and self.max_steps is None:
                 raise ValueError("temp_scheduler.total_steps must be set when max_steps is None")
 
         return self
