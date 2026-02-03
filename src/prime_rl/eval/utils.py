@@ -157,7 +157,7 @@ def make_result(output: vf.RolloutOutput, reasoning_field: str, rollout_idx: int
     for metric_name, metric_value in output["metrics"].items():
         result_dict[metric_name] = metric_value
 
-    result_dict["oai_tools"] = output.get("oai_tools", [])
+    result_dict["oai_tools"] = json.dumps(output.get("oai_tools", []))
 
     return result_dict
 
