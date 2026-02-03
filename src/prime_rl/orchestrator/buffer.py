@@ -211,7 +211,7 @@ class Buffer:
 
         return sampled_examples
 
-    def update(self, rollouts: list[vf.State]):
+    def update(self, rollouts: list[vf.RolloutOutput]):
         """Updates the buffer state with completed rollouts."""
 
         rollouts_by_example = defaultdict(list)

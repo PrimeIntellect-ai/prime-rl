@@ -10,6 +10,7 @@ from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import branch_rollout, build_vlm_image_cache, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
+from prime_rl.utils.pathing import get_env_worker_log_file
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -47,7 +48,7 @@ from prime_rl.utils.client import (
     setup_inference_pool,
 )
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
+from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
@@ -71,7 +72,8 @@ async def orchestrate(config: OrchestratorConfig):
         log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
-    intercept_verifiers_logging(level=config.log.vf_level)
+    vf.setup_logging("ERROR")  # essentially disable vf console logging on orchestrator
+    # intercept_verifiers_logging(level=config.log.vf_level)
     logger.info("Starting orchestrator")
 
     event_loop_lag_monitor = EventLoopLagMonitor()
@@ -161,8 +163,7 @@ async def orchestrate(config: OrchestratorConfig):
     await train_env_group.start_servers(
         log_level=config.log.vf_level,
         log_file=[
-            (config.output_dir / "logs" / "envs" / "train" / f"{env_name}.log").as_posix()
-            for env_name in train_env_group.env_names
+            get_env_worker_log_file(config.output_dir, env_name).as_posix() for env_name in train_env_group.env_names
         ],
         startup_timeout=30,
     )
@@ -197,8 +198,8 @@ async def orchestrate(config: OrchestratorConfig):
             checkpoint_step = config.ckpt.resume_step
 
     scheduler = Scheduler(
+        env=train_env_group,
         client_config=config.client,
-        env_configs=config.env,
         buffer=buffer,
         config=config,
         oversampling_factor=config.oversampling_factor,
@@ -212,9 +213,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     if checkpoint_step is not None and config.model.lora is not None:
         scheduler.model_name = config.model.lora.name
-        for workers in scheduler.workers.values():
-            for worker in workers:
-                worker.model_name = config.model.lora.name
 
     await scheduler.start()
 
@@ -684,8 +682,11 @@ async def orchestrate(config: OrchestratorConfig):
     # Shutdown rollout executor
     rollout_executor.shutdown(wait=False)
 
-    # Stop env workers
+    # Stop scheduler
     await scheduler.stop()
+
+    # Stop env servers
+    await train_env_group.stop_servers()
 
     # Stop inference pool
     await inference_pool.stop()

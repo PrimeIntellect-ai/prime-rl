@@ -5,19 +5,20 @@ from typing import Any, cast
 import verifiers as vf
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
+from verifiers.types import ClientConfig
 
 from prime_rl.utils.logger import ProgressTracker
 
 
 async def generate_group(
-    client: AsyncOpenAI,
+    client: AsyncOpenAI | ClientConfig,
     env: vf.Environment,
     model_name: str,
     example: dict,
     rollouts_per_example: int,
     sampling_args: dict,
     max_retries: int = 0,
-    state_columns: list[str] = ["trajectory"],
+    state_columns: list[str] = ["trajectory", "sampling_args"],
 ) -> list[vf.RolloutOutput]:
     """Asynchronously generate and score rollouts for a single group."""
     group_inputs = [vf.RolloutInput(**example) for _ in range(rollouts_per_example)]
@@ -38,7 +39,7 @@ async def generate_rollout(
     example: dict,
     sampling_args: dict,
     max_retries: int = 0,
-    state_columns: list[str] = ["trajectory"],
+    state_columns: list[str] = ["trajectory", "sampling_args"],
 ) -> vf.RolloutOutput:
     """Asynchronously generate and score a single rollout."""
     rollout_input = vf.RolloutInput(**example)

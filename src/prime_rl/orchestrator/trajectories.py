@@ -12,7 +12,7 @@ from prime_rl.utils.logger import get_logger
 # primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
 
 
-def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
+def interleave_rollout(output: vf.RolloutOutput) -> list[TrainingSample] | None:
     """
     Convert vf.State to a *single* trainable rollout by interleaving the trajectory.
 
@@ -23,16 +23,16 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     """
     logger = get_logger()
 
-    trajectory = state["trajectory"]
+    trajectory = output["trajectory"]
     if len(trajectory) == 0:
-        logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
+        logger.warning(f"No trajectory steps for example {output['example_id']}. Skipping rollout.")
         return None
 
-    has_error = state["error"] is not None
+    has_error = output["error"] is not None
 
     # Initialize the rollout with prompt and completion from first trajectory step
     first_step = trajectory[0]
-    temperature = first_step["temperature"]
+    temperature = output["sampling_args"]["temperature"]
     if has_error:
         completion_mask = [False] * len(first_step["tokens"]["completion_mask"])
     else:
@@ -54,14 +54,13 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     prefix_tokens = first_step["tokens"]["prompt_ids"] + first_step["tokens"]["completion_ids"]
     for step_idx, step in enumerate(trajectory[1:], start=2):
         tokens = step["tokens"]
-        step_temperature = step["temperature"]
         assert tokens is not None
         prev_trajectory_and_new_prompt_ids = tokens["prompt_ids"]
 
         # Incremental tokenization assumption
         if not prefix_tokens == prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)]:
             logger.warning(
-                f"Found mismatch in prefix tokens for example {state['example_id']} at trajectory step {step_idx}"
+                f"Found mismatch in prefix tokens for example {output['example_id']} at trajectory step {step_idx}"
             )
 
         # Extend the completion with the new prompt (use step's temperature for prompt tokens too)
@@ -69,7 +68,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         interleaved_rollout.completion_ids.extend(prompt_ids)
         interleaved_rollout.completion_mask.extend([False] * len(prompt_ids))
         interleaved_rollout.completion_logprobs.extend([0.0] * len(prompt_ids))
-        interleaved_rollout.completion_temperatures.extend([step_temperature] * len(prompt_ids))
+        interleaved_rollout.completion_temperatures.extend([temperature] * len(prompt_ids))
 
         # Extend the completion with the new completion tokens
         completion_ids = tokens["completion_ids"]
@@ -80,7 +79,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
         else:
             interleaved_rollout.completion_mask.extend([bool(i) for i in tokens["completion_mask"]])
         interleaved_rollout.completion_logprobs.extend(completion_logprobs)
-        interleaved_rollout.completion_temperatures.extend([step_temperature] * len(completion_ids))
+        interleaved_rollout.completion_temperatures.extend([temperature] * len(completion_ids))
 
         # New prefix is the current prompt and completion ids concatenated
         prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
@@ -89,7 +88,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
 
 
 def branch_rollout(
-    state: vf.State,
+    output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
 ) -> list[TrainingSample] | None:
@@ -107,16 +106,16 @@ def branch_rollout(
     logger = get_logger()
 
     rollouts = []
-    trajectory = state["trajectory"]
+    trajectory = output["trajectory"]
     if len(trajectory) == 0:
-        logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
+        logger.warning(f"No trajectory steps for example {output['example_id']}. Skipping rollout.")
         return None
 
-    has_error = state["error"] is not None
+    has_error = output["error"] is not None
+    temperature = output["sampling_args"]["temperature"]
 
     for step_idx, step in enumerate(trajectory):
         tokens = step["tokens"]
-        temperature = step["temperature"]
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
@@ -124,7 +123,7 @@ def branch_rollout(
 
         # Get cumulative images up to this step
         if vlm_cache is not None:
-            key = state["example_id"] if cache_key is None else cache_key
+            key = output["example_id"] if cache_key is None else cache_key
             pixel_values, image_grid_thw = vlm_cache.get_for_step(key, step_idx)
         else:
             pixel_values, image_grid_thw = None, None
