@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from itertools import cycle
 from pathlib import Path
 from typing import NamedTuple
 
@@ -91,8 +90,6 @@ class Scheduler:
         self.cancelled_rollouts_count = 0
         self.last_batch_generation_time = 0.0
 
-        self.client_config_cycle = cycle(inference_pool.clients)
-
     async def start(self):
         """Start the scheduler."""
         self.update_policy_task = asyncio.create_task(self.update_policy_loop())
@@ -128,7 +125,7 @@ class Scheduler:
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
         example = self.buffer.sample_examples(n=1)[0]
-        client_config = next(self.client_config_cycle)
+        client_config = await self.inference_pool.get_next_client()
         run_group_task = asyncio.create_task(
             generate_group(
                 example=example,
