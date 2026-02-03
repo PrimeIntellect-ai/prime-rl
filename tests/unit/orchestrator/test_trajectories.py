@@ -429,6 +429,19 @@ def test_vlm_image_cache_get_all():
     assert grid == [[1, 2, 3], [1, 4, 4]]
 
 
+def test_vlm_image_cache_step_out_of_range():
+    cache_data = {
+        1: [
+            ([[1.0]], [[1, 2, 3]]),
+        ],
+    }
+    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
+
+    pv, grid = cache.get_for_step(1, 2)
+    assert pv is None
+    assert grid is None
+
+
 def test_vlm_image_cache_missing_example():
     cache = VLMImageCache({}, num_unique_examples=0, extract_time=0.0, preprocess_time=0.0)
 
@@ -501,18 +514,52 @@ def test_branch_rollout_with_vlm_cache():
     assert rollouts[1].image_grid_thw == [[1, 2, 3], [1, 4, 4]]
 
 
-def test_build_vlm_image_cache_uses_longest_rollout():
-    """
-    Test that build_vlm_image_cache uses the longest trajectory when multiple rollouts
-    exist for the same example_id, ensuring all steps have image data.
-    """
+def test_branch_rollout_uses_cache_key_override():
+    cache_data = {
+        7: [
+            ([[9.0]], [[1, 2, 3]]),
+        ],
+    }
+    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
+
+    state = vf.State(
+        example_id=123,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "Turn 1"}],
+                completion=[{"role": "assistant", "content": "Response 1"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                temperature=1.0,
+            ),
+        ],
+        error=None,
+    )
+
+    rollouts = branch_rollout(state, vlm_cache=cache, cache_key=7)
+
+    assert len(rollouts) == 1
+    assert rollouts[0].pixel_values == [[9.0]]
+    assert rollouts[0].image_grid_thw == [[1, 2, 3]]
+
+
+def test_build_vlm_image_cache_handles_divergent_rollouts():
+    """Test that build_vlm_image_cache keys images per rollout when trajectories diverge."""
     import torch
 
     red_url = _create_test_image("red")
+    blue_url = _create_test_image("blue")
     green_url = _create_test_image("green")
 
-    # Short rollout: 1 trajectory step
-    short_rollout = vf.State(
+    rollout_a = vf.State(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
@@ -526,21 +573,20 @@ def test_build_vlm_image_cache_uses_longest_rollout():
         error=None,
     )
 
-    # Long rollout: 2 trajectory steps (same example_id)
-    long_rollout = vf.State(
+    rollout_b = vf.State(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
-                prompt=[_create_image_message(red_url, "What color?")],
-                completion=[{"role": "assistant", "content": "Red"}],
+                prompt=[_create_image_message(blue_url, "What color?")],
+                completion=[{"role": "assistant", "content": "Blue"}],
                 response=MagicMock(),
                 tokens=MagicMock(),
                 temperature=1.0,
             ),
             vf.TrajectoryStep(
                 prompt=[
-                    _create_image_message(red_url, "What color?"),
-                    {"role": "assistant", "content": "Red"},
+                    _create_image_message(blue_url, "What color?"),
+                    {"role": "assistant", "content": "Blue"},
                     _create_image_message(green_url, "And this one?"),
                 ],
                 completion=[{"role": "assistant", "content": "Green"}],
@@ -555,19 +601,47 @@ def test_build_vlm_image_cache_uses_longest_rollout():
     # Mock processor that returns predictable tensors
     mock_processor = MagicMock()
     mock_processor.image_processor = MagicMock(
-        return_value={
-            "pixel_values": torch.tensor([1.0, 2.0]),  # 2 patches
-            "image_grid_thw": torch.tensor([[1, 1, 1], [1, 1, 1]]),  # 2 images
+        side_effect=lambda images, return_tensors: {
+            "pixel_values": torch.arange(len(images), dtype=torch.float32).view(-1, 1),
+            "image_grid_thw": torch.tensor([[1, 1, 1]] * len(images)),
         }
     )
 
-    # Short rollout appears first, but cache should use the longer one
-    rollouts = [short_rollout, long_rollout]
+    rollouts = [rollout_a, rollout_b]
     cache = build_vlm_image_cache(rollouts, mock_processor)
 
-    # Both steps should have image data
+    assert cache.num_unique_examples == 1
+
+    pv, grid = cache.get_for_step(0, 0)
+    assert pv == [[0.0]]
+    assert grid == [[1, 1, 1]]
+
     pv, grid = cache.get_for_step(1, 0)
-    assert pv is not None, "Step 0 should have image data"
+    assert pv == [[1.0]]
+    assert grid == [[1, 1, 1]]
 
     pv, grid = cache.get_for_step(1, 1)
-    assert pv is not None, "Step 1 should have image data"
+    assert pv == [[1.0], [2.0]]
+    assert grid == [[1, 1, 1], [1, 1, 1]]
+
+
+def test_build_vlm_image_cache_no_images():
+    state = vf.State(
+        example_id=1,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "Hello"}],
+                completion=[{"role": "assistant", "content": "Hi"}],
+                response=MagicMock(),
+                tokens=MagicMock(),
+                temperature=1.0,
+            )
+        ],
+        error=None,
+    )
+
+    cache = build_vlm_image_cache([state], MagicMock())
+
+    pv, grid = cache.get_for_step(0, 0)
+    assert pv is None
+    assert grid is None
