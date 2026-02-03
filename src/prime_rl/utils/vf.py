@@ -1,9 +1,7 @@
 import asyncio
 from itertools import cycle
-from typing import Any, cast
 
 import verifiers as vf
-from openai.types.chat.chat_completion import ChatCompletion
 
 from prime_rl.utils.logger import ProgressTracker, get_logger
 
@@ -138,61 +136,3 @@ def get_completion_len(output: vf.RolloutOutput) -> int:
     tokens.
     """
     return get_seq_len(output) - get_prompt_len(output)
-
-
-def get_is_truncated(output: vf.RolloutOutput) -> bool:
-    """Check if the rollout is truncated. If raw tokens are not available, falls back to checking the finish reason of the last response."""
-    return output["is_truncated"]
-
-
-def to_serializable_trajectory_step(step: vf.TrajectoryStep) -> dict:
-    """Returns a serializable version of vf.TrajectoryStep."""
-    serializable_trajectory_step = cast(dict, step.copy())
-    if "response" in step and isinstance(step["response"], ChatCompletion):
-        serializable_trajectory_step["response"] = step["response"].model_dump()
-    return serializable_trajectory_step
-
-
-def from_serializable_trajectory_step(step: dict) -> vf.TrajectoryStep:
-    """Inverse of to_serializable_trajectory_step."""
-    deserialized_trajectory_step = vf.TrajectoryStep(**step)
-    if "response" in step and isinstance(step["response"], dict):
-        deserialized_trajectory_step["response"] = ChatCompletion.model_validate(step["response"])
-    return deserialized_trajectory_step
-
-
-def to_serializable_state(state: vf.State) -> dict:
-    """Returns a serializable copy of vf.State."""
-    serializable_state = cast(dict, state.copy())
-
-    # Flatten input fields to top level for serialization
-    # This is necessary because the dict object cannot forward access to input fields anymore, e.g. state["prompt"] will automatically forward to state["input"]["prompt"] in vf.State but not in dict. We solve this by populating the inputs into the top-level explicitly
-    if "input" in state:
-        input_dict = serializable_state.pop("input")
-        for field in vf.State.INPUT_FIELDS:
-            if field in input_dict:
-                serializable_state[field] = input_dict[field]
-
-    if "trajectory" in state:
-        serializable_state["trajectory"] = [to_serializable_trajectory_step(step) for step in state["trajectory"]]
-
-    return serializable_state
-
-
-def from_serializable_state(serializable_state: dict) -> vf.State:
-    """Inverse of to_serializable_state."""
-    # Extract input fields from top level and reconstruct input dict
-    input_dict: dict[str, Any] = {}
-    for field in vf.State.INPUT_FIELDS:
-        if field in serializable_state:
-            input_dict[field] = serializable_state.pop(field)
-
-    if input_dict:
-        serializable_state["input"] = input_dict
-
-    state = vf.State(**serializable_state)
-
-    if "trajectory" in state:
-        state["trajectory"] = [from_serializable_trajectory_step(step) for step in state["trajectory"]]
-
-    return state

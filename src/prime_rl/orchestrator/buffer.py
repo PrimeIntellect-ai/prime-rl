@@ -8,11 +8,11 @@ from typing import cast
 
 import verifiers as vf
 from datasets import Dataset
+from verifiers.utils.save_utils import make_serializable
 
 from prime_rl.orchestrator.config import BufferConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_num, mean, mean_normalize
-from prime_rl.utils.vf import from_serializable_state, to_serializable_state
 
 
 class Buffer:
@@ -73,7 +73,7 @@ class Buffer:
         self.hard_examples: list[dict] = []
 
         # Initialize rollout buffer (flat list of rollouts)
-        self.rollout_buffer: list[vf.State] = []
+        self.rollout_buffer: list[vf.RolloutOutput] = []
 
         self.reset_step_metrics()
 
@@ -87,16 +87,14 @@ class Buffer:
         """Saves pool assignments and rollout buffer."""
         path.mkdir(parents=True, exist_ok=True)
 
-        def write_jsonl(lst: list[dict], path: Path) -> None:
+        def write_jsonl(lst: list, path: Path) -> None:
             with open(path, "w") as f:
                 for item in lst:
-                    f.write(json.dumps(item) + "\n")
+                    f.write(json.dumps(item, default=make_serializable) + "\n")
 
         write_jsonl(self.easy_examples, path / "easy_examples.jsonl")
         write_jsonl(self.hard_examples, path / "hard_examples.jsonl")
-
-        serializable_rollouts = [to_serializable_state(rollout) for rollout in self.rollout_buffer]
-        write_jsonl(serializable_rollouts, path / "rollout_buffer.jsonl")
+        write_jsonl(self.rollout_buffer, path / "rollout_buffer.jsonl")
 
     def load(self, path: Path) -> None:
         """Loads pool assignments and rollouts."""
@@ -107,9 +105,7 @@ class Buffer:
 
         saved_easy_examples = read_jsonl(path / "easy_examples.jsonl")
         saved_hard_examples = read_jsonl(path / "hard_examples.jsonl")
-        saved_rollout_buffer = [
-            from_serializable_state(rollout) for rollout in read_jsonl(path / "rollout_buffer.jsonl")
-        ]
+        saved_rollout_buffer = cast(list[vf.RolloutOutput], read_jsonl(path / "rollout_buffer.jsonl"))
 
         if any(saved_easy_examples) or any(saved_hard_examples) or any(saved_rollout_buffer):
             # Build hash lookup for example buffer (env -> (example_hash -> example_id))
