@@ -384,11 +384,10 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
         # Convert rollouts to training samples
-        rollout_fn = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
         parallel_preprocess_start = time.perf_counter()
 
-        # VLM: build image cache for efficient batched preprocessing
-        if is_vlm:
+        # VLM: build image cache for efficient batched preprocessing (only for branching strategy)
+        if is_vlm and config.trajectory_strategy == "branching":
             vlm_cache = build_vlm_image_cache(train_rollouts, processor)
             num_unique = vlm_cache.num_unique_examples
             logger.info(
@@ -399,8 +398,14 @@ async def orchestrate(config: OrchestratorConfig):
             num_unique = len({r["example_id"] for r in train_rollouts})
 
         # Process rollouts in parallel
-        def process_rollout(rollout: vf.State) -> list[TrainingSample] | None:
-            return rollout_fn(rollout, vlm_cache=vlm_cache)
+        if config.trajectory_strategy == "interleaved":
+
+            def process_rollout(rollout: vf.State) -> list[TrainingSample] | None:
+                return interleave_rollout(rollout)
+        else:
+
+            def process_rollout(rollout: vf.State) -> list[TrainingSample] | None:
+                return branch_rollout(rollout, vlm_cache=vlm_cache)
 
         loop = asyncio.get_event_loop()
         futures = [loop.run_in_executor(rollout_executor, process_rollout, r) for r in train_rollouts]

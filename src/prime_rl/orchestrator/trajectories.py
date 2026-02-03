@@ -13,26 +13,15 @@ from prime_rl.utils.logger import get_logger
 # same example (not copied) which is safe since nothing mutates them after creation.
 
 
-def interleave_rollout(
-    state: vf.State,
-    vlm_cache: "VLMImageCache | None" = None,
-) -> list[TrainingSample] | None:
+def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
     """
     Convert vf.State to a *single* trainable rollout by interleaving the trajectory.
 
     NOTE:
     - This requires that consecutive trajectory steps share token prefixes (incremental tokenization)
     - This approach is susceptible to subtle differences due to re-tokenization in multi-turn environments.
-
-    Args:
-        state: vf.State containing trajectory data
-        vlm_cache: Pre-computed VLM image cache for multimodal training
+    - VLM (multimodal) is NOT supported with interleaved strategy; use branching instead.
     """
-    # Get all images for the full trajectory (last step's cumulative images)
-    if vlm_cache is not None:
-        cached_pixel_values, cached_image_grid_thw = vlm_cache.get_all(state["example_id"])
-    else:
-        cached_pixel_values, cached_image_grid_thw = None, None
     logger = get_logger()
 
     trajectory = state["trajectory"]
@@ -60,8 +49,6 @@ def interleave_rollout(
         completion_temperatures=[temperature] * len(completion_ids),
         teacher_logprobs=None,
         advantage=None,
-        pixel_values=cached_pixel_values,
-        image_grid_thw=cached_image_grid_thw,
     )
 
     # Interleave all other trajectory steps into completion

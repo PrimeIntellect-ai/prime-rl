@@ -501,61 +501,6 @@ def test_branch_rollout_with_vlm_cache():
     assert rollouts[1].image_grid_thw == [[1, 2, 3], [1, 4, 4]]
 
 
-def test_interleave_rollout_with_vlm_cache():
-    """Test that interleave_rollout uses all images from cache."""
-    cache_data = {
-        1: [
-            ([[1.0]], [[1, 2, 3]]),
-            ([[1.0], [2.0]], [[1, 2, 3], [1, 4, 4]]),
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    state = vf.State(
-        example_id=1,
-        trajectory=[
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Turn 1"}],
-                completion=[{"role": "assistant", "content": "Response 1"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2],
-                    prompt_mask=[0, 0],
-                    completion_ids=[3, 4],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.1, -0.2],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                temperature=1.0,
-            ),
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Turn 2"}],
-                completion=[{"role": "assistant", "content": "Response 2"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5],
-                    prompt_mask=[0, 0, 0, 0, 0],
-                    completion_ids=[6, 7],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.3, -0.4],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                temperature=1.0,
-            ),
-        ],
-        error=None,
-    )
-
-    rollouts = interleave_rollout(state, vlm_cache=cache)
-
-    assert len(rollouts) == 1
-    # Interleaved rollout should have ALL images (from last step)
-    assert rollouts[0].pixel_values == [[1.0], [2.0]]
-    assert rollouts[0].image_grid_thw == [[1, 2, 3], [1, 4, 4]]
-
-
 def test_build_vlm_image_cache_uses_longest_rollout():
     """
     Test that build_vlm_image_cache uses the longest trajectory when multiple rollouts
