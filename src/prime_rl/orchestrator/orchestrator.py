@@ -6,11 +6,12 @@ from concurrent.futures import ThreadPoolExecutor
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.eval_utils import get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import branch_rollout, build_vlm_image_cache, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
-from prime_rl.utils.pathing import get_env_worker_log_file
+from prime_rl.utils.pathing import get_log_dir
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -26,10 +27,10 @@ import verifiers as vf
 from loguru import logger
 from transformers import AutoProcessor, AutoTokenizer
 
-from prime_rl.eval.utils import run_evals_subprocess
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
+from prime_rl.orchestrator.eval_utils import evaluate_env
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -163,7 +164,8 @@ async def orchestrate(config: OrchestratorConfig):
     await train_env_group.start_servers(
         log_level="CRITICAL",  # essentially no console logging
         log_file=[
-            get_env_worker_log_file(config.output_dir, env_name).as_posix() for env_name in train_env_group.env_names
+            (get_log_dir(config.output_dir) / "train" / f"{env_name}.log").as_posix()
+            for env_name in train_env_group.env_names
         ],
         log_file_level=config.log.vf_level,
         startup_timeout=30,
@@ -175,6 +177,22 @@ async def orchestrate(config: OrchestratorConfig):
     if config.buffer.skip_verification:
         logger.info("Skipping verification (rewards will be set to 0)")
         train_env_group.set_score_rollouts(False)
+
+    if config.eval is not None:
+        eval_envs = [vf.load_environment(env.id, **env.args) for env in config.eval.env]
+        eval_env_names = [env.name or env.id for env in config.eval.env]
+        eval_sampling_args = get_eval_sampling_args(config.eval.sampling)
+        for eval_env, eval_env_name in zip(eval_envs, eval_env_names):
+            await eval_env.start_server(
+                log_level="CRITICAL",  # essentially no console logging
+                log_file=(get_log_dir(config.output_dir) / "eval" / f"{eval_env_name}.log").as_posix(),
+                log_file_level=config.log.vf_level,
+                startup_timeout=30,
+            )
+    else:
+        eval_envs: list[vf.Environment] = []
+        eval_env_names: list[str] = []
+        eval_sampling_args = {}
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
@@ -213,8 +231,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     if checkpoint_step is not None and config.model.lora is not None:
         scheduler.model_name = config.model.lora.name
-
-    await scheduler.start()
 
     # Check health of the inference pool
     logger.info("Waiting for inference pool to be ready")
@@ -334,24 +350,28 @@ async def orchestrate(config: OrchestratorConfig):
             and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
         ):
             last_eval_step = ckpt_step
-            logger.info(f"Running evals for checkpoint step {ckpt_step} (blocking, subprocess)")
+            logger.info(f"Running evals for checkpoint step {ckpt_step}")
 
             # Pause weight updates during eval and cancel inflight rollouts
             # this avoid doing eval across different checkpoints and avoid congestion
             scheduler.checkpoint_ready.clear()
             scheduler.cancel_all_inflight_rollouts()
 
-            await run_evals_subprocess(
-                client_config=config.client,
-                eval_config=config.eval,
-                model_config=config.model,
-                sampling_config=config.eval.sampling,
-                reasoning_field=config.eval.reasoning_field,
-                output_dir=config.output_dir,
-                ckpt_step=ckpt_step,
-                step=progress.step,
-                max_concurrent=config.max_concurrent or -1,
-                json_logging=config.log.json_logging,
+            results = await asyncio.gather(
+                *[
+                    evaluate_env(
+                        env=eval_env,
+                        env_name=eval_env_name,
+                        client=await inference_pool.get_next_client(),  # TODO: round-robin clients within evaluate
+                        model_name=config.model.name,  # TODO: check if we need to use updated lora name (available from scheduler.model_name)
+                        sampling_args=eval_sampling_args,
+                        num_examples=eval_env_config.num_examples or config.eval.num_examples,
+                        rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
+                        ckpt_step=ckpt_step,
+                        step=progress.step,
+                    )
+                    for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
+                ]
             )
 
             # Resume weight updates
@@ -368,8 +388,8 @@ async def orchestrate(config: OrchestratorConfig):
             val_examples = val_buffer.sample_examples(config.val.num_examples)
             val_task = asyncio.create_task(
                 generate_batch(
-                    clients=inference_pool.clients,
                     env=train_env_group,
+                    clients=inference_pool.clients,
                     model_name=config.model.name,
                     examples=val_examples,
                     rollouts_per_example=config.val.rollouts_per_example,
@@ -653,18 +673,22 @@ async def orchestrate(config: OrchestratorConfig):
             heart.beat()
 
     if config.eval:
-        logger.info("Running final evals (subprocess)")
-        await run_evals_subprocess(
-            client_config=config.client,
-            eval_config=config.eval,
-            model_config=config.model,
-            sampling_config=config.eval.sampling,
-            reasoning_field=config.eval.reasoning_field,
-            output_dir=config.output_dir,
-            ckpt_step=scheduler.ckpt_step,
-            step=progress.step,
-            max_concurrent=config.max_concurrent or -1,
-            json_logging=config.log.json_logging,
+        logger.info("Running final evals")
+        results = await asyncio.gather(
+            *[
+                evaluate_env(
+                    env=eval_env,
+                    env_name=eval_env_name,
+                    client=await inference_pool.get_next_client(),
+                    model_name=config.model.name,
+                    sampling_args=eval_sampling_args,
+                    num_examples=eval_env_config.num_examples or config.eval.num_examples,
+                    rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
+                    ckpt_step=ckpt_step,
+                    step=progress.step,
+                )
+                for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
+            ]
         )
 
     # Log final (immutable) samples and distributions to monitor(s)
@@ -683,7 +707,8 @@ async def orchestrate(config: OrchestratorConfig):
     rollout_executor.shutdown(wait=False)
 
     # Stop scheduler
-    await scheduler.stop()
+    scheduler.cancel_all_inflight_rollouts()
+    update_policy_task.cancel()
 
     # Stop env servers
     await train_env_group.stop_servers()

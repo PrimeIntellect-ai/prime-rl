@@ -90,22 +90,6 @@ class Scheduler:
         self.cancelled_rollouts_count = 0
         self.last_batch_generation_time = 0.0
 
-    async def start(self):
-        """Start the scheduler."""
-        self.update_policy_task = asyncio.create_task(self.update_policy_loop())
-
-    async def stop(self):
-        """Stop the scheduler."""
-        if self.update_policy_task is not None:
-            self.update_policy_task.cancel()
-
-        for task in list(self.inflight_group_rollouts.keys()):
-            if not task.done():
-                task.cancel()
-        if self.inflight_group_rollouts:
-            await asyncio.gather(*self.inflight_group_rollouts.keys(), return_exceptions=True)
-        self.inflight_group_rollouts.clear()
-
     def set_sampling_args(self, sampling_args: dict) -> None:
         """Update sampling args for future rollout requests."""
         self.sampling_args = sampling_args
@@ -128,9 +112,9 @@ class Scheduler:
         client_config = await self.inference_pool.get_next_client()
         run_group_task = asyncio.create_task(
             generate_group(
-                example=example,
-                client=client_config,
                 env=self.env,
+                client=client_config,
+                example=example,
                 model_name=self.model_name,
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
