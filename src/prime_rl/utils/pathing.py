@@ -50,15 +50,19 @@ def get_stable_ckpt_steps(ckpt_dir: Path) -> list[int]:
 
 
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
-    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
-    steps = get_all_ckpt_steps(ckpt_dir)
+    """Gets the latest stable checkpoint step from the checkpoint directory.
+
+    Only considers checkpoints that have a STABLE file, indicating the trainer
+    has finished saving weights. Returns None if no stable checkpoints are found.
+    """
+    steps = get_stable_ckpt_steps(ckpt_dir)
     if len(steps) == 0:
         logger = get_logger()
-        logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
+        logger.warning(f"No stable checkpoints found in {ckpt_dir}. Starting from scratch.")
         return None
     latest_step = steps[-1]
     logger = get_logger()
-    logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
+    logger.info(f"Found latest stable checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
 
 
