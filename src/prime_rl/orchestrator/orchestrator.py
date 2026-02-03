@@ -506,8 +506,8 @@ async def orchestrate(config: OrchestratorConfig):
         val_results_df = (
             pd.DataFrame(
                 {
-                    "example_id": [rollout["input"]["example_id"] for rollout in val_outputs],
-                    "task": [rollout["input"]["task"] for rollout in val_outputs],
+                    "example_id": [rollout["example_id"] for rollout in val_outputs],
+                    "task": [rollout["task"] for rollout in val_outputs],
                     "reward": [rollout["reward"] for rollout in val_outputs],
                 }
             )
