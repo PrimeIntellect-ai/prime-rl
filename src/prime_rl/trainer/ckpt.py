@@ -349,6 +349,8 @@ class WeightCheckpointManager:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
         if self.keep_last is None and self.keep_interval is None:
             return
+        if not self.world.is_master:
+            return
 
         # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
@@ -372,7 +374,10 @@ class WeightCheckpointManager:
             ckpt_path = self.get_step_path(ckpt_step)
             if ckpt_path.exists():
                 self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                shutil.rmtree(ckpt_path)
+                try:
+                    shutil.rmtree(ckpt_path)
+                except FileNotFoundError:
+                    self.logger.debug(f"Checkpoint already removed for step {ckpt_step} ({ckpt_path})")
 
         # Update checkpoint steps
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
