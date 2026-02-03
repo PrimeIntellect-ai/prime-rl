@@ -49,7 +49,7 @@ def get_stable_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return [s for s in steps if (ckpt_dir / f"step_{s}" / "STABLE").exists()]
 
 
-def resolve_latest_ckpt_step(ckpt_dir: Path, stability_timeout: int = 300) -> int | None:
+def resolve_latest_ckpt_step(ckpt_dir: Path, stability_timeout: int = 1000) -> int | None:
     """Gets the latest checkpoint step from the checkpoint directory.
 
     If the latest checkpoint is not yet stable (missing STABLE file), waits up to

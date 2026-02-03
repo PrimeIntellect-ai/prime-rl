@@ -460,6 +460,14 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    stability_timeout: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum seconds to wait for a checkpoint to become stable (STABLE file to appear) when using resume_step=-1.",
+        ),
+    ] = 1000
+
     keep_last: Annotated[
         int | None,
         Field(
