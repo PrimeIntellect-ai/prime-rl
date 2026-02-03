@@ -41,6 +41,7 @@ dependencies = [
     "prime>=0.5.24",
     "tenacity>=8.2.0",
     "pyzmq>=27.1.0",
+    "huggingface_hub>=0.32.0",
 ]
 
 [project.scripts]
@@ -51,6 +52,7 @@ inference = "prime_rl.inference.server:main"
 sft = "prime_rl.trainer.sft.train:main"
 eval = "prime_rl.eval.eval:main"
 synthesize = "prime_rl.synthesize.synthesize:main"
+upload-ckpt = "prime_rl.utils.upload:main"
 
 [project.optional-dependencies]
 flash-attn = [

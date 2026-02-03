@@ -57,6 +57,7 @@ from prime_rl.utils.utils import (
     install_env,
     resolve_latest_ckpt_step,
     to_col_format,
+    warn_if_ckpts_inconsistent,
 )
 from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len, get_seq_len
 from prime_rl.utils.vlm import is_vlm_model
@@ -183,6 +184,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     checkpoint_step = None
     if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
+        warn_if_ckpts_inconsistent(
+            config.output_dir.parent, config.ckpt.resume_step
+        )  # output_dir=run_0, parent=$OUTPUT_DIR
         if config.ckpt.resume_step == -1:
             checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
         else:
