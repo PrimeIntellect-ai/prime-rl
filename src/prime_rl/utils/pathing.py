@@ -77,7 +77,7 @@ def resolve_latest_ckpt_step(ckpt_dir: Path, stability_timeout: int = 1000) -> i
             wait_time += 1
             if stable_file.exists():
                 break
-            if wait_time % 30 == 0:
+            if wait_time % 60 == 0:
                 logger.info(f"Still waiting for checkpoint step_{latest_step} to become stable ({wait_time}s elapsed)")
 
         if not stable_file.exists():
