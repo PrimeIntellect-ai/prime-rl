@@ -1,9 +1,10 @@
 import asyncio
+import logging
 from itertools import cycle
 
 import verifiers as vf
 
-from prime_rl.utils.logger import ProgressTracker
+from prime_rl.utils.logger import InterceptHandler, ProgressTracker
 
 DEFAULT_RETRIES = 3
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
@@ -180,3 +181,12 @@ def get_completion_len(output: vf.RolloutOutput) -> int:
     tokens.
     """
     return get_seq_len(output) - get_prompt_len(output)
+
+
+def intercept_vf_logging(level: str = "DEBUG", prefix: str = "verifiers"):
+    """Intercepts verifiers logging and routes through prime-rl logger with [verifiers] prefix."""
+    vf_logger = logging.getLogger("verifiers")
+    vf_logger.handlers.clear()
+    vf_logger.addHandler(InterceptHandler(prefix=prefix))
+    vf_logger.setLevel(level.upper())
+    vf_logger.propagate = False

@@ -40,7 +40,13 @@ from prime_rl.orchestrator.utils import (
     print_benchmark,
     set_semaphore,
 )
-from prime_rl.orchestrator.vf_utils import generate, get_completion_len, get_prompt_len, get_seq_len
+from prime_rl.orchestrator.vf_utils import (
+    generate,
+    get_completion_len,
+    get_prompt_len,
+    get_seq_len,
+    intercept_vf_logging,
+)
 from prime_rl.utils.client import (
     init_nccl_broadcast,
     reload_weights,
@@ -70,8 +76,7 @@ async def orchestrate(config: OrchestratorConfig):
         log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
-    vf.setup_logging("ERROR")  # essentially disable vf console logging on orchestrator
-    # intercept_verifiers_logging(level=config.log.vf_level)
+    intercept_vf_logging(level=config.log.vf_level)
     logger.info("Starting orchestrator")
 
     event_loop_lag_monitor = EventLoopLagMonitor()
