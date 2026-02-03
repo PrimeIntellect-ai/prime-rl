@@ -366,13 +366,14 @@ class WeightCheckpointManager:
                 if step % self.keep_interval == 0:
                     steps_to_keep.add(step)
 
-        # Delete steps not in steps_to_keep
+        # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
         ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
-        for ckpt_step in ckpt_steps_to_delete:
-            ckpt_path = self.get_step_path(ckpt_step)
-            if ckpt_path.exists():
-                self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                shutil.rmtree(ckpt_path)
+        if self.world.is_master:
+            for ckpt_step in ckpt_steps_to_delete:
+                ckpt_path = self.get_step_path(ckpt_step)
+                if ckpt_path.exists():
+                    self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
+                    shutil.rmtree(ckpt_path)
 
         # Update checkpoint steps
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
