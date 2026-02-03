@@ -9,8 +9,7 @@ from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
-# primitives are immutable. pixel_values/image_grid_thw are shared across rollouts of the
-# same example (not copied) which is safe since nothing mutates them after creation.
+# primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
 
 
 def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
@@ -92,6 +91,7 @@ def interleave_rollout(state: vf.State) -> list[TrainingSample] | None:
 def branch_rollout(
     state: vf.State,
     vlm_cache: "VLMImageCache | None" = None,
+    cache_key: int | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy.
@@ -102,6 +102,7 @@ def branch_rollout(
     Args:
         state: vf.State containing trajectory data
         vlm_cache: Pre-computed VLM image cache for multimodal training
+        cache_key: Cache key to use when retrieving images from the VLM cache
     """
     logger = get_logger()
 
@@ -123,7 +124,8 @@ def branch_rollout(
 
         # Get cumulative images up to this step
         if vlm_cache is not None:
-            pixel_values, image_grid_thw = vlm_cache.get_for_step(state["example_id"], step_idx)
+            key = state["example_id"] if cache_key is None else cache_key
+            pixel_values, image_grid_thw = vlm_cache.get_for_step(key, step_idx)
         else:
             pixel_values, image_grid_thw = None, None
 
@@ -180,13 +182,13 @@ def _extract_images_from_examples(
     full conversation history), so we extract only the NEW images introduced in each step.
 
     Args:
-        examples: List of (example_id, state) tuples where state contains a "trajectory"
+        examples: List of (cache_key, state) tuples where state contains a "trajectory"
             list with steps that have "prompt" messages in OpenAI chat format.
 
     Returns:
         Tuple of (all_images, images_per_step_per_example)
         - all_images: flat list of decoded PIL images, ordered by example then by step
-        - images_per_step_per_example: dict mapping example_id to list of cumulative image
+        - images_per_step_per_example: dict mapping cache_key to list of cumulative image
           counts per step (e.g., [1, 2, 2] means 1 image after step 0, 2 after step 1, 2 after step 2)
     """
     all_images = []
@@ -226,12 +228,12 @@ def _preprocess_images_batched(
 
     Args:
         images: Flat list of all PIL images
-        images_per_step_per_example: Dict mapping example_id to list of cumulative image
+        images_per_step_per_example: Dict mapping cache_key to list of cumulative image
             counts per step
         processor: HuggingFace processor with image_processor attribute
 
     Returns:
-        Dict mapping example_id to list of (pixel_values, image_grid_thw) per step.
+        Dict mapping cache_key to list of (pixel_values, image_grid_thw) per step.
         Each step's entry contains cumulative images up to that step.
     """
     if not images or processor is None:
@@ -290,16 +292,16 @@ class VLMImageCache:
         self.extract_time = extract_time
         self.preprocess_time = preprocess_time
 
-    def get_for_step(self, example_id: int, step_idx: int) -> tuple[list | None, list | None]:
+    def get_for_step(self, cache_key: int, step_idx: int) -> tuple[list | None, list | None]:
         """Get cumulative images up to and including the given step."""
-        steps = self.cache.get(example_id, [])
+        steps = self.cache.get(cache_key, [])
         if not steps or step_idx >= len(steps):
             return (None, None)
         return steps[step_idx]
 
-    def get_all(self, example_id: int) -> tuple[list | None, list | None]:
-        """Get all images for the example (last step's cumulative images)."""
-        steps = self.cache.get(example_id, [])
+    def get_all(self, cache_key: int) -> tuple[list | None, list | None]:
+        """Get all images for the cache key (last step's cumulative images)."""
+        steps = self.cache.get(cache_key, [])
         if not steps:
             return (None, None)
         return steps[-1]
@@ -309,26 +311,14 @@ def build_vlm_image_cache(rollouts: list[vf.State], processor) -> VLMImageCache:
     """
     Build image cache for VLM training by extracting and preprocessing images.
 
-    Groups rollouts by example_id to avoid redundant preprocessing (with rollouts_per_example=8,
-    we only preprocess 1/8th of the images).
+    Caches per rollout to keep images aligned with divergent multi-turn trajectories.
     """
-    # Group rollouts by example_id, keeping the longest trajectory for each
-    example_id_to_rollout: dict[int, vf.State] = {}
-    for rollout in rollouts:
-        example_id = rollout["example_id"]
-        if example_id not in example_id_to_rollout:
-            example_id_to_rollout[example_id] = rollout
-        else:
-            current_len = len(example_id_to_rollout[example_id].get("trajectory", []))
-            new_len = len(rollout.get("trajectory", []))
-            if new_len > current_len:
-                example_id_to_rollout[example_id] = rollout
-
-    unique_examples = [(eid, rollout) for eid, rollout in example_id_to_rollout.items()]
+    examples = [(idx, rollout) for idx, rollout in enumerate(rollouts)]
+    unique_example_ids = {rollout["example_id"] for rollout in rollouts}
 
     # Extract images
     extract_start = time.perf_counter()
-    all_images, images_per_example = _extract_images_from_examples(unique_examples)
+    all_images, images_per_example = _extract_images_from_examples(examples)
     extract_time = time.perf_counter() - extract_start
 
     # Preprocess images
@@ -338,7 +328,7 @@ def build_vlm_image_cache(rollouts: list[vf.State], processor) -> VLMImageCache:
 
     return VLMImageCache(
         cache=cache,
-        num_unique_examples=len(unique_examples),
+        num_unique_examples=len(unique_example_ids),
         extract_time=extract_time,
         preprocess_time=preprocess_time,
     )

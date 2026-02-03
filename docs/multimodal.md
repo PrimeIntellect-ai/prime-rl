@@ -16,7 +16,7 @@ Prime-RL has experimental support for training vision-language models (VLMs) lik
 
 - **Higher KL mismatch with multi-image inputs**: VLM training exhibits higher KL mismatch between inference and trainer logprobs compared to text-only models, especially with multiple images per sample. We are investigating the root cause. The existing importance ratio masking thresholds should handle reasonable mismatches.
 
-- **Multi-turn VLM requires branching strategy**: For multi-turn VLM environments, you must use `trajectory_strategy = "branching"` in your orchestrator config. The interleaved strategy doesn't work because vLLM tokenizes images differently at different conversation states, causing token prefix mismatches between trajectory steps. Branching treats each step independently, avoiding this issue.
+- **VLM requires branching strategy**: Multimodal training must use `trajectory_strategy = "branching"` in your orchestrator config. The interleaved strategy doesn't work because vLLM tokenizes images differently at different conversation states, causing token prefix mismatches between trajectory steps. Branching treats each step independently, avoiding this issue.
 
 ## vLLM Configuration
 
@@ -29,7 +29,7 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 ## Why Interleaved Strategy Doesn't Work for VLMs
 
-The interleaved trajectory strategy fails for multi-turn VLM conversations due to how vLLM's `/tokenize` endpoint handles images.
+The interleaved trajectory strategy fails for VLM conversations due to how vLLM's `/tokenize` endpoint handles images.
 
 ### The Problem
 
@@ -63,5 +63,5 @@ The branching strategy creates separate `TrainingSample` objects per turn. Each 
 
 ```toml
 [orchestrator]
-trajectory_strategy = "branching"  # Required for multi-turn VLM
+trajectory_strategy = "branching"  # Required for VLM
 ```
