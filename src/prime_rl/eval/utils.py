@@ -12,7 +12,6 @@ import verifiers as vf
 from huggingface_hub import whoami
 from openai import AsyncOpenAI
 from prime_evals import AsyncEvalsClient
-from tenacity import RetryError
 from verifiers import load_environment
 from verifiers.utils.path_utils import get_results_path
 from verifiers.utils.save_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
