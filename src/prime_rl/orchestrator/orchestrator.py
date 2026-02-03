@@ -123,6 +123,11 @@ async def orchestrate(config: OrchestratorConfig):
 
     processor = None
     if is_vlm:
+        if config.trajectory_strategy == "interleaved":
+            raise ValueError(
+                "Multimodal training does not support the interleaved trajectory strategy. "
+                "Set trajectory_strategy = 'branching' (see docs/multimodal.md)."
+            )
         logger.info(f"Loading VLM processor for {config.model.name}")
         processor = AutoProcessor.from_pretrained(
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
@@ -385,29 +390,37 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
         # Convert rollouts to training samples
-        rollout_fn = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
         parallel_preprocess_start = time.perf_counter()
+
+        num_unique_examples = len({r["example_id"] for r in train_rollouts})
 
         # VLM: build image cache for efficient batched preprocessing
         if is_vlm:
             vlm_cache = build_vlm_image_cache(train_rollouts, processor)
-            num_unique = vlm_cache.num_unique_examples
             logger.info(
                 f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s"
             )
         else:
             vlm_cache = None
-            num_unique = len({r["example_id"] for r in train_rollouts})
 
         # Process rollouts in parallel
-        def process_rollout(rollout: vf.State) -> list[TrainingSample] | None:
-            if vlm_cache is not None:
-                cached = vlm_cache.get(rollout["example_id"])
-                return rollout_fn(rollout, cached_pixel_values=cached[0], cached_image_grid_thw=cached[1])
-            return rollout_fn(rollout)
+        if config.trajectory_strategy == "interleaved":
+
+            def process_rollout(rollout: vf.State) -> list[TrainingSample] | None:
+                return interleave_rollout(rollout)
+        else:
+
+            def process_rollout(rollout: vf.State, rollout_idx: int) -> list[TrainingSample] | None:
+                return branch_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
 
         loop = asyncio.get_event_loop()
-        futures = [loop.run_in_executor(rollout_executor, process_rollout, r) for r in train_rollouts]
+        if config.trajectory_strategy == "interleaved":
+            futures = [loop.run_in_executor(rollout_executor, process_rollout, r) for r in train_rollouts]
+        else:
+            futures = [
+                loop.run_in_executor(rollout_executor, process_rollout, r, rollout_idx)
+                for rollout_idx, r in enumerate(train_rollouts)
+            ]
         results = await asyncio.gather(*futures)
 
         # Collect results and assign advantages
@@ -421,7 +434,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
-            f"Converted {len(train_rollouts)} rollouts ({num_unique} unique examples) "
+            f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
             f"to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
 
@@ -493,8 +506,8 @@ async def orchestrate(config: OrchestratorConfig):
         val_results_df = (
             pd.DataFrame(
                 {
-                    "example_id": [rollout["input"]["example_id"] for rollout in val_outputs],
-                    "task": [rollout["input"]["task"] for rollout in val_outputs],
+                    "example_id": [rollout["example_id"] for rollout in val_outputs],
+                    "task": [rollout["task"] for rollout in val_outputs],
                     "reward": [rollout["reward"] for rollout in val_outputs],
                 }
             )

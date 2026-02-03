@@ -1,8 +1,5 @@
 import asyncio
 
-from prime_rl.orchestrator.utils import (
-    set_semaphore,
-)
 from prime_rl.synthesize.config import SynthesizeConfig
 from prime_rl.synthesize.utils import generate_synthetic_data
 from prime_rl.utils.client import (
@@ -47,9 +44,6 @@ async def synthesize(config: SynthesizeConfig):
     await check_health(admin_clients)
     await maybe_check_has_model(clients, config.model.name, skip_model_check=config.client.skip_model_check)
     logger.success(f"Inference pool is healthy and serves {config.model.name}")
-
-    # Set global semaphore
-    await set_semaphore(config.max_concurrent or -1)
 
     # Generate synthetic data
     logger.info("Starting synthetic data generation")

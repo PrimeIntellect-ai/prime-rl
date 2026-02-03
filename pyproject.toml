@@ -41,6 +41,7 @@ dependencies = [
     "prime>=0.5.24",
     "tenacity>=8.2.0",
     "pyzmq>=27.1.0",
+    "aiolimiter>=1.2.1",
 ]
 
 [project.scripts]
@@ -80,7 +81,7 @@ override-dependencies = ["nvidia-cudnn-cu12>=9.15"]
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "209774a" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "dfc473c" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eebbd950a6ff11d9b5f806282e33df83df9d" }
 

@@ -13,7 +13,9 @@ from multiprocessing import Process, Queue
 from pathlib import Path
 
 import verifiers as vf
+from aiolimiter import AsyncLimiter
 from openai import AsyncOpenAI
+from verifiers.utils.async_utils import maybe_semaphore
 
 from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
@@ -47,8 +49,10 @@ class RolloutResponse:
     lag_metrics: dict | None = None  # Event loop lag metrics from worker
 
 
-def extract_result(state: vf.State, temperature: float) -> dict:
-    """Extract only the fields needed from vf.State for IPC.
+def extract_result(output: vf.RolloutOutput, temperature: float) -> dict:
+    """
+    Extract only the fields from vf.RolloutOutput needed to build training
+    samples and logging.
 
     The extracted dict must contain all fields needed by:
     - Buffer.update(): example_id, task, reward
@@ -65,7 +69,7 @@ def extract_result(state: vf.State, temperature: float) -> dict:
     """
     # Get trajectory with tokens (needed for training)
     trajectory = []
-    for step in state.get("trajectory", []):
+    for step in output.get("trajectory", []):
         traj_step = {
             "prompt": step.get("prompt"),
             "completion": step.get("completion"),
@@ -79,17 +83,17 @@ def extract_result(state: vf.State, temperature: float) -> dict:
 
     return {
         # Required by buffer
-        "example_id": state.get("example_id"),
-        "task": state.get("task"),
-        "reward": state.get("reward"),
+        "example_id": output.get("example_id"),
+        "task": output.get("task"),
+        "reward": output.get("reward"),
         # Required by orchestrator metrics
-        "is_truncated": state.get("is_truncated", False),
-        "error": type(state["error"]).__name__ if state.get("error") else None,
-        "timing": dict(state.get("timing", {})),
-        "metrics": state.get("metrics", {}),
+        "is_truncated": output.get("is_truncated", False),
+        "error": output.get("error"),
+        "timing": output.get("timing", {}),
+        "metrics": output.get("metrics", {}),
         # Required for training examples
-        "prompt": state.get("prompt"),
-        "completion": state.get("completion"),
+        "prompt": output.get("prompt"),
+        "completion": output.get("completion"),
         "trajectory": trajectory,
     }
 
@@ -100,14 +104,16 @@ async def worker_loop(
     env: vf.Environment,
     clients: list[AsyncOpenAI],
     client_config: ClientConfig,
-    max_concurrent: int,
+    max_concurrent_groups: int,
+    tasks_per_minute: int,
     example_lookup: dict[int, dict],
     model_name: str,
 ):
     """Main async loop for processing rollout requests."""
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 
-    semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)
+    semaphore = await maybe_semaphore(max_concurrent_groups)
+    rate_limiter = AsyncLimiter(tasks_per_minute, 60) if tasks_per_minute > 0 else None
 
     # Start event loop lag monitor for this worker
     lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
@@ -136,18 +142,20 @@ async def worker_loop(
         return bool(clients)
 
     async def process_request(request: RolloutRequest, client: AsyncOpenAI) -> RolloutResponse:
+        if rate_limiter:
+            await rate_limiter.acquire()
         example = example_lookup[request.example_id]
         group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
-        states = await env.run_group(
-            group_inputs=group_inputs,
-            client=client,
-            model=request.model_name,
-            gen_sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
-            gen_sem=semaphore,
-            score_sem=semaphore,
-        )
+        async with semaphore:
+            outputs = await env.run_group(
+                group_inputs=group_inputs,
+                client=client,
+                model=request.model_name,
+                sampling_args=request.sampling_args,  # Use per-request sampling args for temp scheduling
+                state_columns=["trajectory"],
+            )
         temperature = request.sampling_args["temperature"]
-        return RolloutResponse(request_id=request.request_id, results=[extract_result(s, temperature) for s in states])
+        return RolloutResponse(request_id=request.request_id, results=[extract_result(o, temperature) for o in outputs])
 
     try:
         while True:
@@ -214,7 +222,8 @@ def worker_main(
     client_config_dict: dict,
     seq_len: int,
     interleaved_rollouts: bool,
-    max_concurrent: int,
+    max_concurrent_groups: int,
+    tasks_per_minute: int,
     example_lookup: dict[int, dict],
     log_level: str,
     vf_log_level: str,
@@ -247,7 +256,8 @@ def worker_main(
             env,
             clients,
             client_config,
-            max_concurrent,
+            max_concurrent_groups,
+            tasks_per_minute,
             example_lookup,
             model_name,
         )
@@ -265,7 +275,8 @@ class EnvWorker:
         model_name: str,
         seq_len: int,
         interleaved_rollouts: bool,
-        max_concurrent: int,
+        max_concurrent_groups: int,
+        tasks_per_minute: int,
         example_lookup: dict[int, dict],
         worker_name: str | None = None,
         log_level: str = "warn",
@@ -280,7 +291,8 @@ class EnvWorker:
         self.model_name = model_name
         self.seq_len = seq_len
         self.interleaved_rollouts = interleaved_rollouts
-        self.max_concurrent = max_concurrent
+        self.max_concurrent_groups = max_concurrent_groups
+        self.tasks_per_minute = tasks_per_minute
         self.example_lookup = example_lookup
         self.worker_name = worker_name or env_id
 
@@ -323,7 +335,8 @@ class EnvWorker:
                 self.client_config.model_dump(),
                 self.seq_len,
                 self.interleaved_rollouts,
-                self.max_concurrent,
+                self.max_concurrent_groups,
+                self.tasks_per_minute,
                 self.example_lookup,
                 self.log_level,
                 self.vf_log_level,
