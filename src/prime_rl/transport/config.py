@@ -24,4 +24,16 @@ class ZMQTransportConfig(BaseTransportConfig):
     hwm: Annotated[int, Field(description="High water mark (max messages in queue) for ZMQ sockets.")] = 10
 
 
-TransportConfigType: TypeAlias = FileSystemTransportConfig | ZMQTransportConfig
+class TCPStoreTransportConfig(BaseTransportConfig):
+    """Configures TCPStore-based transport for micro batches using torch.distributed.TCPStore."""
+
+    type: Literal["tcpstore"] = "tcpstore"
+    host: Annotated[str, Field(description="The host address for the TCPStore master.")] = "localhost"
+    port: Annotated[int, Field(description="The port for the TCPStore.")] = 29600
+    timeout_seconds: Annotated[int, Field(description="Timeout in seconds for TCPStore operations.")] = 300
+    wait_timeout_seconds: Annotated[
+        int, Field(description="Timeout in seconds for waiting on keys in the TCPStore.")
+    ] = 60
+
+
+TransportConfigType: TypeAlias = FileSystemTransportConfig | ZMQTransportConfig | TCPStoreTransportConfig
