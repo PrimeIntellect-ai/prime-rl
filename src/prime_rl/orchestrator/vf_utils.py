@@ -3,23 +3,31 @@ from itertools import cycle
 
 import verifiers as vf
 
-from prime_rl.utils.logger import ProgressTracker, get_logger
+from prime_rl.utils.logger import ProgressTracker
+
+DEFAULT_RETRIES = 3
+REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
+DEFAULT_STATE_COLUMNS = []
 
 
-async def generate_group(
+async def run_rollout(
     env: vf.Environment,
     client: vf.ClientConfig,
     model_name: str,
     example: dict,
-    rollouts_per_example: int,
     sampling_args: dict,
-    max_retries: int = 0,
-    state_columns: list[str] = ["trajectory", "sampling_args"],
-) -> list[vf.RolloutOutput]:
-    """Asynchronously generate and score rollouts for a single group."""
-    group_inputs = [vf.RolloutInput(**example) for _ in range(rollouts_per_example)]
-    return await env.run_group(
-        group_inputs=group_inputs,
+    max_retries: int = DEFAULT_RETRIES,
+    state_columns: list[str] = DEFAULT_STATE_COLUMNS,
+) -> vf.RolloutOutput:
+    """
+    Wrapper for vf.Environment.run_rollout().
+
+    Asynchronously generates and scores a rollout.
+    """
+    state_columns = state_columns + REQUIRED_STATE_COLUMNS
+    rollout_input = vf.RolloutInput(**example)
+    return await env.run_rollout(
+        rollout_input,
         client=client,
         model=model_name,
         sampling_args=sampling_args,
@@ -28,45 +36,73 @@ async def generate_group(
     )
 
 
-async def generate_rollout(
+async def run_group(
     env: vf.Environment,
     client: vf.ClientConfig,
     model_name: str,
     example: dict,
+    rollouts_per_example: int,
     sampling_args: dict,
-    max_retries: int = 0,
-    state_columns: list[str] = ["trajectory", "sampling_args"],
-) -> vf.RolloutOutput:
-    """Asynchronously generate and score a single rollout."""
-    rollout_input = vf.RolloutInput(**example)
-    return await env.run_rollout(
-        rollout_input, client, model_name, sampling_args, max_retries=max_retries, state_columns=state_columns
+    max_retries: int = DEFAULT_RETRIES,
+    state_columns: list[str] = DEFAULT_STATE_COLUMNS,
+) -> list[vf.RolloutOutput]:
+    """
+    Wrapper for vf.Environment.run_group().
+
+    Asynchronously generates and scores a group.
+    """
+    state_columns = state_columns + REQUIRED_STATE_COLUMNS
+    group_inputs = [vf.RolloutInput(**example) for _ in range(rollouts_per_example)]
+    return await env.run_group(
+        group_inputs,
+        client=client,
+        model=model_name,
+        sampling_args=sampling_args,
+        max_retries=max_retries,
+        state_columns=state_columns,
     )
 
 
-async def generate_batch(
+# TODO: migrate this to vf.Environment.generate() once it supports multiple clients
+async def generate(
     env: vf.Environment,
     clients: list[vf.ClientConfig],
     model_name: str,
-    examples: list[dict],
+    examples: list,
     rollouts_per_example: int,
     sampling_args: dict,
+    max_retries: int = DEFAULT_RETRIES,
+    state_columns: list[str] = DEFAULT_STATE_COLUMNS,
     pbar_description: str = "Generating rollouts",
 ) -> list[vf.RolloutOutput]:
-    """Asynchronously generate and score rollouts for a list of groups (batch)."""
+    """
+    Wrapper for vf.Environment.generate().
+
+    NOTE: Currently we cannot use vf.Environment.generate() directly because it does not support multiple clients.
+
+    Asynchronously generates and scores a list of groups.
+    """
 
     total_rollouts = len(examples) * rollouts_per_example
     pbar = ProgressTracker(total=total_rollouts, desc=pbar_description)
 
-    async def generate_group_with_progress(client, example):
-        """Generate rollouts for one problem and update progress."""
-        result = await generate_group(env, client, model_name, example, rollouts_per_example, sampling_args)
+    async def run_group_with_progress(client, example):
+        result = await run_group(
+            env=env,
+            client=client,
+            model_name=model_name,
+            example=example,
+            rollouts_per_example=rollouts_per_example,
+            max_retries=max_retries,
+            state_columns=state_columns,
+            sampling_args=sampling_args,
+        )
         pbar.update(rollouts_per_example)
         return result
 
     try:
         group_outputs_list: list[list[vf.RolloutOutput]] = await asyncio.gather(
-            *[generate_group_with_progress(client, example) for client, example in zip(cycle(clients), examples)]
+            *[run_group_with_progress(client, example) for client, example in zip(cycle(clients), examples)]
         )
     finally:
         pbar.close()
@@ -76,24 +112,32 @@ async def generate_batch(
 
 async def evaluate(
     env: vf.Environment,
-    client: vf.ClientConfig,
+    clients: list[vf.ClientConfig],
     model_name: str,
     sampling_args: dict,
     num_examples: int,
     rollouts_per_example: int,
-    state_columns: list[str] = ["trajectory", "sampling_args"],
-) -> vf.GenerateOutputs:
-    """Asynchronously evaluate an environment."""
-    get_logger().debug(f"Evaluating environment {env.env_id} ({num_examples=}, {rollouts_per_example=})")
-    return await env.evaluate(
-        client=client,
-        model=model_name,
-        sampling_args=sampling_args,
-        num_examples=num_examples,
+    max_retries: int = DEFAULT_RETRIES,
+    state_columns: list[str] = DEFAULT_STATE_COLUMNS,
+) -> list[vf.RolloutOutput]:
+    """
+    Wrapper for vf.Environment.evaluate().
+
+    NOTE: Currently we cannot use vf.Environment.evaluate() directly because it does not support multiple clients.
+          Instead, we use our generate() wrapper which round-robins clients.
+    """
+    inputs = env._get_eval_inputs(num_examples, rollouts_per_example)
+    outputs = await generate(
+        env=env,
+        clients=clients,
+        model_name=model_name,
+        examples=inputs,
         rollouts_per_example=rollouts_per_example,
+        sampling_args=sampling_args,
+        max_retries=max_retries,
         state_columns=state_columns,
-        use_tqdm=False,
     )
+    return outputs
 
 
 # TODO: remove once usage is tracked by verifiers

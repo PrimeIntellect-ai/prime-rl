@@ -39,6 +39,7 @@ from prime_rl.orchestrator.utils import (
     print_benchmark,
     set_semaphore,
 )
+from prime_rl.orchestrator.vf_utils import generate, get_completion_len, get_prompt_len, get_seq_len
 from prime_rl.utils.client import (
     check_health,
     init_nccl_broadcast,
@@ -60,7 +61,6 @@ from prime_rl.utils.utils import (
     resolve_latest_ckpt_step,
     to_col_format,
 )
-from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len, get_seq_len
 from prime_rl.utils.vlm import is_vlm_model
 
 
@@ -362,7 +362,7 @@ async def orchestrate(config: OrchestratorConfig):
                     evaluate_env(
                         env=eval_env,
                         env_name=eval_env_name,
-                        client=await inference_pool.get_next_client(),  # TODO: round-robin clients within evaluate
+                        clients=inference_pool.clients,
                         model_name=config.model.name,  # TODO: check if we need to use updated lora name (available from scheduler.model_name)
                         sampling_args=eval_sampling_args,
                         num_examples=eval_env_config.num_examples or config.eval.num_examples,
@@ -387,7 +387,7 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Running validation for step {progress.step}")
             val_examples = val_buffer.sample_examples(config.val.num_examples)
             val_task = asyncio.create_task(
-                generate_batch(
+                generate(
                     env=train_env_group,
                     clients=inference_pool.clients,
                     model_name=config.model.name,
@@ -679,7 +679,7 @@ async def orchestrate(config: OrchestratorConfig):
                 evaluate_env(
                     env=eval_env,
                     env_name=eval_env_name,
-                    client=await inference_pool.get_next_client(),
+                    clients=inference_pool.clients,
                     model_name=config.model.name,
                     sampling_args=eval_sampling_args,
                     num_examples=eval_env_config.num_examples or config.eval.num_examples,

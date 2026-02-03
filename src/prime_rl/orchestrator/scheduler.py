@@ -16,6 +16,7 @@ import verifiers as vf
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args
+from prime_rl.orchestrator.vf_utils import run_group
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.temp_scheduling import compute_temperature
@@ -25,7 +26,6 @@ from prime_rl.utils.utils import (
     get_step_path,
     wait_for_path,
 )
-from prime_rl.utils.vf import generate_group
 
 
 class InflightRolloutInfo(NamedTuple):
@@ -111,7 +111,7 @@ class Scheduler:
         example = self.buffer.sample_examples(n=1)[0]
         client_config = await self.inference_pool.get_next_client()
         run_group_task = asyncio.create_task(
-            generate_group(
+            run_group(
                 env=self.env,
                 client=client_config,
                 example=example,

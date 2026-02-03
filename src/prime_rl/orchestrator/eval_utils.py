@@ -6,10 +6,10 @@ import pandas as pd
 import verifiers as vf
 
 from prime_rl.orchestrator.config import EvalSamplingConfig
+from prime_rl.orchestrator.vf_utils import evaluate, get_completion_len
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize
-from prime_rl.utils.vf import evaluate, get_completion_len
 
 
 def get_eval_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]:
@@ -65,7 +65,7 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
 async def evaluate_env(
     env: vf.Environment,
     env_name: str,
-    client: vf.ClientConfig,
+    clients: list[vf.ClientConfig],
     model_name: str,
     sampling_args: dict,
     num_examples: int,
@@ -76,11 +76,11 @@ async def evaluate_env(
     logger = get_logger()
     logger.info(f"Evaluating {env_name} ({num_examples=}, {rollouts_per_example=})")
     eval_start_time = time.perf_counter()
-    results = await evaluate(env, client, model_name, sampling_args, num_examples, rollouts_per_example)
+    outputs = await evaluate(env, clients, model_name, sampling_args, num_examples, rollouts_per_example)
     eval_time = time.perf_counter() - eval_start_time
 
     rows = []
-    for output in results["outputs"]:
+    for output in outputs:
         rows.append(
             {
                 "example_id": output["example_id"],
