@@ -10,11 +10,6 @@ from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRespo
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
 
-from fastapi.responses import JSONResponse, StreamingResponse
-from vllm.entrypoints.chat_utils import load_chat_template
-from vllm.entrypoints.logger import RequestLogger
-from vllm.entrypoints.utils import load_aware_call, with_cancellation
-
 from prime_rl.inference.patches import (
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
     monkey_patch_load_lora_adapter,
@@ -34,16 +29,15 @@ import vllm.entrypoints.openai.api_server
 
 import uvloop
 import vllm.envs as envs
-from fastapi import Request
 from fastapi import Depends, HTTPException, Request
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
-from vllm.entrypoints.openai.api_server import (
+from vllm.entrypoints.openai.basic.api_router import (
     router,
     engine_client,
     base,
-    init_app_state,
 )
+from vllm.entrypoints.openai.api_server import init_app_state
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
@@ -121,14 +115,14 @@ async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_reques
     return StreamingResponse(content=generator, media_type="text/event-stream")
 
 
-async def custom_init_app_state(engine_client: EngineClient, state: State, args: Namespace):
+async def custom_init_app_state(engine_client: EngineClient, state: State, args: Namespace, supported_tasks):
     """
     Modifies init_app_state:
     1. Set up the custom OpenAIServingChatWithTokens state.
     2. Monkey-patch to allow updating lora adapters in-place.
     """
     # Setup the regular app state first (in-place)
-    await init_app_state(engine_client, state, args)
+    await init_app_state(engine_client, state, args, supported_tasks)
 
     # NOTE: Initialize the custom OpenAIServingChatWithTokens state here
     # TODO: Here, we repeat some calls done in init_app_state to be able to
