@@ -729,7 +729,7 @@ class OrchestratorConfig(BaseSettings):
         int | None,
         Field(
             ge=1,
-            description="Maximum sandbox tasks per minute per environment worker. Uses token bucket rate limiting. If None, no rate limiting is applied. With multiple workers, effective total rate is workers × this value.",
+            description="Rate limit for tasks per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. When set to None, no rate limiting is applied. Note: with multiple workers, the effective total rate equals workers × this value.",
         ),
     ] = None
 
