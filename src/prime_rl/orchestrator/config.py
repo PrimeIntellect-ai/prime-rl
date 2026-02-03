@@ -725,7 +725,7 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    tasks_per_env_worker_per_minute: Annotated[
+    tasks_per_minutes: Annotated[
         int | None,
         Field(
             ge=1,
