@@ -114,6 +114,7 @@ class Scheduler:
                     max_concurrent_groups=(config.max_concurrent // (self.rollouts_per_example * self.workers_per_env))
                     if config.max_concurrent is not None
                     else -1,
+                    tasks_per_minute=config.tasks_per_minute or -1,
                     example_lookup=self.example_lookups[env_name],
                     worker_name=f"{env_name}_{worker_idx}",
                     log_level=config.log.level,
