@@ -43,7 +43,6 @@ def env_worker(mock_client_config):
         seq_len=1024,
         interleaved_rollouts=False,
         max_concurrent=1,
-        tasks_per_minute=-1,
         example_lookup={},
         worker_name="test_worker",
     )
@@ -190,7 +189,6 @@ def test_full_restart_cycle(mock_client_config):
         seq_len=1024,
         interleaved_rollouts=False,
         max_concurrent=1,
-        tasks_per_minute=-1,
         example_lookup={},
         worker_name="test_worker",
     )
@@ -217,60 +215,3 @@ def test_full_restart_cycle(mock_client_config):
 
         # Cleanup
         worker.stop()
-
-
-def test_env_worker_accepts_tasks_per_minute_parameter(mock_client_config):
-    """Test that EnvWorker accepts tasks_per_minute parameter."""
-    worker = EnvWorker(
-        env_id="test_env",
-        env_args={},
-        client_config=mock_client_config,
-        model_name="test-model",
-        seq_len=1024,
-        interleaved_rollouts=False,
-        max_concurrent=1,
-        tasks_per_minute=128,
-        example_lookup={},
-    )
-    assert worker.tasks_per_minute == 128
-
-
-def test_env_worker_tasks_per_minute_disabled_when_negative(mock_client_config):
-    """Test that tasks_per_minute <= 0 means no rate limiting."""
-    worker = EnvWorker(
-        env_id="test_env",
-        env_args={},
-        client_config=mock_client_config,
-        model_name="test-model",
-        seq_len=1024,
-        interleaved_rollouts=False,
-        max_concurrent=1,
-        tasks_per_minute=-1,
-        example_lookup={},
-    )
-    assert worker.tasks_per_minute == -1
-
-
-def test_env_worker_passes_tasks_per_minute_to_process(mock_client_config):
-    """Test that EnvWorker passes tasks_per_minute to worker_main when starting."""
-    worker = EnvWorker(
-        env_id="test_env",
-        env_args={},
-        client_config=mock_client_config,
-        model_name="test-model",
-        seq_len=1024,
-        interleaved_rollouts=False,
-        max_concurrent=1,
-        tasks_per_minute=256,
-        example_lookup={},
-    )
-
-    with patch("prime_rl.orchestrator.env_worker.Process") as mock_process:
-        mock_process.return_value.start = MagicMock()
-        worker.start()
-
-        # Verify Process was called with tasks_per_minute in args
-        call_args = mock_process.call_args
-        args = call_args.kwargs["args"]
-        # tasks_per_minute is after max_concurrent (index 8) at index 9
-        assert args[9] == 256
