@@ -725,6 +725,14 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
+    tasks_per_env_worker_per_minute: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Maximum sandbox tasks per minute per environment worker. Uses token bucket rate limiting. If None, no rate limiting is applied. With multiple workers, effective total rate is workers × this value.",
+        ),
+    ] = 128
+
     workers_per_env: Annotated[
         int,
         Field(

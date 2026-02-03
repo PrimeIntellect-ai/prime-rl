@@ -13,6 +13,7 @@ from multiprocessing import Process, Queue
 from pathlib import Path
 
 import verifiers as vf
+from aiolimiter import AsyncLimiter
 from openai import AsyncOpenAI
 
 from prime_rl.utils.client import setup_clients
@@ -101,6 +102,7 @@ async def worker_loop(
     clients: list[AsyncOpenAI],
     client_config: ClientConfig,
     max_concurrent: int,
+    tasks_per_minute: int,
     example_lookup: dict[int, dict],
     model_name: str,
 ):
@@ -108,6 +110,7 @@ async def worker_loop(
     from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 
     semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else asyncio.Semaphore(10000)
+    rate_limiter = AsyncLimiter(tasks_per_minute, 60) if tasks_per_minute > 0 else None
 
     # Start event loop lag monitor for this worker
     lag_monitor = EventLoopLagMonitor(interval=0.1)  # More frequent sampling for workers
@@ -136,6 +139,8 @@ async def worker_loop(
         return bool(clients)
 
     async def process_request(request: RolloutRequest, client: AsyncOpenAI) -> RolloutResponse:
+        if rate_limiter:
+            await rate_limiter.acquire()
         example = example_lookup[request.example_id]
         group_inputs = [vf.RolloutInput(**example) for _ in range(request.rollouts_per_example)]
         states = await env.run_group(
@@ -215,6 +220,7 @@ def worker_main(
     seq_len: int,
     interleaved_rollouts: bool,
     max_concurrent: int,
+    tasks_per_minute: int,
     example_lookup: dict[int, dict],
     log_level: str,
     vf_log_level: str,
@@ -248,6 +254,7 @@ def worker_main(
             clients,
             client_config,
             max_concurrent,
+            tasks_per_minute,
             example_lookup,
             model_name,
         )
@@ -266,6 +273,7 @@ class EnvWorker:
         seq_len: int,
         interleaved_rollouts: bool,
         max_concurrent: int,
+        tasks_per_minute: int,
         example_lookup: dict[int, dict],
         worker_name: str | None = None,
         log_level: str = "warn",
@@ -281,6 +289,7 @@ class EnvWorker:
         self.seq_len = seq_len
         self.interleaved_rollouts = interleaved_rollouts
         self.max_concurrent = max_concurrent
+        self.tasks_per_minute = tasks_per_minute
         self.example_lookup = example_lookup
         self.worker_name = worker_name or env_id
 
@@ -324,6 +333,7 @@ class EnvWorker:
                 self.seq_len,
                 self.interleaved_rollouts,
                 self.max_concurrent,
+                self.tasks_per_minute,
                 self.example_lookup,
                 self.log_level,
                 self.vf_log_level,
