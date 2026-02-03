@@ -149,6 +149,7 @@ def train(config: RLTrainerConfig):
             list(model.named_parameters()),
             parallel_dims,
             lora=config.model.lora is not None,
+            cpu_offload=config.model.optim_cpu_offload,
         )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
