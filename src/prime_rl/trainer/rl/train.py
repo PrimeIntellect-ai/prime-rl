@@ -28,6 +28,7 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
     selective_log_softmax,
+    setup_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
 )
@@ -139,9 +140,12 @@ def train(config: RLTrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    # Set up the loss function
+    logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
+    loss_fn = setup_loss_fn(config.loss)
+
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
 
     if config.max_concurrent_runs == 1:
         optimizer = setup_optimizer(
@@ -399,7 +403,7 @@ def train(config: RLTrainerConfig):
                 else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_config=config.loss,
+                loss_fn=loss_fn,
                 loss_scale=loss_scale,
             )
 
