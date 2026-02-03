@@ -2,7 +2,6 @@ import asyncio
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
-from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.utils.client import (
     check_health,
     maybe_check_has_model,
@@ -64,7 +63,6 @@ async def eval(config: OfflineEvalConfig):
     await reload_weights(admin_clients)
 
     # Run benchmarks on base model
-    await set_semaphore(config.max_concurrent or -1)
     if config.eval_base:
         logger.info(f"Evaluating model {config.model.name}")
         await run_evals(

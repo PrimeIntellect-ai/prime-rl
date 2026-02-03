@@ -1,8 +1,6 @@
 import asyncio
 import json
-import re
 import time
-from copy import deepcopy
 from itertools import cycle
 from multiprocessing import Process
 from pathlib import Path
@@ -12,12 +10,11 @@ import numpy as np
 import pandas as pd
 import verifiers as vf
 from huggingface_hub import whoami
-from openai import AsyncOpenAI, BadRequestError
+from openai import AsyncOpenAI
 from prime_evals import AsyncEvalsClient
-from tenacity import RetryCallState, RetryError, retry, stop_after_attempt, wait_exponential
 from verifiers import load_environment
-from verifiers.envs.environment import get_results_path
-from verifiers.utils.eval_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
+from verifiers.utils.path_utils import get_results_path
+from verifiers.utils.save_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig, RetryConfig
@@ -138,96 +135,36 @@ def prepare_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]
 
 
 # TODO: Move to verifiers to avoid code drift
-def make_result(state: vf.State, reasoning_field: str, rollout_idx: int) -> dict:
+def make_result(output: vf.RolloutOutput, reasoning_field: str, rollout_idx: int) -> dict:
     """Translates a finished rollout state to a synthetic dataset row."""
-    completion = merge_reasoning_content(state["completion"], state["trajectory"], reasoning_field)
+    completion = merge_reasoning_content(output["completion"], output["trajectory"], reasoning_field)
     result_dict = {
-        "example_id": state["example_id"],
+        "example_id": output["example_id"],
         "rollout_idx": rollout_idx,
-        "prompt": state["prompt"],
+        "prompt": output["prompt"],
         "completion": completion,
-        "task": state["task"],
-        "reward": state["reward"],
-        "generation_ms": state["timing"]["generation_ms"],
-        "scoring_ms": state["timing"]["scoring_ms"],
-        "total_ms": state["timing"]["total_ms"],
-        "info": state.get("info", {}),
-        "answer": state.get("answer", ""),
-        "completion_len": get_completion_len(state),
-        "is_truncated": get_is_truncated(state),
+        "task": output["task"],
+        "reward": output["reward"],
+        "generation_ms": output["timing"]["generation_ms"],
+        "scoring_ms": output["timing"]["scoring_ms"],
+        "total_ms": output["timing"]["total_ms"],
+        "info": output.get("info", {}),
+        "answer": output.get("answer", ""),
+        "completion_len": get_completion_len(output),
+        "is_truncated": get_is_truncated(output),
     }
-    for metric_name, metric_value in state["metrics"].items():
+    for metric_name, metric_value in output["metrics"].items():
         result_dict[metric_name] = metric_value
 
-    result_dict["oai_tools"] = json.dumps(state["oai_tools"])
+    result_dict["oai_tools"] = json.dumps(output.get("oai_tools", []))
 
     return result_dict
 
 
-async def make_and_save_result(state: vf.State, save_file: Path, reasoning_field: str, rollout_idx: int):
+async def make_and_save_result(output: vf.RolloutOutput, save_file: Path, reasoning_field: str, rollout_idx: int):
     """Translates and saves a finished rollout state to a synthetic dataset row."""
-    result_dict = await asyncio.to_thread(make_result, state, reasoning_field, rollout_idx)
+    result_dict = await asyncio.to_thread(make_result, output, reasoning_field, rollout_idx)
     await save_result(result_dict, save_file)
-
-
-def log_retry_attempt(retry_state: RetryCallState) -> None:
-    """Log retry attempts at WARNING level using the global logger."""
-    logger = get_logger()
-    exception = retry_state.outcome.exception()
-    wait_time = retry_state.next_action.sleep
-    logger.warning(
-        f"Retrying {retry_state.fn.__name__} in {wait_time:.1f} seconds as it raised {exception.__class__.__name__}: {exception}"
-    )
-
-
-def parse_and_calculate_max_tokens(error_message: str) -> int | None:
-    """
-    Example error message:
-    "This endpoint's maximum context length is 131072 tokens. However, you requested
-    about 131419 tokens (347 of text input, 131072 in the output)."
-    """
-    context_match = re.search(r"maximum context length is (\d+) tokens", error_message)
-    prompt_match = re.search(r"(\d+) of text input", error_message)
-
-    if context_match and prompt_match:
-        context_length = int(context_match.group(1))
-        prompt_tokens = int(prompt_match.group(1))
-        max_tokens = context_length - prompt_tokens
-        if max_tokens < 1:
-            return None
-        return max_tokens
-    return None
-
-
-def _make_no_response_state(
-    *,
-    example: dict,
-    rollout_idx: int,
-    env_name_or_id: str,
-    error: Exception,
-) -> dict:
-    """Create a vf.State-like dict for a rollout that never produced a model response."""
-    # NOTE: Keep completion/trajectory empty so merge_reasoning_content() doesn't assert.
-    return {
-        "example_id": example.get("example_id"),
-        "prompt": example.get("prompt"),
-        "completion": [],
-        "task": example.get("task"),
-        "reward": None,
-        "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},
-        "info": {
-            "prime_rl": {
-                "rollout_status": "no_response",
-                "env": env_name_or_id,
-                "rollout_idx": rollout_idx,
-                "error": repr(error),
-            }
-        },
-        "answer": example.get("answer", ""),
-        "metrics": {},
-        "trajectory": [],
-        "oai_tools": [],
-    }
 
 
 def _is_valid_reward(reward: Any) -> bool:
@@ -259,72 +196,20 @@ async def generate_and_save_rollout(
     pbar: ProgressTracker,
     rewards_accumulator: list,
     rewards_lock: asyncio.Lock,
-) -> vf.State:
+) -> vf.RolloutOutput:
     """Generate and optionally save a single rollout, updating progress bar per-rollout."""
     logger = get_logger()
-    _sampling_args = deepcopy(sampling_args)
 
-    @retry(
-        stop=stop_after_attempt(retry_config.max_attempts),
-        wait=wait_exponential(
-            multiplier=retry_config.wait_multiplier, min=retry_config.wait_min, max=retry_config.wait_max
-        ),
-        before_sleep=log_retry_attempt,
-        reraise=retry_config.reraise,
-    )
-    async def _generate_rollout(
-        client: AsyncOpenAI,
-        env: vf.Environment,
-        model_name: str,
-        example: dict,
-        sampling_args: dict,
-    ) -> vf.State:
-        """Asynchronously generate and score a single rollout."""
-        logger = get_logger()
-        try:
-            state = await generate_rollout(client, env, model_name, example, sampling_args)
-            # Re-raise infrastructure errors to trigger retry
-            if state.get("error") and isinstance(state["error"], vf.InfraError):
-                raise state["error"]
-            return state
-        except BadRequestError as e:
-            # Check if this is a context length error and retry with adjusted max_tokens
-            error_message = str(e)
-            new_max_tokens = parse_and_calculate_max_tokens(error_message)
+    # max_retries = max_attempts - 1 (verifiers counts retries, not attempts)
+    max_retries = max(0, retry_config.max_attempts - 1)
+    state = await generate_rollout(client, env, model_name, example, sampling_args, max_retries=max_retries)
 
-            if new_max_tokens is not None:
-                logger.warning(f"Context length error: reducing max_tokens to {new_max_tokens}.")
-                sampling_args["max_tokens"] = new_max_tokens
-                state = await generate_rollout(client, env, model_name, example, sampling_args)
-                if state.get("error") and isinstance(state["error"], vf.InfraError):
-                    raise state["error"]
-                return state
-            raise
-
-    try:
-        state = await _generate_rollout(client, env, model_name, example, _sampling_args)
-    except (RetryError, Exception) as e:
-        # IMPORTANT: do not raise here (asyncio.gather would cancel all other rollouts).
+    # Check if the rollout failed with an error (after retries exhausted)
+    if state.get("error") is not None:
         logger.error(
             f"Rollout generation failed after retries; recording no_response "
-            f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx}): {repr(e)}"
+            f"(env={env_name_or_id}, example_id={example.get('example_id')}, rollout_idx={rollout_idx}): {state.get('error')}"
         )
-        failed_state = _make_no_response_state(
-            example=example, rollout_idx=rollout_idx, env_name_or_id=env_name_or_id, error=e
-        )
-
-        # Save placeholder row if streaming saves enabled (supports resume + complete accounting).
-        if save_file is not None:
-            result_dict = await asyncio.to_thread(make_result, failed_state, reasoning_field, rollout_idx)
-            await save_result(result_dict, save_file)
-
-        # Update progress + running average without biasing downward.
-        async with rewards_lock:
-            rewards_accumulator.append(None)
-            pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
-            pbar.update(1)
-
-        return failed_state  # type: ignore[return-value]
 
     # Save with rollout_idx if streaming saves enabled.
     if save_file is not None:
@@ -333,7 +218,7 @@ async def generate_and_save_rollout(
 
     # Update running average immediately.
     async with rewards_lock:
-        rewards_accumulator.append(state["reward"])
+        rewards_accumulator.append(state.get("reward"))
         pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
         pbar.update(1)
 
@@ -354,77 +239,23 @@ async def generate_and_save_group(
     pbar: ProgressTracker,
     rewards_accumulator: list,
     rewards_lock: asyncio.Lock,
-) -> list[vf.State]:
+) -> list[vf.RolloutOutput]:
     """Generate a group of rollouts, save results, and update progress (group-level)."""
     logger = get_logger()
-    _sampling_args = deepcopy(sampling_args)
 
-    @retry(
-        stop=stop_after_attempt(retry_config.max_attempts),
-        wait=wait_exponential(
-            multiplier=retry_config.wait_multiplier, min=retry_config.wait_min, max=retry_config.wait_max
-        ),
-        before_sleep=log_retry_attempt,
-        reraise=retry_config.reraise,
+    # max_retries = max_attempts - 1 (verifiers counts retries, not attempts)
+    max_retries = max(0, retry_config.max_attempts - 1)
+    states = await generate_group(
+        client, env, model_name, example, rollouts_per_example, sampling_args, max_retries=max_retries
     )
-    async def _generate_group(
-        client: AsyncOpenAI,
-        env: vf.Environment,
-        model_name: str,
-        example: dict,
-        rollouts_per_example: int,
-        sampling_args: dict,
-    ) -> list[vf.State]:
-        """Asynchronously generate and score a group of rollouts."""
-        logger = get_logger()
-        try:
-            states = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
-            # Re-raise infrastructure errors to trigger retry (check all states in group)
-            for state in states:
-                if state.get("error") and isinstance(state["error"], vf.InfraError):
-                    raise state["error"]
-            return states
-        except BadRequestError as e:
-            error_message = str(e)
-            new_max_tokens = parse_and_calculate_max_tokens(error_message)
 
-            if new_max_tokens is not None:
-                logger.warning(f"Context length error: reducing max_tokens to {new_max_tokens}.")
-                sampling_args["max_tokens"] = new_max_tokens
-                states = await generate_group(client, env, model_name, example, rollouts_per_example, sampling_args)
-                for state in states:
-                    if state.get("error") and isinstance(state["error"], vf.InfraError):
-                        raise state["error"]
-                return states
-            raise
-
-    try:
-        states = await _generate_group(client, env, model_name, example, rollouts_per_example, _sampling_args)
-    except (RetryError, Exception) as e:
-        # IMPORTANT: do not raise here (asyncio.gather would cancel other groups).
-        logger.error(
-            f"Group generation failed after retries; recording no_response rollouts "
-            f"(env={env_name_or_id}, example_id={example.get('example_id')}): {repr(e)}"
-        )
-        failed_states = [
-            _make_no_response_state(example=example, rollout_idx=rollout_idx, env_name_or_id=env_name_or_id, error=e)
-            for rollout_idx in range(rollouts_per_example)
-        ]
-
-        if save_file is not None:
-            await asyncio.gather(
-                *[
-                    make_and_save_result(state, save_file, reasoning_field, rollout_idx)
-                    for rollout_idx, state in enumerate(failed_states)
-                ]
+    # Log errors for any states that failed (after retries exhausted)
+    for state in states:
+        if state.get("error") is not None:
+            logger.error(
+                f"Rollout in group failed after retries "
+                f"(env={env_name_or_id}, example_id={example.get('example_id')}): {state.get('error')}"
             )
-
-        async with rewards_lock:
-            rewards_accumulator.extend([None] * rollouts_per_example)
-            pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
-            pbar.update(rollouts_per_example)
-
-        return failed_states  # type: ignore[return-value]
 
     # Save results for the generated group.
     if save_file is not None:
@@ -438,7 +269,7 @@ async def generate_and_save_group(
     # Update running average after group completes.
     async with rewards_lock:
         for state in states:
-            rewards_accumulator.append(state["reward"])
+            rewards_accumulator.append(state.get("reward"))
         pbar.set_postfix({"Avg Reward": _format_avg_reward(rewards_accumulator)})
         pbar.update(rollouts_per_example)
 
@@ -484,6 +315,8 @@ async def run_eval(
             base_path = get_results_path(env_name_or_id, model_name, base_path=output_dir)
             path_to_save = base_path / "results.jsonl"
         path_to_save.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        path_to_save = None
 
     # Create shared structure for tracking rewards
     rewards_accumulator: list = []
@@ -498,6 +331,7 @@ async def run_eval(
 
         # Filter out already-completed rollouts on resume
         if resume_path is not None:
+            assert path_to_save is not None
             existing_rollout_ids = read_existing_rollout_ids(path_to_save)
             original_count = len(all_rollouts)
             all_rollouts = [
@@ -533,7 +367,7 @@ async def run_eval(
                     rollout_idx,
                     env_name_or_id,
                     sampling_args,
-                    path_to_save if save_config.stream else None,
+                    path_to_save,
                     reasoning_field,
                     retry_config,
                     pbar,
@@ -607,6 +441,7 @@ async def run_eval(
 
     # If resuming, combine with existing results for accurate metrics
     if resume_path is not None:
+        assert path_to_save is not None
         existing_results_df = read_existing_results(path_to_save)
         results_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
         logger.info(
@@ -743,34 +578,26 @@ async def run_evals(
 
     async def run_eval_safe(env):
         """Wrapper to catch RetryError and skip env."""
-        try:
-            await run_eval(
-                clients=clients,
-                env_id=env.id,
-                env_name=env.name,
-                env_args=env.args,
-                num_examples=env.num_examples or eval_config.num_examples,
-                reasoning_field=reasoning_field,
-                rollouts_per_example=env.rollouts_per_example or eval_config.rollouts_per_example,
-                output_dir=output_dir,
-                model_name=model_name,
-                sampling_config=sampling_config,
-                save_config=eval_config.save,
-                retry_config=eval_config.retry,
-                evals_client=evals_client,
-                per_rollout=eval_config.per_rollout,
-                ckpt_step=ckpt_step,
-                step=step,
-                resume_path=resume_path,
-            )
-            return True
-        except RetryError as e:
-            env_name = env.name or env.id
-            logger.warning(
-                f"Env '{env_name}' exhausted {eval_config.retry.max_attempts} retry attempts, skipping. "
-                f"Last error: {e.last_attempt.exception()}"
-            )
-            return None
+        await run_eval(
+            clients=clients,
+            env_id=env.id,
+            env_name=env.name,
+            env_args=env.args,
+            num_examples=env.num_examples or eval_config.num_examples,
+            reasoning_field=reasoning_field,
+            rollouts_per_example=env.rollouts_per_example or eval_config.rollouts_per_example,
+            output_dir=output_dir,
+            model_name=model_name,
+            sampling_config=sampling_config,
+            save_config=eval_config.save,
+            retry_config=eval_config.retry,
+            evals_client=evals_client,
+            per_rollout=eval_config.per_rollout,
+            ckpt_step=ckpt_step,
+            step=step,
+            resume_path=resume_path,
+        )
+        return True
 
     results = await asyncio.gather(*[run_eval_safe(env) for env in eval_config.env])
 
