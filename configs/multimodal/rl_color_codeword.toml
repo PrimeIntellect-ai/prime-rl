@@ -1,27 +1,27 @@
 inference_gpu_ids = [0]
 trainer_gpu_ids = [1]
 
-max_steps = 30
+max_steps = 15
 seq_len = 4096
 
 [model]
 name = "Qwen/Qwen3-VL-4B-Instruct"
 
 [orchestrator]
-batch_size = 128
+batch_size = 256
 rollouts_per_example = 16
+trajectory_strategy = "branching"  # Required for multi-turn VLM
 
 [orchestrator.sampling]
-max_tokens = 128
+max_tokens = 64
 
 [[orchestrator.env]]
-id = "text_to_image_simple"
-name = "reverse-text-images-simple"
-args = { base_env = "reverse-text", seed = 42, font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", roles_to_image = ["user"] }
+id = "primeintellect/color-codeword"
+args = { images_per_turn = 1, max_turns = 3, num_examples = 1000, seed = 42 }
 
 [orchestrator.val]
 interval = 1
-num_examples = 64
+num_examples = 100
 
 [trainer]
 
