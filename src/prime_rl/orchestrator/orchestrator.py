@@ -161,10 +161,11 @@ async def orchestrate(config: OrchestratorConfig):
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
     )
     await train_env_group.start_servers(
-        log_level=config.log.vf_level,
+        log_level="CRITICAL",  # essentially no console logging
         log_file=[
             get_env_worker_log_file(config.output_dir, env_name).as_posix() for env_name in train_env_group.env_names
         ],
+        log_file_level=config.log.vf_level,
         startup_timeout=30,
     )
     train_env_group.set_max_seq_len(config.seq_len)
