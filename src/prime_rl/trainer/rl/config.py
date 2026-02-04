@@ -75,7 +75,7 @@ class LossConfig(BaseConfig):
 class CustomLossConfig(BaseModel):
     """Config for a custom external loss function."""
 
-    path: Annotated[str, Field(description="Import path to the loss function (e.g., 'my_module.my_loss')")]
+    byo_function: Annotated[str, Field(description="Import path to the loss function (e.g., 'my_module.my_loss')")]
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
 

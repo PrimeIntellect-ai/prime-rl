@@ -60,7 +60,7 @@ def test_compute_advantages_without_config():
 
 def test_setup_advantage_fn_with_custom_config():
     config = CustomAdvantageConfig(
-        path="tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
+        byo_function="tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
         kwargs={"scale": 2.0},
     )
     advantage_fn = setup_advantage_fn(config)

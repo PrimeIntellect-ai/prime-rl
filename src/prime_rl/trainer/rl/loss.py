@@ -183,7 +183,7 @@ def prime_rl_loss(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
 def setup_loss_fn(loss_config: LossConfigType) -> LossFn:
     """Setup the loss function based on config."""
     if isinstance(loss_config, CustomLossConfig):
-        custom_fn = _import_object(loss_config.path)
+        custom_fn = _import_object(loss_config.byo_function)
         kwargs = loss_config.kwargs
 
         def loss_fn(inputs: LossInputs) -> LossOutputs:

@@ -55,7 +55,7 @@ def grpo_advantage(inputs: AdvantageInputs, length_weighted_mean: bool = False) 
 def setup_advantage_fn(config: AdvantageConfigType) -> AdvantageFn:
     """Setup advantage function from config."""
     if isinstance(config, CustomAdvantageConfig):
-        custom_fn = _import_object(config.path)
+        custom_fn = _import_object(config.byo_function)
         kwargs = config.kwargs
 
         def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:

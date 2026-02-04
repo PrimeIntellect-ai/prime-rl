@@ -620,7 +620,9 @@ class AdvantageConfig(BaseModel):
 class CustomAdvantageConfig(BaseModel):
     """Config for a custom external advantage function."""
 
-    path: Annotated[str, Field(description="Import path to the advantage function (e.g., 'my_module.my_advantage')")]
+    byo_function: Annotated[
+        str, Field(description="Import path to the advantage function (e.g., 'my_module.my_advantage')")
+    ]
     kwargs: Annotated[
         dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the advantage function")
     ]

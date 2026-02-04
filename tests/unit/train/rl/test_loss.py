@@ -56,7 +56,7 @@ def test_entropy_loss():
 def test_setup_loss_fn_with_custom_config():
     """Test setup_loss_fn with CustomLossConfig importing a custom loss."""
     loss_config = CustomLossConfig(
-        path="tests.unit.train.rl.test_loss._dummy_custom_loss",
+        byo_function="tests.unit.train.rl.test_loss._dummy_custom_loss",
         kwargs={"multiplier": 2.0},
     )
     loss_fn = setup_loss_fn(loss_config)

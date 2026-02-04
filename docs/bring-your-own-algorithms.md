@@ -61,7 +61,7 @@ def ppo_clip_loss(inputs: LossInputs, clip_eps: float = 0.2) -> LossOutputs:
 
 ```toml
 [loss]
-path = "my_module.ppo_clip_loss"
+byo_function ="my_module.ppo_clip_loss"
 kwargs = { clip_eps = 0.2 }
 ```
 
@@ -115,7 +115,7 @@ def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> Advantag
 
 ```toml
 [advantage]
-path = "my_module.normalized_advantage"
+byo_function ="my_module.normalized_advantage"
 kwargs = { eps = 1e-8 }
 ```
 
