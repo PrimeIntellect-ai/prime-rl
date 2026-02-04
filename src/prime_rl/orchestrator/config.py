@@ -460,13 +460,13 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    stability_timeout: Annotated[
-        int,
+    wait_for_stable_checkpoint: Annotated[
+        int | None,
         Field(
-            ge=0,
-            description="Maximum seconds to wait for a checkpoint to become stable (STABLE file to appear) when using resume_step=-1.",
+            ge=1,
+            description="When set, wait up to this many seconds for the latest checkpoint to become stable (STABLE file to appear) before resuming. Useful when the orchestrator restarts while the trainer is still saving a checkpoint. If None (default), resume immediately using whatever checkpoint is available.",
         ),
-    ] = 1000
+    ] = None
 
     keep_last: Annotated[
         int | None,

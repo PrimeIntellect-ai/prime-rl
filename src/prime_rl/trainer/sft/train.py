@@ -105,7 +105,7 @@ def train(config: SFTTrainerConfig):
     checkpoint_step = None
     if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
         if config.ckpt.resume_step == -1:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, config.ckpt.stability_timeout)
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
         else:
             checkpoint_step = config.ckpt.resume_step
 
