@@ -1,7 +1,6 @@
 import warnings
 
 from transformers.configuration_utils import PretrainedConfig
-from transformers.modeling_rope_utils import rope_config_validation
 
 
 class Glm4MoeConfig(PretrainedConfig):
@@ -121,6 +120,7 @@ class Glm4MoeConfig(PretrainedConfig):
 
     model_type = "glm4_moe"
     keys_to_ignore_at_inference = ["past_key_values"]
+    attribute_map = {"num_local_experts": "n_routed_experts"}
 
     # Default tensor parallel plan for base model `Glm4Moe`
     base_model_tp_plan = {
@@ -171,6 +171,7 @@ class Glm4MoeConfig(PretrainedConfig):
         norm_topk_prob=True,
         use_qk_norm=False,
         use_grouped_mm=True,
+        pad_token_id=None,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -190,11 +191,7 @@ class Glm4MoeConfig(PretrainedConfig):
         self.rope_scaling = rope_scaling
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
-        # Validate the correctness of rotary position embeddings parameters
-        # BC: if there is a 'type' field, move it to 'rope_type'.
-        if self.rope_scaling is not None and "type" in self.rope_scaling:
-            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
-        rope_config_validation(self)
+        self.pad_token_id = pad_token_id
 
         # MoE arguments
         self.moe_intermediate_size = moe_intermediate_size

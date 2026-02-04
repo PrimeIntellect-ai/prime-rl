@@ -45,6 +45,20 @@ class AfmoeRotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
 
+    def compute_default_rope_parameters(self, config=None, device=None, seq_len=None, layer_type=None):
+        """Required by transformers 5.0.0 for weight initialization when rope_type is 'default'."""
+        cfg = config or self.config
+        cfg.standardize_rope_params()
+        rope_params = cfg.rope_parameters[layer_type] if layer_type is not None else cfg.rope_parameters
+        base = rope_params["rope_theta"]
+        partial_rotary_factor = rope_params.get("partial_rotary_factor", 1.0)
+        head_dim = getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
+        dim = int(head_dim * partial_rotary_factor)
+        inv_freq = 1.0 / (
+            base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
+        )
+        return inv_freq, 1.0
+
     def _dynamic_frequency_update(self, position_ids, device):
         """
         dynamic RoPE layers should recompute `inv_freq` in the following situations:

@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from transformers.configuration_utils import PretrainedConfig, layer_type_validation
-from transformers.modeling_rope_utils import rope_config_validation
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
@@ -70,6 +69,7 @@ class AfmoeConfig(PretrainedConfig):
         attention_dropout: float = 0.0,
         n_group: int = 1,
         topk_group: int = 1,
+        pad_token_id: int | None = None,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -121,11 +121,7 @@ class AfmoeConfig(PretrainedConfig):
             num_key_value_heads = num_attention_heads
 
         self.num_key_value_heads = num_key_value_heads
-
-        # Validate rope configs
-        if self.rope_scaling is not None and "type" in self.rope_scaling:
-            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
-        rope_config_validation(self)
+        self.pad_token_id = pad_token_id
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,

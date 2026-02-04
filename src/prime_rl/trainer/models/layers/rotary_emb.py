@@ -52,6 +52,10 @@ class RotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
 
+    def compute_default_rope_parameters(self, config=None, device=None, seq_len=None, layer_type=None):
+        """Required by transformers 5.0.0 for weight initialization when rope_type is 'default'."""
+        return _compute_default_rope_parameters(config or self.config, device, seq_len, layer_type)
+
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
     def forward(self, x, position_ids):
