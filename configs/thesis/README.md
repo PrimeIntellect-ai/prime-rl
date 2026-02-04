@@ -125,5 +125,9 @@ uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.str
 # 16-step off-policy (mis-0.125-8)
 uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy-mis-0.125-8 --trainer.loss.token-mask-low 0.125 --trainer.loss.token-mask-high 8
 
-# ...
+# 16-step off-policy (kl-tau-1e-3)
+uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy-kl-tau-1e-3 --trainer.loss.kl-tau 1e-3
+
+# 16-step off-policy (mis-0.125-8-kl-tau-1e-3)
+uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy-mis-0.125-8-kl-tau-1e-3 --trainer.loss.token-mask-low 0.125 --trainer.loss.token-mask-high 8 --trainer.loss.kl-tau 1e-3
 ```
