@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, AsyncContextManager
 
 import pandas as pd
-from loguru import logger
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.completion_usage import CompletionUsage
