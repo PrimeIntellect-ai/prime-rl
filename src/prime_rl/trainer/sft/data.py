@@ -244,8 +244,7 @@ class SFTDataset(StatefulIterableDataset):
                         and messages[i + 1]["role"] == "assistant"
                     )
                     else False,
-                    return_dict=False,
-                    **example.get("chat_template_kwargs", {}),
+                    **{**example.get("chat_template_kwargs", {}), "return_dict": False},
                 )
                 assert prev_ids == cur_ids[:prev_len], (
                     f"Got mismatch in incremental tokenization with chat template at message {i}. Previous ids: {prev_ids} != {cur_ids[:prev_len]=}.\nDecoded prev_ids:\n{tokenizer.decode(prev_ids)}\nDecoded cur_ids:\n{tokenizer.decode(cur_ids[:prev_len])}"
@@ -261,8 +260,7 @@ class SFTDataset(StatefulIterableDataset):
             self.tokenizer.apply_chat_template(
                 prompt + completion,
                 tools=tools,
-                return_dict=False,
-                **example.get("chat_template_kwargs", {}),
+                **{**example.get("chat_template_kwargs", {}), "return_dict": False},
             ),
         )
 
