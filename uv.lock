@@ -496,15 +496,15 @@ wheels = [
 
 [[package]]
 name = "cuda-bindings"
-version = "12.9.5"
+version = "13.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cuda-pathfinder" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/83/1720946a56090a004f375617fb2df61185a413daa779e8bb4bda313be9e3/cuda_bindings-12.9.5-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:92f21accf6fcdea7998b2ee1bbed71e2a156737624c46dc9bc3b51a1c55bda88", size = 15400554, upload-time = "2025-12-18T16:31:03.599Z" },
-    { url = "https://files.pythonhosted.org/packages/10/5c/dd3cac662aad06e5b8661749b403cb6dc8359506a79e387ffc497cd25902/cuda_bindings-12.9.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5218388042d3415fba74030600fa25d59e3ec4183c344f227d43df52ca53f408", size = 15918529, upload-time = "2025-12-18T16:31:06.25Z" },
-    { url = "https://files.pythonhosted.org/packages/33/88/b9fb610955af5a79108744dd75cd921484b43da6b151988d889180a5ad16/cuda_bindings-12.9.5-cp312-cp312-win_amd64.whl", hash = "sha256:ee42798f639920d30292a1649b24388526067463f73a8469feeba1570121ce2d", size = 15399440, upload-time = "2025-12-18T16:31:08.894Z" },
+    { url = "https://files.pythonhosted.org/packages/53/3d/c8ed9d169843091f3f0d6b8218e826fd59520a37e0434c204feada597988/cuda_bindings-13.1.1-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1e75ad0cb863330df784236d289612d71ca855c013d19ae00e5693574abd6915", size = 15530160, upload-time = "2025-12-09T22:05:55.386Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/8e/368295623ee43fba622909d780fbb6863efc1638dff55f67a0f04eac6470/cuda_bindings-13.1.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:25785d1a3cdcd98f151240fd5efd025609319a6720a217dee2a929241749d488", size = 16110386, upload-time = "2025-12-09T22:05:57.71Z" },
+    { url = "https://files.pythonhosted.org/packages/60/1f/ecc4701ade3e85f091c625a920574527b9daf7fb354189fbfbc5516af6cd/cuda_bindings-13.1.1-cp312-cp312-win_amd64.whl", hash = "sha256:ccde9c95c0e953b31fe7731bb08da9d0a34b1770498df9a3c156fdfdbe3951ad", size = 15250028, upload-time = "2025-12-09T22:06:00.346Z" },
 ]
 
 [[package]]
@@ -517,13 +517,14 @@ wheels = [
 
 [[package]]
 name = "cuda-python"
-version = "12.9.5"
+version = "13.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cuda-bindings" },
+    { name = "cuda-pathfinder" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0a/02/ce79a804a2d6ee7dc2d1637b75b7c3f01eb90a796915d4d3a1ac42e2d6e6/cuda_python-12.9.5-py3-none-any.whl", hash = "sha256:6fbbb3be2ab617d8269ad83e5fe9d748b1da4c5e0f79257a3296408a70766b39", size = 7596, upload-time = "2025-12-18T16:45:15.973Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/08/b5e3b9822662d72d540d830531e3ab6a7cabbda3dd56175696aabccfeb76/cuda_python-13.1.1-py3-none-any.whl", hash = "sha256:944cc4fe6482673d28dd545797a28840945a1668739328fa2ad1e9be4f7050d9", size = 8038, upload-time = "2025-12-09T22:13:10.719Z" },
 ]
 
 [[package]]
@@ -2131,7 +2132,18 @@ wheels = [
 
 [[package]]
 name = "nvidia-cutlass-dsl"
-version = "4.4.0.dev0"
+version = "4.4.0.dev1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-cutlass-dsl-libs-base" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/85/0f/caa8497bc69da9b7910a43ed5de758b39920cc13d1fccd95fd2e21622c93/nvidia_cutlass_dsl-4.4.0.dev1-py3-none-any.whl", hash = "sha256:20cc1902522f262becae9222e9ac4fb8cc5ae3444784a350365dd775f49fcf18", size = 10226, upload-time = "2026-02-04T01:18:31.415Z" },
+]
+
+[[package]]
+name = "nvidia-cutlass-dsl-libs-base"
+version = "4.4.0.dev1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cuda-python" },
@@ -2139,8 +2151,8 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/7a/eda5151a7108b6a5512819aeb9077453305bc9bbbd006d506da76a9bdcbf/nvidia_cutlass_dsl-4.4.0.dev0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:62ea4d4b762afd8191ba73eacbfd3cc40308a4b8c2aa87787c507b7ea662d1a6", size = 75504224, upload-time = "2026-01-25T14:01:27.267Z" },
-    { url = "https://files.pythonhosted.org/packages/12/18/b97f537ef0ffcbccd7a9f511e35d6a76a15f64f2a75af8d2119d65319405/nvidia_cutlass_dsl-4.4.0.dev0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:d0bfc2f592376c767db2b99b04be9fb896c256ff3e56504b044974500a4764f5", size = 74620993, upload-time = "2026-01-25T14:01:00.812Z" },
+    { url = "https://files.pythonhosted.org/packages/07/c2/3882dff5398f57ed8eea1cac898b7484a4482503622edd76e69a9c723170/nvidia_cutlass_dsl_libs_base-4.4.0.dev1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:bea93ac1064067cb85a26584cf486f35e929082beaacf24fb7201f420017e055", size = 75511841, upload-time = "2026-02-04T01:22:01.021Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/d6/e9a11c14827cf36e339dcc6903e715c03307739c0c1e44f270143f9d23e5/nvidia_cutlass_dsl_libs_base-4.4.0.dev1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:492a8d53127ad3008c939cbfbdf809ebb164272bb6ccac4dbe20461cad41df6f", size = 74630827, upload-time = "2026-02-04T01:23:28.682Z" },
 ]
 
 [[package]]
