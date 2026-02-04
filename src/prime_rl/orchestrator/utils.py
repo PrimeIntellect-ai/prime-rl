@@ -172,7 +172,17 @@ async def compute_teacher_logprobs(
 
 
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:
-    """Get the weight directory for a given checkpoint step."""
+    """Get the weight directory for a given checkpoint step.
+
+    Args:
+        output_dir: The output directory for the run.
+        step: The checkpoint step.
+        check_exists: If True, raises FileNotFoundError if no weight directory exists.
+            If False, returns the broadcast directory path without checking existence
+            (useful for NCCL mode where weights are broadcasted, not stored on disk).
+        wait_timeout: Maximum time in seconds to wait for a stable directory to appear.
+            If None, no waiting is performed.
+    """
     ckpt_weight_dir = get_step_path(get_ckpt_dir(output_dir), step) / "weight"
     broadcast_weight_dir = get_step_path(get_broadcast_dir(output_dir), step)
 
