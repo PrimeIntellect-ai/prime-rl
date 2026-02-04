@@ -1,4 +1,5 @@
 import asyncio
+import time
 from itertools import cycle
 from pathlib import Path
 from typing import Any, AsyncContextManager
@@ -169,7 +170,7 @@ async def compute_teacher_logprobs(
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 
 
-def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True) -> Path:
+def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:
     """Get the weight directory for a given checkpoint step.
 
     Args:
@@ -178,15 +179,37 @@ def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True) -> Pa
         check_exists: If True, raises FileNotFoundError if no weight directory exists.
             If False, returns the broadcast directory path without checking existence
             (useful for NCCL mode where weights are broadcasted, not stored on disk).
+        wait_timeout: Maximum time in seconds to wait for a stable directory to appear.
+            If None, no waiting is performed.
     """
     ckpt_weight_dir = get_step_path(get_ckpt_dir(output_dir), step) / "weight"
     broadcast_weight_dir = get_step_path(get_broadcast_dir(output_dir), step)
-    if ckpt_weight_dir.exists():
-        return ckpt_weight_dir
-    if broadcast_weight_dir.exists():
-        return broadcast_weight_dir
+
+    def find_stable_dir() -> Path | None:
+        # For checkpoint weights, check STABLE file in parent directory (checkpoints/step_{step}/STABLE)
+        ckpt_step_dir = get_step_path(get_ckpt_dir(output_dir), step)
+        if (ckpt_step_dir / "STABLE").exists() and ckpt_weight_dir.exists():
+            return ckpt_weight_dir
+
+        # For broadcast weights, check STABLE file in the broadcast directory itself
+        if (broadcast_weight_dir / "STABLE").exists() and broadcast_weight_dir.exists():
+            return broadcast_weight_dir
+
+        return None
+
+    # Check immediately, then wait if needed
+    result = find_stable_dir()
+    if result is None and wait_timeout:
+        start_time = time.time()
+        while time.time() - start_time < wait_timeout:
+            time.sleep(1)
+            result = find_stable_dir()
+            if result:
+                break
+
+    if result:
+        return result
     if not check_exists:
         return broadcast_weight_dir
-    raise FileNotFoundError(
-        f"No weight directory found for checkpoint step {step}. Expected to find it in {ckpt_weight_dir} or {broadcast_weight_dir}."
-    )
+
+    raise FileNotFoundError(f"No weight directory found for checkpoint step {step}")
