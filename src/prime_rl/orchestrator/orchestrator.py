@@ -51,7 +51,7 @@ from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
-from prime_rl.utils.pathing import get_all_ckpt_steps
+from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.utils import (
     clean_exit,
     get_env_ids_to_install,
@@ -184,30 +184,9 @@ async def orchestrate(config: OrchestratorConfig):
     checkpoint_step = None
     if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
         if config.ckpt.resume_step == -1:
-            steps = get_all_ckpt_steps(ckpt_manager.ckpt_dir)
-            if len(steps) == 0:
-                logger.warning(f"No checkpoints found in {ckpt_manager.ckpt_dir}. Starting from scratch.")
-            else:
-                checkpoint_step = steps[-1]
-                stable_file = ckpt_manager.ckpt_dir / f"step_{checkpoint_step}" / "STABLE"
-
-                if config.ckpt.wait_for_stable_checkpoint and not stable_file.exists():
-                    timeout = config.ckpt.wait_for_stable_checkpoint
-                    logger.info(f"Checkpoint step_{checkpoint_step} not yet stable. Waiting up to {timeout}s...")
-                    wait_time = 0
-                    while wait_time < timeout and not stable_file.exists():
-                        time.sleep(1)
-                        wait_time += 1
-                        if wait_time % 60 == 0:
-                            logger.info(f"Still waiting for step_{checkpoint_step} to become stable ({wait_time}s elapsed)")
-
-                    if not stable_file.exists():
-                        logger.warning(f"Checkpoint step_{checkpoint_step} did not become stable within {timeout}s. Starting from scratch.")
-                        checkpoint_step = None
-                    else:
-                        logger.info(f"Checkpoint step_{checkpoint_step} is now stable.")
-                else:
-                    logger.info(f"Found checkpoint in {ckpt_manager.ckpt_dir}: step_{checkpoint_step}")
+            checkpoint_step = resolve_latest_ckpt_step(
+                ckpt_manager.ckpt_dir, config.ckpt.wait_for_stable_checkpoint
+            )
         else:
             checkpoint_step = config.ckpt.resume_step
 
