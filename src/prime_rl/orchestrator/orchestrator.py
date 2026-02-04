@@ -53,6 +53,7 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
+    count_chinese_chars,
     get_env_ids_to_install,
     install_env,
     resolve_latest_ckpt_step,
@@ -506,6 +507,21 @@ async def orchestrate(config: OrchestratorConfig):
         # Gather individual reward function metrics
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
 
+        # Count Chinese characters in completions
+        chinese_stats = []
+        for rollout in train_rollouts:
+            trajectory = rollout["trajectory"]
+            if not trajectory:
+                continue
+            last_step = trajectory[-1]
+            tokens = last_step["tokens"]
+            completion_text = tokenizer.decode(tokens["completion_ids"])
+            chinese_count, total_count = count_chinese_chars(completion_text)
+            chinese_stats.append(
+                {"chinese_chars": chinese_count, "total_chars": total_count, "has_chinese": chinese_count > 0}
+            )
+        chinese_df = pd.DataFrame(chinese_stats)
+
         val_results_df = (
             pd.DataFrame(
                 {
@@ -585,6 +601,14 @@ async def orchestrate(config: OrchestratorConfig):
             },
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
+            # Chinese character metrics
+            "chinese/char_count": chinese_df.chinese_chars.sum(),
+            "chinese/char_ratio": (
+                chinese_df.chinese_chars.sum() / chinese_df.total_chars.sum()
+                if chinese_df.total_chars.sum() > 0
+                else 0.0
+            ),
+            "chinese/rollout_ratio": chinese_df.has_chinese.mean(),
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
