@@ -96,21 +96,19 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                     return error_check_ret
                 conversation, engine_prompts = await self._preprocess_chat(
                     request,
-                    self.renderer,
                     request.messages,
-                    chat_template=request.chat_template or self.chat_template,
-                    chat_template_content_format=self.chat_template_content_format,
-                    add_generation_prompt=request.add_generation_prompt,
-                    continue_final_message=request.continue_final_message,
+                    default_template=self.chat_template,
+                    default_template_content_format=self.chat_template_content_format,
+                    default_template_kwargs=getattr(self, "default_chat_template_kwargs", None),
                     tool_dicts=tool_dicts,
-                    documents=request.documents,
-                    chat_template_kwargs=request.chat_template_kwargs,
                     tool_parser=tool_parser,
-                    add_special_tokens=request.add_special_tokens,
                 )
             else:
                 # For GPT-OSS.
-                conversation, engine_prompts = self._make_request_with_harmony(request)
+                should_include_tools = tool_dicts is not None
+                conversation, engine_prompts = self._make_request_with_harmony(
+                    request, should_include_tools
+                )
         except (ValueError, TypeError, RuntimeError, jinja2.TemplateError) as e:
             logger.exception("Error in preprocessing prompt inputs")
             return self.create_error_response(f"{e} {e.__cause__}")
@@ -186,13 +184,18 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                         trace_headers=trace_headers,
                     )
                 else:
-                    engine_request, tokenization_kwargs = await self._process_inputs(
+                    tok_params = request.build_tok_params(self.model_config)
+                    tokenization_kwargs = tok_params.get_encode_kwargs()
+
+                    engine_request = self.input_processor.process_inputs(
                         sub_request_id,
                         engine_prompt,
                         sampling_params,
                         lora_request=lora_request,
+                        tokenization_kwargs=tokenization_kwargs,
                         trace_headers=trace_headers,
                         priority=request.priority,
+                        data_parallel_rank=data_parallel_rank,
                     )
 
                     generator = self.engine_client.generate(
