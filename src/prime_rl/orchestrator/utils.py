@@ -196,5 +196,5 @@ def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_
         return result
     if not check_exists:
         return broadcast_weight_dir
-    
+
     raise FileNotFoundError(f"No weight directory found for checkpoint step {step}")
