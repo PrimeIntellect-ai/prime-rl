@@ -75,9 +75,9 @@ inference:
 
   runtimeClassName: nvidia
 
-  # Health probes for inference server
+  # Health probes for inference server (requires /health endpoint)
   probes:
-    enabled: true
+    enabled: false
     # Startup probe: allows long model loading time (up to 45 min by default)
     startup:
       periodSeconds: 10
@@ -123,9 +123,9 @@ trainer:
 
   runtimeClassName: nvidia
 
-  # Health probes for trainer
+  # Health probes for trainer (requires metrics_server config)
   probes:
-    enabled: true
+    enabled: false
     # Startup probe: allows time for model loading
     startup:
       periodSeconds: 10
