@@ -611,8 +611,22 @@ class BufferConfig(BaseConfig):
         return self
 
 
-class AdvantageConfig(BaseConfig):
+class AdvantageConfig(BaseModel):
+    """Config for the default GRPO advantage computation."""
+
     length_weighted_mean: bool = False
+
+
+class CustomAdvantageConfig(BaseModel):
+    """Config for a custom external advantage function."""
+
+    path: Annotated[str, Field(description="Import path to the advantage function (e.g., 'my_module.my_advantage')")]
+    kwargs: Annotated[
+        dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the advantage function")
+    ]
+
+
+AdvantageConfigType: TypeAlias = AdvantageConfig | CustomAdvantageConfig
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):
