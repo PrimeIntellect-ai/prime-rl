@@ -49,9 +49,9 @@ from prime_rl.utils.client import (
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.monitor import setup_monitor
+from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.utils import (
     clean_exit,
     get_env_ids_to_install,
