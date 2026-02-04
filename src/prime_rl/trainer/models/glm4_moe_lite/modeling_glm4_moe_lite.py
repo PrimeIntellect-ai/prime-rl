@@ -290,8 +290,8 @@ class Glm4MoeLitePreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["Glm4MoeLiteDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
-    _supports_flex_attn = True
+    _supports_sdpa = False
+    _supports_flex_attn = False
     _can_compile_fullgraph = False
     _supports_attention_backend = True
     _can_record_outputs = {
@@ -433,14 +433,14 @@ class Glm4MoeLiteForCausalLM(Glm4MoeLitePreTrainedModel, GenerationMixin):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
-        temperature: Optional[float] = 1.0,
+        temperature: Optional[torch.Tensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
             If not provided, the wrapped LM head returns logits only.
-        temperature (`float`, *optional*, defaults to 1.0):
+        temperature (`torch.Tensor`, *optional*):
             Temperature used for the logprobs/entropy computation when `labels` are provided.
         """
         if position_ids is None:
