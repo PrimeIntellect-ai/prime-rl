@@ -117,6 +117,7 @@ metadata:
 spec:
   serviceName: {{ .Release.Name }}-inference-headless
   replicas: {{ .Values.inference.replicas }}
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       {{- include "prime-rl.componentLabels" . | nindent 6 }}
@@ -222,6 +223,7 @@ metadata:
 spec:
   serviceName: {{ .Release.Name }}-trainer-headless
   replicas: {{ .Values.trainer.replicas }}
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       {{- include "prime-rl.componentLabels" . | nindent 6 }}
