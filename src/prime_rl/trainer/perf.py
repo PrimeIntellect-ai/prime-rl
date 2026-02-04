@@ -75,6 +75,15 @@ class PerfCounter:
         if "B200" in device_name:
             # https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-datasheet-3384703
             return 2.25e15  # This is half of the FLOPS reported in torchtitan
+        # AMD Instinct GPUs
+        if "MI300X" in device_name:
+            # https://www.amd.com/en/products/accelerators/instinct/mi300/mi300x.html
+            # Peak BF16: 1307.4 TFLOPS (matrix)
+            return 1307.4e12
+        if "MI325X" in device_name:
+            # https://www.amd.com/en/products/accelerators/instinct/mi300/mi325x.html
+            # Peak BF16: 1307.4 TFLOPS (matrix) - same compute dies as MI300X, more HBM3e
+            return 1307.4e12
         else:
             self._logger.warning(f"Peak FLOPS undefined for `{device_name}`. Falling back to A100 (312 TFLOPS)")
             return 312e12
