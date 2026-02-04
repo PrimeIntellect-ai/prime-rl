@@ -184,7 +184,7 @@ async def orchestrate(config: OrchestratorConfig):
     checkpoint_step = None
     if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
         if config.ckpt.resume_step == -1:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, config.ckpt.wait_for_stable_checkpoint)
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
         else:
             checkpoint_step = config.ckpt.resume_step
 
@@ -253,7 +253,10 @@ async def orchestrate(config: OrchestratorConfig):
 
         # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
         check_exists = config.weight_broadcast.type != "nccl"
-        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step, check_exists=check_exists)
+        wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
+        weights_path = get_weight_dir(
+            config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
+        )
         lora_name = config.model.lora.name if config.model.lora else None
         await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:

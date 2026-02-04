@@ -460,11 +460,11 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    wait_for_stable_checkpoint: Annotated[
+    wait_for_weights_timeout: Annotated[
         int | None,
         Field(
             ge=1,
-            description="When set, wait up to this many seconds for the latest checkpoint to become stable (STABLE file to appear) before resuming. Useful when the orchestrator restarts while the trainer is still saving a checkpoint. If None (default), resume immediately using whatever checkpoint is available.",
+            description="When resuming, wait up to this many seconds for the weight directory to appear. Useful when the orchestrator restarts while the trainer is still saving weights. If None (default), fail immediately if weights are not found.",
         ),
     ] = None
 
