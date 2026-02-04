@@ -172,46 +172,29 @@ async def compute_teacher_logprobs(
 
 
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:
-    """Get the weight directory for a given checkpoint step.
-
-    Args:
-        output_dir: The output directory for the run.
-        step: The checkpoint step.
-        check_exists: If True, raises FileNotFoundError if no weight directory exists.
-            If False, returns the broadcast directory path without checking existence
-            (useful for NCCL mode where weights are broadcasted, not stored on disk).
-        wait_timeout: If set, wait up to this many seconds for either weight directory to appear.
-    """
+    """Get the weight directory for a given checkpoint step."""
     ckpt_weight_dir = get_step_path(get_ckpt_dir(output_dir), step) / "weight"
     broadcast_weight_dir = get_step_path(get_broadcast_dir(output_dir), step)
 
-    def check_dirs() -> Path | None:
-        if (ckpt_weight_dir / "STABLE").exists():
-            return ckpt_weight_dir
-        if (broadcast_weight_dir / "STABLE").exists():
-            return broadcast_weight_dir
+    def find_stable_dir() -> Path | None:
+        for weight_dir in [ckpt_weight_dir, broadcast_weight_dir]:
+            if (weight_dir / "STABLE").exists():
+                return weight_dir
         return None
 
-    result = check_dirs()
+    # Check immediately, then wait if needed
+    result = find_stable_dir()
+    if not result and wait_timeout:
+        start_time = time.time()
+        while time.time() - start_time < wait_timeout:
+            time.sleep(1)
+            result = find_stable_dir()
+            if result:
+                break
+
     if result:
         return result
-
-    if wait_timeout:
-        logger.info(f"Weight directory for step_{step} not found. Waiting up to {wait_timeout}s...")
-        wait_time = 0
-        while wait_time < wait_timeout:
-            time.sleep(1)
-            wait_time += 1
-            result = check_dirs()
-            if result:
-                logger.info(f"Weight directory for step_{step} is now available.")
-                return result
-            if wait_time % 60 == 0:
-                logger.info(f"Still waiting for weight directory for step_{step} ({wait_time}s elapsed)")
-        logger.warning(f"Weight directory for step_{step} did not appear within {wait_timeout}s.")
-
     if not check_exists:
         return broadcast_weight_dir
-    raise FileNotFoundError(
-        f"No weight directory found for checkpoint step {step}. Expected to find it in {ckpt_weight_dir} or {broadcast_weight_dir}."
-    )
+    
+    raise FileNotFoundError(f"No weight directory found for checkpoint step {step}")
