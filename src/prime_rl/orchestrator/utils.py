@@ -186,9 +186,9 @@ def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_
     broadcast_weight_dir = get_step_path(get_broadcast_dir(output_dir), step)
 
     def check_dirs() -> Path | None:
-        if ckpt_weight_dir.exists():
+        if (ckpt_weight_dir / "STABLE").exists():
             return ckpt_weight_dir
-        if broadcast_weight_dir.exists():
+        if (broadcast_weight_dir / "STABLE").exists():
             return broadcast_weight_dir
         return None
 
