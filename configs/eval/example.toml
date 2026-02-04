@@ -1,0 +1,40 @@
+# Example offline evaluation config
+# Usage: uv run eval @ configs/eval/example.toml
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[client]
+base_url = ["http://localhost:8000/v1"]
+
+[[env]]
+env_id = "reverse-text"
+name = "reverse-text"
+
+[sampling]
+max_tokens = 2048
+temperature = 0.7
+
+# Global eval settings
+num_examples = 100
+rollouts_per_example = 1
+max_concurrent = 32
+
+# Watcher mode (disabled by default)
+[watcher]
+enabled = false
+# weights_dir = "/path/to/checkpoints"
+# poll_interval = 10
+
+# WandB logging (optional)
+# [wandb]
+# project = "prime-rl"
+# name = "eval-run"
+# [wandb.log_extras]
+# rollouts = false
+# rewards = false
+
+[log]
+level = "info"
+
+output_dir = "outputs/eval"
