@@ -186,14 +186,20 @@ def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_
     broadcast_weight_dir = get_step_path(get_broadcast_dir(output_dir), step)
 
     def find_stable_dir() -> Path | None:
-        for weight_dir in [ckpt_weight_dir, broadcast_weight_dir]:
-            if (weight_dir / "STABLE").exists():
-                return weight_dir
+        # For checkpoint weights, check STABLE file in parent directory (checkpoints/step_{step}/STABLE)
+        ckpt_step_dir = get_step_path(get_ckpt_dir(output_dir), step)
+        if (ckpt_step_dir / "STABLE").exists():
+            return ckpt_weight_dir
+
+        # For broadcast weights, check STABLE file in the broadcast directory itself
+        if (broadcast_weight_dir / "STABLE").exists():
+            return broadcast_weight_dir
+
         return None
 
     # Check immediately, then wait if needed
     result = find_stable_dir()
-    if not result and wait_timeout:
+    if result is None and wait_timeout:
         start_time = time.time()
         while time.time() - start_time < wait_timeout:
             time.sleep(1)
