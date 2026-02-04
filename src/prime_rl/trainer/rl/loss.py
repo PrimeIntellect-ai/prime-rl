@@ -1,3 +1,4 @@
+import importlib
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -6,7 +7,14 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.trainer.rl.config import LossConfig
+from prime_rl.trainer.rl.config import CustomLossConfig, LossConfig, LossConfigType
+
+
+def _import_object(path: str) -> Any:
+    """Import an object from a dotted path."""
+    module_path, _, name = path.rpartition(".")
+    module = importlib.import_module(module_path)
+    return getattr(module, name)
 
 
 @dataclass
@@ -172,8 +180,16 @@ def prime_rl_loss(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def setup_loss_fn(loss_config: LossConfig) -> LossFn:
+def setup_loss_fn(loss_config: LossConfigType) -> LossFn:
     """Setup the loss function based on config."""
+    if isinstance(loss_config, CustomLossConfig):
+        custom_fn = _import_object(loss_config.path)
+        kwargs = loss_config.kwargs
+
+        def loss_fn(inputs: LossInputs) -> LossOutputs:
+            return custom_fn(inputs, **kwargs)
+
+        return loss_fn
 
     def loss_fn(inputs: LossInputs) -> LossOutputs:
         return prime_rl_loss(inputs, loss_config)

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -70,6 +70,16 @@ class LossConfig(BaseConfig):
                 f"sequence_mask_low ({self.sequence_mask_low}) must be less than sequence_mask_high ({self.sequence_mask_high})"
             )
         return self
+
+
+class CustomLossConfig(BaseModel):
+    """Config for a custom external loss function."""
+
+    path: Annotated[str, Field(description="Import path to the loss function (e.g., 'my_module.my_loss')")]
+    kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
+
+
+LossConfigType: TypeAlias = LossConfig | CustomLossConfig
 
 
 class FakeDataLoaderConfig(BaseConfig):
