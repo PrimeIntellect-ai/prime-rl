@@ -21,6 +21,7 @@ from prime_rl.utils.client import setup_clients
 from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.elastic import ServerDiscovery
 from prime_rl.utils.logger import get_logger, intercept_verifiers_logging, reset_logger, setup_logger
+from prime_rl.utils.utils import strip_env_version
 
 
 class WorkerDiedError(Exception):
@@ -240,7 +241,7 @@ def worker_main(
         intercept_verifiers_logging(level=vf_log_level)
 
     # Load environment
-    env = vf.load_environment(env_id, **env_args)
+    env = vf.load_environment(strip_env_version(env_id), **env_args)
     env.set_max_seq_len(seq_len)
     env.set_interleaved_rollouts(interleaved_rollouts)
 
