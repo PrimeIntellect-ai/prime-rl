@@ -177,18 +177,19 @@ async def orchestrate(config: OrchestratorConfig):
         train_env_group.set_score_rollouts(False)
 
     train_env_addresses = []
-    for env in config.env:
+    for env, env_name in zip(config.env, train_env_group.env_names):
         if env.address is None:
             address = spawn_env_server(
                 env_id=env.id,
                 env_args=env.args,
                 extra_env_kwargs=extra_env_kwargs,
                 log_level="CRITICAL",
-                log_file=(get_log_dir(config.output_dir) / "train" / f"{env.name or env.id}.log").as_posix(),
+                log_file=(get_log_dir(config.output_dir) / "train" / f"{env_name}.log").as_posix(),
                 log_file_level=config.log.vf_level,
             )
         else:
             address = env.address
+        logger.info(f"Connecting train environment {env_name} to server at {address}")
         train_env_addresses.append(address)
     train_env_clients = [setup_env_client(address) for address in train_env_addresses]
 
@@ -219,6 +220,7 @@ async def orchestrate(config: OrchestratorConfig):
                 )
             else:
                 address = env.address
+            logger.info(f"Connecting eval environment {eval_env_name} to server at {address}")
             eval_env_addresses.append(address)
 
         eval_env_clients = [setup_env_client(address) for address in eval_env_addresses]
@@ -227,7 +229,7 @@ async def orchestrate(config: OrchestratorConfig):
         await asyncio.gather(*[env_client.health(timeout=30) for env_client in eval_env_clients])
         logger.success("Eval environment servers ready")
 
-        # this puts all train envs into server model
+        # this puts all eval envs into server mode
         # all calls to run_rollout and run_group will be routed to the server via the env client
         for eval_env, eval_env_client in zip(eval_envs, eval_env_clients):
             eval_env.env_client = eval_env_client
