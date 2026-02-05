@@ -187,7 +187,7 @@ class LlamaModel(LlamaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3"):
+        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
             flat_position_ids = position_ids.view(-1)
             seqlens = torch.cat(
                 [

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3"]
+AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "flash_attention_4"]
 
 MOE_MODEL_MAPS = {
     "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
@@ -314,6 +314,19 @@ class ModelConfig(BaseConfig):
                 raise ValueError(
                     f"Fused LM head chunk size must be at least {low}, got {self.fused_lm_head_chunk_size}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def fuck_transformers(self):
+        if self.attn == "flash_attention_4":
+            self.attn = "fa4"
+            from transformers import AttentionInterface
+
+            def empty(*args, **kwargs) -> None:
+                pass
+
+            AttentionInterface.register("fa4", empty)
+
         return self
 
 

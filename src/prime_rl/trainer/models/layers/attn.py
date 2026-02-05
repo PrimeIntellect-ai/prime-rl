@@ -11,12 +11,14 @@ from .rotary_emb import apply_rotary_pos_emb
 try:
     from flash_attn import flash_attn_varlen_func
 except ImportError:
-    flash_attn_varlen_func = None
+    flash_attn_varlen_func = None  # type: ignore
 
 try:
     from flash_attn_interface import flash_attn_varlen_func as flash_attn_3_varlen_func
 except ImportError:
-    flash_attn_3_varlen_func = None
+    flash_attn_3_varlen_func = None  # type: ignore
+
+from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
 
 
 @dataclass
@@ -38,6 +40,12 @@ class AttentionConfig:
 
 class FlashAttention(nn.Module):
     """Flash Attention"""
+
+    _funcs = {
+        2: flash_attn_varlen_func,
+        3: flash_attn_3_varlen_func,
+        4: flash_attn_4_varlen_func,
+    }
 
     def __init__(self, config: AttentionConfig, flash_attn_version: int = 2):
         super().__init__()
@@ -61,7 +69,11 @@ class FlashAttention(nn.Module):
             self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
             self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
 
-        self.func = flash_attn_3_varlen_func if flash_attn_version == 3 else flash_attn_varlen_func
+        self._flash_attn_version = flash_attn_version
+        self.func = self._funcs[flash_attn_version]
+        self._flash_attn_call = self.func
+        if self._flash_attn_version == 4:
+            self._flash_attn_call = torch._dynamo.disable(self.func)
 
     def forward(
         self,
@@ -92,14 +104,19 @@ class FlashAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-        out = self.func(
+
+        args = [
             query_states[0],
             key_states[0],
             value_states[0],
             cu_seqlens,
             cu_seqlens,
-            max_seqlen,
-            max_seqlen,
+        ]
+        if self._flash_attn_version != 4:
+            args.extend([max_seqlen, max_seqlen])
+
+        out = self._flash_attn_call(
+            *args,
             causal=True,
         )
         if isinstance(out, tuple):
@@ -180,6 +197,7 @@ ATTN_IMPL2CLASS = {
     "flash_attention_2": functools.partial(FlashAttention, flash_attn_version=2),
     "sdpa": SDPAAttention,
     "flash_attention_3": functools.partial(FlashAttention, flash_attn_version=3),
+    "fa4": functools.partial(FlashAttention, flash_attn_version=4),
 }
 
 
