@@ -296,6 +296,11 @@ class ModelConfig(BaseConfig):
     def cp_only_with_flash_attn(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3"]:
             raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
+        if self.cp > 1 and self.attn == "flash_attention_3" and self.impl != "custom":
+            raise ValueError(
+                "CP with flash_attention_3 requires model.impl='custom' "
+                "(the FA3 ring-attention kernel is only implemented for the custom model path)"
+            )
         return self
 
     @model_validator(mode="after")

@@ -186,7 +186,7 @@ ATTN_IMPL2CLASS = {
 def substitute_prime_rl_flash_attn(
     process_group: torch.distributed.ProcessGroup,
     heads_k_stride: int,
-    flash_attn_kernel: int = 2,
+    attn_impl: str = "flash_attention_2",
 ) -> None:
     from ring_flash_attn import llama3_flash_attn_varlen_func
     from ring_flash_attn.utils import AllGatherComm, get_default_args
@@ -381,10 +381,8 @@ def substitute_prime_rl_flash_attn(
 
         return RingFA3Varlen.apply(q, k, v)
 
-    if flash_attn_kernel not in {2, 3}:
-        raise ValueError(f"Unsupported ring flash attention kernel version: {flash_attn_kernel}")
-
-    ring_func = llama3_flash_attn_varlen_func if flash_attn_kernel == 2 else ring_fa3_varlen_func
+    use_fa3 = attn_impl == "flash_attention_3"
+    ring_func = ring_fa3_varlen_func if use_fa3 else llama3_flash_attn_varlen_func
 
     class RingFlashAttention(FlashAttention):
         def forward(

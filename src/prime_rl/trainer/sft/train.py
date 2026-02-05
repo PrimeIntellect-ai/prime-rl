@@ -96,11 +96,10 @@ def train(config: SFTTrainerConfig):
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
-        ring_kernel = 3 if config.model.attn == "flash_attention_3" else 2
         substitute_prime_rl_flash_attn(
             parallel_dims.world_mesh["cp"].get_group(),
             heads_k_stride=1,
-            flash_attn_kernel=ring_kernel,
+            attn_impl=config.model.attn,
         )
 
     # Set up checkpoint manager
