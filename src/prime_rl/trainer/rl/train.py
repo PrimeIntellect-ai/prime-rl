@@ -273,138 +273,159 @@ def train(config: RLTrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        if config.loss.ratio_type == "token":
-            loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        elif config.loss.ratio_type == "sequence":
-            loss_scale = batch_size
-        loss_scale = max(loss_scale, 1)
+        # Calculate actual gradient steps (may be less than requested if not enough micro-batches)
+        num_gradient_steps = min(config.gradient_steps_per_batch, batch_size)
+        if num_gradient_steps < config.gradient_steps_per_batch and is_first_step:
+            logger.warning(
+                f"Requested {config.gradient_steps_per_batch} gradient steps per batch, "
+                f"but only {batch_size} micro-batches available. Using {num_gradient_steps} gradient steps."
+            )
 
-        logger.debug(f"Starting forward and backward pass ({batch_size=})")
+        # Split micro-batches into minibatch groups for multiple gradient steps
+        def chunk_into_n(lst: list, n: int) -> list[list]:
+            """Split list into n roughly equal chunks."""
+            k, m = divmod(len(lst), n)
+            return [lst[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)] for i in range(n)]
+
+        minibatch_groups = chunk_into_n(micro_batches, num_gradient_steps)
+
+        logger.debug(f"Starting forward and backward pass ({batch_size=}, {num_gradient_steps=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
         cp_size = parallel_dims.cp
 
-        for micro_step, micro_batch in enumerate(micro_batches):
-            input_ids = micro_batch["input_ids"].to("cuda")
-            position_ids = micro_batch["position_ids"].to("cuda")
-            advantages = micro_batch["advantages"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
-            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-            teacher_logprobs = (
-                micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
-            )
+        grad_norm = torch.tensor(0.0)  # Will be overwritten in minibatch loop
+        for minibatch_idx, minibatch_micro_batches in enumerate(minibatch_groups):
+            # Normalize by the local number of unmasked tokens in the minibatch (per-batch length normalization)
+            if config.loss.ratio_type == "token":
+                loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in minibatch_micro_batches)
+            else:  # sequence
+                loss_scale = len(minibatch_micro_batches)
+            loss_scale = max(loss_scale, 1)
 
-            labels = shift_tensor_left(input_ids)
+            for micro_step, micro_batch in enumerate(minibatch_micro_batches):
+                input_ids = micro_batch["input_ids"].to("cuda")
+                position_ids = micro_batch["position_ids"].to("cuda")
+                advantages = micro_batch["advantages"].to("cuda")
+                loss_mask = micro_batch["loss_mask"].to("cuda")
+                inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
+                teacher_logprobs = (
+                    micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
+                )
 
-            if cp_enabled:
-                input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
-                labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-            else:
-                forward_position_ids = position_ids
+                labels = shift_tensor_left(input_ids)
 
-            if config.model.lora:
-                lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                 if cp_enabled:
-                    chunk_size = input_ids.shape[1]  # We pad to multiple of cp so this should be fine
-                    logger.debug(f"[Rank {world.rank}] {cp_rank=} {cp_size=} {cp_group=} {chunk_size=}")
-                    # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
-                    cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
-                    adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
-                    lora_num_tokens = torch.diff(
-                        adjusted_cu, prepend=torch.tensor([0], device=adjusted_cu.device, dtype=adjusted_cu.dtype)
+                    input_ids, forward_position_ids = setup_cp_params(
+                        input_ids, position_ids, cp_rank, cp_size, cp_group
                     )
-                set_lora_num_tokens(lora_num_tokens)
+                    labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
+                else:
+                    forward_position_ids = position_ids
 
-            temperature = micro_batch["temperature"]
+                if config.model.lora:
+                    lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
+                    if cp_enabled:
+                        chunk_size = input_ids.shape[1]  # We pad to multiple of cp so this should be fine
+                        logger.debug(f"[Rank {world.rank}] {cp_rank=} {cp_size=} {cp_group=} {chunk_size=}")
+                        # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
+                        cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
+                        adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
+                        lora_num_tokens = torch.diff(
+                            adjusted_cu, prepend=torch.tensor([0], device=adjusted_cu.device, dtype=adjusted_cu.dtype)
+                        )
+                    set_lora_num_tokens(lora_num_tokens)
 
-            # Forward pass
-            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
+                temperature = micro_batch["temperature"]
 
-            if out.get("logprobs") is None:
-                assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
-                logits = out["logits"] / float(temperature)
-                out["logprobs"] = selective_log_softmax(logits, labels)
-                out["entropy"] = compute_entropy(logits)
+                # Forward pass
+                with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+                    out = forward(model, input_ids, forward_position_ids, labels=labels, temperature=temperature)
 
-            if cp_enabled:
-                logprobs = dist_nn.all_gather(out["logprobs"], group=cp_group)
-                out["logprobs"] = torch.cat(logprobs, dim=1)
+                if out.get("logprobs") is None:
+                    assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
+                    logits = out["logits"] / float(temperature)
+                    out["logprobs"] = selective_log_softmax(logits, labels)
+                    out["entropy"] = compute_entropy(logits)
 
-                entropies = [torch.zeros_like(out["entropy"]) for _ in range(cp_size)]
-                dist.all_gather(entropies, out["entropy"], group=cp_group)
-                out["entropy"] = torch.cat(entropies, dim=1)
+                if cp_enabled:
+                    logprobs = dist_nn.all_gather(out["logprobs"], group=cp_group)
+                    out["logprobs"] = torch.cat(logprobs, dim=1)
 
-            vocab_size = model.config.vocab_size
-            # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
-            out["logprobs"] = shift_tensor_right(
-                out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()
-            )
-            out["entropy"] = shift_tensor_right(
-                out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
-            )
+                    entropies = [torch.zeros_like(out["entropy"]) for _ in range(cp_size)]
+                    dist.all_gather(entropies, out["entropy"], group=cp_group)
+                    out["entropy"] = torch.cat(entropies, dim=1)
 
-            # Compute loss
-            response_lengths = get_response_lengths(position_ids)
-            loss, loss_tensors = compute_loss(
-                trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
-                if teacher_logprobs is not None
-                else None,
-                advantages=advantages.squeeze().split(response_lengths),
-                loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_config=config.loss,
-                loss_scale=loss_scale,
-                step=progress.step,
-                rank=world.rank,
-                output_dir=config.output_dir,
-            )
+                vocab_size = model.config.vocab_size
+                # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
+                out["logprobs"] = shift_tensor_right(
+                    out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()
+                )
+                out["entropy"] = shift_tensor_right(
+                    out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
+                )
 
-            # Backward pass
-            with maybe_record_function("backward"):
-                loss.backward()
+                # Compute loss
+                response_lengths = get_response_lengths(position_ids)
+                loss, loss_tensors = compute_loss(
+                    trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
+                    inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
+                    teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
+                    if teacher_logprobs is not None
+                    else None,
+                    advantages=advantages.squeeze().split(response_lengths),
+                    loss_mask=loss_mask.squeeze().split(response_lengths),
+                    loss_config=config.loss,
+                    loss_scale=loss_scale,
+                    step=progress.step,
+                    rank=world.rank,
+                    output_dir=config.output_dir,
+                )
 
-            # Add relevant tensors to tensor dict for logging purposes
-            tensors["trainer_probs"].append(torch.exp(out["logprobs"])[loss_mask].detach().to("cpu"))
-            tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
-            tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
-            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+                # Backward pass
+                with maybe_record_function("backward"):
+                    loss.backward()
 
-            if is_tt_moe_model(model):
-                load_balance_stats = get_load_balance_stats(model)
-                for k, v in load_balance_stats.items():
-                    if v is not None:
-                        tensors[k].append(v)
+                # Add relevant tensors to tensor dict for logging purposes
+                tensors["trainer_probs"].append(torch.exp(out["logprobs"])[loss_mask].detach().to("cpu"))
+                tensors["inference_probs"].append(torch.exp(inference_logprobs)[loss_mask].detach().to("cpu"))
+                tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
+                tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
-            # Add loss tensors to tensor dict for logging purposes
-            for key, loss_tensor in loss_tensors.items():
-                loss_tensor = loss_tensor.detach().to("cpu")
-                tensors[key].append(loss_tensor)
+                if is_tt_moe_model(model):
+                    load_balance_stats = get_load_balance_stats(model)
+                    for k, v in load_balance_stats.items():
+                        if v is not None:
+                            tensors[k].append(v)
 
-            # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
-            if "max_vio" in tensors:
-                micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
-            logger.debug(micro_step_message)
+                # Add loss tensors to tensor dict for logging purposes
+                for key, loss_tensor in loss_tensors.items():
+                    loss_tensor = loss_tensor.detach().to("cpu")
+                    tensors[key].append(loss_tensor)
 
-        # Optionally, clip the gradients
-        grad_norm_dtensor = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm)
-        # Convert to CUDA if on CPU (needed for FSDP CPU offloading)
-        if grad_norm_dtensor.device.type == "cpu":
-            grad_norm_dtensor = grad_norm_dtensor.to(torch.device("cuda"))
-        grad_norm = grad_norm_dtensor.full_tensor()
+                # Debug log with *local, micro step* stats
+                micro_step_message = f"Micro Step {micro_step}/{len(minibatch_micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
+                if "max_vio" in tensors:
+                    micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+                logger.debug(micro_step_message)
 
-        # Update the model parameters
-        optimizer.step()
-        optimizer.zero_grad()
+            # Optionally, clip the gradients and update after each minibatch
+            grad_norm_dtensor = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm)
+            # Convert to CUDA if on CPU (needed for FSDP CPU offloading)
+            if grad_norm_dtensor.device.type == "cpu":
+                grad_norm_dtensor = grad_norm_dtensor.to(torch.device("cuda"))
+            grad_norm = grad_norm_dtensor.full_tensor()
 
-        # Update learning rate scheduler
-        scheduler.step()
+            # Update the model parameters
+            optimizer.step()
+            optimizer.zero_grad()
 
+            # Update learning rate scheduler
+            scheduler.step()
+
+        # Get current LR (after all gradient steps)
         if config.max_concurrent_runs == 1:
             current_lr = optimizer.param_groups[0]["lr"]
         else:

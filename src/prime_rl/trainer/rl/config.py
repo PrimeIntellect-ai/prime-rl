@@ -223,6 +223,15 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = 1
 
+    gradient_steps_per_batch: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of gradient updates per training step. Splits the batch into minibatches. "
+            "If fewer micro-batches are available than requested, automatically reduces to available count.",
+        ),
+    ] = 1
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
