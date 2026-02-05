@@ -10,7 +10,6 @@ import httpx
 import verifiers as vf
 from httpx import AsyncClient
 from openai import NotFoundError
-from prime_evals import AsyncEvalsClient
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from prime_rl.utils.config import ClientConfig
@@ -131,10 +130,6 @@ def setup_clients(client_config: ClientConfig) -> list[vf.ClientConfig]:
         )
 
     return [_setup_client(client_idx, base_url) for client_idx, base_url in enumerate(client_config.base_url)]
-
-
-def setup_evals_client() -> AsyncEvalsClient:
-    return AsyncEvalsClient()
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
