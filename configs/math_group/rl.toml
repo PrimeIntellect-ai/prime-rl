@@ -1,0 +1,53 @@
+trainer_gpu_ids = [0]
+inference_gpu_ids = [1]
+
+max_steps = 500
+seq_len = 2048
+
+[wandb]
+project = "math-group-debug"
+name = "math-group"
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 2048
+
+[[orchestrator.env]]
+id = "primeintellect/math-env"
+name = "hendrycks-math"
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
+
+[[orchestrator.env]]
+id = "primeintellect/math-env"
+name = "acereason-math"
+args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem" }
+
+[orchestrator.buffer]
+easy_threshold = 1.0
+hard_threshold = 0.0
+
+[orchestrator.val]
+interval = 5
+num_examples = 128
+
+[orchestrator.eval]
+interval = 10
+
+[orchestrator.eval.sampling]
+max_tokens = 2048
+
+[[orchestrator.eval.env]]
+id = "primeintellect/math500"
+num_examples = 30
+rollouts_per_example = 4
+
+[trainer] # Default trainer config
+
+[inference] # Default inference config
+
