@@ -18,7 +18,10 @@ try:
 except ImportError:
     flash_attn_3_varlen_func = None  # type: ignore
 
-from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
+try:
+    from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
+except ImportError:
+    flash_attn_4_varlen_func = None  # type: ignore
 
 
 @dataclass

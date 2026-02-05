@@ -317,14 +317,45 @@ class ModelConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def fuck_transformers(self):
+    def flash_attention_4_only_with_custom_impl(self):
+        if self.attn in ("flash_attention_4", "fa4") and self.impl not in ("custom", "auto"):
+            raise ValueError("Flash attention 4 is only supported with the custom implementation or auto mode")
+        return self
+
+    @model_validator(mode="after")
+    def ensure_correct_flash_attention_4_installed(self):
+        # this has to be a joke
+        if self.attn in ("flash_attention_4", "fa4"):
+            try:
+                import flash_attn.cute.interface as fa4_interface
+
+                with open(fa4_interface.__file__, "r") as f:
+                    num_lines = len(f.readlines())
+
+                if num_lines < 1000:
+                    raise ValueError(
+                        "flash-attn-cute has probably been overwritten by flash-attn, run `scripts/fix-flash-attn-cute.sh` to fix this behaviour."
+                    )
+
+            except ImportError:
+                raise ValueError(
+                    "flash-attn-cute is not installed. Please run `uv sync --extra flash-attn-cute` to install it."
+                )
+
+        return self
+
+    @model_validator(mode="after")
+    def override_fa4_name_for_transformers(self):
         if self.attn == "flash_attention_4":
+            # if we keep the name that starts with `flash_attention_*`, it will trigger a hit in transformers and try to install kernel from hub lol, so we internall override to `fa4`
             self.attn = "fa4"
             from transformers import AttentionInterface
 
             def empty(*args, **kwargs) -> None:
                 pass
 
+            # we need to register a dummy function so AutoConfig will think `fa4` is a legitimate attention implementation
+            # this never gets called bc fa4 is only supported with our custom implementation - checked in `flash_attention_4_only_with_custom_impl`
             AttentionInterface.register("fa4", empty)
 
         return self
