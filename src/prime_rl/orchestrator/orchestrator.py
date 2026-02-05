@@ -47,7 +47,7 @@ from prime_rl.orchestrator.vf_utils import (
     get_seq_len,
     intercept_vf_logging,
     setup_env_client,
-    setup_env_server,
+    spawn_env_server,
 )
 from prime_rl.utils.client import (
     init_nccl_broadcast,
@@ -158,10 +158,15 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(
         f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
     )
+    extra_env_kwargs = dict(
+        seq_len=config.seq_len,
+        interleaved_rollouts=config.trajectory_strategy == "interleaved",
+        score_rollouts=not config.buffer.skip_verification,
+    )
     train_env_group = vf.EnvGroup(
         envs=[vf.load_environment(env.id, **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
-        map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
+        map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
     train_env_group.set_max_seq_len(config.seq_len)
     if config.trajectory_strategy == "interleaved":
@@ -171,18 +176,17 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info("Skipping verification (rewards will be set to 0)")
         train_env_group.set_score_rollouts(False)
 
-    train_env_servers, train_env_addresses = [], []
+    train_env_addresses = []
     for env in config.env:
         if env.address is None:
-            server, address = await setup_env_server(
-                env.id,
-                env.args,
-                {},
+            address = spawn_env_server(
+                env_id=env.id,
+                env_args=env.args,
+                extra_env_kwargs=extra_env_kwargs,
                 log_level="CRITICAL",
                 log_file=(get_log_dir(config.output_dir) / "train" / f"{env.name or env.id}.log").as_posix(),
                 log_file_level=config.log.vf_level,
             )
-            train_env_servers.append(server)
         else:
             address = env.address
         train_env_addresses.append(address)
@@ -192,6 +196,8 @@ async def orchestrate(config: OrchestratorConfig):
     await asyncio.gather(*[env_client.health(timeout=30) for env_client in train_env_clients])
     logger.success("Train environment servers ready")
 
+    # this puts all train envs into server model
+    # all calls to run_rollout and run_group will be routed to the server via the env client
     for env, env_client in zip(train_env_group.envs, train_env_clients):
         env.env_client = env_client
 
@@ -199,25 +205,30 @@ async def orchestrate(config: OrchestratorConfig):
         eval_envs = [vf.load_environment(env.id, **env.args) for env in config.eval.env]
         eval_env_names = [env.name or env.id for env in config.eval.env]
         eval_sampling_args = get_eval_sampling_args(config.eval.sampling)
-        eval_env_servers, eval_env_addresses = [], []
+        eval_env_addresses = []
+
         for env, eval_env_name in zip(config.eval.env, eval_env_names):
             if env.address is None:
-                server, address = await setup_env_server(
-                    env.id,
-                    env.args,
-                    {},
+                address = spawn_env_server(
+                    env_id=env.id,
+                    env_args=env.args,
+                    extra_env_kwargs={},
                     log_level="CRITICAL",
                     log_file=(get_log_dir(config.output_dir) / "eval" / f"{eval_env_name}.log").as_posix(),
                     log_file_level=config.log.vf_level,
                 )
-                eval_env_servers.append(server)
             else:
                 address = env.address
             eval_env_addresses.append(address)
+
         eval_env_clients = [setup_env_client(address) for address in eval_env_addresses]
+
         logger.info("Waiting for eval environment servers to be ready")
         await asyncio.gather(*[env_client.health(timeout=30) for env_client in eval_env_clients])
         logger.success("Eval environment servers ready")
+
+        # this puts all train envs into server model
+        # all calls to run_rollout and run_group will be routed to the server via the env client
         for eval_env, eval_env_client in zip(eval_envs, eval_env_clients):
             eval_env.env_client = eval_env_client
     else:

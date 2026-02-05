@@ -5,9 +5,9 @@ from multiprocessing import Process
 from typing import Any
 
 import verifiers as vf
+from verifiers.envs.environment import EnvClient
 from verifiers.utils.worker_utils import get_free_port
 from verifiers.workers import ZMQEnvClient, ZMQEnvServer
-from verifiers.workers.client.env_client import EnvClient
 
 from prime_rl.utils.logger import InterceptHandler, ProgressTracker
 
@@ -16,7 +16,7 @@ REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
 DEFAULT_STATE_COLUMNS = []
 
 
-async def setup_env_server(
+def spawn_env_server(
     env_id: str,
     env_args: dict[str, Any],
     extra_env_kwargs: dict[str, Any],
@@ -25,10 +25,14 @@ async def setup_env_server(
     log_file: str | None = None,
     log_file_level: str | None = None,
     daemon: bool = True,
-) -> tuple[Process, str]:
-    """Start a ZMQ server process for an environment. Mirrors vf.Environment.start_server()."""
+) -> str:
+    """
+    Starts a ZMQEnvServer process in a subprocess.
+
+    Mirrors vf.Environment.start_server().
+    """
     address = address or f"tcp://127.0.0.1:{get_free_port()}"
-    env_server_process = Process(
+    Process(
         target=ZMQEnvServer.run_server,
         args=(
             env_id,
@@ -40,14 +44,13 @@ async def setup_env_server(
         ),
         kwargs=dict(address=address),
         daemon=daemon,
-    )
-    env_server_process.start()
+    ).start()
 
-    return env_server_process, address
+    return address
 
 
 def setup_env_client(address: str) -> EnvClient:
-    """Setup a client for an environment."""
+    """Sets up a ZMQEnvClient for a given address."""
     return ZMQEnvClient(address=address)
 
 
