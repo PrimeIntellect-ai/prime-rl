@@ -78,7 +78,7 @@ prerelease = "allow"
 torch = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
 wiki-search = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "5813ff1", subdirectory = "environments/wiki_search" }
-math-env = { git = "https://github.com/PrimeIntellect-ai/research-environments.git", rev = "be1f9af", subdirectory = "environments/math_env" }
+math-env = { git = "https://github.com/PrimeIntellect-ai/research-environments.git", rev = "d7a5e93", subdirectory = "environments/math_env" }
 deepdive = { git = "https://github.com/PrimeIntellect-ai/research-environments.git", rev = "81c91d9", subdirectory = "environments/deepdive" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "5813ff1" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "main" }

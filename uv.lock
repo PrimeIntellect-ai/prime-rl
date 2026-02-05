@@ -1747,7 +1747,7 @@ wheels = [
 [[package]]
 name = "math-env"
 version = "0.1.2"
-source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmath_env&rev=be1f9af#be1f9af15b7b010fbd76b1ae83913d8e3e02a70d" }
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmath_env&rev=d7a5e93#d7a5e931bb54ca78a0bd8a05ee57c9c739113060" }
 dependencies = [
     { name = "math-verify" },
     { name = "prime-sandboxes" },
@@ -2809,7 +2809,7 @@ requires-dist = [
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
-    { name = "math-env", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmath_env&rev=be1f9af" },
+    { name = "math-env", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmath_env&rev=d7a5e93" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
