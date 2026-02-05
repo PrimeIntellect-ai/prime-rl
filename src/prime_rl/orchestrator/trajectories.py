@@ -14,7 +14,7 @@ from prime_rl.utils.logger import get_logger
 
 def interleave_rollout(output: vf.RolloutOutput) -> list[TrainingSample] | None:
     """
-    Convert vf.State to a *single* trainable rollout by interleaving the trajectory.
+    Convert vf.RolloutOutput to a *single* trainable rollout by interleaving the trajectory.
 
     NOTE:
     - This requires that consecutive trajectory steps share token prefixes (incremental tokenization)
@@ -93,13 +93,13 @@ def branch_rollout(
     cache_key: int | None = None,
 ) -> list[TrainingSample] | None:
     """
-    Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy.
+    Convert vf.RolloutOutput to *multiple* trainable rollouts using branching trajectories strategy.
 
     Each rollout gets the cumulative images up to its step, supporting multi-turn VLM
     conversations where new images can be introduced in later turns.
 
     Args:
-        state: vf.State containing trajectory data
+        output: vf.RolloutOutput containing trajectory data
         vlm_cache: Pre-computed VLM image cache for multimodal training
         cache_key: Cache key to use when retrieving images from the VLM cache
     """

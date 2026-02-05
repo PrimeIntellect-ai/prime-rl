@@ -208,10 +208,7 @@ class Scheduler:
             self.ckpt_step = next_ckpt_step
 
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
-        """Generate a batch of rollouts using workers.
-
-        Returns list of result dicts (not vf.State, since those stay in workers).
-        """
+        """Continuously generates a batch of rollouts."""
         self.step = step
         batch_start_time = time.perf_counter()
 
