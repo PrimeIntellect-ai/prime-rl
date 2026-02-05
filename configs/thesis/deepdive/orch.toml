@@ -1,0 +1,23 @@
+max_steps = 300
+seq_len = 16384
+batch_size = 512
+rollouts_per_example = 16
+max_async_level = 16
+strict_async_level = true
+
+[[env]]
+id = "deepdive"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[sampling]
+temperature = 1.0
+
+[wandb]
+project = "mika-thesis"
+name = "deepdive-orchestrator"
+
+
+[log]
+level = "debug"

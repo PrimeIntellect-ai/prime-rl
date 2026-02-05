@@ -1,0 +1,21 @@
+max_steps = 300
+max_async_level = 16
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+seq_len = 16384
+
+[model.compile]
+
+[model.ac]
+
+[optim]
+type = "muon"
+lr = 1e-4
+
+[wandb]
+project = "mika-thesis"
+name = "deepdive-trainer"
+
+[log]
+level = "debug"

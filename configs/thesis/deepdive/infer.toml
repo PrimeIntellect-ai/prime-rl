@@ -1,0 +1,10 @@
+gpu_memory_utilization = 0.8
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+
+[parallel]
+tp = 2
+dp = 4
