@@ -183,8 +183,208 @@ ATTN_IMPL2CLASS = {
 }
 
 
-def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup, heads_k_stride: int) -> None:
+def substitute_prime_rl_flash_attn(
+    process_group: torch.distributed.ProcessGroup,
+    heads_k_stride: int,
+    flash_attn_kernel: int = 2,
+) -> None:
     from ring_flash_attn import llama3_flash_attn_varlen_func
+    from ring_flash_attn.utils import AllGatherComm, get_default_args
+
+    def ring_fa3_varlen_func(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_k: torch.Tensor,
+        max_seqlen_q: int,
+        max_seqlen_k: int,
+        local_k_slice: slice,
+        causal: bool,
+        heads_k_stride: int,
+        group: torch.distributed.ProcessGroup,
+    ) -> torch.Tensor:
+        def fa3_forward(
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            cu_seqlens_q: torch.Tensor,
+            cu_seqlens_k: torch.Tensor,
+            max_seqlen_q: int,
+            max_seqlen_k: int,
+            softmax_scale: float,
+            causal: bool,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            from flash_attn_interface import _flash_attn_forward
+
+            params = get_default_args(_flash_attn_forward).copy()
+            params.update(
+                {
+                    "q": q,
+                    "k": k,
+                    "v": v,
+                    "cu_seqlens_q": cu_seqlens_q,
+                    "cu_seqlens_k": cu_seqlens_k,
+                    "max_seqlen_q": max_seqlen_q,
+                    "max_seqlen_k": max_seqlen_k,
+                    "softmax_scale": softmax_scale,
+                    "causal": causal,
+                }
+            )
+            out, lse, _, _ = _flash_attn_forward(**params)
+            return out, lse
+
+        class RingFA3Varlen(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, q, k, v):
+                softmax_scale = q.shape[-1] ** (-0.5)
+                out_list = []
+                lse_list = []
+
+                nheads = q.shape[1]
+                total_k, nheads_k, head_dim = k.shape
+                if nheads_k % heads_k_stride != 0:
+                    raise ValueError("nheads_k must be divisible by heads_k_stride")
+
+                world_size = torch.distributed.get_world_size(group)
+                kv_buffer = torch.empty(
+                    (2, total_k * world_size, heads_k_stride, head_dim), dtype=k.dtype, device=k.device
+                )
+                kv_buffer_copy = torch.empty_like(kv_buffer)
+                comm = AllGatherComm(group)
+
+                comm.all_gather(kv_buffer_copy[0], k[:, :heads_k_stride].contiguous())
+                comm.all_gather(kv_buffer_copy[1], v[:, :heads_k_stride].contiguous())
+
+                for i in range(0, nheads_k, heads_k_stride):
+                    comm.wait()
+                    kv_buffer, kv_buffer_copy = kv_buffer_copy, kv_buffer
+
+                    if i < nheads_k - heads_k_stride:
+                        left = i + heads_k_stride
+                        right = left + heads_k_stride
+                        comm.all_gather(kv_buffer_copy[0], k[:, left:right].contiguous())
+                        comm.all_gather(kv_buffer_copy[1], v[:, left:right].contiguous())
+
+                    q_i = q[:, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k]
+                    k_i = kv_buffer[0][local_k_slice]
+                    v_i = kv_buffer[1][local_k_slice]
+                    out_i, lse_i = fa3_forward(
+                        q=q_i,
+                        k=k_i,
+                        v=v_i,
+                        cu_seqlens_q=cu_seqlens_q,
+                        cu_seqlens_k=cu_seqlens_k,
+                        max_seqlen_q=max_seqlen_q,
+                        max_seqlen_k=max_seqlen_k,
+                        softmax_scale=softmax_scale,
+                        causal=causal,
+                    )
+                    out_list.append(out_i)
+                    lse_list.append(lse_i)
+
+                out = torch.cat(out_list, dim=1)
+                lse = torch.cat(lse_list, dim=-2)
+
+                ctx.save_for_backward(q, k, v, out, lse)
+                ctx.softmax_scale = softmax_scale
+                return out
+
+            @staticmethod
+            def backward(ctx, dout):
+                from flash_attn_interface import _flash_attn_backward
+
+                q, k, v, out, softmax_lse = ctx.saved_tensors
+                nheads = q.shape[1]
+                total_k, nheads_k, head_dim = k.shape
+
+                world_size = torch.distributed.get_world_size(group)
+                kv_buffer = torch.empty(
+                    (2, total_k * world_size, heads_k_stride, head_dim), dtype=k.dtype, device=k.device
+                )
+                kv_buffer_copy = torch.empty_like(kv_buffer)
+                dkv_buffer = torch.empty(
+                    (2, total_k * world_size, heads_k_stride, head_dim), dtype=k.dtype, device=k.device
+                )
+
+                if heads_k_stride != nheads_k:
+                    kv_contiguous_buffer = torch.empty(
+                        (2, total_k, heads_k_stride, head_dim), dtype=k.dtype, device=k.device
+                    )
+
+                dq = torch.empty_like(q)
+                dk = torch.empty_like(k)
+                dv = torch.empty_like(v)
+
+                comm = AllGatherComm(group)
+                comm.all_gather(kv_buffer_copy[0], k[:, :heads_k_stride].contiguous())
+                comm.all_gather(kv_buffer_copy[1], v[:, :heads_k_stride].contiguous())
+
+                for i in range(0, nheads_k, heads_k_stride):
+                    dkv_buffer.zero_()
+                    q_slice = slice(i * nheads // nheads_k, (i + heads_k_stride) * nheads // nheads_k)
+                    q_i = q[:, q_slice]
+                    dout_i = dout[:, q_slice]
+                    out_i = out[:, q_slice]
+                    dq_i = dq[:, q_slice]
+                    lse_i = softmax_lse[q_slice].contiguous()
+
+                    comm.wait()
+                    kv_buffer, kv_buffer_copy = kv_buffer_copy, kv_buffer
+                    if i < nheads_k - heads_k_stride:
+                        left = i + heads_k_stride
+                        right = left + heads_k_stride
+                        comm.all_gather(kv_buffer_copy[0], k[:, left:right].contiguous())
+                        comm.all_gather(kv_buffer_copy[1], v[:, left:right].contiguous())
+
+                    k_i = kv_buffer[0][local_k_slice]
+                    v_i = kv_buffer[1][local_k_slice]
+                    dk_i = dkv_buffer[0][local_k_slice]
+                    dv_i = dkv_buffer[1][local_k_slice]
+
+                    params = get_default_args(_flash_attn_backward).copy()
+                    params.update(
+                        {
+                            "dout": dout_i,
+                            "q": q_i,
+                            "k": k_i,
+                            "v": v_i,
+                            "out": out_i,
+                            "softmax_lse": lse_i,
+                            "cu_seqlens_q": cu_seqlens_q,
+                            "cu_seqlens_k": cu_seqlens_k,
+                            "max_seqlen_q": max_seqlen_q,
+                            "max_seqlen_k": max_seqlen_k,
+                            "dq": dq_i,
+                            "dk": dk_i,
+                            "dv": dv_i,
+                            "softmax_scale": ctx.softmax_scale,
+                            "causal": causal,
+                        }
+                    )
+                    _flash_attn_backward(**params)
+
+                    if heads_k_stride != nheads_k:
+                        dk_i = kv_contiguous_buffer[0]
+                        dv_i = kv_contiguous_buffer[1]
+                    else:
+                        dk_i = dk
+                        dv_i = dv
+
+                    torch.distributed.reduce_scatter_tensor(dk_i, dkv_buffer[0], group=group)
+                    torch.distributed.reduce_scatter_tensor(dv_i, dkv_buffer[1], group=group)
+                    if heads_k_stride != nheads_k:
+                        dk[:, i : i + heads_k_stride] = dk_i
+                        dv[:, i : i + heads_k_stride] = dv_i
+
+                return dq, dk, dv
+
+        return RingFA3Varlen.apply(q, k, v)
+
+    if flash_attn_kernel not in {2, 3}:
+        raise ValueError(f"Unsupported ring flash attention kernel version: {flash_attn_kernel}")
+
+    ring_func = llama3_flash_attn_varlen_func if flash_attn_kernel == 2 else ring_fa3_varlen_func
 
     class RingFlashAttention(FlashAttention):
         def forward(
@@ -224,7 +424,7 @@ def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
             value_states = value_states.transpose(1, 2)
-            out = llama3_flash_attn_varlen_func(
+            out = ring_func(
                 query_states[0],
                 key_states[0],
                 value_states[0],
@@ -237,6 +437,8 @@ def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup
                 group=process_group,
                 heads_k_stride=heads_k_stride,
             )
+            if isinstance(out, tuple):
+                out = out[0]
             out = out.contiguous()
             attn_output = out.view(1, out.shape[0], -1)
             attn_weights = None

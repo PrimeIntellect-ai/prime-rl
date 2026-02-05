@@ -137,7 +137,12 @@ class ModelConfig(BaseConfig):
 
     seq_len: Annotated[int, Field(description="The sequence length to use for the model.")] = 2048
 
-    attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
+    attn: Annotated[
+        AttnImplementation,
+        Field(
+            description="The attention implementation to use. When CP is enabled, ring attention uses the matching kernel family (FA2 for flash_attention_2, FA3 for flash_attention_3).",
+        ),
+    ] = "flash_attention_2"
 
     compile: Annotated[
         CompileConfig | None,
