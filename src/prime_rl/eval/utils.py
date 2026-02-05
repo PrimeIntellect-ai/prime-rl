@@ -25,7 +25,7 @@ from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.elastic import ServerDiscovery
 from prime_rl.utils.logger import ProgressTracker, get_logger, intercept_verifiers_logging, reset_logger, setup_logger
 from prime_rl.utils.monitor import get_monitor
-from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path
+from prime_rl.utils.utils import capitalize, get_eval_dir, get_step_path, strip_env_version
 from prime_rl.utils.vf import (
     generate_group,
     generate_rollout,
@@ -302,7 +302,7 @@ async def run_eval(
 
     # Load the eval environment
     env_name_or_id = env_name or env_id
-    env = load_environment(env_id, **env_args)
+    env = load_environment(strip_env_version(env_id), **env_args)
     dataset = env.get_eval_dataset(n=num_examples)
     sampling_args = prepare_sampling_args(sampling_config)
 

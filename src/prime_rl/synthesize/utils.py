@@ -12,6 +12,7 @@ from verifiers.utils.path_utils import get_results_path
 
 from prime_rl.orchestrator.config import ClientConfig, EvalSamplingConfig, ModelConfig
 from prime_rl.utils.logger import ProgressTracker, get_logger
+from prime_rl.utils.utils import strip_env_version
 from prime_rl.utils.vf import generate_group
 
 WRITE_LOCK = asyncio.Lock()
@@ -148,7 +149,7 @@ async def generate_synthetic_data(
 
     # Load the environment
     env_name_or_id = env_name or env_id
-    env = load_environment(env_id, **env_args)
+    env = load_environment(strip_env_version(env_id), **env_args)
     try:
         dataset = env.get_dataset(n=num_examples + skip_first)
     except ValueError:
