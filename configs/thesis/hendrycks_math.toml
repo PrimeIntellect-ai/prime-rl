@@ -29,7 +29,8 @@ id = "primeintellect/aime2024"
 name = "aime2024"
 rollouts_per_example = 32
 
-[trainer]
+[trainer.model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [inference.model]
 max_model_len = 8192
