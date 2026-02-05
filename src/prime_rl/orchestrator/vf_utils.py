@@ -1,14 +1,54 @@
 import asyncio
 import logging
 from itertools import cycle
+from multiprocessing import Process
+from typing import Any
 
 import verifiers as vf
+from verifiers.utils.worker_utils import get_free_port
+from verifiers.workers import ZMQEnvClient, ZMQEnvServer
+from verifiers.workers.client.env_client import EnvClient
 
 from prime_rl.utils.logger import InterceptHandler, ProgressTracker
 
 DEFAULT_RETRIES = 3
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
 DEFAULT_STATE_COLUMNS = []
+
+
+async def setup_env_server(
+    env_id: str,
+    env_args: dict[str, Any],
+    extra_env_kwargs: dict[str, Any],
+    address: str | None = None,
+    log_level: str | None = None,
+    log_file: str | None = None,
+    log_file_level: str | None = None,
+    daemon: bool = True,
+) -> tuple[Process, str]:
+    """Start a ZMQ server process for an environment. Mirrors vf.Environment.start_server()."""
+    address = address or f"tcp://127.0.0.1:{get_free_port()}"
+    env_server_process = Process(
+        target=ZMQEnvServer.run_server,
+        args=(
+            env_id,
+            env_args,
+            extra_env_kwargs,
+            log_level,
+            log_file,
+            log_file_level,
+        ),
+        kwargs=dict(address=address),
+        daemon=daemon,
+    )
+    env_server_process.start()
+
+    return env_server_process, address
+
+
+def setup_env_client(address: str) -> EnvClient:
+    """Setup a client for an environment."""
+    return ZMQEnvClient(address=address)
 
 
 async def run_rollout(
