@@ -328,7 +328,13 @@ class WeightCheckpointManager:
             adapter_path.mkdir(parents=True, exist_ok=True)
             torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
             if self.lora_config:
-                save_lora_config(self.lora_config, model, adapter_path)  # Pass model
+                save_lora_config(
+                    model,
+                    adapter_path,
+                    rank=self.lora_config.rank,
+                    alpha=self.lora_config.alpha,
+                    dropout=self.lora_config.dropout,
+                )
         self.logger.debug(f"Saved weight checkpoint to {path} in {time.perf_counter() - start_time:.2f} seconds")
 
     def save(
