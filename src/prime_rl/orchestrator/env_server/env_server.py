@@ -1,5 +1,3 @@
-import asyncio
-
 from loguru import logger
 from verifiers.workers import ZMQEnvServer
 
@@ -33,7 +31,7 @@ def run_server(config: EnvServerConfig):
 
 def main():
     """Main entry-point for env-server. Run using `uv run env-server`"""
-    asyncio.run(run_server(parse_argv(EnvServerConfig)))
+    run_server(parse_argv(EnvServerConfig))
 
 
 if __name__ == "__main__":
