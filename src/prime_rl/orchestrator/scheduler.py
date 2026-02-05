@@ -1,9 +1,3 @@
-"""
-Scheduler that runs environments in subprocesses.
-
-Isolates event loop lag from environment execution.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -37,10 +31,10 @@ class InflightRolloutInfo(NamedTuple):
 
 
 class Scheduler:
-    """Asynchronously schedules group rollout requests using subprocess workers.
-
-    Runs environment execution in separate processes to isolate event loop lag
-    from the main orchestrator process.
+    """
+    Asynchronously manages scheduling of group rollout requests and policy
+    updates. Keeps a constant number of groups in-flight (continuous batching)
+    and updates the policy as soon as it becomes available.
 
     References:
     - AReal: https://arxiv.org/abs/2505.24298v1
