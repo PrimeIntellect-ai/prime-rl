@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "flash_attention_4"]
+AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "flash_attention_4", "fa4"]
 
 MOE_MODEL_MAPS = {
     "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
@@ -346,7 +346,7 @@ class ModelConfig(BaseConfig):
 
     @model_validator(mode="after")
     def override_fa4_name_for_transformers(self):
-        if self.attn == "flash_attention_4":
+        if self.attn in ("flash_attention_4", "fa4"):
             # if we keep the name that starts with `flash_attention_*`, it will trigger a hit in transformers and try to install kernel from hub lol, so we internall override to `fa4`
             self.attn = "fa4"
             from transformers import AttentionInterface
