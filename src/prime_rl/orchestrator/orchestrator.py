@@ -173,15 +173,18 @@ async def orchestrate(config: OrchestratorConfig):
 
     train_env_servers, train_env_addresses = [], []
     for env in config.env:
-        server, address = await setup_env_server(
-            env.id,
-            env.args,
-            {},
-            log_level="CRITICAL",
-            log_file=(get_log_dir(config.output_dir) / "train" / f"{env.name or env.id}.log").as_posix(),
-            log_file_level=config.log.vf_level,
-        )
-        train_env_servers.append(server)
+        if env.address is None:
+            server, address = await setup_env_server(
+                env.id,
+                env.args,
+                {},
+                log_level="CRITICAL",
+                log_file=(get_log_dir(config.output_dir) / "train" / f"{env.name or env.id}.log").as_posix(),
+                log_file_level=config.log.vf_level,
+            )
+            train_env_servers.append(server)
+        else:
+            address = env.address
         train_env_addresses.append(address)
     train_env_clients = [setup_env_client(address) for address in train_env_addresses]
 
@@ -198,15 +201,18 @@ async def orchestrate(config: OrchestratorConfig):
         eval_sampling_args = get_eval_sampling_args(config.eval.sampling)
         eval_env_servers, eval_env_addresses = [], []
         for env, eval_env_name in zip(config.eval.env, eval_env_names):
-            server, address = await setup_env_server(
-                env.id,
-                env.args,
-                {},
-                log_level="CRITICAL",
-                log_file=(get_log_dir(config.output_dir) / "eval" / f"{eval_env_name}.log").as_posix(),
-                log_file_level=config.log.vf_level,
-            )
-            eval_env_servers.append(server)
+            if env.address is None:
+                server, address = await setup_env_server(
+                    env.id,
+                    env.args,
+                    {},
+                    log_level="CRITICAL",
+                    log_file=(get_log_dir(config.output_dir) / "eval" / f"{eval_env_name}.log").as_posix(),
+                    log_file_level=config.log.vf_level,
+                )
+                eval_env_servers.append(server)
+            else:
+                address = env.address
             eval_env_addresses.append(address)
         eval_env_clients = [setup_env_client(address) for address in eval_env_addresses]
         logger.info("Waiting for eval environment servers to be ready")

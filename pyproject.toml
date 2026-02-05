@@ -49,6 +49,7 @@ rl = "prime_rl.rl:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
 inference = "prime_rl.inference.server:main"
+env-server = "prime_rl.orchestrator.env_server.env_server:main"
 sft = "prime_rl.trainer.sft.train:main"
 
 [project.optional-dependencies]

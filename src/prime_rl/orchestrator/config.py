@@ -274,6 +274,12 @@ class EnvConfig(BaseConfig):
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
     name: Annotated[str | None, Field(description="Name of the environment to use.")] = None
+    address: Annotated[
+        str | None,
+        Field(
+            description="Address of the environment server. If None, will spawn an environment server in a subprocess automatically.If given, will try to connect an environment client to the environment server at this address."
+        ),
+    ] = None
 
 
 class EvalEnvConfig(EnvConfig):

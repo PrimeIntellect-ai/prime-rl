@@ -13,6 +13,7 @@ max_tokens = 128
 
 [[orchestrator.env]]
 id = "reverse-text"
+address = "tcp://127.0.0.1:5000" # requires: uv run env-server --env.id reverse-text --env.address tcp://127.0.0.1:5000
 
 [[orchestrator.env]]
 id = "reverse-text"
