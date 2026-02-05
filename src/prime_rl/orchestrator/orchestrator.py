@@ -266,6 +266,7 @@ async def orchestrate(config: OrchestratorConfig):
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
+        tasks_per_minute=config.tasks_per_minute,
         lora_name=config.model.lora.name if config.model.lora else None,
         output_dir=config.output_dir,
         config=config,

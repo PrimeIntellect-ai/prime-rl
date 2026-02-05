@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import verifiers as vf
+from aiolimiter import AsyncLimiter
 
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
@@ -56,10 +57,15 @@ class Scheduler:
         max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
+        tasks_per_minute: int | None,
         lora_name: str | None = None,
         output_dir: Path | None = None,
     ):
         self.logger = get_logger()
+        if tasks_per_minute is not None:
+            self.rate_limiter = AsyncLimiter(max_rate=tasks_per_minute, time_period=60)
+        else:
+            self.rate_limiter = None
         self.env = env
         self.buffer = buffer
         self.config = config
@@ -108,6 +114,8 @@ class Scheduler:
 
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
+        if self.rate_limiter:
+            await self.rate_limiter.acquire()
         example = self.buffer.sample_examples(n=1)[0]
         client_config = await self.inference_pool.get_next_client()
         run_group_task = asyncio.create_task(
