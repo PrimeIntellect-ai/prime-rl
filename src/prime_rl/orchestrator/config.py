@@ -652,22 +652,6 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    workers_per_env: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of worker subprocesses to spawn per environment. Multiple workers enable isolation of event loop lag - if one worker slows down, others continue at full speed. Uses least-pending routing to distribute load.",
-        ),
-    ] = 1
-
-    max_env_worker_restarts: Annotated[
-        int,
-        Field(
-            ge=-1,
-            description="Maximum number of automatic restarts for an environment worker that dies unexpectedly. After this limit, the orchestrator will crash. Set to -1 for unlimited restarts.",
-        ),
-    ] = 5
-
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
     oversampling_factor: Annotated[
@@ -692,13 +676,6 @@ class OrchestratorConfig(BaseSettings):
             description="Sequence length to use for training. If a sample is shorter than this, it will be padded. If a sequence is longer than this, it will be truncated.",
         ),
     ] = 2048
-
-    mask_env_responses: Annotated[
-        bool,
-        Field(
-            description="Whether to mask environment responses from the loss.",
-        ),
-    ] = True
 
     # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: Annotated[
