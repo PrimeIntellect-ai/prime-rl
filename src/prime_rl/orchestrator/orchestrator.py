@@ -322,15 +322,14 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Run evals BEFORE training (blocking, in subprocess to isolate event loop)
         # This ensures weights don't change during eval and eval doesn't cause event loop lag
-        # Trigger based on progress.step (training step), but evaluate/log at ckpt_step (model being evaluated)
         if (
             config.eval
-            and progress.step % config.eval.interval == 0
-            and progress.step > last_eval_step
-            and ((progress.step == 0 and config.eval.eval_base_model) or progress.step > 0)
+            and ckpt_step % config.eval.interval == 0
+            and ckpt_step > last_eval_step
+            and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
         ):
-            last_eval_step = progress.step
-            logger.info(f"Running evals at training step {progress.step} (ckpt_step={ckpt_step}, blocking, subprocess)")
+            last_eval_step = ckpt_step
+            logger.info(f"Running evals for checkpoint step {ckpt_step} (blocking, subprocess)")
 
             # Pause weight updates during eval and cancel inflight rollouts
             # this avoid doing eval across different checkpoints and avoid congestion
