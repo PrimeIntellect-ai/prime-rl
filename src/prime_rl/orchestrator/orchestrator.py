@@ -773,9 +773,6 @@ async def orchestrate(config: OrchestratorConfig):
     scheduler.cancel_all_inflight_rollouts()
     update_policy_task.cancel()
 
-    # Stop env servers
-    await train_env_group.stop_servers()
-
     # Stop inference pool
     await inference_pool.stop()
 
