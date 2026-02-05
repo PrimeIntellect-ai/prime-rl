@@ -41,6 +41,7 @@ dependencies = [
     "prime>=0.5.24",
     "tenacity>=8.2.0",
     "pyzmq>=27.1.0",
+    "aiolimiter>=1.2.1",
 ]
 
 [project.scripts]

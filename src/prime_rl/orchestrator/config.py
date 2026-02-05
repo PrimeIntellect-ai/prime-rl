@@ -365,6 +365,14 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    wait_for_weights_timeout: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="When resuming, wait up to this many seconds for the weight directory to appear. Useful when the orchestrator restarts while the trainer is still saving weights. If None (default), fail immediately if weights are not found.",
+        ),
+    ] = None
+
     keep_last: Annotated[
         int | None,
         Field(
@@ -627,6 +635,14 @@ class OrchestratorConfig(BaseSettings):
         int | None,
         Field(
             description="Maximum number of concurrent rollouts to generate and score per-environment. If None, will not limit concurrency.",
+        ),
+    ] = None
+
+    tasks_per_minute: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Rate limit for tasks per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. When set to None, no rate limiting is applied. Note: with multiple workers, the effective total rate equals workers × this value.",
         ),
     ] = None
 

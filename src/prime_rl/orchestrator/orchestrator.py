@@ -59,6 +59,7 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
+    count_chinese_chars,
     get_env_ids_to_install,
     install_env,
     resolve_latest_ckpt_step,
@@ -272,7 +273,10 @@ async def orchestrate(config: OrchestratorConfig):
 
         # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
         check_exists = config.weight_broadcast.type != "nccl"
-        weights_path = get_weight_dir(config.output_dir, scheduler.ckpt_step, check_exists=check_exists)
+        wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
+        weights_path = get_weight_dir(
+            config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
+        )
         lora_name = config.model.lora.name if config.model.lora else None
         await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
@@ -522,6 +526,21 @@ async def orchestrate(config: OrchestratorConfig):
         # Gather individual reward function metrics
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
 
+        # Count Chinese characters in completions
+        chinese_stats = []
+        for rollout in train_rollouts:
+            trajectory = rollout["trajectory"]
+            if not trajectory:
+                continue
+            last_step = trajectory[-1]
+            tokens = last_step["tokens"]
+            completion_text = tokenizer.decode(tokens["completion_ids"])
+            chinese_count, total_count = count_chinese_chars(completion_text)
+            chinese_stats.append(
+                {"chinese_chars": chinese_count, "total_chars": total_count, "has_chinese": chinese_count > 0}
+            )
+        chinese_df = pd.DataFrame(chinese_stats)
+
         val_results_df = (
             pd.DataFrame(
                 {
@@ -601,6 +620,14 @@ async def orchestrate(config: OrchestratorConfig):
             },
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
+            # Chinese character metrics (cast to native Python types for JSON serialization)
+            "chinese/char_count": int(chinese_df.chinese_chars.sum()),
+            "chinese/char_ratio": (
+                float(chinese_df.chinese_chars.sum() / chinese_df.total_chars.sum())
+                if chinese_df.total_chars.sum() > 0
+                else 0.0
+            ),
+            "chinese/rollout_ratio": float(chinese_df.has_chinese.mean()),
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
