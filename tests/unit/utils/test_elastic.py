@@ -189,6 +189,7 @@ def test_adapter_matches_when_no_adapter_desired():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
         # No adapter desired (base model inference)
@@ -201,6 +202,7 @@ def test_adapter_matches_by_path():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
         pool._desired.path = Path("/weights/step_100")
@@ -218,6 +220,7 @@ def test_adapter_matches_by_step_when_nonzero():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
         pool._desired.path = Path("/weights/step_100")
@@ -233,6 +236,7 @@ def test_adapter_does_not_match_by_zero_step():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
         pool._desired.path = Path("/weights/step_0")
@@ -248,6 +252,7 @@ def test_adapter_returns_false_when_no_adapter_loaded():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
         pool._desired.path = Path("/weights/step_100")
@@ -391,7 +396,7 @@ def test_get_loaded_adapter_finds_correct_adapter_when_multiple_loaded():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
-            base_model="base-model",
+            model_name="base-model",
             port=8000,
         )
 
@@ -442,7 +447,7 @@ def test_get_loaded_adapter_returns_none_when_desired_adapter_not_found():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
-            base_model="base-model",
+            model_name="base-model",
             port=8000,
         )
 
@@ -473,6 +478,7 @@ def test_get_loaded_adapter_parses_step_from_path():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
 
@@ -501,6 +507,7 @@ def test_get_loaded_adapter_handles_step_dash_format():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
 
