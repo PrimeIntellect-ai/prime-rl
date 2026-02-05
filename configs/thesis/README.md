@@ -16,18 +16,18 @@ uv run rl @ configs/thesis/debug.toml --orchestrator.strict-async-level --max-as
 uv run rl @ configs/thesis/debug.toml
 ```
 
-## Single-turn math
+## Hendryck's Math
 
 ```bash
-# baseline: synchronous on-policy RL
-uv run rl @ configs/thesis/single_turn_math.toml --max-async-level 0 --wandb.name single-turn-math-sync-on-policy
+# near on-policy baseline
+uv run rl @ configs/thesis/hendrycks_math.toml
 
-# method 1: fixed-off policy steps
+# fixed-off policy steps
 uv run rl @ configs/thesis/single_turn_math.toml --orchestrator.strict-async-level --max-async-level 1 --wandb.name single-turn-math-1-step-off-policy
 uv run rl @ configs/thesis/single_turn_math.toml --orchestrator.strict-async-level --max-async-level 8 --wandb.name single-turn-math-8-step-off-policy
 uv run rl @ configs/thesis/single_turn_math.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name single-turn-math-16-step-off-policy
 
-# method 2: areal/ pipelinerl /w in-flight weight updates
+# areal/ pipelinerl /w in-flight weight updates
 uv run rl @ configs/thesis/single_turn_math.toml --wandb.name single-turn-math-in-flight-off-policy
 ```
 
@@ -113,6 +113,19 @@ uv run rl @ configs/thesis/wiki_search.toml --orchestrator.strict-async-level --
 ```bash
 # baseline
 uv run rl @ configs/thesis/deepdive.toml
+```
+
+```bash
+# lr sweep
+uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy-lr-1e-4 --trainer.optim.lr 1e-4
+
+uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy-lr-5e-5 --trainer.optim.lr e-5
+
+uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy-lr-1e-5 --trainer.optim.lr 1e-5
+
+uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy-lr-5e-6 --trainer.optim.lr 5e-6
+
+uv run rl @ configs/thesis/deepdive.toml --max-async-level 16 --orchestrator.strict-async-level --wandb.name deepdive-16-step-off-policy-lr-1e-6 --trainer.optim.lr 1e-6
 ```
 
 ```bash
