@@ -19,6 +19,9 @@ freq = 1
 
 [trainer.model.lora]
 rank = 32
+
+[orchestrator.model.lora]
+rank = 32
 alpha = 64
 
 [trainer.optim]
