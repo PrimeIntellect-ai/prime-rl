@@ -37,6 +37,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aime2024"
+version = "0.1.18"
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Faime2024&rev=d7a5e93#d7a5e931bb54ca78a0bd8a05ee57c9c739113060" }
+dependencies = [
+    { name = "math-verify" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2742,6 +2751,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
+    { name = "aime2024" },
     { name = "beartype" },
     { name = "blobfile" },
     { name = "cydifflib" },
@@ -2798,6 +2808,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=1.10.1" },
+    { name = "aime2024", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Faime2024&rev=d7a5e93" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "blobfile", specifier = ">=3.0.0" },
     { name = "cydifflib", specifier = ">=1.2.0" },

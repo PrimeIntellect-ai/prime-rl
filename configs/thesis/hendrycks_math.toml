@@ -17,7 +17,7 @@ rollouts_per_example = 8
 oversampling_factor = 2.0
 
 [[orchestrator.env]]
-id = "primeintellect/math-env"
+id = "math-env"
 args = { dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
 name = "hendrycks-math"
 
@@ -25,7 +25,7 @@ name = "hendrycks-math"
 interval = 50
 
 [[orchestrator.eval.env]]
-id = "primeintellect/aime2024"
+id = "aime2024"
 name = "aime2024"
 rollouts_per_example = 32
 
