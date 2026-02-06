@@ -411,7 +411,7 @@ async def orchestrate(config: OrchestratorConfig):
                         env=eval_env,
                         env_name=eval_env_name,
                         clients=inference_pool.clients,
-                        model_name=config.model.name,  # TODO: check if we need to use updated lora name (available from scheduler.model_name)
+                        model_name=scheduler.model_name,
                         sampling_args=eval_sampling_args,
                         num_examples=eval_env_config.num_examples or config.eval.num_examples,
                         rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
