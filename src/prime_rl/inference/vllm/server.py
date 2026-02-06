@@ -54,9 +54,6 @@ from prime_rl.inference.config import InferenceConfig, ReplicaBootstrapConfig
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
-# Module-level config for replica bootstrap (set by server() before startup)
-_replica_bootstrap_config: ReplicaBootstrapConfig | None = None
-
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
@@ -228,27 +225,24 @@ async def custom_init_app_state(engine_client: EngineClient, state: State, args:
     await init_app_state(engine_client, state, args)
 
     # Replica bootstrap: fetch weights from existing peer via NCCL
-    global _replica_bootstrap_config
-    if _replica_bootstrap_config and _replica_bootstrap_config.enabled:
+    replica_bootstrap_config: ReplicaBootstrapConfig | None = getattr(args, "replica_bootstrap_config", None)
+    if replica_bootstrap_config and replica_bootstrap_config.enabled:
         logger.info("Replica bootstrap enabled, fetching weights from peer...")
-        try:
-            results = await engine_client.collective_rpc(
-                "fetch_weights_from_peer",
-                kwargs={
-                    "headless_service": _replica_bootstrap_config.headless_service,
-                    "namespace": _replica_bootstrap_config.namespace,
-                    "peer_ip": _replica_bootstrap_config.peer_ip,
-                    "http_port": _replica_bootstrap_config.http_port,
-                    "nccl_port": _replica_bootstrap_config.nccl_port,
-                },
-            )
-            success = results[0] if results else False
-            if success:
-                logger.info("Replica bootstrap complete!")
-            else:
-                logger.warning("No peer available for bootstrap, model has dummy weights")
-        except Exception as e:
-            logger.error(f"Replica bootstrap failed: {e}")
+        results = await engine_client.collective_rpc(
+            "fetch_weights_from_peer",
+            kwargs={
+                "headless_service": replica_bootstrap_config.headless_service,
+                "namespace": replica_bootstrap_config.namespace,
+                "peer_ip": replica_bootstrap_config.peer_ip,
+                "http_port": replica_bootstrap_config.http_port,
+                "nccl_port": replica_bootstrap_config.nccl_port,
+            },
+        )
+        success = results[0] if results else False
+        if success:
+            logger.info("Replica bootstrap complete!")
+        else:
+            logger.warning("No peer available for bootstrap, model has dummy weights")
 
     # NOTE: Initialize the custom OpenAIServingChatWithTokens state here
     # TODO: Here, we repeat some calls done in init_app_state to be able to
@@ -324,9 +318,8 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
-    # Store replica bootstrap config for use in init_app_state
-    global _replica_bootstrap_config
-    _replica_bootstrap_config = config.replica_bootstrap
+    # Store replica bootstrap config on args for use in init_app_state
+    args.replica_bootstrap_config = config.replica_bootstrap
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

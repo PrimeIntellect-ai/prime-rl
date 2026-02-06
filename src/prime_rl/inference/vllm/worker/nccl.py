@@ -99,7 +99,12 @@ class NCCLWeightBroadcastReceiver:
 
 
 class NCCLWeightUpdateWorker(Worker):
-    """vLLM worker extension for updating weights in-place using NCCL."""
+    """vLLM worker extension for updating weights in-place using NCCL.
+
+    Note: This worker is used for trainer->inference weight updates via NCCL.
+    Peer-to-peer replica bootstrap is not supported with this worker type;
+    use FileSystemWeightUpdateWorker for replica bootstrap functionality.
+    """
 
     def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int) -> None:
         """Initialize the NCCL broadcast receiver."""
@@ -132,6 +137,19 @@ class NCCLWeightUpdateWorker(Worker):
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
         model.load_weights(state_iter)  # type: ignore
 
-        # # Process weights after loading (important for some models)
         device = next(model.parameters()).device
         process_weights_after_loading(model, self.model_runner.model_config, device)
+
+    def broadcast_to_peer(self, nccl_port: int = 29600) -> None:
+        """Not supported with NCCL worker. Use FileSystemWeightUpdateWorker for replica bootstrap."""
+        raise NotImplementedError(
+            "Peer broadcast is not supported with NCCLWeightUpdateWorker. "
+            "Use weight_broadcast.type='filesystem' for replica bootstrap functionality."
+        )
+
+    def fetch_weights_from_peer(self, **kwargs) -> bool:
+        """Not supported with NCCL worker. Use FileSystemWeightUpdateWorker for replica bootstrap."""
+        raise NotImplementedError(
+            "Peer fetch is not supported with NCCLWeightUpdateWorker. "
+            "Use weight_broadcast.type='filesystem' for replica bootstrap functionality."
+        )

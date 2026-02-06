@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING
 
 from torch.nn import Module
+from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
@@ -16,6 +17,16 @@ else:
 logger = init_logger("prime_rl.inference.vllm.worker.filesystem")
 
 
+def get_model_from_runner(model_runner) -> Module:
+    """Extract the model from a vLLM model runner, handling torch.compile wrappers."""
+    if hasattr(model_runner.model, "runnable"):
+        model = model_runner.model.runnable
+    else:
+        model = model_runner.model
+    assert isinstance(model, Module)
+    return model
+
+
 class FileSystemWeightUpdateWorker(Worker):
     """vLLM worker extension for updating weights in-place using shared filesystem."""
 
@@ -25,14 +36,7 @@ class FileSystemWeightUpdateWorker(Worker):
 
     def update_weights(self, weight_path: str) -> None:
         """Update weights from a specified path in shared filesystem containing a HF-compatible checkpoint."""
-        # Get vLLM model runner and model
-        # When enforce_eager=True, model isn't wrapped by torch.compile so no .runnable attr
-        model_runner = self.model_runner
-        if hasattr(model_runner.model, "runnable"):
-            model = model_runner.model.runnable
-        else:
-            model = model_runner.model
-        assert isinstance(model, Module)
+        model = get_model_from_runner(self.model_runner)
 
         # Get vLLM model loader
         model_loader = get_model_loader(self.load_config)
@@ -58,24 +62,20 @@ class FileSystemWeightUpdateWorker(Worker):
         Called when a newly scaled pod requests weights. This pod acts as the
         TCP store master (rank 0), the requesting peer is rank 1.
 
-        Uses NCCL which auto-detects the best transport:
-        - NVLink for same-node (~900 GB/s)
-        - InfiniBand for cross-node with RDMA (~400 GB/s)
-        - TCP sockets as fallback (~1-25 GB/s depending on network)
+        Only TP rank 0 performs the broadcast to avoid port collisions in multi-GPU setups.
+        Other ranks wait until the broadcast completes.
 
         Args:
             nccl_port: Port for NCCL communication
         """
         from prime_rl.inference.vllm.peer_broadcast import broadcast_weights_to_peer
 
-        # Get model from worker
-        model_runner = self.model_runner
-        if hasattr(model_runner.model, "runnable"):
-            model = model_runner.model.runnable
-        else:
-            model = model_runner.model
-        assert isinstance(model, Module)
+        tp_rank = get_tp_group().rank_in_group
+        if tp_rank != 0:
+            logger.debug(f"TP rank {tp_rank} skipping broadcast (only rank 0 broadcasts)")
+            return
 
+        model = get_model_from_runner(self.model_runner)
         logger.info(f"Broadcasting weights to peer on port {nccl_port}")
         broadcast_weights_to_peer(model, nccl_port=nccl_port)
 
@@ -93,6 +93,9 @@ class FileSystemWeightUpdateWorker(Worker):
         Called when starting with --load-format dummy to quickly receive weights
         from an existing pod instead of loading from disk.
 
+        Only TP rank 0 performs the fetch to avoid port collisions in multi-GPU setups.
+        Other ranks return True and rely on internal vLLM weight sync mechanisms.
+
         Can use either K8s DNS discovery OR direct peer IP:
         - K8s mode: provide headless_service and namespace
         - Direct mode: provide peer_ip
@@ -109,13 +112,12 @@ class FileSystemWeightUpdateWorker(Worker):
         """
         from prime_rl.inference.vllm.peer_broadcast import fetch_weights_from_peer
 
-        # Get model from worker
-        model_runner = self.model_runner
-        if hasattr(model_runner.model, "runnable"):
-            model = model_runner.model.runnable
-        else:
-            model = model_runner.model
-        assert isinstance(model, Module)
+        tp_rank = get_tp_group().rank_in_group
+        if tp_rank != 0:
+            logger.debug(f"TP rank {tp_rank} skipping fetch (only rank 0 fetches)")
+            return True
+
+        model = get_model_from_runner(self.model_runner)
 
         if peer_ip:
             logger.info(f"Attempting to fetch weights from peer {peer_ip}")
@@ -132,7 +134,6 @@ class FileSystemWeightUpdateWorker(Worker):
         )
 
         if success:
-            # Process weights after loading
             device = next(model.parameters()).device
             process_weights_after_loading(model, self.model_runner.model_config, device)
             logger.info("Weights from peer loaded and processed successfully")

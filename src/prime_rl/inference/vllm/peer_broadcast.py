@@ -39,7 +39,9 @@ DEFAULT_TIMEOUT = 120
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 
-# Lock to prevent concurrent broadcasts from the same source
+# Lock to serialize peer broadcasts from a single source pod.
+# Without this, concurrent bootstrap requests from multiple replicas would
+# collide on the same NCCL port, causing deadlocks or connection failures.
 _broadcast_lock = threading.Lock()
 
 
