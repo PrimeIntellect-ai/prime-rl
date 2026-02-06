@@ -15,6 +15,7 @@ from prime_rl.transport import (
     setup_micro_batch_sender,
     setup_training_batch_receiver,
 )
+from prime_rl.utils.billing import get_billing_client
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
 
@@ -271,21 +272,43 @@ class MultiPacker(BasePacker):
         # Group samples by run_idx - each microbatch must contain samples from only ONE run
         # because MultiLoRAGroupedExperts (MoE) only supports one adapter per microbatch
         samples_by_run: dict[int, list[TrainingSample]] = {}
-        per_run_stats: dict[int, tuple[int, int]] = {}
+        # Track (num_samples, num_tokens, input_tokens, output_tokens) per run
+        per_run_stats: dict[int, tuple[int, int, int, int]] = {}
         for run_idx, sample, step in selected_samples:
             if run_idx not in samples_by_run:
                 samples_by_run[run_idx] = []
             samples_by_run[run_idx].append(sample)
 
-            num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
+            input_tokens = len(sample.prompt_ids)
+            output_tokens = len(sample.completion_ids)
+            num_tokens = input_tokens + output_tokens
             if run_idx in per_run_stats:
-                cur_samples, cur_tokens = per_run_stats[run_idx]
-                per_run_stats[run_idx] = (cur_samples + 1, cur_tokens + num_tokens)
+                cur_samples, cur_tokens, cur_input, cur_output = per_run_stats[run_idx]
+                per_run_stats[run_idx] = (
+                    cur_samples + 1,
+                    cur_tokens + num_tokens,
+                    cur_input + input_tokens,
+                    cur_output + output_tokens,
+                )
             else:
-                per_run_stats[run_idx] = (1, num_tokens)
+                per_run_stats[run_idx] = (1, num_tokens, input_tokens, output_tokens)
 
-        for run_idx, (num_samples, num_tokens) in per_run_stats.items():
+        # Update progress and report usage for billing
+        billing_client = get_billing_client()
+        for run_idx, (num_samples, num_tokens, input_tokens, output_tokens) in per_run_stats.items():
             self._update_run_progress(run_idx, num_samples, num_tokens)
+
+            # Report usage for billing (run_id from folder name)
+            run_id = self.multi_run_manager.idx_2_id.get(run_idx)
+            if run_id:
+                step = self.multi_run_manager.progress[run_idx].step
+                billing_client.report_usage(
+                    run_id=run_id,
+                    step=step,
+                    tokens=num_tokens,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
 
         # Pack each run separately to ensure no mixing of runs in microbatches
         all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]

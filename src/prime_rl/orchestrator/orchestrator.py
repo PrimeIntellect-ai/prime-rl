@@ -582,21 +582,10 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Update progress metrics and throughput
         num_tokens = int(results_df.seq_len.sum())
-        input_tokens = int(results_df.prompt_len.sum())
-        output_tokens = int(results_df.completion_len.sum())
         progress.total_tokens += num_tokens
         progress.total_samples += config.batch_size
         progress.total_problems += config.batch_size // config.rollouts_per_example
         throughput = num_tokens / generate_completions_time
-
-        # Report usage for billing
-        monitor.log_usage(
-            step=progress.step,
-            usage_type="training",
-            tokens=num_tokens,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
 
         # Compute solve all and none tensors
         solve_all = (
