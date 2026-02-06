@@ -27,14 +27,24 @@ def receive_integer(communicator: PyNcclCommunicator) -> int:
     return cast(int, integer_tensor.item())
 
 
-def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str, torch.Tensor], None, None]:
-    """Stream tensors in a state dict broadcasted over NCCL."""
+def receive_state_dict(
+    communicator: PyNcclCommunicator,
+    receive_on_cpu: bool = False,
+) -> Generator[tuple[str, torch.Tensor], None, None]:
+    """Stream tensors in a state dict broadcasted over NCCL.
+
+    Args:
+        communicator: NCCL communicator
+        receive_on_cpu: If True, copy received tensors to CPU immediately after NCCL receive.
+            This reduces GPU memory pressure when the model already occupies most of VRAM.
+    """
     size_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
     communicator.broadcast(size_tensor, src=0)
     state_tensor = torch.empty(cast(int, size_tensor.item()), dtype=torch.uint8).to(communicator.device)
     communicator.broadcast(state_tensor, src=0)
 
     metadata = pickle.loads(bytes(state_tensor.cpu().numpy()))
+    del state_tensor
 
     # Receive concatenated tensors per dtype and split them back
     for dtype, tensor_info_list in metadata.items():
@@ -43,17 +53,22 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
         concatenated = torch.empty(total_elements, dtype=dtype, device=communicator.device)
         communicator.broadcast(concatenated, src=0)
 
+        # Move to CPU if requested to reduce GPU memory pressure
+        if receive_on_cpu:
+            concatenated = concatenated.cpu()
+            torch.cuda.empty_cache()
+
         # Split concatenated tensor back into individual tensors
         offset = 0
         for key, shape, numel in tensor_info_list:
             tensor = concatenated[offset : offset + numel].view(shape).clone()
             offset += numel
-            try:
-                yield key, tensor
-            finally:
-                del tensor
+            yield key, tensor
+            del tensor
 
         del concatenated
+        if receive_on_cpu:
+            torch.cuda.empty_cache()
 
 
 class NCCLWeightBroadcastReceiver:

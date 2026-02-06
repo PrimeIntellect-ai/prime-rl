@@ -147,37 +147,37 @@ def find_healthy_peer(
     return None
 
 
-def receive_weights_from_peer(
+def stream_weights_from_peer(
+    model: "Module",
     peer_ip: str,
     http_port: int = DEFAULT_HTTP_PORT,
     nccl_port: int = DEFAULT_NCCL_PORT,
     timeout: int = DEFAULT_TIMEOUT,
-) -> dict[str, torch.Tensor]:
+) -> None:
     """
-    Request and receive weights from a peer via NCCL.
+    Request and stream weights from a peer directly into the model via NCCL.
+
+    This is memory-efficient: weights are received to CPU one chunk at a time,
+    then loaded directly into the model. This avoids holding 2x model size in memory.
 
     The peer acts as rank 0 (TCP store master), we are rank 1.
     We trigger the broadcast first (so peer starts TCP store), then connect.
 
     Args:
+        model: The model to load weights into
         peer_ip: IP address of the peer to receive from
         http_port: HTTP port for triggering broadcast on peer
         nccl_port: Port for NCCL communication
         timeout: Timeout for NCCL operations
-
-    Returns:
-        State dict with received weights
 
     Raises:
         RuntimeError: If weight transfer fails
     """
     import concurrent.futures
 
-    logger.info(f"Requesting weights from peer {peer_ip}:{nccl_port}")
+    logger.info(f"Streaming weights from peer {peer_ip}:{nccl_port}")
 
-    received_weights: dict[str, torch.Tensor] = {}
     broadcast_error: Exception | None = None
-    broadcast_started = threading.Event()
 
     def trigger_broadcast():
         """Trigger broadcast on peer in background thread."""
@@ -205,40 +205,51 @@ def receive_weights_from_peer(
 
         # Now connect to peer's TCP store (peer is rank 0 master, we're rank 1)
         logger.info(f"Connecting to NCCL at {peer_ip}:{nccl_port}...")
-        try:
-            pg = StatelessProcessGroup.create(
-                host=peer_ip,
-                port=nccl_port,
-                rank=1,
-                world_size=2,
-                store_timeout=timeout,
-            )
-            comm = PyNcclCommunicator(pg, device=torch.cuda.current_device())
-            logger.info("NCCL connected!")
+        pg = StatelessProcessGroup.create(
+            host=peer_ip,
+            port=nccl_port,
+            rank=1,
+            world_size=2,
+            store_timeout=timeout,
+        )
+        comm = PyNcclCommunicator(pg, device=torch.cuda.current_device())
+        logger.info("NCCL connected!")
 
-            start = time.time()
-            num_chunks = receive_integer(comm)
-            logger.info(f"Expecting {num_chunks} weight chunks")
+        start = time.time()
 
-            for i in range(num_chunks):
-                for key, tensor in receive_state_dict(comm):
-                    received_weights[key] = tensor
-                logger.debug(f"Received chunk {i + 1}/{num_chunks}")
+        # Receive weights via NCCL - keeps tensors on GPU for NVLink speed
+        # NCCL broadcasts are synchronous collectives - both sides must stay in sync
+        # If OOM occurs, reduce --max-model-len to free GPU memory for the transfer buffer
+        num_chunks = receive_integer(comm)
+        logger.info(f"Expecting {num_chunks} weight chunks")
 
-            torch.cuda.synchronize()
-            elapsed = time.time() - start
-            size_gb = sum(p.numel() * p.element_size() for p in received_weights.values()) / 1e9
-            logger.info(f"Received {len(received_weights)} tensors ({size_gb:.2f}GB) in {elapsed:.2f}s")
+        received_weights: dict[str, torch.Tensor] = {}
+        for i in range(num_chunks):
+            for key, tensor in receive_state_dict(comm, receive_on_cpu=False):
+                received_weights[key] = tensor
+            if (i + 1) % 10 == 0:
+                logger.info(f"Received chunk {i + 1}/{num_chunks}")
 
-        except Exception as e:
-            raise RuntimeError(f"NCCL receive failed: {e}")
+        torch.cuda.synchronize()
+        nccl_elapsed = time.time() - start
+        size_gb = sum(t.numel() * t.element_size() for t in received_weights.values()) / 1e9
+        logger.info(f"NCCL transfer complete: {len(received_weights)} tensors ({size_gb:.2f}GB) in {nccl_elapsed:.2f}s")
 
         # Wait for broadcast thread to finish
         broadcast_future.result(timeout=30)
         if broadcast_error:
             raise RuntimeError(f"Broadcast failed: {broadcast_error}")
 
-    return received_weights
+    # Load weights directly into model parameters using load_state_dict
+    # We use load_state_dict instead of load_weights because:
+    # - state_dict() returns vLLM-internal keys (merged qkv projections)
+    # - load_weights() expects HuggingFace checkpoint keys (separate q,k,v)
+    # - For peer-to-peer transfer, both models have identical structure
+    logger.info("Loading weights into model...")
+    load_start = time.time()
+    model.load_state_dict(received_weights, strict=True)
+    load_elapsed = time.time() - load_start
+    logger.info(f"model.load_state_dict() completed in {load_elapsed:.2f}s")
 
 
 def broadcast_weights_to_peer(
@@ -278,7 +289,9 @@ def broadcast_weights_to_peer(
         comm = PyNcclCommunicator(pg, device=torch.cuda.current_device())
         logger.info("NCCL connected, starting broadcast...")
 
+        logger.info("Getting state_dict from model...")
         state_dict = model.state_dict()
+        logger.info(f"Got state_dict with {len(state_dict)} tensors")
 
         # Count layers for chunked transfer
         layer_keys = [k for k in state_dict if "model.layers." in k]
@@ -288,20 +301,26 @@ def broadcast_weights_to_peer(
             num_layers = 0
 
         num_chunks = num_layers + 1  # layers + non-layer weights
+        logger.info(f"Broadcasting {num_chunks} chunks ({num_layers} layers + 1 non-layer)")
 
         start = time.time()
 
         # Broadcast number of chunks
+        logger.info("Broadcasting chunk count...")
         broadcast_integer(num_chunks, comm)
+        logger.info("Chunk count sent, broadcasting non-layer weights...")
 
         # Broadcast non-layer weights first
         non_layer = {k: v for k, v in state_dict.items() if "model.layers." not in k}
         broadcast_state_dict(non_layer, comm)
+        logger.info("Non-layer weights sent, broadcasting layers...")
 
         # Broadcast each layer
         for i in range(num_layers):
             layer_dict = {k: v for k, v in state_dict.items() if f"model.layers.{i}." in k}
             broadcast_state_dict(layer_dict, comm)
+            if (i + 1) % 10 == 0:
+                logger.info(f"Sent layer {i + 1}/{num_layers}")
 
         torch.cuda.synchronize()
         elapsed = time.time() - start
@@ -375,24 +394,17 @@ def fetch_weights_from_peer(
             logger.warning(f"Peer {target_ip} not healthy or model not loaded")
             return False
 
-    # Receive weights from peer with retries
+    # Stream weights from peer directly into model with retries
     last_error: Exception | None = None
     for attempt in range(retries):
         try:
             logger.info(f"Fetching weights from peer {target_ip} (attempt {attempt + 1}/{retries})")
-            weights = receive_weights_from_peer(
+            stream_weights_from_peer(
+                model,
                 target_ip,
                 http_port=http_port,
                 nccl_port=nccl_port,
             )
-
-            # Validate we got weights
-            if not weights:
-                raise RuntimeError("Received empty weight dict")
-
-            # Load weights into model
-            logger.info(f"Loading {len(weights)} tensors into model...")
-            model.load_weights(weights.items())
 
             logger.info("Weights loaded from peer successfully!")
             return True
