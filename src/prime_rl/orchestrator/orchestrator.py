@@ -65,6 +65,7 @@ from prime_rl.utils.utils import (
     get_env_ids_to_install,
     install_env,
     resolve_latest_ckpt_step,
+    strip_env_version,
     to_col_format,
 )
 from prime_rl.utils.vlm import is_vlm_model
@@ -164,7 +165,7 @@ async def orchestrate(config: OrchestratorConfig):
         score_rollouts=not config.buffer.skip_verification,
     )
     train_env_group = vf.EnvGroup(
-        envs=[vf.load_environment(env.id, **env.args) for env in config.env],
+        envs=[vf.load_environment(strip_env_version(env.id), **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
