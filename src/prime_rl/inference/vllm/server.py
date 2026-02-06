@@ -50,10 +50,12 @@ from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_se
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
-from prime_rl.inference.config import InferenceConfig
+from prime_rl.inference.config import InferenceConfig, ReplicaBootstrapConfig
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
+# Module-level config for replica bootstrap (set by server() before startup)
+_replica_bootstrap_config: ReplicaBootstrapConfig | None = None
 
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
@@ -114,6 +116,78 @@ async def init_broadcaster(request: Request):
     return {"status": "ok"}
 
 
+@router.post("/broadcast_weights_to_peer")
+async def broadcast_weights_to_peer(request: Request):
+    """
+    Broadcast model weights to a peer pod via NCCL.
+
+    This endpoint is called by newly scaled pods that started with --load-format dummy.
+    They discover this pod via K8s DNS, then request weights via this endpoint.
+    The weights are transferred via NCCL (uses InfiniBand if available, falls back to TCP).
+
+    Request body:
+        nccl_port: Port for NCCL communication (default: 29600)
+    """
+    data = await request.json()
+    nccl_port = data.get("nccl_port", 29600)
+    await engine_client(request).collective_rpc(
+        "broadcast_to_peer",
+        args=(nccl_port,),
+    )
+    return {"status": "ok"}
+
+
+@router.post("/fetch_weights_from_peer")
+async def fetch_weights_from_peer(request: Request):
+    """
+    Fetch model weights from a healthy peer via NCCL.
+
+    This endpoint is called after starting with --load-format dummy to quickly
+    receive weights from an existing pod instead of loading from disk.
+
+    Can use either K8s DNS discovery OR direct peer IP:
+    - K8s mode: provide headless_service and namespace
+    - Direct mode: provide peer_ip
+
+    Request body:
+        headless_service: K8s headless service name for peer discovery (optional)
+        namespace: K8s namespace (optional)
+        peer_ip: Direct peer IP address to fetch from (optional)
+        http_port: HTTP port for health checks (default: 8000)
+        nccl_port: Port for NCCL communication (default: 29600)
+
+    Returns:
+        {"status": "ok", "fetched": true/false}
+    """
+    data = await request.json()
+    headless_service = data.get("headless_service")
+    namespace = data.get("namespace")
+    peer_ip = data.get("peer_ip")
+    http_port = data.get("http_port", 8000)
+    nccl_port = data.get("nccl_port", 29600)
+
+    # Must have either peer_ip or headless_service (namespace auto-detected if not provided)
+    if not peer_ip and not headless_service:
+        return JSONResponse(
+            content={"error": "Must provide either peer_ip or headless_service"},
+            status_code=400,
+        )
+
+    results = await engine_client(request).collective_rpc(
+        "fetch_weights_from_peer",
+        kwargs={
+            "headless_service": headless_service,
+            "namespace": namespace,
+            "peer_ip": peer_ip,
+            "http_port": http_port,
+            "nccl_port": nccl_port,
+        },
+    )
+    # All workers should return the same result
+    success = results[0] if results else False
+    return {"status": "ok", "fetched": success}
+
+
 @router.post(
     "/v1/chat/completions/tokens",
     dependencies=[Depends(validate_json_request)],
@@ -148,9 +222,33 @@ async def custom_init_app_state(engine_client: EngineClient, state: State, args:
     Modifies init_app_state:
     1. Set up the custom OpenAIServingChatWithTokens state.
     2. Monkey-patch to allow updating lora adapters in-place.
+    3. Auto-fetch weights from peer if configured.
     """
     # Setup the regular app state first (in-place)
     await init_app_state(engine_client, state, args)
+
+    # Replica bootstrap: fetch weights from existing peer via NCCL
+    global _replica_bootstrap_config
+    if _replica_bootstrap_config and _replica_bootstrap_config.enabled:
+        logger.info("Replica bootstrap enabled, fetching weights from peer...")
+        try:
+            results = await engine_client.collective_rpc(
+                "fetch_weights_from_peer",
+                kwargs={
+                    "headless_service": _replica_bootstrap_config.headless_service,
+                    "namespace": _replica_bootstrap_config.namespace,
+                    "peer_ip": _replica_bootstrap_config.peer_ip,
+                    "http_port": _replica_bootstrap_config.http_port,
+                    "nccl_port": _replica_bootstrap_config.nccl_port,
+                },
+            )
+            success = results[0] if results else False
+            if success:
+                logger.info("Replica bootstrap complete!")
+            else:
+                logger.warning("No peer available for bootstrap, model has dummy weights")
+        except Exception as e:
+            logger.error(f"Replica bootstrap failed: {e}")
 
     # NOTE: Initialize the custom OpenAIServingChatWithTokens state here
     # TODO: Here, we repeat some calls done in init_app_state to be able to
@@ -225,6 +323,10 @@ def server(config: InferenceConfig, vllm_args: list[str]):
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+
+    # Store replica bootstrap config for use in init_app_state
+    global _replica_bootstrap_config
+    _replica_bootstrap_config = config.replica_bootstrap
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

@@ -114,6 +114,45 @@ class WeightBroadcastConfig(BaseSettings):
     )
 
 
+class ReplicaBootstrapConfig(BaseSettings):
+    """Configures replica bootstrap via NCCL weight transfer.
+
+    When starting with --load-format dummy, the server can automatically
+    fetch weights from a healthy peer via NCCL instead of loading from disk.
+    This dramatically speeds up autoscaling.
+    """
+
+    enabled: Annotated[
+        bool,
+        Field(description="Enable replica bootstrap from existing peers."),
+    ] = False
+
+    peer_ip: Annotated[
+        str | None,
+        Field(description="Direct peer IP to bootstrap from. If not set, uses K8s DNS discovery."),
+    ] = None
+
+    headless_service: Annotated[
+        str | None,
+        Field(description="K8s headless service name for peer discovery."),
+    ] = None
+
+    namespace: Annotated[
+        str | None,
+        Field(description="K8s namespace for peer discovery. Auto-detected if not set."),
+    ] = None
+
+    nccl_port: Annotated[
+        int,
+        Field(description="Port for NCCL weight transfer."),
+    ] = 29600
+
+    http_port: Annotated[
+        int,
+        Field(description="HTTP port to check peer health on."),
+    ] = 8000
+
+
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)
 # TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
@@ -187,6 +226,11 @@ class InferenceConfig(BaseSettings):
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
+
+    replica_bootstrap: Annotated[
+        ReplicaBootstrapConfig,
+        Field(description="Config for replica bootstrap via NCCL weight transfer."),
+    ] = ReplicaBootstrapConfig()
 
     @model_validator(mode="after")
     def auto_setup_dynamic_lora_updating(self):
