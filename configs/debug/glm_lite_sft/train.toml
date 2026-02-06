@@ -1,0 +1,21 @@
+max_steps = 5
+
+[model]
+name = "zai-org/GLM-4.7-Flash"
+moe_use_grouped_mm = true
+impl = "custom"
+attn = "flash_attention_2"
+fsdp_cpu_offload = false
+ep = 2
+
+[model.ac]
+freq = 1
+
+[model.debug]
+num_layers = 4
+random_init = true
+
+[data]
+type = "fake"
+batch_size = 2
+seq_len = 256

@@ -1,3 +1,18 @@
+# coding=utf-8
+# Copyright 2025 The ZhipuAI Inc. team and HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import torch
 from torch import Tensor
 
@@ -8,12 +23,14 @@ def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
 
 
 def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
+    """Convert a layer from HuggingFace format to TorchTitan (prime-rl) format."""
     i = layer_idx
 
     # Check if this is a MoE layer by looking for gate weight
     if f"model.layers.{i}.mlp.gate.weight" not in state_dict:
         return
 
+    # Router weight conversion
     state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
     del state_dict[f"model.layers.{i}.mlp.gate.weight"]
 
@@ -35,20 +52,17 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
         del state_dict[f"model.layers.{i}.mlp.experts.down_proj"]
     else:
         # Old per-expert format
-        num_experts = len([j for j in state_dict.keys() if f"model.layers.{i}.mlp.experts" in j]) // 3
+        num_experts = len([j for j in state_dict.keys() if f"model.layers.{i}.mlp.experts" in j and "gate_proj" in j])
         if num_experts == 0:
             return
 
         dim, moe_dim = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].shape
-        w1 = torch.empty(
-            (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
-        )  # Gate
-        w2 = torch.empty(
-            (num_experts, dim, moe_dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
-        )  # Down
-        w3 = torch.empty(
-            (num_experts, moe_dim, dim), dtype=state_dict[f"model.layers.{i}.mlp.experts.1.down_proj.weight"].dtype
-        )  # Up
+        dtype = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].dtype
+
+        w1 = torch.empty((num_experts, moe_dim, dim), dtype=dtype)  # Gate
+        w2 = torch.empty((num_experts, dim, moe_dim), dtype=dtype)  # Down
+        w3 = torch.empty((num_experts, moe_dim, dim), dtype=dtype)  # Up
+
         for j in range(num_experts):
             w1[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"])
             w2[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"])
@@ -62,6 +76,7 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
     state_dict[f"model.layers.{i}.mlp.experts.w2"] = w2
     state_dict[f"model.layers.{i}.mlp.experts.w3"] = w3
 
+    # Shared expert conversion
     state_dict[f"model.layers.{i}.mlp.shared_expert.w1"] = state_dict[
         f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
     ]
@@ -76,20 +91,23 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
     del state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"]
     del state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"]
 
-    state_dict[f"model.layers.{i}.mlp.expert_bias"] = state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
-    del state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
+    # Expert bias (load balancing)
+    if f"model.layers.{i}.mlp.gate.e_score_correction_bias" in state_dict:
+        state_dict[f"model.layers.{i}.mlp.expert_bias"] = state_dict[
+            f"model.layers.{i}.mlp.gate.e_score_correction_bias"
+        ]
+        del state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
 
 
 def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
-    """Convert MoE weights from HF to TT format in-place."""
+    """Convert MoE weights from HuggingFace to TorchTitan format in-place."""
     num_layers = get_max_layer_num(state_dict)
     for i in range(num_layers):
         convert_hf_layer_to_tt(state_dict, i)
 
 
 def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
-    """Convert a layer from TT to HF format in-place."""
-
+    """Convert a layer from TorchTitan (prime-rl) format to HuggingFace format in-place."""
     i = layer_index
 
     # Load balancing terms
@@ -148,7 +166,7 @@ def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
 
 
 def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
-    """Convert MoE weights from TT to HF format in-place."""
+    """Convert MoE weights from TorchTitan to HuggingFace format in-place."""
     num_layers = get_max_layer_num(state_dict)
     for i in range(num_layers):
         convert_tt_layer_to_hf(state_dict, i)

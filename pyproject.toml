@@ -18,9 +18,9 @@ dependencies = [
     "pylatexenc>=2.10",
     "tomli>=2.2.1",
     "torch>=2.9.0",
-    "transformers>=4.57.6",
+    "transformers>=5.0.0",
     "uvloop>=0.21.0",
-    "vllm==0.14.0",
+    "vllm",
     "wandb>=0.20.1",
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
@@ -76,7 +76,10 @@ no-build-isolation-package = ["flash-attn"]
 prerelease = "allow"
 # Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
 # See: https://github.com/pytorch/pytorch/issues/166122
-override-dependencies = ["nvidia-cudnn-cu12>=9.15"]
+override-dependencies = [
+    "nvidia-cudnn-cu12>=9.15",
+    "transformers==5.0.0",
+]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
@@ -84,6 +87,7 @@ reverse-text = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "dfc473c" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eebbd950a6ff11d9b5f806282e33df83df9d" }
+vllm = { index = "vllm-nightly" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -99,6 +103,11 @@ url = "https://hub.primeintellect.ai/primeintellect/simple/"
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/test/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "vllm-nightly"
+url = "https://wheels.vllm.ai/nightly"
 explicit = true
 
 [tool.ruff.lint]
