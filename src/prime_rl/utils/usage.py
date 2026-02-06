@@ -1,17 +1,14 @@
 import atexit
 import os
-import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Annotated, Any
 
 import httpx
 from pydantic import Field
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pydantic_config import BaseConfig
-
-MAX_RETRIES = 3
-RETRY_DELAY = 1.0
 
 if TYPE_CHECKING:
     import verifiers as vf
@@ -56,21 +53,17 @@ class UsageReporter:
         if self._client:
             self._client.close()
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
+    def _post_with_retry(self, payload: dict[str, Any]) -> None:
+        resp = self._client.post(f"{self._base_url}/usage", json=payload, headers={"x-api-key": self._api_key})
+        if resp.status_code != 409:
+            resp.raise_for_status()
+
     def _post(self, payload: dict[str, Any]) -> None:
-        for attempt in range(MAX_RETRIES):
-            try:
-                resp = self._client.post(
-                    f"{self._base_url}/usage", json=payload, headers={"x-api-key": self._api_key}
-                )
-                if resp.status_code == 409:
-                    return
-                resp.raise_for_status()
-                return
-            except Exception as e:
-                if attempt == MAX_RETRIES - 1:
-                    get_logger().warning(f"Usage report failed after {MAX_RETRIES} attempts: {e}")
-                else:
-                    time.sleep(RETRY_DELAY * (attempt + 1))
+        try:
+            self._post_with_retry(payload)
+        except Exception as e:
+            get_logger().warning(f"Usage report failed: {e}")
 
     def report_training(self, run_id: str, step: int, tokens: int) -> None:
         if self._executor:
