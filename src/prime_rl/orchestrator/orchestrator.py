@@ -163,9 +163,10 @@ async def orchestrate(config: OrchestratorConfig):
         interleaved_rollouts=config.trajectory_strategy == "interleaved",
         score_rollouts=not config.buffer.skip_verification,
     )
+    env_ids = [strip_env_version(env.id) for env in config.env]
     train_env_group = vf.EnvGroup(
-        envs=[vf.load_environment(strip_env_version(env.id), **env.args) for env in config.env],
-        env_names=[env.name or env.id for env in config.env],
+        envs=[vf.load_environment(env_id, **env.args) for env_id, env in zip(env_ids, config.env)],
+        env_names=[env.name or env_id for env_id, env in zip(env_ids, config.env)],
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
     train_env_group.set_max_seq_len(config.seq_len)
@@ -177,10 +178,10 @@ async def orchestrate(config: OrchestratorConfig):
         train_env_group.set_score_rollouts(False)
 
     train_env_addresses = []
-    for env, env_name in zip(config.env, train_env_group.env_names):
+    for env_id, env, env_name in zip(env_ids, config.env, train_env_group.env_names):
         if env.address is None:
             address = spawn_env_server(
-                env_id=env.id,
+                env_id=env_id,
                 env_args=env.args,
                 extra_env_kwargs=extra_env_kwargs,
                 log_level="CRITICAL",
@@ -203,15 +204,16 @@ async def orchestrate(config: OrchestratorConfig):
         env.env_client = env_client
 
     if config.eval:
-        eval_envs = [vf.load_environment(env.id, **env.args) for env in config.eval.env]
-        eval_env_names = [env.name or env.id for env in config.eval.env]
+        env_ids = [strip_env_version(env.id) for env in config.eval.env]
+        eval_envs = [vf.load_environment(env_id, **env.args) for env_id, env in zip(env_ids, config.eval.env)]
+        eval_env_names = [env.name or env_id for env_id, env in zip(env_ids, config.eval.env)]
         eval_sampling_args = get_eval_sampling_args(config.eval.sampling)
         eval_env_addresses = []
 
-        for env, eval_env_name in zip(config.eval.env, eval_env_names):
+        for env_id, env, eval_env_name in zip(env_ids, config.eval.env, eval_env_names):
             if env.address is None:
                 address = spawn_env_server(
-                    env_id=env.id,
+                    env_id=env_id,
                     env_args=env.args,
                     extra_env_kwargs={},
                     log_level="CRITICAL",

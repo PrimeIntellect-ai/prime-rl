@@ -10,7 +10,6 @@ from verifiers.utils.worker_utils import get_free_port
 from verifiers.workers import ZMQEnvClient, ZMQEnvServer
 
 from prime_rl.utils.logger import InterceptHandler, ProgressTracker
-from prime_rl.utils.utils import strip_env_version
 
 DEFAULT_RETRIES = 3
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
@@ -36,7 +35,7 @@ def spawn_env_server(
     Process(
         target=ZMQEnvServer.run_server,
         args=(
-            strip_env_version(env_id),
+            env_id,
             env_args,
             extra_env_kwargs,
             log_level,
