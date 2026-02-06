@@ -58,6 +58,7 @@ def train(config: SFTTrainerConfig):
     logger = setup_logger(
         config.log.level,
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
+        json_logging=config.log.json_logging,
     )
     logger.info(f"Starting SFT trainer in {world}")
 
@@ -95,7 +96,11 @@ def train(config: SFTTrainerConfig):
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
-        substitute_prime_rl_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+        substitute_prime_rl_flash_attn(
+            parallel_dims.world_mesh["cp"].get_group(),
+            heads_k_stride=1,
+            attn_impl=config.model.attn,
+        )
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -118,7 +123,9 @@ def train(config: SFTTrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = setup_optimizer(config.optim, list(model.named_parameters()), parallel_dims)
+    optimizer = setup_optimizer(
+        config.optim, list(model.named_parameters()), parallel_dims, cpu_offload=config.model.optim_cpu_offload
+    )
 
     # Set up the learning rate scheduler
     scheduler_steps = (

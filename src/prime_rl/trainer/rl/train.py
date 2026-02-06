@@ -69,6 +69,7 @@ def train(config: RLTrainerConfig):
     logger = setup_logger(
         config.log.level,
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
+        json_logging=config.log.json_logging,
     )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
@@ -148,6 +149,7 @@ def train(config: RLTrainerConfig):
             list(model.named_parameters()),
             parallel_dims,
             lora=config.model.lora is not None,
+            cpu_offload=config.model.optim_cpu_offload,
         )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
@@ -168,7 +170,11 @@ def train(config: RLTrainerConfig):
 
     if parallel_dims.cp_enabled:
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
-        substitute_prime_rl_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+        substitute_prime_rl_flash_attn(
+            parallel_dims.world_mesh["cp"].get_group(),
+            heads_k_stride=1,
+            attn_impl=config.model.attn,
+        )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()

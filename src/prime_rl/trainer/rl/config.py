@@ -255,6 +255,12 @@ class RLTrainerConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_optim_cpu_offload_single_run(self):
+        if self.model.optim_cpu_offload and self.max_concurrent_runs > 1:
+            raise ValueError("Optimizer CPU offload is not supported with max_concurrent_runs > 1")
+        return self
+
+    @model_validator(mode="after")
     def validate_lora_broadcast(self):
         if self.model.lora is not None and self.weight_broadcast.type == "nccl":
             # TODO: Support this

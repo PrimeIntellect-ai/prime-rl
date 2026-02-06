@@ -11,3 +11,5 @@ max_tokens = 128
 
 [[env]]
 id = "reverse-text"
+
+[ckpt]

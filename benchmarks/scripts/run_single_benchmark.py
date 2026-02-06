@@ -67,7 +67,7 @@ class BenchmarkConfig(BaseSettings):
     )
 
     attention: Annotated[
-        Literal["sdpa", "flash_attention_2", "flash_attention_3"],
+        Literal["sdpa", "flash_attention_2", "flash_attention_3", "flash_attention_4"],
         Field(description="Attention implementation"),
     ] = "flash_attention_2"
 
