@@ -2,7 +2,6 @@ import asyncio
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 
 import tomli_w
 
@@ -483,11 +482,15 @@ async def orchestrate(config: OrchestratorConfig):
         if config.trajectory_strategy == "interleaved":
             futures = [loop.run_in_executor(rollout_executor, interleave_rollout, r) for r in train_rollouts]
         else:
+
+            def branch_rollout_with_vlm_cache(
+                rollout: vf.RolloutOutput, rollout_idx: int
+            ) -> list[TrainingSample] | None:
+                return branch_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
+
             futures = [
-                loop.run_in_executor(
-                    rollout_executor, partial(branch_rollout, vlm_cache=vlm_cache), rollout, rollout_idx
-                )
-                for rollout_idx, rollout in enumerate(train_rollouts)
+                loop.run_in_executor(rollout_executor, branch_rollout_with_vlm_cache, r, rollout_idx)
+                for rollout_idx, r in enumerate(train_rollouts)
             ]
 
         results = await asyncio.gather(*futures)
