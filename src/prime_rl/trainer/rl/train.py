@@ -141,10 +141,7 @@ def train(config: RLTrainerConfig):
     tokenizer = setup_tokenizer(config.tokenizer)
 
     # Set up the loss function
-    if isinstance(config.loss, LossConfig):
-        logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
-    else:
-        logger.info(f"Using custom loss function ({config.loss})")
+    logger.info(f"Setting up loss function ({config.loss})")
     loss_fn = setup_loss_fn(config.loss)
 
     # Set up the optimizer
