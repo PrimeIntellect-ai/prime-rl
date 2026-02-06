@@ -62,18 +62,23 @@ class UsageReporter:
 
     def report_training(self, run_id: str, step: int, tokens: int) -> None:
         if self._executor:
-            self._executor.submit(self._post, {"run_id": run_id, "step": step, "usage_type": "training", "tokens": tokens})
+            self._executor.submit(
+                self._post, {"run_id": run_id, "step": step, "usage_type": "training", "tokens": tokens}
+            )
 
     def report_inference(self, run_id: str, step: int, input_tokens: int, output_tokens: int) -> None:
         if self._executor:
-            self._executor.submit(self._post, {
-                "run_id": run_id,
-                "step": step,
-                "usage_type": "inference",
-                "tokens": input_tokens + output_tokens,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            })
+            self._executor.submit(
+                self._post,
+                {
+                    "run_id": run_id,
+                    "step": step,
+                    "usage_type": "inference",
+                    "tokens": input_tokens + output_tokens,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                },
+            )
 
 
 def init_usage_reporter(config: UsageConfig | None) -> None:
