@@ -8,11 +8,13 @@ from torch import nn
 from .rms_norm import RMSNorm, RMSNormConfig
 from .rotary_emb import apply_rotary_pos_emb
 
+# flash-attention-2
 try:
     from flash_attn import flash_attn_varlen_func
 except ImportError:
     flash_attn_varlen_func = None
 
+# flash-attention-3
 try:
     from flash_attn_interface import flash_attn_varlen_func as flash_attn_3_varlen_func
 except ImportError:
