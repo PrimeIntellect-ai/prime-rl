@@ -19,13 +19,15 @@ class UsageClient:
     since it supports multiple runs with different run_ids.
     """
 
+    DEFAULT_BASE_URL = "https://api.primeintellect.ai/api/internal/rft"
+
     def __init__(
         self,
-        base_url: str = "https://api.primeintellect.ai/api/internal/rft",
+        base_url: str | None = None,
         api_key_var: str = "PRIME_API_KEY",
     ):
         self.logger = get_logger()
-        self.base_url = base_url
+        self.base_url = base_url or os.getenv("PRIME_API_BASE_URL", self.DEFAULT_BASE_URL)
 
         # Only enable on rank 0
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
