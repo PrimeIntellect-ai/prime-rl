@@ -782,6 +782,9 @@ async def orchestrate(config: OrchestratorConfig):
     # Stop inference pool
     await inference_pool.stop()
 
+    if teacher_inference_pool is not None:
+        await teacher_inference_pool.stop()
+
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
 
