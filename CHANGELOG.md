@@ -47,3 +47,7 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`model.optim_cpu_offload`**: Added flag to offload optimizer states to CPU without moving parameters (default: False) (2026-01-31)
 - **`orchestrator.tasks_per_minute`**: Added optional rate limiting for sandbox tasks per environment worker. Uses token bucket algorithm. If None (default), no rate limiting is applied (2026-02-02)
 - **`model.cp`**: When `cp>1` with `attn="flash_attention_3"`, require `model.impl="custom"` (FA3 ring-attention kernel only in custom path) (2026-02-06)
+- **`orchestrator.env.address`**: Added address field on `EnvConfig`. If set, connect to an environment server at this address; if None, spawn a server in a subprocess (2026-02-06)
+- **`OrchestratorConfig`**: Removed `workers_per_env`, `max_env_worker_restarts`, and `mask_env_responses` (2026-02-06)
+- **`EvalSaveDiskConfig`**, **`EvalSaveConfig`**, **`RetryConfig`**, **`OnlineEvalConfig`**: Removed (2026-02-06)
+- **`TemperatureScheduleConfig`**: Renamed to `TemperatureSchedulerConfig` (2026-02-06)
