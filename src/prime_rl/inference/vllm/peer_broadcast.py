@@ -139,6 +139,7 @@ def receive_weights_from_peer(
     Request and receive weights from a peer via NCCL.
 
     The peer acts as rank 0 (TCP store master), we are rank 1.
+    We trigger the broadcast first (so peer starts TCP store), then connect.
 
     Args:
         peer_ip: IP address of the peer to receive from
@@ -157,17 +158,36 @@ def receive_weights_from_peer(
     logger.info(f"Requesting weights from peer {peer_ip}:{nccl_port}")
 
     received_weights: dict[str, torch.Tensor] = {}
-    receive_error: Exception | None = None
-    receiver_ready = threading.Event()
+    broadcast_error: Exception | None = None
+    broadcast_started = threading.Event()
 
-    def do_receive():
-        nonlocal received_weights, receive_error
-
-        pg = None
-        comm = None
+    def trigger_broadcast():
+        """Trigger broadcast on peer in background thread."""
+        nonlocal broadcast_error
         try:
-            # Connect to peer's TCP store (peer is rank 0 master, we're rank 1)
-            logger.info(f"Connecting to NCCL at {peer_ip}:{nccl_port}...")
+            logger.info("Triggering broadcast on peer...")
+            resp = requests.post(
+                f"http://{peer_ip}:{http_port}/broadcast_weights_to_peer",
+                json={"nccl_port": nccl_port},
+                timeout=600,  # Weight transfer can take a while for large models
+            )
+            if resp.status_code != 200:
+                broadcast_error = RuntimeError(f"Peer broadcast failed: {resp.text}")
+            else:
+                logger.info("Peer broadcast completed")
+        except Exception as e:
+            broadcast_error = e
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        # Start broadcast trigger in background - this makes peer start TCP store
+        broadcast_future = executor.submit(trigger_broadcast)
+
+        # Give peer time to start TCP store before we try to connect
+        time.sleep(2)
+
+        # Now connect to peer's TCP store (peer is rank 0 master, we're rank 1)
+        logger.info(f"Connecting to NCCL at {peer_ip}:{nccl_port}...")
+        try:
             pg = StatelessProcessGroup.create(
                 host=peer_ip,
                 port=nccl_port,
@@ -177,9 +197,6 @@ def receive_weights_from_peer(
             )
             comm = PyNcclCommunicator(pg, device=torch.cuda.current_device())
             logger.info("NCCL connected!")
-
-            # Signal that we're ready to receive
-            receiver_ready.set()
 
             start = time.time()
             num_chunks = receive_integer(comm)
@@ -196,43 +213,12 @@ def receive_weights_from_peer(
             logger.info(f"Received {len(received_weights)} tensors ({size_gb:.2f}GB) in {elapsed:.2f}s")
 
         except Exception as e:
-            receive_error = e
-            receiver_ready.set()  # Unblock main thread even on error
-            raise
+            raise RuntimeError(f"NCCL receive failed: {e}")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        recv_future = executor.submit(do_receive)
-
-        # Wait for receiver to be ready (with timeout)
-        if not receiver_ready.wait(timeout=30):
-            raise RuntimeError("Timeout waiting for NCCL receiver to initialize")
-
-        # Check for early errors
-        if receive_error:
-            raise RuntimeError(f"Receiver failed during setup: {receive_error}")
-
-        # Trigger peer to start broadcasting
-        logger.info("Triggering broadcast on peer...")
-        try:
-            resp = requests.post(
-                f"http://{peer_ip}:{http_port}/broadcast_weights_to_peer",
-                json={"nccl_port": nccl_port},
-                timeout=600,  # Weight transfer can take a while for large models
-            )
-
-            if resp.status_code != 200:
-                raise RuntimeError(f"Peer broadcast failed: {resp.text}")
-
-            logger.info("Peer broadcast request accepted")
-
-        except requests.RequestException as e:
-            raise RuntimeError(f"Failed to trigger broadcast on peer: {e}")
-
-        # Wait for receive to complete
-        try:
-            recv_future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            raise RuntimeError(f"Weight transfer timed out after {timeout}s")
+        # Wait for broadcast thread to finish
+        broadcast_future.result(timeout=30)
+        if broadcast_error:
+            raise RuntimeError(f"Broadcast failed: {broadcast_error}")
 
     return received_weights
 
