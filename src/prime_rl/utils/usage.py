@@ -1,4 +1,4 @@
-"""Billing client for reporting token usage to Prime Intellect API."""
+"""Usage client for reporting token usage to Prime Intellect API."""
 
 import asyncio
 import os
@@ -10,9 +10,9 @@ import httpx
 from prime_rl.utils.logger import get_logger
 
 
-class BillingClient:
+class UsageClient:
     """
-    Lightweight client for reporting token usage to the billing API.
+    Lightweight client for reporting token usage to the platform API.
 
     This is used by the trainer/packer to report per-run token usage.
     Unlike PrimeMonitor, this doesn't require RUN_ID environment variable
@@ -37,7 +37,7 @@ class BillingClient:
         # Get API key from environment variable
         api_key = os.getenv(api_key_var)
         if not api_key:
-            self.logger.debug(f"Billing API key not found ({api_key_var}). Usage reporting disabled.")
+            self.logger.debug(f"API key not found ({api_key_var}). Usage reporting disabled.")
             self.enabled = False
             return
 
@@ -96,7 +96,7 @@ class BillingClient:
         usage_type: str = "training",
     ) -> None:
         """
-        Report token usage for billing.
+        Report token usage.
 
         Args:
             run_id: The run ID (from folder name like run_xxx)
@@ -143,13 +143,13 @@ class BillingClient:
         self._thread.join(timeout=5.0)
 
 
-# Global billing client instance
-_BILLING_CLIENT: BillingClient | None = None
+# Global usage client instance
+_USAGE_CLIENT: UsageClient | None = None
 
 
-def get_billing_client() -> BillingClient:
-    """Get or create the global billing client."""
-    global _BILLING_CLIENT
-    if _BILLING_CLIENT is None:
-        _BILLING_CLIENT = BillingClient()
-    return _BILLING_CLIENT
+def get_usage_client() -> UsageClient:
+    """Get or create the global usage client."""
+    global _USAGE_CLIENT
+    if _USAGE_CLIENT is None:
+        _USAGE_CLIENT = UsageClient()
+    return _USAGE_CLIENT

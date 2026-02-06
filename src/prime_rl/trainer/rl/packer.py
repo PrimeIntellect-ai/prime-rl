@@ -15,7 +15,7 @@ from prime_rl.transport import (
     setup_micro_batch_sender,
     setup_training_batch_receiver,
 )
-from prime_rl.utils.billing import get_billing_client
+from prime_rl.utils.usage import get_usage_client
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
 
@@ -293,16 +293,16 @@ class MultiPacker(BasePacker):
             else:
                 per_run_stats[run_idx] = (1, num_tokens, input_tokens, output_tokens)
 
-        # Update progress and report usage for billing
-        billing_client = get_billing_client()
+        # Update progress and report usage
+        usage_client = get_usage_client()
         for run_idx, (num_samples, num_tokens, input_tokens, output_tokens) in per_run_stats.items():
             self._update_run_progress(run_idx, num_samples, num_tokens)
 
-            # Report usage for billing (run_id from folder name)
+            # Report usage (run_id from folder name)
             run_id = self.multi_run_manager.idx_2_id.get(run_idx)
             if run_id:
                 step = self.multi_run_manager.progress[run_idx].step
-                billing_client.report_usage(
+                usage_client.report_usage(
                     run_id=run_id,
                     step=step,
                     tokens=num_tokens,
