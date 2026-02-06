@@ -4,7 +4,7 @@ from verifiers.workers import ZMQEnvServer
 from prime_rl.orchestrator.env_server.config import EnvServerConfig
 from prime_rl.utils.pathing import get_log_dir
 from prime_rl.utils.pydantic_config import parse_argv
-from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, install_env
+from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, install_env, strip_env_version
 
 
 @clean_exit
@@ -19,7 +19,7 @@ def run_server(config: EnvServerConfig):
     env_name = config.env.name or config.env.id
     log_file = (get_log_dir(config.output_dir) / "train" / f"{env_name}.log").as_posix()
     ZMQEnvServer.run_server(
-        env_id=config.env.id,
+        env_id=strip_env_version(config.env.id),
         env_args=config.env.args,
         extra_env_kwargs={},
         log_level=config.log.level,
