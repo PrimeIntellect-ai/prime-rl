@@ -8,11 +8,13 @@ from torch import nn
 from .rms_norm import RMSNorm, RMSNormConfig
 from .rotary_emb import apply_rotary_pos_emb
 
+# flash-attention-2
 try:
     from flash_attn import flash_attn_varlen_func
 except ImportError:
     flash_attn_varlen_func = None  # type: ignore
 
+# flash-attention-3
 try:
     from flash_attn_interface import flash_attn_varlen_func as flash_attn_3_varlen_func
 except ImportError:
@@ -204,8 +206,17 @@ ATTN_IMPL2CLASS = {
 }
 
 
-def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup, heads_k_stride: int) -> None:
+def substitute_prime_rl_flash_attn(
+    process_group: torch.distributed.ProcessGroup,
+    heads_k_stride: int,
+    attn_impl: str = "flash_attention_2",
+) -> None:
     from ring_flash_attn import llama3_flash_attn_varlen_func
+
+    from .ring_attn import ring_fa3_varlen_func
+
+    use_fa3 = attn_impl == "flash_attention_3"
+    ring_func = ring_fa3_varlen_func if use_fa3 else llama3_flash_attn_varlen_func
 
     class RingFlashAttention(FlashAttention):
         def forward(
@@ -245,7 +256,7 @@ def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
             value_states = value_states.transpose(1, 2)
-            out = llama3_flash_attn_varlen_func(
+            out = ring_func(
                 query_states[0],
                 key_states[0],
                 value_states[0],
@@ -258,6 +269,8 @@ def substitute_prime_rl_flash_attn(process_group: torch.distributed.ProcessGroup
                 group=process_group,
                 heads_k_stride=heads_k_stride,
             )
+            if isinstance(out, tuple):
+                out = out[0]
             out = out.contiguous()
             attn_output = out.view(1, out.shape[0], -1)
             attn_weights = None

@@ -170,7 +170,11 @@ def train(config: RLTrainerConfig):
 
     if parallel_dims.cp_enabled:
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
-        substitute_prime_rl_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+        substitute_prime_rl_flash_attn(
+            parallel_dims.world_mesh["cp"].get_group(),
+            heads_k_stride=1,
+            attn_impl=config.model.attn,
+        )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()

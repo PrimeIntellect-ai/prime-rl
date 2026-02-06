@@ -57,6 +57,7 @@ from prime_rl.utils.utils import (
     get_env_ids_to_install,
     install_env,
     resolve_latest_ckpt_step,
+    strip_env_version,
     to_col_format,
 )
 from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len, get_seq_len
@@ -155,7 +156,7 @@ async def orchestrate(config: OrchestratorConfig):
         f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
     )
     env = vf.EnvGroup(
-        envs=[vf.load_environment(env.id, **env.args) for env in config.env],
+        envs=[vf.load_environment(strip_env_version(env.id), **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
     )
