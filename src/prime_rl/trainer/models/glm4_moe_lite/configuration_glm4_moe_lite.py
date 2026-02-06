@@ -108,6 +108,9 @@ class Glm4MoeLiteConfig(PretrainedConfig):
         "layers": (["hidden_states", "attention_mask"], ["hidden_states"]),
         "norm": (["hidden_states"], ["hidden_states"]),
     }
+    attribute_map = {
+        "num_local_experts": "n_routed_experts",
+    }
 
     def __init__(
         self,
