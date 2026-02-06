@@ -44,8 +44,26 @@ _broadcast_lock = threading.Lock()
 
 
 def get_pod_ip() -> str:
-    """Get the current pod's IP address."""
-    return os.environ.get("POD_IP", socket.gethostbyname(socket.gethostname()))
+    """Get the current pod's IP address.
+
+    Priority:
+    1. POD_IP environment variable (set by K8s downward API or manually)
+    2. Fallback to gethostbyname
+
+    NOTE: For replica bootstrap to work, POD_IP must be set to a routable IP.
+    In K8s, use the downward API. On bare metal, set it manually:
+        export POD_IP=$(hostname -I | awk '{print $1}')
+    """
+    if pod_ip := os.environ.get("POD_IP"):
+        return pod_ip
+
+    ip = socket.gethostbyname(socket.gethostname())
+    if ip.startswith("127."):
+        logger.warning(
+            f"POD_IP not set and gethostbyname returned localhost ({ip}). "
+            "NCCL may fail to connect. Set POD_IP to a routable IP."
+        )
+    return ip
 
 
 def get_namespace() -> str | None:
