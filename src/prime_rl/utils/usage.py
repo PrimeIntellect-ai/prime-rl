@@ -25,13 +25,13 @@ class UsageConfig(BaseConfig):
 
 
 class UsageReporter:
-    """Fire-and-forget token usage reporter."""
+    """Fire-and-forget token usage reporter with retries."""
 
     def __init__(self, config: UsageConfig | None = None):
         self._executor: ThreadPoolExecutor | None = None
         self._client: httpx.Client | None = None
-        self._base_url: str = ""
-        self._api_key: str = ""
+        self._base_url: str | None = None
+        self._api_key: str | None = None
 
         if not config:
             return
@@ -46,6 +46,7 @@ class UsageReporter:
         self._client = httpx.Client(timeout=config.timeout)
         self._executor = ThreadPoolExecutor(max_workers=2)
         atexit.register(self._shutdown)
+        get_logger().info(f"UsageReporter enabled: {self._base_url}")
 
     def _shutdown(self) -> None:
         if self._executor:
