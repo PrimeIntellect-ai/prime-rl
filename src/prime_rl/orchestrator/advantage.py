@@ -26,4 +26,7 @@ def compute_advantages(
         baseline = (rewards * lengths).sum(dim=1, keepdim=True) / lengths.sum(dim=1, keepdim=True)
     else:
         baseline = rewards.mean(dim=1, keepdim=True)
-    return (rewards - baseline).flatten().tolist()
+    advantages = rewards - baseline
+    if advantage_config.normalize_by_pass_rate:
+        advantages = torch.where(baseline > 0, advantages / baseline, torch.zeros_like(advantages))
+    return advantages.flatten().tolist()

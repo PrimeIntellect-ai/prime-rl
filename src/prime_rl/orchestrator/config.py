@@ -613,6 +613,7 @@ class BufferConfig(BaseConfig):
 
 class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False
+    normalize_by_pass_rate: bool = False
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):
