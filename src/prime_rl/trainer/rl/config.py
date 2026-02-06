@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 
 from prime_rl.trainer.config import (
     AdamWConfig,
@@ -19,8 +19,9 @@ from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
 class LossConfig(BaseConfig):
-    """Base config for loss."""
+    """Config for the default loss."""
 
+    type: Literal["default"] = "default"
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
 
     token_mask_high: Annotated[
@@ -75,11 +76,21 @@ class LossConfig(BaseConfig):
 class CustomLossConfig(BaseModel):
     """Config for a custom external loss function."""
 
-    byo_function: Annotated[str, Field(description="Import path to the loss function (e.g., 'my_module.my_loss')")]
+    type: Literal["custom"] = "custom"
+    import_path: Annotated[str, Field(description="Import path to the loss function (e.g., 'my_module.my_loss')")]
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
 
-LossConfigType: TypeAlias = LossConfig | CustomLossConfig
+def _loss_config_discriminator(v: Any) -> str:
+    if isinstance(v, dict):
+        return v.get("type", "default")
+    return getattr(v, "type", "default")
+
+
+LossConfigType: TypeAlias = Annotated[
+    Annotated[LossConfig, Tag("default")] | Annotated[CustomLossConfig, Tag("custom")],
+    Discriminator(_loss_config_discriminator),
+]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -140,7 +151,7 @@ class RLTrainerConfig(BaseSettings):
     data: DataLoaderConfig = DataLoaderConfig()
 
     # The loss configuration
-    loss: LossConfig = LossConfig()
+    loss: LossConfigType = LossConfig()
 
     # The optimizer configuration
     optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()

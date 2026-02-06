@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Discriminator, Field, Tag, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
@@ -612,15 +612,17 @@ class BufferConfig(BaseConfig):
 
 
 class AdvantageConfig(BaseModel):
-    """Config for the default GRPO advantage computation."""
+    """Config for the default advantage."""
 
+    type: Literal["default"] = "default"
     length_weighted_mean: bool = False
 
 
 class CustomAdvantageConfig(BaseModel):
     """Config for a custom external advantage function."""
 
-    byo_function: Annotated[
+    type: Literal["custom"] = "custom"
+    import_path: Annotated[
         str, Field(description="Import path to the advantage function (e.g., 'my_module.my_advantage')")
     ]
     kwargs: Annotated[
@@ -628,7 +630,16 @@ class CustomAdvantageConfig(BaseModel):
     ]
 
 
-AdvantageConfigType: TypeAlias = AdvantageConfig | CustomAdvantageConfig
+def _advantage_config_discriminator(v: Any) -> str:
+    if isinstance(v, dict):
+        return v.get("type", "default")
+    return getattr(v, "type", "default")
+
+
+AdvantageConfigType: TypeAlias = Annotated[
+    Annotated[AdvantageConfig, Tag("default")] | Annotated[CustomAdvantageConfig, Tag("custom")],
+    Discriminator(_advantage_config_discriminator),
+]
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):
@@ -699,7 +710,7 @@ class OrchestratorConfig(BaseSettings):
     buffer: BufferConfig = BufferConfig()
 
     # The advantage configuration
-    advantage: AdvantageConfig | None = AdvantageConfig()
+    advantage: AdvantageConfigType | None = AdvantageConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()

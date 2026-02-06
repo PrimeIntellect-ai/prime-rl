@@ -1,27 +1,27 @@
-import importlib
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 
 from prime_rl.orchestrator.config import AdvantageConfigType, CustomAdvantageConfig
+from prime_rl.utils.utils import import_object
 
 
 @dataclass
 class AdvantageInputs:
     """Inputs for advantage computation."""
 
-    rewards: Float[Tensor, "num_problems samples_per_problem"]
-    completion_lengths: Int[Tensor, "num_problems samples_per_problem"]
+    rewards: Float[Tensor, "num_problems rollouts_per_example"]
+    completion_lengths: Int[Tensor, "num_problems rollouts_per_example"]
 
 
 @dataclass
 class AdvantageOutputs:
     """Outputs from advantage computation."""
 
-    advantages: Float[Tensor, "num_problems samples_per_problem"]
+    advantages: Float[Tensor, "num_problems rollouts_per_example"]
 
 
 AdvantageFn = Callable[..., AdvantageOutputs]
@@ -33,14 +33,7 @@ Expected signature:
 """
 
 
-def _import_object(path: str) -> Any:
-    """Import an object from a dotted path."""
-    module_path, _, name = path.rpartition(".")
-    module = importlib.import_module(module_path)
-    return getattr(module, name)
-
-
-def grpo_advantage(inputs: AdvantageInputs, length_weighted_mean: bool = False) -> AdvantageOutputs:
+def default_advantage(inputs: AdvantageInputs, length_weighted_mean: bool = False) -> AdvantageOutputs:
     """Default GRPO advantage: reward minus per-problem baseline."""
     if length_weighted_mean:
         baseline = (inputs.rewards * inputs.completion_lengths).sum(
@@ -55,7 +48,7 @@ def grpo_advantage(inputs: AdvantageInputs, length_weighted_mean: bool = False) 
 def setup_advantage_fn(config: AdvantageConfigType) -> AdvantageFn:
     """Setup advantage function from config."""
     if isinstance(config, CustomAdvantageConfig):
-        custom_fn = _import_object(config.byo_function)
+        custom_fn = import_object(config.import_path)
         kwargs = config.kwargs
 
         def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
@@ -64,7 +57,7 @@ def setup_advantage_fn(config: AdvantageConfigType) -> AdvantageFn:
         return advantage_fn
 
     def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
-        return grpo_advantage(inputs, length_weighted_mean=config.length_weighted_mean)
+        return default_advantage(inputs, length_weighted_mean=config.length_weighted_mean)
 
     return advantage_fn
 

@@ -17,7 +17,7 @@ from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
-from prime_rl.trainer.rl.config import RLTrainerConfig
+from prime_rl.trainer.rl.config import LossConfig, RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     setup_cp_params,
@@ -141,7 +141,10 @@ def train(config: RLTrainerConfig):
     tokenizer = setup_tokenizer(config.tokenizer)
 
     # Set up the loss function
-    logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
+    if isinstance(config.loss, LossConfig):
+        logger.info(f"Using `{config.loss.ratio_type}` importance ratio ({config.loss})")
+    else:
+        logger.info(f"Using custom loss function ({config.loss})")
     loss_fn = setup_loss_fn(config.loss)
 
     # Set up the optimizer
@@ -292,9 +295,9 @@ def train(config: RLTrainerConfig):
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        if config.loss.ratio_type == "token":
+        if isinstance(config.loss, LossConfig) and config.loss.ratio_type == "token":
             loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        elif config.loss.ratio_type == "sequence":
+        else:
             loss_scale = batch_size
         loss_scale = max(loss_scale, 1)
 

@@ -4,30 +4,30 @@ from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
     AdvantageOutputs,
     compute_advantages,
-    grpo_advantage,
+    default_advantage,
     setup_advantage_fn,
 )
 from prime_rl.orchestrator.config import AdvantageConfig, CustomAdvantageConfig
 
 
-def test_grpo_advantage_simple_mean():
+def test_default_advantage_simple_mean():
     inputs = AdvantageInputs(
         rewards=torch.tensor([[1.0, 0.5, 0.8], [0.2, 0.9, 0.1]]),
         completion_lengths=torch.tensor([[10, 12, 8], [15, 11, 9]]),
     )
-    result = grpo_advantage(inputs, length_weighted_mean=False)
+    result = default_advantage(inputs, length_weighted_mean=False)
 
     assert result.advantages.shape == (2, 3)
     # Check that mean is subtracted per row
     assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
 
 
-def test_grpo_advantage_length_weighted():
+def test_default_advantage_length_weighted():
     inputs = AdvantageInputs(
         rewards=torch.tensor([[1.0, 0.5, 0.8]]),
         completion_lengths=torch.tensor([[10, 20, 10]]),
     )
-    result = grpo_advantage(inputs, length_weighted_mean=True)
+    result = default_advantage(inputs, length_weighted_mean=True)
 
     # Length-weighted mean: (1.0*10 + 0.5*20 + 0.8*10) / (10+20+10) = 28/40 = 0.7
     expected_baseline = 0.7
@@ -60,7 +60,7 @@ def test_compute_advantages_without_config():
 
 def test_setup_advantage_fn_with_custom_config():
     config = CustomAdvantageConfig(
-        byo_function="tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
+        import_path="tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
         kwargs={"scale": 2.0},
     )
     advantage_fn = setup_advantage_fn(config)

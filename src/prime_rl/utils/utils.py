@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import importlib
 import os
 import subprocess
 from collections import defaultdict
@@ -30,6 +31,13 @@ from prime_rl.utils.pathing import (
     sync_wait_for_path,
     wait_for_path,
 )
+
+
+def import_object(dotted_path: str) -> Any:
+    """Import an object from a dotted path like 'my_module.submodule.MyClass'."""
+    module_path, _, name = dotted_path.rpartition(".")
+    module = importlib.import_module(module_path)
+    return getattr(module, name)
 
 
 def rgetattr(obj: Any, attr_path: str) -> Any:

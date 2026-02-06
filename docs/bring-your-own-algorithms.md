@@ -61,7 +61,8 @@ def ppo_clip_loss(inputs: LossInputs, clip_eps: float = 0.2) -> LossOutputs:
 
 ```toml
 [loss]
-byo_function ="my_module.ppo_clip_loss"
+type = "custom"
+import_path = "my_module.ppo_clip_loss"
 kwargs = { clip_eps = 0.2 }
 ```
 
@@ -69,7 +70,7 @@ kwargs = { clip_eps = 0.2 }
 
 ## 2. Custom Advantage Functions
 
-Advantages are computed **per-problem** (grouped by `samples_per_problem`). You provide a function that computes advantages for a batch of problems.
+Advantages are computed **per-example** (grouped by `rollouts_per_example`). You provide a function that computes advantages for a batch of examples.
 
 ### Interface
 
@@ -85,8 +86,8 @@ def my_custom_advantage(inputs: AdvantageInputs, **kwargs) -> AdvantageOutputs:
 ```python
 @dataclass
 class AdvantageInputs:
-    rewards: Float[Tensor, "num_problems samples_per_problem"]
-    completion_lengths: Int[Tensor, "num_problems samples_per_problem"]
+    rewards: Float[Tensor, "num_examples rollouts_per_example"]
+    completion_lengths: Int[Tensor, "num_examples rollouts_per_example"]
 ```
 
 #### AdvantageOutputs
@@ -94,17 +95,17 @@ class AdvantageInputs:
 ```python
 @dataclass
 class AdvantageOutputs:
-    advantages: Float[Tensor, "num_problems samples_per_problem"]
+    advantages: Float[Tensor, "num_examples rollouts_per_example"]
 ```
 
-### Example: GAE-style Advantage
+### Example: Normalized Advantage
 
 ```python
 import torch
 from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs
 
 def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
-    """Normalize advantages to zero mean and unit variance per problem."""
+    """Normalize advantages to zero mean and unit variance per example."""
     mean = inputs.rewards.mean(dim=1, keepdim=True)
     std = inputs.rewards.std(dim=1, keepdim=True)
     advantages = (inputs.rewards - mean) / (std + eps)
@@ -115,7 +116,8 @@ def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> Advantag
 
 ```toml
 [advantage]
-byo_function ="my_module.normalized_advantage"
+type = "custom"
+import_path = "my_module.normalized_advantage"
 kwargs = { eps = 1e-8 }
 ```
 
@@ -125,8 +127,8 @@ kwargs = { eps = 1e-8 }
 
 If no custom function is specified:
 
-- **Loss**: Uses `prime_rl_loss` (GRPO-style with importance ratio clipping and masking)
-- **Advantage**: Uses `grpo_advantage` (reward minus per-problem baseline)
+- **Loss**: Uses `prime_rl_loss` (clipped/masked importance sampling with optional KL term)
+- **Advantage**: Uses `default_advantage` (reward minus per-example baseline, a.k.a. DR-GRPO without std normalization)
 
 See `LossConfig` and `AdvantageConfig` for available parameters.
 
