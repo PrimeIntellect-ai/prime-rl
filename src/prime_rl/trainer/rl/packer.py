@@ -17,7 +17,7 @@ from prime_rl.transport import (
 )
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
-from prime_rl.utils.usage import get_usage_client
+from prime_rl.utils.usage import UsageConfig, UsageReporter
 
 TIMEOUT_SECONDS = 0.1
 
@@ -97,8 +97,10 @@ class MultiPacker(BasePacker):
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
         start_step: int = 0,
+        usage_config: UsageConfig | None = None,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
+        self.usage_reporter = UsageReporter(usage_config)
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -294,21 +296,13 @@ class MultiPacker(BasePacker):
                 per_run_stats[run_idx] = (1, num_tokens, input_tokens, output_tokens)
 
         # Update progress and report usage
-        usage_client = get_usage_client()
         for run_idx, (num_samples, num_tokens, input_tokens, output_tokens) in per_run_stats.items():
             self._update_run_progress(run_idx, num_samples, num_tokens)
 
-            # Report usage (run_id from folder name)
             run_id = self.multi_run_manager.idx_2_id.get(run_idx)
             if run_id:
                 step = self.multi_run_manager.progress[run_idx].step
-                usage_client.report_usage(
-                    run_id=run_id,
-                    step=step,
-                    tokens=num_tokens,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                )
+                self.usage_reporter.report_training(run_id, step, num_tokens)
 
         # Pack each run separately to ensure no mixing of runs in microbatches
         all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]
@@ -336,9 +330,10 @@ def setup_packer(
     tokenizer: PreTrainedTokenizer,
     transport_config: TransportConfigType,
     start_step: int = 0,
+    usage_config: UsageConfig | None = None,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
         return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
     else:
-        return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step, usage_config)

@@ -1,157 +1,106 @@
-"""Usage client for reporting token usage to Prime Intellect API."""
-
-import asyncio
+import atexit
 import os
-from threading import Thread
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING, Annotated, Any
 
 import httpx
+from pydantic import Field
 
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pydantic_config import BaseConfig
+
+if TYPE_CHECKING:
+    import verifiers as vf
+
+__all__ = ["UsageConfig", "UsageReporter", "init_usage_reporter", "report_inference_usage"]
+
+_reporter: "UsageReporter | None" = None
 
 
-class UsageClient:
-    """
-    Lightweight client for reporting token usage to the platform API.
+class UsageConfig(BaseConfig):
+    base_url: Annotated[str, Field(description="Base URL for the usage API.")]
+    api_key_var: Annotated[str, Field(description="Environment variable containing the API key.")] = "PRIME_API_KEY"
+    timeout: Annotated[int, Field(description="HTTP request timeout in seconds.")] = 10
 
-    This is used by the trainer/packer to report per-run token usage.
-    Unlike PrimeMonitor, this doesn't require RUN_ID environment variable
-    since it supports multiple runs with different run_ids.
-    """
 
-    DEFAULT_BASE_URL = "https://api.primeintellect.ai/api/internal/rft"
+class UsageReporter:
+    """Fire-and-forget token usage reporter."""
 
-    def __init__(
-        self,
-        base_url: str | None = None,
-        api_key_var: str = "PRIME_API_KEY",
-    ):
-        self.logger = get_logger()
-        self.base_url = base_url or os.getenv("PRIME_API_BASE_URL", self.DEFAULT_BASE_URL)
+    def __init__(self, config: UsageConfig | None = None):
+        self._executor: ThreadPoolExecutor | None = None
+        self._client: httpx.Client | None = None
+        self._base_url: str = ""
+        self._api_key: str = ""
 
-        # Only enable on rank 0
-        rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
-        self.is_master = rank == 0
-        if not self.is_master:
-            self.enabled = False
+        if not config:
             return
 
-        # Get API key from environment variable
-        api_key = os.getenv(api_key_var)
+        api_key = os.getenv(config.api_key_var)
         if not api_key:
-            self.logger.debug(f"API key not found ({api_key_var}). Usage reporting disabled.")
-            self.enabled = False
+            get_logger().debug(f"UsageReporter disabled: {config.api_key_var} not set")
             return
 
-        self.api_key = api_key
-        self.enabled = True
+        self._base_url = config.base_url
+        self._api_key = api_key
+        self._client = httpx.Client(timeout=config.timeout)
+        self._executor = ThreadPoolExecutor(max_workers=2)
+        atexit.register(self._shutdown)
 
-        # Set up async HTTP client with background event loop
-        self._init_async_client()
-        os.register_at_fork(after_in_child=self._reinit_after_fork)
+    def _shutdown(self) -> None:
+        if self._executor:
+            self._executor.shutdown(wait=False)
+        if self._client:
+            self._client.close()
 
-    def _init_async_client(self) -> None:
-        """Initialize the event loop, background thread, and HTTP client."""
-        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
-        self._thread = Thread(target=self._run_event_loop, daemon=True)
-        self._thread.start()
-        self._client = httpx.AsyncClient(timeout=30)
-        self._pending_futures: list[asyncio.Future] = []
-
-    def _reinit_after_fork(self) -> None:
-        """Reinitialize thread and event loop after fork."""
-        self._init_async_client()
-
-    def _run_event_loop(self) -> None:
-        """Run the async event loop in a background thread."""
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
-
-    async def _make_request_async(self, data: dict[str, Any], max_retries: int = 3) -> None:
-        """Make an async POST request to the usage endpoint with retries."""
-        headers = {
-            "x-api-key": self.api_key,
-            "Content-Type": "application/json",
-        }
-        endpoint = f"{self.base_url}/usage"
-
-        for attempt in range(max_retries):
-            try:
-                response = await self._client.post(endpoint, headers=headers, json=data)
-                response.raise_for_status()
-                return
-            except Exception as e:
-                is_last_attempt = attempt == max_retries - 1
-                if is_last_attempt:
-                    self.logger.debug(f"Failed to report usage after {max_retries} attempts: {type(e).__name__}: {e}")
-                else:
-                    delay = 2**attempt
-                    await asyncio.sleep(delay)
-
-    def report_usage(
-        self,
-        run_id: str,
-        step: int,
-        tokens: int,
-        input_tokens: int | None = None,
-        output_tokens: int | None = None,
-        usage_type: str = "training",
-    ) -> None:
-        """
-        Report token usage.
-
-        Args:
-            run_id: The run ID (from folder name like run_xxx)
-            step: Current training step
-            tokens: Total tokens processed
-            input_tokens: Number of input/prompt tokens
-            output_tokens: Number of output/completion tokens
-            usage_type: Either "training" or "inference"
-        """
-        if not self.enabled:
-            return
-
-        payload = {
-            "run_id": run_id,
-            "step": step,
-            "usage_type": usage_type,
-            "tokens": tokens,
-        }
-
-        if input_tokens is not None:
-            payload["input_tokens"] = input_tokens
-        if output_tokens is not None:
-            payload["output_tokens"] = output_tokens
-
-        future = asyncio.run_coroutine_threadsafe(self._make_request_async(payload), self._loop)
-        self._pending_futures.append(future)
-        self._pending_futures = [f for f in self._pending_futures if not f.done()]
-
-    def close(self) -> None:
-        """Close the HTTP client and stop the background event loop."""
-        if not hasattr(self, "_client"):
-            return
-
-        async def _close_client() -> None:
-            await self._client.aclose()
-
+    def _post(self, payload: dict[str, Any]) -> None:
         try:
-            future = asyncio.run_coroutine_threadsafe(_close_client(), self._loop)
-            future.result(timeout=5.0)
-        except Exception:
-            pass
+            resp = self._client.post(f"{self._base_url}/usage", json=payload, headers={"x-api-key": self._api_key})
+            if resp.status_code != 409:
+                resp.raise_for_status()
+        except Exception as e:
+            get_logger().warning(f"Usage report failed: {e}")
 
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=5.0)
+    def report_training(self, run_id: str, step: int, tokens: int) -> None:
+        if self._executor:
+            self._executor.submit(self._post, {"run_id": run_id, "step": step, "usage_type": "training", "tokens": tokens})
+
+    def report_inference(self, run_id: str, step: int, input_tokens: int, output_tokens: int) -> None:
+        if self._executor:
+            self._executor.submit(self._post, {
+                "run_id": run_id,
+                "step": step,
+                "usage_type": "inference",
+                "tokens": input_tokens + output_tokens,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            })
 
 
-# Global usage client instance
-_USAGE_CLIENT: UsageClient | None = None
+def init_usage_reporter(config: UsageConfig | None) -> None:
+    """Initialize the global usage reporter. Call once at startup."""
+    global _reporter
+    _reporter = UsageReporter(config)
 
 
-def get_usage_client() -> UsageClient:
-    """Get or create the global usage client."""
-    global _USAGE_CLIENT
-    if _USAGE_CLIENT is None:
-        _USAGE_CLIENT = UsageClient()
-    return _USAGE_CLIENT
+def _get_inference_tokens(state: "vf.State") -> tuple[int, int]:
+    """Total tokens processed by vLLM across all trajectory steps."""
+    total_input = 0
+    total_output = 0
+    for step in state["trajectory"]:
+        if step["tokens"]:
+            total_input += len(step["tokens"]["prompt_ids"])
+            total_output += len(step["tokens"]["completion_ids"])
+    return total_input, total_output
+
+
+def report_inference_usage(step: int, rollouts: list["vf.State"]) -> None:
+    """Report inference token usage. No-op if reporter not initialized or RUN_ID not set."""
+    run_id = os.getenv("RUN_ID")
+    if not run_id or not _reporter:
+        return
+    input_tokens, output_tokens = 0, 0
+    for rollout in rollouts:
+        inp, out = _get_inference_tokens(rollout)
+        input_tokens += inp
+        output_tokens += out
+    _reporter.report_inference(run_id, step, input_tokens, output_tokens)

@@ -9,6 +9,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
+from prime_rl.utils.usage import UsageConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
 
@@ -143,6 +144,7 @@ class DataLoader:
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
+        usage_config: UsageConfig | None = None,
     ):
         self.world = get_world()
 
@@ -154,6 +156,7 @@ class DataLoader:
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 start_step=start_step,
+                usage_config=usage_config,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size

@@ -11,6 +11,7 @@ from prime_rl.utils.config import (
     PrimeMonitorConfig,
     WandbWithExtrasConfig,
 )
+from prime_rl.utils.usage import UsageConfig
 from prime_rl.utils.config import (
     ModelConfig as BaseModelConfig,
 )
@@ -639,6 +640,9 @@ class OrchestratorConfig(BaseSettings):
 
     # The prime monitor configuration
     prime_monitor: PrimeMonitorConfig | None = None
+
+    # Usage reporting configuration
+    usage: UsageConfig | None = None
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
