@@ -97,6 +97,8 @@ def find_healthy_peer(
     """
     Find a peer that is healthy and has model loaded.
 
+    Checks /v1/models endpoint to verify model is loaded and ready.
+
     Args:
         peers: List of peer IP addresses
         http_port: HTTP port to check health on
@@ -107,13 +109,17 @@ def find_healthy_peer(
     """
     for ip in peers:
         try:
-            resp = requests.get(f"http://{ip}:{http_port}/health", timeout=timeout)
+            # Check /v1/models to verify model is loaded and ready
+            resp = requests.get(f"http://{ip}:{http_port}/v1/models", timeout=timeout)
             if resp.status_code == 200:
                 data = resp.json()
-                # Check if peer has model loaded (not using dummy weights)
-                if data.get("model_loaded", False):
-                    logger.info(f"Found healthy peer with model: {ip}")
+                # vLLM returns {"data": [{"id": "model-name", ...}]} when model is loaded
+                models = data.get("data", [])
+                if models:
+                    logger.info(f"Found healthy peer with model: {ip} (models: {[m.get('id') for m in models]})")
                     return ip
+                else:
+                    logger.debug(f"Peer {ip} has no models loaded")
         except requests.RequestException as e:
             logger.debug(f"Peer {ip} not ready: {e}")
         except Exception as e:
