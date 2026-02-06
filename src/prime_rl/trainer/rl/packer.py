@@ -15,9 +15,9 @@ from prime_rl.transport import (
     setup_micro_batch_sender,
     setup_training_batch_receiver,
 )
-from prime_rl.utils.usage import get_usage_client
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
+from prime_rl.utils.usage import get_usage_client
 
 TIMEOUT_SECONDS = 0.1
 
