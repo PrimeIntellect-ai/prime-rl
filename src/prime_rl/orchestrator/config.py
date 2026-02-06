@@ -280,6 +280,14 @@ class EnvConfig(BaseConfig):
             description="Address of the environment server. If None, will spawn an environment server in a subprocess automatically.If given, will try to connect an environment client to the environment server at this address."
         ),
     ] = None
+    extra_env_kwargs: Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                "Extra kwargs passed to an env (e.g. seq_len, interleaved_rollouts, score_rollouts). This field is auto-populated with the seq_len, interleaved_rollouts, and score_rollouts for training envs on the orchestrator. It is generally NOT recommended for this field to be overriden by the user. It's main use case is to match the extra_env_kwargs when running an env in an isolated environment server."
+            ),
+        ),
+    ] = {}
 
 
 class EvalEnvConfig(EnvConfig):
@@ -763,6 +771,19 @@ class OrchestratorConfig(BaseSettings):
                 self.wandb.log_extras = None
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
+
+        return self
+
+    @model_validator(mode="after")
+    def resolve_extra_env_kwargs(self):
+        train_extra_env_kwargs = dict(
+            seq_len=self.seq_len,
+            interleaved_rollouts=self.trajectory_strategy == "interleaved",
+            score_rollouts=not self.buffer.skip_verification,
+        )
+        for env in self.env:
+            # extra_env_kwargs is not meant to be used by the user, we shamelessly override here
+            env.extra_env_kwargs.update(train_extra_env_kwargs)
 
         return self
 

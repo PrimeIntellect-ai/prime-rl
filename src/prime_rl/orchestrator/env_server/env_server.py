@@ -21,7 +21,7 @@ def run_server(config: EnvServerConfig):
     ZMQEnvServer.run_server(
         env_id=strip_env_version(config.env.id),
         env_args=config.env.args,
-        extra_env_kwargs={},
+        extra_env_kwargs=config.env.extra_env_kwargs,
         log_level=config.log.level,
         log_file_level=config.log.vf_level,
         log_file=log_file,

@@ -159,24 +159,12 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(
         f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
     )
-    extra_env_kwargs = dict(
-        seq_len=config.seq_len,
-        interleaved_rollouts=config.trajectory_strategy == "interleaved",
-        score_rollouts=not config.buffer.skip_verification,
-    )
     env_ids = [strip_env_version(env.id) for env in config.env]
     train_env_group = vf.EnvGroup(
         envs=[vf.load_environment(env_id, **env.args) for env_id, env in zip(env_ids, config.env)],
         env_names=[env.name or env_id for env_id, env in zip(env_ids, config.env)],
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
-    train_env_group.set_max_seq_len(config.seq_len)
-    if config.trajectory_strategy == "interleaved":
-        logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
-        train_env_group.set_interleaved_rollouts(True)
-    if config.buffer.skip_verification:
-        logger.info("Skipping verification (rewards will be set to 0)")
-        train_env_group.set_score_rollouts(False)
 
     train_env_addresses = []
     for env_id, env, env_name in zip(env_ids, config.env, train_env_group.env_names):
@@ -184,7 +172,7 @@ async def orchestrate(config: OrchestratorConfig):
             address = spawn_env_server(
                 env_id=env_id,
                 env_args=env.args,
-                extra_env_kwargs=extra_env_kwargs,
+                extra_env_kwargs=env.extra_env_kwargs,
                 log_level="CRITICAL",
                 log_file=(get_log_dir(config.output_dir) / "train" / f"{env_name}.log").as_posix(),
                 log_file_level=config.log.vf_level,
@@ -216,7 +204,7 @@ async def orchestrate(config: OrchestratorConfig):
                 address = spawn_env_server(
                     env_id=env_id,
                     env_args=env.args,
-                    extra_env_kwargs={},
+                    extra_env_kwargs=env.extra_env_kwargs,
                     log_level="CRITICAL",
                     log_file=(get_log_dir(config.output_dir) / "eval" / f"{eval_env_name}.log").as_posix(),
                     log_file_level=config.log.vf_level,
