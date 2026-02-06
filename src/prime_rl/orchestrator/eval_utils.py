@@ -106,16 +106,13 @@ async def evaluate_env(
         logger.warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
 
     # Log statistics to console
-    no_response_rate = (
-        float((results_df.rollout_status == "no_response").mean()) if "rollout_status" in results_df else 0.0
-    )
     message = f"Evaluated {env.env_id} in {eval_time:.2f}s (Avg@{rollouts_per_example}={results_df.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
             message += f", {capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
     message += (
-        f", No-response: {no_response_rate * 100:.1f}%"
+        f", No-response: {results_df.no_response.mean() * 100:.1f}%"
         f", Completion Length: {results_df.completion_len.mean():.2f} (±{results_df.completion_len.std():.2f}, ∈[{results_df.completion_len.min():.2f}, {results_df.completion_len.max():.2f}])"
         f", Truncated: {results_df.is_truncated.mean() * 100:.1f}%)"
     )
@@ -124,11 +121,9 @@ async def evaluate_env(
     # Log statistics to monitor
     eval_metrics = {
         f"avg@{rollouts_per_example}": results_df.reward.mean(),
-        "no_response/pct": no_response_rate * 100.0,
-        "no_response/count": int((results_df.rollout_status == "no_response").sum())
-        if "rollout_status" in results_df
-        else 0,
-        "completion_len/avg": results_df.completion_len.mean().item(),
+        "no_response/mean": results_df.no_response.mean(),
+        "no_response/count": results_df.no_response.sum(),
+        "completion_len/mean": results_df.completion_len.mean().item(),
         "completion_len/max": results_df.completion_len.max().item(),
         "completion_len/min": results_df.completion_len.min().item(),
         "is_truncated/mean": results_df.is_truncated.mean().item(),
