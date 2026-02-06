@@ -2,7 +2,6 @@ trainer_gpu_ids = [0]
 inference_gpu_ids = [1]
 
 max_steps = 500
-seq_len = 2048
 
 [wandb]
 project = "math-group-debug"
@@ -15,9 +14,6 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 batch_size = 512
 rollouts_per_example = 16
 oversampling_factor = 1.5
-
-[orchestrator.sampling]
-max_tokens = 2048
 
 [[orchestrator.env]]
 id = "primeintellect/math-env"
@@ -40,16 +36,16 @@ num_examples = 128
 [orchestrator.eval]
 interval = 50
 
-[orchestrator.eval.sampling]
-max_tokens = 2048
-
 [[orchestrator.eval.env]]
-id = "primeintellect/math500"
-name = "math500"
+id = "primeintellect/aime2024"
+name = "aime2024"
 num_examples = 30
 rollouts_per_example = 4
 
-[trainer] # Default trainer config
+[trainer.model]
+seq_len = 4096
 
-[inference] # Default inference config
+[inference.model]
+max_model_len = 2048
+
 
