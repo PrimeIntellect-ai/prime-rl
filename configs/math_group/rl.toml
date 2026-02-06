@@ -14,6 +14,7 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
+oversampling_factor = 1.5
 
 [orchestrator.sampling]
 max_tokens = 2048
@@ -37,13 +38,14 @@ interval = 5
 num_examples = 128
 
 [orchestrator.eval]
-interval = 10
+interval = 50
 
 [orchestrator.eval.sampling]
 max_tokens = 2048
 
 [[orchestrator.eval.env]]
 id = "primeintellect/math500"
+name = "math500"
 num_examples = 30
 rollouts_per_example = 4
 
