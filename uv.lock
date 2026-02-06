@@ -2563,7 +2563,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.57.6" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=7f5f873" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=f75fc2c" },
     { name = "vllm", specifier = "==0.14.0" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -3131,7 +3131,7 @@ dependencies = [
     { name = "verifiers" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@efe79870/reverse_text-0.1.4-py2.py3-none-any.whl", hash = "sha256:0adc3abcb6ceba3fa82709258c732e95c90400bc899230dce47a2e0f31a74aec" },
+    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@3d7ff9e4/reverse_text-0.1.4-py2.py3-none-any.whl", hash = "sha256:0adc3abcb6ceba3fa82709258c732e95c90400bc899230dce47a2e0f31a74aec" },
 ]
 
 [[package]]
@@ -3908,7 +3908,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.10.dev0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=7f5f873#7f5f8737ce8faa6c2aed68f4d4f3a519a098f9d5" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=f75fc2c#f75fc2c370834f0f6e56dd12d8914f206408caae" }
 dependencies = [
     { name = "datasets" },
     { name = "gepa" },
