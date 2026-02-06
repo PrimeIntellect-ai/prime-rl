@@ -53,7 +53,7 @@ class UsageReporter:
         if self._client:
             self._client.close()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
+    @retry(stop=stop_after_attempt(10), wait=wait_exponential(multiplier=2, min=1, max=60), reraise=True)
     def _post_with_retry(self, payload: dict[str, Any]) -> None:
         resp = self._client.post(f"{self._base_url}/usage", json=payload, headers={"x-api-key": self._api_key})
         if resp.status_code != 409:
