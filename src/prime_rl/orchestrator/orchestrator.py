@@ -53,9 +53,11 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
+    count_chinese_chars,
     get_env_ids_to_install,
     install_env,
     resolve_latest_ckpt_step,
+    strip_env_version,
     to_col_format,
 )
 from prime_rl.utils.vf import generate_batch, get_completion_len, get_prompt_len, get_seq_len
@@ -154,7 +156,7 @@ async def orchestrate(config: OrchestratorConfig):
         f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
     )
     env = vf.EnvGroup(
-        envs=[vf.load_environment(env.id, **env.args) for env in config.env],
+        envs=[vf.load_environment(strip_env_version(env.id), **env.args) for env in config.env],
         env_names=[env.name or env.id for env in config.env],
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
     )
@@ -506,6 +508,21 @@ async def orchestrate(config: OrchestratorConfig):
         # Gather individual reward function metrics
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
 
+        # Count Chinese characters in completions
+        chinese_stats = []
+        for rollout in train_rollouts:
+            trajectory = rollout["trajectory"]
+            if not trajectory:
+                continue
+            last_step = trajectory[-1]
+            tokens = last_step["tokens"]
+            completion_text = tokenizer.decode(tokens["completion_ids"])
+            chinese_count, total_count = count_chinese_chars(completion_text)
+            chinese_stats.append(
+                {"chinese_chars": chinese_count, "total_chars": total_count, "has_chinese": chinese_count > 0}
+            )
+        chinese_df = pd.DataFrame(chinese_stats)
+
         val_results_df = (
             pd.DataFrame(
                 {
@@ -581,10 +598,21 @@ async def orchestrate(config: OrchestratorConfig):
             "error/mean": (~results_df.error.isna()).mean(),
             **{
                 f"error/{error}": error_rate
-                for error, error_rate in results_df.error.dropna().value_counts(normalize=True).items()
+                for error, error_rate in results_df.error.dropna()
+                .apply(lambda e: e.get("error") if isinstance(e, dict) else e)
+                .value_counts(normalize=True)
+                .items()
             },
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
+            # Chinese character metrics (cast to native Python types for JSON serialization)
+            "chinese/char_count": int(chinese_df.chinese_chars.sum()),
+            "chinese/char_ratio": (
+                float(chinese_df.chinese_chars.sum() / chinese_df.total_chars.sum())
+                if chinese_df.total_chars.sum() > 0
+                else 0.0
+            ),
+            "chinese/rollout_ratio": float(chinese_df.has_chinese.mean()),
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,

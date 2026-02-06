@@ -5,7 +5,13 @@ from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3"]
+AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
+
+# User-facing name -> internal name. Users set `flash_attention_4` in configs,
+# which gets rewritten to `fa4` before pydantic validation.
+# We use `fa4` internally because `flash_attention_*` triggers transformers
+# to attempt installing a kernel from hub.
+_ATTN_ALIASES = {"flash_attention_4": "fa4"}
 
 MOE_MODEL_MAPS = {
     "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
@@ -137,7 +143,12 @@ class ModelConfig(BaseConfig):
 
     seq_len: Annotated[int, Field(description="The sequence length to use for the model.")] = 2048
 
-    attn: Annotated[AttnImplementation, Field(description="The attention implementation to use.")] = "flash_attention_2"
+    attn: Annotated[
+        AttnImplementation,
+        Field(
+            description="The attention implementation to use. When CP is enabled, ring attention uses the matching kernel family (FA2 for flash_attention_2, FA3 for flash_attention_3).",
+        ),
+    ] = "flash_attention_2"
 
     compile: Annotated[
         CompileConfig | None,
@@ -272,6 +283,14 @@ class ModelConfig(BaseConfig):
         ),
     ] = "auto"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_attn_alias(cls, data):
+        """Rewrite user-facing `flash_attention_4` to internal `fa4` before validation."""
+        if isinstance(data, dict) and data.get("attn") in _ATTN_ALIASES:
+            data["attn"] = _ATTN_ALIASES[data["attn"]]
+        return data
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""
@@ -291,6 +310,11 @@ class ModelConfig(BaseConfig):
     def cp_only_with_flash_attn(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3"]:
             raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
+        if self.cp > 1 and self.attn == "flash_attention_3" and self.impl != "custom":
+            raise ValueError(
+                "CP with flash_attention_3 requires model.impl='custom' "
+                "(the FA3 ring-attention kernel is only implemented for the custom model path)"
+            )
         return self
 
     @model_validator(mode="after")
@@ -314,6 +338,12 @@ class ModelConfig(BaseConfig):
                 raise ValueError(
                     f"Fused LM head chunk size must be at least {low}, got {self.fused_lm_head_chunk_size}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def flash_attention_4_only_with_custom_impl(self):
+        if self.attn == "fa4" and self.impl != "custom":
+            raise ValueError("Flash attention 4 is only supported with the custom implementation")
         return self
 
 
