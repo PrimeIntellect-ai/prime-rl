@@ -432,7 +432,9 @@ def train(config: RLTrainerConfig):
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f}"
+            if "mismatch_kl" in tensors:
+                micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
@@ -478,7 +480,10 @@ def train(config: RLTrainerConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f}"
+        if "mismatch_kl/mean" in tensor_stats:
+            step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f}"
+        step_message += f" | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)

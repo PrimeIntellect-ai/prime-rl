@@ -611,7 +611,7 @@ class BufferConfig(BaseConfig):
         return self
 
 
-class AdvantageConfig(BaseModel):
+class AdvantageConfig(BaseConfig):
     """Config for the default advantage."""
 
     type: Literal["default"] = "default"
