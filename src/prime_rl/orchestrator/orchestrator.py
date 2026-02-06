@@ -437,7 +437,7 @@ async def orchestrate(config: OrchestratorConfig):
                 generate(
                     env=train_env_group,
                     clients=inference_pool.clients,
-                    model_name=config.model.name,
+                    model_name=scheduler.model_name,
                     examples=val_examples,
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=sampling_args,
