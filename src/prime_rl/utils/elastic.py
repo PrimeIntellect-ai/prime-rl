@@ -62,115 +62,13 @@ async def discover_ready_servers(hostname: str, port: int, model_name: str) -> l
 
     with_model = set()
     for ip, result in zip(ips, results):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             continue
         has_model, _ = result
         if has_model:
             with_model.add(f"http://{ip}:{port}/v1")
 
     return sorted(with_model)
-
-
-# --- ServerDiscovery: for env workers ---
-
-
-class ServerDiscovery:
-    """DNS-based server discovery for env workers.
-
-    Discovers servers via DNS, checks if they have the model, provides clients.
-    """
-
-    def __init__(
-        self,
-        hostname: str,
-        port: int,
-        model_name: str,
-        client_config: ClientConfig,
-        sync_interval: float = 5.0,
-    ):
-        self.logger = get_logger()
-        self.hostname = hostname
-        self.port = port
-        self.model_name = model_name
-        self.client_config = client_config
-        self.sync_interval = sync_interval
-
-        self._clients: list[vf.ClientConfig] = []
-        self._urls: list[str] = []
-        self._client_index = 0
-        self._last_refresh = 0.0
-
-    @classmethod
-    def from_config(cls, config: ClientConfig, model_name: str) -> ServerDiscovery:
-        if config.elastic is None:
-            raise ValueError("Server discovery requires elastic config")
-        return cls(
-            hostname=config.elastic.hostname,
-            port=config.elastic.port,
-            model_name=model_name,
-            client_config=config,
-            sync_interval=config.elastic.sync_interval,
-        )
-
-    @property
-    def has_clients(self) -> bool:
-        return len(self._clients) > 0
-
-    @property
-    def clients(self) -> list[vf.ClientConfig]:
-        """Get the current list of clients."""
-        return self._clients
-
-    def get_next_client(self) -> vf.ClientConfig | None:
-        """Get next client in round-robin fashion."""
-        if not self._clients:
-            return None
-        client = self._clients[self._client_index % len(self._clients)]
-        self._client_index += 1
-        return client
-
-    async def refresh(self) -> bool:
-        """Refresh clients via DNS discovery. Rate-limited by sync_interval."""
-        if time.time() - self._last_refresh < self.sync_interval:
-            return False
-        self._last_refresh = time.time()
-
-        urls = await discover_ready_servers(self.hostname, self.port, self.model_name)
-        if set(urls) == set(self._urls):
-            return False
-
-        self._urls = urls
-        if urls:
-            self.logger.debug(f"Discovered {len(urls)} ready server(s)")
-            self._clients = setup_clients(
-                ClientConfig(
-                    timeout=self.client_config.timeout,
-                    base_url=urls,
-                    api_key_var=self.client_config.api_key_var,
-                    headers=self.client_config.headers,
-                )
-            )
-        else:
-            self.logger.debug("No ready inference servers found")
-            self._clients = []
-        self._client_index = 0
-        return True
-
-    async def wait_for_clients(self) -> list[vf.ClientConfig]:
-        """Wait for clients to be available and return them."""
-        while not self.has_clients:
-            await self.refresh()
-            if not self.has_clients:
-                self.logger.debug(f"Waiting for inference servers with model {self.model_name}...")
-                await asyncio.sleep(self.sync_interval)
-
-        return self._clients
-
-    async def stop(self) -> None:
-        self._clients = []
-
-
-# --- ElasticInferencePool: for orchestrator ---
 
 
 @dataclass
@@ -525,7 +423,7 @@ class ElasticInferencePool:
         self._client_urls = []
         self._started = False
 
-    async def sync_weights(self, weights_path: Path, lora_name: str | None = None, step: int = 0) -> None:
+    async def sync_weights(self, weights_path: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         async with self._lock:
             self._desired = AdapterState(
                 name=lora_name,
