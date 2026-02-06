@@ -127,7 +127,7 @@ kwargs = { eps = 1e-8 }
 
 If no custom function is specified:
 
-- **Loss**: Uses `prime_rl_loss` (clipped/masked importance sampling with optional KL term)
+- **Loss**: Uses `prime_rl_loss` (masked importance sampling with KL against the inference policy, and optional masking strategies)
 - **Advantage**: Uses `default_advantage` (reward minus per-example baseline, a.k.a. DR-GRPO without std normalization)
 
 See `LossConfig` and `AdvantageConfig` for available parameters.

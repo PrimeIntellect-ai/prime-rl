@@ -105,7 +105,7 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 
 
 def prime_rl_loss(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
-    """Prime RL loss for a single sample."""
+    """Masked importance sampling with KL against the inference policy, and optional masking strategies."""
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
     teacher_logprobs = inputs.teacher_logprobs
