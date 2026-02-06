@@ -47,6 +47,7 @@ from prime_rl.orchestrator.vf_utils import (
     intercept_vf_logging,
     setup_env_client,
     spawn_env_server,
+    wait_for_env_servers,
 )
 from prime_rl.utils.client import (
     init_nccl_broadcast,
@@ -195,7 +196,7 @@ async def orchestrate(config: OrchestratorConfig):
     train_env_clients = [setup_env_client(address) for address in train_env_addresses]
 
     logger.info("Waiting for train environment servers to be ready")
-    await asyncio.gather(*[env_client.health(timeout=30) for env_client in train_env_clients])
+    await wait_for_env_servers(train_env_clients)
     logger.success("Train environment servers ready")
 
     # this puts all train envs into server model
@@ -228,7 +229,7 @@ async def orchestrate(config: OrchestratorConfig):
         eval_env_clients = [setup_env_client(address) for address in eval_env_addresses]
 
         logger.info("Waiting for eval environment servers to be ready")
-        await asyncio.gather(*[env_client.health(timeout=30) for env_client in eval_env_clients])
+        await wait_for_env_servers(eval_env_clients)
         logger.success("Eval environment servers ready")
 
         # this puts all eval envs into server mode

@@ -9,7 +9,7 @@ from verifiers.envs.environment import EnvClient
 from verifiers.utils.worker_utils import get_free_port
 from verifiers.workers import ZMQEnvClient, ZMQEnvServer
 
-from prime_rl.utils.logger import InterceptHandler, ProgressTracker
+from prime_rl.utils.logger import InterceptHandler, ProgressTracker, get_logger
 
 DEFAULT_RETRIES = 3
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
@@ -52,6 +52,33 @@ def spawn_env_server(
 def setup_env_client(address: str) -> EnvClient:
     """Sets up a ZMQEnvClient for a given address."""
     return ZMQEnvClient(address=address)
+
+
+async def wait_for_env_servers(
+    env_clients: list[EnvClient], interval: int = 1, log_interval: int = 10, timeout: int = 1800
+) -> None:
+    logger = get_logger()
+
+    async def wait_for_env_server(env_client: EnvClient) -> None:
+        wait_time = 0
+        logger.debug(f"Starting pinging environment server at {env_client.address}")
+        while wait_time < timeout:
+            try:
+                await env_client.health(timeout=1)  # quick timeout
+                logger.debug(f"Environment server at {env_client.address} is ready after {wait_time} seconds")
+                return
+            except Exception as e:
+                if wait_time % log_interval == 0 and wait_time > 0:
+                    logger.warning(
+                        f"Environment server at {env_client.address} was not reached after {wait_time} seconds (Error: {e})"
+                    )
+                await asyncio.sleep(interval)
+                wait_time += interval
+        msg = f"Environment server at {env_client.address} is not ready after {wait_time} (>{timeout}) seconds. Aborting..."
+        logger.error(msg)
+        raise TimeoutError(msg)
+
+    await asyncio.gather(*[wait_for_env_server(env_client) for env_client in env_clients])
 
 
 async def run_rollout(
