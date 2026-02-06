@@ -104,7 +104,7 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
-def prime_rl_loss(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
+def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
     """Masked importance sampling with KL against the inference policy, and optional masking strategies."""
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
@@ -185,7 +185,7 @@ def setup_loss_fn(loss_config: LossConfigType) -> LossFn:
         return loss_fn
 
     def loss_fn(inputs: LossInputs) -> LossOutputs:
-        return prime_rl_loss(inputs, loss_config)
+        return default_loss_fn(inputs, loss_config)
 
     return loss_fn
 
