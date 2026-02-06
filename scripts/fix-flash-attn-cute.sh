@@ -1,6 +1,12 @@
 #!/bin/bash
-# Reinstalls flash-attn-cute to ensure it overwrites the older cute module from flash-attn
-# Run this after `uv sync` if you have both flash-attn and flash-attn-cute extras enabled
+# Both `flash-attn` (FA2) and `flash-attn-cute` (FA4) ship a `flash_attn/cute/`
+# sub-package.  The one from `flash-attn` is a tiny stub, while the one from
+# `flash-attn-cute` contains the real FA4 kernels (>1000 lines in interface.py).
+# When both extras are installed, `uv sync` may install `flash-attn` *after*
+# `flash-attn-cute`, causing the stub to overwrite the real module.
+#
+# This script reinstalls `flash-attn-cute` so the real module wins.
+# Run it after `uv sync` if you have both flash-attn and flash-attn-cute extras enabled.
 
 set -e
 

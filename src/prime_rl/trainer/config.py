@@ -5,7 +5,13 @@ from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "flash_attention_4", "fa4"]
+AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
+
+# User-facing name -> internal name. Users set `flash_attention_4` in configs,
+# which gets rewritten to `fa4` before pydantic validation.
+# We use `fa4` internally because `flash_attention_*` triggers transformers
+# to attempt installing a kernel from hub.
+_ATTN_ALIASES = {"flash_attention_4": "fa4"}
 
 MOE_MODEL_MAPS = {
     "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
@@ -272,6 +278,14 @@ class ModelConfig(BaseConfig):
         ),
     ] = "auto"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_attn_alias(cls, data):
+        """Rewrite user-facing `flash_attention_4` to internal `fa4` before validation."""
+        if isinstance(data, dict) and data.get("attn") in _ATTN_ALIASES:
+            data["attn"] = _ATTN_ALIASES[data["attn"]]
+        return data
+
     @model_validator(mode="after")
     def _map_model_name_for_moe(self):
         """Map model name if it exists in MOE_MODEL_MAPS."""
@@ -318,46 +332,8 @@ class ModelConfig(BaseConfig):
 
     @model_validator(mode="after")
     def flash_attention_4_only_with_custom_impl(self):
-        if self.attn in ("flash_attention_4", "fa4") and self.impl not in ("custom"):
+        if self.attn == "fa4" and self.impl != "custom":
             raise ValueError("Flash attention 4 is only supported with the custom implementation")
-        return self
-
-    @model_validator(mode="after")
-    def ensure_correct_flash_attention_4_installed(self):
-        # this has to be a joke
-        if self.attn in ("flash_attention_4", "fa4"):
-            try:
-                import flash_attn.cute.interface as fa4_interface
-
-                with open(fa4_interface.__file__, "r") as f:
-                    num_lines = len(f.readlines())
-
-                if num_lines < 1000:
-                    raise ValueError(
-                        "flash-attn-cute has probably been overwritten by flash-attn, run `scripts/fix-flash-attn-cute.sh` to fix this behaviour."
-                    )
-
-            except ImportError:
-                raise ValueError(
-                    "flash-attn-cute is not installed. Please run `uv sync --extra flash-attn-cute` to install it."
-                )
-
-        return self
-
-    @model_validator(mode="after")
-    def override_fa4_name_for_transformers(self):
-        if self.attn in ("flash_attention_4", "fa4"):
-            # if we keep the name that starts with `flash_attention_*`, it will trigger a hit in transformers and try to install kernel from hub lol, so we internall override to `fa4`
-            self.attn = "fa4"
-            from transformers import AttentionInterface
-
-            def empty(*args, **kwargs) -> None:
-                pass
-
-            # we need to register a dummy function so AutoConfig will think `fa4` is a legitimate attention implementation
-            # this never gets called bc fa4 is only supported with our custom implementation - checked in `flash_attention_4_only_with_custom_impl`
-            AttentionInterface.register("fa4", empty)
-
         return self
 
 
