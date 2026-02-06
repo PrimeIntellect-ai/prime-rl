@@ -35,6 +35,17 @@ class Monitor(ABC):
         """Close any resources held by the monitor. Override in subclasses that need cleanup."""
         pass
 
+    def log_usage(
+        self,
+        step: int,
+        usage_type: str,
+        tokens: int,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+    ) -> None:
+        """Report token usage for billing. Override in subclasses that support billing."""
+        pass
+
 
 class NoOpMonitor(Monitor):
     """Monitor that does nothing. Used when no monitors are configured."""

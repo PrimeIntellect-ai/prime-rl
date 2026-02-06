@@ -60,3 +60,23 @@ class MultiMonitor(Monitor):
                 monitor.close()
             except Exception as e:
                 self.logger.warning(f"Failed to close {monitor.__class__.__name__}: {e}")
+
+    def log_usage(
+        self,
+        step: int,
+        usage_type: str,
+        tokens: int,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+    ) -> None:
+        for monitor in self.monitors:
+            try:
+                monitor.log_usage(
+                    step=step,
+                    usage_type=usage_type,
+                    tokens=tokens,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to log usage to {monitor.__class__.__name__}: {e}")

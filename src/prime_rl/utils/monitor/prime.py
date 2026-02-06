@@ -332,3 +332,44 @@ class PrimeMonitor(Monitor):
         self._pending_futures.append(future)
         # Clean up completed futures to avoid memory growth
         self._pending_futures = [f for f in self._pending_futures if not f.done()]
+
+    def log_usage(
+        self,
+        step: int,
+        usage_type: str,
+        tokens: int,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+    ) -> None:
+        """
+        Report token usage for billing to Prime Intellect API.
+
+        This is called by the orchestrator to report training token usage.
+        The platform uses this to bill users based on token consumption.
+
+        Args:
+            step: Current training step number
+            usage_type: Either "training" or "inference"
+            tokens: Total tokens (must equal input_tokens + output_tokens for inference)
+            input_tokens: Number of input/prompt tokens (required for inference)
+            output_tokens: Number of output/completion tokens (required for inference)
+        """
+        if not self.is_master:
+            return
+        if not self.enabled:
+            return
+
+        payload = {
+            "run_id": self.run_id,
+            "step": step,
+            "usage_type": usage_type,
+            "tokens": tokens,
+        }
+
+        # Include input/output tokens if provided
+        if input_tokens is not None:
+            payload["input_tokens"] = input_tokens
+        if output_tokens is not None:
+            payload["output_tokens"] = output_tokens
+
+        self._make_request("usage", payload)
