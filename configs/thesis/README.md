@@ -20,15 +20,13 @@ uv run rl @ configs/thesis/debug.toml
 
 ```bash
 # near on-policy baseline
-uv run rl @ configs/thesis/hendrycks_math.toml
+uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-baseline
 
-# fixed-off policy steps
-uv run rl @ configs/thesis/single_turn_math.toml --orchestrator.strict-async-level --max-async-level 1 --wandb.name single-turn-math-1-step-off-policy
-uv run rl @ configs/thesis/single_turn_math.toml --orchestrator.strict-async-level --max-async-level 8 --wandb.name single-turn-math-8-step-off-policy
-uv run rl @ configs/thesis/single_turn_math.toml --orchestrator.strict-async-level --max-async-level 16 --wandb.name single-turn-math-16-step-off-policy
-
-# areal/ pipelinerl /w in-flight weight updates
-uv run rl @ configs/thesis/single_turn_math.toml --wandb.name single-turn-math-in-flight-off-policy
+uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-no-ratio --no-trainer.loss.use-importance-sampling-ratio
+uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-tis-0-4 --trainer.loss.token-clip-high 4
+uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-mis-0.125-8 --trainer.loss.token-mask-low 0.125 --trainer.loss.token-mask-high 8
+uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
+uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-mis-0.125-8-kl-tau-1e-2 --trainer.loss.token-mask-low 0.125 --trainer.loss.token-mask-high 8 --trainer.loss.kl-tau 1e-2
 ```
 
 ## Wiki Search
