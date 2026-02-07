@@ -48,6 +48,11 @@ class UsageReporter:
         atexit.register(self._shutdown)
         get_logger().info(f"UsageReporter enabled: {self._base_url}")
 
+    @property
+    def is_enabled(self) -> bool:
+        """Check if usage reporting is enabled."""
+        return self._executor is not None
+
     def _shutdown(self) -> None:
         if self._executor:
             self._executor.shutdown(wait=False)

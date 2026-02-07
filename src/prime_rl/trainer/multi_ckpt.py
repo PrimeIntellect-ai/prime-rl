@@ -168,7 +168,12 @@ class MultiCheckpointManager:
                 manager.ckpt_steps.append(step)
 
                 # Report training usage after successful checkpoint (master only)
-                if self.world.is_master and self._usage_reporter and self._dataloader:
+                if (
+                    self.world.is_master
+                    and self._usage_reporter
+                    and self._usage_reporter.is_enabled
+                    and self._dataloader
+                ):
                     run_id = self.multi_run_manager.idx_2_id.get(idx)
                     if run_id:
                         tokens = self._dataloader.get_accumulated_tokens(idx, step)

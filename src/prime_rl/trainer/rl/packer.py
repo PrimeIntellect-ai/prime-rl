@@ -306,14 +306,12 @@ class MultiPacker(BasePacker):
 
         # Update progress and accumulate tokens for billing (reported after checkpoint)
         for run_idx, (num_samples, num_tokens, input_tokens, output_tokens) in per_run_stats.items():
-            # Get the current step before updating progress
-            current_step = self.multi_run_manager.progress[run_idx].step
+            self._update_run_progress(run_idx, num_samples, num_tokens)
 
-            # Accumulate tokens for this (run_idx, step) - will be reported after checkpoint
+            # Accumulate tokens for the current step (after update, so it matches checkpoint step)
+            current_step = self.multi_run_manager.progress[run_idx].step
             key = (run_idx, current_step)
             self._accumulated_tokens[key] = self._accumulated_tokens.get(key, 0) + num_tokens
-
-            self._update_run_progress(run_idx, num_samples, num_tokens)
 
         # Pack each run separately to ensure no mixing of runs in microbatches
         all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]
