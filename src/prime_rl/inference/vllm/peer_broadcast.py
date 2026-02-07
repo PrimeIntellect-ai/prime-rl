@@ -15,6 +15,7 @@ Flow:
 
 import os
 import socket
+import subprocess
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -66,6 +67,42 @@ def get_pod_ip() -> str:
             "NCCL may fail to connect. Set POD_IP to a routable IP."
         )
     return ip
+
+
+def configure_nccl_socket_interface() -> None:
+    """Configure NCCL to use the correct network interface for TCP bootstrap.
+
+    On multi-homed nodes (e.g., with InfiniBand), NCCL may select an interface
+    whose IP is not routable for TCP (e.g., IB uses RDMA, not TCP). This causes
+    StatelessProcessGroup.create() to hang waiting for TCP connections.
+
+    This function detects which interface has the POD_IP and sets NCCL_SOCKET_IFNAME
+    to force NCCL to use that interface for TCP bootstrap communication.
+    """
+    if os.environ.get("NCCL_SOCKET_IFNAME"):
+        logger.info(f"NCCL_SOCKET_IFNAME already set: {os.environ['NCCL_SOCKET_IFNAME']}")
+        return
+
+    pod_ip = get_pod_ip()
+    result = subprocess.run(
+        ["ip", "-o", "-4", "addr", "show"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.warning(f"Failed to run 'ip addr show': {result.stderr}")
+        return
+
+    for line in result.stdout.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 4 and parts[3].startswith(f"{pod_ip}/"):
+            interface = parts[1]
+            logger.info(f"Setting NCCL_SOCKET_IFNAME={interface} (detected from POD_IP={pod_ip})")
+            os.environ["NCCL_SOCKET_IFNAME"] = interface
+            os.environ["GLOO_SOCKET_IFNAME"] = interface
+            return
+
+    logger.warning(f"Could not find interface for POD_IP={pod_ip}, NCCL may select wrong interface")
 
 
 def get_namespace() -> str | None:
@@ -205,6 +242,9 @@ def stream_weights_from_peer(
         # Give peer time to start TCP store before we try to connect
         time.sleep(2)
 
+        # Configure NCCL to use the correct interface for TCP bootstrap
+        configure_nccl_socket_interface()
+
         # Now connect to peer's TCP store (peer is rank 0 master, we're rank 1)
         logger.info(f"Connecting to NCCL at {peer_ip}:{nccl_port}...")
         pg = StatelessProcessGroup.create(
@@ -219,39 +259,41 @@ def stream_weights_from_peer(
 
         start = time.time()
 
-        # Receive weights via NCCL - keeps tensors on GPU for NVLink speed
-        # NCCL broadcasts are synchronous collectives - both sides must stay in sync
-        # If OOM occurs, reduce --max-model-len to free GPU memory for the transfer buffer
-        num_chunks = receive_integer(comm)
-        logger.info(f"Expecting {num_chunks} weight chunks")
+        # Build a map from param names to their data buffers for in-place copy
+        # This avoids 2x memory usage by receiving directly into existing tensors
+        model_state = model.state_dict()
+        param_map = {k: v for k, v in model_state.items()}
 
-        received_weights: dict[str, torch.Tensor] = {}
+        # Receive weights via NCCL and copy directly into model parameters
+        # NCCL broadcasts are synchronous collectives - both sides must stay in sync
+        num_chunks = receive_integer(comm)
+        logger.info(f"Expecting {num_chunks} weight chunks, copying in-place to avoid 2x memory")
+
+        total_params = 0
         for i in range(num_chunks):
             for key, tensor in receive_state_dict(comm, receive_on_cpu=False):
-                received_weights[key] = tensor
+                if key in param_map:
+                    # Copy received tensor directly into existing parameter buffer
+                    param_map[key].copy_(tensor)
+                    total_params += 1
+                    del tensor  # Free the temporary receive buffer immediately
+                else:
+                    logger.warning(f"Received unknown key: {key}")
             if (i + 1) % 10 == 0:
                 logger.info(f"Received chunk {i + 1}/{num_chunks}")
 
         torch.cuda.synchronize()
         nccl_elapsed = time.time() - start
-        size_gb = sum(t.numel() * t.element_size() for t in received_weights.values()) / 1e9
-        logger.info(f"NCCL transfer complete: {len(received_weights)} tensors ({size_gb:.2f}GB) in {nccl_elapsed:.2f}s")
+        size_gb = sum(p.numel() * p.element_size() for p in param_map.values()) / 1e9
+        logger.info(f"NCCL transfer complete: {total_params} tensors ({size_gb:.2f}GB) in {nccl_elapsed:.2f}s")
 
         # Wait for broadcast thread to finish
         broadcast_future.result(timeout=30)
         if broadcast_error:
             raise RuntimeError(f"Broadcast failed: {broadcast_error}")
 
-    # Load weights directly into model parameters using load_state_dict
-    # We use load_state_dict instead of load_weights because:
-    # - state_dict() returns vLLM-internal keys (merged qkv projections)
-    # - load_weights() expects HuggingFace checkpoint keys (separate q,k,v)
-    # - For peer-to-peer transfer, both models have identical structure
-    logger.info("Loading weights into model...")
-    load_start = time.time()
-    model.load_state_dict(received_weights, strict=True)
-    load_elapsed = time.time() - load_start
-    logger.info(f"model.load_state_dict() completed in {load_elapsed:.2f}s")
+    # No need for load_state_dict - we already copied in-place above
+    logger.info("Weights copied in-place, no additional load_state_dict needed")
 
 
 def broadcast_weights_to_peer(
@@ -279,6 +321,9 @@ def broadcast_weights_to_peer(
     try:
         my_ip = get_pod_ip()
         logger.info(f"Broadcasting weights on {my_ip}:{nccl_port}")
+
+        # Configure NCCL to use the correct interface for TCP bootstrap
+        configure_nccl_socket_interface()
 
         # Create TCP store as master (rank 0)
         pg = StatelessProcessGroup.create(
