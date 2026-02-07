@@ -2,7 +2,7 @@
 
 Automated benchmark results for prime-rl using `--bench` flag.
 
-**Last Updated:** 2026-02-07 02:37 UTC  
+**Last Updated:** 2026-02-07 03:03 UTC  
 **Commit:** `30bf494f`  
 **Docker Image:** `None`
 
@@ -14,9 +14,11 @@ Automated benchmark results for prime-rl using `--bench` flag.
 
 | Type | SeqLen | AC | Attn | EP | CP | Hardware | MFU | TPS | Step Time | Peak Mem |
 |------|--------|----|----|----|----|----------|-----|-----|-----------|----------|
+| RL LoRA(r=16) | 16384 | Recompute | FA4 | 1 | 1 | 8xB200 | 13.3% | 25.56k | 5.13s | 91.9 GiB |
 | RL LoRA(r=16) | 16384 | Recompute | FA3 | 1 | 1 | 8xH200 | 19.8% | 16.69k | 7.85s | 89.7 GiB |
 | RL LoRA(r=16) | 16384 | Offload | FA3 | 1 | 1 | 8xH200 | 19.2% | 16.15k | 8.11s | 84.2 GiB |
 | RL LoRA(r=16) | 16384 | Recompute | FA2 | 1 | 1 | 8xB200 | 2.5% | 4.78k | 27.45s | 90.4 GiB |
+| RL LoRA(r=16) | 65536 | Recompute | FA4 | 1 | 1 | 8xB200 | 19.6% | 17.36k | 30.20s | 161.7 GiB |
 | RL LoRA(r=16) | 65536 | Offload | FA3 | 1 | 1 | 8xH200 | 25.1% | 9.76k | 53.73s | 128.8 GiB |
 | RL LoRA(r=16) | 65536 | Offload | FA2 | 1 | 1 | 8xH200 | 16.2% | 6.30k | 83.23s | 130.3 GiB |
 | RL LoRA(r=16) | 65536 | Recompute | FA2 | 1 | 1 | 8xB200 | 5.8% | 5.16k | 101.60s | 153.6 GiB |
