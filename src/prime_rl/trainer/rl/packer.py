@@ -17,7 +17,6 @@ from prime_rl.transport import (
 )
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
-from prime_rl.utils.usage import UsageConfig, UsageReporter
 
 TIMEOUT_SECONDS = 0.1
 
@@ -97,10 +96,8 @@ class MultiPacker(BasePacker):
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
         start_step: int = 0,
-        usage_config: UsageConfig | None = None,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
-        self.usage_reporter = UsageReporter(usage_config)
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -109,8 +106,9 @@ class MultiPacker(BasePacker):
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
-        # Accumulated tokens per run for the current step (reset when step increments)
-        self._pending_training_tokens: dict[int, int] = {}
+        # Accumulated tokens per (run_idx, step) - for usage billing after checkpoint
+        # Key: (run_idx, step), Value: total tokens for that run's step
+        self._accumulated_tokens: dict[tuple[int, int], int] = {}
 
         # Register forgotten hook for receiver reset (master only, called during discover_runs)
         # This must happen when a run is deleted to prevent stale data from remaining
@@ -123,7 +121,14 @@ class MultiPacker(BasePacker):
 
         # Reset run state
         self.buffers[idx].clear()
-        self._pending_training_tokens.pop(idx, None)
+        # Clear accumulated tokens for this run (all steps)
+        keys_to_remove = [k for k in self._accumulated_tokens if k[0] == idx]
+        for key in keys_to_remove:
+            del self._accumulated_tokens[key]
+
+    def get_accumulated_tokens(self, run_idx: int, step: int) -> int:
+        """Get and clear accumulated tokens for a run's step (called after checkpoint)."""
+        return self._accumulated_tokens.pop((run_idx, step), 0)
 
     def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
         """Validate a sample to ensure it won't crash the trainer."""
@@ -244,26 +249,20 @@ class MultiPacker(BasePacker):
 
         return selected
 
-    def _update_run_progress(self, run_idx: int, num_samples: int, num_tokens: int) -> bool:
-        """Update run progress; increment step when all samples from the current step have been consumed.
-
-        Returns True if step was incremented (meaning we should report usage for this step).
-        """
+    def _update_run_progress(self, run_idx: int, num_samples: int, num_tokens: int) -> None:
+        """Update run progress; increment step when all samples from the current step have been consumed."""
         # HACK: This fixes the issue with branching rollouts having unpredictable batch size
         # However, it makes us unable to do incremental orchestrator rollouts
         # Removing the len(self.buffers[run_idx]) == 0 check would allow incremental orchestrator rollouts
-        step_incremented = False
         if (
             len(self.buffers[run_idx]) == 0
             or self.buffers[run_idx][0][1] > self.multi_run_manager.progress[run_idx].step
         ):
             self.multi_run_manager.progress[run_idx].step += 1
             self.multi_run_manager.ready_to_update[run_idx] = True
-            step_incremented = True
 
         self.multi_run_manager.progress[run_idx].total_tokens += num_tokens
         self.multi_run_manager.progress[run_idx].total_samples += num_samples
-        return step_incremented
 
     def pack(self):
         """Pack samples from buffers using round-robin fair scheduling."""
@@ -305,22 +304,16 @@ class MultiPacker(BasePacker):
             else:
                 per_run_stats[run_idx] = (1, num_tokens, input_tokens, output_tokens)
 
-        # Update progress and report usage
+        # Update progress and accumulate tokens for billing (reported after checkpoint)
         for run_idx, (num_samples, num_tokens, input_tokens, output_tokens) in per_run_stats.items():
-            # Accumulate tokens for this run's current step
-            self._pending_training_tokens[run_idx] = self._pending_training_tokens.get(run_idx, 0) + num_tokens
+            # Get the current step before updating progress
+            current_step = self.multi_run_manager.progress[run_idx].step
 
-            # Capture step before incrementing (this is the step we're completing)
-            completed_step = self.multi_run_manager.progress[run_idx].step
+            # Accumulate tokens for this (run_idx, step) - will be reported after checkpoint
+            key = (run_idx, current_step)
+            self._accumulated_tokens[key] = self._accumulated_tokens.get(key, 0) + num_tokens
 
-            step_incremented = self._update_run_progress(run_idx, num_samples, num_tokens)
-
-            # Only report usage when step is completed (incremented)
-            if step_incremented:
-                run_id = self.multi_run_manager.idx_2_id.get(run_idx)
-                if run_id:
-                    total_tokens = self._pending_training_tokens.pop(run_idx, num_tokens)
-                    self.usage_reporter.report_training(run_id, completed_step, total_tokens)
+            self._update_run_progress(run_idx, num_samples, num_tokens)
 
         # Pack each run separately to ensure no mixing of runs in microbatches
         all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]
@@ -348,12 +341,9 @@ def setup_packer(
     tokenizer: PreTrainedTokenizer,
     transport_config: TransportConfigType,
     start_step: int = 0,
-    usage_config: UsageConfig | None = None,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
         return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
     else:
-        return MultiPacker(
-            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step, usage_config
-        )
+        return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)

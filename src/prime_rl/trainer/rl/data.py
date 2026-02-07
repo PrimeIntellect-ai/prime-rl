@@ -7,11 +7,10 @@ from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
-from prime_rl.trainer.rl.packer import BasePacker, setup_packer
+from prime_rl.trainer.rl.packer import BasePacker, MultiPacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
-from prime_rl.utils.usage import UsageConfig
 
 
 class TensorMicroBatch(TypedDict):
@@ -144,7 +143,6 @@ class DataLoader:
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
-        usage_config: UsageConfig | None = None,
     ):
         self.world = get_world()
 
@@ -156,7 +154,6 @@ class DataLoader:
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 start_step=start_step,
-                usage_config=usage_config,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size
@@ -199,3 +196,15 @@ class DataLoader:
             if micro_batch.image_grid_thw is not None
             else None,
         )
+
+    def get_accumulated_tokens(self, run_idx: int, step: int) -> int:
+        """Get and clear accumulated training tokens for a run's step.
+
+        Called by MultiCheckpointManager after checkpoint succeeds.
+        Only available on master (where packer runs).
+        """
+        if not self.world.is_master:
+            return 0
+        if not isinstance(self.packer, MultiPacker):
+            return 0
+        return self.packer.get_accumulated_tokens(run_idx, step)
