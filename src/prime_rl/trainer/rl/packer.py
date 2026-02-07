@@ -310,15 +310,17 @@ class MultiPacker(BasePacker):
             # Accumulate tokens for this run's current step
             self._pending_training_tokens[run_idx] = self._pending_training_tokens.get(run_idx, 0) + num_tokens
 
+            # Capture step before incrementing (this is the step we're completing)
+            completed_step = self.multi_run_manager.progress[run_idx].step
+
             step_incremented = self._update_run_progress(run_idx, num_samples, num_tokens)
 
             # Only report usage when step is completed (incremented)
             if step_incremented:
                 run_id = self.multi_run_manager.idx_2_id.get(run_idx)
                 if run_id:
-                    step = self.multi_run_manager.progress[run_idx].step
                     total_tokens = self._pending_training_tokens.pop(run_idx, num_tokens)
-                    self.usage_reporter.report_training(run_id, step, total_tokens)
+                    self.usage_reporter.report_training(run_id, completed_step, total_tokens)
 
         # Pack each run separately to ensure no mixing of runs in microbatches
         all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]
