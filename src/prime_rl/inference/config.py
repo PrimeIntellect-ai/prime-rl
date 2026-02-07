@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
+from prime_rl.utils.vlm import is_vlm_model
 
 # TODO: Set thinking/ solution budget
 
@@ -192,6 +193,13 @@ class InferenceConfig(BaseSettings):
     def auto_setup_dynamic_lora_updating(self):
         if self.enable_lora:
             os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_vlm_env(self):
+        if is_vlm_model(self.model.name):
+            os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+            os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
         return self
 
     @model_validator(mode="after")

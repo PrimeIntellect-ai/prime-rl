@@ -32,9 +32,11 @@ Each multimodal sample becomes its own micro-batch during training (no packing w
 
 ## vLLM Configuration
 
-When using vLLM for inference with VLM models, you must set these environment variables to avoid issues with multimodal models:
+When using vLLM for inference with VLM models, these environment variables are required:
 
 ```bash
-export VLLM_ENABLE_V1_MULTIPROCESSING=0
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
+VLLM_ENABLE_V1_MULTIPROCESSING=0
+VLLM_WORKER_MULTIPROC_METHOD=spawn
 ```
+
+These are set automatically when a VLM model is detected. You can still override them by setting the variables yourself before launching the server.
