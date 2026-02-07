@@ -176,7 +176,7 @@ class MultiCheckpointManager:
                 ):
                     run_id = self.multi_run_manager.idx_2_id.get(idx)
                     if run_id:
-                        tokens = self._dataloader.get_accumulated_tokens(idx, step)
+                        tokens = self._dataloader.get_accumulated_tokens(idx)
                         if tokens > 0:
                             self._usage_reporter.report_training(run_id, step, tokens)
             except FileNotFoundError:

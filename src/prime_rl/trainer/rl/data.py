@@ -197,8 +197,8 @@ class DataLoader:
             else None,
         )
 
-    def get_accumulated_tokens(self, run_idx: int, step: int) -> int:
-        """Get and clear accumulated training tokens for a run's step.
+    def get_accumulated_tokens(self, run_idx: int) -> int:
+        """Get and clear accumulated training tokens for a run.
 
         Called by MultiCheckpointManager after checkpoint succeeds.
         Only available on master (where packer runs).
@@ -207,4 +207,4 @@ class DataLoader:
             return 0
         if not isinstance(self.packer, MultiPacker):
             return 0
-        return self.packer.get_accumulated_tokens(run_idx, step)
+        return self.packer.get_accumulated_tokens(run_idx)

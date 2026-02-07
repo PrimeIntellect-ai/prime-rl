@@ -106,9 +106,9 @@ class MultiPacker(BasePacker):
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
-        # Accumulated tokens per (run_idx, step) - for usage billing after checkpoint
-        # Key: (run_idx, step), Value: total tokens for that run's step
-        self._accumulated_tokens: dict[tuple[int, int], int] = {}
+        # Accumulated tokens per run since last checkpoint
+        # Key: run_idx, Value: total tokens since last checkpoint for that run
+        self._accumulated_tokens: dict[int, int] = {}
 
         # Register forgotten hook for receiver reset (master only, called during discover_runs)
         # This must happen when a run is deleted to prevent stale data from remaining
@@ -121,14 +121,11 @@ class MultiPacker(BasePacker):
 
         # Reset run state
         self.buffers[idx].clear()
-        # Clear accumulated tokens for this run (all steps)
-        keys_to_remove = [k for k in self._accumulated_tokens if k[0] == idx]
-        for key in keys_to_remove:
-            del self._accumulated_tokens[key]
+        self._accumulated_tokens.pop(idx, None)
 
-    def get_accumulated_tokens(self, run_idx: int, step: int) -> int:
-        """Get and clear accumulated tokens for a run's step (called after checkpoint)."""
-        return self._accumulated_tokens.pop((run_idx, step), 0)
+    def get_accumulated_tokens(self, run_idx: int) -> int:
+        """Get and clear accumulated tokens for a run (called after checkpoint)."""
+        return self._accumulated_tokens.pop(run_idx, 0)
 
     def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
         """Validate a sample to ensure it won't crash the trainer."""
@@ -308,10 +305,8 @@ class MultiPacker(BasePacker):
         for run_idx, (num_samples, num_tokens, input_tokens, output_tokens) in per_run_stats.items():
             self._update_run_progress(run_idx, num_samples, num_tokens)
 
-            # Accumulate tokens for the current step (after update, so it matches checkpoint step)
-            current_step = self.multi_run_manager.progress[run_idx].step
-            key = (run_idx, current_step)
-            self._accumulated_tokens[key] = self._accumulated_tokens.get(key, 0) + num_tokens
+            # Accumulate tokens for this run (will be reported at next checkpoint)
+            self._accumulated_tokens[run_idx] = self._accumulated_tokens.get(run_idx, 0) + num_tokens
 
         # Pack each run separately to ensure no mixing of runs in microbatches
         all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]
