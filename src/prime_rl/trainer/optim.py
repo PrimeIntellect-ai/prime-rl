@@ -1,8 +1,11 @@
+import copy
 import time
 from typing import Callable
 
+import torch
 from dion import Muon
 from torch import nn
+from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
@@ -12,12 +15,107 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
 
+class CPUOffloadOptimizer:
+    """Wraps an optimizer to keep states on CPU, moving to GPU only for step().
+
+    Unlike FSDP's CPUOffload which offloads weights too, this keeps weights on GPU.
+    With activation checkpointing, activations and optimizer states are never on GPU
+    at the same time: peak memory becomes max(activations, opt_states) instead of sum.
+    """
+
+    def __init__(self, optimizer: Optimizer, pin_memory: bool = True):
+        self.optimizer = optimizer
+        self.pin_memory = pin_memory
+        self._initialized = False
+
+    def _move_states(self, device: str):
+        """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
+        for p in self.optimizer.state:
+            state = self.optimizer.state[p]
+            for k, v in state.items():
+                if isinstance(v, DTensor):
+                    local_tensor = v._local_tensor
+                    if device == "cpu":
+                        non_blocking = not self.pin_memory
+                        new_local = local_tensor.to("cpu", non_blocking=non_blocking)
+                        if self.pin_memory and not new_local.is_pinned():
+                            new_local = new_local.pin_memory()
+                    else:
+                        new_local = local_tensor.to(device, non_blocking=True)
+                    new_dtensor = copy.copy(v)
+                    new_dtensor._local_tensor = new_local
+                    state[k] = new_dtensor
+                elif isinstance(v, torch.Tensor):
+                    if device == "cpu":
+                        non_blocking = not self.pin_memory
+                        cpu_tensor = v.to("cpu", non_blocking=non_blocking)
+                        if self.pin_memory and not cpu_tensor.is_pinned():
+                            cpu_tensor = cpu_tensor.pin_memory()
+                        state[k] = cpu_tensor
+                    else:
+                        state[k] = v.to(device, non_blocking=True)
+
+    def step(self, closure=None):
+        # First step initializes states on GPU - offload after
+        if not self._initialized:
+            result = self.optimizer.step(closure)
+            self._move_states("cpu")
+            self._initialized = True
+            return result
+
+        # Move states to GPU
+        self._move_states("cuda")
+
+        # Run optimizer step
+        result = self.optimizer.step(closure)
+
+        # Move states back to CPU
+        self._move_states("cpu")
+
+        return result
+
+    def zero_grad(self, set_to_none: bool = True):
+        self.optimizer.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        # Move to GPU temporarily for consistent state dict
+        if self._initialized:
+            self._move_states("cuda")
+            torch.cuda.synchronize()
+        sd = self.optimizer.state_dict()
+        if self._initialized:
+            self._move_states("cpu")
+        return sd
+
+    def load_state_dict(self, state_dict):
+        self.optimizer.load_state_dict(state_dict)
+        self._move_states("cpu")
+        self._initialized = True
+
+    @property
+    def param_groups(self):
+        return self.optimizer.param_groups
+
+    @param_groups.setter
+    def param_groups(self, value):
+        self.optimizer.param_groups = value
+
+    @property
+    def state(self):
+        return self.optimizer.state
+
+    @property
+    def base_optimizer(self) -> Optimizer:
+        return self.optimizer
+
+
 def setup_optimizer(
     config: OptimizerConfigType,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     lora: bool = False,
-) -> Optimizer:
+    cpu_offload: bool = False,
+) -> Optimizer | CPUOffloadOptimizer:
     if lora:
         # Wait for run 0 to be created in the multi run manager
         # Otherwise, the creation will reset the parameters
@@ -32,7 +130,13 @@ def setup_optimizer(
             time.sleep(1)
         named_params = multi_run_manager.get_named_parameters_for_run(0)
 
-    return _create_optimizer(config, named_params, parallel_dims)
+    optimizer = _create_optimizer(config, named_params, parallel_dims)
+
+    if cpu_offload:
+        get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
+        return CPUOffloadOptimizer(optimizer)
+
+    return optimizer
 
 
 def _create_optimizer(

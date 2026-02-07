@@ -7,12 +7,12 @@ from typing import Any
 import aiofiles
 import verifiers as vf
 from openai import AsyncOpenAI
-from tqdm.asyncio import tqdm
 from verifiers import load_environment
-from verifiers.envs.environment import get_results_path
+from verifiers.utils.path_utils import get_results_path
 
 from prime_rl.orchestrator.config import ClientConfig, EvalSamplingConfig, ModelConfig
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import ProgressTracker, get_logger
+from prime_rl.utils.utils import strip_env_version
 from prime_rl.utils.vf import generate_group
 
 WRITE_LOCK = asyncio.Lock()
@@ -90,7 +90,7 @@ def make_result(state: vf.State, reasoning_field: str) -> dict:
     for metric_name, metric_value in state["metrics"].items():
         result_dict[metric_name] = metric_value
 
-    result_dict["oai_tools"] = json.dumps(state["oai_tools"])
+    result_dict["oai_tools"] = json.dumps(state.get("oai_tools", []))
 
     return result_dict
 
@@ -118,7 +118,7 @@ async def generate_and_save_group(
     sampling_args: dict,
     save_file: Path,
     reasoning_field: str,
-    pbar: tqdm,
+    pbar: ProgressTracker,
 ) -> None:
     logger = get_logger()
     try:
@@ -149,7 +149,7 @@ async def generate_synthetic_data(
 
     # Load the environment
     env_name_or_id = env_name or env_id
-    env = load_environment(env_id, **env_args)
+    env = load_environment(strip_env_version(env_id), **env_args)
     try:
         dataset = env.get_dataset(n=num_examples + skip_first)
     except ValueError:
@@ -166,7 +166,7 @@ async def generate_synthetic_data(
     )
 
     total_rollouts = len(dataset) * rollouts_per_example
-    pbar = tqdm(total=total_rollouts, desc="Generating synthetic data")
+    pbar = ProgressTracker(total=total_rollouts, desc="Generating synthetic data")
 
     await asyncio.gather(
         *[

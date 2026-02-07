@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import importlib
 import os
 import subprocess
 from collections import defaultdict
@@ -30,6 +31,13 @@ from prime_rl.utils.pathing import (
     sync_wait_for_path,
     wait_for_path,
 )
+
+
+def import_object(dotted_path: str) -> Any:
+    """Import an object from a dotted path like 'my_module.submodule.MyClass'."""
+    module_path, _, name = dotted_path.rpartition(".")
+    module = importlib.import_module(module_path)
+    return getattr(module, name)
 
 
 def rgetattr(obj: Any, attr_path: str) -> Any:
@@ -282,6 +290,15 @@ def default_dtype(dtype):
         torch.set_default_dtype(prev)
 
 
+def strip_env_version(env_id: str) -> str:
+    """Strip the @version suffix from an environment ID.
+
+    Environment IDs may include a version (e.g. 'd42me/meow@0.1.5') for installation,
+    but the version must be stripped before loading as a Python module.
+    """
+    return env_id.split("@")[0]
+
+
 def install_env(env_id: str) -> None:
     """Install an environment in subprocess."""
     logger = get_logger()
@@ -300,3 +317,28 @@ def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -
         if "/" in env_config.id:
             env_ids_to_install.add(env_config.id)
     return env_ids_to_install
+
+
+def is_chinese_char(char: str) -> bool:
+    """Check if a character is Chinese (CJK Unified Ideographs and extensions)."""
+    code_point = ord(char)
+    return (
+        0x4E00 <= code_point <= 0x9FFF  # CJK Unified Ideographs
+        or 0x3400 <= code_point <= 0x4DBF  # CJK Extension A
+        or 0x20000 <= code_point <= 0x2A6DF  # CJK Extension B
+        or 0x2A700 <= code_point <= 0x2B73F  # CJK Extension C
+        or 0x2B740 <= code_point <= 0x2B81F  # CJK Extension D
+        or 0x2B820 <= code_point <= 0x2CEAF  # CJK Extension E
+        or 0xF900 <= code_point <= 0xFAFF  # CJK Compatibility Ideographs
+        or 0x2F800 <= code_point <= 0x2FA1F  # CJK Compatibility Ideographs Supplement
+    )
+
+
+def count_chinese_chars(text: str) -> tuple[int, int]:
+    """Count Chinese characters in text.
+
+    Returns:
+        Tuple of (chinese_char_count, total_char_count)
+    """
+    chinese_count = sum(1 for char in text if is_chinese_char(char))
+    return chinese_count, len(text)

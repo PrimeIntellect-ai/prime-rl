@@ -53,6 +53,11 @@ class SharedLogConfig(BaseSettings):
 
     file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
 
+    json_logging: Annotated[
+        bool,
+        Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
+    ] = False
+
 
 class SharedWandbConfig(BaseSettings):
     """Configures shared W&B configs."""
@@ -248,6 +253,8 @@ class RLConfig(BaseSettings):
             if self.log.file is not None:
                 self.trainer.log.file = self.log.file
                 self.orchestrator.log.file = self.log.file
+            self.trainer.log.json_logging = self.log.json_logging
+            self.orchestrator.log.json_logging = self.log.json_logging
 
         return self
 
@@ -570,7 +577,9 @@ def check_gpus_available(gpu_ids: list[int]) -> None:
 def rl(config: RLConfig):
     # Setup logger
     logger = setup_logger(
-        config.log.level or "info", log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None
+        config.log.level or "info",
+        log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None,
+        json_logging=config.log.json_logging,
     )
     start_command = sys.argv
     logger.info("Starting RL run")
