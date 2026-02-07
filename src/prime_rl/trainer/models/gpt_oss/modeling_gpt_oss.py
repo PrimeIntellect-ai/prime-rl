@@ -33,10 +33,8 @@ from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
-from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
-from prime_rl.trainer.models.layers.moe import MoEArgs, MoE
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
 
