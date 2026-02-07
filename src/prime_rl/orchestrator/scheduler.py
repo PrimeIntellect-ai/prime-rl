@@ -110,7 +110,7 @@ class Scheduler:
                     client_config=client_config,
                     model_name=self.model_name,
                     seq_len=config.seq_len,
-                    interleaved_rollouts=config.trajectory_strategy == "interleaved",
+                    interleaved_rollouts=True,
                     max_concurrent_groups=(config.max_concurrent // (self.rollouts_per_example * self.workers_per_env))
                     if config.max_concurrent is not None
                     else -1,

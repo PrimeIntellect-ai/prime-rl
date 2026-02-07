@@ -58,7 +58,7 @@ def extract_result(output: vf.RolloutOutput, temperature: float) -> dict:
     The extracted dict must contain all fields needed by:
     - Buffer.update(): example_id, task, reward
     - orchestrator metrics: reward, is_truncated, error, timing, metrics, trajectory
-    - interleave_rollout/branch_rollout: trajectory[*]["tokens"] with all token fields
+    - interleave_rollout: trajectory[*]["tokens"] with all token fields
 
     For multimodal (Qwen3-VL), tokens dict may also contain:
     - pixel_values: flattened image patches [num_patches, patch_dim]
@@ -243,7 +243,7 @@ def worker_main(
     # Load environment
     env = vf.load_environment(strip_env_version(env_id), **env_args)
     env.set_max_seq_len(seq_len)
-    env.set_interleaved_rollouts(interleaved_rollouts)
+    env.set_interleaved_rollouts(True)
 
     # Create clients (empty list in elastic mode - workers discover servers dynamically)
     client_config = ClientConfig(**client_config_dict)

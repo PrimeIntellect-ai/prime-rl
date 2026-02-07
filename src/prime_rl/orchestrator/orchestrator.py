@@ -8,7 +8,7 @@ import tomli_w
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import branch_rollout, build_vlm_image_cache, interleave_rollout
+from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -125,11 +125,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     processor = None
     if is_vlm:
-        if config.trajectory_strategy == "interleaved":
-            raise ValueError(
-                "Multimodal training does not support the interleaved trajectory strategy. "
-                "Set trajectory_strategy = 'branching' (see docs/multimodal.md)."
-            )
         logger.info(f"Loading VLM processor for {config.model.name}")
         processor = AutoProcessor.from_pretrained(
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
@@ -161,9 +156,8 @@ async def orchestrate(config: OrchestratorConfig):
         map_kwargs=dict(writer_batch_size=1),  # Set defensively to not error on map operations on large datasets
     )
     env.set_max_seq_len(config.seq_len)
-    if config.trajectory_strategy == "interleaved":
-        logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
-        env.set_interleaved_rollouts(True)
+    logger.info("Using token prompts in environment to avoid retokenization discrepancies in multi-turn rollouts")
+    env.set_interleaved_rollouts(True)
     if config.buffer.skip_verification:
         logger.info("Skipping verification (rewards will be set to 0)")
         env.set_score_rollouts(False)
@@ -409,23 +403,14 @@ async def orchestrate(config: OrchestratorConfig):
             vlm_cache = None
 
         # Process rollouts in parallel
-        if config.trajectory_strategy == "interleaved":
-
-            def process_rollout(rollout: vf.State) -> list[TrainingSample] | None:
-                return interleave_rollout(rollout)
-        else:
-
-            def process_rollout(rollout: vf.State, rollout_idx: int) -> list[TrainingSample] | None:
-                return branch_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
+        def process_rollout(rollout: vf.State, rollout_idx: int) -> list[TrainingSample] | None:
+            return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
 
         loop = asyncio.get_event_loop()
-        if config.trajectory_strategy == "interleaved":
-            futures = [loop.run_in_executor(rollout_executor, process_rollout, r) for r in train_rollouts]
-        else:
-            futures = [
-                loop.run_in_executor(rollout_executor, process_rollout, r, rollout_idx)
-                for rollout_idx, r in enumerate(train_rollouts)
-            ]
+        futures = [
+            loop.run_in_executor(rollout_executor, process_rollout, r, rollout_idx)
+            for rollout_idx, r in enumerate(train_rollouts)
+        ]
         results = await asyncio.gather(*futures)
 
         # Collect results and assign advantages
@@ -440,7 +425,7 @@ async def orchestrate(config: OrchestratorConfig):
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
             f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
-            f"to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
+            f"to {len(train_examples)} training examples"
         )
 
         # Compute teacher logprobs if teacher model is configured
