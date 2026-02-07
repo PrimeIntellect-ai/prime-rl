@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Discriminator, Field, Tag, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
@@ -460,6 +460,14 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
+    wait_for_weights_timeout: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="When resuming, wait up to this many seconds for the weight directory to appear. Useful when the orchestrator restarts while the trainer is still saving weights. If None (default), fail immediately if weights are not found.",
+        ),
+    ] = None
+
     keep_last: Annotated[
         int | None,
         Field(
@@ -604,7 +612,34 @@ class BufferConfig(BaseConfig):
 
 
 class AdvantageConfig(BaseConfig):
+    """Config for the default advantage."""
+
+    type: Literal["default"] = "default"
     length_weighted_mean: bool = False
+
+
+class CustomAdvantageConfig(BaseModel):
+    """Config for a custom external advantage function."""
+
+    type: Literal["custom"] = "custom"
+    import_path: Annotated[
+        str, Field(description="Import path to the advantage function (e.g., 'my_module.my_advantage')")
+    ]
+    kwargs: Annotated[
+        dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the advantage function")
+    ]
+
+
+def _advantage_config_discriminator(v: Any) -> str:
+    if isinstance(v, dict):
+        return v.get("type", "default")
+    return getattr(v, "type", "default")
+
+
+AdvantageConfigType: TypeAlias = Annotated[
+    Annotated[AdvantageConfig, Tag("default")] | Annotated[CustomAdvantageConfig, Tag("custom")],
+    Discriminator(_advantage_config_discriminator),
+]
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):
@@ -675,7 +710,7 @@ class OrchestratorConfig(BaseSettings):
     buffer: BufferConfig = BufferConfig()
 
     # The advantage configuration
-    advantage: AdvantageConfig | None = AdvantageConfig()
+    advantage: AdvantageConfigType | None = AdvantageConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -704,13 +739,6 @@ class OrchestratorConfig(BaseSettings):
 
     rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
 
-    trajectory_strategy: Annotated[
-        Literal["interleaved", "branching"],
-        Field(
-            description="Strategy to use for building training examples from multi-turn rollouts. If interleaved, will try to concatenate consecutive trajectory steps into a single training example. If branching, will create a separate training example for each trajectory step."
-        ),
-    ] = "interleaved"
-
     output_dir: Annotated[
         Path,
         Field(
@@ -721,7 +749,15 @@ class OrchestratorConfig(BaseSettings):
     max_concurrent: Annotated[
         int | None,
         Field(
-            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
+            description="Maximum number of concurrent rollouts to generate and score per-environment. If None, will not limit concurrency.",
+        ),
+    ] = None
+
+    tasks_per_minute: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Rate limit for tasks per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. When set to None, no rate limiting is applied. Note: with multiple workers, the effective total rate equals workers × this value.",
         ),
     ] = None
 
@@ -821,6 +857,15 @@ class OrchestratorConfig(BaseSettings):
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
+
+    @model_validator(mode="after")
+    def validate_max_concurrent(self):
+        min_concurrent = self.rollouts_per_example * (self.workers_per_env or 1)
+        if self.max_concurrent is not None and self.max_concurrent < min_concurrent:
+            raise ValueError(
+                f"max_concurrent must be at least rollouts_per_example * workers_per_env ({min_concurrent})"
+            )
+        return self
 
     @model_validator(mode="after")
     def nccl_max_async_level(self):

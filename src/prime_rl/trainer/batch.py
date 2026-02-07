@@ -15,7 +15,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     position_ids = list(range(len(input_ids)))
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
-    prompt_temp = training_example.completion_temperatures[0]
+    # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
+    prompt_temp = training_example.completion_temperatures[0] if training_example.completion_temperatures else 1.0
     temperatures = [prompt_temp] * len(training_example.prompt_ids) + training_example.completion_temperatures
 
     # Teacher logprobs already cover the full sequence (prompt + completion),

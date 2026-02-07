@@ -544,6 +544,42 @@ def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
             buffer.data = buffer.data.to("cuda")
 
 
+def _validate_flash_attn_4_installed() -> None:
+    """Validate that flash-attn-cute is installed and not overwritten by flash-attn.
+
+    Both flash-attn and flash-attn-cute ship a `flash_attn.cute` sub-package.
+    When both extras are installed, the older stub from flash-attn can shadow the
+    real implementation.  We detect this by checking the line count of the interface
+    module (the real one is >1000 lines).
+    """
+    import flash_attn.cute.interface as fa4_interface
+
+    with open(fa4_interface.__file__, "r") as f:
+        num_lines = sum(1 for _ in f)
+
+    if num_lines < 1000:
+        raise ValueError(
+            "flash-attn-cute has probably been overwritten by flash-attn, "
+            "run `scripts/fix-flash-attn-cute.sh` to fix this behaviour."
+        )
+
+
+def _register_fa4_attention_interface() -> None:
+    """Register a dummy `fa4` attention with transformers so AutoConfig accepts it.
+
+    The `flash_attention_*` naming pattern triggers transformers to attempt
+    installing a kernel from the hub, so we use the short name `fa4` internally.
+    This dummy is never called because fa4 is only supported with our custom
+    model implementation.
+    """
+    from transformers import AttentionInterface
+
+    def _noop(*args, **kwargs) -> None:
+        pass
+
+    AttentionInterface.register("fa4", _noop)
+
+
 def setup_model(
     config: ModelConfig, parallel_dims: ParallelDims, loading_from_checkpoint_later: bool = False
 ) -> nn.Module:
@@ -551,6 +587,11 @@ def setup_model(
         raise ValueError(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
+
+    if config.attn == "fa4":
+        _validate_flash_attn_4_installed()
+        _register_fa4_attention_interface()
+
     logger = get_logger()
 
     # 1. We load to meta device by default

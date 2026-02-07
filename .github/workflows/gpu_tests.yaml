@@ -65,13 +65,16 @@ jobs:
         include:
           - test: base
             runner: vm
-            pytest_args: "tests/integration -m gpu --ignore=tests/integration/test_rl_lora.py --ignore=tests/integration/test_rl_multi_run_lora.py"
+            pytest_args: "tests/integration -m gpu --ignore=tests/integration/test_rl_lora.py --ignore=tests/integration/test_rl_multi_run_lora.py --ignore=tests/integration/test_benchmark_regression.py"
           - test: rl_lora
             runner: vm
             pytest_args: "tests/integration/test_rl_lora.py -m gpu"
           - test: rl_multi_run
             runner: 4xa6000
             pytest_args: "tests/integration/test_rl_multi_run_lora.py -m gpu"
+          - test: benchmark_regression
+            runner: 4xa6000
+            pytest_args: "tests/integration/test_benchmark_regression.py -m gpu"
     steps:
       - name: Install Git
         run: |

@@ -2,7 +2,6 @@ import asyncio
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
-from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.utils.client import (
     check_health,
     maybe_check_has_model,
@@ -22,7 +21,9 @@ from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, get_step_pa
 async def eval(config: OfflineEvalConfig):
     # Initialize the logger
     logger = setup_logger(
-        config.log.level, log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None
+        config.log.level,
+        log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None,
+        json_logging=config.log.json_logging,
     )
     intercept_verifiers_logging(level=config.log.vf_level)
 
@@ -62,7 +63,6 @@ async def eval(config: OfflineEvalConfig):
     await reload_weights(admin_clients)
 
     # Run benchmarks on base model
-    await set_semaphore(config.max_concurrent or -1)
     if config.eval_base:
         logger.info(f"Evaluating model {config.model.name}")
         await run_evals(
@@ -127,9 +127,9 @@ async def eval(config: OfflineEvalConfig):
             await _eval_ckpt(ckpt_step)
 
         if config.watcher:
-            # Keep watcher behavior consistent with previous versions: after evaluating all currently-stable
-            # checkpoints, watch for new ones and evaluate them as they appear.
-            already_evaluated_ckpt_steps = list(ckpt_steps)
+            # After evaluating all currently-stable checkpoints, watch for new ones and evaluate them as they appear.
+            # Only checkpoints with step > max_evaluated_step will be picked up (strictly increasing order).
+            max_evaluated_step = max(ckpt_steps) if ckpt_steps else -1
             while True:
                 # Only include checkpoints that have a STABLE file (indicating save completed)
                 all_ckpt_steps = sorted(
@@ -139,12 +139,12 @@ async def eval(config: OfflineEvalConfig):
                         if (step_path / "STABLE").exists()
                     ]
                 )
-                new_ckpt_steps = [step for step in all_ckpt_steps if step not in already_evaluated_ckpt_steps]
+                new_ckpt_steps = [step for step in all_ckpt_steps if step > max_evaluated_step]
                 if len(new_ckpt_steps) > 0:
                     logger.info(f"New checkpoints to evaluate: {', '.join(map(str, new_ckpt_steps))}")
                     for ckpt_step in new_ckpt_steps:
                         await _eval_ckpt(ckpt_step)
-                        already_evaluated_ckpt_steps.append(ckpt_step)
+                        max_evaluated_step = max(max_evaluated_step, ckpt_step)
                 else:
                     logger.info("No new checkpoints to evaluate, waiting for 10 seconds")
                     await asyncio.sleep(10)

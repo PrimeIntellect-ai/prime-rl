@@ -11,15 +11,13 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
-from tqdm import tqdm
-
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import EnvConfig, OrchestratorConfig
 from prime_rl.orchestrator.env_worker import EnvWorker, WorkerDiedError
 from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.config import ClientConfig
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.pathing import get_env_worker_log_file
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
@@ -78,6 +76,7 @@ class Scheduler:
         initial_temp = compute_temperature(step=0, sampling_config=config.sampling, max_steps=config.max_steps)
         self.sampling_args = get_sampling_args(config.sampling, temperature=initial_temp)
         self.model_name = self.config.model.name
+        self.json_logging = config.log.json_logging
 
         # Inference pool - used for admin operations (adapter sync) and metrics
         self.inference_pool = inference_pool
@@ -111,14 +110,18 @@ class Scheduler:
                     client_config=client_config,
                     model_name=self.model_name,
                     seq_len=config.seq_len,
-                    interleaved_rollouts=config.trajectory_strategy == "interleaved",
-                    max_concurrent=config.max_concurrent or -1,
+                    interleaved_rollouts=True,
+                    max_concurrent_groups=(config.max_concurrent // (self.rollouts_per_example * self.workers_per_env))
+                    if config.max_concurrent is not None
+                    else -1,
+                    tasks_per_minute=config.tasks_per_minute or -1,
                     example_lookup=self.example_lookups[env_name],
                     worker_name=f"{env_name}_{worker_idx}",
                     log_level=config.log.level,
                     vf_log_level=config.log.vf_level,
                     log_file=str(env_log_file) if env_log_file else None,
                     max_restarts=config.max_env_worker_restarts,
+                    json_logging=config.log.json_logging,
                 )
                 self.workers[env_name].append(worker)
 
@@ -286,7 +289,9 @@ class Scheduler:
             await self.schedule_group_rollout()
 
         batch_rollouts: list[dict] = []
-        pbar = tqdm(total=self.config.batch_size, desc="Generating rollouts (train)")
+        pbar = ProgressTracker(
+            total=self.config.batch_size, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
+        )
 
         while len(batch_rollouts) < self.config.batch_size:
             # Wait for at least one future to complete

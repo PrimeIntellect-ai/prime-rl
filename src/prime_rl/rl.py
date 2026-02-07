@@ -11,6 +11,7 @@ from subprocess import Popen
 from threading import Event, Thread
 from typing import Annotated, Literal
 
+import pynvml
 import tomli_w
 from pydantic import Field, model_validator
 
@@ -51,6 +52,11 @@ class SharedLogConfig(BaseSettings):
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
 
     file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
+
+    json_logging: Annotated[
+        bool,
+        Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
+    ] = False
 
 
 class SharedWandbConfig(BaseSettings):
@@ -247,6 +253,8 @@ class RLConfig(BaseSettings):
             if self.log.file is not None:
                 self.trainer.log.file = self.log.file
                 self.orchestrator.log.file = self.log.file
+            self.trainer.log.json_logging = self.log.json_logging
+            self.orchestrator.log.json_logging = self.log.json_logging
 
         return self
 
@@ -546,14 +554,55 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
         stop_event.set()
 
 
+def check_gpus_available(gpu_ids: list[int]) -> None:
+    """Raise error if there are existing processes on the specified GPUs."""
+    pynvml.nvmlInit()
+
+    occupied = []
+    for gpu_id in gpu_ids:
+        handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+        processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
+        if processes:
+            pids = [p.pid for p in processes]
+            occupied.append((gpu_id, pids))
+
+    if occupied:
+        msg = "Existing processes found on GPUs:\n"
+        for gpu_id, pids in occupied:
+            msg += f"  GPU {gpu_id}: PIDs {pids}\n"
+        msg += "Kill these processes or use different GPUs."
+        raise RuntimeError(msg)
+
+
 def rl(config: RLConfig):
     # Setup logger
     logger = setup_logger(
-        config.log.level or "info", log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None
+        config.log.level or "info",
+        log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None,
+        json_logging=config.log.json_logging,
     )
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
+
+    # Check for existing processes on GPUs
+    all_gpu_ids = list(set(config.inference_gpu_ids + config.trainer_gpu_ids + (config.teacher_gpu_ids or [])))
+    check_gpus_available(all_gpu_ids)
+
+    # Validate client port matches inference server port
+    if config.inference is not None and not config.orchestrator.client.is_elastic:
+        from urllib.parse import urlparse
+
+        base_url = config.orchestrator.client.base_url[0]
+        parsed = urlparse(base_url)
+        client_port = parsed.port
+        expected_port = config.inference.server.port
+        if client_port != expected_port:
+            raise ValueError(
+                f"orchestrator.client.base_url port ({client_port}) does not match "
+                f"inference.server.port ({expected_port}). "
+                f"Update the base_url to use port {expected_port} to match the inference server."
+            )
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)

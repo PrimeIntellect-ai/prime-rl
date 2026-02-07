@@ -97,6 +97,10 @@ RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/p
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
 
+# HuggingFace Hub timeouts (defaults are 10s which causes issues on slow networks)
+ENV HF_HUB_ETAG_TIMEOUT=500
+ENV HF_HUB_DOWNLOAD_TIMEOUT=300
+
 # Use entrypoint for setup (ulimit, etc) but default to sleep infinity for K8s
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["sleep", "infinity"]

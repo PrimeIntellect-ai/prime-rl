@@ -5,9 +5,8 @@ from typing import Any, cast
 import verifiers as vf
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
-from tqdm import tqdm
 
-from prime_rl.orchestrator.utils import get_semaphore
+from prime_rl.utils.logger import ProgressTracker
 
 
 async def generate_group(
@@ -17,17 +16,18 @@ async def generate_group(
     example: dict,
     rollouts_per_example: int,
     sampling_args: dict,
-) -> list[vf.State]:
+    max_retries: int = 0,
+    state_columns: list[str] = ["trajectory"],
+) -> list[vf.RolloutOutput]:
     """Asynchronously generate and score rollouts for a single group."""
-    semaphore = await get_semaphore()
     group_inputs = [vf.RolloutInput(**example) for _ in range(rollouts_per_example)]
     return await env.run_group(
         group_inputs=group_inputs,
         client=client,
         model=model_name,
-        gen_sampling_args=sampling_args,
-        gen_sem=semaphore,
-        score_sem=semaphore,
+        sampling_args=sampling_args,
+        max_retries=max_retries,
+        state_columns=state_columns,
     )
 
 
@@ -37,14 +37,14 @@ async def generate_rollout(
     model_name: str,
     example: dict,
     sampling_args: dict,
-) -> vf.State:
+    max_retries: int = 0,
+    state_columns: list[str] = ["trajectory"],
+) -> vf.RolloutOutput:
     """Asynchronously generate and score a single rollout."""
-    semaphore = await get_semaphore()
     rollout_input = vf.RolloutInput(**example)
-
-    state = await env.run_rollout(semaphore, rollout_input, client, model_name, sampling_args)
-    await env.rubric.score_rollout(state, score_sem=semaphore)
-    return state
+    return await env.run_rollout(
+        rollout_input, client, model_name, sampling_args, max_retries=max_retries, state_columns=state_columns
+    )
 
 
 async def generate_batch(
@@ -55,11 +55,11 @@ async def generate_batch(
     rollouts_per_example: int,
     sampling_args: dict,
     pbar_description: str = "Generating rollouts",
-) -> list[vf.State]:
+) -> list[vf.RolloutOutput]:
     """Asynchronously generate and score rollouts for a list of groups (batch)."""
 
     total_rollouts = len(examples) * rollouts_per_example
-    pbar = tqdm(total=total_rollouts, desc=pbar_description)
+    pbar = ProgressTracker(total=total_rollouts, desc=pbar_description)
 
     async def generate_group_with_progress(client, example):
         """Generate rollouts for one problem and update progress."""
@@ -68,13 +68,13 @@ async def generate_batch(
         return result
 
     try:
-        group_states_list: list[list[vf.State]] = await asyncio.gather(
+        group_outputs_list: list[list[vf.RolloutOutput]] = await asyncio.gather(
             *[generate_group_with_progress(client, example) for client, example in zip(cycle(clients), examples)]
         )
     finally:
         pbar.close()
 
-    return [state for group_states in group_states_list for state in group_states]
+    return [output for group_outputs in group_outputs_list for output in group_outputs]
 
 
 def get_prompt_len(state: vf.State) -> int:
