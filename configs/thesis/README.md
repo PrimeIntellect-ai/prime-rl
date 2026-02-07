@@ -27,6 +27,9 @@ uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-tis-0
 uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-mis-0.125-8 --trainer.loss.token-mask-low 0.125 --trainer.loss.token-mask-high 8
 uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-kl-tau-1e-2 --trainer.loss.kl-tau 1e-2
 uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-mis-0.125-8-kl-tau-1e-2 --trainer.loss.token-mask-low 0.125 --trainer.loss.token-mask-high 8 --trainer.loss.kl-tau 1e-2
+
+uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-dppo-bin-tv-0.2 --trainer.loss.dppo-tv-clip-low 0.2 --trainer.loss.dppo-tv-clip-high 0.2
+uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-ppo-clip-0.2 --trainer.loss.ppo-clip-low 0.2 --trainer.loss.ppo-clip-high 0.2
 ```
 
 ## Wiki Search
