@@ -71,6 +71,36 @@ class LossConfig(BaseConfig):
         ),
     ] = float("inf")
 
+    dppo_tv_clip_low: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="DPPO-Bin-TV: mask (for negative-advantage tokens) when (prob - rollout_prob) < -this. Default inf = do not apply.",
+        ),
+    ] = float("inf")
+    dppo_tv_clip_high: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="DPPO-Bin-TV: mask (for positive-advantage tokens) when (prob - rollout_prob) > this. Default inf = do not apply.",
+        ),
+    ] = float("inf")
+
+    ppo_clip_low: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="PPO: mask (for negative-advantage tokens) when importance_ratio < 1 - this. Default inf = do not apply.",
+        ),
+    ] = float("inf")
+    ppo_clip_high: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="PPO: mask (for positive-advantage tokens) when importance_ratio > 1 + this. Default inf = do not apply.",
+        ),
+    ] = float("inf")
+
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0

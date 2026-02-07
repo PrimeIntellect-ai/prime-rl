@@ -165,7 +165,28 @@ def compute_loss(
         geo_mask_low = geo_seq_ratio < loss_config.geo_mask_low
         geo_mask_high = geo_seq_ratio > loss_config.geo_mask_high
 
-        is_masked = token_mask_low | token_mask_high | geo_mask_low | geo_mask_high | seq_mask_low | seq_mask_high
+        # DPPO-Bin-TV: mask conditionally on advantage (PPO-style)
+        prob = torch.exp(trainer_logprobs)
+        rollout_prob = torch.exp(inference_logprobs)
+        invalid_tv_positive = (prob - rollout_prob) > loss_config.dppo_tv_clip_high
+        invalid_tv_negative = (prob - rollout_prob) < -loss_config.dppo_tv_clip_low
+        invalid_dppo_tv = torch.where(advantages > 0, invalid_tv_positive, invalid_tv_negative)
+
+        # PPO: mask when ratio outside [1 - clip_low, 1 + clip_high], conditionally on advantage
+        invalid_ppo_positive = token_importance_ratio > (1.0 + loss_config.ppo_clip_high)
+        invalid_ppo_negative = token_importance_ratio < (1.0 - loss_config.ppo_clip_low)
+        invalid_ppo = torch.where(advantages > 0, invalid_ppo_positive, invalid_ppo_negative)
+
+        is_masked = (
+            token_mask_low
+            | token_mask_high
+            | invalid_dppo_tv
+            | invalid_ppo
+            | geo_mask_low
+            | geo_mask_high
+            | seq_mask_low
+            | seq_mask_high
+        )
         keep_mask = loss_mask & ~is_masked
 
         # tis: clamp is ratio (independent of masking)
