@@ -8,7 +8,6 @@ from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionReque
 from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.utils import get_max_tokens
-from vllm.inputs.parse import get_prompt_components
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import BeamSearchParams, SamplingParams
@@ -188,7 +187,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         generators: list[AsyncGenerator[RequestOutput, None]] = []
         try:
             for i, engine_prompt in enumerate(engine_prompts):
-                prompt_text, _, _ = get_prompt_components(engine_prompts[i])
+                prompt_text = self._extract_prompt_text(engine_prompt)
                 # If we are creating sub requests for multiple prompts, ensure that they
                 # have unique request ids.
                 sub_request_id = request_id if len(engine_prompts) == 1 else f"{request_id}_{i}"
