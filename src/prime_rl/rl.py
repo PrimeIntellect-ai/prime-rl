@@ -514,28 +514,6 @@ class RLConfig(BaseSettings):
             )
         return self
 
-    @model_validator(mode="after")
-    def validate_client_port_matches_inference(self):
-        """Validate that orchestrator.client.base_url port matches inference.server.port."""
-        if self.orchestrator.client.is_elastic:
-            return self
-
-        from urllib.parse import urlparse
-
-        base_url = self.orchestrator.client.base_url[0]
-        parsed = urlparse(base_url)
-        client_port = parsed.port
-        expected_port = self.inference.server.port
-
-        if client_port != expected_port:
-            raise ValueError(
-                f"orchestrator.client.base_url port ({client_port}) does not match "
-                f"inference.server.port ({expected_port}). "
-                f"Update the base_url to use port {expected_port} to match the inference server."
-            )
-
-        return self
-
 
 def cleanup_threads(threads: list[Thread]):
     for thread in threads:
@@ -601,6 +579,21 @@ def rl(config: RLConfig):
     # Check for existing processes on GPUs
     all_gpu_ids = list(set(config.inference_gpu_ids + config.trainer_gpu_ids + (config.teacher_gpu_ids or [])))
     check_gpus_available(all_gpu_ids)
+
+    # Validate client port matches inference server port
+    if config.inference is not None and not config.orchestrator.client.is_elastic:
+        from urllib.parse import urlparse
+
+        base_url = config.orchestrator.client.base_url[0]
+        parsed = urlparse(base_url)
+        client_port = parsed.port
+        expected_port = config.inference.server.port
+        if client_port != expected_port:
+            raise ValueError(
+                f"orchestrator.client.base_url port ({client_port}) does not match "
+                f"inference.server.port ({expected_port}). "
+                f"Update the base_url to use port {expected_port} to match the inference server."
+            )
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
