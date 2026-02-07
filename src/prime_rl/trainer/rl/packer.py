@@ -280,29 +280,22 @@ class MultiPacker(BasePacker):
         # Group samples by run_idx - each microbatch must contain samples from only ONE run
         # because MultiLoRAGroupedExperts (MoE) only supports one adapter per microbatch
         samples_by_run: dict[int, list[TrainingSample]] = {}
-        # Track (num_samples, num_tokens, input_tokens, output_tokens) per run
-        per_run_stats: dict[int, tuple[int, int, int, int]] = {}
+        # Track (num_samples, num_tokens) per run
+        per_run_stats: dict[int, tuple[int, int]] = {}
         for run_idx, sample, step in selected_samples:
             if run_idx not in samples_by_run:
                 samples_by_run[run_idx] = []
             samples_by_run[run_idx].append(sample)
 
-            input_tokens = len(sample.prompt_ids)
-            output_tokens = len(sample.completion_ids)
-            num_tokens = input_tokens + output_tokens
+            num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
             if run_idx in per_run_stats:
-                cur_samples, cur_tokens, cur_input, cur_output = per_run_stats[run_idx]
-                per_run_stats[run_idx] = (
-                    cur_samples + 1,
-                    cur_tokens + num_tokens,
-                    cur_input + input_tokens,
-                    cur_output + output_tokens,
-                )
+                cur_samples, cur_tokens = per_run_stats[run_idx]
+                per_run_stats[run_idx] = (cur_samples + 1, cur_tokens + num_tokens)
             else:
-                per_run_stats[run_idx] = (1, num_tokens, input_tokens, output_tokens)
+                per_run_stats[run_idx] = (1, num_tokens)
 
         # Update progress and accumulate tokens for billing (reported after checkpoint)
-        for run_idx, (num_samples, num_tokens, input_tokens, output_tokens) in per_run_stats.items():
+        for run_idx, (num_samples, num_tokens) in per_run_stats.items():
             self._update_run_progress(run_idx, num_samples, num_tokens)
 
             # Accumulate tokens for this run (will be reported at next checkpoint)
