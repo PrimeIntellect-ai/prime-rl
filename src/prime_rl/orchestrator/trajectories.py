@@ -148,7 +148,6 @@ def interleave_rollout(
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples.append([new_prefix, make_sample(step, step_idx=step_idx)])
 
-    # Return all samples
     return [sample for _, sample in active_samples]
 
 
@@ -248,9 +247,16 @@ def _preprocess_images_batched(
             for eid, counts in images_per_step_per_example.items()
         }
 
+    image_sizes = [(img.width, img.height) for img in images]
     processed = processor.image_processor(images=images, return_tensors="pt")
     all_pixel_values = processed["pixel_values"]
     all_grid_thw = processed["image_grid_thw"]
+
+    logger = get_logger()
+    logger.debug(
+        f"VLM image processing: {len(images)} images, sizes={image_sizes}, "
+        f"pixel_values={all_pixel_values.shape}, grid_thw={all_grid_thw.tolist()}"
+    )
 
     result = {}
     img_idx = 0
