@@ -382,7 +382,7 @@ class WeightCheckpointManager:
         else:
             lora_state_dict = None
 
-        # Convert PrimeRL format to HF format if needed
+        # Convert to HF hub format if needed
         if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
             self.logger.debug("Converting PrimeRL format to HF format for weight checkpoint")
             start_time = time.perf_counter()
@@ -390,6 +390,14 @@ class WeightCheckpointManager:
             self.logger.debug(
                 f"Converted PrimeRL format to HF format in {time.perf_counter() - start_time:.2f} seconds"
             )
+        else:
+            # For regular transformers models, revert internal format to original HF hub format
+            from transformers.core_model_loading import revert_weight_conversion
+
+            self.logger.debug("Reverting transformers internal format to HF hub format for weight checkpoint")
+            start_time = time.perf_counter()
+            state_dict = revert_weight_conversion(model, state_dict)
+            self.logger.debug(f"Reverted to HF hub format in {time.perf_counter() - start_time:.2f} seconds")
 
         # Save weight checkpoint on master rank
         if self.world.is_master:
