@@ -20,6 +20,12 @@ from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 class LossConfig(BaseConfig):
     """Base config for loss."""
 
+    use_importance_sampling_ratio: Annotated[
+        bool,
+        Field(
+            description="If True, weight the policy gradient loss by the importance sampling ratio (default). If False, use advantages only."
+        ),
+    ] = True
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
 
     token_mask_high: Annotated[

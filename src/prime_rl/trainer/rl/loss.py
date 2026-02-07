@@ -178,6 +178,8 @@ def compute_loss(
         importance_ratio = (
             seq_importance_ratio if loss_config.ratio_type == "sequence" else clipped_token_importance_ratio
         )
+        if not loss_config.use_importance_sampling_ratio:
+            importance_ratio = torch.ones_like(importance_ratio)
 
         advantages = loss_config.adv_tau * advantages
         if teacher_logprobs is not None:
