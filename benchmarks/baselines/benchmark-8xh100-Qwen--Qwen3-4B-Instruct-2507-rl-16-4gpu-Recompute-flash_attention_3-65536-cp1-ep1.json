@@ -1,0 +1,48 @@
+{
+  "config": {
+    "type": "rl",
+    "num_gpus": 4,
+    "model_name": "Qwen/Qwen3-4B-Instruct-2507",
+    "lora_rank": 16,
+    "seq_len": 65536,
+    "ac": "Recompute",
+    "attention": "flash_attention_3",
+    "output": "/home/ubuntu/prime-rl/benchmarks/scripts/../gpu_scaling_results/benchmark-8xh100-Qwen--Qwen3-4B-Instruct-2507-rl-16-4gpu-Recompute-flash_attention_3-65536-cp1-ep1.json",
+    "dry_run": false,
+    "timeout": 1500,
+    "micro_batches": 2,
+    "ep": 1,
+    "cp": 1,
+    "docker_image": null,
+    "device_name": "NVIDIA H100 80GB HBM3",
+    "commit_sha": "8dbd955a",
+    "timestamp": "2026-02-07T06:50:11.739533+00:00",
+    "success": true,
+    "error_reason": null,
+    "time_taken": 195.78983470999992
+  },
+  "metrics": {
+    "mfu": {
+      "mean": 36.403317808300336,
+      "std": 0.03959131306039785,
+      "min": 36.37867521811388,
+      "max": 36.448986204189936
+    },
+    "throughput": {
+      "mean": 16223.937544506014,
+      "std": 17.644737597252814,
+      "min": 16212.95503334521,
+      "max": 16244.290667443112
+    },
+    "step_time": {
+      "mean": 32.333651207,
+      "std": 0.06272217954231447,
+      "min": 32.27435403600066,
+      "max": 32.39931306699873
+    },
+    "peak_memory": {
+      "gib": 33.837890625,
+      "pct": 42.71986203888709
+    }
+  }
+}
