@@ -196,10 +196,10 @@ class InferenceConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_vlm_env(self):
+    def auto_setup_vllm_env(self):
+        os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
         if is_vlm_model(self.model.name):
             os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
-            os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
         return self
 
     @model_validator(mode="after")
