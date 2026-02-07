@@ -2,9 +2,9 @@
 
 Automated benchmark results for prime-rl using `--bench` flag.
 
-**Last Updated:** 2026-02-07 01:44 UTC  
-**Commit:** `unknown`  
-**Docker Image:** `primeintellect/prime-rl-jackmin@sha256:5a146f7dfdcdf6b0e90fd3f1ed0874d22a3a0641378dc8dad46ce213d02fa2e6`
+**Last Updated:** 2026-02-07 02:37 UTC  
+**Commit:** `30bf494f`  
+**Docker Image:** `None`
 
 > :warning: indicates regression > 5% from baseline
 > diffs shown when abs(change) >= 1.0% (except regressions, which always show diffs)
@@ -96,3 +96,24 @@ Automated benchmark results for prime-rl using `--bench` flag.
 | SFT Full | 16384 | Recompute | FA2 | 1 | 1 | 8xH200 | 28.4% | 53.14k | 2.47s | 54.6 GiB |
 | SFT Full | 16384 | Recompute | FA2 | 1 | 1 | 8xH100 HBM3 | 26.6% | 49.72k | 2.64s | 54.6 GiB |
 | SFT Full | 65536 | Recompute | FA2 | 1 | 1 | 8xB200 | 14.2% | 26.39k | 19.86s | 171.5 GiB |
+
+## Llama-3.1-8B-Instruct
+
+| Type | SeqLen | AC | Attn | EP | CP | Hardware | MFU | TPS | Step Time | Peak Mem |
+|------|--------|----|----|----|----|----------|-----|-----|-----------|----------|
+| RL LoRA(r=16) | 16384 | Recompute | FA4 | 1 | 1 | 8xB200 | 20.5% | 66.01k | 1.99s | 16.6 GiB |
+| RL LoRA(r=16) | 65536 | Recompute | FA4 | 1 | 1 | 8xB200 | 37.7% | 50.82k | 10.32s | 43.9 GiB |
+
+## Llama-3.2-1B-Instruct
+
+| Type | SeqLen | AC | Attn | EP | CP | Hardware | MFU | TPS | Step Time | Peak Mem |
+|------|--------|----|----|----|----|----------|-----|-----|-----------|----------|
+| RL LoRA(r=16) | 16384 | Recompute | FA4 | 1 | 1 | 8xB200 | 9.9% | 155.50k | 0.84s | 5.6 GiB |
+| RL LoRA(r=16) | 65536 | Recompute | FA4 | 1 | 1 | 8xB200 | 22.3% | 130.51k | 4.02s | 15.5 GiB |
+
+## Llama-3.2-3B-Instruct
+
+| Type | SeqLen | AC | Attn | EP | CP | Hardware | MFU | TPS | Step Time | Peak Mem |
+|------|--------|----|----|----|----|----------|-----|-----|-----------|----------|
+| RL LoRA(r=16) | 16384 | Recompute | FA4 | 1 | 1 | 8xB200 | 16.2% | 97.78k | 1.34s | 10.0 GiB |
+| RL LoRA(r=16) | 65536 | Recompute | FA4 | 1 | 1 | 8xB200 | 35.2% | 78.64k | 6.67s | 28.0 GiB |
