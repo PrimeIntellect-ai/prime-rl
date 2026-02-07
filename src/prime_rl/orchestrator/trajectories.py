@@ -264,7 +264,7 @@ def _preprocess_images_batched(
         total_images = cumulative_counts[-1]
         example_grids = all_grid_thw[img_idx : img_idx + total_images]
         num_patches = sum(int(g[0] * g[1] * g[2]) for g in example_grids)
-        example_pixels = all_pixel_values[patch_idx : patch_idx + num_patches]
+        example_patches = all_pixel_values[patch_idx : patch_idx + num_patches]
 
         # Build per-step cumulative entries
         per_step = []
@@ -274,7 +274,7 @@ def _preprocess_images_batched(
             else:
                 step_grids = example_grids[:cum_count]
                 step_patches = sum(int(g[0] * g[1] * g[2]) for g in step_grids)
-                per_step.append((example_pixels[:step_patches].tolist(), step_grids.tolist()))
+                per_step.append((example_patches[:step_patches].tolist(), step_grids.tolist()))
 
         result[eid] = per_step
         img_idx += total_images
