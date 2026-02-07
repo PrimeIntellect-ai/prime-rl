@@ -11,11 +11,11 @@ from prime_rl.utils.config import (
     PrimeMonitorConfig,
     WandbWithExtrasConfig,
 )
-from prime_rl.utils.usage import UsageConfig
 from prime_rl.utils.config import (
     ModelConfig as BaseModelConfig,
 )
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.utils.usage import UsageConfig
 
 
 class OptimizerConfig(BaseConfig):

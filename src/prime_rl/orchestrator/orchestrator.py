@@ -59,6 +59,7 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
+from prime_rl.utils.usage import init_usage_reporter, report_inference_usage
 from prime_rl.utils.utils import (
     clean_exit,
     count_chinese_chars,

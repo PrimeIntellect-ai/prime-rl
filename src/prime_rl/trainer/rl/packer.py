@@ -109,6 +109,9 @@ class MultiPacker(BasePacker):
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
+        # Accumulated tokens per run for the current step (reset when step increments)
+        self._pending_training_tokens: dict[int, int] = {}
+
         # Register forgotten hook for receiver reset (master only, called during discover_runs)
         # This must happen when a run is deleted to prevent stale data from remaining
         self.multi_run_manager.register_forgotten_hook(self._on_run_data_deleted)
@@ -120,6 +123,7 @@ class MultiPacker(BasePacker):
 
         # Reset run state
         self.buffers[idx].clear()
+        self._pending_training_tokens.pop(idx, None)
 
     def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
         """Validate a sample to ensure it won't crash the trainer."""
@@ -240,20 +244,26 @@ class MultiPacker(BasePacker):
 
         return selected
 
-    def _update_run_progress(self, run_idx: int, num_samples: int, num_tokens: int) -> None:
-        """Update run progress; increment step when all samples from the current step have been consumed."""
+    def _update_run_progress(self, run_idx: int, num_samples: int, num_tokens: int) -> bool:
+        """Update run progress; increment step when all samples from the current step have been consumed.
+
+        Returns True if step was incremented (meaning we should report usage for this step).
+        """
         # HACK: This fixes the issue with branching rollouts having unpredictable batch size
         # However, it makes us unable to do incremental orchestrator rollouts
         # Removing the len(self.buffers[run_idx]) == 0 check would allow incremental orchestrator rollouts
+        step_incremented = False
         if (
             len(self.buffers[run_idx]) == 0
             or self.buffers[run_idx][0][1] > self.multi_run_manager.progress[run_idx].step
         ):
             self.multi_run_manager.progress[run_idx].step += 1
             self.multi_run_manager.ready_to_update[run_idx] = True
+            step_incremented = True
 
         self.multi_run_manager.progress[run_idx].total_tokens += num_tokens
         self.multi_run_manager.progress[run_idx].total_samples += num_samples
+        return step_incremented
 
     def pack(self):
         """Pack samples from buffers using round-robin fair scheduling."""
@@ -297,12 +307,18 @@ class MultiPacker(BasePacker):
 
         # Update progress and report usage
         for run_idx, (num_samples, num_tokens, input_tokens, output_tokens) in per_run_stats.items():
-            self._update_run_progress(run_idx, num_samples, num_tokens)
+            # Accumulate tokens for this run's current step
+            self._pending_training_tokens[run_idx] = self._pending_training_tokens.get(run_idx, 0) + num_tokens
 
-            run_id = self.multi_run_manager.idx_2_id.get(run_idx)
-            if run_id:
-                step = self.multi_run_manager.progress[run_idx].step
-                self.usage_reporter.report_training(run_id, step, num_tokens)
+            step_incremented = self._update_run_progress(run_idx, num_samples, num_tokens)
+
+            # Only report usage when step is completed (incremented)
+            if step_incremented:
+                run_id = self.multi_run_manager.idx_2_id.get(run_idx)
+                if run_id:
+                    step = self.multi_run_manager.progress[run_idx].step
+                    total_tokens = self._pending_training_tokens.pop(run_idx, num_tokens)
+                    self.usage_reporter.report_training(run_id, step, total_tokens)
 
         # Pack each run separately to ensure no mixing of runs in microbatches
         all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]

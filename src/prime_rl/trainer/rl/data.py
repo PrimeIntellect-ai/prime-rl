@@ -9,9 +9,9 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
-from prime_rl.utils.usage import UsageConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
+from prime_rl.utils.usage import UsageConfig
 
 
 class TensorMicroBatch(TypedDict):
