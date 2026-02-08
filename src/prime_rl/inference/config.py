@@ -1,4 +1,3 @@
-import os
 from argparse import Namespace
 from typing import Annotated, Any, Literal
 
@@ -187,18 +186,6 @@ class InferenceConfig(BaseSettings):
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
-
-    @model_validator(mode="after")
-    def auto_setup_dynamic_lora_updating(self):
-        if self.enable_lora:
-            os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_vllm_env(self):
-        # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
-        os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
-        return self
 
     @model_validator(mode="after")
     def round_up_max_lora_rank(self):
