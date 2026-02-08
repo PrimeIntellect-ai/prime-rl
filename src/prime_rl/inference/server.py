@@ -6,7 +6,10 @@ from prime_rl.utils.pydantic_config import parse_argv
 
 def setup_vllm_env(config: InferenceConfig):
     """Set vLLM environment variables based on config. Must be called before importing vLLM."""
+
+    # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
     if config.enable_lora:
         os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
 
