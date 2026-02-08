@@ -180,7 +180,7 @@ def _extract_images_from_examples(
     full conversation history), so we extract only the NEW images introduced in each step.
 
     Args:
-        examples: List of (cache_key, state) tuples where state contains a "trajectory"
+        examples: List of (cache_key, output) tuples where output contains a "trajectory"
             list with steps that have "prompt" messages in OpenAI chat format.
 
     Returns:
@@ -192,8 +192,8 @@ def _extract_images_from_examples(
     all_images = []
     images_per_step_per_example = {}
 
-    for eid, state in examples:
-        trajectory = state.get("trajectory", [])
+    for eid, output in examples:
+        trajectory = output.get("trajectory", [])
         if not trajectory:
             images_per_step_per_example[eid] = []
             continue

@@ -464,7 +464,7 @@ async def orchestrate(config: OrchestratorConfig):
             vlm_cache = None
 
         # Process rollouts in parallel
-        def process_rollout(rollout: vf.State, rollout_idx: int) -> list[TrainingSample] | None:
+        def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
             return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
 
         loop = asyncio.get_event_loop()
