@@ -97,22 +97,9 @@ def init_usage_reporter(config: UsageConfig | None) -> None:
 
 
 def _get_inference_tokens(state: "vf.State") -> tuple[int, int]:
-    """Total tokens processed by vLLM across all trajectory steps.
-
-    Prefers the StateUsageTracker if available (more accurate), otherwise
-    falls back to counting from trajectory token IDs.
-    """
-    if "usage_tracker" in state and state["usage_tracker"] is not None:
-        usage = state["usage_tracker"].snapshot()
-        return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
-
-    total_input = 0
-    total_output = 0
-    for step in state["trajectory"]:
-        if step["tokens"]:
-            total_input += len(step["tokens"]["prompt_ids"])
-            total_output += len(step["tokens"]["completion_ids"])
-    return total_input, total_output
+    """Total tokens processed by vLLM from the StateUsageTracker."""
+    usage = state["usage_tracker"].snapshot()
+    return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
 
 
 def report_inference_usage(step: int, rollouts: list["vf.State"]) -> None:
