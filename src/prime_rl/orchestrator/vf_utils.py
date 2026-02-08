@@ -203,7 +203,7 @@ async def evaluate(
         clients=clients,
         model_name=model_name,
         examples=inputs,
-        rollouts_per_example=rollouts_per_example,
+        rollouts_per_example=1,  # _get_eval_inputs() already repeats the examples
         sampling_args=sampling_args,
         max_retries=max_retries,
         state_columns=state_columns,
