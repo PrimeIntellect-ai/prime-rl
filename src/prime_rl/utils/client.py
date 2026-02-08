@@ -189,6 +189,32 @@ async def check_health(
 
 
 NCCL_READY_MARKER = "NCCL_READY"
+BASE_UPDATE_REQUIRED_MARKER = "BASE_UPDATE_REQUIRED"
+BASE_WEIGHT_FILES = {
+    "model.safetensors",
+    "pytorch_model.bin",
+    "model.safetensors.index.json",
+    "pytorch_model.bin.index.json",
+}
+
+
+def _has_base_weights(weight_dir: Path) -> bool:
+    if (weight_dir / BASE_UPDATE_REQUIRED_MARKER).exists():
+        return True
+
+    for file_name in BASE_WEIGHT_FILES:
+        if (weight_dir / file_name).exists():
+            return True
+
+    for path in weight_dir.glob("*.safetensors"):
+        if not path.name.startswith("adapter_model"):
+            return True
+
+    for path in weight_dir.glob("*.bin"):
+        if not path.name.startswith("adapter_model"):
+            return True
+
+    return False
 
 
 async def update_weights(
@@ -203,35 +229,35 @@ async def update_weights(
     to the trainer that inference workers are about to enter the receive path.
     This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
 
-    Note: The server-side /update_weights endpoint automatically resets the prefix cache
-    to invalidate any cached KV states computed with the old weights.
+    When LoRA is enabled, this function still updates base weights first if the
+    directory contains full model weights, then loads the adapter from the same
+    directory. This keeps base and adapter updates in sync.
     """
     logger = get_logger()
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
+    has_base_weights = weight_dir is not None and _has_base_weights(weight_dir)
+
+    async def _update_weights(admin_client: AsyncClient, current_weight_dir: str | None) -> None:
+        try:
+            response = await admin_client.post("/update_weights", json={"weight_dir": current_weight_dir})
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning("The route /update_weights does not exist. Skipping weight update.")
+                return
+            raise
+
+    should_update_base = weight_dir is not None and (lora_name is None or has_base_weights)
+    if should_update_base:
+        nccl_ready_file = weight_dir / NCCL_READY_MARKER
+        nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+        nccl_ready_file.touch()
+        logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+        await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
     if lora_name is not None and weight_dir is not None:
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
-    else:
-
-        async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
-            try:
-                response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
-                response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 404:
-                    logger.warning("The route /update_weights does not exist. Skipping weight update.")
-                    return
-                raise
-
-        # Create ready marker before servers enter receive path (used by NCCL broadcast)
-        if weight_dir is not None:
-            nccl_ready_file = weight_dir / NCCL_READY_MARKER
-            nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
-            nccl_ready_file.touch()
-            logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
-
-        await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
 
 async def reload_weights(admin_clients: list[AsyncClient]) -> None:

@@ -22,6 +22,7 @@ from transformers.utils import (
 from prime_rl.trainer.lora import (
     clean_lora_state_dict,
 )
+from prime_rl.trainer.kv_prefix import is_kv_prefix_param_name
 from prime_rl.utils.logger import get_logger
 
 PYTORCH_WRAPPER_PREFIXES = ["_fsdp_wrapped_module.", "_orig_module.", "_checkpoint_wrapped_module."]
@@ -146,6 +147,8 @@ def get_adapter_state_dict(model: nn.Module, is_master: bool) -> dict[str, Tenso
 
     named_params = {_strip_pytorch_wrapper_prefix(key): value for key, value in model.named_parameters()}
     for key, value in model.state_dict().items():
+        if is_kv_prefix_param_name(key):
+            continue
         param = named_params.get(key)
         if param is None or not param.requires_grad:
             continue

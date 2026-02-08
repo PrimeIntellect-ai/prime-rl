@@ -1,5 +1,6 @@
 import functools
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 import torch.nn.functional as F
@@ -79,6 +80,102 @@ class FlashAttention(nn.Module):
         self._flash_attn_call = self.func
         if self._flash_attn_version == 4:
             self._flash_attn_call = torch._dynamo.disable(self.func)
+        self._kv_prefix_num_tokens = 0
+        self._kv_prefix_init: Literal["normal", "zeros"] = "normal"
+        self._kv_prefix_init_std = 0.02
+        self.kv_prefix_key: nn.Parameter | None = None
+        self.kv_prefix_value: nn.Parameter | None = None
+
+    def kv_prefix_num_tokens(self) -> int:
+        return self._kv_prefix_num_tokens
+
+    def enable_kv_prefix(
+        self,
+        num_tokens: int,
+        init: Literal["normal", "zeros"] = "normal",
+        init_std: float = 0.02,
+    ) -> None:
+        if num_tokens < 1:
+            raise ValueError(f"num_tokens must be >= 1, got {num_tokens}")
+        if init_std < 0:
+            raise ValueError(f"init_std must be >= 0, got {init_std}")
+
+        self._kv_prefix_num_tokens = num_tokens
+        self._kv_prefix_init = init
+        self._kv_prefix_init_std = init_std
+
+        num_key_value_heads = self.k_proj.out_features // self.head_dim
+        self.kv_prefix_key = nn.Parameter(
+            torch.empty(
+                num_key_value_heads,
+                num_tokens,
+                self.head_dim,
+                device=self.k_proj.weight.device,
+                dtype=self.k_proj.weight.dtype,
+            )
+        )
+        self.kv_prefix_value = nn.Parameter(
+            torch.empty(
+                num_key_value_heads,
+                num_tokens,
+                self.head_dim,
+                device=self.v_proj.weight.device,
+                dtype=self.v_proj.weight.dtype,
+            )
+        )
+
+        if self.kv_prefix_key.device.type != "meta":
+            self._init_kv_prefix_parameters()
+
+    def _init_kv_prefix_parameters(self, generator: torch.Generator | None = None) -> None:
+        if self._kv_prefix_num_tokens == 0:
+            return
+        assert self.kv_prefix_key is not None
+        assert self.kv_prefix_value is not None
+
+        if self._kv_prefix_init == "zeros":
+            nn.init.zeros_(self.kv_prefix_key)
+            nn.init.zeros_(self.kv_prefix_value)
+            return
+
+        nn.init.normal_(self.kv_prefix_key, mean=0.0, std=self._kv_prefix_init_std, generator=generator)
+        nn.init.normal_(self.kv_prefix_value, mean=0.0, std=self._kv_prefix_init_std, generator=generator)
+
+    def _prepend_prefix_for_packed_sequences(
+        self,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        cu_seqlens_q: torch.LongTensor,
+        max_seqlen_q: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.LongTensor, int]:
+        assert self.kv_prefix_key is not None
+        assert self.kv_prefix_value is not None
+        assert self._kv_prefix_num_tokens > 0
+
+        prefix_key = self.kv_prefix_key.transpose(0, 1).to(dtype=key_states.dtype)
+        prefix_value = self.kv_prefix_value.transpose(0, 1).to(dtype=value_states.dtype)
+
+        merged_keys = []
+        merged_values = []
+        for seq_idx in range(cu_seqlens_q.shape[0] - 1):
+            seq_start = int(cu_seqlens_q[seq_idx].item())
+            seq_end = int(cu_seqlens_q[seq_idx + 1].item())
+            merged_keys.append(prefix_key)
+            merged_keys.append(key_states[seq_start:seq_end])
+            merged_values.append(prefix_value)
+            merged_values.append(value_states[seq_start:seq_end])
+
+        prefixed_keys = torch.cat(merged_keys, dim=0).contiguous()
+        prefixed_values = torch.cat(merged_values, dim=0).contiguous()
+
+        seq_prefix_offsets = torch.arange(
+            cu_seqlens_q.shape[0],
+            device=cu_seqlens_q.device,
+            dtype=cu_seqlens_q.dtype,
+        ) * self._kv_prefix_num_tokens
+        cu_seqlens_k = cu_seqlens_q + seq_prefix_offsets
+        max_seqlen_k = max_seqlen_q + self._kv_prefix_num_tokens
+        return prefixed_keys, prefixed_values, cu_seqlens_k, max_seqlen_k
 
     def forward(
         self,
@@ -109,16 +206,30 @@ class FlashAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
+        key_states_0 = key_states[0]
+        value_states_0 = value_states[0]
+        cu_seqlens_k = cu_seqlens
+        max_seqlen_k = max_seqlen
+
+        if self._kv_prefix_num_tokens > 0:
+            if cu_seqlens is None or max_seqlen is None:
+                raise ValueError("KV-prefix tuning requires packed sequence metadata (cu_seqlens/max_seqlen).")
+            key_states_0, value_states_0, cu_seqlens_k, max_seqlen_k = self._prepend_prefix_for_packed_sequences(
+                key_states_0,
+                value_states_0,
+                cu_seqlens,
+                max_seqlen,
+            )
 
         args = [
             query_states[0],
-            key_states[0],
-            value_states[0],
+            key_states_0,
+            value_states_0,
             cu_seqlens,
-            cu_seqlens,
+            cu_seqlens_k,
         ]
         if self._flash_attn_version != 4:
-            args.extend([max_seqlen, max_seqlen])
+            args.extend([max_seqlen, max_seqlen_k])
 
         out = self._flash_attn_call(
             *args,

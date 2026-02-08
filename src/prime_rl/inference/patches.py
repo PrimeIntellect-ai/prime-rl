@@ -1,3 +1,6 @@
+import torch
+
+
 # Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 def monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode():
     from vllm.v1.metrics import loggers as vllm_metrics_loggers
@@ -137,3 +140,172 @@ def monkey_patch_LRUCacheWorkerLoRAManager():
 
     LRUCacheWorkerLoRAManager._apply_adapters = _patched__apply_adapters
     LRUCacheWorkerLoRAManager.add_adapter = _patched_add_adapter
+
+
+def monkey_patch_flash_attention_for_kv_prefix():
+    from vllm.v1.attention.backend import AttentionType
+    from vllm.v1.attention.backends import flash_attn as flash_attn_backend
+
+    from prime_rl.inference.vllm.kv_prefix import get_layer_kv_prefix
+
+    flash_attention_impl = flash_attn_backend.FlashAttentionImpl
+    if getattr(flash_attention_impl, "_prime_kv_prefix_patched", False):
+        return
+    if not hasattr(flash_attn_backend, "flash_attn_varlen_func"):
+        return
+
+    _original_forward = flash_attention_impl.forward
+
+    def _patched_forward(
+        self,
+        layer: torch.nn.Module,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: torch.Tensor,
+        attn_metadata,
+        output: torch.Tensor | None = None,
+        output_scale: torch.Tensor | None = None,
+        output_block_scale: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        kv_prefix = get_layer_kv_prefix(layer)
+        if kv_prefix is None:
+            return _original_forward(
+                self,
+                layer,
+                query,
+                key,
+                value,
+                kv_cache,
+                attn_metadata,
+                output=output,
+                output_scale=output_scale,
+                output_block_scale=output_block_scale,
+            )
+
+        if self.attn_type != AttentionType.DECODER:
+            return _original_forward(
+                self,
+                layer,
+                query,
+                key,
+                value,
+                kv_cache,
+                attn_metadata,
+                output=output,
+                output_scale=output_scale,
+                output_block_scale=output_block_scale,
+            )
+
+        assert output is not None, "Output tensor must be provided."
+        assert self.vllm_flash_attn_version is not None, "FlashAttention version not detected."
+
+        if output_scale is not None or output_block_scale is not None:
+            raise NotImplementedError(
+                "fused output quantization is not yet supported for FlashAttentionImpl with KV-prefix"
+            )
+
+        if attn_metadata is None:
+            return output.fill_(0)
+
+        if self.dcp_world_size > 1:
+            raise NotImplementedError("KV-prefix inference is not supported with decode context parallelism.")
+        if self.kv_cache_dtype.startswith("fp8"):
+            raise NotImplementedError("KV-prefix inference is not supported with fp8 KV-cache.")
+        if self.alibi_slopes is not None:
+            raise NotImplementedError("KV-prefix inference is not supported with ALiBi.")
+        if self.sliding_window != (-1, -1):
+            raise NotImplementedError("KV-prefix inference is not supported with sliding-window attention.")
+        if self.sinks is not None:
+            raise NotImplementedError("KV-prefix inference is not supported with attention sinks.")
+
+        num_actual_tokens = attn_metadata.num_actual_tokens
+        key_cache, value_cache = kv_cache.unbind(0)
+
+        if self.kv_sharing_target_layer_name is None and key is not None and value is not None:
+            flash_attn_backend.reshape_and_cache_flash(
+                key,
+                value,
+                key_cache,
+                value_cache,
+                attn_metadata.slot_mapping,
+                self.kv_cache_dtype,
+                layer._k_scale,
+                layer._v_scale,
+            )
+
+        cu_seqlens_q = attn_metadata.query_start_loc
+        seqused_k = attn_metadata.seq_lens
+        max_seqlen_q = attn_metadata.max_query_len
+        max_seqlen_k = attn_metadata.max_seq_len
+        block_table = attn_metadata.block_table
+        scheduler_metadata = attn_metadata.scheduler_metadata
+        descale_shape = (cu_seqlens_q.shape[0] - 1, self.num_kv_heads)
+        sliding_window_size = list(self.sliding_window) if self.sliding_window is not None else None
+
+        suffix_output, suffix_lse = flash_attn_backend.flash_attn_varlen_func(
+            q=query[:num_actual_tokens],
+            k=key_cache,
+            v=value_cache,
+            out=None,
+            cu_seqlens_q=cu_seqlens_q,
+            max_seqlen_q=max_seqlen_q,
+            seqused_k=seqused_k,
+            max_seqlen_k=max_seqlen_k,
+            softmax_scale=self.scale,
+            causal=attn_metadata.causal,
+            alibi_slopes=self.alibi_slopes,
+            window_size=sliding_window_size,
+            block_table=block_table,
+            softcap=self.logits_soft_cap,
+            scheduler_metadata=scheduler_metadata,
+            fa_version=self.vllm_flash_attn_version,
+            q_descale=layer._q_scale.expand(descale_shape),
+            k_descale=layer._k_scale.expand(descale_shape),
+            v_descale=layer._v_scale.expand(descale_shape),
+            num_splits=attn_metadata.max_num_splits,
+            return_softmax_lse=True,
+            s_aux=self.sinks,
+        )
+
+        prefix_key, prefix_value, prefix_tokens = kv_prefix
+        prefix_key = prefix_key.to(device=query.device, dtype=query.dtype, non_blocking=False)
+        prefix_value = prefix_value.to(device=query.device, dtype=query.dtype, non_blocking=False)
+        prefix_cu_seqlens_q = torch.tensor([0, num_actual_tokens], dtype=torch.int32, device=query.device)
+        prefix_cu_seqlens_k = torch.tensor([0, prefix_tokens], dtype=torch.int32, device=query.device)
+        prefix_descale_shape = (1, self.num_kv_heads)
+
+        prefix_output, prefix_lse = flash_attn_backend.flash_attn_varlen_func(
+            q=query[:num_actual_tokens],
+            k=prefix_key,
+            v=prefix_value,
+            out=None,
+            cu_seqlens_q=prefix_cu_seqlens_q,
+            cu_seqlens_k=prefix_cu_seqlens_k,
+            max_seqlen_q=num_actual_tokens,
+            max_seqlen_k=prefix_tokens,
+            softmax_scale=self.scale,
+            causal=False,
+            alibi_slopes=None,
+            window_size=sliding_window_size,
+            softcap=self.logits_soft_cap,
+            fa_version=self.vllm_flash_attn_version,
+            q_descale=layer._q_scale.expand(prefix_descale_shape),
+            k_descale=layer._k_scale.expand(prefix_descale_shape),
+            v_descale=layer._v_scale.expand(prefix_descale_shape),
+            num_splits=attn_metadata.max_num_splits,
+            return_softmax_lse=True,
+            s_aux=None,
+        )
+
+        flash_attn_backend.merge_attn_states(
+            output[:num_actual_tokens],
+            prefix_output,
+            prefix_lse,
+            suffix_output,
+            suffix_lse,
+        )
+        return output
+
+    flash_attention_impl.forward = _patched_forward
+    flash_attention_impl._prime_kv_prefix_patched = True

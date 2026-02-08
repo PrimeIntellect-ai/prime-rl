@@ -5,19 +5,19 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from vllm.entrypoints.chat_utils import load_chat_template
 from vllm.entrypoints.cli.serve import run_api_server_worker_proc
 from vllm.entrypoints.logger import RequestLogger
+from vllm.entrypoints.openai.protocol import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ErrorResponse,
+    LoadLoRAAdapterRequest,
+)
 from vllm.entrypoints.openai.utils import validate_json_request
-from vllm.entrypoints.openai.protocol import ChatCompletionResponse, ErrorResponse
-from vllm.entrypoints.utils import load_aware_call, with_cancellation
-
-from fastapi.responses import JSONResponse, StreamingResponse
-from vllm.entrypoints.chat_utils import load_chat_template
-from vllm.entrypoints.logger import RequestLogger
-from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ChatCompletionResponse, ErrorResponse
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
 
 from prime_rl.inference.patches import (
-    monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
+    monkey_patch_flash_attention_for_kv_prefix,
     monkey_patch_load_lora_adapter,
+    monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
 )
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
@@ -28,13 +28,13 @@ from prime_rl.inference.vllm.serving_chat_with_tokens import (
 monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
 # NOTE: Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
 monkey_patch_load_lora_adapter()
+# NOTE: Monkeypatch FlashAttention to merge trainable KV-prefix caches at inference time.
+monkey_patch_flash_attention_for_kv_prefix()
 
 # ruff: noqa
 import vllm.entrypoints.openai.api_server
 
 import uvloop
-import vllm.envs as envs
-from fastapi import Request
 from fastapi import Depends, HTTPException, Request
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
@@ -45,7 +45,6 @@ from vllm.entrypoints.openai.api_server import (
     init_app_state,
     models,
 )
-from vllm.entrypoints.openai.protocol import LoadLoRAAdapterRequest
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser

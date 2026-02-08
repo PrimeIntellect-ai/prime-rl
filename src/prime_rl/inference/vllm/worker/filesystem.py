@@ -4,6 +4,11 @@ from torch.nn import Module
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
+from prime_rl.inference.vllm.kv_prefix import (
+    apply_kv_prefix_state_dict,
+    split_kv_prefix_state_dict,
+)
+
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
@@ -42,8 +47,10 @@ class FileSystemWeightUpdateWorker(Worker):
             allow_patterns_overrides=getattr(model, "allow_patterns_overrides", None),
         )
         weights_iterator = model_loader._get_weights_iterator(local_source)
+        weights_iterator, kv_prefix_state_dict = split_kv_prefix_state_dict(weights_iterator)
         model.load_weights(weights_iterator)  # type: ignore
 
         # Process weights after loading (important for some models)
         device = next(model.parameters()).device
         process_weights_after_loading(model, self.model_runner.model_config, device)
+        apply_kv_prefix_state_dict(model, kv_prefix_state_dict)

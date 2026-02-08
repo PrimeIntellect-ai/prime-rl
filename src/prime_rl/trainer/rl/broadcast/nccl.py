@@ -10,6 +10,7 @@ from torch.distributed.tensor import DTensor
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
+from prime_rl.trainer.config import LoRAConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig
@@ -21,6 +22,7 @@ from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 NCCL_READY_MARKER = "NCCL_READY"
+BASE_UPDATE_REQUIRED_MARKER = "BASE_UPDATE_REQUIRED"
 
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
@@ -72,7 +74,7 @@ def filter_state_dict_by_layers(
     """Yield a generator of state dicts for each layer as well as the remaining weights."""
     yield 0, {key: value for key, value in state_dict.items() if "model.layers" not in key}
 
-    for i in range(1, num_layers + 1):  # +1 because layer indices start from 1
+    for i in range(num_layers):
         yield (
             i,
             {
@@ -143,13 +145,21 @@ class NCCLWeightBroadcast(WeightBroadcast):
         config: NCCLWeightBroadcastConfig,
         device: int | str | torch.device,
         dtype: torch.dtype = torch.bfloat16,
+        lora_config: LoRAConfig | None = None,
     ):
         super().__init__(output_dir)
         self.logger = get_logger()
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
+        self.lora_config = lora_config
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
             config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout, dtype
+        )
+
+    def _has_trainable_non_lora_params(self, model: nn.Module) -> bool:
+        return any(
+            param.requires_grad and "lora_A" not in name and "lora_B" not in name
+            for name, param in model.named_parameters()
         )
 
     @torch.no_grad()
@@ -157,15 +167,20 @@ class NCCLWeightBroadcast(WeightBroadcast):
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
+        broadcast_base_weights = self.lora_config is None or self._has_trainable_non_lora_params(model)
         notified_runs: list[tuple[int, Path]] = []
         if self.world.is_master:
-            notified_runs = self._notify_orchestrator()
-            # Wait for inference workers to signal readiness before starting NCCL broadcast
-            self._wait_for_nccl_ready(notified_runs)
-        self.nccl_broadcast_sender.broadcast_weights(model, step)
+            notified_runs = self._notify_orchestrator(broadcast_base_weights)
+            if broadcast_base_weights:
+                # Wait for inference workers to signal readiness before starting NCCL broadcast.
+                self._wait_for_nccl_ready(notified_runs)
+
+        if broadcast_base_weights:
+            self.nccl_broadcast_sender.broadcast_weights(model, step)
+
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
-    def _notify_orchestrator(self) -> list[tuple[int, Path]]:
+    def _notify_orchestrator(self, broadcast_base_weights: bool) -> list[tuple[int, Path]]:
         """Notify the orchestrator to initiate weight broadcast.
 
         Returns:
@@ -186,6 +201,8 @@ class NCCLWeightBroadcast(WeightBroadcast):
 
                     stable_file = save_dir / "STABLE"
                     stable_file.touch()
+                    if broadcast_base_weights:
+                        (save_dir / BASE_UPDATE_REQUIRED_MARKER).touch()
                     notified_runs.append((idx, save_dir))
                 except FileNotFoundError:
                     self.logger.warning(f"Run {idx} is deleted, skipping")

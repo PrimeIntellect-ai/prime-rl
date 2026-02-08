@@ -131,6 +131,33 @@ class LoRAConfig(BaseConfig):
     ] = []
 
 
+class KVPrefixConfig(BaseConfig):
+    """Configuration for trainable KV-prefix tuning."""
+
+    num_tokens: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Fixed prefix length (number of virtual KV tokens) applied at all attention layers.",
+        ),
+    ] = 64
+
+    init: Annotated[
+        Literal["normal", "zeros"],
+        Field(
+            description="Initialization strategy for trainable KV-prefix tensors.",
+        ),
+    ] = "normal"
+
+    init_std: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Standard deviation for normal initialization when init='normal'.",
+        ),
+    ] = 0.02
+
+
 class ModelConfig(BaseConfig):
     """Configures the model for training."""
 
@@ -262,6 +289,16 @@ class ModelConfig(BaseConfig):
         ),
     ] = None
 
+    kv_prefix: Annotated[
+        KVPrefixConfig | None,
+        Field(
+            description=(
+                "Whether to add trainable KV-prefix tensors (fixed prefix length at all attention layers). "
+                "Requires the custom model implementation and flash-attention kernels."
+            ),
+        ),
+    ] = None
+
     debug: Annotated[
         DebugModelConfig,
         Field(
@@ -315,6 +352,18 @@ class ModelConfig(BaseConfig):
                 "CP with flash_attention_3 requires model.impl='custom' "
                 "(the FA3 ring-attention kernel is only implemented for the custom model path)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def kv_prefix_constraints(self):
+        if self.kv_prefix is None:
+            return self
+        if self.impl == "hf":
+            raise ValueError("KV-prefix tuning is only supported with the custom implementation (impl='custom' or 'auto').")
+        if self.attn not in ["flash_attention_2", "flash_attention_3", "fa4"]:
+            raise ValueError("KV-prefix tuning requires flash attention 2/3/4.")
+        if self.cp > 1:
+            raise ValueError("KV-prefix tuning does not support context parallelism yet.")
         return self
 
     @model_validator(mode="after")

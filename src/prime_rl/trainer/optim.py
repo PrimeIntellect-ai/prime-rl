@@ -128,7 +128,12 @@ def setup_optimizer(
             multi_run_manager.synchronize_state()
             logger.info(f"Waiting for run 0 to be created {multi_run_manager.id_2_idx=}")
             time.sleep(1)
-        named_params = multi_run_manager.get_named_parameters_for_run(0)
+        named_params_lora = multi_run_manager.get_named_parameters_for_run(0)
+        lora_param_ids = {id(param) for _, param in named_params_lora}
+        extra_named_params = [
+            (name, param) for name, param in named_params if param.requires_grad and id(param) not in lora_param_ids
+        ]
+        named_params = named_params_lora + extra_named_params
 
     optimizer = _create_optimizer(config, named_params, parallel_dims)
 
@@ -137,6 +142,10 @@ def setup_optimizer(
         return CPUOffloadOptimizer(optimizer)
 
     return optimizer
+
+
+def _is_lora_param_name(name: str) -> bool:
+    return "lora_A" in name or "lora_B" in name
 
 
 def _create_optimizer(
@@ -250,7 +259,12 @@ def _create_muon_optimizer(
 
 
 class MultiLoRAOptimizer:
-    def __init__(self, config: OptimizerConfigType, parallel_dims: ParallelDims):
+    def __init__(
+        self,
+        config: OptimizerConfigType,
+        parallel_dims: ParallelDims,
+        shared_named_params: list[tuple[str, nn.Parameter]] | None = None,
+    ):
         self.config = config
         self.parallel_dims = parallel_dims
         self.multi_run_manager = get_multi_run_manager()
@@ -258,6 +272,13 @@ class MultiLoRAOptimizer:
 
         self.optimizers: list[Optimizer | None] = [None] * self.multi_run_manager.max_runs
         self._post_creation_callbacks: list[Callable[[Optimizer, int], None]] = []
+        self.shared_named_params = shared_named_params or []
+        self.shared_optimizer: Optimizer | None = None
+        if self.shared_named_params:
+            self.shared_optimizer = _create_optimizer(self.config, self.shared_named_params, self.parallel_dims)
+            self.logger.info(
+                f"Created shared optimizer with {sum(param.numel() for _, param in self.shared_named_params):,} parameters"
+            )
 
         # Register creation hook for optimizer setup
         # The MultiRunManager class handles parameter reset internally when new runs are created
@@ -289,23 +310,46 @@ class MultiLoRAOptimizer:
             callback(self.optimizers[idx], idx)
 
     def step(self):
-        for idx in self.multi_run_manager.ready_to_update_idxs:
+        ready_idxs = self.multi_run_manager.ready_to_update_idxs
+        for idx in ready_idxs:
             self.optimizers[idx].step()
+        if self.shared_optimizer is not None and ready_idxs:
+            self.shared_optimizer.step()
 
     def zero_grad(self):
-        for idx in self.multi_run_manager.ready_to_update_idxs:
+        ready_idxs = self.multi_run_manager.ready_to_update_idxs
+        for idx in ready_idxs:
             self.optimizers[idx].zero_grad()
+        if self.shared_optimizer is not None and ready_idxs:
+            self.shared_optimizer.zero_grad()
 
     def get_current_lr(self, idx: int | None = None) -> float:
         if idx is None:
             for idx in self.multi_run_manager.ready_to_update_idxs:
                 return self.optimizers[idx].param_groups[0]["lr"]
+            if self.shared_optimizer is not None:
+                return self.shared_optimizer.param_groups[0]["lr"]
             else:
                 self.logger.warning("No runs are ready to update. Returning 0.0 for current learning rate.")
                 return 0.0
         else:
-            return self.optimizers[idx].param_groups[0]["lr"]
+            if self.optimizers[idx] is not None:
+                return self.optimizers[idx].param_groups[0]["lr"]
+            if self.shared_optimizer is not None:
+                return self.shared_optimizer.param_groups[0]["lr"]
+            return 0.0
 
 
-def setup_multi_optimizer(config: OptimizerConfigType, parallel_dims: ParallelDims) -> MultiLoRAOptimizer:
-    return MultiLoRAOptimizer(config, parallel_dims)
+def setup_multi_optimizer(
+    config: OptimizerConfigType,
+    parallel_dims: ParallelDims,
+    named_params: list[tuple[str, nn.Parameter]] | None = None,
+) -> MultiLoRAOptimizer:
+    shared_named_params: list[tuple[str, nn.Parameter]] = []
+    if named_params is not None:
+        shared_named_params = [
+            (name, param)
+            for name, param in named_params
+            if param.requires_grad and not _is_lora_param_name(name)
+        ]
+    return MultiLoRAOptimizer(config, parallel_dims, shared_named_params=shared_named_params)

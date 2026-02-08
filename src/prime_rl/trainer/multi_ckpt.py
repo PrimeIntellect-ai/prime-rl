@@ -26,18 +26,24 @@ if TYPE_CHECKING:
 
 
 class RunState(Stateful):
-    """Per-run state wrapper - just like AppState but for adapter weights."""
+    """Per-run state wrapper for adapter weights and optional shared trainable weights."""
 
     def __init__(
         self,
         model_state_dict: dict[str, Any],
+        shared_model_state_dict: dict[str, Any] | None,
         optimizer,
         scheduler,
+        shared_optimizer,
+        shared_scheduler,
         progress: Progress,
     ):
         self.model_state_dict = model_state_dict
+        self.shared_model_state_dict = shared_model_state_dict
         self.optimizer = optimizer
         self.scheduler = scheduler
+        self.shared_optimizer = shared_optimizer
+        self.shared_scheduler = shared_scheduler
         self.progress = progress
 
     def state_dict(self) -> dict[str, Any]:
@@ -45,10 +51,16 @@ class RunState(Stateful):
             "model": self.model_state_dict,
             "progress": asdict(self.progress),
         }
+        if self.shared_model_state_dict is not None:
+            state["shared_model"] = self.shared_model_state_dict
         if self.optimizer is not None:
             state["optimizer"] = self.optimizer.state_dict()
         if self.scheduler is not None:
             state["scheduler"] = self.scheduler.state_dict()
+        if self.shared_optimizer is not None:
+            state["shared_optimizer"] = self.shared_optimizer.state_dict()
+        if self.shared_scheduler is not None:
+            state["shared_scheduler"] = self.shared_scheduler.state_dict()
         return state
 
     @torch.no_grad()
@@ -57,12 +69,20 @@ class RunState(Stateful):
         for key, value in state_dict["model"].items():
             if key in self.model_state_dict:
                 self.model_state_dict[key].copy_(value)
+        if "shared_model" in state_dict and self.shared_model_state_dict is not None:
+            for key, value in state_dict["shared_model"].items():
+                if key in self.shared_model_state_dict:
+                    self.shared_model_state_dict[key].copy_(value)
         # Load optimizer
         if "optimizer" in state_dict and self.optimizer is not None:
             self.optimizer.load_state_dict(state_dict["optimizer"])
         # Load scheduler
         if "scheduler" in state_dict and self.scheduler is not None:
             self.scheduler.load_state_dict(state_dict["scheduler"])
+        if "shared_optimizer" in state_dict and self.shared_optimizer is not None:
+            self.shared_optimizer.load_state_dict(state_dict["shared_optimizer"])
+        if "shared_scheduler" in state_dict and self.shared_scheduler is not None:
+            self.shared_scheduler.load_state_dict(state_dict["shared_scheduler"])
         # Don't load progress because it resets packers count
         # There will be a step issue if we load progress
 
@@ -127,10 +147,18 @@ class MultiCheckpointManager:
                 model_state_dict = {
                     k: v.data.detach().clone() for k, v in self.multi_run_manager.get_named_parameters_for_run(idx)
                 }
+                shared_model_state_dict = None
+                if optimizer.shared_named_params:
+                    shared_model_state_dict = {
+                        k: v.data.detach().clone() for k, v in optimizer.shared_named_params
+                    }
                 run_state = RunState(
                     model_state_dict,
+                    shared_model_state_dict,
                     optimizer.optimizers[idx],
                     scheduler.schedulers[idx],
+                    optimizer.shared_optimizer,
+                    scheduler.shared_scheduler,
                     self.multi_run_manager.progress[idx],
                 )
                 ckpt_path = manager.get_ckpt_path(step)
@@ -199,10 +227,14 @@ class MultiCheckpointManager:
 
         try:
             model_state_dict = dict(self.multi_run_manager.get_named_parameters_for_run(idx))
+            shared_model_state_dict = dict(optimizer.shared_named_params) if optimizer.shared_named_params else None
             run_state = RunState(
                 model_state_dict,
+                shared_model_state_dict,
                 optimizer.optimizers[idx],
                 scheduler.schedulers[idx],
+                optimizer.shared_optimizer,
+                scheduler.shared_scheduler,
                 self.multi_run_manager.progress[idx],
             )
             ckpt_path = manager.get_ckpt_path(step)
