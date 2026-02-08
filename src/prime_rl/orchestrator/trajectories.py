@@ -1,21 +1,12 @@
 import base64
 import time
 from io import BytesIO
-from typing import TypedDict
 
 import verifiers as vf
 from PIL import Image
 
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
-
-
-class TrajectoryStepWithTemp(TypedDict):
-    """Trajectory step with temperature field added by prime-rl's extract_result."""
-
-    tokens: vf.TrajectoryStepTokens
-    temperature: float
-
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
@@ -57,6 +48,7 @@ def interleave_rollout(
         return None
 
     has_error = output["error"] is not None
+    # this field should be guaranteed because we set temperature in get_sampling_args
     temperature = output["sampling_args"]["temperature"]
 
     def get_images(step_idx: int) -> tuple[list | None, list | None]:
@@ -65,9 +57,10 @@ def interleave_rollout(
         key = output["example_id"] if cache_key is None else cache_key
         return vlm_cache.get_for_step(key, step_idx)
 
-    def make_sample(step: TrajectoryStepWithTemp, step_idx: int) -> TrainingSample:
+    def make_sample(step: vf.TrajectoryStep, step_idx: int) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         tokens = step["tokens"]
+        assert tokens is not None
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
@@ -87,10 +80,10 @@ def interleave_rollout(
             image_grid_thw=image_grid_thw,
         )
 
-    def extend_sample(sample: TrainingSample, step: TrajectoryStepWithTemp, prefix_len: int, step_idx: int) -> None:
+    def extend_sample(sample: TrainingSample, step: vf.TrajectoryStep, prefix_len: int, step_idx: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = step["tokens"]
-        temperature = step["temperature"]
+        assert tokens is not None
 
         # Extend with new prompt tokens (mask=False, no gradient)
         new_prompt_ids = tokens["prompt_ids"][prefix_len:]
