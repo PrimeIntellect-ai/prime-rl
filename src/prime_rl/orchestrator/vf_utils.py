@@ -196,6 +196,7 @@ async def evaluate(
 
     NOTE: Currently we cannot use vf.Environment.evaluate() directly because it does not support multiple clients.
           Instead, we use our generate() wrapper which round-robins clients.
+
     """
     inputs = env._get_eval_inputs(num_examples, rollouts_per_example)
     outputs = await generate(
@@ -203,7 +204,11 @@ async def evaluate(
         clients=clients,
         model_name=model_name,
         examples=inputs,
-        rollouts_per_example=1,  # _get_eval_inputs() already repeats the examples
+        # _get_eval_inputs() already repeats the examples, this currently means
+        # we do not support eval envs with group scoring well -- this should be
+        # resolved once we can use vf.Environment.generate() and
+        # vf.Environment.evaluate() directly though
+        rollouts_per_example=1,
         sampling_args=sampling_args,
         max_retries=max_retries,
         state_columns=state_columns,
