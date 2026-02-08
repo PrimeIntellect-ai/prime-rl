@@ -195,6 +195,12 @@ class InferenceConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_vllm_env(self):
+        # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
+        os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+        return self
+
+    @model_validator(mode="after")
     def round_up_max_lora_rank(self):
         """Round up max_lora_rank to the nearest valid vLLM value.
 
