@@ -15,7 +15,7 @@
     "cp": 1,
     "docker_image": null,
     "device_name": "NVIDIA RTX A6000",
-    "commit_sha": "1c813485",
+    "commit_sha": "a76eec30",
     "timestamp": "2026-02-01T00:37:17.504432+00:00",
     "success": true,
     "error_reason": null,
@@ -41,8 +41,8 @@
       "max": 63.430982740130275
     },
     "peak_memory": {
-      "gib": 19.50390625,
-      "pct": 41.029855115635286
+      "gib": 22.685546875,
+      "pct": 47.72
     }
   }
 }
