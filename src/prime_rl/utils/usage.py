@@ -107,9 +107,12 @@ def report_inference_usage(step: int, rollouts: list["vf.State"]) -> None:
     run_id = os.getenv("RUN_ID")
     if not run_id or not _reporter or not _reporter.is_enabled:
         return
-    input_tokens, output_tokens = 0, 0
-    for rollout in rollouts:
-        inp, out = _get_inference_tokens(rollout)
-        input_tokens += inp
-        output_tokens += out
-    _reporter.report_inference(run_id, step, input_tokens, output_tokens)
+    try:
+        input_tokens, output_tokens = 0, 0
+        for rollout in rollouts:
+            inp, out = _get_inference_tokens(rollout)
+            input_tokens += inp
+            output_tokens += out
+        _reporter.report_inference(run_id, step, input_tokens, output_tokens)
+    except Exception as e:
+        get_logger().warning(f"Inference usage reporting failed: {e}")
