@@ -73,6 +73,7 @@ def test_apply_kv_prefix_state_dict_applies_prefix_to_matching_layer():
     assert torch.equal(key, kv_prefix_state["model.layers.0.self_attn.kv_prefix_key"].transpose(0, 1))
     assert torch.equal(value, kv_prefix_state["model.layers.0.self_attn.kv_prefix_value"].transpose(0, 1))
 
+
 def test_apply_kv_prefix_state_dict_clears_existing_prefix_when_empty_update():
     model = FakeModel()
     kv_prefix_state = {
@@ -85,6 +86,7 @@ def test_apply_kv_prefix_state_dict_clears_existing_prefix_when_empty_update():
 
     assert cleared_layers == 0
     assert get_layer_kv_prefix(model.layers[0]) is None
+
 
 def test_apply_kv_prefix_state_dict_raises_for_unknown_layer():
     model = FakeModel()

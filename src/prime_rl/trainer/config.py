@@ -359,7 +359,9 @@ class ModelConfig(BaseConfig):
         if self.kv_prefix is None:
             return self
         if self.impl == "hf":
-            raise ValueError("KV-prefix tuning is only supported with the custom implementation (impl='custom' or 'auto').")
+            raise ValueError(
+                "KV-prefix tuning is only supported with the custom implementation (impl='custom' or 'auto')."
+            )
         if self.attn not in ["flash_attention_2", "flash_attention_3", "fa4"]:
             raise ValueError("KV-prefix tuning requires flash attention 2/3/4.")
         if self.cp > 1:

@@ -94,10 +94,14 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
                     self.logger.debug(f"Saving weights for run {idx} to {save_dir}")
                     if full_state_dict is not None:
-                        save_state_dict(dict(full_state_dict), save_dir, self.save_format, self.save_sharded, adapter=False)
+                        save_state_dict(
+                            dict(full_state_dict), save_dir, self.save_format, self.save_sharded, adapter=False
+                        )
 
                     if adapter_state_dict is not None:
-                        save_state_dict(adapter_state_dict, save_dir, self.save_format, save_sharded=False, adapter=True)
+                        save_state_dict(
+                            adapter_state_dict, save_dir, self.save_format, save_sharded=False, adapter=True
+                        )
                         save_lora_config(self.lora_config, model, save_dir)
 
                     self._notify_orchestrator(save_dir)

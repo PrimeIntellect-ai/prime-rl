@@ -149,9 +149,7 @@ class MultiCheckpointManager:
                 }
                 shared_model_state_dict = None
                 if optimizer.shared_named_params:
-                    shared_model_state_dict = {
-                        k: v.data.detach().clone() for k, v in optimizer.shared_named_params
-                    }
+                    shared_model_state_dict = {k: v.data.detach().clone() for k, v in optimizer.shared_named_params}
                 run_state = RunState(
                     model_state_dict,
                     shared_model_state_dict,

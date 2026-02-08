@@ -5,7 +5,6 @@ import torch.nn as nn
 
 from prime_rl.trainer.models.layers.attn import FlashAttention
 
-
 KV_PREFIX_KEY_NAME = "kv_prefix_key"
 KV_PREFIX_VALUE_NAME = "kv_prefix_value"
 

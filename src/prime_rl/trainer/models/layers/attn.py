@@ -168,11 +168,14 @@ class FlashAttention(nn.Module):
         prefixed_keys = torch.cat(merged_keys, dim=0).contiguous()
         prefixed_values = torch.cat(merged_values, dim=0).contiguous()
 
-        seq_prefix_offsets = torch.arange(
-            cu_seqlens_q.shape[0],
-            device=cu_seqlens_q.device,
-            dtype=cu_seqlens_q.dtype,
-        ) * self._kv_prefix_num_tokens
+        seq_prefix_offsets = (
+            torch.arange(
+                cu_seqlens_q.shape[0],
+                device=cu_seqlens_q.device,
+                dtype=cu_seqlens_q.dtype,
+            )
+            * self._kv_prefix_num_tokens
+        )
         cu_seqlens_k = cu_seqlens_q + seq_prefix_offsets
         max_seqlen_k = max_seqlen_q + self._kv_prefix_num_tokens
         return prefixed_keys, prefixed_values, cu_seqlens_k, max_seqlen_k

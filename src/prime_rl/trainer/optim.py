@@ -348,8 +348,6 @@ def setup_multi_optimizer(
     shared_named_params: list[tuple[str, nn.Parameter]] = []
     if named_params is not None:
         shared_named_params = [
-            (name, param)
-            for name, param in named_params
-            if param.requires_grad and not _is_lora_param_name(name)
+            (name, param) for name, param in named_params if param.requires_grad and not _is_lora_param_name(name)
         ]
     return MultiLoRAOptimizer(config, parallel_dims, shared_named_params=shared_named_params)
