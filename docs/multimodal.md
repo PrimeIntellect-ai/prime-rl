@@ -16,52 +16,20 @@ Prime-RL has experimental support for training vision-language models (VLMs) lik
 
 - **Higher KL mismatch with multi-image inputs**: VLM training exhibits higher KL mismatch between inference and trainer logprobs compared to text-only models, especially with multiple images per sample. We are investigating the root cause. The existing importance ratio masking thresholds should handle reasonable mismatches.
 
-- **VLM requires branching strategy**: Multimodal training must use `trajectory_strategy = "branching"` in your orchestrator config. The interleaved strategy doesn't work because vLLM tokenizes images differently at different conversation states, causing token prefix mismatches between trajectory steps. Branching treats each step independently, avoiding this issue.
+## How Multi-Turn VLM Training Works
+
+VLM training uses the same `interleave_rollout` path as text-only models. Multi-turn trajectory steps are merged into a single training sample wherever the extension property holds (consecutive steps share a token prefix). When extension breaks (e.g., due to context compaction), a new sample is started automatically.
+
+Images are handled via a `VLMImageCache` built once per batch:
+
+1. **Extract**: Base64 images are decoded from trajectory step prompts into PIL images. Since prompts are cumulative, only new images per step are extracted.
+2. **Preprocess**: All images are processed in a single batched call through the HuggingFace image processor, producing `pixel_values` (patches) and `image_grid_thw` (grid dimensions).
+3. **Attach**: Each training sample receives the cumulative `pixel_values` up to its last merged step. When steps are merged, the sample's images are updated to include all images seen so far.
+
+This works correctly for all combinations: images in early turns with text-only follow-ups, images appearing mid-conversation, new images accumulating across turns, and interleaved agents with separate image streams.
+
+Each multimodal sample becomes its own micro-batch during training (no packing with other samples) since image tensor sizes vary per sample.
 
 ## vLLM Configuration
 
-When using vLLM for inference with VLM models, you must set these environment variables to avoid issues with multimodal models:
-
-```bash
-export VLLM_ENABLE_V1_MULTIPROCESSING=0
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-```
-
-## Why Interleaved Strategy Doesn't Work for VLMs
-
-The interleaved trajectory strategy fails for VLM conversations due to how vLLM's `/tokenize` endpoint handles images.
-
-### The Problem
-
-For multi-turn conversations, the interleaved strategy uses the Token-In Token-Out API:
-
-1. **Turn 1**: Uses standard `/chat/completions` endpoint
-   - vLLM properly processes images and expands `<|image_pad|>` placeholders
-   - Example: 2 images → 128 tokens (64 per image based on grid dimensions)
-
-2. **Turn 2+**: Uses `/chat/completions/tokens` with pre-tokenized prompt
-   - Tokens are computed by calling vLLM's `/tokenize` endpoint
-   - **`/tokenize` does NOT expand image tokens** - it returns raw `<|image_pad|>` tokens (1 per image)
-   - Example: 2 images in turn 2 → only 2 tokens instead of 128
-
-3. **Mismatch**: The model validates that `count(image_tokens) == image_features` and fails:
-   ```
-   ValueError: Image features and image tokens do not match: tokens: 130, features: 256
-   ```
-
-### Technical Details
-
-- vLLM's `/tokenize` uses `apply_chat_template(tokenize=False)` followed by basic tokenization
-- Image token expansion happens later in the model executor layer via `PromptReplacement`
-- The HuggingFace processor can properly expand image tokens, but the tokenize endpoint doesn't use it
-
-### Why Branching Works
-
-The branching strategy creates separate `TrainingSample` objects per turn. Each sample goes through the standard `/chat/completions` endpoint which properly expands image tokens. Tokens and `pixel_values` are always matched per-turn.
-
-### Configuration
-
-```toml
-[orchestrator]
-trajectory_strategy = "branching"  # Required for VLM
-```
+`VLLM_WORKER_MULTIPROC_METHOD=spawn` is required for VLM inference. This is set automatically in `src/prime_rl/inference/config.py`, so if you use `uv run rl @ ...` it works out of the box, but if you start the vLLM server yourself, make sure this environment variable is set.

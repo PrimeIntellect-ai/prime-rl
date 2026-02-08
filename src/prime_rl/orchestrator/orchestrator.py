@@ -9,7 +9,7 @@ from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import branch_rollout, build_vlm_image_cache, interleave_rollout
+from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
 
@@ -129,11 +129,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     processor = None
     if is_vlm:
-        if config.trajectory_strategy == "interleaved":
-            raise ValueError(
-                "Multimodal training does not support the interleaved trajectory strategy. "
-                "Set trajectory_strategy = 'branching' (see docs/multimodal.md)."
-            )
         logger.info(f"Loading VLM processor for {config.model.name}")
         processor = AutoProcessor.from_pretrained(
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
@@ -468,22 +463,14 @@ async def orchestrate(config: OrchestratorConfig):
             vlm_cache = None
 
         # Process rollouts in parallel
+        def process_rollout(rollout: vf.State, rollout_idx: int) -> list[TrainingSample] | None:
+            return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
+
         loop = asyncio.get_event_loop()
-
-        if config.trajectory_strategy == "interleaved":
-            futures = [loop.run_in_executor(rollout_executor, interleave_rollout, r) for r in train_rollouts]
-        else:
-
-            def branch_rollout_with_vlm_cache(
-                rollout: vf.RolloutOutput, rollout_idx: int
-            ) -> list[TrainingSample] | None:
-                return branch_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
-
-            futures = [
-                loop.run_in_executor(rollout_executor, branch_rollout_with_vlm_cache, r, rollout_idx)
-                for rollout_idx, r in enumerate(train_rollouts)
-            ]
-
+        futures = [
+            loop.run_in_executor(rollout_executor, process_rollout, r, rollout_idx)
+            for rollout_idx, r in enumerate(train_rollouts)
+        ]
         results = await asyncio.gather(*futures)
 
         # Collect results and assign advantages
@@ -498,7 +485,7 @@ async def orchestrate(config: OrchestratorConfig):
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
             f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
-            f"to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
+            f"to {len(train_examples)} training examples"
         )
 
         # Compute teacher logprobs if teacher model is configured
@@ -656,7 +643,10 @@ async def orchestrate(config: OrchestratorConfig):
             "error/mean": (~results_df.error.isna()).mean(),
             **{
                 f"error/{error}": error_rate
-                for error, error_rate in results_df.error.dropna().value_counts(normalize=True).items()
+                for error, error_rate in results_df.error.dropna()
+                .apply(lambda e: e.get("error") if isinstance(e, dict) else e)
+                .value_counts(normalize=True)
+                .items()
             },
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},

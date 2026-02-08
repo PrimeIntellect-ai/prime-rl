@@ -16,6 +16,7 @@ from prime_rl.utils.pydantic_config import BaseSettings, parse_argv
 SHORTENED_ATTN_MAPPING = {
     "flash_attention_2": "FA2",
     "flash_attention_3": "FA3",
+    "flash_attention_4": "FA4",
 }
 
 # These words are stripped from the device name to get the short name

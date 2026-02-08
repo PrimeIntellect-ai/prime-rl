@@ -1,6 +1,7 @@
 import base64
 import time
 from io import BytesIO
+from typing import TypedDict
 
 import verifiers as vf
 from PIL import Image
@@ -8,95 +9,40 @@ from PIL import Image
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
+
+class TrajectoryStepWithTemp(TypedDict):
+    """Trajectory step with temperature field added by prime-rl's extract_result."""
+
+    tokens: vf.TrajectoryStepTokens
+    temperature: float
+
+
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
 
 
-def interleave_rollout(output: vf.RolloutOutput) -> list[TrainingSample] | None:
-    """
-    Convert vf.RolloutOutput to a *single* trainable rollout by interleaving the trajectory.
-
-    NOTE:
-    - This requires that consecutive trajectory steps share token prefixes (incremental tokenization)
-    - This approach is susceptible to subtle differences due to re-tokenization in multi-turn environments.
-    - VLM (multimodal) is NOT supported with interleaved strategy; use branching instead.
-    """
-    logger = get_logger()
-
-    trajectory = output["trajectory"]
-    if len(trajectory) == 0:
-        logger.warning(f"No trajectory steps for example {output['example_id']}. Skipping rollout.")
-        return None
-
-    has_error = output["error"] is not None
-
-    # Initialize the rollout with prompt and completion from first trajectory step
-    first_step = trajectory[0]
-    temperature = output["sampling_args"]["temperature"]
-    if has_error:
-        completion_mask = [False] * len(first_step["tokens"]["completion_mask"])
-    else:
-        completion_mask = [bool(i) for i in first_step["tokens"]["completion_mask"]]
-
-    completion_ids = list(first_step["tokens"]["completion_ids"])
-    interleaved_rollout = TrainingSample(
-        prompt_ids=list(first_step["tokens"]["prompt_ids"]),
-        prompt_mask=[bool(i) for i in first_step["tokens"]["prompt_mask"]],
-        completion_ids=completion_ids,
-        completion_mask=completion_mask,
-        completion_logprobs=list(first_step["tokens"]["completion_logprobs"]),
-        completion_temperatures=[temperature] * len(completion_ids),
-        teacher_logprobs=None,
-        advantage=None,
-    )
-
-    # Interleave all other trajectory steps into completion
-    prefix_tokens = first_step["tokens"]["prompt_ids"] + first_step["tokens"]["completion_ids"]
-    for step_idx, step in enumerate(trajectory[1:], start=2):
-        tokens = step["tokens"]
-        assert tokens is not None
-        prev_trajectory_and_new_prompt_ids = tokens["prompt_ids"]
-
-        # Incremental tokenization assumption
-        if not prefix_tokens == prev_trajectory_and_new_prompt_ids[: len(prefix_tokens)]:
-            logger.warning(
-                f"Found mismatch in prefix tokens for example {output['example_id']} at trajectory step {step_idx}"
-            )
-
-        # Extend the completion with the new prompt (use step's temperature for prompt tokens too)
-        prompt_ids = list(prev_trajectory_and_new_prompt_ids[len(prefix_tokens) :])
-        interleaved_rollout.completion_ids.extend(prompt_ids)
-        interleaved_rollout.completion_mask.extend([False] * len(prompt_ids))
-        interleaved_rollout.completion_logprobs.extend([0.0] * len(prompt_ids))
-        interleaved_rollout.completion_temperatures.extend([temperature] * len(prompt_ids))
-
-        # Extend the completion with the new completion tokens
-        completion_ids = tokens["completion_ids"]
-        completion_logprobs = tokens["completion_logprobs"]
-        interleaved_rollout.completion_ids.extend(completion_ids)
-        if has_error:
-            interleaved_rollout.completion_mask.extend([False] * len(tokens["completion_mask"]))
-        else:
-            interleaved_rollout.completion_mask.extend([bool(i) for i in tokens["completion_mask"]])
-        interleaved_rollout.completion_logprobs.extend(completion_logprobs)
-        interleaved_rollout.completion_temperatures.extend([temperature] * len(completion_ids))
-
-        # New prefix is the current prompt and completion ids concatenated
-        prefix_tokens = tokens["prompt_ids"] + tokens["completion_ids"]
-
-    return [interleaved_rollout]
-
-
-def branch_rollout(
+def interleave_rollout(
     output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
 ) -> list[TrainingSample] | None:
     """
-    Convert vf.RolloutOutput to *multiple* trainable rollouts using branching trajectories strategy.
+    Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
+    where the extension property holds.
 
-    Each rollout gets the cumulative images up to its step, supporting multi-turn VLM
-    conversations where new images can be introduced in later turns.
+    When consecutive steps share token prefixes (extension property), they are
+    merged into a single sample. When extension breaks (e.g., due to context
+    compaction or a change in control-flow), a new sample is started.
+
+    Supports multi-prefix matching to handle interleaved agents. For example,
+    [agent1-step1, agent1-step2, agent2-step1, agent1-step3] produces two samples:
+    agent1 steps merged together, agent2 step separate.
+
+    Returns a list of samples - could be 1 (extension always held) or up to T
+    (extension never held).
+
+    For VLM models, pass vlm_cache to attach cumulative pixel_values per sample.
+    Each sample gets the images accumulated up to its last merged step.
 
     Args:
         output: vf.RolloutOutput containing trajectory data
@@ -105,7 +51,6 @@ def branch_rollout(
     """
     logger = get_logger()
 
-    rollouts = []
     trajectory = output["trajectory"]
     if len(trajectory) == 0:
         logger.warning(f"No trajectory steps for example {output['example_id']}. Skipping rollout.")
@@ -114,35 +59,96 @@ def branch_rollout(
     has_error = output["error"] is not None
     temperature = output["sampling_args"]["temperature"]
 
-    for step_idx, step in enumerate(trajectory):
+    def get_images(step_idx: int) -> tuple[list | None, list | None]:
+        if vlm_cache is None:
+            return None, None
+        key = output["example_id"] if cache_key is None else cache_key
+        return vlm_cache.get_for_step(key, step_idx)
+
+    def make_sample(step: TrajectoryStepWithTemp, step_idx: int) -> TrainingSample:
+        """Create a new TrainingSample from a trajectory step."""
         tokens = step["tokens"]
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
-
-        # Get cumulative images up to this step
-        if vlm_cache is not None:
-            key = output["example_id"] if cache_key is None else cache_key
-            pixel_values, image_grid_thw = vlm_cache.get_for_step(key, step_idx)
-        else:
-            pixel_values, image_grid_thw = None, None
-
         completion_ids = list(tokens["completion_ids"])
-        rollout = TrainingSample(
+        pixel_values, image_grid_thw = get_images(step_idx)
+        return TrainingSample(
             prompt_ids=list(tokens["prompt_ids"]),
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
             completion_ids=completion_ids,
             completion_mask=completion_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
             completion_temperatures=[temperature] * len(completion_ids),
-            advantage=None,
             teacher_logprobs=None,
+            advantage=None,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
         )
-        rollouts.append(rollout)
-    return rollouts
+
+    def extend_sample(sample: TrainingSample, step: TrajectoryStepWithTemp, prefix_len: int, step_idx: int) -> None:
+        """Extend an existing sample with a new trajectory step (extension property holds)."""
+        tokens = step["tokens"]
+        temperature = step["temperature"]
+
+        # Extend with new prompt tokens (mask=False, no gradient)
+        new_prompt_ids = tokens["prompt_ids"][prefix_len:]
+        sample.completion_ids.extend(new_prompt_ids)
+        sample.completion_mask.extend([False] * len(new_prompt_ids))
+        sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
+        sample.completion_temperatures.extend([temperature] * len(new_prompt_ids))
+
+        # Extend with new completion tokens
+        completion_ids = tokens["completion_ids"]
+        sample.completion_ids.extend(completion_ids)
+        if has_error:
+            sample.completion_mask.extend([False] * len(tokens["completion_mask"]))
+        else:
+            sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
+        sample.completion_logprobs.extend(tokens["completion_logprobs"])
+        sample.completion_temperatures.extend([temperature] * len(completion_ids))
+
+        # Update cumulative images to include any new images from this step
+        pixel_values, image_grid_thw = get_images(step_idx)
+        sample.pixel_values = pixel_values
+        sample.image_grid_thw = image_grid_thw
+
+    # Track multiple active (prefix, sample) pairs to handle interleaved agents
+    # Each entry is [prefix_tokens, sample] where prefix_tokens is the accumulated token sequence
+    active_samples: list[list] = []
+
+    first_tokens = trajectory[0]["tokens"]
+    first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
+    active_samples.append([first_prefix, make_sample(trajectory[0], step_idx=0)])
+
+    for step_idx, step in enumerate(trajectory[1:], start=1):
+        tokens = step["tokens"]
+        step_prompt_ids = tokens["prompt_ids"]
+
+        # Check if this step extends ANY active prefix
+        matched_idx = None
+        for idx, (prefix_tokens, _) in enumerate(active_samples):
+            if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
+                matched_idx = idx
+                break
+
+        if matched_idx is not None:
+            # Extension holds - merge into matched sample
+            prefix_tokens, sample = active_samples[matched_idx]
+            extend_sample(sample, step, len(prefix_tokens), step_idx=step_idx)
+            # Update prefix for this sample
+            active_samples[matched_idx][0] = tokens["prompt_ids"] + tokens["completion_ids"]
+        else:
+            # No prefix matches - start a new sample
+            logger.debug(
+                f"Extension property broke at step {step_idx + 1} for example {output['example_id']}. "
+                f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
+            )
+            new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
+            active_samples.append([new_prefix, make_sample(step, step_idx=step_idx)])
+
+    return [sample for _, sample in active_samples]
 
 
 # =============================================================================
@@ -241,9 +247,16 @@ def _preprocess_images_batched(
             for eid, counts in images_per_step_per_example.items()
         }
 
+    image_sizes = [(img.width, img.height) for img in images]
     processed = processor.image_processor(images=images, return_tensors="pt")
     all_pixel_values = processed["pixel_values"]
     all_grid_thw = processed["image_grid_thw"]
+
+    logger = get_logger()
+    logger.debug(
+        f"VLM image processing: {len(images)} images, sizes={image_sizes}, "
+        f"pixel_values={all_pixel_values.shape}, grid_thw={all_grid_thw.tolist()}"
+    )
 
     result = {}
     img_idx = 0

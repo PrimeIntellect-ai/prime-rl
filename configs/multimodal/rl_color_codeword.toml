@@ -10,7 +10,7 @@ name = "Qwen/Qwen3-VL-4B-Instruct"
 [orchestrator]
 batch_size = 256
 rollouts_per_example = 16
-trajectory_strategy = "branching"  # Required for multi-turn VLM
+
 
 [orchestrator.sampling]
 max_tokens = 64
