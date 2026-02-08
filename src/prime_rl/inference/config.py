@@ -6,7 +6,6 @@ from pydantic import Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
-from prime_rl.utils.vlm import is_vlm_model
 
 # TODO: Set thinking/ solution budget
 
@@ -197,9 +196,8 @@ class InferenceConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_vllm_env(self):
+        # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
         os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
-        if is_vlm_model(self.model.name):
-            os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
         return self
 
     @model_validator(mode="after")
