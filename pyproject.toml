@@ -31,10 +31,9 @@ dependencies = [
     "torchdata>=0.11.0",
     "accelerate>=1.10.1",
     "blobfile>=3.0.0",
-    "reverse-text>=0.1.4",
     "torchtitan",
     "dion",
-    "reverse-text",
+    # "reverse-text",
     "verifiers>=0.1.8",
     "prime-evals>=0.1.5",
     "ring-flash-attn>=0.1.8",
@@ -83,7 +82,7 @@ override-dependencies = ["nvidia-cudnn-cu12>=9.15"]
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "3409cb5" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "bc9fcd5" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eebbd950a6ff11d9b5f806282e33df83df9d" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }

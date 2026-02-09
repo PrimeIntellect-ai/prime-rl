@@ -2505,7 +2505,6 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pylatexenc" },
     { name = "pyzmq" },
-    { name = "reverse-text" },
     { name = "rich" },
     { name = "ring-flash-attn" },
     { name = "tenacity" },
@@ -2568,8 +2567,6 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "reverse-text", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "reverse-text", specifier = ">=0.1.4", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
     { name = "tenacity", specifier = ">=8.2.0" },
@@ -2581,7 +2578,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.57.6" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=3409cb5" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=bc9fcd5" },
     { name = "vllm", specifier = "==0.14.0" },
     { name = "wandb", specifier = ">=0.20.1" },
 ]
@@ -3153,18 +3150,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c9/74/b3ff8e6c8446842c3f5c837e9c3dfcfe2018ea6ecef224c710c85ef728f4/requests-2.32.5.tar.gz", hash = "sha256:dbba0bac56e100853db0ea71b82b4dfd5fe2bf6d3754a8893c3af500cec7d7cf", size = 134517, upload-time = "2025-08-18T20:46:02.573Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/db/4254e3eabe8020b458f1a747140d32277ec7a271daf1d235b70dc0b4e6e3/requests-2.32.5-py3-none-any.whl", hash = "sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6", size = 64738, upload-time = "2025-08-18T20:46:00.542Z" },
-]
-
-[[package]]
-name = "reverse-text"
-version = "0.1.4"
-source = { registry = "https://hub.primeintellect.ai/primeintellect/simple/" }
-dependencies = [
-    { name = "datasets" },
-    { name = "verifiers" },
-]
-wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/reverse-text/@3d7ff9e4/reverse_text-0.1.4-py2.py3-none-any.whl", hash = "sha256:0adc3abcb6ceba3fa82709258c732e95c90400bc899230dce47a2e0f31a74aec" },
 ]
 
 [[package]]
@@ -3955,8 +3940,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.10.dev3"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=3409cb5#3409cb5f1d780def683bfa7eec4010f1e4682d9b" }
+version = "0.1.10.dev4"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=bc9fcd5#bc9fcd51c0e183bd9a9a6e5c322e041849df8f07" }
 dependencies = [
     { name = "datasets" },
     { name = "gepa" },
