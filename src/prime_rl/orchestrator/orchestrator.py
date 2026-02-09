@@ -44,7 +44,6 @@ from prime_rl.orchestrator.vf_utils import (
     get_completion_len,
     get_prompt_len,
     get_seq_len,
-    intercept_vf_logging,
     setup_env_client,
     spawn_env_server,
     wait_for_env_servers,
@@ -80,7 +79,7 @@ async def orchestrate(config: OrchestratorConfig):
         log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
-    intercept_vf_logging(level=config.log.vf_level)
+    vf.setup_logging(level="CRITICAL")
     logger.info("Starting orchestrator")
 
     event_loop_lag_monitor = EventLoopLagMonitor()
