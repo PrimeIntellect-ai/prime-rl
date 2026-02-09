@@ -112,6 +112,7 @@ class ElasticInferencePool:
         self.hostname = hostname
         self.client_config = client_config
         self.model_name = model_name
+        self.base_model_name = model_name  # Keep original for health checks
         self.port = port
         self.sync_interval = sync_interval
 
@@ -323,8 +324,8 @@ class ElasticInferencePool:
             data = response.json()
             models = [m.get("id") for m in data.get("data", [])]
 
-            if self.model_name not in models:
-                self.logger.debug(f"Server {ip} does not have model {self.model_name}")
+            if self.base_model_name not in models:
+                self.logger.debug(f"Server {ip} does not have base model {self.base_model_name}")
                 return False
         except Exception as e:
             self.logger.debug(f"Server {ip} model check failed: {e}")
