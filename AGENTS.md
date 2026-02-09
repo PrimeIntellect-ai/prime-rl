@@ -47,6 +47,8 @@ Namespaces are one honking great idea -- let's do more of those!
 
 Skills live in `skills/` and are symlinked to `.claude/skills/`. They teach agents how to handle specific workflows (e.g. starting the inference server, writing configs). When you make changes to the codebase, check if any skills need to be updated to stay accurate.
 
+You are responsible for maintaining the skills folder. When a workflow fails and you fix it – whether with help from the user or through trial and error – you must update the skills to make implicit knowledge explicit. You are also responsible for keeping the skills up to date whenever you or anyone else modifies the code.
+
 ## Testing
 
 Write tests as plain functions with pytest fixtures. Don't use class-based tests.
