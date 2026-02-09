@@ -496,9 +496,11 @@ def setup_multi_run_manager(
         trainer_lora = lora_config
 
         def validate_lora_rank(orch_config: "OrchestratorConfig") -> tuple[bool, str]:
-            # Default to trainer's rank if not specified
+            # Default to trainer's rank/alpha if not specified
             if orch_config.model.lora.rank is None:
                 orch_config.model.lora.rank = trainer_lora.rank
+            if orch_config.model.lora.alpha is None:
+                orch_config.model.lora.alpha = trainer_lora.alpha
             if orch_config.model.lora.rank > trainer_lora.rank:
                 return (
                     False,
