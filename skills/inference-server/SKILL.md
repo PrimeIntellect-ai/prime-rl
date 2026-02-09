@@ -20,29 +20,6 @@ uv run inference --model.name Qwen/Qwen3-0.6B --model.max_model_len 2048 --model
 uv run inference @ path/to/config.toml --server.port 8001 --gpu-memory-utilization 0.5
 ```
 
-## TOML config structure
-
-Top-level fields must come before any `[section]` header (TOML rule).
-
-```toml
-gpu_memory_utilization = 0.5
-seed = 42
-
-[model]
-name = "Qwen/Qwen3-0.6B"
-max_model_len = 4096
-enforce_eager = true
-dtype = "bfloat16"
-
-[server]
-port = 8000
-
-[parallel]
-tp = 2
-```
-
-See `src/prime_rl/inference/config.py` for all available fields and defaults.
-
 ## Custom endpoints
 
 The server extends vLLM with:
