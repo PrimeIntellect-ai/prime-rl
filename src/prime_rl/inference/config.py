@@ -3,7 +3,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
+from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 from prime_rl.utils.utils import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
@@ -291,17 +291,12 @@ class InferenceConfig(BaseSettings):
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
+            "seed": "seed",
         }
 
-        # Prefixes of fields handled via env vars that must not be passed to vLLM's namespace
-        # (logits_processors conflicts with vLLM's own logits_processors field)
-        skip_prefixes = ("logits_processors",)
-
-        for key in get_all_fields(self):
-            if key.startswith(skip_prefixes):
-                continue
+        for key, vllm_key in to_vllm.items():
             value = rgetattr(self, key.replace("-", "_"))
-            rsetattr(namespace, to_vllm.get(key, key), value)
+            rsetattr(namespace, vllm_key, value)
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
