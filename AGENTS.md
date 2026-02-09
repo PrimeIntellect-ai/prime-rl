@@ -41,8 +41,11 @@ Namespaces are one honking great idea -- let's do more of those!
 
 - Config files use `@` syntax: `uv run sft @ path/to/config.toml`
 - For multi-GPU with torchrun: `uv run torchrun --nproc-per-node 2 src/prime_rl/trainer/sft/train.py @ path/to/config.toml`
-- Boolean flags don't need `true`: use `--model.optim_cpu_offload` not `--model.optim_cpu_offload true`, use `--no-model.optim_cpu_offload` to pass False.
-- Override config values with CLI flags: `--model.name Qwen/Qwen3-0.6B --training.max_steps 100`
+- See the `toml-config` skill in `skills/` for full details on TOML structure, CLI overrides, and available commands.
+
+## Skills
+
+Skills live in `skills/` and are symlinked to `.claude/skills/`. They teach agents how to handle specific workflows (e.g. starting the inference server, writing configs). When you make changes to the codebase, check if any skills need to be updated to stay accurate.
 
 ## Testing
 

@@ -77,9 +77,8 @@ All accept `@ config.toml` and CLI overrides:
 | `uv run inference` | `InferenceConfig` | vLLM inference server |
 | `uv run trainer` | trainer config | RL trainer |
 | `uv run orchestrator` | orchestrator config | Rollout orchestrator |
+| `uv run env-server` | env server config | Environment server |
 | `uv run sft` | SFT config | Supervised fine-tuning |
-| `uv run eval` | eval config | Evaluation |
-| `uv run synthesize` | synthesize config | Data synthesis |
 
 ## Key files
 
