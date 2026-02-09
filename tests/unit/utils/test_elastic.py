@@ -8,7 +8,6 @@ import httpx
 from prime_rl.utils.elastic import (
     AdapterState,
     ElasticInferencePool,
-    ServerDiscovery,
     check_server_model,
     discover_ready_servers,
     discover_server_ips,
@@ -189,6 +188,7 @@ def test_adapter_matches_when_no_adapter_desired():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
         # No adapter desired (base model inference)
@@ -201,6 +201,7 @@ def test_adapter_matches_by_path():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
         pool._desired.path = Path("/weights/step_100")
@@ -218,6 +219,7 @@ def test_adapter_matches_by_step_when_nonzero():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
         pool._desired.path = Path("/weights/step_100")
@@ -233,6 +235,7 @@ def test_adapter_does_not_match_by_zero_step():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
         pool._desired.path = Path("/weights/step_0")
@@ -248,138 +251,13 @@ def test_adapter_returns_false_when_no_adapter_loaded():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
         pool._desired.path = Path("/weights/step_100")
         pool._desired.step = 100
 
         assert pool._adapter_matches_desired(None) is False
-
-
-# ServerDiscovery tests
-
-
-def test_server_discovery_initialization():
-    with patch("prime_rl.utils.elastic.get_logger"):
-        mock_config = MagicMock()
-        mock_config.timeout = 30
-        mock_config.api_key_var = "TEST_KEY"
-        mock_config.headers = {}
-
-        discovery = ServerDiscovery(
-            hostname="test.hostname",
-            port=8000,
-            model_name="my-model",
-            client_config=mock_config,
-            sync_interval=5.0,
-        )
-
-        assert discovery.hostname == "test.hostname"
-        assert discovery.port == 8000
-        assert discovery.sync_interval == 5.0
-        assert discovery.model_name == "my-model"
-        assert discovery.has_clients is False
-        assert discovery.get_next_client() is None
-
-
-def test_server_discovery_round_robin():
-    with patch("prime_rl.utils.elastic.get_logger"):
-        mock_config = MagicMock()
-
-        discovery = ServerDiscovery(
-            hostname="test.hostname",
-            port=8000,
-            model_name="my-model",
-            client_config=mock_config,
-            sync_interval=5.0,
-        )
-
-        # Manually set clients to test round-robin
-        client1, client2, client3 = MagicMock(), MagicMock(), MagicMock()
-        discovery._clients = [client1, client2, client3]
-        discovery._urls = ["url1", "url2", "url3"]
-
-        assert discovery.has_clients is True
-        assert discovery.get_next_client() is client1
-        assert discovery.get_next_client() is client2
-        assert discovery.get_next_client() is client3
-        assert discovery.get_next_client() is client1  # wraps around
-
-
-def test_server_discovery_refresh_creates_clients_on_discovery():
-    with (
-        patch("prime_rl.utils.elastic.get_logger"),
-        patch("prime_rl.utils.elastic.discover_ready_servers") as mock_discover,
-        patch("prime_rl.utils.elastic.setup_clients") as mock_setup_clients,
-    ):
-        mock_config = MagicMock()
-        mock_config.timeout = 30
-        mock_config.api_key_var = "TEST_KEY"
-        mock_config.headers = {}
-
-        mock_discover.return_value = ["http://10.0.0.1:8000/v1"]
-        mock_client = MagicMock()
-        mock_setup_clients.return_value = [mock_client]
-
-        discovery = ServerDiscovery(
-            hostname="test.hostname",
-            port=8000,
-            model_name="my-model",
-            client_config=mock_config,
-            sync_interval=0.0,  # No throttling for tests
-        )
-
-        changed = asyncio.run(discovery.refresh())
-
-        assert changed is True
-        mock_discover.assert_called_once_with("test.hostname", 8000, "my-model")
-
-
-def test_server_discovery_refresh_no_change_when_urls_same():
-    with (
-        patch("prime_rl.utils.elastic.get_logger"),
-        patch("prime_rl.utils.elastic.discover_ready_servers") as mock_discover,
-    ):
-        mock_config = MagicMock()
-        mock_config.timeout = 30
-        mock_config.api_key_var = "TEST_KEY"
-        mock_config.headers = {}
-
-        mock_discover.return_value = ["http://10.0.0.1:8000/v1"]
-
-        discovery = ServerDiscovery(
-            hostname="test.hostname",
-            port=8000,
-            model_name="my-model",
-            client_config=mock_config,
-            sync_interval=0.0,
-        )
-        discovery._urls = ["http://10.0.0.1:8000/v1"]
-        discovery._last_refresh = 0  # Allow refresh
-
-        changed = asyncio.run(discovery.refresh())
-
-        assert changed is False
-
-
-def test_server_discovery_model_name_can_be_updated():
-    """Test that discovery model name can be updated for LoRA switching."""
-    with patch("prime_rl.utils.elastic.get_logger"):
-        mock_config = MagicMock()
-
-        discovery = ServerDiscovery(
-            hostname="test.hostname",
-            port=8000,
-            model_name="base-model",
-            client_config=mock_config,
-            sync_interval=5.0,
-        )
-        assert discovery.model_name == "base-model"
-
-        # Simulate LoRA switch by updating model name
-        discovery.model_name = "lora-adapter"
-        discovery._urls = []  # Force refresh
-        assert discovery.model_name == "lora-adapter"
 
 
 # _get_loaded_adapter tests
@@ -391,7 +269,7 @@ def test_get_loaded_adapter_finds_correct_adapter_when_multiple_loaded():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
-            base_model="base-model",
+            model_name="base-model",
             port=8000,
         )
 
@@ -442,7 +320,7 @@ def test_get_loaded_adapter_returns_none_when_desired_adapter_not_found():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
-            base_model="base-model",
+            model_name="base-model",
             port=8000,
         )
 
@@ -473,6 +351,7 @@ def test_get_loaded_adapter_parses_step_from_path():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
 
@@ -501,6 +380,7 @@ def test_get_loaded_adapter_handles_step_dash_format():
         pool = ElasticInferencePool(
             hostname="test.hostname",
             client_config=MagicMock(),
+            model_name="base-model",
             port=8000,
         )
 

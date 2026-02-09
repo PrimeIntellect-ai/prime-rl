@@ -92,7 +92,7 @@ class PrimeMonitor(Monitor):
             },
         )
 
-    def log_samples(self, rollouts: list[vf.State], step: int) -> None:
+    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
         """Logs rollouts to Prime Intellect API."""
         if not self.is_master:
             return

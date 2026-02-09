@@ -50,3 +50,8 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`model.cp`**: When `cp>1` with `attn="flash_attention_3"`, require `model.impl="custom"` (FA3 ring-attention kernel only in custom path) (2026-02-06)
 - **`model.attn`**: Added `fa4` as an attention implementation option. Flash attention 4 is only supported with the custom implementation (#1726, 2026-02-06)
 - **`inference.model.enable_prefix_caching`**: Added flag to enable prefix caching in vLLM. Passed to vLLM as `--enable-prefix-caching` (default: None) (2026-02-08)
+- **`orchestrator.env.address`**: Added address field on `EnvConfig`. If set, connect to an environment server at this address; if None, spawn a server in a subprocess (2026-02-06)
+- **`orchestrator.env.extra_env_kwargs`**: Added on `EnvConfig`. Extra kwargs passed to the env (e.g. seq_len, interleaved_rollouts, score_rollouts). Auto-populated by the orchestrator for training envs; generally not recommended for user override. Main use case is to match these kwargs when running an env in an isolated environment server (default: {}) (2026-02-06)
+- **`OrchestratorConfig`**: Removed `workers_per_env`, `max_env_worker_restarts`, and `mask_env_responses` (2026-02-06)
+- **`EvalSaveDiskConfig`**, **`EvalSaveConfig`**, **`RetryConfig`**, **`OnlineEvalConfig`**: Removed (2026-02-06)
+- **`TemperatureScheduleConfig`**: Renamed to `TemperatureSchedulerConfig` (2026-02-06)

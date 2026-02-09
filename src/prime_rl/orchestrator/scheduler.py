@@ -1,9 +1,3 @@
-"""
-Scheduler that runs environments in subprocesses.
-
-Isolates event loop lag from environment execution.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -11,14 +5,15 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+import verifiers as vf
+from aiolimiter import AsyncLimiter
+
 from prime_rl.orchestrator.buffer import Buffer
-from prime_rl.orchestrator.config import EnvConfig, OrchestratorConfig
-from prime_rl.orchestrator.env_worker import EnvWorker, WorkerDiedError
+from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args
+from prime_rl.orchestrator.vf_utils import run_group
 from prime_rl.utils.client import InferencePool
-from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import ProgressTracker, get_logger
-from prime_rl.utils.pathing import get_env_worker_log_file
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     get_broadcast_dir,
@@ -32,15 +27,14 @@ class InflightRolloutInfo(NamedTuple):
     """Metadata for an in-flight group rollout request."""
 
     off_policy_steps: int
-    worker: EnvWorker
-    request_id: str
+    client_config: vf.ClientConfig
 
 
 class Scheduler:
-    """Asynchronously schedules group rollout requests using subprocess workers.
-
-    Runs environment execution in separate processes to isolate event loop lag
-    from the main orchestrator process.
+    """
+    Asynchronously manages scheduling of group rollout requests and policy
+    updates. Keeps a constant number of groups in-flight (continuous batching)
+    and updates the policy as soon as it becomes available.
 
     References:
     - AReal: https://arxiv.org/abs/2505.24298v1
@@ -49,20 +43,24 @@ class Scheduler:
 
     def __init__(
         self,
-        client_config: ClientConfig,
-        env_configs: list[EnvConfig],
+        env: vf.Environment,
+        inference_pool: InferencePool,
         buffer: Buffer,
         config: OrchestratorConfig,
         oversampling_factor: float,
         max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
-        inference_pool: InferencePool,
+        tasks_per_minute: int | None,
         lora_name: str | None = None,
         output_dir: Path | None = None,
     ):
         self.logger = get_logger()
-        self.client_config = client_config
+        if tasks_per_minute is not None:
+            self.rate_limiter = AsyncLimiter(max_rate=tasks_per_minute, time_period=60)
+        else:
+            self.rate_limiter = None
+        self.env = env
         self.buffer = buffer
         self.config = config
         self.batch_size = config.batch_size
@@ -81,81 +79,16 @@ class Scheduler:
         # Inference pool - used for admin operations (adapter sync) and metrics
         self.inference_pool = inference_pool
 
-        # Build example lookup dicts per env (example_id -> example)
-        self.example_lookups: dict[str, dict[int, dict]] = {}
-        for env_config in env_configs:
-            env_name = env_config.name or env_config.id
-            self.example_lookups[env_name] = buffer.example_buffer[env_name].copy()
-
-        # Create workers - multiple per env
-        self.workers_per_env = config.workers_per_env or 1
-        self.workers: dict[str, list[EnvWorker]] = {}
-        self.env_names: list[str] = []
-        for env_config in env_configs:
-            env_name = env_config.name or env_config.id
-            self.env_names.append(env_name)
-            self.workers[env_name] = []
-
-            # Setup log file if env worker file logging is enabled (all workers share one file)
-            env_log_file = None
-            if config.log.env_worker_logs and output_dir is not None:
-                env_log_file = get_env_worker_log_file(output_dir, env_name)
-                env_log_file.parent.mkdir(parents=True, exist_ok=True)
-
-            for worker_idx in range(self.workers_per_env):
-                # Start with base model name - workers will be updated after LoRA is loaded
-                worker = EnvWorker(
-                    env_id=env_config.id,
-                    env_args=env_config.args,
-                    client_config=client_config,
-                    model_name=self.model_name,
-                    seq_len=config.seq_len,
-                    interleaved_rollouts=True,
-                    max_concurrent_groups=(config.max_concurrent // (self.rollouts_per_example * self.workers_per_env))
-                    if config.max_concurrent is not None
-                    else -1,
-                    tasks_per_minute=config.tasks_per_minute or -1,
-                    example_lookup=self.example_lookups[env_name],
-                    worker_name=f"{env_name}_{worker_idx}",
-                    log_level=config.log.level,
-                    vf_log_level=config.log.vf_level,
-                    log_file=str(env_log_file) if env_log_file else None,
-                    max_restarts=config.max_env_worker_restarts,
-                    json_logging=config.log.json_logging,
-                )
-                self.workers[env_name].append(worker)
-
-        # Track in-flight requests: future -> info
-        self.inflight_group_rollouts: dict[asyncio.Future, InflightRolloutInfo] = {}
+        # Track in-flight requests: task -> info
+        self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
 
         self.step, self.ckpt_step = 0, 0
         self.checkpoint_ready = asyncio.Event()
         self.checkpoint_ready.set()
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
+        self.update_policy_task = None
         self.cancelled_rollouts_count = 0
         self.last_batch_generation_time = 0.0
-
-        # Background tasks
-        self._response_collectors: list[asyncio.Task] = []
-
-    async def start(self):
-        """Start all workers and response collectors."""
-        total_workers = sum(len(workers) for workers in self.workers.values())
-        self.logger.info(f"Starting {total_workers} env worker(s) ({self.workers_per_env} per env)")
-        for workers in self.workers.values():
-            for worker in workers:
-                worker.start()
-                # Start response collector for each worker
-                task = asyncio.create_task(worker.collect_responses())
-                self._response_collectors.append(task)
-
-    async def stop(self):
-        """Stop all workers and collectors."""
-        for task in self._response_collectors:
-            task.cancel()
-        for workers in self.workers.values():
-            for worker in workers:
-                worker.stop()
 
     def set_sampling_args(self, sampling_args: dict) -> None:
         """Update sampling args for future rollout requests."""
@@ -175,24 +108,22 @@ class Scheduler:
 
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
+        if self.rate_limiter:
+            await self.rate_limiter.acquire()
         example = self.buffer.sample_examples(n=1)[0]
-
-        # Route to worker for this example's environment
-        task = example["task"]
-        workers = self.workers[task]
-        worker = min(workers, key=lambda w: w.pending_count)
-
-        future, request_id = await worker.submit_request(
-            example_id=example["example_id"],
-            rollouts_per_example=self.config.rollouts_per_example,
-            sampling_args=self.sampling_args,
+        client_config = await self.inference_pool.get_next_client()
+        run_group_task = asyncio.create_task(
+            run_group(
+                env=self.env,
+                client=client_config,
+                example=example,
+                model_name=self.model_name,
+                rollouts_per_example=self.config.rollouts_per_example,
+                sampling_args=self.sampling_args,
+                max_retries=0,  # TODO: make configurable
+            )
         )
-
-        self.inflight_group_rollouts[future] = InflightRolloutInfo(
-            off_policy_steps=0,
-            worker=worker,
-            request_id=request_id,
-        )
+        self.inflight_group_rollouts[run_group_task] = InflightRolloutInfo(0, client_config)
 
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
@@ -235,51 +166,43 @@ class Scheduler:
 
             if self.lora_name is not None:
                 self.model_name = self.lora_name
-                # Update workers to use LoRA name for future requests
-                for workers in self.workers.values():
-                    for worker in workers:
-                        worker.update_model_name(self.lora_name)
+                self.inference_pool.update_model_name(self.model_name)
 
             self.checkpoint_ready.set()
 
             # Handle off-policy tracking - cancel old requests
-            futures_to_remove = []
-            futures_to_update = []
+            tasks_to_remove = []
+            tasks_to_update = []
 
-            for future, info in self.inflight_group_rollouts.items():
+            for task, info in self.inflight_group_rollouts.items():
                 if info.off_policy_steps > self.max_off_policy_steps:
-                    if not future.done():
-                        future.cancel()
-                    futures_to_remove.append((future, info.worker))
+                    if not task.done():
+                        task.cancel()
+                    tasks_to_remove.append((task, info.client_config))
                 else:
-                    futures_to_update.append((future, info.off_policy_steps + 1, info.worker, info.request_id))
+                    tasks_to_update.append((task, info.off_policy_steps + 1, info.client_config))
 
             # Remove cancelled
-            for future, worker in futures_to_remove:
-                self.inflight_group_rollouts.pop(future, None)
-            self.cancelled_rollouts_count += len(futures_to_remove)
+            for task, _ in tasks_to_remove:
+                self.inflight_group_rollouts.pop(task, None)
+            self.cancelled_rollouts_count += len(tasks_to_remove)
 
             # Update off-policy steps for remaining
-            for future, off_policy_steps, worker, request_id in futures_to_update:
-                if future in self.inflight_group_rollouts:
-                    self.inflight_group_rollouts[future] = InflightRolloutInfo(
-                        off_policy_steps=off_policy_steps,
-                        worker=worker,
-                        request_id=request_id,
+            for task, off_policy_steps, client_config in tasks_to_update:
+                if task in self.inflight_group_rollouts:
+                    self.inflight_group_rollouts[task] = InflightRolloutInfo(
+                        off_policy_steps=off_policy_steps + 1, client_config=client_config
                     )
 
-            if len(futures_to_remove) > 0:
+            if len(tasks_to_remove) > 0:
                 self.logger.warning(
-                    f"Cancelled {len(futures_to_remove)} old rollout requests (will refill naturally). Consider increasing max_off_policy_steps to avoid this."
+                    f"Cancelled {len(tasks_to_remove)} old rollout requests (will refill naturally). Consider increasing max_off_policy_steps to avoid this."
                 )
 
             self.ckpt_step = next_ckpt_step
 
-    async def generate_batch(self, step: int) -> list[dict]:
-        """Generate a batch of rollouts using workers.
-
-        Returns list of result dicts (not vf.State, since those stay in workers).
-        """
+    async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
+        """Continuously generates a batch of rollouts."""
         self.step = step
         batch_start_time = time.perf_counter()
 
@@ -288,34 +211,34 @@ class Scheduler:
         while len(self.inflight_group_rollouts) < self.problems_per_batch:
             await self.schedule_group_rollout()
 
-        batch_rollouts: list[dict] = []
+        batch_rollouts: list[vf.RolloutOutput] = []
         pbar = ProgressTracker(
             total=self.config.batch_size, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
         )
 
         while len(batch_rollouts) < self.config.batch_size:
             # Wait for at least one future to complete
-            done, _ = await asyncio.wait(
+            finished_tasks, _ = await asyncio.wait(
                 self.inflight_group_rollouts.keys(),
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
             await self.checkpoint_ready.wait()
 
-            for finished_future in done:
+            for finished_task in finished_tasks:
                 if len(batch_rollouts) >= self.config.batch_size:
                     batch_rollouts = batch_rollouts[: self.config.batch_size]
                     break
 
                 # Safely pop the future from tracking
-                if self.inflight_group_rollouts.pop(finished_future, None) is None:
+                if self.inflight_group_rollouts.pop(finished_task, None) is None:
                     continue
 
                 try:
-                    group_results: list[dict] = finished_future.result()
+                    finished_rollouts: list[vf.RolloutOutput] = finished_task.result()
 
                     # Update buffer with results
-                    self.buffer.update(group_results)
+                    self.buffer.update(finished_rollouts)
                     accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
 
                     batch_rollouts.extend(accepted_rollouts)
@@ -323,11 +246,6 @@ class Scheduler:
 
                 except asyncio.CancelledError:
                     pass  # Request was cancelled, will be rescheduled
-                except WorkerDiedError as e:
-                    # Worker died - check if it will auto-restart or if orchestrator should crash
-                    self.logger.warning(f"Rollout lost due to worker death: {e}")
-                    # Check if any worker has permanently failed (exceeded max restarts)
-                    self._check_for_fatal_worker_errors()
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
 
@@ -336,14 +254,6 @@ class Scheduler:
         pbar.close()
         self.last_batch_generation_time = time.perf_counter() - batch_start_time
         return batch_rollouts
-
-    def _check_for_fatal_worker_errors(self):
-        """Check if any worker has permanently failed and raise the error to crash orchestrator."""
-        for workers in self.workers.values():
-            for worker in workers:
-                if worker._fatal_error is not None:
-                    self.logger.error(f"Worker '{worker.worker_name}' permanently failed, crashing orchestrator")
-                    raise worker._fatal_error
 
     @property
     def max_off_policy_level(self) -> int:
@@ -381,17 +291,6 @@ class Scheduler:
             "batch/cancelled_rollouts": self.cancelled_rollouts_count,
         }
         self.cancelled_rollouts_count = 0
-
-        # Add per-worker lag metrics and pending counts
-        for workers in self.workers.values():
-            for worker in workers:
-                worker_key = worker.worker_name
-                # Track pending count per worker (useful for debugging load balancing)
-                metrics[f"worker/{worker_key}/pending"] = worker.pending_count
-                if worker.latest_lag_metrics:
-                    for metric_name, value in worker.latest_lag_metrics.items():
-                        # e.g. "worker_lag/env_0/max"
-                        metrics[f"worker_lag/{worker_key}/{metric_name.split('/')[-1]}"] = value
 
         # Add inference pool metrics (e.g. elastic pool server counts)
         metrics.update(self.inference_pool.get_metrics())

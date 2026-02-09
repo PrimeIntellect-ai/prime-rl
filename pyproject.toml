@@ -49,9 +49,8 @@ rl = "prime_rl.rl:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
 inference = "prime_rl.inference.server:main"
+env-server = "prime_rl.orchestrator.env_server.env_server:main"
 sft = "prime_rl.trainer.sft.train:main"
-eval = "prime_rl.eval.eval:main"
-synthesize = "prime_rl.synthesize.synthesize:main"
 
 [project.optional-dependencies]
 flash-attn = [
@@ -84,7 +83,7 @@ override-dependencies = ["nvidia-cudnn-cu12>=9.15"]
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 reverse-text = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "e85c598" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "3409cb5" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eebbd950a6ff11d9b5f806282e33df83df9d" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
