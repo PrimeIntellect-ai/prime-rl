@@ -208,8 +208,9 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
+        base_position_ids = position_ids
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            flat_position_ids = position_ids.view(-1)
+            flat_position_ids = base_position_ids.view(-1)
             seqlens = torch.cat(
                 [
                     flat_position_ids[0:1],
@@ -223,6 +224,11 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         else:
             max_seqlen = None
             cu_seqlens = None
+
+        prefix_tokens = 0
+        if len(self.layers) > 0 and hasattr(self.layers[0].self_attn, "kv_prefix_num_tokens"):
+            prefix_tokens = self.layers[0].self_attn.kv_prefix_num_tokens()
+        position_ids = base_position_ids + prefix_tokens if prefix_tokens > 0 else base_position_ids
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)

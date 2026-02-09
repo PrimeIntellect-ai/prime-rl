@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter
+from prime_rl.utils import client as client_module
+from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, update_weights
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -83,3 +84,48 @@ def test_load_lora_adapter_raises_non_retryable_error_immediately():
 
     assert exc_info.value.response.status_code == 400
     assert mock_client.post.call_count == 1
+
+
+def test_update_weights_with_lora_and_adapter_only_checkpoint(monkeypatch, tmp_path):
+    mock_client = AsyncMock()
+    (tmp_path / "adapter_model.safetensors").touch()
+    load_lora_adapter_mock = AsyncMock()
+    monkeypatch.setattr(client_module, "load_lora_adapter", load_lora_adapter_mock)
+
+    asyncio.run(update_weights([mock_client], tmp_path, lora_name="test-lora"))
+
+    assert not mock_client.post.called
+    load_lora_adapter_mock.assert_awaited_once_with([mock_client], "test-lora", tmp_path)
+
+
+def test_update_weights_with_lora_and_base_weights_checkpoint(monkeypatch, tmp_path):
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_client.post.return_value = mock_response
+    (tmp_path / "model.safetensors").touch()
+    (tmp_path / "adapter_model.safetensors").touch()
+    load_lora_adapter_mock = AsyncMock()
+    monkeypatch.setattr(client_module, "load_lora_adapter", load_lora_adapter_mock)
+
+    asyncio.run(update_weights([mock_client], tmp_path, lora_name="test-lora"))
+
+    mock_client.post.assert_called_once_with("/update_weights", json={"weight_dir": tmp_path.as_posix()})
+    assert (tmp_path / "NCCL_READY").exists()
+    load_lora_adapter_mock.assert_awaited_once_with([mock_client], "test-lora", tmp_path)
+
+
+def test_update_weights_with_lora_and_base_update_marker(monkeypatch, tmp_path):
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_client.post.return_value = mock_response
+    (tmp_path / "BASE_UPDATE_REQUIRED").touch()
+    load_lora_adapter_mock = AsyncMock()
+    monkeypatch.setattr(client_module, "load_lora_adapter", load_lora_adapter_mock)
+
+    asyncio.run(update_weights([mock_client], tmp_path, lora_name="test-lora"))
+
+    mock_client.post.assert_called_once_with("/update_weights", json={"weight_dir": tmp_path.as_posix()})
+    assert (tmp_path / "NCCL_READY").exists()
+    load_lora_adapter_mock.assert_awaited_once_with([mock_client], "test-lora", tmp_path)

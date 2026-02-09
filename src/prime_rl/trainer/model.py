@@ -21,6 +21,10 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
+from prime_rl.trainer.kv_prefix import (
+    apply_kv_prefix_to_model,
+    strip_kv_prefix_from_state_dict,
+)
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -424,6 +428,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     load_dcp_start_time = time.perf_counter()
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
+    state_dict = strip_kv_prefix_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
         del state_dict["lm_head.weight"]
     dcp_load(
@@ -435,7 +440,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     _move_buffers_to_cuda(model, config)
 
     lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
-    if lora_modules:
+    kv_prefix_modules = [m for m in model.modules() if hasattr(m, "_init_kv_prefix_parameters")]
+    if lora_modules or kv_prefix_modules:
         generator: torch.Generator | None = None
         if parallel_dims.dp_replicate_enabled:
             # Synchronize LoRA initialization across dp_replicate ranks by broadcasting a seed
@@ -447,6 +453,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
             generator = torch.Generator(device="cuda").manual_seed(seed_tensor.item())
         for module in lora_modules:
             module._init_lora_parameters(generator)
+        for module in kv_prefix_modules:
+            module._init_kv_prefix_parameters(generator)
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
@@ -618,6 +626,17 @@ def setup_model(
     # Apply LoRA before FSDP setup
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
+
+    if config.kv_prefix is not None:
+        kv_prefix_module_names = apply_kv_prefix_to_model(
+            model,
+            num_tokens=config.kv_prefix.num_tokens,
+            init=config.kv_prefix.init,
+            init_std=config.kv_prefix.init_std,
+        )
+        logger.info(
+            f"KV-prefix enabled: {len(kv_prefix_module_names)} attention modules, prefix length={config.kv_prefix.num_tokens}"
+        )
 
     if parallel_dims.ep_enabled:
         apply_ep(model, parallel_dims)

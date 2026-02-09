@@ -133,6 +133,8 @@ class MultiLoRAScheduler:
         self,
         scheduler_config: SchedulerConfigType,
         max_steps: int | None,
+        shared_optimizer: Optimizer | None = None,
+        shared_lr: float | None = None,
     ):
         self.scheduler_config = scheduler_config
         self.max_steps = max_steps
@@ -140,6 +142,14 @@ class MultiLoRAScheduler:
         self.logger = get_logger()
 
         self.schedulers: list[LRScheduler | None] = [None] * self.multi_run_manager.max_runs
+        self.shared_scheduler: LRScheduler | None = None
+        if shared_optimizer is not None and shared_lr is not None:
+            self.shared_scheduler = setup_scheduler(
+                shared_optimizer,
+                self.scheduler_config,
+                self.max_steps,
+                shared_lr,
+            )
 
     def scheduler_creation_hook(self, optimizer: Optimizer, idx: int) -> None:
         """Create a scheduler for a newly created optimizer.
@@ -156,8 +166,11 @@ class MultiLoRAScheduler:
 
     def step(self) -> None:
         """Step all active schedulers."""
-        for idx in self.multi_run_manager.ready_to_update_idxs:
+        ready_idxs = self.multi_run_manager.ready_to_update_idxs
+        for idx in ready_idxs:
             self.schedulers[idx].step()
+        if self.shared_scheduler is not None and ready_idxs:
+            self.shared_scheduler.step()
 
     def get_last_lr(self, idx: int) -> list[float]:
         """Get the last learning rate for a specific run."""
@@ -168,12 +181,16 @@ class MultiLoRAScheduler:
     def state_dict(self) -> dict:
         return {
             "schedulers": [scheduler.state_dict() if scheduler is not None else None for scheduler in self.schedulers],
+            "shared_scheduler": self.shared_scheduler.state_dict() if self.shared_scheduler is not None else None,
         }
 
     def load_state_dict(self, state_dict: dict) -> None:
         for idx, scheduler_state in enumerate(state_dict["schedulers"]):
             if scheduler_state is not None and self.schedulers[idx] is not None:
                 self.schedulers[idx].load_state_dict(scheduler_state)
+        shared_scheduler_state = state_dict.get("shared_scheduler")
+        if shared_scheduler_state is not None and self.shared_scheduler is not None:
+            self.shared_scheduler.load_state_dict(shared_scheduler_state)
 
 
 def setup_multi_scheduler(
@@ -182,7 +199,12 @@ def setup_multi_scheduler(
     max_steps: int | None,
 ) -> MultiLoRAScheduler:
     """Create a MultiLoRAScheduler for managing per-run schedulers."""
-    scheduler = MultiLoRAScheduler(scheduler_config, max_steps)
+    scheduler = MultiLoRAScheduler(
+        scheduler_config,
+        max_steps,
+        shared_optimizer=optimizer.shared_optimizer,
+        shared_lr=optimizer.config.lr if optimizer.shared_optimizer is not None else None,
+    )
     # Register callback at index 0 so schedulers are created before other callbacks
     optimizer.register_post_creation_callback(scheduler.scheduler_creation_hook, index=0)
     return scheduler

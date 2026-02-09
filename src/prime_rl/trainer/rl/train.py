@@ -157,7 +157,7 @@ def train(config: RLTrainerConfig):
         )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
-        optimizer = setup_multi_optimizer(config.optim, parallel_dims)
+        optimizer = setup_multi_optimizer(config.optim, parallel_dims, list(model.named_parameters()))
         scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps)
 
         # Register checkpoint loading callback at index 1 (after scheduler creation at index 0)
