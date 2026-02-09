@@ -108,8 +108,8 @@ class NCCLWeightUpdateWorker(Worker):
             timeout=timeout,
         )
 
-    def update_weights_from_path(self, weight_dir: str) -> None:
-        """Update weights with the nccl communicator."""
+    def update_weights_from_path(self, weight_dir: str) -> None:  # noqa: ARG002 - signature must match vLLM RPC
+        """Update weights via NCCL broadcast (weight_dir unused, weights received via NCCL)."""
         model_runner = self.model_runner
         model = model_runner.model.runnable
         assert isinstance(model, Module)
