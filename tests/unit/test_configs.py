@@ -4,7 +4,6 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.rl import RLConfig
@@ -13,7 +12,7 @@ from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.pydantic_config import parse_argv
 
 # All config config classes
-CONFIG_CLASSES = [RLConfig, RLTrainerConfig, SFTTrainerConfig, OrchestratorConfig, InferenceConfig, OfflineEvalConfig]
+CONFIG_CLASSES = [RLConfig, RLTrainerConfig, SFTTrainerConfig, OrchestratorConfig, InferenceConfig]
 
 
 def get_config_files() -> list[Path]:
@@ -27,9 +26,6 @@ def get_config_files() -> list[Path]:
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path, monkeypatch: pytest.MonkeyPatch):
     """Tests that all config files can be loaded by at least one config class."""
-    if "intellect_3/evals" in config_file.as_posix():
-        pytest.skip("Skipped because uses partial configs, which are not supported by this test.")
-
     monkeypatch.setattr(
         sys,
         "argv",

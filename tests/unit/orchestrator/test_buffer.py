@@ -51,19 +51,17 @@ def dummy_env_group(mock_openai_client, dummy_dataset) -> vf.EnvGroup:
 
 @pytest.fixture
 def make_rollouts():
-    def _make_rollouts(dataset: Dataset, rewards: list[float]) -> list[vf.State]:
-        rollouts = []
+    def _make_rollouts(dataset: Dataset, rewards: list[float]) -> list[vf.RolloutOutput]:
+        all_rollouts = []
         for i, reward in enumerate(rewards):
             task = dataset[i]["task"]
             example_id = dataset[i]["example_id"]
             prompt = dataset[i]["prompt"]
-            problem_rollouts = [
-                vf.State(
-                    input=vf.RolloutInput(
-                        example_id=example_id,
-                        task=task,
-                        prompt=prompt,
-                    ),
+            rollouts = [
+                vf.RolloutOutput(
+                    example_id=example_id,
+                    task=task,
+                    prompt=prompt,
                     prompt_ids=[0],
                     prompt_mask=[1],
                     completion_ids=[1],
@@ -75,8 +73,8 @@ def make_rollouts():
                     metrics={},
                 )
             ] * 2
-            rollouts.extend(problem_rollouts)
-        return rollouts
+            all_rollouts.extend(rollouts)
+        return all_rollouts
 
     return _make_rollouts
 

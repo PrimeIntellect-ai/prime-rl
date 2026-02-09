@@ -5,12 +5,13 @@ from pathlib import Path
 from typing import Any, AsyncContextManager
 
 import pandas as pd
-from openai import AsyncOpenAI
+import verifiers as vf
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.completion_usage import CompletionUsage
 from rich.console import Console
 from rich.table import Table
 from verifiers.utils.async_utils import maybe_semaphore
+from verifiers.utils.client_utils import setup_client
 
 from prime_rl.orchestrator.config import SamplingConfig
 from prime_rl.transport import TrainingSample
@@ -143,13 +144,15 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
 
 
 async def compute_teacher_logprobs(
-    clients: list[AsyncOpenAI],
+    clients: list[vf.ClientConfig],
     model_name: str,
     samples: list[TrainingSample],
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
 
-    async def _compute_single(client: AsyncOpenAI, sample: TrainingSample) -> list[float]:
+    async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
+        client = setup_client(client_config)
+
         async with await get_semaphore():
             response = await client.post(
                 "/chat/completions/tokens",
