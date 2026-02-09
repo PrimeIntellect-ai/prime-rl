@@ -7,7 +7,7 @@ description: Start and test the prime-rl inference server. Use when asked to run
 
 ## Starting the server
 
-Always use the `inference` entry point — never `vllm serve` or `python -m vllm.entrypoints.openai.api_server` directly. The entry point runs `setup_vllm_env()` which configures environment variables (LoRA, logits processors, multiprocessing) before vLLM is imported.
+Always use the `inference` entry point — never `vllm serve` or `python -m vllm.entrypoints.openai.api_server` directly. The entry point runs `setup_vllm_env()` which configures environment variables (LoRA, multiprocessing) before vLLM is imported.
 
 ```bash
 # With a TOML config
@@ -39,13 +39,6 @@ port = 8000
 
 [parallel]
 tp = 2
-
-[logits_processors.gibberish_detection]
-# presence of section enables it; all fields have defaults
-
-[logits_processors.repetition_detection]
-window = 3000
-prob_threshold = 0.99
 ```
 
 See `src/prime_rl/inference/config.py` for all available fields and defaults.
