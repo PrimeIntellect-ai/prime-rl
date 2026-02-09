@@ -14,7 +14,13 @@ from openai import AsyncOpenAI
 from prime_evals import AsyncEvalsClient
 from verifiers import load_environment
 from verifiers.utils.path_utils import get_results_path
-from verifiers.utils.save_utils import get_hf_hub_dataset_name, make_dataset, sanitize_metadata, save_to_disk
+from verifiers.utils.save_utils import (
+    get_hf_hub_dataset_name,
+    make_dataset,
+    sanitize_metadata,
+    save_metadata,
+    save_outputs,
+)
 
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.orchestrator.config import EvalConfig, EvalSamplingConfig, EvalSaveConfig, ModelConfig, RetryConfig
@@ -521,7 +527,8 @@ async def run_eval(
                 else outputs["metadata"]["path_to_save"]
             )
             save_path = save_config.disk.path or default_save_path
-            save_to_disk(dataset, metadata_dict, save_path)
+            save_outputs(outputs["outputs"], save_path)
+            save_metadata(metadata_dict, save_path)
             logger.info(f"Saved eval results for {env_name_or_id} to disk ({save_path})")
 
         if save_config.hf is not None:
