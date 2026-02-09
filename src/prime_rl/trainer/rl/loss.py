@@ -104,6 +104,53 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
+"""
+We use importance sampling to address distributio shift between trainer and inference policies. The importance sampling weight is:
+w = trainer_probs / inference_probs
+
+or sometimes in log space to avoid numerical instability:
+log w = log(trainer_probs) - log(inference_probs)
+
+KL estimators:
+r = inference_probs / trainer_probs
+
+k1: -log r = log w (high variance, unbiased)
+k2: 1/2 * (log r)**2 = 1/2 * (log w)**2 (low variance, biased)
+k2: (r - 1) - log r = 1/w - 1 + log w (low variance, unbiased)
+
+We have two orthogonal ways to handle the distribution shift caused by the off-policy nature of the training. We currently employ
+both, but we can separate the two axis better. 
+
+## Importance Sampling
+Already implemented in the default loss function. Let's call w_t the ratio between the trainer and inference logprobs for token t. We can use
+a per token weight w_t or a per sequence weight w_s = product_t w_t (broadcast to each token). To reduce variance, we also have the option
+to clip weights, this is called truncated importance sampling, applicable to both token-level and sequence-level weights.
+
+Token-level Truncated Importance Sampling (upper bound)
+Sequence-level Truncated Importance Sampling (upper bound)
+
+## Rejection Sampling
+Importance sampling provides continues reweighting (reduces variance). Rejection sampling on the other hand provides a hard filtering option, 
+acting as a hard trust region filter. Clipping retains weights which is good for sample efficiency, but can still inflict bias from OOD samples.
+TIS is a soft enforcement of the trust region. Rejection sampling gives us a hard option. These two methods are independent, and can be combined.
+
+- Token-level Rejection Sampling with a upper/lower bound. In default loss function this is calculated with the k1 KL estimator.
+- Sequence-level Rejection Sampling (Seq-MIS). In default loss function this is calculated with the k1 KL estimator. This is a sum of divergences across the trajectory. We want the option of using the k3 estimator because the k3 estimator has less variance and is strictly non-negative. 
+Why is this nice, i.e what is wrong with the current version? We can see how default loss fn calculates the k1 estimator:  sum(log w) => `(trainer_logprobs - inference_logprobs).sum()`, because low w values can be negative, terms can cancel each other and hide mismatch.
+Hence we would like the option to use k3 estimator as an alternative to k1. However, because k3 is strictly negative this term can only have a upper bound, as opposed to the double sided mask that k1 has. 
+- Geometric Mean Rejection Sampling. This is currently implemented with the k1 KL estimator. This is the average per token divergence across the trajectory. For the same reason as above, we want the option to use k3 estimator for this. This is a length invariant property.
+- Max Rejection Sampling. This is not implemented in default loss fn. This creates a mask based on the maximum divergence across the trajectory. Similarly to geometric mean this is length invariant. We can NOT use the k1 sample based estimator. Instead use the k2 estimator because
+the metric detecs divergence symmetrically, flagging both support collapse w -> 0 and w->inf equally.
+
+
+---
+
+We want to cleanly separate importance sampling from rejection sampling. Importance sampling should be applicable without rejection sampling, and vice versa. They can also be combined. 
+Existing popular variants such as Seq-MIS, TIS, should be clearly documented or provided as options. We want to be able to modify the KL estimator used for rejection sampling.
+
+"""
+
+
 def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
     """Masked importance sampling with KL against the inference policy, and optional masking strategies."""
     trainer_logprobs = inputs.trainer_logprobs
