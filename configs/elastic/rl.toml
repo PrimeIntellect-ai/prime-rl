@@ -1,0 +1,46 @@
+# Alphabet sort RL with elastic inference pool (no inference process started by rl).
+# Start the inference server manually first, then run: uv run rl @ examples/alphabet_sort/rl_elastic.toml
+# The orchestrator discovers servers via DNS (hostname) and only uses ready ones.
+# Omitting [inference] means inference = None, so the rl entrypoint will not start an inference process.
+
+max_steps = 200
+seq_len = 2048
+
+[ckpt]
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "alphabet-sort"
+name = "alphabet-sort-elastic"
+
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+lr = 1e-5
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 8
+
+[orchestrator.sampling]
+max_tokens = 768
+
+[orchestrator.client.elastic]
+hostname = "localhost"
+port = 8000
+sync_interval = 5.0
+
+[[orchestrator.env]]
+id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
+args = { min_turns = 3, max_turns = 5, power_per_turn = false }

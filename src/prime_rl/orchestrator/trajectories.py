@@ -1,7 +1,6 @@
 import base64
 import time
 from io import BytesIO
-from typing import TypedDict
 
 import verifiers as vf
 from PIL import Image
@@ -9,25 +8,17 @@ from PIL import Image
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
-
-class TrajectoryStepWithTemp(TypedDict):
-    """Trajectory step with temperature field added by prime-rl's extract_result."""
-
-    tokens: vf.TrajectoryStepTokens
-    temperature: float
-
-
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
 
 
 def interleave_rollout(
-    state: vf.State,
+    output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
 ) -> list[TrainingSample] | None:
     """
-    Convert vf.State to trainable rollouts by interleaving trajectory steps
+    Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
     where the extension property holds.
 
     When consecutive steps share token prefixes (extension property), they are
@@ -45,29 +36,31 @@ def interleave_rollout(
     Each sample gets the images accumulated up to its last merged step.
 
     Args:
-        state: vf.State containing trajectory data
+        output: vf.RolloutOutput containing trajectory data
         vlm_cache: Pre-computed VLM image cache for multimodal training
         cache_key: Cache key to use when retrieving images from the VLM cache
     """
     logger = get_logger()
 
-    trajectory = state["trajectory"]
+    trajectory = output["trajectory"]
     if len(trajectory) == 0:
-        logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
+        logger.warning(f"No trajectory steps for example {output['example_id']}. Skipping rollout.")
         return None
 
-    has_error = state["error"] is not None
+    has_error = output["error"] is not None
+    # this field should be guaranteed because we set temperature in get_sampling_args
+    temperature = output["sampling_args"]["temperature"]
 
     def get_images(step_idx: int) -> tuple[list | None, list | None]:
         if vlm_cache is None:
             return None, None
-        key = state["example_id"] if cache_key is None else cache_key
+        key = output["example_id"] if cache_key is None else cache_key
         return vlm_cache.get_for_step(key, step_idx)
 
-    def make_sample(step: TrajectoryStepWithTemp, step_idx: int) -> TrainingSample:
+    def make_sample(step: vf.TrajectoryStep, step_idx: int) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         tokens = step["tokens"]
-        temperature = step["temperature"]
+        assert tokens is not None
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
@@ -87,10 +80,10 @@ def interleave_rollout(
             image_grid_thw=image_grid_thw,
         )
 
-    def extend_sample(sample: TrainingSample, step: TrajectoryStepWithTemp, prefix_len: int, step_idx: int) -> None:
+    def extend_sample(sample: TrainingSample, step: vf.TrajectoryStep, prefix_len: int, step_idx: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = step["tokens"]
-        temperature = step["temperature"]
+        assert tokens is not None
 
         # Extend with new prompt tokens (mask=False, no gradient)
         new_prompt_ids = tokens["prompt_ids"][prefix_len:]
@@ -142,13 +135,12 @@ def interleave_rollout(
         else:
             # No prefix matches - start a new sample
             logger.debug(
-                f"Extension property broke at step {step_idx + 1} for example {state['example_id']}. "
+                f"Extension property broke at step {step_idx + 1} for example {output['example_id']}. "
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples.append([new_prefix, make_sample(step, step_idx=step_idx)])
 
-    # Return all samples
     return [sample for _, sample in active_samples]
 
 
@@ -178,7 +170,7 @@ def _extract_images_from_messages(messages: list) -> list[Image.Image]:
 
 
 def _extract_images_from_examples(
-    examples: list[tuple[int, vf.State]],
+    examples: list[tuple[int, vf.RolloutOutput]],
 ) -> tuple[list[Image.Image], dict[int, list[int]]]:
     """
     Extract images from all trajectory steps of each example.
@@ -188,7 +180,7 @@ def _extract_images_from_examples(
     full conversation history), so we extract only the NEW images introduced in each step.
 
     Args:
-        examples: List of (cache_key, state) tuples where state contains a "trajectory"
+        examples: List of (cache_key, output) tuples where output contains a "trajectory"
             list with steps that have "prompt" messages in OpenAI chat format.
 
     Returns:
@@ -200,8 +192,8 @@ def _extract_images_from_examples(
     all_images = []
     images_per_step_per_example = {}
 
-    for eid, state in examples:
-        trajectory = state.get("trajectory", [])
+    for eid, output in examples:
+        trajectory = output.get("trajectory", [])
         if not trajectory:
             images_per_step_per_example[eid] = []
             continue
@@ -248,9 +240,16 @@ def _preprocess_images_batched(
             for eid, counts in images_per_step_per_example.items()
         }
 
+    image_sizes = [(img.width, img.height) for img in images]
     processed = processor.image_processor(images=images, return_tensors="pt")
     all_pixel_values = processed["pixel_values"]
     all_grid_thw = processed["image_grid_thw"]
+
+    logger = get_logger()
+    logger.debug(
+        f"VLM image processing: {len(images)} images, sizes={image_sizes}, "
+        f"pixel_values={all_pixel_values.shape}, grid_thw={all_grid_thw.tolist()}"
+    )
 
     result = {}
     img_idx = 0
@@ -313,7 +312,7 @@ class VLMImageCache:
         return steps[-1]
 
 
-def build_vlm_image_cache(rollouts: list[vf.State], processor) -> VLMImageCache:
+def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMImageCache:
     """
     Build image cache for VLM training by extracting and preprocessing images.
 

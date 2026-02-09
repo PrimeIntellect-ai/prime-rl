@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
+import verifiers as vf
 from httpx import AsyncClient
-from openai import AsyncOpenAI
 
 from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
 from prime_rl.utils.config import ClientConfig
@@ -62,115 +62,13 @@ async def discover_ready_servers(hostname: str, port: int, model_name: str) -> l
 
     with_model = set()
     for ip, result in zip(ips, results):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             continue
         has_model, _ = result
         if has_model:
             with_model.add(f"http://{ip}:{port}/v1")
 
     return sorted(with_model)
-
-
-# --- ServerDiscovery: for env workers ---
-
-
-class ServerDiscovery:
-    """DNS-based server discovery for env workers.
-
-    Discovers servers via DNS, checks if they have the model, provides clients.
-    """
-
-    def __init__(
-        self,
-        hostname: str,
-        port: int,
-        model_name: str,
-        client_config: ClientConfig,
-        sync_interval: float = 5.0,
-    ):
-        self.logger = get_logger()
-        self.hostname = hostname
-        self.port = port
-        self.model_name = model_name
-        self.client_config = client_config
-        self.sync_interval = sync_interval
-
-        self._clients: list[AsyncOpenAI] = []
-        self._urls: list[str] = []
-        self._client_index = 0
-        self._last_refresh = 0.0
-
-    @classmethod
-    def from_config(cls, config: ClientConfig, model_name: str) -> ServerDiscovery:
-        return cls(
-            hostname=config.elastic.hostname,
-            port=config.elastic.port,
-            model_name=model_name,
-            client_config=config,
-            sync_interval=config.elastic.sync_interval,
-        )
-
-    @property
-    def has_clients(self) -> bool:
-        return len(self._clients) > 0
-
-    @property
-    def clients(self) -> list[AsyncOpenAI]:
-        """Get the current list of clients."""
-        return self._clients
-
-    def get_next_client(self) -> AsyncOpenAI | None:
-        """Get next client in round-robin fashion."""
-        if not self._clients:
-            return None
-        client = self._clients[self._client_index % len(self._clients)]
-        self._client_index += 1
-        return client
-
-    async def refresh(self) -> bool:
-        """Refresh clients via DNS discovery. Rate-limited by sync_interval."""
-        if time.time() - self._last_refresh < self.sync_interval:
-            return False
-        self._last_refresh = time.time()
-
-        urls = await discover_ready_servers(self.hostname, self.port, self.model_name)
-        if set(urls) == set(self._urls):
-            return False
-
-        self._urls = urls
-        if urls:
-            self.logger.debug(f"Discovered {len(urls)} ready server(s)")
-            self._clients = setup_clients(
-                ClientConfig(
-                    timeout=self.client_config.timeout,
-                    base_url=urls,
-                    api_key_var=self.client_config.api_key_var,
-                    headers=self.client_config.headers,
-                )
-            )
-        else:
-            self.logger.debug("No ready inference servers found")
-            self._clients = []
-        self._client_index = 0
-        return True
-
-    async def wait_for_clients(self) -> list[AsyncOpenAI]:
-        """Wait for clients to be available and return them."""
-        while not self.has_clients:
-            await self.refresh()
-            if not self.has_clients:
-                self.logger.debug(f"Waiting for inference servers with model {self.model_name}...")
-                await asyncio.sleep(self.sync_interval)
-
-        return self._clients
-
-    async def stop(self) -> None:
-        for client in self._clients:
-            await client.close()
-        self._clients = []
-
-
-# --- ElasticInferencePool: for orchestrator ---
 
 
 @dataclass
@@ -206,14 +104,15 @@ class ElasticInferencePool:
         self,
         hostname: str,
         client_config: ClientConfig,
-        base_model: str | None = None,
+        model_name: str,
         port: int = 8000,
         sync_interval: float = 5.0,
     ):
         self.logger = get_logger()
         self.hostname = hostname
         self.client_config = client_config
-        self.base_model = base_model
+        self.model_name = model_name
+        self.base_model_name = model_name  # Keep original for health checks
         self.port = port
         self.sync_interval = sync_interval
 
@@ -222,23 +121,29 @@ class ElasticInferencePool:
         self._lock = asyncio.Lock()
         self._desired: AdapterState = AdapterState()
 
-        self._clients: list[AsyncOpenAI] = []
+        self._clients: list[vf.ClientConfig] = []
         self._client_urls: list[str] = []
+        self._client_index = 0
 
         self._sync_task: asyncio.Task | None = None
         self._started = False
 
     @classmethod
-    async def from_config(cls, config: ClientConfig, base_model: str | None = None) -> ElasticInferencePool:
+    async def from_config(cls, config: ClientConfig, model_name: str) -> ElasticInferencePool:
+        if config.elastic is None:
+            raise ValueError("Elastic inference pool requires elastic config")
         pool = cls(
             hostname=config.elastic.hostname,
             client_config=config,
-            base_model=base_model,
+            model_name=model_name,
             port=config.elastic.port,
             sync_interval=config.elastic.sync_interval,
         )
         await pool.start()
         return pool
+
+    def update_model_name(self, model_name: str) -> None:
+        self.model_name = model_name
 
     def _build_url(self, ip: str) -> str:
         return f"http://{ip}:{self.port}"
@@ -251,10 +156,11 @@ class ElasticInferencePool:
         return [self._build_inference_url(ip) for ip, s in self._servers.items() if s.status == "ready"]
 
     @property
-    def clients(self) -> list[AsyncOpenAI]:
+    def clients(self) -> list[vf.ClientConfig]:
         urls = self.ready_urls
         if set(urls) != set(self._client_urls):
             self._client_urls = urls
+            self._client_index = 0
             self._clients = (
                 setup_clients(
                     ClientConfig(
@@ -268,6 +174,18 @@ class ElasticInferencePool:
                 else []
             )
         return self._clients
+
+    @property
+    def has_clients(self) -> bool:
+        return len(self.clients) > 0
+
+    async def get_next_client(self) -> vf.ClientConfig:
+        """Get next client in round-robin fashion."""
+        while not self.has_clients:
+            await asyncio.sleep(self.sync_interval)
+        client = self._clients[self._client_index % len(self._clients)]
+        self._client_index += 1
+        return client
 
     @property
     def admin_clients(self) -> list[AsyncClient]:
@@ -310,7 +228,7 @@ class ElasticInferencePool:
                         continue
                 elif not parent:
                     continue
-                elif self.base_model is not None and parent != self.base_model:
+                elif parent != self.model_name:
                     continue
 
                 root = model.get("root", "")
@@ -406,8 +324,8 @@ class ElasticInferencePool:
             data = response.json()
             models = [m.get("id") for m in data.get("data", [])]
 
-            if self.base_model is not None and self.base_model not in models:
-                self.logger.debug(f"Server {ip} does not have base model {self.base_model}")
+            if self.base_model_name not in models:
+                self.logger.debug(f"Server {ip} does not have base model {self.base_model_name}")
                 return False
         except Exception as e:
             self.logger.debug(f"Server {ip} model check failed: {e}")
@@ -502,15 +420,11 @@ class ElasticInferencePool:
         for ip in list(self._servers.keys()):
             await self._remove_server(ip)
 
-        # Close inference clients (admin clients are closed in _remove_server)
-        for client in self._clients:
-            await client.close()
         self._clients = []
         self._client_urls = []
-
         self._started = False
 
-    async def sync_weights(self, weights_path: Path, lora_name: str | None = None, step: int = 0) -> None:
+    async def sync_weights(self, weights_path: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         async with self._lock:
             self._desired = AdapterState(
                 name=lora_name,

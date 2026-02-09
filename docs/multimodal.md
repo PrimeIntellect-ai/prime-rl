@@ -32,9 +32,4 @@ Each multimodal sample becomes its own micro-batch during training (no packing w
 
 ## vLLM Configuration
 
-When using vLLM for inference with VLM models, you must set these environment variables to avoid issues with multimodal models:
-
-```bash
-export VLLM_ENABLE_V1_MULTIPROCESSING=0
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-```
+`VLLM_WORKER_MULTIPROC_METHOD=spawn` is required for VLM inference. This is set automatically in `src/prime_rl/inference/config.py`, so if you use `uv run rl @ ...` it works out of the box, but if you start the vLLM server yourself, make sure this environment variable is set.

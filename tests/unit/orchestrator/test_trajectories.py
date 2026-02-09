@@ -16,8 +16,9 @@ from prime_rl.orchestrator.trajectories import (
 
 
 @pytest.fixture
-def single_step_trajectory_state():
-    state = vf.State(
+def single_step_trajectory_output():
+    output = vf.RolloutOutput(
+        example_id=0,
         trajectory=[
             vf.TrajectoryStep(
                 prompt=[{"role": "user", "content": "U1"}],
@@ -34,18 +35,21 @@ def single_step_trajectory_state():
                 ),
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
                 extras={},
-                temperature=1.0,
             )
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
-    return state
+    return output
 
 
 @pytest.fixture
-def multi_step_trajectory_state():
-    state = vf.State(
+def multi_step_trajectory_output():
+    output = vf.RolloutOutput(
+        example_id=0,
         trajectory=[
             vf.TrajectoryStep(
                 prompt=[{"role": "user", "content": "U1"}],
@@ -62,8 +66,9 @@ def multi_step_trajectory_state():
                 ),
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
                 extras={},
-                temperature=1.0,
             ),
             vf.TrajectoryStep(
                 prompt=[
@@ -84,18 +89,21 @@ def multi_step_trajectory_state():
                 ),
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
                 extras={},
-                temperature=1.0,
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
-    return state
+    return output
 
 
 @pytest.fixture
-def multi_step_trajectory_with_tool_calls():
-    state = vf.State(
+def multi_step_trajectory_with_tool_calls_output():
+    output = vf.RolloutOutput(
+        example_id=0,
         trajectory=[
             vf.TrajectoryStep(
                 prompt=[{"role": "user", "content": "U1"}],
@@ -112,8 +120,9 @@ def multi_step_trajectory_with_tool_calls():
                 ),
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
                 extras={},
-                temperature=1.0,
             ),
             vf.TrajectoryStep(
                 prompt=[
@@ -134,17 +143,19 @@ def multi_step_trajectory_with_tool_calls():
                 ),
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
                 extras={},
-                temperature=1.0,
             ),
         ],
         reward=1.0,
         advantage=None,
         stop_condition=None,
         metrics={"has_error": 0.0, "tool_calls": 1.0},
+        sampling_args={"temperature": 1.0},
         error=None,
     )
-    return state
+    return output
 
 
 @pytest.fixture
@@ -153,8 +164,8 @@ def multi_step_trajectory_extension_never_holds():
     2-step trajectory where extension NEVER holds (step 2 has completely different tokens).
     This simulates e.g. a chat template that re-renders the entire conversation differently.
     """
-    state = vf.State(
-        input=vf.RolloutInput(messages=[], example_id="test-no-extension"),
+    output = vf.RolloutOutput(
+        example_id=0,
         trajectory=[
             vf.TrajectoryStep(
                 prompt=[{"role": "user", "content": "U1"}],
@@ -171,8 +182,9 @@ def multi_step_trajectory_extension_never_holds():
                 ),
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
                 extras={},
-                temperature=1.0,
             ),
             vf.TrajectoryStep(
                 prompt=[
@@ -194,20 +206,22 @@ def multi_step_trajectory_extension_never_holds():
                 ),
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
                 extras={},
-                temperature=1.0,
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
-    return state
+    return output
 
 
 @pytest.fixture
 def multi_step_trajectory_with_tool_calls_extension_never_holds():
     """2-step trajectory with tool calls where extension NEVER holds."""
-    state = vf.State(
-        input=vf.RolloutInput(messages=[], example_id="test-no-extension-tools"),
+    output = vf.RolloutOutput(
+        example_id=0,
         trajectory=[
             vf.TrajectoryStep(
                 prompt=[{"role": "user", "content": "U1"}],
@@ -225,7 +239,8 @@ def multi_step_trajectory_with_tool_calls_extension_never_holds():
                 reward=None,
                 advantage=None,
                 extras={},
-                temperature=1.0,
+                is_truncated=False,
+                trajectory_id="1",
             ),
             vf.TrajectoryStep(
                 prompt=[
@@ -248,21 +263,24 @@ def multi_step_trajectory_with_tool_calls_extension_never_holds():
                 reward=None,
                 advantage=None,
                 extras={},
-                temperature=1.0,
+                is_truncated=False,
+                trajectory_id="1",
             ),
         ],
         reward=1.0,
         advantage=None,
         stop_condition=None,
+        sampling_args={"temperature": 1.0},
         metrics={"has_error": 0.0, "tool_calls": 1.0},
         error=None,
     )
-    return state
+    return output
 
 
 def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extension_never_holds):
     """When extension never holds, each step becomes its own sample (same as old branching)."""
     rollouts = interleave_rollout(multi_step_trajectory_extension_never_holds)
+    assert rollouts is not None
     assert len(rollouts) == 2
 
     # first step
@@ -289,6 +307,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
 ):
     """When extension never holds (with tool calls), same as old branching."""
     rollouts = interleave_rollout(multi_step_trajectory_with_tool_calls_extension_never_holds)
+    assert rollouts is not None
     assert len(rollouts) == 2
 
     # first step
@@ -310,8 +329,9 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
     assert rollout.completion_temperatures == [1.0, 1.0]
 
 
-def test_interleave_rollout_single_step_trajectory(single_step_trajectory_state):
-    rollouts = interleave_rollout(single_step_trajectory_state)
+def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output):
+    rollouts = interleave_rollout(single_step_trajectory_output)
+    assert rollouts is not None
     assert len(rollouts) == 1
     rollout = rollouts[0]
 
@@ -323,8 +343,9 @@ def test_interleave_rollout_single_step_trajectory(single_step_trajectory_state)
     assert rollout.completion_temperatures == [1.0, 1.0]
 
 
-def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_state):
-    rollouts = interleave_rollout(multi_step_trajectory_state)
+def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_output):
+    rollouts = interleave_rollout(multi_step_trajectory_output)
+    assert rollouts is not None
     assert len(rollouts) == 1
     rollout = rollouts[0]
 
@@ -337,8 +358,9 @@ def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_state):
     assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
 
-def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_trajectory_with_tool_calls):
-    rollouts = interleave_rollout(multi_step_trajectory_with_tool_calls)
+def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_trajectory_with_tool_calls_output):
+    rollouts = interleave_rollout(multi_step_trajectory_with_tool_calls_output)
+    assert rollouts is not None
     assert len(rollouts) == 1
     rollout = rollouts[0]
 
@@ -362,8 +384,8 @@ def five_step_trajectory_with_extension_break():
 
     Expected: 2 samples (steps 1-3 merged, steps 4-5 merged)
     """
-    state = vf.State(
-        input=vf.RolloutInput(messages=[], example_id="test-extension-break"),
+    output = vf.RolloutOutput(
+        example_id=0,
         trajectory=[
             # Step 1: initial prompt and completion
             vf.TrajectoryStep(
@@ -382,7 +404,8 @@ def five_step_trajectory_with_extension_break():
                 reward=None,
                 advantage=None,
                 extras={},
-                temperature=1.0,
+                is_truncated=False,
+                trajectory_id="1",
             ),
             # Step 2: extends step 1 (prefix [1,2,3,4] matches)
             vf.TrajectoryStep(
@@ -405,7 +428,8 @@ def five_step_trajectory_with_extension_break():
                 reward=None,
                 advantage=None,
                 extras={},
-                temperature=1.0,
+                is_truncated=False,
+                trajectory_id="1",
             ),
             # Step 3: extends step 2 (prefix [1,2,3,4,5,6,7,8] matches)
             vf.TrajectoryStep(
@@ -430,7 +454,8 @@ def five_step_trajectory_with_extension_break():
                 reward=None,
                 advantage=None,
                 extras={},
-                temperature=1.0,
+                is_truncated=False,
+                trajectory_id="1",
             ),
             # Step 4: EXTENSION BREAKS - different prefix (e.g. thinking stripped, context compacted)
             vf.TrajectoryStep(
@@ -457,7 +482,8 @@ def five_step_trajectory_with_extension_break():
                 reward=None,
                 advantage=None,
                 extras={},
-                temperature=1.0,
+                is_truncated=False,
+                trajectory_id="1",
             ),
             # Step 5: extends step 4 (prefix [100,101,102,103,104,105] matches)
             vf.TrajectoryStep(
@@ -486,12 +512,14 @@ def five_step_trajectory_with_extension_break():
                 reward=None,
                 advantage=None,
                 extras={},
-                temperature=1.0,
+                is_truncated=False,
+                trajectory_id="1",
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
-    return state
+    return output
 
 
 def test_interleave_rollout_extension_break_creates_multiple_samples(five_step_trajectory_with_extension_break):
@@ -503,6 +531,7 @@ def test_interleave_rollout_extension_break_creates_multiple_samples(five_step_t
     """
     rollouts = interleave_rollout(five_step_trajectory_with_extension_break)
 
+    assert rollouts is not None
     assert len(rollouts) == 2, "Should produce 2 samples when extension breaks at step 4"
 
     # First sample: steps 1-3 merged
@@ -539,7 +568,7 @@ def interleaved_agents_trajectory():
     agent2-step1: prompt=[100,101], completion=[102,103]  (different prefix, new sample)
     agent1-step3: prompt=[1,2,3,4,5,6,7,8,9,10], completion=[11,12]  (extends agent1-step2!)
     """
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         task="test",
         trajectory=[
@@ -562,7 +591,6 @@ def interleaved_agents_trajectory():
                 is_truncated=False,
                 trajectory_id="traj1",
                 extras={},
-                temperature=1.0,
             ),
             # agent1-step2 (extends agent1-step1)
             vf.TrajectoryStep(
@@ -583,7 +611,6 @@ def interleaved_agents_trajectory():
                 is_truncated=False,
                 trajectory_id="traj1",
                 extras={},
-                temperature=1.0,
             ),
             # agent2-step1 (different prefix, starts new sample)
             vf.TrajectoryStep(
@@ -604,7 +631,6 @@ def interleaved_agents_trajectory():
                 is_truncated=False,
                 trajectory_id="traj2",
                 extras={},
-                temperature=1.0,
             ),
             # agent1-step3 (extends agent1-step2, should merge back!)
             vf.TrajectoryStep(
@@ -625,12 +651,12 @@ def interleaved_agents_trajectory():
                 is_truncated=False,
                 trajectory_id="traj1",
                 extras={},
-                temperature=1.0,
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
-    return state
+    return output
 
 
 def test_interleave_rollout_interleaved_agents(interleaved_agents_trajectory):
@@ -640,6 +666,7 @@ def test_interleave_rollout_interleaved_agents(interleaved_agents_trajectory):
     """
     rollouts = interleave_rollout(interleaved_agents_trajectory)
 
+    assert rollouts is not None
     assert len(rollouts) == 2, "Should produce 2 samples (agent1 merged, agent2 separate)"
 
     # First sample: agent1 steps 1, 2, 3 merged
@@ -713,7 +740,7 @@ def test_extract_images_from_messages_multiple_images():
 
 def test_extract_images_from_examples_single_turn():
     image_url = _create_test_image("red")
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
@@ -721,13 +748,18 @@ def test_extract_images_from_examples_single_turn():
                 completion=[{"role": "assistant", "content": "A red square"}],
                 response=MagicMock(),
                 tokens=MagicMock(),
-                temperature=1.0,
-            )
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    all_images, images_per_step = _extract_images_from_examples([(1, state)])
+    all_images, images_per_step = _extract_images_from_examples([(1, output)])
 
     assert len(all_images) == 1
     assert images_per_step == {1: [1]}  # 1 image after step 0
@@ -738,7 +770,7 @@ def test_extract_images_from_examples_multi_turn_new_image_each_turn():
     red_url = _create_test_image("red")
     green_url = _create_test_image("green")
 
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             # Turn 1: just the red image
@@ -747,7 +779,11 @@ def test_extract_images_from_examples_multi_turn_new_image_each_turn():
                 completion=[{"role": "assistant", "content": "Red"}],
                 response=MagicMock(),
                 tokens=MagicMock(),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Turn 2: cumulative prompt with red image + green image
             vf.TrajectoryStep(
@@ -759,13 +795,18 @@ def test_extract_images_from_examples_multi_turn_new_image_each_turn():
                 completion=[{"role": "assistant", "content": "Green"}],
                 response=MagicMock(),
                 tokens=MagicMock(),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    all_images, images_per_step = _extract_images_from_examples([(1, state)])
+    all_images, images_per_step = _extract_images_from_examples([(1, output)])
 
     assert len(all_images) == 2  # 2 unique images total
     assert images_per_step == {1: [1, 2]}  # 1 after step 0, 2 after step 1
@@ -775,7 +816,7 @@ def test_extract_images_from_examples_multi_turn_no_new_images():
     """Test turns where no new images are added."""
     red_url = _create_test_image("red")
 
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
@@ -783,7 +824,11 @@ def test_extract_images_from_examples_multi_turn_no_new_images():
                 completion=[{"role": "assistant", "content": "Red"}],
                 response=MagicMock(),
                 tokens=MagicMock(),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Turn 2: same image, no new ones
             vf.TrajectoryStep(
@@ -795,13 +840,18 @@ def test_extract_images_from_examples_multi_turn_no_new_images():
                 completion=[{"role": "assistant", "content": "Yes"}],
                 response=MagicMock(),
                 tokens=MagicMock(),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    all_images, images_per_step = _extract_images_from_examples([(1, state)])
+    all_images, images_per_step = _extract_images_from_examples([(1, output)])
 
     assert len(all_images) == 1  # Only 1 unique image
     assert images_per_step == {1: [1, 1]}  # 1 after step 0, still 1 after step 1
@@ -877,7 +927,7 @@ def test_interleave_rollout_with_vlm_cache():
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
 
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
@@ -893,7 +943,11 @@ def test_interleave_rollout_with_vlm_cache():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             vf.TrajectoryStep(
                 prompt=[{"role": "user", "content": "Turn 2"}],
@@ -908,16 +962,22 @@ def test_interleave_rollout_with_vlm_cache():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    rollouts = interleave_rollout(state, vlm_cache=cache)
+    rollouts = interleave_rollout(output, vlm_cache=cache)
 
     # Extension holds (step 1 prompt [1,2,3,4,5] extends prefix [1,2,3,4])
     # so both steps merge into a single sample with cumulative images from step 1
+    assert rollouts is not None
     assert len(rollouts) == 1
     rollout = rollouts[0]
     assert rollout.prompt_ids == [1, 2]
@@ -937,7 +997,7 @@ def test_interleave_rollout_uses_cache_key_override():
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
 
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=123,
         trajectory=[
             vf.TrajectoryStep(
@@ -953,14 +1013,20 @@ def test_interleave_rollout_uses_cache_key_override():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    rollouts = interleave_rollout(state, vlm_cache=cache, cache_key=7)
+    rollouts = interleave_rollout(output, vlm_cache=cache, cache_key=7)
 
+    assert rollouts is not None
     assert len(rollouts) == 1
     assert rollouts[0].pixel_values == [[9.0]]
     assert rollouts[0].image_grid_thw == [[1, 2, 3]]
@@ -981,7 +1047,7 @@ def test_interleave_rollout_vlm_image_then_text_turns():
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
 
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             # Step 0: user sends image
@@ -998,7 +1064,11 @@ def test_interleave_rollout_vlm_image_then_text_turns():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Step 1: text-only follow-up (extension holds)
             vf.TrajectoryStep(
@@ -1014,7 +1084,11 @@ def test_interleave_rollout_vlm_image_then_text_turns():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Step 2: another text-only follow-up (extension holds)
             vf.TrajectoryStep(
@@ -1030,15 +1104,21 @@ def test_interleave_rollout_vlm_image_then_text_turns():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    rollouts = interleave_rollout(state, vlm_cache=cache)
+    rollouts = interleave_rollout(output, vlm_cache=cache)
 
     # All 3 steps merge into 1 sample (extension always holds)
+    assert rollouts is not None
     assert len(rollouts) == 1
     rollout = rollouts[0]
     assert rollout.prompt_ids == [1, 2]
@@ -1065,7 +1145,7 @@ def test_interleave_rollout_vlm_new_image_mid_conversation():
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
 
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
@@ -1081,7 +1161,11 @@ def test_interleave_rollout_vlm_new_image_mid_conversation():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             vf.TrajectoryStep(
                 prompt=[{"role": "user", "content": "Text only"}],
@@ -1096,7 +1180,11 @@ def test_interleave_rollout_vlm_new_image_mid_conversation():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             vf.TrajectoryStep(
                 prompt=[{"role": "user", "content": "Image 2"}],
@@ -1111,14 +1199,20 @@ def test_interleave_rollout_vlm_new_image_mid_conversation():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    rollouts = interleave_rollout(state, vlm_cache=cache)
+    rollouts = interleave_rollout(output, vlm_cache=cache)
 
+    assert rollouts is not None
     assert len(rollouts) == 1
     rollout = rollouts[0]
     assert rollout.prompt_ids == [1, 2]
@@ -1143,7 +1237,7 @@ def test_interleave_rollout_vlm_extension_break():
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
 
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
@@ -1159,7 +1253,11 @@ def test_interleave_rollout_vlm_extension_break():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Step 1: extends step 0
             vf.TrajectoryStep(
@@ -1175,7 +1273,11 @@ def test_interleave_rollout_vlm_extension_break():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Step 2: extension breaks (different prefix, e.g. context compaction)
             vf.TrajectoryStep(
@@ -1191,14 +1293,20 @@ def test_interleave_rollout_vlm_extension_break():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    rollouts = interleave_rollout(state, vlm_cache=cache)
+    rollouts = interleave_rollout(output, vlm_cache=cache)
 
+    assert rollouts is not None
     assert len(rollouts) == 2
 
     # Sample 1: steps 0-1 merged, images from step 1 (still 1 image)
@@ -1229,7 +1337,7 @@ def test_interleave_rollout_vlm_image_appears_late():
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
 
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             # Step 0: text-only
@@ -1246,7 +1354,11 @@ def test_interleave_rollout_vlm_image_appears_late():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Step 1: text-only (extension holds)
             vf.TrajectoryStep(
@@ -1262,7 +1374,11 @@ def test_interleave_rollout_vlm_image_appears_late():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Step 2: user sends image (extension holds)
             vf.TrajectoryStep(
@@ -1278,14 +1394,20 @@ def test_interleave_rollout_vlm_image_appears_late():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    rollouts = interleave_rollout(state, vlm_cache=cache)
+    rollouts = interleave_rollout(output, vlm_cache=cache)
 
+    assert rollouts is not None
     assert len(rollouts) == 1
     rollout = rollouts[0]
     assert rollout.prompt_ids == [1, 2]
@@ -1298,20 +1420,20 @@ def test_interleave_rollout_vlm_image_appears_late():
 
 def test_interleave_rollout_empty_trajectory():
     """Empty trajectory returns None."""
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[],
         error=None,
     )
-    assert interleave_rollout(state) is None
+    assert interleave_rollout(output) is None
 
 
-def test_interleave_rollout_error_state_masks_all_false():
+def test_interleave_rollout_error_masks_all_false():
     """
-    When state has an error, all completion_mask values should be False
+    When rollout output has an error, all completion_mask values should be False
     across both make_sample (step 0) and extend_sample (step 1).
     """
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
@@ -1327,7 +1449,11 @@ def test_interleave_rollout_error_state_masks_all_false():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=0.8,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             vf.TrajectoryStep(
                 prompt=[{"role": "user", "content": "U2"}],
@@ -1342,14 +1468,20 @@ def test_interleave_rollout_error_state_masks_all_false():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=0.8,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
         error="timeout: environment exceeded time limit",
+        sampling_args={"temperature": 0.8},
     )
 
-    rollouts = interleave_rollout(state)
+    rollouts = interleave_rollout(output)
 
+    assert rollouts is not None
     assert len(rollouts) == 1
     rollout = rollouts[0]
     # Extension holds so tokens merge, but ALL completion_mask should be False
@@ -1385,7 +1517,7 @@ def test_interleave_rollout_vlm_interleaved_agents():
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
 
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             # Step 0: agent1-step1
@@ -1402,7 +1534,11 @@ def test_interleave_rollout_vlm_interleaved_agents():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Step 1: agent1-step2 (extends step 0)
             vf.TrajectoryStep(
@@ -1418,7 +1554,11 @@ def test_interleave_rollout_vlm_interleaved_agents():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Step 2: agent2-step1 (different prefix)
             vf.TrajectoryStep(
@@ -1434,7 +1574,11 @@ def test_interleave_rollout_vlm_interleaved_agents():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             # Step 3: agent1-step3 (extends agent1, merges back)
             vf.TrajectoryStep(
@@ -1450,14 +1594,20 @@ def test_interleave_rollout_vlm_interleaved_agents():
                     overlong_prompt=False,
                     is_truncated=False,
                 ),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
         error=None,
+        sampling_args={"temperature": 1.0},
     )
 
-    rollouts = interleave_rollout(state, vlm_cache=cache)
+    rollouts = interleave_rollout(output, vlm_cache=cache)
 
+    assert rollouts is not None
     assert len(rollouts) == 2
 
     # Agent1: steps 0,1,3 merged → images from step 3 (A+C)
@@ -1485,7 +1635,7 @@ def test_build_vlm_image_cache_handles_divergent_rollouts():
     blue_url = _create_test_image("blue")
     green_url = _create_test_image("green")
 
-    rollout_a = vf.State(
+    rollout_a = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
@@ -1493,13 +1643,18 @@ def test_build_vlm_image_cache_handles_divergent_rollouts():
                 completion=[{"role": "assistant", "content": "Red"}],
                 response=MagicMock(),
                 tokens=MagicMock(),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    rollout_b = vf.State(
+    rollout_b = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
@@ -1507,7 +1662,11 @@ def test_build_vlm_image_cache_handles_divergent_rollouts():
                 completion=[{"role": "assistant", "content": "Blue"}],
                 response=MagicMock(),
                 tokens=MagicMock(),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
             vf.TrajectoryStep(
                 prompt=[
@@ -1518,9 +1677,14 @@ def test_build_vlm_image_cache_handles_divergent_rollouts():
                 completion=[{"role": "assistant", "content": "Green"}],
                 response=MagicMock(),
                 tokens=MagicMock(),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             ),
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
@@ -1552,7 +1716,7 @@ def test_build_vlm_image_cache_handles_divergent_rollouts():
 
 
 def test_build_vlm_image_cache_no_images():
-    state = vf.State(
+    output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
@@ -1560,13 +1724,18 @@ def test_build_vlm_image_cache_no_images():
                 completion=[{"role": "assistant", "content": "Hi"}],
                 response=MagicMock(),
                 tokens=MagicMock(),
-                temperature=1.0,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
             )
         ],
+        sampling_args={"temperature": 1.0},
         error=None,
     )
 
-    cache = build_vlm_image_cache([state], MagicMock())
+    cache = build_vlm_image_cache([output], MagicMock())
 
     pv, grid = cache.get_for_step(0, 0)
     assert pv is None
