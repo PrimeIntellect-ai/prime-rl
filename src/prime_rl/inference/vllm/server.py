@@ -38,7 +38,7 @@ monkey_patch_load_lora_adapter()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
-# vLLM 0.15 no longer exports router/dependencies, so we define our own
+# Create our own router for custom endpoints
 router = APIRouter()
 
 
