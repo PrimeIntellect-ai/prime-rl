@@ -258,33 +258,6 @@ def get_completion_len(output: vf.RolloutOutput) -> int:
     return get_seq_len(output) - get_prompt_len(output)
 
 
-# TODO: remove once usage is tracked by verifiers
-def get_total_inference_tokens(output: vf.RolloutOutput) -> tuple[int, int]:
-    """
-    Computes total inference tokens across all trajectory steps (for multi-turn environments).
-
-    Returns:
-        Tuple of (total_input_tokens, total_output_tokens) summed across all turns.
-    """
-    if not output["trajectory"]:
-        return 0, 0
-
-    total_input = 0
-    total_output = 0
-
-    for step in output["trajectory"]:
-        if step["tokens"] is not None:
-            total_input += len(step["tokens"]["prompt_ids"])
-            total_output += len(step["tokens"]["completion_ids"])
-        elif step.get("response") is not None:
-            response = step["response"]
-            if response.get("usage"):
-                total_input += response["usage"].get("prompt_tokens", 0)
-                total_output += response["usage"].get("completion_tokens", 0)
-
-    return total_input, total_output
-
-
 def intercept_vf_logging(level: str = "DEBUG", prefix: str = "verifiers"):
     """Intercepts verifiers logging and routes through prime-rl logger with [verifiers] prefix."""
     vf_logger = logging.getLogger("verifiers")

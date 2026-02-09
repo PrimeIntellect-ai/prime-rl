@@ -44,7 +44,6 @@ from prime_rl.orchestrator.vf_utils import (
     get_completion_len,
     get_prompt_len,
     get_seq_len,
-    get_total_inference_tokens,
     setup_env_client,
     spawn_env_server,
     wait_for_env_servers,
@@ -69,7 +68,6 @@ from prime_rl.utils.utils import (
     strip_env_version,
     to_col_format,
 )
-from prime_rl.utils.usage import init_usage_reporter, report_inference_usage
 from prime_rl.utils.vlm import is_vlm_model
 
 
