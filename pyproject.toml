@@ -53,6 +53,10 @@ sft = "prime_rl.trainer.sft.train:main"
 eval = "prime_rl.eval.eval:main"
 synthesize = "prime_rl.synthesize.synthesize:main"
 
+[project.entry-points."vllm.logits_processors"]
+gibberish_detection = "prime_rl.inference.vllm.logits_processors.gibberish:GibberishDetectionLogitsProcessor"
+repetition_detection = "prime_rl.inference.vllm.logits_processors.repetition:RepetitionDetectionLogitsProcessor"
+
 [project.optional-dependencies]
 flash-attn = [
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",

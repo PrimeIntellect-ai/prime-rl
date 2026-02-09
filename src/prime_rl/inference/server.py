@@ -13,6 +13,18 @@ def setup_vllm_env(config: InferenceConfig):
     if config.enable_lora:
         os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
 
+    lp = config.logits_processors
+    if lp.gibberish_detection is not None:
+        gd = lp.gibberish_detection
+        os.environ["PRIME_GIBBERISH_DETECTION_ENABLED"] = "1"
+        os.environ["PRIME_GIBBERISH_DETECTION_TOKEN_ID_THRESHOLD"] = str(gd.token_id_threshold)
+        os.environ["PRIME_GIBBERISH_DETECTION_LOGPROB_OFFSET"] = str(gd.logprob_offset)
+    if lp.repetition_detection is not None:
+        rd = lp.repetition_detection
+        os.environ["PRIME_REPETITION_DETECTION_ENABLED"] = "1"
+        os.environ["PRIME_REPETITION_DETECTION_WINDOW"] = str(rd.window)
+        os.environ["PRIME_REPETITION_DETECTION_PROB_THRESHOLD"] = str(rd.prob_threshold)
+
 
 def main():
     config = parse_argv(InferenceConfig, allow_extras=True)

@@ -105,6 +105,43 @@ class ModelConfig(BaseConfig):
     ] = None
 
 
+class GibberishDetectionConfig(BaseConfig):
+    """Detects rare tokens generated at high entropy. Aborts the rollout on first gibberish token."""
+
+    token_id_threshold: Annotated[
+        int,
+        Field(description="Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."),
+    ] = 100_000
+
+    logprob_offset: Annotated[
+        float,
+        Field(description="Offset from uniform distribution logprob. Threshold = -log(vocab_size) - logprob_offset."),
+    ] = 2.0
+
+
+class RepetitionDetectionConfig(BaseConfig):
+    """Detects pathological repetition loops where the model generates with very high confidence."""
+
+    window: Annotated[
+        int,
+        Field(description="Number of consecutive high-probability steps before aborting."),
+    ] = 3_000
+
+    prob_threshold: Annotated[
+        float,
+        Field(
+            description="Max token probability threshold. Steps where max_prob exceeds this count toward the window."
+        ),
+    ] = 0.99
+
+
+class LogitsProcessorsConfig(BaseConfig):
+    """Configures custom logits processors applied during generation. Each sub-config enables a processor when set."""
+
+    gibberish_detection: GibberishDetectionConfig | None = None
+    repetition_detection: RepetitionDetectionConfig | None = None
+
+
 class WeightBroadcastConfig(BaseSettings):
     """Configures weight broadcast settings."""
 
@@ -190,6 +227,10 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 0
 
+    logits_processors: Annotated[
+        LogitsProcessorsConfig, Field(description="Custom logits processors applied during generation.")
+    ] = LogitsProcessorsConfig()
+
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
@@ -252,7 +293,13 @@ class InferenceConfig(BaseSettings):
             "api_server_count": "api_server_count",
         }
 
+        # Prefixes of fields handled via env vars that must not be passed to vLLM's namespace
+        # (logits_processors conflicts with vLLM's own logits_processors field)
+        skip_prefixes = ("logits_processors",)
+
         for key in get_all_fields(self):
+            if key.startswith(skip_prefixes):
+                continue
             value = rgetattr(self, key.replace("-", "_"))
             rsetattr(namespace, to_vllm.get(key, key), value)
 
