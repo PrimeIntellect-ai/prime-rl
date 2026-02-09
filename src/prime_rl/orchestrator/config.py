@@ -643,7 +643,9 @@ class OrchestratorConfig(BaseSettings):
 
     usage: Annotated[
         UsageConfig | None,
-        Field(description="Internal platform usage reporting. Tracks inference tokens for billing. Not intended for end users."),
+        Field(
+            description="Internal platform usage reporting. Tracks inference tokens for billing. Not intended for end users."
+        ),
     ] = None
 
     # The checkpoint configuration
