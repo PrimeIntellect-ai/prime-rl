@@ -33,7 +33,7 @@ dependencies = [
     "blobfile>=3.0.0",
     "torchtitan",
     "dion",
-    # "reverse-text",
+    "reverse-text",
     "verifiers>=0.1.8",
     "prime-evals>=0.1.5",
     "ring-flash-attn>=0.1.8",
