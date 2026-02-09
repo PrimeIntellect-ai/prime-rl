@@ -641,8 +641,10 @@ class OrchestratorConfig(BaseSettings):
     # The prime monitor configuration
     prime_monitor: PrimeMonitorConfig | None = None
 
-    # Usage reporting configuration
-    usage: UsageConfig | None = None
+    usage: Annotated[
+        UsageConfig | None,
+        Field(description="Internal platform usage reporting. Tracks inference tokens for billing. Not intended for end users."),
+    ] = None
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
