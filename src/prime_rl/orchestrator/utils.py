@@ -169,6 +169,48 @@ async def compute_teacher_logprobs(
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 
 
+async def compute_pi_teacher_logprobs(
+    clients: list[AsyncOpenAI],
+    model_name: str,
+    samples_with_prefix: list[tuple[list[int], TrainingSample]],
+) -> list[list[float]]:
+    """Compute teacher logprobs with a privileged-information prefix prepended.
+
+    For each (pi_prefix_ids, sample) pair, sends ``pi_prefix_ids + prompt_ids + completion_ids``
+    for prefill and returns logprobs aligned to ``prompt_ids + completion_ids``
+    (i.e. the first ``len(pi_prefix_ids)`` logprobs are sliced off).
+    """
+
+    async def _compute_single(client: AsyncOpenAI, pi_prefix_ids: list[int], sample: TrainingSample) -> list[float]:
+        student_ids = sample.prompt_ids + sample.completion_ids
+        full_tokens = pi_prefix_ids + student_ids
+        async with await get_semaphore():
+            response = await client.post(
+                "/chat/completions/tokens",
+                body={
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": ""}],
+                    "tokens": full_tokens,
+                    "max_tokens": 1,
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "skip_special_tokens": False,
+                    "prompt_logprobs": True,
+                },
+                cast_to=ChatCompletion,
+            )
+        all_logprobs = [
+            0.0 if lp is None else float(next(iter(lp.values()))["logprob"]) for lp in response.prompt_logprobs
+        ]
+        # Slice off the prefix portion to align with student token sequence
+        return all_logprobs[len(pi_prefix_ids) :]
+
+    client_cycle = cycle(clients)
+    return await asyncio.gather(
+        *[_compute_single(next(client_cycle), prefix, sample) for prefix, sample in samples_with_prefix]
+    )
+
+
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True) -> Path:
     """Get the weight directory for a given checkpoint step.
 

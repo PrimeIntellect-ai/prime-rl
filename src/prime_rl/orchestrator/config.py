@@ -616,6 +616,34 @@ class AdvantageConfig(BaseConfig):
     ] = 1.0
 
 
+class PiOpdConfig(BaseConfig):
+    """Privileged-information on-policy distillation.
+
+    Uses tool calls from successful rollouts as context for a same-model
+    teacher to produce per-token advantage weights.
+    """
+
+    enabled: Annotated[bool, Field(description="Enable PI-OPD.")] = False
+    dampen: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            le=1.0,
+            description="Dampening factor (1.0 = full signal, 0.0 = uniform / no effect).",
+        ),
+    ] = 1.0
+    prompt_template: Annotated[
+        str,
+        Field(
+            description=("Template for the privileged-information prefix. Must contain {tool_calls} placeholder."),
+        ),
+    ] = (
+        "Here are examples of successful tool usage for solving the question:\n\n"
+        "{tool_calls}\n\n"
+        "Now solve the question in your own way.\n\n"
+    )
+
+
 class FileSystemWeightBroadcastConfig(BaseModel):
     """Configures the filesystem weight broadcast."""
 
@@ -685,6 +713,9 @@ class OrchestratorConfig(BaseSettings):
 
     # The advantage configuration
     advantage: AdvantageConfig | None = AdvantageConfig()
+
+    # Privileged-information on-policy distillation
+    pi_opd: PiOpdConfig = PiOpdConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()

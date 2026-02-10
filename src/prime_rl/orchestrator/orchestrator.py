@@ -1,12 +1,19 @@
 import asyncio
 import random
 import time
+from collections import defaultdict
 
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
+from prime_rl.orchestrator.pi_opd import (
+    build_pi_prefix,
+    compute_pi_advantage_weights,
+    extract_tool_calls,
+    select_donor_rollout,
+)
 from prime_rl.orchestrator.trajectories import branch_rollout, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 
@@ -29,6 +36,7 @@ from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
+    compute_pi_teacher_logprobs,
     compute_teacher_logprobs,
     get_sampling_args,
     get_weight_dir,
@@ -368,10 +376,11 @@ async def orchestrate(config: OrchestratorConfig):
             config.advantage,
         )
 
-        # Update and sample rollouts from the buffer
+        # Convert rollouts to training examples, tracking rollout→example mapping for PI-OPD
         make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
         train_examples: list[TrainingSample] = []
-        for train_rollout, advantage in zip(train_rollouts, advantages):
+        rollout_to_examples: dict[int, list[int]] = {}  # rollout_idx → list of train_example indices
+        for rollout_idx, (train_rollout, advantage) in enumerate(zip(train_rollouts, advantages)):
             weight_dampen = config.advantage.token_weight_dampen if config.advantage is not None else 1.0
             train_example = make_train_example(
                 train_rollout,
@@ -380,13 +389,94 @@ async def orchestrate(config: OrchestratorConfig):
                 weight_dampen=weight_dampen,
             )
             if train_example is not None:
+                example_indices = []
                 for te in train_example:
                     te.advantage = advantage
                     te.reward = train_rollout["reward"]
-                train_examples.extend(train_example)
+                    example_indices.append(len(train_examples))
+                    train_examples.append(te)
+                rollout_to_examples[rollout_idx] = example_indices
         logger.debug(
             f"Converted {len(train_rollouts)} training rollouts to {len(train_examples)} training examples using {config.trajectory_strategy} strategy"
         )
+
+        # PI-OPD: compute per-token advantage weights from privileged information
+        pi_opd_time = 0.0
+        pi_opd_num_weighted = 0
+        pi_opd_weight_stds: list[float] = []
+        if config.pi_opd.enabled:
+            pi_opd_start = time.perf_counter()
+
+            # Group rollouts by example_id
+            rollouts_by_example: dict[int, list[tuple[int, dict]]] = defaultdict(list)
+            for i, rollout in enumerate(train_rollouts):
+                rollouts_by_example[rollout["example_id"]].append((i, rollout))
+
+            # Build prefill tasks: (train_example_idx, pi_prefix_ids) for samples that need PI-OPD
+            prefill_tasks: list[tuple[int, list[int]]] = []
+            for group in rollouts_by_example.values():
+                for rollout_idx, rollout in group:
+                    if rollout_idx not in rollout_to_examples:
+                        continue
+                    donor = select_donor_rollout(group, rollout_idx)
+                    if donor is None:
+                        continue
+                    tool_calls_text = extract_tool_calls(donor)
+                    if not tool_calls_text:
+                        continue
+                    pi_prefix_ids = build_pi_prefix(tool_calls_text, config.pi_opd.prompt_template, tokenizer)
+                    for te_idx in rollout_to_examples[rollout_idx]:
+                        prefill_tasks.append((te_idx, pi_prefix_ids))
+
+            if prefill_tasks:
+                logger.info(f"PI-OPD: computing teacher logprobs for {len(prefill_tasks)} training examples")
+                samples_with_prefix = [(prefix, train_examples[te_idx]) for te_idx, prefix in prefill_tasks]
+                pi_teacher_logprobs_list = await compute_pi_teacher_logprobs(
+                    clients=clients,
+                    model_name=config.model.name,
+                    samples_with_prefix=samples_with_prefix,
+                )
+
+                for (te_idx, _prefix), pi_teacher_lps in zip(prefill_tasks, pi_teacher_logprobs_list):
+                    sample = train_examples[te_idx]
+                    # Student logprobs = prompt zeros + completion logprobs
+                    student_lps = [0.0] * len(sample.prompt_ids) + sample.completion_logprobs
+                    full_mask = sample.prompt_mask + sample.completion_mask
+                    pi_weights = compute_pi_advantage_weights(
+                        teacher_logprobs=pi_teacher_lps,
+                        student_logprobs=student_lps,
+                        completion_mask=full_mask,
+                        dampen=config.pi_opd.dampen,
+                        advantage=sample.advantage,
+                    )
+                    if not pi_weights:
+                        continue
+
+                    # Extract only the completion-aligned portion
+                    completion_pi_weights = pi_weights[len(sample.prompt_ids) :]
+                    if len(completion_pi_weights) != len(sample.completion_ids):
+                        logger.warning(
+                            f"PI-OPD weight length mismatch ({len(completion_pi_weights)} vs {len(sample.completion_ids)}); skipping."
+                        )
+                        continue
+
+                    # Compose with existing advantage_weights (from turn scores)
+                    if sample.advantage_weights is not None:
+                        sample.advantage_weights = [
+                            aw * pw for aw, pw in zip(sample.advantage_weights, completion_pi_weights)
+                        ]
+                    else:
+                        sample.advantage_weights = completion_pi_weights
+
+                    pi_opd_num_weighted += 1
+                    masked_weights = [w for w, m in zip(completion_pi_weights, sample.completion_mask) if m]
+                    if masked_weights:
+                        mean_w = sum(masked_weights) / len(masked_weights)
+                        var_w = sum((w - mean_w) ** 2 for w in masked_weights) / len(masked_weights)
+                        pi_opd_weight_stds.append(var_w**0.5)
+
+            pi_opd_time = time.perf_counter() - pi_opd_start
+            logger.debug(f"PI-OPD: weighted {pi_opd_num_weighted}/{len(train_examples)} examples in {pi_opd_time:.2f}s")
 
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0
@@ -553,6 +643,11 @@ async def orchestrate(config: OrchestratorConfig):
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
             "time/teacher_logprobs": teacher_logprobs_time,
+            "time/pi_opd": pi_opd_time,
+            "pi_opd/num_weighted": pi_opd_num_weighted,
+            "pi_opd/mean_weight_std": (sum(pi_opd_weight_stds) / len(pi_opd_weight_stds))
+            if pi_opd_weight_stds
+            else 0.0,
             "time/save_ckpt": save_ckpt_time,
             # Scheduler metrics
             **scheduler.get_metrics(),
