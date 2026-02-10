@@ -29,7 +29,7 @@ alpha = 64
 lr = 1e-5
 
 [orchestrator]
-batch_size = 512
+max_inflight_groups = 64
 rollouts_per_example = 8
 
 [orchestrator.sampling]

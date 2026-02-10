@@ -105,11 +105,11 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         stable_file = save_dir / "STABLE"
         stable_file.touch()
 
-    def maybe_clean(self, max_async_level: int, interval_to_keep: int | None):
+    def maybe_clean(self, keep_last: int, interval_to_keep: int | None):
         for idx in self.multi_run_manager.used_idxs:
             maybe_clean(
                 get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
                 self.multi_run_manager.progress[idx].step,
-                max_async_level,
+                keep_last,
                 interval_to_keep,
             )

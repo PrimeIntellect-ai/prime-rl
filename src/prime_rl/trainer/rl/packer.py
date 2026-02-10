@@ -15,7 +15,7 @@ from prime_rl.transport import (
     setup_micro_batch_sender,
     setup_training_batch_receiver,
 )
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.pathing import get_rollout_dir
 
 TIMEOUT_SECONDS = 0.1
@@ -57,30 +57,50 @@ class SinglePacker(BasePacker):
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
+        token_batch_size: int,
         start_step: int = 0,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
         assert self.multi_run_manager.max_runs == 1, "SinglePacker only supports one run"
+        self.token_batch_size = token_batch_size
+        # Ensure the receiver is ready to accept step-0 batches after rollout dir cleanup
+        self.receiver._received_steps = {0: 0}
 
     def pack(self):
-        # Wait for batch to be available
-        batches = []
-        while len(batches) == 0:
+        """Accumulate samples from streamed group rollouts until the token budget is met."""
+        accumulated_samples: list[TrainingSample] = []
+        completion_tokens = 0
+
+        pbar = ProgressTracker(
+            total=self.token_batch_size,
+            desc="Accumulating completion tokens",
+        )
+
+        while completion_tokens < self.token_batch_size:
             self.multi_run_manager.discover_runs()
             batches = self.receiver.receive()
-            time.sleep(0.2)
 
-        assert len(batches) == 1, "SinglePacker only supports one batch per step"
-        batch = batches[0]
+            if not batches:
+                time.sleep(0.2)
+                continue
+
+            for batch in batches:
+                for sample in batch.examples:
+                    n_tokens = len(sample.completion_ids)
+                    accumulated_samples.append(sample)
+                    completion_tokens += n_tokens
+                    pbar.update(n_tokens)
+
+        pbar.close()
 
         self.multi_run_manager.ready_to_update[0] = True
         self.multi_run_manager.progress[0].step += 1
         micro_batch_grid = prepare_batch(
-            rollouts=batch.examples,
+            rollouts=accumulated_samples,
             seq_len=self.seq_len,
             pad_to_multiple_of=self.pad_to_multiple_of,
             num_train_workers=self.dp_world_size,
-            idxs=[0] * len(batch.examples),
+            idxs=[0] * len(accumulated_samples),
             num_loras=self.multi_run_manager.max_runs,
         )
 
@@ -312,10 +332,14 @@ def setup_packer(
     pad_to_multiple_of: int,
     tokenizer: PreTrainedTokenizer,
     transport_config: TransportConfigType,
+    token_batch_size: int | None = None,
     start_step: int = 0,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
-        return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        assert token_batch_size is not None, "token_batch_size is required for SinglePacker"
+        return SinglePacker(
+            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, token_batch_size, start_step
+        )
     else:
         return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)

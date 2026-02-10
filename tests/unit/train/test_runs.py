@@ -39,7 +39,7 @@ def create_run_with_config(
     if config is None:
         config = {
             "model": {"name": "test-model"},
-            "batch_size": 32,
+            "max_inflight_groups": 8,
             "rollouts_per_example": 4,
             "env": [{"id": "test-env"}],
         }
@@ -197,7 +197,7 @@ def test_config_loading(tmp_path: Path) -> None:
     # Create a run directory with config
     test_config = {
         "model": {"name": "test-model"},
-        "batch_size": 32,
+        "max_inflight_groups": 8,
         "max_steps": 1000,
         "rollouts_per_example": 4,
         "env": [{"id": "test-env"}],
@@ -215,7 +215,7 @@ def test_config_loading(tmp_path: Path) -> None:
     # Access config as OrchestratorConfig object
     config = multi_run_manager.config[run_idx]
     assert config.model.name == "test-model"
-    assert config.batch_size == 32
+    assert config.max_inflight_groups == 8
     assert config.max_steps == 1000
 
 
@@ -242,7 +242,7 @@ def test_config_cleanup_on_deletion(tmp_path: Path) -> None:
     # Create a run directory with valid config
     test_config = {
         "model": {"name": "test-model"},
-        "batch_size": 16,
+        "max_inflight_groups": 4,
         "rollouts_per_example": 4,
         "env": [{"id": "test-env"}],
     }
@@ -269,10 +269,10 @@ def test_config_invalid(tmp_path: Path) -> None:
     multi_run_manager = MultiRunManager(output_dir=tmp_path, max_runs=5)
 
     # Create a run directory with invalid config (invalid type for a field)
-    # Invalid config - batch_size should be int, not string
+    # Invalid config - max_inflight_groups should be int, not string
     invalid_config = {
         "model": {"name": "test-model"},
-        "batch_size": "not-a-number",  # Invalid type
+        "max_inflight_groups": "not-a-number",  # Invalid type
         "rollouts_per_example": 4,
         "env": [{"id": "test-env"}],
     }

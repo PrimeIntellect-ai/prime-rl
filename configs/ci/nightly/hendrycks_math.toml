@@ -8,7 +8,7 @@ seq_len = 2048
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [orchestrator]
-batch_size = 1024
+max_inflight_groups = 64
 rollouts_per_example = 16
 
 [orchestrator.sampling]
@@ -24,10 +24,6 @@ easy_fraction = 0.0
 hard_fraction = 0.0
 easy_threshold = 1.0
 hard_threshold = 0.0
-
-[orchestrator.val]
-interval = 5
-num_examples = 128
 
 [orchestrator.eval]
 interval = 10

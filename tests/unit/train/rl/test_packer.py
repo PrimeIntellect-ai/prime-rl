@@ -28,7 +28,7 @@ def create_run_with_config(output_dir: Path, run_name: str) -> Path:
     control_dir.mkdir()
     config = {
         "model": {"name": "test-model"},
-        "batch_size": 2,
+        "max_inflight_groups": 2,
         "rollouts_per_example": 1,
         "env": [{"id": "test-env"}],
         "sampling": {"temperature": 1.0},

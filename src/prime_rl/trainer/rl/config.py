@@ -111,7 +111,13 @@ class DataLoaderConfig(BaseConfig):
 class BaseWeightBroadcastConfig(BaseModel):
     """Configures the base weight broadcast."""
 
-    pass
+    keep_last: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of recent weight broadcast directories to keep on disk. Old directories are cleaned up after each broadcast.",
+        ),
+    ] = 1
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
@@ -188,13 +194,13 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = None
 
-    max_async_level: Annotated[
+    token_batch_size: Annotated[
         int,
         Field(
-            ge=0,
-            description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower performance. If 0, will be fully synchronous.",
+            ge=1,
+            description="Number of completion tokens to accumulate before taking a training step. The orchestrator streams individual group rollouts; the trainer accumulates them until this budget is met.",
         ),
-    ] = 1
+    ] = 32768
 
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
@@ -261,12 +267,6 @@ class RLTrainerConfig(BaseSettings):
                     "save_adapter_separately=True requires LoRA to be enabled. "
                     "Set model.lora or disable save_adapter_separately."
                 )
-        return self
-
-    @model_validator(mode="after")
-    def validate_weight_broadcast_type(self):
-        if self.weight_broadcast.type == "nccl" and self.max_async_level != 1:
-            raise ValueError("NCCL weight broadcast only works with async level 1")
         return self
 
     @model_validator(mode="after")

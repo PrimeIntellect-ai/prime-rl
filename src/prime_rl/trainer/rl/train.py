@@ -203,6 +203,7 @@ def train(config: RLTrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
+            token_batch_size=config.token_batch_size,
         )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
@@ -217,21 +218,17 @@ def train(config: RLTrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
-        # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
-        last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
-        if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
+        # Broadcast weights at every step (except step 0 — no need to broadcast the base model)
+        if progress.step > 0:
             broadcast_weights_start_time = time.perf_counter()
             weight_broadcast.broadcast_weights(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
             # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-            ckpt_interval = config.ckpt and config.ckpt.interval
-            interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
             if config.weight_broadcast.type == "filesystem":
-                weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
+                ckpt_interval = config.ckpt and config.ckpt.interval
+                weight_broadcast.maybe_clean(config.weight_broadcast.keep_last, ckpt_interval)
         else:
             broadcast_weights_time = 0
-            # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
             for idx in multi_run_manager.used_idxs:
                 multi_run_manager.ready_to_update[idx] = False
 

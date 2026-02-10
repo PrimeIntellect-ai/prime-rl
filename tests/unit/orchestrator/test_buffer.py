@@ -107,28 +107,21 @@ def test_buffer_problem_pool_assignment(dummy_env_group, make_rollouts):
     assert len(get_normal_ids(buffer)) == 7
 
 
-def test_buffer_online_difficulty_filtering(dummy_env_group, make_rollouts):
-    """With online_difficulty_filtering=True, only partial reward rollouts are kept."""
+def test_buffer_tracks_pool_metrics(dummy_env_group, make_rollouts):
+    """Buffer tracks per-pool rollout counts; difficulty filtering is handled by the orchestrator."""
     dataset = dummy_env_group.get_dataset()
     buffer = Buffer(
         dataset,
         dummy_env_group.env_names,
-        BufferConfig(online_difficulty_filtering=True),
+        BufferConfig(easy_threshold=1.0, hard_threshold=0.0),
     )
     buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 0.5, 0.0, 0.5, 0.5]))
 
-    # Only 3 problems with reward 0.5 -> 6 rollouts kept
-    assert len(buffer.rollout_buffer) == 6
-
-
-def test_buffer_no_filtering_by_default(dummy_env_group, make_rollouts):
-    """With online_difficulty_filtering=False (default), all rollouts are kept."""
-    dataset = dummy_env_group.get_dataset()
-    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig())
-    buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 0.5, 0.0, 0.5, 0.5]))
-
-    # All 5 problems -> 10 rollouts kept
-    assert len(buffer.rollout_buffer) == 10
+    # rewards=[1.0, 0.5, 0.0, 0.5, 0.5] -> 1 easy, 1 hard, 3 normal (2 rollouts each)
+    total_rollouts = sum(
+        count for env in buffer.env_names for count in buffer.num_rollouts_per_step[env].values()
+    )
+    assert total_rollouts == 10
 
 
 def test_buffer_save_load_with_conversion(dummy_env_group, make_rollouts, tmp_path):

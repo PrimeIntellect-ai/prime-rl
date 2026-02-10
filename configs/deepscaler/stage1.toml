@@ -15,7 +15,7 @@ name = "stage1"
 interval = 100
 
 [orchestrator]
-batch_size = 1024
+max_inflight_groups = 128
 rollouts_per_example = 8
 
 [orchestrator.sampling]

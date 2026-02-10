@@ -12,7 +12,7 @@ name = "hendrycks-math"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-batch_size = 512
+max_inflight_groups = 32
 rollouts_per_example = 16
 
 [orchestrator.sampling]
@@ -26,10 +26,6 @@ args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "defau
 [orchestrator.buffer]
 easy_threshold = 1.0
 hard_threshold = 0.0
-
-[orchestrator.val]
-interval = 5
-num_examples = 128
 
 [orchestrator.eval]
 interval = 10
