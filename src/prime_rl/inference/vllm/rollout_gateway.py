@@ -222,10 +222,12 @@ async def _call_chat_with_messages(
     tools: list[dict[str, Any]] | None,
     sampling_args: dict[str, Any],
 ) -> ChatCompletion:
+    extra_body = sampling_args.pop("extra_body", {})
     request_body: dict[str, Any] = {
         "model": rollout.config.model,
         "messages": messages,
         **sampling_args,
+        **extra_body,
     }
     if tools:
         request_body["tools"] = tools
