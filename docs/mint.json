@@ -13,6 +13,7 @@
                 "runs",
                 "checkpointing",
                 "benchmarking",
+                "grouped_gemm_experimental",
                 "deployment",
                 "kubernetes",
                 "troubleshooting"
