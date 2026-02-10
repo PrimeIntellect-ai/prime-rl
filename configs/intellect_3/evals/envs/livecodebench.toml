@@ -1,4 +1,0 @@
-[[env]]
-id = "livecodebench"
-args = { pool_size = 128 }
-rollouts_per_example = 2 # 454 examples * 2 rollouts = 908 rollouts

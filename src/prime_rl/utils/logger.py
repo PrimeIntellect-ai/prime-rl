@@ -79,8 +79,12 @@ class _JsonFileSink:
         self._file.flush()
 
 
-class _VerifiersInterceptHandler(logging.Handler):
-    """Intercept stdlib logging from verifiers and route to loguru with [verifiers] prefix."""
+class InterceptHandler(logging.Handler):
+    """Intercept standard logging library and routes to our prime-rl logger with specified prefix."""
+
+    def __init__(self, prefix: str):
+        super().__init__()
+        self.prefix = prefix
 
     def emit(self, record: logging.LogRecord) -> None:
         logger = get_logger()
@@ -94,7 +98,7 @@ class _VerifiersInterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(level, f"[verifiers] {record.getMessage()}")
+        logger.opt(depth=depth, exception=record.exc_info).log(level, f"[{self.prefix}] {record.getMessage()}")
 
 
 def setup_logger(
@@ -260,12 +264,3 @@ class ProgressTracker:
             percent = int(100 * self.current / self.total)
             if percent > self._last_logged_percent:
                 self._emit_progress(percent)
-
-
-def intercept_verifiers_logging(level: str = "DEBUG"):
-    """Intercept all verifiers stdlib logging and route through prime-rl loguru with [verifiers] prefix."""
-    vf_logger = logging.getLogger("verifiers")
-    vf_logger.handlers.clear()
-    vf_logger.addHandler(_VerifiersInterceptHandler())
-    vf_logger.setLevel(level.upper())
-    vf_logger.propagate = False

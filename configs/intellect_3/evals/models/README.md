@@ -1,1 +1,0 @@
-The model names in this directory match the names on OpenRouter. If you try hitting the model on a different provider, you might have to change the model name.

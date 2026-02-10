@@ -1,8 +1,0 @@
-max_concurrent = 16
-
-[model]
-name = "PrimeIntellect/INTELLECT-3"
-
-[client]
-base_url = ["https://dev-inference.pinference.ai/api/v1"]
-api_key_var = "PRIME_API_KEY_DEV"

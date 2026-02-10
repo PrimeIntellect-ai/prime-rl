@@ -434,9 +434,39 @@ class RLConfig(BaseSettings):
 
                 self.orchestrator.model.lora = LoRAConfig()
 
+            # Validate orchestrator LoRA rank/alpha don't conflict with trainer
+            if (
+                self.orchestrator.model.lora.rank is not None
+                and self.orchestrator.model.lora.rank != self.trainer.model.lora.rank
+            ):
+                raise ValueError(
+                    f"orchestrator.model.lora.rank ({self.orchestrator.model.lora.rank}) conflicts with "
+                    f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
+                    f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
+                )
+
+            if (
+                self.orchestrator.model.lora.alpha is not None
+                and self.orchestrator.model.lora.alpha != self.trainer.model.lora.alpha
+            ):
+                raise ValueError(
+                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.lora.alpha}) conflicts with "
+                    f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
+                    f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
+                )
+
+            # Propagate rank/alpha from trainer when not explicitly set
+            if self.orchestrator.model.lora.rank is None:
+                self.orchestrator.model.lora.rank = self.trainer.model.lora.rank
+
+            if self.orchestrator.model.lora.alpha is None:
+                self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
+
             # Auto-generate name if not provided
             if self.orchestrator.model.lora.name is None:
-                self.orchestrator.model.lora.name = f"r{self.trainer.model.lora.rank}-a{self.trainer.model.lora.alpha}"
+                self.orchestrator.model.lora.name = (
+                    f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
+                )
 
             if self.inference is not None:
                 self.inference.enable_lora = True

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import httpx
+import verifiers as vf
 from httpx import AsyncClient
-from openai import AsyncOpenAI, NotFoundError
-from prime_evals import AsyncEvalsClient
+from openai import NotFoundError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from prime_rl.utils.config import ClientConfig
@@ -20,13 +21,21 @@ class InferencePool(Protocol):
     """Protocol for inference pools (static or elastic)."""
 
     @property
-    def clients(self) -> list[AsyncOpenAI]:
+    def clients(self) -> list[vf.ClientConfig]:
         """Get inference clients."""
         ...
 
     @property
     def admin_clients(self) -> list[AsyncClient]:
         """Get admin clients."""
+        ...
+
+    def update_model_name(self, model_name: str) -> None:
+        """Update the model name."""
+        ...
+
+    async def get_next_client(self) -> vf.ClientConfig:
+        """Get next client in round-robin fashion."""
         ...
 
     async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
@@ -49,22 +58,33 @@ class InferencePool(Protocol):
 class StaticInferencePool:
     """Static inference pool with fixed client list."""
 
-    def __init__(self, clients: list[AsyncOpenAI], admin_clients: list[AsyncClient], skip_model_check: bool = False):
+    def __init__(
+        self, clients: list[vf.ClientConfig], admin_clients: list[AsyncClient], skip_model_check: bool = False
+    ):
         self._clients = clients
         self._admin_clients = admin_clients
         self._skip_model_check = skip_model_check
+        self._idx_to_client = {client.client_idx: client for client in clients}
+        self._client_cycle = cycle(clients)
+        self.model_name = None  # unused
 
     @property
-    def clients(self) -> list[AsyncOpenAI]:
+    def clients(self) -> list[vf.ClientConfig]:
         return self._clients
 
     @property
     def admin_clients(self) -> list[AsyncClient]:
         return self._admin_clients
 
+    def update_model_name(self, model_name: str) -> None:
+        self.model_name = model_name
+
+    async def get_next_client(self) -> vf.ClientConfig:
+        return next(self._client_cycle)
+
     async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
         await check_health(self._admin_clients, timeout=timeout)
-        await maybe_check_has_model(self._clients, model_name, skip_model_check=self._skip_model_check)
+        await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
@@ -76,14 +96,14 @@ class StaticInferencePool:
         pass
 
 
-async def setup_inference_pool(client_config: ClientConfig, base_model: str | None = None) -> InferencePool:
+async def setup_inference_pool(client_config: ClientConfig, model_name: str) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
 
     if client_config.is_elastic:
         from prime_rl.utils.elastic import ElasticInferencePool
 
-        return await ElasticInferencePool.from_config(client_config, base_model=base_model)
+        return await ElasticInferencePool.from_config(client_config, model_name=model_name)
 
     logger.info(
         f"Initializing OpenAI client (base_url={', '.join(client_config.base_url)}, "
@@ -96,28 +116,20 @@ async def setup_inference_pool(client_config: ClientConfig, base_model: str | No
     )
 
 
-def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
-    def _setup_client(base_url: str) -> AsyncOpenAI:
-        # We use a longer request timeout than default, but if more than 20min, we probably need faster inference deployment
-        timeout = httpx.Timeout(client_config.timeout)
-        # We use as many concurrent connections as possible, but lower than available ports
-        limits = httpx.Limits(
-            max_connections=8192,  # OAI default: 1000
-            max_keepalive_connections=8192,  # OAI default: 100
-        )
-        http_client = httpx.AsyncClient(limits=limits, timeout=timeout, headers=client_config.headers)
-        return AsyncOpenAI(
-            base_url=base_url,
-            api_key=os.getenv(client_config.api_key_var, "EMPTY"),
-            max_retries=10,  # OAI default: 2 (does exponential backoff and reasonable timeout in between retries)
-            http_client=http_client,
+def setup_clients(client_config: ClientConfig) -> list[vf.ClientConfig]:
+    def _setup_client(client_idx: int, base_url: str) -> vf.ClientConfig:
+        return vf.ClientConfig(
+            client_idx=client_idx,
+            api_base_url=base_url,
+            api_key_var=client_config.api_key_var,
+            timeout=client_config.timeout,
+            max_connections=8192,
+            max_keepalive_connections=8192,
+            max_retries=10,
+            extra_headers=client_config.headers,
         )
 
-    return [_setup_client(base_url) for base_url in client_config.base_url]
-
-
-def setup_evals_client() -> AsyncEvalsClient:
-    return AsyncEvalsClient()
+    return [_setup_client(client_idx, base_url) for client_idx, base_url in enumerate(client_config.base_url)]
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
@@ -145,16 +157,18 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     return [_setup_admin_client(base_url) for base_url in client_config.base_url]
 
 
-async def maybe_check_has_model(clients: list[AsyncOpenAI], model_name: str, skip_model_check: bool = False) -> None:
+async def maybe_check_has_model(
+    admin_clients: list[AsyncClient], model_name: str, skip_model_check: bool = False
+) -> None:
     if skip_model_check:
         return
     logger = get_logger()
     logger.debug(f"Checking if model {model_name} is in the inference pool")
-    results = await asyncio.gather(*[client.models.list() for client in clients])
-    for client, result in zip(clients, results):
-        models = result.data
-        if not any(model.id == model_name for model in models):
-            raise ValueError(f"Model {model_name} was not found in the inference pool on {client.base_url}")
+    results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
+    for admin_client, result in zip(admin_clients, results):
+        models = result.json()["data"]
+        if not any(model["id"] == model_name for model in models):
+            raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 
