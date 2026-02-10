@@ -48,12 +48,12 @@ class LoRAConfig(BaseConfig):
     ] = None
 
     alpha: Annotated[
-        float,
+        float | None,
         Field(
             ge=0,
-            description="LoRA alpha for this run.",
+            description="LoRA alpha for this run. If None, uses trainer's alpha.",
         ),
-    ] = 32.0
+    ] = None
 
 
 class ModelConfig(BaseModelConfig):
