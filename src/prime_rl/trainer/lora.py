@@ -234,14 +234,16 @@ def clean_lora_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torc
     return clean_state_dict
 
 
-def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:
+def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropout: float) -> None:
     """
     Save LoRA configuration as JSON for adapter portability.
 
     Args:
-        config: LoRA configuration to save
         model: Model with LoRA layers to introspect
         save_path: Path object or string pointing to directory where adapter_config.json will be saved
+        rank: LoRA rank
+        alpha: LoRA alpha scaling parameter
+        dropout: LoRA dropout rate
     """
     import json
     from pathlib import Path
@@ -266,9 +268,9 @@ def save_lora_config(config: LoRAConfig, model: nn.Module, save_path) -> None:
         "peft_type": "LORA",
         "task_type": "CAUSAL_LM",
         "base_model_name_or_path": model.config._name_or_path,
-        "r": config.rank,
-        "lora_alpha": config.alpha,
-        "lora_dropout": config.dropout,
+        "r": rank,
+        "lora_alpha": alpha,
+        "lora_dropout": dropout,
         "bias": "none",
         "target_modules": sorted(list(target_modules)),
         "modules_to_save": sorted(list(modules_to_save)) if modules_to_save else None,
