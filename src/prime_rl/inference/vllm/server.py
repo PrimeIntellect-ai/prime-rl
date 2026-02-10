@@ -32,6 +32,7 @@ from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
     OpenAIServingChatWithTokens,
 )
+from prime_rl.inference.vllm.rollout_gateway import RolloutRegistry
 
 # NOTE: Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
@@ -187,6 +188,16 @@ async def custom_init_app_state(
         if "generate" in supported_tasks
         else None
     )
+
+    if args.api_server_count > 1:
+        logger.warning(
+            "Rollout gateway disabled because api_server_count=%s. "
+            "Set api_server_count=1 to enable /v1/rollouts endpoints.",
+            args.api_server_count,
+        )
+        state.rollout_registry = None
+    else:
+        state.rollout_registry = RolloutRegistry(port=args.port)
 
 
 def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
