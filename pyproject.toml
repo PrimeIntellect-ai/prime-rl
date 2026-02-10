@@ -19,7 +19,7 @@ dependencies = [
     "pylatexenc>=2.10",
     "tomli>=2.2.1",
     "torch>=2.9.0",
-    "transformers>=5.0.0",
+    "transformers>=5.1.0",
     "uvloop>=0.21.0",
     "vllm",
     "wandb>=0.24.2",
@@ -80,7 +80,7 @@ prerelease = "allow"
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
-    "transformers==5.0.0",
+    "transformers==5.1.0",
 ]
 
 [tool.uv.sources]
