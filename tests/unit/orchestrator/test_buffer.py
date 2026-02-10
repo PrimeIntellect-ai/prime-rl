@@ -118,9 +118,7 @@ def test_buffer_tracks_pool_metrics(dummy_env_group, make_rollouts):
     buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 0.5, 0.0, 0.5, 0.5]))
 
     # rewards=[1.0, 0.5, 0.0, 0.5, 0.5] -> 1 easy, 1 hard, 3 normal (2 rollouts each)
-    total_rollouts = sum(
-        count for env in buffer.env_names for count in buffer.num_rollouts_per_step[env].values()
-    )
+    total_rollouts = sum(count for env in buffer.env_names for count in buffer.num_rollouts_per_step[env].values())
     assert total_rollouts == 10
 
 

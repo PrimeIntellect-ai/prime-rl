@@ -420,7 +420,9 @@ async def orchestrate(config: OrchestratorConfig):
         if ckpt_step > prev_ckpt_step:
             # Log accumulated metrics from the previous interval
             if accumulated_rollouts:
-                _log_accumulated_metrics(ctx, accumulated_rollouts, accumulated_advantages, prev_ckpt_step, step_start_time)
+                _log_accumulated_metrics(
+                    ctx, accumulated_rollouts, accumulated_advantages, prev_ckpt_step, step_start_time
+                )
                 accumulated_rollouts = []
                 accumulated_advantages = []
                 step_start_time = time.perf_counter()
@@ -484,7 +486,7 @@ async def orchestrate(config: OrchestratorConfig):
         if not train_examples:
             continue
 
-        # Skip sending to trainer if all advantages are zero 
+        # Skip sending to trainer if all advantages are zero
         if any(a != 0.0 for a in advantages):
             # Compute teacher logprobs if teacher model is configured
             if config.teacher_model and teacher_inference_pool:
@@ -601,7 +603,7 @@ def _log_accumulated_metrics(
         "progress/problems": num_problems,
         "progress/total_tokens": progress.total_tokens,
         "progress/total_samples": progress.total_samples,
-        "progress/total_problems": progress.total_problems,        
+        "progress/total_problems": progress.total_problems,
         "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
         "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
         "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
