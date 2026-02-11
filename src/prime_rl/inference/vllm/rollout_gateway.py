@@ -30,9 +30,11 @@ from verifiers.utils.token_utils import (
     get_prompt_ids,
     prepare_sampling_args_for_token_prompts,
 )
+from vllm.logger import init_logger
 from vllm.entrypoints.openai.api_server import router
 
 RolloutStatus = Literal["active", "cancelled", "completed"]
+logger = init_logger("vllm.entrypoints.openai.rollout_gateway")
 
 
 class RegisterRolloutRequest(BaseModel):
@@ -363,6 +365,17 @@ async def chat_completions(
 
     async with rollout.lock:
         _validate_rollout_accepting_requests(rollout, rollout_id)
+        turn_index = rollout.turn_count
+
+        logger.debug(
+            "rollout=%s turn=%d request messages=%d tools=%d stream=%s status=%s",
+            rollout_id,
+            turn_index,
+            len(messages),
+            len(tools or []),
+            stream,
+            rollout.status,
+        )
 
         if tools is not None:
             rollout.vf_state["oai_tools"] = tools
@@ -371,6 +384,7 @@ async def chat_completions(
         sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
 
         if rollout.turn_count == 0:
+            request_mode = "chat_completions"
             rollout.vf_state["prompt"] = messages
             response = await _call_chat_with_messages(
                 rollout=rollout,
@@ -379,10 +393,17 @@ async def chat_completions(
                 sampling_args=dict(sampling_args),
             )
         else:
+            request_mode = "chat_completions_tokens"
             prompt_ids = await get_prompt_ids(
                 state=rollout.vf_state,
                 prompt_messages=messages,
                 client=rollout.localhost_client,
+            )
+            logger.debug(
+                "rollout=%s turn=%d prompt_ids_len=%d",
+                rollout_id,
+                turn_index,
+                len(prompt_ids),
             )
             response = await _call_chat_with_tokens(
                 rollout=rollout,
@@ -423,6 +444,32 @@ async def chat_completions(
         if rollout.config.max_turns > 0 and rollout.turn_count >= rollout.config.max_turns:
             rollout.status = "completed"
 
+        finish_reason = response.choices[0].finish_reason if response.choices else None
+        assistant_content = response.choices[0].message.content if response.choices else None
+        preview = None
+        if assistant_content:
+            preview = (
+                assistant_content[:200] + "..."
+                if len(assistant_content) > 200
+                else assistant_content
+            )
+        prompt_token_count = len(tokens["prompt_ids"]) if tokens is not None else None
+        completion_token_count = (
+            len(tokens["completion_ids"]) if tokens is not None else None
+        )
+        logger.debug(
+            "rollout=%s turn=%d response mode=%s finish=%s truncated=%s prompt_tokens=%s completion_tokens=%s steps=%d preview=%r",
+            rollout_id,
+            turn_index,
+            request_mode,
+            finish_reason,
+            step_is_truncated,
+            prompt_token_count,
+            completion_token_count,
+            len(rollout.vf_state["trajectory"]),
+            preview,
+        )
+
     if stream:
         return StreamingResponse(
             _synthesize_stream(response),
@@ -448,6 +495,14 @@ async def get_trajectory(rollout_id: str, request: Request):
             for step in vf_state.get("trajectory", [])
         ]
         completion = vf_state.get("completion") or _render_completion(vf_state)
+        logger.debug(
+            "rollout=%s trajectory_fetch status=%s turns=%d steps=%d truncated=%s",
+            rollout_id,
+            rollout.status,
+            rollout.turn_count,
+            len(trajectory_payload),
+            rollout.is_truncated,
+        )
 
         return {
             "rollout_id": rollout_id,
