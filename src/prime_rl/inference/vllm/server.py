@@ -6,18 +6,13 @@ from vllm.entrypoints.chat_utils import load_chat_template
 from vllm.entrypoints.cli.serve import run_api_server_worker_proc
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.utils import validate_json_request
-from vllm.entrypoints.openai.protocol import ChatCompletionResponse, ErrorResponse
-from vllm.entrypoints.utils import load_aware_call, with_cancellation
-
-from fastapi.responses import JSONResponse, StreamingResponse
-from vllm.entrypoints.chat_utils import load_chat_template
-from vllm.entrypoints.logger import RequestLogger
-from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ChatCompletionResponse, ErrorResponse
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionResponse, ChatCompletionRequest
+from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
 
 from prime_rl.inference.patches import (
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
-    monkey_patch_load_lora_adapter,
 )
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
@@ -26,15 +21,12 @@ from prime_rl.inference.vllm.serving_chat_with_tokens import (
 
 # NOTE: Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
-# NOTE: Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
-monkey_patch_load_lora_adapter()
 
 # ruff: noqa
 import vllm.entrypoints.openai.api_server
 
 import uvloop
 import vllm.envs as envs
-from fastapi import Request
 from fastapi import Depends, HTTPException, Request
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
@@ -43,9 +35,7 @@ from vllm.entrypoints.openai.api_server import (
     engine_client,
     base,
     init_app_state,
-    models,
 )
-from vllm.entrypoints.openai.protocol import LoadLoRAAdapterRequest
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
@@ -89,7 +79,8 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     Wrapper around vLLM's /v1/load_lora_adapter that also resets the prefix cache
     to invalidate KV states computed with old weights.
     """
-    handler = models(raw_request)
+    handler = raw_request.app.state.openai_serving_models
+    lora_request.load_inplace = True
     response = await handler.load_lora_adapter(lora_request)
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
