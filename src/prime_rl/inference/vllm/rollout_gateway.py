@@ -367,7 +367,7 @@ async def chat_completions(
         _validate_rollout_accepting_requests(rollout, rollout_id)
         turn_index = rollout.turn_count
 
-        logger.debug(
+        logger.info(
             "rollout=%s turn=%d request messages=%d tools=%d stream=%s status=%s",
             rollout_id,
             turn_index,
@@ -399,7 +399,7 @@ async def chat_completions(
                 prompt_messages=messages,
                 client=rollout.localhost_client,
             )
-            logger.debug(
+            logger.info(
                 "rollout=%s turn=%d prompt_ids_len=%d",
                 rollout_id,
                 turn_index,
@@ -457,7 +457,7 @@ async def chat_completions(
         completion_token_count = (
             len(tokens["completion_ids"]) if tokens is not None else None
         )
-        logger.debug(
+        logger.info(
             "rollout=%s turn=%d response mode=%s finish=%s truncated=%s prompt_tokens=%s completion_tokens=%s steps=%d preview=%r",
             rollout_id,
             turn_index,
@@ -495,7 +495,7 @@ async def get_trajectory(rollout_id: str, request: Request):
             for step in vf_state.get("trajectory", [])
         ]
         completion = vf_state.get("completion") or _render_completion(vf_state)
-        logger.debug(
+        logger.info(
             "rollout=%s trajectory_fetch status=%s turns=%d steps=%d truncated=%s",
             rollout_id,
             rollout.status,
