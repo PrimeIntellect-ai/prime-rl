@@ -266,6 +266,7 @@ class CheckpointManager:
             for ckpt_step in ckpt_steps_to_delete:
                 trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
                 ckpt_path = trainer_ckpt_path.parent
+                self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
                 if not ckpt_path.exists() or _try_rmtree(ckpt_path, self.logger):
                     steps_deleted.add(ckpt_step)
 
@@ -414,6 +415,7 @@ class WeightCheckpointManager:
         if self.world.is_master:
             for ckpt_step in ckpt_steps_to_delete:
                 ckpt_path = self.get_step_path(ckpt_step)
+                self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
                 if not ckpt_path.exists() or _try_rmtree(ckpt_path, self.logger):
                     steps_deleted.add(ckpt_step)
 
