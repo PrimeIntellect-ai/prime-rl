@@ -465,6 +465,29 @@ class WeightCheckpointConfig(BaseConfig):
     ] = False
 
 
+class HubCheckpointUploadConfig(BaseConfig):
+    """Configures uploading already-saved checkpoints from disk to the Hugging Face Hub."""
+
+    repo_id: Annotated[
+        str,
+        Field(
+            description=(
+                "HF Hub repository id to upload to (e.g. 'PrimeIntellect/INTELLECT-3-64-Ckpt')."
+            )
+        ),
+    ]
+
+    repo_prefix: Annotated[
+        str,
+        Field(
+            description=(
+                "Root folder within the HF repo to upload into (e.g. for repo "
+                "'PrimeIntellect/INTELLECT-3-64-Ckpt', a good prefix is 'INTELLECT-3')."
+            )
+        ),
+    ] = ""
+
+
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
@@ -501,6 +524,8 @@ class CheckpointConfig(BaseConfig):
             description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
         ),
     ] = None
+
+    hf_push: HubCheckpointUploadConfig | None = None
 
     skip_progress: Annotated[
         bool,

@@ -1,3 +1,4 @@
+import multiprocessing as mp
 import shutil
 import time
 import warnings
@@ -28,6 +29,13 @@ from prime_rl.trainer.weights import (
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.hf_hub import (
+    build_training_path_in_repo,
+    build_weights_path_in_repo,
+    hf_push_upload_worker,
+    log_hf_push_worker_result,
+    should_upload_step,
+)
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
 from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
@@ -113,12 +121,17 @@ class CheckpointManager:
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
         self.world = get_world()
-
-        all_steps = get_all_ckpt_steps(self.ckpt_dir)
-        if config.resume_step is not None and config.resume_step >= 0:
-            self.ckpt_steps = [s for s in all_steps if s <= config.resume_step]
+        self._upload_proc: mp.Process | None = None
+        self._upload_queue: mp.Queue[str | None] | None = None
+        self._upload_desc: str | None = None
+        if self.world.is_master:
+            all_steps = get_all_ckpt_steps(self.ckpt_dir)
+            if config.resume_step is not None and config.resume_step >= 0:
+                self.ckpt_steps = [s for s in all_steps if s <= config.resume_step]
+            else:
+                self.ckpt_steps = all_steps
         else:
-            self.ckpt_steps = all_steps
+            self.ckpt_steps = []
 
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
@@ -226,7 +239,32 @@ class CheckpointManager:
         )
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
-        self.ckpt_steps.append(step)
+        if self.world.is_master:
+            self.ckpt_steps.append(step)
+            self._maybe_upload(step)
+
+    def _maybe_upload(self, step: int) -> None:
+        hub = self.config.hf_push
+        if hub is None:
+            return
+        if not should_upload_step(step, self.config.keep_interval):
+            return
+        self._poll_upload()
+        if self._upload_proc is not None and self._upload_proc.poll() is None:
+            # Keep it simple: if another eligible step happens while an upload is running, wait for it.
+            self.logger.info(f"Waiting for previous hf_push to finish ({self._upload_desc})")
+            self._wait_for_upload()
+
+        step_dir = get_step_path(self.ckpt_dir, step)
+        path_in_repo = build_training_path_in_repo(hub.repo_prefix, step)
+        payload = {
+            "repo_id": hub.repo_id,
+            "folder_path": str(step_dir),
+            "path_in_repo": path_in_repo,
+            "commit_message": f"Upload trainer checkpoint step {step}",
+        }
+        desc = f"trainer step {step} -> {hub.repo_id}/{path_in_repo}"
+        self._spawn_upload(payload, desc)
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
@@ -249,18 +287,68 @@ class CheckpointManager:
                 if step % self.config.keep_interval == 0:
                     steps_to_keep.add(step)
 
-        # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
+        # Delete steps not in steps_to_keep
         ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
-        if self.world.is_master:
-            for ckpt_step in ckpt_steps_to_delete:
-                trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
-                ckpt_path = trainer_ckpt_path.parent
-                if ckpt_path.exists():
-                    self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                    shutil.rmtree(ckpt_path)
+        for ckpt_step in ckpt_steps_to_delete:
+            trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
+            ckpt_path = trainer_ckpt_path.parent
+            if ckpt_path.exists():
+                self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
+                shutil.rmtree(ckpt_path)
 
         # Update checkpoint steps
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
+
+    def _spawn_upload(self, payload: dict[str, str], desc: str) -> None:
+        try:
+            self.logger.info(f"Starting hf_push upload subprocess ({desc})")
+            ctx = mp.get_context("spawn")
+            self._upload_queue = ctx.Queue(maxsize=1)
+            self._upload_proc = ctx.Process(target=hf_push_upload_worker, args=(payload, self._upload_queue), daemon=True)
+            self._upload_proc.start()
+            self._upload_desc = desc
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(f"Failed to start hf_push upload subprocess ({desc}): {e}")
+            self._upload_proc = None
+            self._upload_queue = None
+            self._upload_desc = None
+
+    def _poll_upload(self) -> None:
+        if self._upload_proc is None:
+            return
+        if self._upload_proc.is_alive():
+            return
+        self._finalize_upload()
+
+    def _wait_for_upload(self) -> None:
+        if self._upload_proc is None:
+            return
+        try:
+            self._upload_proc.join()
+        finally:
+            self._finalize_upload()
+
+    def _finalize_upload(self) -> None:
+        assert self._upload_proc is not None
+        desc = self._upload_desc or "unknown"
+        result = None
+        if self._upload_queue is not None:
+            try:
+                result = self._upload_queue.get_nowait()
+            except Exception:  # noqa: BLE001
+                result = "hf_push worker exited without reporting status"
+        log_hf_push_worker_result(desc, result)
+
+        self._upload_proc = None
+        self._upload_queue = None
+        self._upload_desc = None
+
+    def wait_for_last_hf_push(self) -> None:
+        """Wait for the last hf_push upload (if any). Never raises."""
+        try:
+            self._wait_for_upload()
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(f"hf_push wait failed: {e}")
 
 
 class WeightCheckpointManager:
@@ -275,12 +363,16 @@ class WeightCheckpointManager:
         keep_last: int | None = None,
         keep_interval: int | None = None,
         resume_step: int | None = None,
+        hub: CheckpointConfig | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
         self.lora_config = lora_config
         self.logger = get_logger()
         self.world = get_world()
+        self._upload_proc: mp.Process | None = None
+        self._upload_queue: mp.Queue[str | None] | None = None
+        self._upload_desc: str | None = None
         if self.world.is_master:
             all_steps = get_all_ckpt_steps(self.weights_dir)
             if resume_step is not None and resume_step >= 0:
@@ -291,6 +383,7 @@ class WeightCheckpointManager:
             self.ckpt_steps = []
         self.keep_last = keep_last
         self.keep_interval = keep_interval
+        self._hub_cfg = hub.hf_push if hub is not None else None
 
     def get_step_path(self, step: int) -> Path:
         """Get the path to write the weight checkpoint for a given step."""
@@ -375,7 +468,29 @@ class WeightCheckpointManager:
             self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
             # Write STABLE file to indicate checkpoint is complete (for eval to safely read)
             (step_path / "STABLE").touch()
-        self.ckpt_steps.append(step)
+            self.ckpt_steps.append(step)
+            self._maybe_upload(step, step_path)
+
+    def _maybe_upload(self, step: int, step_path: Path) -> None:
+        hub = self._hub_cfg
+        if hub is None:
+            return
+        if not should_upload_step(step, self.keep_interval):
+            return
+        self._poll_upload()
+        if self._upload_proc is not None and self._upload_proc.poll() is None:
+            self.logger.info(f"Waiting for previous hf_push to finish ({self._upload_desc})")
+            self._wait_for_upload()
+
+        path_in_repo = build_weights_path_in_repo(hub.repo_prefix, step)
+        payload = {
+            "repo_id": hub.repo_id,
+            "folder_path": str(step_path),
+            "path_in_repo": path_in_repo,
+            "commit_message": f"Upload weight checkpoint step {step}",
+        }
+        desc = f"weights step {step} -> {hub.repo_id}/{path_in_repo}"
+        self._spawn_upload(payload, desc)
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
@@ -410,6 +525,57 @@ class WeightCheckpointManager:
         # Update checkpoint steps
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
 
+    def _spawn_upload(self, payload: dict[str, str], desc: str) -> None:
+        try:
+            self.logger.info(f"Starting hf_push upload subprocess ({desc})")
+            ctx = mp.get_context("spawn")
+            self._upload_queue = ctx.Queue(maxsize=1)
+            self._upload_proc = ctx.Process(target=hf_push_upload_worker, args=(payload, self._upload_queue), daemon=True)
+            self._upload_proc.start()
+            self._upload_desc = desc
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(f"Failed to start hf_push upload subprocess ({desc}): {e}")
+            self._upload_proc = None
+            self._upload_queue = None
+            self._upload_desc = None
+
+    def _poll_upload(self) -> None:
+        if self._upload_proc is None:
+            return
+        if self._upload_proc.is_alive():
+            return
+        self._finalize_upload()
+
+    def _wait_for_upload(self) -> None:
+        if self._upload_proc is None:
+            return
+        try:
+            self._upload_proc.join()
+        finally:
+            self._finalize_upload()
+
+    def _finalize_upload(self) -> None:
+        assert self._upload_proc is not None
+        desc = self._upload_desc or "unknown"
+        result = None
+        if self._upload_queue is not None:
+            try:
+                result = self._upload_queue.get_nowait()
+            except Exception:  # noqa: BLE001
+                result = "hf_push worker exited without reporting status"
+        log_hf_push_worker_result(desc, result)
+
+        self._upload_proc = None
+        self._upload_queue = None
+        self._upload_desc = None
+
+    def wait_for_last_hf_push(self) -> None:
+        """Wait for the last hf_push upload (if any). Never raises."""
+        try:
+            self._wait_for_upload()
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(f"hf_push wait failed: {e}")
+
 
 def setup_ckpt_managers(
     output_dir: Path, ckpt_config: CheckpointConfig | None, lora_config: LoRAConfig | None = None
@@ -425,6 +591,7 @@ def setup_ckpt_managers(
             keep_last=ckpt_config.keep_last,
             keep_interval=ckpt_config.keep_interval,
             resume_step=ckpt_config.resume_step,
+            hub=ckpt_config,
         )
     else:
         weight_ckpt_manager = None
