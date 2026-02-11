@@ -22,7 +22,7 @@ dependencies = [
     "transformers>=4.57.6",
     "uvloop>=0.21.0",
     "vllm==0.14.0",
-    "wandb>=0.20.1",
+    "wandb>=0.24.2",
     "lovely-tensors>=0.1.18",
     "rich>=14.0.0",
     "tomli-w>=1.2.0",
