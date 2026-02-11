@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Literal, cast
 
 from fastapi import HTTPException, Request
@@ -30,8 +32,8 @@ from verifiers.utils.token_utils import (
     get_prompt_ids,
     prepare_sampling_args_for_token_prompts,
 )
-from vllm.logger import init_logger
 from vllm.entrypoints.openai.api_server import router
+from vllm.logger import init_logger
 
 RolloutStatus = Literal["active", "cancelled", "completed"]
 logger = init_logger("vllm.entrypoints.openai.rollout_gateway")
@@ -216,6 +218,54 @@ def _validate_rollout_accepting_requests(rollout: RolloutState, rollout_id: str)
                 "Register a new rollout for additional turns."
             ),
         )
+
+
+@lru_cache(maxsize=1)
+def _get_full_turn_log_config() -> tuple[str | None, set[int] | None]:
+    rollout_filter = os.getenv("PRIME_ROLLOUT_LOG_ROLLOUT_ID")
+    rollout_filter = rollout_filter.strip() if rollout_filter else None
+    if rollout_filter == "":
+        rollout_filter = None
+
+    turns_raw = os.getenv("PRIME_ROLLOUT_LOG_FULL_TURNS", "").strip()
+    if not turns_raw:
+        return rollout_filter, None
+    if turns_raw.lower() in {"all", "*"}:
+        return rollout_filter, set()
+
+    turns: set[int] = set()
+    for part in turns_raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            turns.add(int(token))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid PRIME_ROLLOUT_LOG_FULL_TURNS token: %r",
+                token,
+            )
+    return rollout_filter, turns if turns else None
+
+
+def _should_log_full_turn(rollout_id: str, turn_index: int) -> bool:
+    rollout_filter, turns = _get_full_turn_log_config()
+    if turns is None:
+        return False
+    if rollout_filter is not None and rollout_filter != rollout_id:
+        return False
+    # empty set is sentinel for "all turns"
+    return not turns or turn_index in turns
+
+
+def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
+    serialized: list[dict[str, Any]] = []
+    for tool_call in tool_calls or []:
+        if hasattr(tool_call, "model_dump"):
+            serialized.append(cast(dict[str, Any], tool_call.model_dump(mode="json")))
+        elif isinstance(tool_call, dict):
+            serialized.append(tool_call)
+    return serialized
 
 
 async def _call_chat_with_messages(
@@ -469,6 +519,37 @@ async def chat_completions(
             len(rollout.vf_state["trajectory"]),
             preview,
         )
+
+        if _should_log_full_turn(rollout_id, turn_index):
+            tool_calls = (
+                _serialize_tool_calls(response.choices[0].message.tool_calls)
+                if response.choices
+                else []
+            )
+            prompt_tool_responses = [
+                message
+                for message in messages
+                if isinstance(message, dict) and message.get("role") == "tool"
+            ]
+            logger.info(
+                "rollout=%s turn=%d full_completion=%s",
+                rollout_id,
+                turn_index,
+                assistant_content,
+            )
+            logger.info(
+                "rollout=%s turn=%d full_tool_calls=%s",
+                rollout_id,
+                turn_index,
+                tool_calls,
+            )
+            if prompt_tool_responses:
+                logger.info(
+                    "rollout=%s turn=%d prompt_tool_responses=%s",
+                    rollout_id,
+                    turn_index,
+                    prompt_tool_responses,
+                )
 
     if stream:
         return StreamingResponse(
