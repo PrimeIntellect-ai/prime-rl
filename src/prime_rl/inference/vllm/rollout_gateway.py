@@ -443,25 +443,40 @@ async def chat_completions(
                 sampling_args=dict(sampling_args),
             )
         else:
-            request_mode = "chat_completions_tokens"
-            prompt_ids = await get_prompt_ids(
-                state=rollout.vf_state,
-                prompt_messages=messages,
-                client=rollout.localhost_client,
+            prev_step = rollout.vf_state["trajectory"][-1]
+            prev_context = cast(Messages, concat_messages([prev_step["prompt"], prev_step["completion"]]))
+            is_prefix_extension = (
+                len(messages) > len(prev_context)
+                and messages[: len(prev_context)] == prev_context
             )
-            logger.info(
-                "rollout=%s turn=%d prompt_ids_len=%d",
-                rollout_id,
-                turn_index,
-                len(prompt_ids),
-            )
-            response = await _call_chat_with_tokens(
-                rollout=rollout,
-                messages=messages,
-                tools=tools,
-                prompt_ids=prompt_ids,
-                sampling_args=dict(sampling_args),
-            )
+            if is_prefix_extension:
+                request_mode = "chat_completions_tokens"
+                prompt_ids = await get_prompt_ids(
+                    state=rollout.vf_state,
+                    prompt_messages=messages,
+                    client=rollout.localhost_client,
+                )
+                logger.info(
+                    "rollout=%s turn=%d prompt_ids_len=%d",
+                    rollout_id,
+                    turn_index,
+                    len(prompt_ids),
+                )
+                response = await _call_chat_with_tokens(
+                    rollout=rollout,
+                    messages=messages,
+                    tools=tools,
+                    prompt_ids=prompt_ids,
+                    sampling_args=dict(sampling_args),
+                )
+            else:
+                request_mode = "chat_completions"
+                response = await _call_chat_with_messages(
+                    rollout=rollout,
+                    messages=messages,
+                    tools=tools,
+                    sampling_args=dict(sampling_args),
+                )
 
         completion_messages = await parse_response_messages(response, "chat")
         response_is_truncated = await parse_is_truncated(response, "chat")

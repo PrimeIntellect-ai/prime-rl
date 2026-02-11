@@ -266,3 +266,49 @@ def test_rollout_gateway_streaming_response(monkeypatch) -> None:
             assert unregister.status_code == 200
 
     asyncio.run(_run())
+
+
+def test_rollout_gateway_non_extension_turn_falls_back_to_chat(monkeypatch) -> None:
+    from verifiers.utils.token_utils import get_tokens_client
+
+    monkeypatch.setattr(rollout_gateway, "AsyncOpenAI", FakeAsyncOpenAI)
+    get_tokens_client.cache_clear()
+    app = _new_test_app()
+
+    async def _run() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            rollout_id = "test-rollout-non-extension"
+            register = await client.post(
+                f"/v1/rollouts/{rollout_id}/register",
+                json={
+                    "model": "Qwen/Qwen3-0.6B",
+                    "sampling_params": {"max_completion_tokens": 32},
+                    "max_turns": 10,
+                },
+            )
+            assert register.status_code == 200
+
+            turn_0 = [{"role": "user", "content": "Hello"}]
+            non_extension_turn = [
+                {"role": "system", "content": "Use concise output"},
+                {"role": "user", "content": "Follow up"},
+            ]
+
+            resp0 = await _post_chat(client, rollout_id, turn_0)
+            assert resp0.status_code == 200
+
+            resp1 = await _post_chat(client, rollout_id, non_extension_turn)
+            assert resp1.status_code == 200
+
+            trajectory_response = await client.get(f"/v1/rollouts/{rollout_id}/trajectory")
+            assert trajectory_response.status_code == 200
+            payload = trajectory_response.json()
+
+            assert payload["num_turns"] == 2
+            assert payload["trajectory"][1]["tokens"]["prompt_ids"] == [11, 12]
+
+            unregister = await client.post(f"/v1/rollouts/{rollout_id}/unregister")
+            assert unregister.status_code == 200
+
+    asyncio.run(_run())
