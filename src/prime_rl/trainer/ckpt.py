@@ -1,3 +1,4 @@
+import bisect
 import shutil
 import time
 import warnings
@@ -226,7 +227,7 @@ class CheckpointManager:
         )
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
-        self.ckpt_steps.append(step)
+        bisect.insort(self.ckpt_steps, step)
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
@@ -375,7 +376,7 @@ class WeightCheckpointManager:
             self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
             # Write STABLE file to indicate checkpoint is complete (for eval to safely read)
             (step_path / "STABLE").touch()
-        self.ckpt_steps.append(step)
+        bisect.insort(self.ckpt_steps, step)
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
