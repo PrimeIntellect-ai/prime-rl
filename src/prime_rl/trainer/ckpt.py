@@ -33,12 +33,14 @@ from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_si
 from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
 
 
-def _try_rmtree(path: Path, logger) -> None:
-    """Remove a directory tree, logging and skipping on failure."""
+def _try_rmtree(path: Path, logger) -> bool:
+    """Remove a directory tree, logging and skipping on failure. Returns True if removed."""
     try:
         shutil.rmtree(path)
+        return True
     except OSError as e:
         logger.warning(f"Failed to remove {path}: {e}, skipping cleanup")
+        return False
 
 
 class AppState(Stateful):
@@ -259,16 +261,16 @@ class CheckpointManager:
 
         # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
         ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
+        steps_deleted = set()
         if self.world.is_master:
             for ckpt_step in ckpt_steps_to_delete:
                 trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
                 ckpt_path = trainer_ckpt_path.parent
-                if ckpt_path.exists():
-                    self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                    _try_rmtree(ckpt_path, self.logger)
+                if not ckpt_path.exists() or _try_rmtree(ckpt_path, self.logger):
+                    steps_deleted.add(ckpt_step)
 
-        # Update checkpoint steps
-        self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
+        # Update checkpoint steps, keeping steps that failed to delete for retry
+        self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep or step not in steps_deleted]
 
 
 class WeightCheckpointManager:
@@ -408,15 +410,15 @@ class WeightCheckpointManager:
 
         # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
         ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
+        steps_deleted = set()
         if self.world.is_master:
             for ckpt_step in ckpt_steps_to_delete:
                 ckpt_path = self.get_step_path(ckpt_step)
-                if ckpt_path.exists():
-                    self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                    _try_rmtree(ckpt_path, self.logger)
+                if not ckpt_path.exists() or _try_rmtree(ckpt_path, self.logger):
+                    steps_deleted.add(ckpt_step)
 
-        # Update checkpoint steps
-        self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
+        # Update checkpoint steps, keeping steps that failed to delete for retry
+        self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep or step not in steps_deleted]
 
 
 def setup_ckpt_managers(
