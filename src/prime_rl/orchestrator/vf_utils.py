@@ -59,7 +59,7 @@ async def wait_for_env_servers(
     interval: float = 1,
     log_interval: float = 10,
     timeout: float = 1800,
-    health_timeout: float = 10,
+    health_timeout: float = 30,
 ) -> None:
     logger = get_logger()
 
