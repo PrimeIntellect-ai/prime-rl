@@ -34,6 +34,7 @@ from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
+    load_state_dict_keys,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
@@ -381,41 +382,40 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         )
         snapshot_path = Path(config.name)
 
-    # Load the snapshot state
-    snapshot_state_dict = load_state_dict(snapshot_path)
-    model_state_dict = model.state_dict()
-
-    # Dynamically convert between different weight formats if needed
+    # Dynamically convert between different weight formats if needed.
+    # All ranks read just the key names (cheap) to determine the path independently.
+    # Only master loads the full state dict when conversion is actually needed.
     if isinstance(model, PreTrainedModelPrimeRL):
-        if model.is_hf_state_dict(snapshot_state_dict) and model.is_prime_state_dict(model_state_dict):
+        snapshot_keys = dict.fromkeys(load_state_dict_keys(snapshot_path))
+        model_keys = dict.fromkeys(model.state_dict().keys())
+
+        if model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(model_keys):
             logger.warning(
                 "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
             )
             snapshot_path = snapshot_path / "prime"
-            if snapshot_path.exists():
-                logger.debug(f"Conversion found at {snapshot_path}.")
-            else:
-                if get_world().is_master:
-                    logger.debug(
-                        f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                    )
-                    model.convert_to_prime(snapshot_state_dict)
-                    save_state_dict(snapshot_state_dict, snapshot_path)
+            if not snapshot_path.exists() and get_world().is_master:
+                logger.debug(
+                    f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                )
+                snapshot_state_dict = load_state_dict(snapshot_path.parent)
+                model.convert_to_prime(snapshot_state_dict)
+                save_state_dict(snapshot_state_dict, snapshot_path)
+                del snapshot_state_dict
 
-        elif model.is_prime_state_dict(snapshot_state_dict) and model.is_hf_state_dict(model_state_dict):
+        elif model.is_prime_state_dict(snapshot_keys) and model.is_hf_state_dict(model_keys):
             logger.warning(
                 "Found PrimeRL weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
             )
             snapshot_path = snapshot_path / "hf"
-            if snapshot_path.exists():
-                logger.debug(f"Conversion found at {snapshot_path}.")
-            else:
-                if get_world().is_master:
-                    logger.debug(
-                        f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                    )
-                    model.convert_to_hf(snapshot_state_dict)
-                    save_state_dict(snapshot_state_dict, snapshot_path)
+            if not snapshot_path.exists() and get_world().is_master:
+                logger.debug(
+                    f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                )
+                snapshot_state_dict = load_state_dict(snapshot_path.parent)
+                model.convert_to_hf(snapshot_state_dict)
+                save_state_dict(snapshot_state_dict, snapshot_path)
+                del snapshot_state_dict
 
     # All ranks wait for master rank to finish conversion
     torch.distributed.barrier()
