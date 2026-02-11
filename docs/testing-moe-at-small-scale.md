@@ -84,9 +84,41 @@ What to look for:
 
 Don't expect the reward to go up meaningfully in 20 steps on a random model.
 
+## Kimi K2.5 (MLA + MoE)
+
+The same workflow works for Kimi K2.5, which uses DeepseekV3's MLA (Multi-head Latent Attention) architecture:
+
+### Step 1: Create and verify
+
+```bash
+uv run python scripts/mini_moe.py --arch kimi_k25 --output-dir ./mini-kimi-k25
+```
+
+### Step 2: SFT warmup
+
+```bash
+uv run sft @ configs/debug/moe/sft/train.toml \
+    --model.name ./mini-kimi-k25 \
+    --data.name PrimeIntellect/Reverse-Text-SFT \
+    --data.type null \
+    --max_steps 200 \
+    --optim.lr 1e-4 \
+    --ckpt.weights
+```
+
+### Step 3: RL (requires 2 GPUs)
+
+```bash
+uv run rl @ configs/ci/integration/rl/start.toml \
+    --model.name ./mini-kimi-k25 \
+    --trainer.model.impl custom \
+    --inference.gpu-memory-utilization 0.7 \
+    --inference.model.max-model-len 2048
+```
+
 ## Adding a new architecture
 
-To test a new MoE architecture (e.g., Kimi2.5):
+To test a new MoE architecture:
 
 1. Add modeling code under `src/prime_rl/trainer/models/<arch>/`
 2. Add a preset to `scripts/mini_moe.py` with the config class, small dimensions, HF model class, PrimeRL model class, and tokenizer source
