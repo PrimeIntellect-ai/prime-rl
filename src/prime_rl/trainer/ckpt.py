@@ -33,6 +33,14 @@ from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_si
 from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
 
 
+def _try_rmtree(path: Path, logger) -> None:
+    """Remove a directory tree, logging and skipping on failure."""
+    try:
+        shutil.rmtree(path)
+    except OSError as e:
+        logger.warning(f"Failed to remove {path}: {e}, skipping cleanup")
+
+
 class AppState(Stateful):
     """
     A wrapper for checkpointing the trainer with sharded weights and optimizer
@@ -257,7 +265,7 @@ class CheckpointManager:
                 ckpt_path = trainer_ckpt_path.parent
                 if ckpt_path.exists():
                     self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                    shutil.rmtree(ckpt_path)
+                    _try_rmtree(ckpt_path, self.logger)
 
         # Update checkpoint steps
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
@@ -405,7 +413,7 @@ class WeightCheckpointManager:
                 ckpt_path = self.get_step_path(ckpt_step)
                 if ckpt_path.exists():
                     self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                    shutil.rmtree(ckpt_path)
+                    _try_rmtree(ckpt_path, self.logger)
 
         # Update checkpoint steps
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
