@@ -85,6 +85,7 @@ args = { domain = "telecom" }
 gpu_memory_utilization = 0.9
 
 [inference.model]
+max_model_len = 16384
 enable_auto_tool_choice = true
 tool_call_parser = "hermes"
 
