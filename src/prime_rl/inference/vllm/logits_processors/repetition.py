@@ -12,15 +12,11 @@ import torch
 from vllm.sampling_params import SamplingParams
 from vllm.v1.sample.logits_processor import AdapterLogitsProcessor
 
+from prime_rl.inference.vllm.logits_processors.utils import force_eos
+
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.logits_process import LogitsProcessor as RequestLogitsProcessor
-
-
-def _force_eos(logits: torch.Tensor, eos_token_id: int) -> torch.Tensor:
-    logits.fill_(float("-inf"))
-    logits[eos_token_id] = 0.0
-    return logits
 
 
 class RepetitionDetector:
@@ -45,7 +41,7 @@ class RepetitionDetector:
 
     def __call__(self, output_tok_ids: list[int], logits: torch.Tensor) -> torch.Tensor:
         if self.aborted:
-            return _force_eos(logits, self.eos_token_id)
+            return force_eos(logits, self.eos_token_id)
 
         max_prob = torch.softmax(logits, dim=-1).max().item()
         if max_prob > self.prob_threshold:
@@ -55,7 +51,7 @@ class RepetitionDetector:
 
         if self.consecutive_count >= self.window:
             self.aborted = True
-            return _force_eos(logits, self.eos_token_id)
+            return force_eos(logits, self.eos_token_id)
 
         return logits
 
@@ -75,7 +71,7 @@ class RepetitionDetectionLogitsProcessor(AdapterLogitsProcessor):
         self.prob_threshold = float(os.environ.get("PRIME_REPETITION_DETECTION_PROB_THRESHOLD", "0.99"))
 
     def is_argmax_invariant(self) -> bool:
-        return False
+        return not self.enabled
 
     def new_req_logits_processor(self, params: SamplingParams) -> "RequestLogitsProcessor | None":
         if not self.enabled:

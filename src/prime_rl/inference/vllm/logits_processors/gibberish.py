@@ -14,15 +14,11 @@ import torch
 from vllm.sampling_params import SamplingParams
 from vllm.v1.sample.logits_processor import AdapterLogitsProcessor
 
+from prime_rl.inference.vllm.logits_processors.utils import force_eos
+
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.logits_process import LogitsProcessor as RequestLogitsProcessor
-
-
-def _force_eos(logits: torch.Tensor, eos_token_id: int) -> torch.Tensor:
-    logits.fill_(float("-inf"))
-    logits[eos_token_id] = 0.0
-    return logits
 
 
 class GibberishDetector:
@@ -47,7 +43,7 @@ class GibberishDetector:
 
     def __call__(self, output_tok_ids: list[int], logits: torch.Tensor) -> torch.Tensor:
         if self.aborted:
-            return _force_eos(logits, self.eos_token_id)
+            return force_eos(logits, self.eos_token_id)
 
         if self.prev_logits is not None and output_tok_ids:
             last_token = output_tok_ids[-1]
@@ -56,7 +52,7 @@ class GibberishDetector:
                 logprob = (self.prev_logits[last_token] - log_normalizer).item()
                 if logprob < self.logprob_threshold:
                     self.aborted = True
-                    return _force_eos(logits, self.eos_token_id)
+                    return force_eos(logits, self.eos_token_id)
 
         self.prev_logits = logits.detach().clone()
         return logits
@@ -79,7 +75,7 @@ class GibberishDetectionLogitsProcessor(AdapterLogitsProcessor):
         self.logprob_threshold = -math.log(vocab_size) - logprob_offset
 
     def is_argmax_invariant(self) -> bool:
-        return False
+        return not self.enabled
 
     def new_req_logits_processor(self, params: SamplingParams) -> "RequestLogitsProcessor | None":
         if not self.enabled:
