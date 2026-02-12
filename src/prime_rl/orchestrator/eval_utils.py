@@ -106,7 +106,7 @@ async def evaluate_env(
         logger.warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
 
     # Log statistics to console
-    message = f"Evaluated {env.env_id} in {eval_time:.2f}s (Avg@{rollouts_per_example}={results_df.reward.mean():.4f}"
+    message = f"Evaluated {env_name} in {eval_time:.2f}s (Avg@{rollouts_per_example}={results_df.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
