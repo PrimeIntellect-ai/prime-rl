@@ -9,6 +9,8 @@ from torch import Tensor
 from prime_rl.trainer.rl.config import CustomLossConfig, LossConfig, LossConfigType
 from prime_rl.utils.utils import import_object
 
+SAFETY_BOUNDS: float = 30.0
+
 
 @dataclass
 class LossInputs:
@@ -36,6 +38,15 @@ Expected signature:
     def my_loss(inputs: LossInputs, **kwargs) -> LossOutputs:
         ...
 """
+
+
+@dataclass
+class ImportanceWeights:
+    """Importance sampling weights at different aggregation levels."""
+
+    token_weights: Float[Tensor, " seq"]
+    sequence_weight: Float[Tensor, ""]
+    geo_mean_weight: Float[Tensor, ""]
 
 
 @jaxtyped(typechecker=typechecker)
@@ -104,51 +115,122 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
-"""
-We use importance sampling to address distributio shift between trainer and inference policies. The importance sampling weight is:
-w = trainer_probs / inference_probs
+def compute_importance_weights(
+    log_ratio: Float[Tensor, " seq"],
+    mask: Bool[Tensor, " seq"],
+    token_clip_low: float | None = None,
+    token_clip_high: float | None = None,
+    sequence_clip_low: float | None = None,
+    sequence_clip_high: float | None = None,
+    geo_mean_clip_low: float | None = None,
+    geo_mean_clip_high: float | None = None,
+) -> ImportanceWeights:
+    """Compute importance sampling weights from a log-ratio log(p/q).
 
-or sometimes in log space to avoid numerical instability:
-log w = log(trainer_probs) - log(inference_probs)
+    Optionally applies truncated importance sampling via per-level clipping.
+    """
+    log_ratio = torch.clamp(log_ratio, min=-SAFETY_BOUNDS, max=SAFETY_BOUNDS)
 
-KL estimators:
-r = inference_probs / trainer_probs
+    token_weights = torch.exp(log_ratio)
+    if token_clip_low is not None or token_clip_high is not None:
+        token_weights = torch.clamp(token_weights, min=token_clip_low, max=token_clip_high)
 
-k1: -log r = log w (high variance, unbiased)
-k2: 1/2 * (log r)**2 = 1/2 * (log w)**2 (low variance, biased)
-k2: (r - 1) - log r = 1/w - 1 + log w (low variance, unbiased)
+    masked_sum = log_ratio[mask].sum()
+    n_masked = torch.clamp_min(mask.sum(), 1)
 
-We have two orthogonal ways to handle the distribution shift caused by the off-policy nature of the training. We currently employ
-both, but we can separate the two axis better. 
+    seq_log = torch.clamp(masked_sum, min=-SAFETY_BOUNDS, max=SAFETY_BOUNDS)
+    sequence_weight = torch.exp(seq_log)
+    if sequence_clip_low is not None or sequence_clip_high is not None:
+        sequence_weight = torch.clamp(sequence_weight, min=sequence_clip_low, max=sequence_clip_high)
 
-## Importance Sampling
-Already implemented in the default loss function. Let's call w_t the ratio between the trainer and inference logprobs for token t. We can use
-a per token weight w_t or a per sequence weight w_s = product_t w_t (broadcast to each token). To reduce variance, we also have the option
-to clip weights, this is called truncated importance sampling, applicable to both token-level and sequence-level weights.
+    geo_mean_weight = torch.exp(masked_sum / n_masked)
+    if geo_mean_clip_low is not None or geo_mean_clip_high is not None:
+        geo_mean_weight = torch.clamp(geo_mean_weight, min=geo_mean_clip_low, max=geo_mean_clip_high)
 
-Token-level Truncated Importance Sampling (upper bound)
-Sequence-level Truncated Importance Sampling (upper bound)
-
-## Rejection Sampling
-Importance sampling provides continues reweighting (reduces variance). Rejection sampling on the other hand provides a hard filtering option, 
-acting as a hard trust region filter. Clipping retains weights which is good for sample efficiency, but can still inflict bias from OOD samples.
-TIS is a soft enforcement of the trust region. Rejection sampling gives us a hard option. These two methods are independent, and can be combined.
-
-- Token-level Rejection Sampling with a upper/lower bound. In default loss function this is calculated with the k1 KL estimator.
-- Sequence-level Rejection Sampling (Seq-MIS). In default loss function this is calculated with the k1 KL estimator. This is a sum of divergences across the trajectory. We want the option of using the k3 estimator because the k3 estimator has less variance and is strictly non-negative. 
-Why is this nice, i.e what is wrong with the current version? We can see how default loss fn calculates the k1 estimator:  sum(log w) => `(trainer_logprobs - inference_logprobs).sum()`, because low w values can be negative, terms can cancel each other and hide mismatch.
-Hence we would like the option to use k3 estimator as an alternative to k1. However, because k3 is strictly negative this term can only have a upper bound, as opposed to the double sided mask that k1 has. 
-- Geometric Mean Rejection Sampling. This is currently implemented with the k1 KL estimator. This is the average per token divergence across the trajectory. For the same reason as above, we want the option to use k3 estimator for this. This is a length invariant property.
-- Max Rejection Sampling. This is not implemented in default loss fn. This creates a mask based on the maximum divergence across the trajectory. Similarly to geometric mean this is length invariant. We can NOT use the k1 sample based estimator. Instead use the k2 estimator because
-the metric detecs divergence symmetrically, flagging both support collapse w -> 0 and w->inf equally.
+    return ImportanceWeights(
+        token_weights=token_weights,
+        sequence_weight=sequence_weight,
+        geo_mean_weight=geo_mean_weight,
+    )
 
 
----
+def reject_by_token(
+    log_ratio: Float[Tensor, " seq"],
+    low: float | None = None,
+    high: float | None = None,
+) -> tuple[Bool[Tensor, " seq"], Bool[Tensor, " seq"]]:
+    """Reject individual tokens where the importance weight breaches bounds.
 
-We want to cleanly separate importance sampling from rejection sampling. Importance sampling should be applicable without rejection sampling, and vice versa. They can also be combined. 
-Existing popular variants such as Seq-MIS, TIS, should be clearly documented or provided as options. We want to be able to modify the KL estimator used for rejection sampling.
+    Returns (low_mask, high_mask) indicating which tokens were rejected by each bound.
+    """
+    token_weights = torch.exp(torch.clamp(log_ratio, min=-SAFETY_BOUNDS, max=SAFETY_BOUNDS))
+    false = torch.zeros_like(token_weights, dtype=torch.bool)
+    return (
+        (token_weights < low) if low is not None else false,
+        (token_weights > high) if high is not None else false,
+    )
 
-"""
+
+def reject_by_sequence_max(
+    log_ratio: Float[Tensor, " seq"],
+    loss_mask: Bool[Tensor, " seq"],
+    low: float | None = None,
+    high: float | None = None,
+) -> tuple[Bool[Tensor, ""], Bool[Tensor, ""]]:
+    """Reject entire sequence if any token's importance weight breaches bounds.
+
+    Returns (low_mask, high_mask) as scalar bools.
+    """
+    token_weights = torch.exp(torch.clamp(log_ratio, min=-SAFETY_BOUNDS, max=SAFETY_BOUNDS))
+    false = torch.tensor(False, device=log_ratio.device)
+    low_mask = false
+    high_mask = false
+    if low is not None:
+        seq_min = torch.where(loss_mask, token_weights, torch.inf).min()
+        low_mask = seq_min < low
+    if high is not None:
+        seq_max = torch.where(loss_mask, token_weights, -torch.inf).max()
+        high_mask = seq_max > high
+    return low_mask, high_mask
+
+
+def reject_by_geo_k1(
+    log_ratio: Float[Tensor, " seq"],
+    mask: Bool[Tensor, " seq"],
+    low: float | None = None,
+    high: float | None = None,
+) -> tuple[Bool[Tensor, ""], Bool[Tensor, ""]]:
+    """Reject based on geometric mean importance weight (k1 estimator).
+
+    geo_mean_weight = exp(mean(log w)). Because log w can be negative, terms can cancel
+    and hide mismatch — a sequence with half the tokens at w=2 and half at w=0.5 looks fine.
+
+    Returns (low_mask, high_mask) as scalar bools.
+    """
+    geo_mean_weight = torch.exp(_safe_mean(log_ratio, mask))
+    false = torch.tensor(False, device=log_ratio.device)
+    return (
+        (geo_mean_weight < low) if low is not None else false,
+        (geo_mean_weight > high) if high is not None else false,
+    )
+
+
+def reject_by_geo_k3(
+    log_ratio: Float[Tensor, " seq"],
+    mask: Bool[Tensor, " seq"],
+    high: float | None = None,
+) -> Bool[Tensor, ""]:
+    """Reject based on mean k3 KL divergence estimate.
+
+    k3 per token: (1/w - 1 + log w), strictly non-negative. The mean across masked tokens
+    gives average per-token divergence. Because k3 >= 0, only an upper bound is meaningful.
+    """
+    if high is None:
+        return torch.tensor(False, device=log_ratio.device)
+    token_weights = torch.exp(torch.clamp(log_ratio, min=-SAFETY_BOUNDS, max=SAFETY_BOUNDS))
+    k3_per_token = 1.0 / token_weights - 1.0 + log_ratio
+    mean_k3 = _safe_mean(k3_per_token, mask)
+    return mean_k3 > high
 
 
 def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
@@ -160,38 +242,30 @@ def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
     loss_mask = inputs.loss_mask
 
     log_importance_ratio = trainer_logprobs - inference_logprobs
-    teacher_kl = teacher_logprobs - trainer_logprobs if teacher_logprobs is not None else None
 
-    token_importance_ratio = torch.exp(log_importance_ratio)
-    geo_seq_ratio = torch.exp(_safe_mean(log_importance_ratio, loss_mask))
-    token_mismatch_kl = token_importance_ratio - log_importance_ratio - 1
-
-    seq_log_importance_ratio = torch.clamp(log_importance_ratio[loss_mask].sum().detach(), max=10.0)
-    seq_importance_ratio = torch.clamp(torch.exp(seq_log_importance_ratio), max=loss_config.sequence_clip_high)
-
-    seq_min_ratio = torch.where(loss_mask, token_importance_ratio, torch.inf).min()
-    seq_max_ratio = torch.where(loss_mask, token_importance_ratio, -torch.inf).max()
-    seq_mask_low = seq_min_ratio < loss_config.sequence_mask_low
-    seq_mask_high = seq_max_ratio > loss_config.sequence_mask_high
-
-    token_mask_low_mask = token_importance_ratio < loss_config.token_mask_low
-    token_mask_high_mask = token_importance_ratio > loss_config.token_mask_high
-
-    geo_mask_low_mask = geo_seq_ratio < loss_config.geo_mask_low
-    geo_mask_high_mask = geo_seq_ratio > loss_config.geo_mask_high
-
-    is_masked = (
-        token_mask_low_mask
-        | token_mask_high_mask
-        | geo_mask_low_mask
-        | geo_mask_high_mask
-        | seq_mask_low
-        | seq_mask_high
+    is_weights = compute_importance_weights(
+        log_importance_ratio, loss_mask, sequence_clip_high=loss_config.sequence_clip_high
     )
+    token_mismatch_kl = is_weights.token_weights - log_importance_ratio - 1
+
+    token_low, token_high = reject_by_token(
+        log_importance_ratio, low=loss_config.token_mask_low, high=loss_config.token_mask_high
+    )
+    seq_low, seq_high = reject_by_sequence_max(
+        log_importance_ratio, loss_mask, low=loss_config.sequence_mask_low, high=loss_config.sequence_mask_high
+    )
+    geo_low, geo_high = reject_by_geo_k1(
+        log_importance_ratio, loss_mask, low=loss_config.geo_mask_low, high=loss_config.geo_mask_high
+    )
+
+    is_masked = token_low | token_high | seq_low | seq_high | geo_low | geo_high
     keep_mask = loss_mask & ~is_masked
 
-    importance_ratio = seq_importance_ratio if loss_config.ratio_type == "sequence" else token_importance_ratio
+    importance_ratio = (
+        is_weights.sequence_weight if loss_config.ratio_type == "sequence" else is_weights.token_weights
+    )  # detach?
 
+    teacher_kl = teacher_logprobs - trainer_logprobs if teacher_logprobs is not None else None
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:
         advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
@@ -206,13 +280,13 @@ def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
         "masked_mismatch_kl": _safe_mean(token_mismatch_kl, loss_mask & is_masked),
         "unmasked_mismatch_kl": _safe_mean(token_mismatch_kl, keep_mask),
         "is_masked": is_masked[loss_mask].float(),
-        "is_masked_low": token_mask_low_mask[loss_mask].float(),
-        "is_masked_high": token_mask_high_mask[loss_mask].float(),
-        "sequence_masked_low": seq_mask_low.float(),
-        "sequence_masked_high": seq_mask_high.float(),
-        "geo_masked_low": geo_mask_low_mask.float(),
-        "geo_masked_high": geo_mask_high_mask.float(),
-        "geo_seq_ratio": geo_seq_ratio,
+        "is_masked_low": token_low[loss_mask].float(),
+        "is_masked_high": token_high[loss_mask].float(),
+        "sequence_masked_low": seq_low.float(),
+        "sequence_masked_high": seq_high.float(),
+        "geo_masked_low": geo_low.float(),
+        "geo_masked_high": geo_high.float(),
+        "geo_seq_ratio": is_weights.geo_mean_weight,
     }
     if teacher_kl is not None:
         metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
