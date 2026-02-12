@@ -8,6 +8,7 @@ from prime_rl.utils.config import (
     ClientConfig,
     HeartbeatConfig,
     LogConfig,
+    MLflowWithExtrasConfig,
     PrimeMonitorConfig,
     WandbWithExtrasConfig,
 )
@@ -640,6 +641,9 @@ class OrchestratorConfig(BaseSettings):
     # The prime monitor configuration
     prime_monitor: PrimeMonitorConfig | None = None
 
+    # The MLflow configuration
+    mlflow: MLflowWithExtrasConfig | None = None
+
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
@@ -791,6 +795,8 @@ class OrchestratorConfig(BaseSettings):
                 self.wandb.log_extras = None
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
+            if self.mlflow:
+                self.mlflow.log_extras = None
 
         return self
 

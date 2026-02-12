@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from typing import Optional
 
 from prime_rl.inference.config import InferenceConfig
@@ -115,4 +116,20 @@ def validate_shared_weight_broadcast(
     elif trainer.weight_broadcast.type != orchestrator.weight_broadcast.type:
         raise ValueError(
             f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
+        )
+
+
+def validate_shared_mlflow_config(
+    trainer: RLTrainerConfig,
+    orchestrator: OrchestratorConfig,
+) -> None:
+    if trainer.mlflow and not orchestrator.mlflow:
+        warnings.warn(
+            "Trainer MLflow config is specified, but orchestrator MLflow config is not. "
+            "Only trainer metrics will be logged to MLflow. Use [mlflow] to configure both at once."
+        )
+    if orchestrator.mlflow and not trainer.mlflow:
+        warnings.warn(
+            "Orchestrator MLflow config is specified, but trainer MLflow config is not. "
+            "Only orchestrator metrics will be logged to MLflow. Use [mlflow] to configure both at once."
         )

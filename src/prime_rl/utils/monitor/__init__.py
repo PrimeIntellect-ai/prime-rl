@@ -2,8 +2,9 @@ from pathlib import Path
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.utils.config import PrimeMonitorConfig, WandbWithExtrasConfig
+from prime_rl.utils.config import MLflowConfig, MLflowWithExtrasConfig, PrimeMonitorConfig, WandbWithExtrasConfig
 from prime_rl.utils.monitor.base import Monitor, NoOpMonitor
+from prime_rl.utils.monitor.mlflow import MLflowMonitor
 from prime_rl.utils.monitor.multi import MultiMonitor
 from prime_rl.utils.monitor.prime import PrimeMonitor
 from prime_rl.utils.monitor.wandb import WandbMonitor
@@ -13,6 +14,7 @@ __all__ = [
     "Monitor",
     "WandbMonitor",
     "PrimeMonitor",
+    "MLflowMonitor",
     "MultiMonitor",
     "NoOpMonitor",
     "setup_monitor",
@@ -37,6 +39,7 @@ def setup_monitor(
     run_config: BaseSettings | None = None,
     *,
     prime_config: PrimeMonitorConfig | None = None,
+    mlflow_config: MLflowConfig | MLflowWithExtrasConfig | None = None,
     # Backward compatibility: support old 'config' keyword argument
     config: WandbWithExtrasConfig | None = None,
 ) -> Monitor:
@@ -66,6 +69,16 @@ def setup_monitor(
         monitors.append(
             PrimeMonitor(
                 config=prime_config,
+                output_dir=output_dir,
+                tokenizer=tokenizer,
+                run_config=run_config,
+            )
+        )
+
+    if mlflow_config is not None:
+        monitors.append(
+            MLflowMonitor(
+                config=mlflow_config,
                 output_dir=output_dir,
                 tokenizer=tokenizer,
                 run_config=run_config,
