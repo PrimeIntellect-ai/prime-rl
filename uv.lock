@@ -12,7 +12,7 @@ prerelease-mode = "allow"
 [manifest]
 overrides = [
     { name = "nvidia-cudnn-cu12", specifier = ">=9.15" },
-    { name = "transformers", specifier = "==5.1.0" },
+    { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=609e3d5" },
 ]
 
 [[package]]
@@ -2620,7 +2620,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
-    { name = "transformers", specifier = ">=5.1.0" },
+    { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=609e3d5" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=bc9fcd5" },
     { name = "vllm", index = "https://wheels.vllm.ai/nightly" },
@@ -3812,8 +3812,8 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "5.1.0"
-source = { registry = "https://pypi.org/simple" }
+version = "5.2.0.dev0"
+source = { git = "https://github.com/huggingface/transformers.git?rev=609e3d5#609e3d585bfe2f78e95f18761dd85ae753da5f1b" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "numpy" },
@@ -3824,10 +3824,6 @@ dependencies = [
     { name = "tokenizers" },
     { name = "tqdm" },
     { name = "typer-slim" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c9/1d/a7d91500a6c02ec76058bc9e65fcdec1bdb8882854dec8e4adf12d0aa8b0/transformers-5.1.0.tar.gz", hash = "sha256:c60d6180e5845ea1b4eed38d7d1b06fcc4cc341c6b7fa5c1dc767d7e25fe0139", size = 8531810, upload-time = "2026-02-05T15:41:42.932Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/66/57042d4b0f1ede8046d7ae6409bf3640df996e9cbc3fe20467aa29badc54/transformers-5.1.0-py3-none-any.whl", hash = "sha256:de534b50c9b2ce6217fc56421075a1734241fb40704fdc90f50f6a08fc533d59", size = 10276537, upload-time = "2026-02-05T15:41:40.358Z" },
 ]
 
 [[package]]
