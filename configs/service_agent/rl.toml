@@ -14,6 +14,10 @@ name = "service-agent-4b"
 [orchestrator]
 batch_size = 1024
 rollouts_per_example = 8
+oversampling_factor = 2.0
+
+[orchestrator.log]
+vf_level = "debug"
 
 [orchestrator.client]
 api_key_var = "VLLM_API_KEY"
