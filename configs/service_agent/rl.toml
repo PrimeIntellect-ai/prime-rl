@@ -2,7 +2,7 @@ inference_gpu_ids = [0, 1, 2, 3]
 trainer_gpu_ids = [4, 5, 6, 7]
 
 max_steps = 1000
-seq_len = 24576
+seq_len = 16384
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
@@ -87,4 +87,6 @@ gpu_memory_utilization = 0.9
 [inference.model]
 enable_auto_tool_choice = true
 tool_call_parser = "hermes"
-max_model_len = 24576
+
+[log]
+level = "debug"
