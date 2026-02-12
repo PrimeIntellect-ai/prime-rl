@@ -74,6 +74,7 @@ dev = [
 
 
 [tool.uv]
+preview = true
 no-build-isolation-package = ["flash-attn"]
 prerelease = "allow"
 # Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
