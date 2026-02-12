@@ -212,8 +212,7 @@ def reject_by_geo_mean_k1(
     Why tight thresholds? For 100 tokens with per-token log-ratio = 0.01 each:
     Arithmetic product ratio: 𝑒100×0.01 ≈2.7
     Geometric ratio: 𝑒0.01 ≈1.010
-
-
+    
     Bounds of 0.99-1.01 rejects sequences whose average per token log deviation exceeds 1%.  
 
     Returns (low_mask, high_mask) as scalar bools.
