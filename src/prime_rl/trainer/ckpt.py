@@ -329,7 +329,14 @@ class WeightCheckpointManager:
             # Save model config, generation arguments and tokenizer
             model.config.save_pretrained(path)
             if model.generation_config:
-                model.generation_config.save_pretrained(path)
+                # training sets use_cache=False which can conflict with
+                # cache_implementation — save with use_cache=True without
+                # mutating the model's config
+                from copy import deepcopy
+
+                gen_config = deepcopy(model.generation_config)
+                gen_config.use_cache = True
+                gen_config.save_pretrained(path)
             tokenizer.save_pretrained(path)
 
         if self.config.save_adapter_separately and lora_state_dict is not None:
@@ -361,6 +368,11 @@ class WeightCheckpointManager:
         start_time = time.perf_counter()
         state_dict = gather_weights_on_master(model, self.world.is_master, dtype=torch.bfloat16)
         self.logger.debug(f"Gathered weights on master rank in {time.perf_counter() - start_time:.2f} seconds")
+
+        # Remove tied weight keys to match original model format
+        if getattr(model.config, "tie_word_embeddings", False):
+            for key in getattr(model, "_tied_weights_keys", []):
+                state_dict.pop(key, None)
 
         if has_lora_layers(model):
             self.logger.debug("Getting LoRA state dict on master rank for weight checkpoint")
