@@ -1,8 +1,12 @@
 """Repetition detection logits processor.
 
-Detects pathological repetition loops where the model generates with very
-high confidence for many consecutive steps. Forces EOS to halt generation
-after `window` consecutive tokens where max probability exceeds the threshold.
+Early truncation heuristic for pathological repetition loops during RL
+training (Section 3.2, https://arxiv.org/abs/2506.13585). Once a model
+enters a repetitive cycle, the probability of each token tends to spike.
+String-matching is ineffective against varied repetition patterns, so we
+use a probability-based proxy instead: generation is halted when `window`
+(default 3000) consecutive tokens each have max probability above
+`prob_threshold` (default 0.99).
 """
 
 import os
@@ -20,11 +24,11 @@ if TYPE_CHECKING:
 
 
 class RepetitionDetector:
-    """Per-request callable that detects repetition loops.
+    """Per-request callable that detects repetition loops via probability.
 
-    At each step, checks whether the max probability of the current logits
-    distribution exceeds a threshold. If this happens for `window` consecutive
-    steps, forces EOS. No previous-step state is needed beyond the counter.
+    Uses max-probability streaks as a proxy for repetition rather than
+    inspecting the token history directly (output_tok_ids is unused).
+    See module docstring for rationale.
     """
 
     def __init__(

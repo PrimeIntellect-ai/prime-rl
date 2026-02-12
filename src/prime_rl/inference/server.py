@@ -19,11 +19,16 @@ def setup_vllm_env(config: InferenceConfig):
         os.environ["PRIME_GIBBERISH_DETECTION_ENABLED"] = "1"
         os.environ["PRIME_GIBBERISH_DETECTION_TOKEN_ID_THRESHOLD"] = str(gd.token_id_threshold)
         os.environ["PRIME_GIBBERISH_DETECTION_LOGPROB_OFFSET"] = str(gd.logprob_offset)
+    else:
+        # Clear in case the var was inherited from the parent environment
+        os.environ.pop("PRIME_GIBBERISH_DETECTION_ENABLED", None)
     if lp.repetition_detection is not None:
         rd = lp.repetition_detection
         os.environ["PRIME_REPETITION_DETECTION_ENABLED"] = "1"
         os.environ["PRIME_REPETITION_DETECTION_WINDOW"] = str(rd.window)
         os.environ["PRIME_REPETITION_DETECTION_PROB_THRESHOLD"] = str(rd.prob_threshold)
+    else:
+        os.environ.pop("PRIME_REPETITION_DETECTION_ENABLED", None)  # ditto
 
 
 def main():

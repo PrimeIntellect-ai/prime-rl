@@ -1,9 +1,12 @@
 """Gibberish detection logits processor.
 
-Detects rare tokens generated at high entropy and forces EOS to abort the rollout.
-A token is considered gibberish when both:
-  - id(token) > token_id_threshold (rare BPE token)
-  - logprob(token) < -log(vocab_size) - logprob_offset (generated at high entropy)
+Rejects any token that is both rare and generated with low probability
+(Section 5.2, https://arxiv.org/abs/2510.02387). BPE tokens are sorted
+by merge order so large ids correspond to rare tokens; generating them at
+high entropy suggests the model is over-weighing rare tokens. A token is
+flagged when both:
+  - id(token) > token_id_threshold  (default 100k — rare BPE token)
+  - logprob(token) < -log(vocab_size) - logprob_offset  (high entropy)
 """
 
 import math
