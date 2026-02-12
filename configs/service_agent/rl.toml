@@ -64,17 +64,19 @@ rollouts_per_example = 1
 eval_base_model = true
 
 [orchestrator.eval.sampling]
-temperature = 0.6
-
-[[orchestrator.eval.env]]
-id = "tau2-bench"
-name = "tau2-airline"
-args = { domain = "airline" }
+temperature = 0.8
 
 [[orchestrator.eval.env]]
 id = "tau2-bench"
 name = "tau2-retail"
 args = { domain = "retail" }
+
+[[orchestrator.eval.env]]
+id = "tau2-bench"
+name = "tau2-telecom"
+args = { domain = "telecom" }
+
+[trainer]
 
 [inference]
 gpu_memory_utilization = 0.9
