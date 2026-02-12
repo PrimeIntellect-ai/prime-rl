@@ -640,6 +640,9 @@ def rl(config: RLConfig):
 
     # If dump_config is set, write resolved subconfigs and exit early
     if config.dump_config is not None:
+        logger.warning(
+            "--dump-config is set. No RL training will be started. Only writing resolved subconfigs to disk."
+        )
         write_subconfigs(config, config.dump_config)
         logger.info(f"Dumping resolved subconfigs to {config.dump_config}")
         logger.info(f"  Wrote trainer config to {config.dump_config / 'trainer.toml'}")
@@ -649,6 +652,7 @@ def rl(config: RLConfig):
         if config.teacher_inference is not None:
             logger.info(f"  Wrote teacher inference config to {config.dump_config / 'teacher_inference.toml'}")
         logger.success(f"Config dump complete. Files written to {config.dump_config}")
+        logger.warning("To start an RL run, remove --dump-config from your command.")
         return
 
     start_command = sys.argv
