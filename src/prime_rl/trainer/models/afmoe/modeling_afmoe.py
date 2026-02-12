@@ -279,8 +279,7 @@ def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
     if attn_impl not in AFMOE_ATTN_IMPL2CLASS:
         supported = list(AFMOE_ATTN_IMPL2CLASS.keys())
         raise ValueError(
-            f"AFMoE attention does not support '{config._attn_implementation}'. "
-            f"Supported implementations: {supported}."
+            f"AFMoE attention does not support '{config._attn_implementation}'. Supported implementations: {supported}."
         )
 
     return AFMOE_ATTN_IMPL2CLASS[attn_impl](attn_config)
