@@ -1,0 +1,85 @@
+inference_gpu_ids = [0, 1, 2, 3]
+trainer_gpu_ids = [4, 5, 6, 7]
+
+max_steps = 1000
+seq_len = 24576
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "service-agent"
+name = "service-agent-4b"
+
+[orchestrator]
+batch_size = 1024
+rollouts_per_example = 8
+
+[orchestrator.buffer]
+easy_threshold = 1.0
+
+# train on service-agent
+
+[[orchestrator.env]]
+id = "service-agent"
+name = "library"
+args = { domain = "library" }
+
+[[orchestrator.env]]
+id = "service-agent"
+name = "restaurant"
+args = { domain = "restaurant" }
+
+[[orchestrator.env]]
+id = "service-agent"
+name = "helpdesk"
+args = { domain = "helpdesk" }
+
+[[orchestrator.env]]
+id = "service-agent"
+name = "government"
+args = { domain = "government" }
+
+[[orchestrator.env]]
+id = "service-agent"
+name = "festival"
+args = { domain = "festival" }
+
+[[orchestrator.env]]
+id = "service-agent"
+name = "clinic"
+args = { domain = "clinic" }
+
+[[orchestrator.env]]
+id = "service-agent"
+name = "car_rental"
+args = { domain = "car_rental" }
+
+# eval tau2-bench
+
+[orchestrator.eval]
+interval = 20
+num_examples = -1
+rollouts_per_example = 1
+eval_base_model = true
+
+[orchestrator.eval.sampling]
+temperature = 0.6
+
+[[orchestrator.eval.env]]
+id = "tau2-bench"
+name = "tau2-airline"
+args = { domain = "airline" }
+
+[[orchestrator.eval.env]]
+id = "tau2-bench"
+name = "tau2-retail"
+args = { domain = "retail" }
+
+[inference]
+gpu_memory_utilization = 0.9
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+max_model_len = 24576
