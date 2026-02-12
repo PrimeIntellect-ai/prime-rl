@@ -6,14 +6,14 @@
 #SBATCH --gres=gpu:8
 #SBATCH --partition=cluster
 #SBATCH --exclusive
-#SBATCH --output=/shared/logs/job_%j.log
-#SBATCH --error=/shared/logs/job_%j.log
+#SBATCH --output=/shared/mika/job_%j.log
+#SBATCH --error=/shared/mika/job_%j.log
 
 # Configs
-export MODEL_NAME=${MODEL_NAME:-"Qwen/Qwen3-235B-A22B-Instruct-2507"}
+export MODEL_NAME=${MODEL_NAME:-"Qwen/Qwen3-30B-A3B-Instruct-2507"}
 export TOOL_CALL_PARSER=${TOOL_CALL_PARSER:-"hermes"}
-export DP=${DP:-2}
-export TP=${TP:-4}
+export DP=${DP:-4}
+export TP=${TP:-2}
 export IFNAME=${IFNAME:-"bond0"}
 
 # Update job name to include model slug
@@ -22,8 +22,8 @@ export MODEL_ID=$(echo "$MODEL_NAME" | cut -d'/' -f2)
 export JOB_NAME="$(echo $MODEL_ID | tr '[:upper:]' '[:lower:]')-vllm"
 
 # Change directory
-export BASE_DIR=${BASE_DIR:-"/shared/research-prod-evals"}
-export OUTPUT_DIR=${OUTPUT_DIR:-"/shared/outputs/$SLURM_JOB_NAME"}
+export BASE_DIR=${BASE_DIR:-"/home/mika/prime-rl"}
+export OUTPUT_DIR=${OUTPUT_DIR:-"/shared/mika/$SLURM_JOB_NAME"}
 mkdir -p $OUTPUT_DIR/slurm
 
 # General
@@ -59,5 +59,6 @@ srun bash -c '
     --tool-call-parser $TOOL_CALL_PARSER \
     --tensor-parallel-size $TP \
     --data-parallel-size $DP \
+    --api-key $VLLM_API_KEY \
     2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${SLURM_PROCID}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${SLURM_PROCID}.log
 '
