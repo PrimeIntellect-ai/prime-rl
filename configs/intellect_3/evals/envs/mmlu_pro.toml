@@ -1,3 +1,0 @@
-[[env]]
-id = "mmlu-pro"
-rollouts_per_example = 1 # 12K examples * 1 rollouts = 12000 rollouts

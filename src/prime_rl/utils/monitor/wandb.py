@@ -79,7 +79,7 @@ class WandbMonitor(Monitor):
             return
         wandb.log(metrics, step=step)
 
-    def log_samples(self, rollouts: list[vf.State], step: int) -> None:
+    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
         """Logs rollouts to W&B table."""
         if not self.is_master:
             return

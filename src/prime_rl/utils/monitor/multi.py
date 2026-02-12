@@ -26,7 +26,7 @@ class MultiMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to log metrics to {monitor.__class__.__name__}: {e}")
 
-    def log_samples(self, rollouts: list[vf.State], step: int) -> None:
+    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
         for monitor in self.monitors:
             try:
                 monitor.log_samples(rollouts=rollouts, step=step)

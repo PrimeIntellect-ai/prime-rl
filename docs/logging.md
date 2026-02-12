@@ -55,30 +55,28 @@ For RL training, logs are organized by component:
 | **Trainer** | `logs/trainer/rank_{N}.log` | Training process (one file per GPU rank) |
 | **Env Workers** | `logs/env_workers/{env_name}/worker_{N}.log` | Per-environment worker logs (optional) |
 
-## Per-Environment Worker Logging
+## Per-Environment Logging
 
-Environment workers run in **separate subprocesses** to isolate event loop lag. Worker logging is controlled at the orchestrator level via `orchestrator.log`:
+Environment are run via `vf.EnvServer` in separate processes. By default, each environment logs to a file in its run directory under `{output_dir}/run_default/train/{env_name}.log` and `{output_dir}/run_default/eval/{env_name}.log`. The log verbosity can be controlled with `orchestrator.log.vf_level`.
 
 ```toml
 [orchestrator.log]
 level = "debug"           # Log level for prime-rl logger
 vf_level = "info"         # Log level for verifiers library
-env_worker_logs = true    # Enable file logging for env workers
 ```
 
-When `env_worker_logs = true`, logs are written to:
 ```
 output_dir/
-└── logs/
-    └── env_workers/
+└── run_default/
+    └── train/
+        ├── {env_name_1}.log
+        ├── {env_name_2}.log
+        └── ...
+    └── eval/
         ├── {env_name_1}.log
         ├── {env_name_2}.log
         └── ...
 ```
-
-All workers for an environment share the same log file.
-
-Set `env_worker_logs = false` to disable worker file logging (workers inherit parent process logging).
 
 ## Torchrun
 

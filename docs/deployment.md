@@ -185,7 +185,7 @@ uv run rl \
   --inference @ path/to/infer.toml \
 ```
 
-You can configure to GPU IDs to use for the inference server and the trainer. For example, to run the inference server on GPUs IDs 0-5 with data parallelism and the trainer on GPUs IDs 6-7
+You can configure the GPU IDs to use for the inference server and the trainer. For example, to run the inference server on GPUs IDs 0-5 with data parallelism and the trainer on GPUs IDs 6-7
 
 ```bash
 uv run rl \
@@ -237,9 +237,9 @@ uv run rl \
 
 ### Multi-Node Training
 
-> We currently require shared file system for multi-node RL training.
+> We currently require a shared file system for multi-node RL training.
 
-To faciliate multi-node RL training, ensure that all nodes have access to a shared file system and that the node that will run the inference server is reachable from the orchestrator via a private or public IP address. Then, set the following environment variables on all nodes:
+To facilitate multi-node RL training, ensure that all nodes have access to a shared file system and that the node that will run the inference server is reachable from the orchestrator via a private or public IP address. Then, set the following environment variables on all nodes:
 
 ```bash
 # On all nodes

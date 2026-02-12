@@ -240,6 +240,8 @@ def _create_muon_optimizer(
     optimizer = Muon(
         params=param_groups,
         lr=lr,
+        mu=config.mu,
+        betas=(config.betas1, config.betas2),
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
         distributed_mesh=distributed_mesh,

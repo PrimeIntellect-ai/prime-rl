@@ -16,7 +16,7 @@ class Monitor(ABC):
         pass
 
     @abstractmethod
-    def log_samples(self, rollouts: list[vf.State], step: int) -> None:
+    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
         pass
 
     @abstractmethod
@@ -45,7 +45,7 @@ class NoOpMonitor(Monitor):
     def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
         self.history.append(metrics)
 
-    def log_samples(self, rollouts: list[vf.State], step: int) -> None:
+    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
         pass
 
     def log_final_samples(self) -> None:
