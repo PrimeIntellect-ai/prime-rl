@@ -191,7 +191,7 @@ class Scheduler:
             for task, off_policy_steps, client_config in tasks_to_update:
                 if task in self.inflight_group_rollouts:
                     self.inflight_group_rollouts[task] = InflightRolloutInfo(
-                        off_policy_steps=off_policy_steps + 1, client_config=client_config
+                        off_policy_steps=off_policy_steps, client_config=client_config
                     )
 
             if len(tasks_to_remove) > 0:
