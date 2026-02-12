@@ -8,9 +8,9 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_importance_weights,
     compute_loss,
-    reject_by_geo_k1,
-    reject_by_geo_k3,
-    reject_by_sequence_max,
+    reject_by_geo_mean_k1,
+    reject_by_geo_mean_k3,
+    reject_by_sequence_minmax,
     reject_by_token,
     setup_loss_fn,
 )
@@ -167,14 +167,14 @@ class TestRejectBySequenceMax:
     def test_rejects_sequence_when_any_token_breaches(self):
         log_ratio = torch.tensor([0.0, 5.0, 0.0], device="cuda")  # one token at w ≈ 148
         mask = torch.ones(3, dtype=torch.bool, device="cuda")
-        _, high_mask = reject_by_sequence_max(log_ratio, mask, high=100.0)
+        _, high_mask = reject_by_sequence_minmax(log_ratio, mask, high=100.0)
 
         assert high_mask.item() is True
 
     def test_no_rejection_when_within_bounds(self):
         log_ratio = torch.tensor([0.1, -0.1, 0.2], device="cuda")
         mask = torch.ones(3, dtype=torch.bool, device="cuda")
-        low_mask, high_mask = reject_by_sequence_max(log_ratio, mask, low=0.5, high=2.0)
+        low_mask, high_mask = reject_by_sequence_minmax(log_ratio, mask, low=0.5, high=2.0)
 
         assert low_mask.item() is False
         assert high_mask.item() is False
@@ -182,7 +182,7 @@ class TestRejectBySequenceMax:
     def test_ignores_unmasked_tokens(self):
         log_ratio = torch.tensor([0.0, 10.0, 0.0], device="cuda")  # middle token huge but unmasked
         mask = torch.tensor([True, False, True], device="cuda")
-        _, high_mask = reject_by_sequence_max(log_ratio, mask, high=5.0)
+        _, high_mask = reject_by_sequence_minmax(log_ratio, mask, high=5.0)
 
         assert high_mask.item() is False
 
@@ -191,14 +191,14 @@ class TestRejectByGeoK1:
     def test_rejects_above_high(self):
         log_ratio = torch.tensor([2.0, 2.0, 2.0], device="cuda")  # geo mean = exp(2) ≈ 7.39
         mask = torch.ones(3, dtype=torch.bool, device="cuda")
-        _, high_mask = reject_by_geo_k1(log_ratio, mask, high=5.0)
+        _, high_mask = reject_by_geo_mean_k1(log_ratio, mask, high=5.0)
 
         assert high_mask.item() is True
 
     def test_rejects_below_low(self):
         log_ratio = torch.tensor([-3.0, -3.0], device="cuda")  # geo mean = exp(-3) ≈ 0.05
         mask = torch.ones(2, dtype=torch.bool, device="cuda")
-        low_mask, _ = reject_by_geo_k1(log_ratio, mask, low=0.1)
+        low_mask, _ = reject_by_geo_mean_k1(log_ratio, mask, low=0.1)
 
         assert low_mask.item() is True
 
@@ -206,7 +206,7 @@ class TestRejectByGeoK1:
         """k1 allows cancellation: half tokens at w=e^2, half at w=e^-2 → geo mean = 1.0"""
         log_ratio = torch.tensor([2.0, -2.0], device="cuda")
         mask = torch.ones(2, dtype=torch.bool, device="cuda")
-        low_mask, high_mask = reject_by_geo_k1(log_ratio, mask, low=0.5, high=2.0)
+        low_mask, high_mask = reject_by_geo_mean_k1(log_ratio, mask, low=0.5, high=2.0)
 
         assert low_mask.item() is False
         assert high_mask.item() is False
@@ -216,20 +216,20 @@ class TestRejectByGeoK3:
     def test_rejects_high_divergence(self):
         log_ratio = torch.tensor([2.0, -2.0], device="cuda")
         mask = torch.ones(2, dtype=torch.bool, device="cuda")
-        rejected = reject_by_geo_k3(log_ratio, mask, high=0.5)
+        rejected = reject_by_geo_mean_k3(log_ratio, mask, high=0.5)
 
         assert rejected.item() is True
 
     def test_no_rejection_when_close(self):
         log_ratio = torch.tensor([0.01, -0.01], device="cuda")
         mask = torch.ones(2, dtype=torch.bool, device="cuda")
-        rejected = reject_by_geo_k3(log_ratio, mask, high=1.0)
+        rejected = reject_by_geo_mean_k3(log_ratio, mask, high=1.0)
 
         assert rejected.item() is False
 
     def test_none_high_returns_false(self):
         log_ratio = torch.tensor([5.0, 5.0], device="cuda")
         mask = torch.ones(2, dtype=torch.bool, device="cuda")
-        rejected = reject_by_geo_k3(log_ratio, mask, high=None)
+        rejected = reject_by_geo_mean_k3(log_ratio, mask, high=None)
 
         assert rejected.item() is False
