@@ -61,9 +61,9 @@ class RepetitionDetectionLogitsProcessor(AdapterLogitsProcessor):
 
     def __init__(self, vllm_config: "VllmConfig", device: torch.device, is_pin_memory: bool):
         self.enabled = os.environ.get("PRIME_REPETITION_DETECTION_ENABLED") == "1"
+        super().__init__(vllm_config, device, is_pin_memory)
         if not self.enabled:
             return
-        super().__init__(vllm_config, device, is_pin_memory)
 
         eos = vllm_config.model_config.hf_text_config.eos_token_id
         self.eos_token_id = eos[0] if isinstance(eos, list) else eos
