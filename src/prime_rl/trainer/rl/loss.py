@@ -163,6 +163,8 @@ def reject_by_token(
 ) -> tuple[Bool[Tensor, " seq"], Bool[Tensor, " seq"]]:
     """Reject individual tokens where the importance ratio breaches bounds.
 
+    typical thresholds: 0.5 - 2
+
     Returns (low_mask, high_mask) indicating which tokens were rejected by each bound.
     """
     token_ratio = _safe_exp_log_ratio(log_ratio)
@@ -181,7 +183,9 @@ def reject_by_sequence_minmax(
 ) -> tuple[Bool[Tensor, ""], Bool[Tensor, ""]]:
     """Reject entire sequence if any token's importance ratio breaches bounds.
 
-    Returns (seq_rejected_low, seq_rejected_high) as scalar masks.
+    typical thresholds: ?
+
+    Returns (low_mask, high_mask) as scalar masks.
     """
     token_ratio = _safe_exp_log_ratio(log_ratio)
 
@@ -200,10 +204,17 @@ def reject_by_geo_mean_k1(
     low: float | None = None,
     high: float | None = None,
 ) -> tuple[Bool[Tensor, ""], Bool[Tensor, ""]]:
-    """Reject based on geometric mean importance ratio (k1 estimator).
+    """Reject based on geometric mean importance ratio.
 
-    geo_mean_weight = exp(mean(log w)). Because log w can be negative, terms can cancel
-    and hide mismatch — a sequence with half the tokens at w=2 and half at w=0.5 looks fine.
+    Ideal ratio = 1.0
+    Typical bounds: "0.999_1.001" (~±0.1%)
+    
+    Why tight thresholds? For 100 tokens with per-token log-ratio = 0.01 each:
+    Arithmetic product ratio: 𝑒100×0.01 ≈2.7
+    Geometric ratio: 𝑒0.01 ≈1.010
+
+
+    Bounds of 0.99-1.01 rejects sequences whose average per token log deviation exceeds 1%.  
 
     Returns (low_mask, high_mask) as scalar bools.
     """
@@ -220,16 +231,21 @@ def reject_by_geo_mean_k3(
     mask: Bool[Tensor, " seq"],
     high: float | None = None,
 ) -> Bool[Tensor, ""]:
-    """Reject based on mean k3 KL divergence estimate.
+    """Reject based on mean k3 KL divergence estimate. log_ratio is p = log(p/q).
 
-    k3 per token: (1/w - 1 + log w), strictly non-negative. The mean across masked tokens
-    gives average per-token divergence. Because k3 >= 0, only an upper bound is meaningful.
+    In expectation, k3 is the reverse KL divergence KL(q || p).
+
+    k3 per token: (p - log p - 1), strictly non-negative. The mean across masked tokens
+    gives average per-token divergence. K3 is more stable than direct KL. 
+    Because k3 >= 0, only an upper bound is meaningful.
+
+    typical bounds: 0.001 - 0.01
     """
     if high is None:
         return torch.tensor(False, device=log_ratio.device)
     clamped_log_ratio = torch.clamp(log_ratio, min=-LOG_RATIO_EXP_BOUND, max=LOG_RATIO_EXP_BOUND)
     token_ratio = torch.exp(clamped_log_ratio)
-    k3_per_token = 1.0 / token_ratio - 1.0 + clamped_log_ratio
+    k3_per_token = token_ratio - clamped_log_ratio - 1.0
     mean_k3 = _safe_mean(k3_per_token, mask)
     return mean_k3 > high
 
