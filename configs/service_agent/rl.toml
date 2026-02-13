@@ -90,6 +90,8 @@ args = { domain = "telecom" }
 
 [trainer]
 
+[trainer.model.compile]
+
 [inference]
 gpu_memory_utilization = 0.9
 
