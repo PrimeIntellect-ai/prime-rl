@@ -115,3 +115,36 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     q_embed = torch.cat([q_embed, q_pass], dim=-1)
     k_embed = torch.cat([k_embed, k_pass], dim=-1)
     return q_embed, k_embed
+
+
+def apply_rotary_pos_emb_interleave(q, k, cos, sin, unsqueeze_dim=1):
+    """Applies interleaved Rotary Position Embedding to the query and key tensors.
+
+    This is the non-neox style RoPE used by GLM-5 (glm_moe_dsa) where real/imaginary
+    components are interleaved rather than split in half. The input is reshaped from
+    (..., d) to (..., d//2, 2) and transposed before applying the standard rotation.
+
+    Args:
+        q (`torch.Tensor`): The query tensor with shape (batch, heads, seq_len, head_dim).
+        k (`torch.Tensor`): The key tensor with shape (batch, heads, seq_len, head_dim).
+        cos (`torch.Tensor`): The cosine part of the rotary embedding.
+        sin (`torch.Tensor`): The sine part of the rotary embedding.
+        unsqueeze_dim (`int`, *optional*, defaults to 1):
+            The dimension along which to unsqueeze cos and sin for broadcasting.
+    Returns:
+        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the
+        interleaved Rotary Position Embedding.
+    """
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+
+    # Interleave: reshape (..., d) -> (..., d//2, 2) -> transpose -> reshape back
+    # This converts from interleaved [r0, i0, r1, i1, ...] to half [r0, r1, ..., i0, i1, ...]
+    b, h, s, d = q.shape
+    q = q.view(b, h, s, d // 2, 2).transpose(4, 3).reshape(b, h, s, d)
+    b, h, s, d = k.shape
+    k = k.view(b, h, s, d // 2, 2).transpose(4, 3).reshape(b, h, s, d)
+
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed

@@ -17,9 +17,12 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoTokenizer
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
+from transformers import GlmMoeDsaForCausalLM as HFGlmMoeDsaForCausalLM
 
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
+from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig
+from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaForCausalLM as PrimeRLGlmMoeDsaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.utils import default_dtype
@@ -56,6 +59,38 @@ ARCH_PRESETS = {
         "hf_model_class": HFGlm4MoeForCausalLM,
         "prime_model_class": PrimeRLGlm4MoeForCausalLM,
         "tokenizer_source": "THUDM/GLM-4-9B-0414",
+    },
+    "glm_moe_dsa": {
+        "config_class": GlmMoeDsaConfig,
+        "config_kwargs": dict(
+            vocab_size=154880,
+            hidden_size=1024,
+            intermediate_size=2048,
+            moe_intermediate_size=256,
+            num_hidden_layers=12,
+            num_attention_heads=8,
+            num_key_value_heads=8,
+            kv_lora_rank=128,
+            q_lora_rank=256,
+            qk_rope_head_dim=32,
+            v_head_dim=64,
+            qk_nope_head_dim=32,
+            hidden_act="silu",
+            max_position_embeddings=4096,
+            rms_norm_eps=1e-5,
+            rope_interleave=True,
+            n_routed_experts=8,
+            num_experts_per_tok=2,
+            n_shared_experts=1,
+            first_k_dense_replace=2,
+            norm_topk_prob=True,
+            use_grouped_mm=False,
+            pad_token_id=151329,
+            eos_token_id=[151329, 151336, 151338],
+        ),
+        "hf_model_class": HFGlmMoeDsaForCausalLM,
+        "prime_model_class": PrimeRLGlmMoeDsaForCausalLM,
+        "tokenizer_source": "zai-org/GLM-5",
     },
 }
 
@@ -107,7 +142,7 @@ def verify(arch: str, model_dir: Path) -> None:
         input_ids = torch.randint(0, config.vocab_size, (1, 64))
         position_ids = torch.arange(1, 65).unsqueeze(0)
 
-    hf_output = hf_model(input_ids, position_ids)
+    hf_output = hf_model(input_ids=input_ids, position_ids=position_ids)
     prime_output = prime_model(input_ids, position_ids)
 
     logits_diff = prime_output["logits"] - hf_output.logits
@@ -121,7 +156,7 @@ def verify(arch: str, model_dir: Path) -> None:
         hf_roundtrip = preset["hf_model_class"]._from_config(config)
         hf_roundtrip.load_state_dict(roundtrip_state_dict)
 
-    hf_roundtrip_output = hf_roundtrip(input_ids, position_ids)
+    hf_roundtrip_output = hf_roundtrip(input_ids=input_ids, position_ids=position_ids)
     roundtrip_diff = hf_roundtrip_output.logits - hf_output.logits
     max_roundtrip_diff = roundtrip_diff.abs().max().item()
     print(f"  HF -> PrimeRL -> HF roundtrip max logits diff: {max_roundtrip_diff:.6f}")
