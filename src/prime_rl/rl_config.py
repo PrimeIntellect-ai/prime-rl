@@ -1,4 +1,5 @@
 import warnings
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
@@ -20,6 +21,7 @@ from prime_rl.utils.validation import (
     validate_shared_max_async_level,
     validate_shared_max_steps,
     validate_shared_model_name,
+    validate_shared_output_dir,
     validate_shared_wandb_config,
     validate_shared_weight_broadcast,
 )
@@ -98,6 +100,11 @@ class BaseRLConfig(BaseSettings):
 
     trainer: TrainerConfig
     orchestrator: OrchestratorConfig
+
+    output_dir: Annotated[
+        Path | None,
+        Field(description="The directory to store the outputs. Should typically be set to an experiment identifier."),
+    ] = None
     inference: Annotated[
         InferenceConfig | None,
         Field(
@@ -312,4 +319,14 @@ class BaseRLConfig(BaseSettings):
                 warnings.warn(
                     "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_output_dir(self):
+        if self.output_dir is not None:
+            self.trainer.output_dir = self.output_dir
+            self.orchestrator.output_dir = self.output_dir / "run_default"
+
+        validate_shared_output_dir(self.trainer, self.orchestrator)
+
         return self
