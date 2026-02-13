@@ -1,4 +1,4 @@
-inference_gpu_ids = [0, 1, 2, 3]
+inference_gpu_ids = [2, 3]
 trainer_gpu_ids = [4, 5, 6, 7]
 
 max_steps = 1000
@@ -26,8 +26,8 @@ api_key_var = "VLLM_API_KEY"
 easy_threshold = 1.0
 
 [orchestrator.val]
-interval = 1
-num_examples = 512
+interval = 5
+num_examples = 256
 rollouts_per_example = 1
 
 # train on service-agent
@@ -35,44 +35,44 @@ rollouts_per_example = 1
 [[orchestrator.env]]
 id = "service-agent"
 name = "library"
-args = { domain = "library" }
+args = { domain = "library", user_model = "openai/Qwen/Qwen3-4B-Instruct-2507", user_base_url = "http://localhost:8000/v1", user_api_key_var = "VLLM_API_KEY" }
 
 [[orchestrator.env]]
 id = "service-agent"
 name = "restaurant"
-args = { domain = "restaurant" }
+args = { domain = "restaurant", user_model = "openai/Qwen/Qwen3-4B-Instruct-2507", user_base_url = "http://localhost:8000/v1", user_api_key_var = "VLLM_API_KEY" }
 
 [[orchestrator.env]]
 id = "service-agent"
 name = "helpdesk"
-args = { domain = "helpdesk" }
+args = { domain = "helpdesk", user_model = "openai/Qwen/Qwen3-4B-Instruct-2507", user_base_url = "http://localhost:8000/v1", user_api_key_var = "VLLM_API_KEY" }
 
 [[orchestrator.env]]
 id = "service-agent"
 name = "government"
-args = { domain = "government" }
+args = { domain = "government", user_model = "openai/Qwen/Qwen3-4B-Instruct-2507", user_base_url = "http://localhost:8000/v1", user_api_key_var = "VLLM_API_KEY" }
 
 [[orchestrator.env]]
 id = "service-agent"
 name = "festival"
-args = { domain = "festival" }
+args = { domain = "festival", user_model = "openai/Qwen/Qwen3-4B-Instruct-2507", user_base_url = "http://localhost:8000/v1", user_api_key_var = "VLLM_API_KEY" }
 
 [[orchestrator.env]]
 id = "service-agent"
 name = "clinic"
-args = { domain = "clinic" }
+args = { domain = "clinic", user_model = "openai/Qwen/Qwen3-4B-Instruct-2507", user_base_url = "http://localhost:8000/v1", user_api_key_var = "VLLM_API_KEY" }
 
 [[orchestrator.env]]
 id = "service-agent"
 name = "car_rental"
-args = { domain = "car_rental" }
+args = { domain = "car_rental", user_model = "openai/Qwen/Qwen3-4B-Instruct-2507", user_base_url = "http://localhost:8000/v1", user_api_key_var = "VLLM_API_KEY" }
 
 # eval tau2-bench
 
 [orchestrator.eval]
 interval = 20
 num_examples = -1
-rollouts_per_example = 4
+rollouts_per_example = 2
 eval_base_model = true
 
 [orchestrator.eval.sampling]
@@ -81,14 +81,15 @@ temperature = 0.8
 [[orchestrator.eval.env]]
 id = "tau2-bench"
 name = "tau2-retail"
-args = { domain = "retail" }
+args = { domain = "retail", user_model = "gpt-4.1-mini" }
 
 [[orchestrator.eval.env]]
 id = "tau2-bench"
 name = "tau2-telecom"
-args = { domain = "telecom" }
+args = { domain = "telecom", user_model = "gpt-4.1-mini" }
 
 [trainer]
+dist_timeout_seconds = 3600
 
 [trainer.model.compile]
 
