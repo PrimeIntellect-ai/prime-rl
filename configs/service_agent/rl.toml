@@ -14,7 +14,7 @@ name = "service-agent-4b"
 [orchestrator]
 batch_size = 1024
 rollouts_per_example = 8
-oversampling_factor = 2.0
+oversampling_factor = 1.5
 
 [orchestrator.log]
 vf_level = "debug"
@@ -24,6 +24,11 @@ api_key_var = "VLLM_API_KEY"
 
 [orchestrator.buffer]
 easy_threshold = 1.0
+
+[orchestrator.val]
+interval = 1
+num_examples = 512
+rollouts_per_example = 1
 
 # train on service-agent
 
@@ -67,7 +72,7 @@ args = { domain = "car_rental" }
 [orchestrator.eval]
 interval = 20
 num_examples = -1
-rollouts_per_example = 1
+rollouts_per_example = 4
 eval_base_model = true
 
 [orchestrator.eval.sampling]
