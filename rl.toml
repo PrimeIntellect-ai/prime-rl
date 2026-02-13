@@ -1,0 +1,55 @@
+inference_gpu_ids = [0,1,2,3]
+trainer_gpu_ids = [6,7]
+
+max_steps = 20
+seq_len = 2048
+
+[wandb]
+project = "prime-rl-debug"
+
+[ckpt]
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+
+[orchestrator.optim]
+lr = 3e-5
+
+[trainer.optim]
+lr = 3e-5
+
+[trainer.model.lora]
+rank = 16
+
+[trainer.model]
+seq_len = 16384
+attn = "flash_attention_4"
+impl = "custom"
+
+[trainer.model.compile]
+
+[trainer.model.ac]
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.model.lora]
+name = "r8-1e-4"
+
+[orchestrator.sampling]
+max_tokens = 256
+
+[[orchestrator.env]]
+id = "reverse-text"
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7
+
+[inference.model]
+max_model_len = 65536
+enforce_eager = true
+
+[inference.parallel]
+tp = 4

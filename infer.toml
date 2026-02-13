@@ -1,0 +1,11 @@
+enable_lora = true
+gpu_memory_utilization = 0.7
+max_lora_rank = 16
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_model_len = 65536
+enforce_eager = true
+
+[parallel]
+tp = 4

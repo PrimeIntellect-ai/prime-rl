@@ -1,0 +1,21 @@
+batch_size = 128
+rollouts_per_example = 16
+seq_len = 2048
+max_steps = 20
+num_train_workers = 2
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+
+[model.lora]
+name = "r8-1e-4"
+rank = 16
+alpha = 32.0
+
+[sampling]
+max_tokens = 256
+
+[[env]]
+id = "reverse-text"
+
+[ckpt]
