@@ -15,15 +15,18 @@ TEMPLATE_NAME = "rl_slurm.sh.j2"
 
 
 class RLSLURMConfig(BaseRLConfig):
-
     output_dir: Path
-    base_dir: Path | None = Field(default=None, description="The path to the base directory. If none, will use the current working directory.")
+    base_dir: Path | None = Field(
+        default=None, description="The path to the base directory. If none, will use the current working directory."
+    )
 
     job_name: str
     num_train_nodes: int
     num_infer_nodes: int
-    
-    slurm_template: Path | None = Field(default=None, description="The path to the SLURM template file. If none, will use the default template.")
+
+    slurm_template: Path | None = Field(
+        default=None, description="The path to the SLURM template file. If none, will use the default template."
+    )
     dry_run: bool = Field(default=False, description="Only generate the SLURM script and configs without submitting.")
 
 
@@ -67,11 +70,10 @@ def rl_slurm(config: RLSLURMConfig):
 
     config_dir = config.output_dir / "configs"
     write_subconfigs(config, config_dir)
-    
+
     if config.base_dir is None:
         config.base_dir = Path.cwd()
-        
-    
+
     logger.info(f"Wrote subconfigs to {config_dir}")
 
     script = render_slurm_script(config, config_dir)
