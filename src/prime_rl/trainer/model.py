@@ -147,6 +147,10 @@ def get_model(
     model_config.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
 
+    # Ensure pad_token_id is set (some models like Qwen3MoE don't have it)
+    if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
+        model_config.pad_token_id = model_config.eos_token_id
+
     # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
     # The model should load in its default dtype (bf16) to match vLLM inference.
     # The FSDP MixedPrecisionPolicy handles compute dtype separately.
@@ -436,6 +440,9 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
     )
+    # Restore weight tying broken by to_empty() for HF models
+    if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
+        model.tie_weights()
     _init_buffers_post_meta()
 
     _move_buffers_to_cuda(model, config)
@@ -653,6 +660,9 @@ def setup_model(
                 model.init_buffers_post_meta()
             else:
                 fix_model_post_empty(model)
+                # Restore weight tying broken by to_empty() for HF models
+                if model.config.tie_word_embeddings:
+                    model.tie_weights()
 
             _move_buffers_to_cuda(model, config)
         # - or load from HF with dcp
