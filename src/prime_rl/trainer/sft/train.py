@@ -46,8 +46,51 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
-
 from torchtitan.distributed.utils import clip_grad_norm_
+
+
+def log_samples_to_weave(
+    log_sft_samples,
+    tokenizer,
+    input_ids: torch.Tensor,
+    target_ids: torch.Tensor,
+    logits: torch.Tensor,
+    step: int,
+    n_samples: int = 4,
+) -> None:
+    """Log training samples with predictions to Weave.
+    
+    Args:
+        log_sft_samples: The weave op function for logging samples.
+        tokenizer: The tokenizer for decoding.
+        input_ids: Input token IDs tensor.
+        target_ids: Target token IDs tensor.
+        logits: Model output logits tensor.
+        step: Current training step.
+        n_samples: Number of samples to log (default: 4).
+    """
+    n_samples = min(n_samples, input_ids.size(0))
+    
+    samples_data = []
+    for i in range(n_samples):
+        # Decode input and target (ground truth)
+        input_text = tokenizer.decode(input_ids[i], skip_special_tokens=False)
+        target_text = tokenizer.decode(target_ids[i], skip_special_tokens=False)
+
+        # Get model prediction (greedy decoding from logits)
+        pred_ids = logits[i].argmax(dim=-1)
+        pred_text = tokenizer.decode(pred_ids, skip_special_tokens=True)
+
+        samples_data.append({
+            "step": step,
+            "input_text": input_text,
+            "target_text": target_text,
+            "prediction_text": pred_text,
+        })
+
+    logger.info(f"Logging {len(samples_data)} samples (with predictions) to Weave at step {step}")
+    log_sft_samples(samples_data, step)
+    logger.info(f"Successfully logged samples to Weave")
 
 
 @clean_exit
@@ -69,6 +112,23 @@ def train(config: SFTTrainerConfig):
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
     monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
+
+    weave_initialized = False
+    log_sft_samples = None
+    if world.is_master and config.wandb and config.wandb.weave and config.wandb.project:
+        logger.info(f"Initializing Weave ({config.wandb.project})")
+        import weave
+        weave.init(project_name=config.wandb.project)
+        weave_initialized = True
+        logger.info(f"Successfully initialized Weave")
+
+        # Define Weave op for logging samples
+        @weave.op()
+        def _log_sft_samples(samples_data: list[dict], step: int):
+            """Weave operation to log SFT training samples."""
+            return samples_data
+
+        log_sft_samples = _log_sft_samples
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -254,6 +314,18 @@ def train(config: SFTTrainerConfig):
 
             logits = out["logits"]
             B, L, V = logits.shape
+
+            # Log samples to Weave (with predictions)
+            if (world.is_master and config.wandb and config.wandb.weave
+                and progress.step % 1 == 0 and micro_step == 0 and weave_initialized and log_sft_samples is not None):
+                log_samples_to_weave(
+                    log_sft_samples=log_sft_samples,
+                    tokenizer=tokenizer,
+                    input_ids=input_ids,
+                    target_ids=target_ids,
+                    logits=logits,
+                    step=progress.step,
+                )
 
             # Compute loss
             loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
