@@ -2800,8 +2800,8 @@ requires-dist = [
     { name = "reverse-text", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
-    { name = "service-agent", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fservice_agent&rev=259d360" },
-    { name = "tau2-bench", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Ftau2_bench&rev=259d360" },
+    { name = "service-agent", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fservice_agent&rev=36840f3" },
+    { name = "tau2-bench", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Ftau2_bench&rev=36840f3" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "textarena", specifier = ">=0.6.16" },
     { name = "tomli", specifier = ">=2.2.1" },
@@ -3634,7 +3634,7 @@ wheels = [
 [[package]]
 name = "service-agent"
 version = "0.1.0"
-source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fservice_agent&rev=259d360#259d3606e8dbd7eed16ba4a6e23a6180dc95c92b" }
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fservice_agent&rev=36840f3#36840f3d1e76e81e9902cb41817f7f2366ef95fa" }
 dependencies = [
     { name = "tau2-bench" },
     { name = "verifiers" },
@@ -3784,7 +3784,7 @@ wheels = [
 [[package]]
 name = "tau2"
 version = "0.2.1.dev0"
-source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Ftau2_bench%2Ftau2&rev=259d360#259d3606e8dbd7eed16ba4a6e23a6180dc95c92b" }
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Ftau2_bench%2Ftau2&rev=36840f3#36840f3d1e76e81e9902cb41817f7f2366ef95fa" }
 dependencies = [
     { name = "addict" },
     { name = "deepdiff" },
@@ -3817,7 +3817,7 @@ dependencies = [
 [[package]]
 name = "tau2-bench"
 version = "0.2.2"
-source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Ftau2_bench&rev=259d360#259d3606e8dbd7eed16ba4a6e23a6180dc95c92b" }
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Ftau2_bench&rev=36840f3#36840f3d1e76e81e9902cb41817f7f2366ef95fa" }
 dependencies = [
     { name = "tau2" },
     { name = "verifiers" },
