@@ -14,7 +14,7 @@ from prime_rl.trainer.config import (
     TokenizerConfig,
 )
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
-from prime_rl.utils.config import HeartbeatConfig, LogConfig, MetricsServerConfig, WandbConfig
+from prime_rl.utils.config import HeartbeatConfig, LogConfig, MetricsServerConfig, MLflowConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -173,6 +173,9 @@ class RLTrainerConfig(BaseSettings):
 
     # The wandb configuration
     wandb: WandbConfig | None = None
+
+    # The MLflow configuration
+    mlflow: MLflowConfig | None = None
 
     output_dir: Annotated[
         Path,

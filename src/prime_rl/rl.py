@@ -26,7 +26,7 @@ from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
 from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
-from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
+from prime_rl.utils.config import MLflowConfig, MLflowWithExtrasConfig, WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import BaseSettings, parse_argv
 from prime_rl.utils.utils import (
@@ -39,6 +39,7 @@ from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
     validate_shared_max_async_level,
     validate_shared_max_steps,
+    validate_shared_mlflow_config,
     validate_shared_model_name,
     validate_shared_output_dir,
     validate_shared_wandb_config,
@@ -67,6 +68,16 @@ class SharedWandbConfig(BaseSettings):
     name: Annotated[str | None, Field(description="The W&B run name to use.")] = None
 
     offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
+
+
+class SharedMLflowConfig(BaseSettings):
+    """Configures shared MLflow configs."""
+
+    tracking_uri: Annotated[str | None, Field(description="MLflow tracking URI.")] = "mlruns"
+
+    experiment_name: Annotated[str | None, Field(description="The MLflow experiment name.")] = "prime-rl"
+
+    run_name: Annotated[str | None, Field(description="The MLflow run name.")] = None
 
 
 class SharedCheckpointConfig(BaseSettings):
@@ -176,6 +187,13 @@ class RLConfig(BaseSettings):
         SharedWandbConfig | None,
         Field(
             description="Shared W&B configs. If None, will fallback to the W&B configs specified on submodule configs."
+        ),
+    ] = None
+
+    mlflow: Annotated[
+        SharedMLflowConfig | None,
+        Field(
+            description="Shared MLflow configs. If None, will fallback to the MLflow configs specified on submodule configs."
         ),
     ] = None
 
@@ -324,6 +342,30 @@ class RLConfig(BaseSettings):
                 self.orchestrator.wandb.offline = self.wandb.offline
 
         validate_shared_wandb_config(self.trainer, self.orchestrator)
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_mlflow(self):
+        if self.mlflow is not None:
+            if not self.trainer.mlflow:
+                self.trainer.mlflow = MLflowConfig()
+            if not self.orchestrator.mlflow:
+                self.orchestrator.mlflow = MLflowWithExtrasConfig()
+
+            if self.mlflow.tracking_uri:
+                self.trainer.mlflow.tracking_uri = self.mlflow.tracking_uri
+                self.orchestrator.mlflow.tracking_uri = self.mlflow.tracking_uri
+
+            if self.mlflow.experiment_name:
+                self.trainer.mlflow.experiment_name = self.mlflow.experiment_name
+                self.orchestrator.mlflow.experiment_name = self.mlflow.experiment_name
+
+            if self.mlflow.run_name:
+                self.trainer.mlflow.run_name = f"{self.mlflow.run_name}-trainer"
+                self.orchestrator.mlflow.run_name = f"{self.mlflow.run_name}-orchestrator"
+
+        validate_shared_mlflow_config(self.trainer, self.orchestrator)
 
         return self
 

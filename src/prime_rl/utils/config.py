@@ -210,6 +210,52 @@ class WandbWithExtrasConfig(WandbConfig):
     ] = LogExtrasConfig()
 
 
+class MLflowConfig(BaseConfig):
+    """Configures logging to MLflow."""
+
+    tracking_uri: Annotated[
+        str,
+        Field(description="MLflow tracking URI. Can be a local path or a remote server URL."),
+    ] = "mlruns"
+
+    experiment_name: Annotated[
+        str,
+        Field(description="The MLflow experiment name to log to."),
+    ] = "prime-rl"
+
+    run_name: Annotated[
+        str | None,
+        Field(description="The MLflow run name. If None, MLflow will auto-generate one."),
+    ] = None
+
+    artifact_location: Annotated[
+        str | None,
+        Field(
+            description="Artifact location for the experiment. Use 'mlflow-artifacts:/' to proxy "
+            "artifact uploads through the tracking server (no S3 credentials needed on the client).",
+        ),
+    ] = None
+
+    log_artifacts: Annotated[
+        bool,
+        Field(
+            description="Whether to upload artifacts (samples, summaries) to MLflow. "
+            "Set to false for metrics-only logging when no artifact storage is configured.",
+        ),
+    ] = True
+
+
+class MLflowWithExtrasConfig(MLflowConfig):
+    """Configures logging to MLflow with extras."""
+
+    log_extras: Annotated[
+        LogExtrasConfig | None,
+        Field(
+            description="Configuration for logging extras. If None, no extras are logged.",
+        ),
+    ] = LogExtrasConfig()
+
+
 class PrimeMonitorConfig(BaseConfig):
     """Configures logging to Prime Intellect API."""
 

@@ -134,10 +134,13 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
     # Setup monitor
-    logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
+    logger.info(
+        f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor}, mlflow={config.mlflow})"
+    )
     monitor = setup_monitor(
         wandb_config=config.wandb,
         prime_config=config.prime_monitor,
+        mlflow_config=config.mlflow,
         output_dir=config.output_dir,
         tokenizer=tokenizer,
         run_config=config,

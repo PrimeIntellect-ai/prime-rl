@@ -13,7 +13,7 @@ from prime_rl.trainer.config import (
     SchedulerConfigType,
     TokenizerConfig,
 )
-from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
+from prime_rl.utils.config import HeartbeatConfig, LogConfig, MLflowConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -130,6 +130,9 @@ class SFTTrainerConfig(BaseSettings):
 
     # The wandb configuration
     wandb: WandbConfig | None = None
+
+    # The MLflow configuration
+    mlflow: MLflowConfig | None = None
 
     output_dir: Annotated[
         Path,
