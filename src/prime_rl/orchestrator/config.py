@@ -575,7 +575,7 @@ class GibberishFilterConfig(BaseConfig):
     ] = 2.0
     vocab_size: Annotated[
         int | None,
-        Field(description="Vocabulary size for computing logprob threshold. If None, uses tokenizer.vocab_size."),
+        Field(ge=1, description="Vocabulary size for computing logprob threshold. If None, uses tokenizer.vocab_size."),
     ] = None
 
 
@@ -590,7 +590,9 @@ class RepetitionFilterConfig(BaseConfig):
     prob_threshold: Annotated[
         float,
         Field(
-            description="Token probability threshold. Steps where sampled prob exceeds this count toward the window."
+            gt=0,
+            le=1,
+            description="Token probability threshold. Steps where sampled prob exceeds this count toward the window.",
         ),
     ] = 0.99
 
