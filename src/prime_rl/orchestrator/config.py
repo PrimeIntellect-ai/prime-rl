@@ -585,7 +585,7 @@ class RepetitionFilterConfig(BaseConfig):
     type: Literal["repetition"] = "repetition"
     window: Annotated[
         int,
-        Field(description="Number of consecutive high-probability steps before flagging."),
+        Field(ge=1, description="Number of consecutive high-probability steps before flagging."),
     ] = 3_000
     prob_threshold: Annotated[
         float,
