@@ -137,7 +137,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
 
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    loss = -pg_loss + loss_config.kl_tau * kl_loss
+    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
 
     metrics = {
         "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),  # all trainable tokens
