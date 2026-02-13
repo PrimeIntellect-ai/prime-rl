@@ -48,18 +48,25 @@ def _make_rollout(completion_ids, completion_logprobs, reward=1.0, multi_step=Fa
     }
 
 
+def _make_gibberish_filter(vocab_size=128_000, token_id_threshold=100_000, logprob_offset=2.0):
+    logprob_threshold = -math.log(vocab_size) - logprob_offset
+    return GibberishFilter(name="gibberish", token_id_threshold=token_id_threshold, logprob_threshold=logprob_threshold)
+
+
+def _make_repetition_filter(window=5, prob_threshold=0.99):
+    return RepetitionFilter(name="repetition", window=window, logprob_threshold=math.log(prob_threshold))
+
+
 # --- GibberishFilter tests ---
 
 
 def test_gibberish_detects_rare_low_prob_token():
-    vocab_size = 128_000
-    logprob_threshold = -math.log(vocab_size) - 2.0
-    f = GibberishFilter(name="gibberish", token_id_threshold=100_000, logprob_threshold=logprob_threshold)
+    gibberish_filter = _make_gibberish_filter()
 
-    result = f.check(
+    result = gibberish_filter.check(
         _make_rollout(
             completion_ids=[50, 120_000, 80],
-            completion_logprobs=[-1.0, logprob_threshold - 1.0, -0.5],
+            completion_logprobs=[-1.0, gibberish_filter.logprob_threshold - 1.0, -0.5],
         )
     )
     assert result.detected is True
@@ -67,11 +74,9 @@ def test_gibberish_detects_rare_low_prob_token():
 
 
 def test_gibberish_ignores_normal_tokens():
-    vocab_size = 128_000
-    logprob_threshold = -math.log(vocab_size) - 2.0
-    f = GibberishFilter(name="gibberish", token_id_threshold=100_000, logprob_threshold=logprob_threshold)
+    gibberish_filter = _make_gibberish_filter()
 
-    result = f.check(
+    result = gibberish_filter.check(
         _make_rollout(
             completion_ids=[10, 200, 5000],
             completion_logprobs=[-1.0, -2.0, -3.0],
@@ -82,11 +87,9 @@ def test_gibberish_ignores_normal_tokens():
 
 
 def test_gibberish_ignores_high_prob_rare_token():
-    vocab_size = 128_000
-    logprob_threshold = -math.log(vocab_size) - 2.0
-    f = GibberishFilter(name="gibberish", token_id_threshold=100_000, logprob_threshold=logprob_threshold)
+    gibberish_filter = _make_gibberish_filter()
 
-    result = f.check(
+    result = gibberish_filter.check(
         _make_rollout(
             completion_ids=[120_000],
             completion_logprobs=[-0.5],
@@ -96,14 +99,12 @@ def test_gibberish_ignores_high_prob_rare_token():
 
 
 def test_gibberish_works_across_trajectory_steps():
-    vocab_size = 128_000
-    logprob_threshold = -math.log(vocab_size) - 2.0
-    f = GibberishFilter(name="gibberish", token_id_threshold=100_000, logprob_threshold=logprob_threshold)
+    gibberish_filter = _make_gibberish_filter()
 
-    result = f.check(
+    result = gibberish_filter.check(
         _make_rollout(
             completion_ids=[50, 60, 120_000, 80],
-            completion_logprobs=[-1.0, -0.5, logprob_threshold - 1.0, -0.5],
+            completion_logprobs=[-1.0, -0.5, gibberish_filter.logprob_threshold - 1.0, -0.5],
             multi_step=True,
         )
     )
@@ -115,9 +116,9 @@ def test_gibberish_works_across_trajectory_steps():
 
 
 def test_repetition_triggers_after_window():
-    f = RepetitionFilter(name="repetition", window=5, logprob_threshold=math.log(0.99))
+    repetition_filter = _make_repetition_filter(window=5)
 
-    result = f.check(
+    result = repetition_filter.check(
         _make_rollout(
             completion_ids=list(range(5)),
             completion_logprobs=[-0.001] * 5,
@@ -128,9 +129,9 @@ def test_repetition_triggers_after_window():
 
 
 def test_repetition_no_trigger_below_window():
-    f = RepetitionFilter(name="repetition", window=5, logprob_threshold=math.log(0.99))
+    repetition_filter = _make_repetition_filter(window=5)
 
-    result = f.check(
+    result = repetition_filter.check(
         _make_rollout(
             completion_ids=list(range(4)),
             completion_logprobs=[-0.001] * 4,
@@ -140,10 +141,10 @@ def test_repetition_no_trigger_below_window():
 
 
 def test_repetition_resets_on_low_prob():
-    f = RepetitionFilter(name="repetition", window=5, logprob_threshold=math.log(0.99))
+    repetition_filter = _make_repetition_filter(window=5)
 
     logprobs = [-0.001] * 3 + [-2.0] + [-0.001] * 3
-    result = f.check(
+    result = repetition_filter.check(
         _make_rollout(
             completion_ids=list(range(7)),
             completion_logprobs=logprobs,
@@ -153,9 +154,9 @@ def test_repetition_resets_on_low_prob():
 
 
 def test_repetition_varied_probs_no_trigger():
-    f = RepetitionFilter(name="repetition", window=3, logprob_threshold=math.log(0.99))
+    repetition_filter = _make_repetition_filter(window=3)
 
-    result = f.check(
+    result = repetition_filter.check(
         _make_rollout(
             completion_ids=list(range(6)),
             completion_logprobs=[-0.001, -3.0, -0.001, -3.0, -0.001, -3.0],
@@ -169,26 +170,26 @@ def test_repetition_varied_probs_no_trigger():
 
 def test_setup_filter_gibberish():
     config = GibberishFilterConfig(token_id_threshold=100_000, logprob_offset=2.0)
-    f = setup_filter(config, vocab_size=128_000)
-    assert isinstance(f, GibberishFilter)
-    assert f.name == "gibberish"
-    assert f.token_id_threshold == 100_000
-    assert abs(f.logprob_threshold - (-math.log(128_000) - 2.0)) < 1e-10
+    gibberish_filter = setup_filter(config, vocab_size=128_000)
+    assert isinstance(gibberish_filter, GibberishFilter)
+    assert gibberish_filter.name == "gibberish"
+    assert gibberish_filter.token_id_threshold == 100_000
+    assert abs(gibberish_filter.logprob_threshold - (-math.log(128_000) - 2.0)) < 1e-10
 
 
 def test_setup_filter_gibberish_uses_config_vocab_size():
     config = GibberishFilterConfig(vocab_size=64_000)
-    f = setup_filter(config, vocab_size=128_000)
-    assert abs(f.logprob_threshold - (-math.log(64_000) - 2.0)) < 1e-10
+    gibberish_filter = setup_filter(config, vocab_size=128_000)
+    assert abs(gibberish_filter.logprob_threshold - (-math.log(64_000) - 2.0)) < 1e-10
 
 
 def test_setup_filter_repetition():
     config = RepetitionFilterConfig(window=3_000, prob_threshold=0.99)
-    f = setup_filter(config, vocab_size=128_000)
-    assert isinstance(f, RepetitionFilter)
-    assert f.name == "repetition"
-    assert f.window == 3_000
-    assert abs(f.logprob_threshold - math.log(0.99)) < 1e-10
+    repetition_filter = setup_filter(config, vocab_size=128_000)
+    assert isinstance(repetition_filter, RepetitionFilter)
+    assert repetition_filter.name == "repetition"
+    assert repetition_filter.window == 3_000
+    assert abs(repetition_filter.logprob_threshold - math.log(0.99)) < 1e-10
 
 
 def test_setup_filters_multiple():
@@ -206,17 +207,15 @@ def test_setup_filters_multiple():
 
 
 def test_apply_filters_zeros_reward_and_mask():
-    vocab_size = 128_000
-    logprob_threshold = -math.log(vocab_size) - 2.0
-    gf = GibberishFilter(name="gibberish", token_id_threshold=100_000, logprob_threshold=logprob_threshold)
+    gibberish_filter = _make_gibberish_filter()
 
     rollout = _make_rollout(
         completion_ids=[120_000],
-        completion_logprobs=[logprob_threshold - 1.0],
+        completion_logprobs=[gibberish_filter.logprob_threshold - 1.0],
         reward=1.0,
     )
 
-    metrics = apply_filters([gf], [rollout])
+    metrics = apply_filters([gibberish_filter], [rollout])
 
     assert rollout["reward"] == 0.0
     assert all(m == 0 for m in rollout["trajectory"][0]["tokens"]["completion_mask"])
@@ -228,9 +227,7 @@ def test_apply_filters_zeros_reward_and_mask():
 
 
 def test_apply_filters_preserves_clean_rollouts():
-    vocab_size = 128_000
-    logprob_threshold = -math.log(vocab_size) - 2.0
-    gf = GibberishFilter(name="gibberish", token_id_threshold=100_000, logprob_threshold=logprob_threshold)
+    gibberish_filter = _make_gibberish_filter()
 
     rollout = _make_rollout(
         completion_ids=[50, 60, 70],
@@ -238,7 +235,7 @@ def test_apply_filters_preserves_clean_rollouts():
         reward=1.0,
     )
 
-    metrics = apply_filters([gf], [rollout])
+    metrics = apply_filters([gibberish_filter], [rollout])
 
     assert rollout["reward"] == 1.0
     assert all(m == 1 for m in rollout["trajectory"][0]["tokens"]["completion_mask"])
@@ -248,18 +245,16 @@ def test_apply_filters_preserves_clean_rollouts():
 
 
 def test_apply_filters_first_filter_wins():
-    vocab_size = 128_000
-    logprob_threshold = -math.log(vocab_size) - 2.0
-    gf = GibberishFilter(name="gibberish", token_id_threshold=100_000, logprob_threshold=logprob_threshold)
-    rf = RepetitionFilter(name="repetition", window=2, logprob_threshold=math.log(0.99))
+    gibberish_filter = _make_gibberish_filter()
+    repetition_filter = _make_repetition_filter(window=2)
 
     rollout = _make_rollout(
         completion_ids=[120_000, 1, 2],
-        completion_logprobs=[logprob_threshold - 1.0, -0.001, -0.001],
+        completion_logprobs=[gibberish_filter.logprob_threshold - 1.0, -0.001, -0.001],
         reward=1.0,
     )
 
-    metrics = apply_filters([gf, rf], [rollout])
+    metrics = apply_filters([gibberish_filter, repetition_filter], [rollout])
 
     assert rollout["stop_condition"] == "gibberish"
     assert metrics["filter/gibberish_count"] == 1.0
@@ -278,14 +273,14 @@ def test_apply_filters_empty_list():
 
 
 def test_apply_filters_mixed_batch():
-    vocab_size = 128_000
-    logprob_threshold = -math.log(vocab_size) - 2.0
-    gf = GibberishFilter(name="gibberish", token_id_threshold=100_000, logprob_threshold=logprob_threshold)
+    gibberish_filter = _make_gibberish_filter()
 
     clean = _make_rollout(completion_ids=[50], completion_logprobs=[-1.0], reward=1.0)
-    dirty = _make_rollout(completion_ids=[120_000], completion_logprobs=[logprob_threshold - 1.0], reward=1.0)
+    dirty = _make_rollout(
+        completion_ids=[120_000], completion_logprobs=[gibberish_filter.logprob_threshold - 1.0], reward=1.0
+    )
 
-    metrics = apply_filters([gf], [clean, dirty])
+    metrics = apply_filters([gibberish_filter], [clean, dirty])
 
     assert clean["reward"] == 1.0
     assert dirty["reward"] == 0.0

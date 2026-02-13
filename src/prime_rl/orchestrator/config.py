@@ -561,7 +561,7 @@ AdvantageConfigType: TypeAlias = Annotated[
 ]
 
 
-class GibberishFilterConfig(BaseConfig):
+class GibberishFilterConfig(BaseModel):
     """Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387)."""
 
     type: Literal["gibberish"] = "gibberish"
@@ -579,7 +579,7 @@ class GibberishFilterConfig(BaseConfig):
     ] = None
 
 
-class RepetitionFilterConfig(BaseConfig):
+class RepetitionFilterConfig(BaseModel):
     """Flags pathological repetition loops (Section 3.2, https://arxiv.org/abs/2506.13585)."""
 
     type: Literal["repetition"] = "repetition"
@@ -597,15 +597,9 @@ class RepetitionFilterConfig(BaseConfig):
     ] = 0.99
 
 
-def _filter_config_discriminator(v: Any) -> str:
-    if isinstance(v, dict):
-        return v.get("type", "gibberish")
-    return getattr(v, "type", "gibberish")
-
-
 FilterConfigType: TypeAlias = Annotated[
-    Annotated[GibberishFilterConfig, Tag("gibberish")] | Annotated[RepetitionFilterConfig, Tag("repetition")],
-    Discriminator(_filter_config_discriminator),
+    GibberishFilterConfig | RepetitionFilterConfig,
+    Field(discriminator="type"),
 ]
 
 
