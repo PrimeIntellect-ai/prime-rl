@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
 
 from prime_rl.trainer.config import (
     AdamWConfig,
@@ -81,6 +81,39 @@ class CustomLossConfig(BaseModel):
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
 
+class TrplLossConfig(BaseConfig):
+    """Config for the TRPL (Trust Region Policy Layer) loss.
+
+    Uses discrete_trpl.SdtrplLayer to project the current policy onto a KL trust
+    region around the old/inference policy, then computes a policy gradient loss
+    using importance ratios from the projected distribution plus a projection loss
+    that pulls the current policy toward the projected distribution.
+    """
+
+    # Allow extra fields so that pydantic-settings' nested_model_default_partial_update
+    # can deep-merge the default LossConfig fields without validation errors.
+    model_config = ConfigDict(extra="ignore")
+
+    type: Literal["trpl"] = "trpl"
+    alpha: Annotated[float, Field(ge=0, description="Weight of the projection loss (KL(policy || projected)).")] = 1.0
+    kl_bound: Annotated[float, Field(gt=0, description="Trust region KL bound for the projection.")] = 0.05
+    top_k: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Sparsity level for logit distributions. Must match sampling.top_logprobs on the orchestrator.",
+        ),
+    ] = 256
+    default_log_prob: Annotated[
+        float,
+        Field(description="Default log-probability for tokens outside the top-k support."),
+    ] = -27.6  # log(1e-12)
+    opt_config: Annotated[
+        dict[str, Any],
+        Field(description="Kwargs for discrete_trpl.DtrplOptConfig (num_points, max_steps, etc.)."),
+    ] = {}
+
+
 def _loss_config_discriminator(v: Any) -> str:
     if isinstance(v, dict):
         return v.get("type", "default")
@@ -88,7 +121,9 @@ def _loss_config_discriminator(v: Any) -> str:
 
 
 LossConfigType: TypeAlias = Annotated[
-    Annotated[LossConfig, Tag("default")] | Annotated[CustomLossConfig, Tag("custom")],
+    Annotated[LossConfig, Tag("default")]
+    | Annotated[CustomLossConfig, Tag("custom")]
+    | Annotated[TrplLossConfig, Tag("trpl")],
     Discriminator(_loss_config_discriminator),
 ]
 
@@ -301,6 +336,15 @@ class RLTrainerConfig(BaseSettings):
         if self.model.fused_lm_head_chunk_size == "auto":
             self.model.fused_lm_head_chunk_size = 2048
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_trpl_no_cp(self):
+        if isinstance(self.loss, TrplLossConfig) and self.model.cp > 1:
+            raise ValueError(
+                "TRPL loss does not support context parallelism (CP > 1). "
+                "All-gathering full logits across CP ranks is prohibitively expensive."
+            )
         return self
 
     @model_validator(mode="after")

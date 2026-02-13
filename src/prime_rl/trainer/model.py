@@ -667,6 +667,9 @@ def forward(
     # Multimodal fields (Qwen3-VL)
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
     image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
+    # TRPL fields (optional)
+    trpl_top_k: int | None = None,
+    old_top_indices: Int[Tensor, "batch seq k"] | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
@@ -674,6 +677,10 @@ def forward(
         "labels": labels,
         "temperature": temperature,
     }
+    if trpl_top_k is not None:
+        kwargs["trpl_top_k"] = trpl_top_k
+    if old_top_indices is not None:
+        kwargs["old_top_indices"] = old_top_indices
 
     # For multimodal (VLM), don't pass position_ids - let the model compute MRoPE internally
     # using image_grid_thw. Qwen3-VL only computes proper MRoPE when position_ids is None.

@@ -62,6 +62,9 @@ flash-attn-3 = [
 flash-attn-cute = [
     "flash-attn-cute",
 ]
+trpl = [
+    "discrete_trpl @ git+https://github.com/pbecker93/discrete_trpl.git",
+]
 
 [dependency-groups]
 dev = [

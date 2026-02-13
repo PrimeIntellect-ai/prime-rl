@@ -217,6 +217,10 @@ class Scheduler:
         )
 
         while len(batch_rollouts) < self.config.batch_size:
+            # Refill if cancellations left us with fewer in-flight tasks than needed
+            while len(self.inflight_group_rollouts) < self.problems_per_batch:
+                await self.schedule_group_rollout()
+
             # Wait for at least one future to complete
             finished_tasks, _ = await asyncio.wait(
                 self.inflight_group_rollouts.keys(),

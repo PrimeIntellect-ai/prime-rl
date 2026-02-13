@@ -161,6 +161,13 @@ class InferenceConfig(BaseSettings):
         ),
     ] = None
 
+    max_logprobs: Annotated[
+        int,
+        Field(
+            description="Maximum number of log probabilities to return per output token. Passed to vLLM as `--max-logprobs`",
+        ),
+    ] = 20
+
     enable_prefix_caching: Annotated[
         bool | None,
         Field(
@@ -244,6 +251,7 @@ class InferenceConfig(BaseSettings):
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "enable_lora": "enable_lora",
+            "max_logprobs": "max_logprobs",
             "enable_prefix_caching": "enable_prefix_caching",
             "max_loras": "max_loras",
             "max_cpu_loras": "max_cpu_loras",
