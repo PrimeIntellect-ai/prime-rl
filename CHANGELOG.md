@@ -57,4 +57,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`TemperatureScheduleConfig`**: Renamed to `TemperatureSchedulerConfig` (2026-02-06)
 - **`optim.mu`**: Added Muon momentum (`mu`) config field (default: 0.95). Previously hardcoded to Muon class default. Also fixed `optim.betas1`/`optim.betas2` not being passed through to the Muon optimizer (2026-02-09)
 - **`client.api_key_var`**: Changed default from "OPENAI_API_KEY" to "VLLM_API_KEY" (2026-02-12)
-- **`inference.logits_processors`**: Added logits processors configuration with `gibberish_detection` (token_id_threshold, logprob_offset) and `repetition_detection` (window, prob_threshold) sub-configs. When set, enables vLLM logits processors that detect and abort degenerate generations (2026-02-12)
+- **`inference.logits_processors`**: Removed. Gibberish and repetition detection moved from vLLM logits processors to orchestrator-side rollout filters. Use `orchestrator.filters` with `[[filters]] type = "gibberish"` and `[[filters]] type = "repetition"` instead. Filters run post-generation, zeroing reward and completion mask for detected rollouts (2026-02-13)

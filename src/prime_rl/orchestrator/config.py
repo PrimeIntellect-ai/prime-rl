@@ -561,6 +561,52 @@ AdvantageConfigType: TypeAlias = Annotated[
 ]
 
 
+class GibberishFilterConfig(BaseConfig):
+    """Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387)."""
+
+    type: Literal["gibberish"] = "gibberish"
+    token_id_threshold: Annotated[
+        int,
+        Field(description="Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."),
+    ] = 100_000
+    logprob_offset: Annotated[
+        float,
+        Field(description="Offset from uniform distribution logprob. Threshold = -log(vocab_size) - logprob_offset."),
+    ] = 2.0
+    vocab_size: Annotated[
+        int | None,
+        Field(description="Vocabulary size for computing logprob threshold. If None, uses tokenizer.vocab_size."),
+    ] = None
+
+
+class RepetitionFilterConfig(BaseConfig):
+    """Flags pathological repetition loops (Section 3.2, https://arxiv.org/abs/2506.13585)."""
+
+    type: Literal["repetition"] = "repetition"
+    window: Annotated[
+        int,
+        Field(description="Number of consecutive high-probability steps before flagging."),
+    ] = 3_000
+    prob_threshold: Annotated[
+        float,
+        Field(
+            description="Token probability threshold. Steps where sampled prob exceeds this count toward the window."
+        ),
+    ] = 0.99
+
+
+def _filter_config_discriminator(v: Any) -> str:
+    if isinstance(v, dict):
+        return v.get("type", "gibberish")
+    return getattr(v, "type", "gibberish")
+
+
+FilterConfigType: TypeAlias = Annotated[
+    Annotated[GibberishFilterConfig, Tag("gibberish")] | Annotated[RepetitionFilterConfig, Tag("repetition")],
+    Discriminator(_filter_config_discriminator),
+]
+
+
 class FileSystemWeightBroadcastConfig(BaseModel):
     """Configures the filesystem weight broadcast."""
 
@@ -630,6 +676,9 @@ class OrchestratorConfig(BaseSettings):
 
     # The advantage configuration
     advantage: AdvantageConfigType | None = AdvantageConfig()
+
+    # Rollout filters (detect and zero out degenerate generations)
+    filters: list[FilterConfigType] = []
 
     # The logging configuration
     log: LogConfig = LogConfig()
