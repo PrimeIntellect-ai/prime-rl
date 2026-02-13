@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import cast
 
 import torch
+import torch._dynamo
 import torch.nn as nn
 from beartype import beartype as typechecker
 from huggingface_hub import snapshot_download
@@ -52,6 +53,11 @@ DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
     "float32": torch.float32,
 }
+
+# We increase the torch.compile recompile limit and cache size as we found this
+# necessary for training INTELLECT-3 with Muon.
+torch._dynamo.config.recompile_limit = 16  # default: 8
+torch._dynamo.config.cache_size_limit = 64  # default: 8
 
 
 def freeze_vision_encoder(model: nn.Module) -> None:
