@@ -22,55 +22,12 @@ class LossConfig(BaseConfig):
     """Config for the default loss."""
 
     type: Literal["default"] = "default"
-    ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
 
-    token_mask_high: Annotated[
-        float, Field(ge=0, description="The high threshold for token importance ratio to mask.")
-    ] = 8.0
-    token_mask_low: Annotated[
-        float, Field(ge=0, description="The low threshold for token importance ratio to mask.")
-    ] = 0.125
-    sequence_clip_high: Annotated[
-        float, Field(ge=0, description="The high threshold for sequence importance ratio to clip.")
-    ] = 10.0
-    geo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for geo importance ratio to mask.")] = (
-        10.0
-    )
-    geo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for geo importance ratio to mask.")] = 0.1
-    sequence_mask_low: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="If set, masks entire sequences when any generated token has an importance ratio below this value.",
-        ),
-    ] = 0.0
-    sequence_mask_high: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="If set, masks entire sequences when any generated token has an importance ratio above this value.",
-        ),
-    ] = 100.0
-
+    dppo_tv_clip_low: Annotated[float, Field(ge=0, description="The low threshold for masking tokens.")] = 0.2
+    dppo_tv_clip_high: Annotated[float, Field(ge=0, description="The high threshold for masking tokens.")] = 0.2
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
-
-    @model_validator(mode="after")
-    def validate_mask_bounds(self):
-        if self.token_mask_low >= self.token_mask_high:
-            raise ValueError(
-                f"token_mask_low ({self.token_mask_low}) must be less than token_mask_high ({self.token_mask_high})"
-            )
-        if self.geo_mask_low >= self.geo_mask_high:
-            raise ValueError(
-                f"geo_mask_low ({self.geo_mask_low}) must be less than geo_mask_high ({self.geo_mask_high})"
-            )
-        if self.sequence_mask_low >= self.sequence_mask_high:
-            raise ValueError(
-                f"sequence_mask_low ({self.sequence_mask_low}) must be less than sequence_mask_high ({self.sequence_mask_high})"
-            )
-        return self
 
 
 class CustomLossConfig(BaseModel):
