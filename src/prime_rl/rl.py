@@ -11,6 +11,7 @@ from subprocess import Popen
 from threading import Event, Thread
 from typing import Annotated, Literal
 
+from prime_rl.utils.validation import validate_shared_output_dir
 import pynvml
 import tomli_w
 from pydantic import Field, model_validator
@@ -247,6 +248,17 @@ class RLConfig(BaseRLConfig):
                 warnings.warn(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora` and `--max-lora-rank`."
                 )
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_output_dir(self):
+        # If specified, use the same outputs directory for trainer and orchestrator
+        if self.output_dir is not None:
+            self.trainer.output_dir = self.output_dir
+            self.orchestrator.output_dir = self.output_dir / "run_default"
+
+        validate_shared_output_dir(self.trainer, self.orchestrator)
 
         return self
 

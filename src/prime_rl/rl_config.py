@@ -20,7 +20,6 @@ from prime_rl.utils.validation import (
     validate_shared_max_async_level,
     validate_shared_max_steps,
     validate_shared_model_name,
-    validate_shared_output_dir,
     validate_shared_wandb_config,
     validate_shared_weight_broadcast,
 )
@@ -262,17 +261,6 @@ class BaseRLConfig(BaseSettings):
             self.orchestrator.max_async_level = self.max_async_level
 
         validate_shared_max_async_level(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_output_dir(self):
-        # If specified, use the same outputs directory for trainer and orchestrator
-        if self.output_dir is not None:
-            self.trainer.output_dir = self.output_dir
-            self.orchestrator.output_dir = self.output_dir / "run_default"
-
-        validate_shared_output_dir(self.trainer, self.orchestrator)
 
         return self
 
