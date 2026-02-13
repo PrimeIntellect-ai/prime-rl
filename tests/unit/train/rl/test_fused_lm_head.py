@@ -423,3 +423,146 @@ def test_hf_model_fused_vs_vanilla_matches():
     # Compare results
     torch.testing.assert_close(fused_logprobs, vanilla_logprobs, rtol=1e-3, atol=1e-4)
     torch.testing.assert_close(fused_entropy, vanilla_entropy, rtol=1e-3, atol=1e-4)
+
+
+def test_fused_lm_head_trpl_forward_matches_dense():
+    """Test that FusedOutputLinear TRPL outputs match dense computation.
+
+    Verifies:
+    - Top-K indices/values from fused match actual top-K from full logits
+    - Log-probs at old_top_indices match gathering from full log-softmax
+    - All outputs have correct shapes
+    """
+    torch.manual_seed(42)
+    b, s, h, v = 1, 8, 16, 50
+    k = 5
+    k_old = 4
+    chunk_size = 13  # Non-divisor of v to test edge cases
+
+    hidden = torch.randn(b, s, h, dtype=torch.float32)
+    labels = torch.randint(0, v, (b, s), dtype=torch.long)
+    weight = torch.randn(v, h, dtype=torch.float32)
+    temperature = torch.full((b, s), 1.5, dtype=torch.float32)
+    old_top_indices = torch.randint(0, v, (b, s, k_old), dtype=torch.long)
+
+    # Fused path
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
+    lm.weight = torch.nn.Parameter(weight.clone())
+    out = lm(hidden, labels, temperature=temperature, trpl_top_k=k, old_top_indices=old_top_indices)
+
+    assert out.get("logprobs") is not None
+    assert out.get("entropy") is not None
+    assert out.get("current_top_k_indices") is not None
+    assert out.get("current_top_k_values") is not None
+    assert out.get("old_indices_current_lp") is not None
+
+    # Check shapes
+    assert out["current_top_k_indices"].shape == (b, s, k)
+    assert out["current_top_k_values"].shape == (b, s, k)
+    assert out["old_indices_current_lp"].shape == (b, s, k_old)
+
+    # Dense reference: full logits → log_softmax → gather
+    full_logits = hidden @ weight.t()  # [b, s, v]
+    inv_t = 1.0 / temperature.unsqueeze(-1)
+    full_logits_scaled = full_logits * inv_t  # [b, s, v]
+    full_lp = full_logits_scaled.log_softmax(dim=-1)  # [b, s, v]
+
+    # Check top-K: the fused top-K values should match gathering from full log_softmax
+    fused_topk_idx = out["current_top_k_indices"]  # [b, s, k]
+    fused_topk_lp = out["current_top_k_values"]  # [b, s, k]
+
+    # Gather reference values at the fused top-K indices
+    ref_topk_lp = full_lp.gather(2, fused_topk_idx)
+    torch.testing.assert_close(fused_topk_lp, ref_topk_lp, rtol=0, atol=1e-4)
+
+    # Verify these are actually the top-K (sorted by value)
+    ref_topk_vals, ref_topk_idx = full_lp.topk(k, dim=-1, sorted=True)
+    # The fused version may not be sorted, so compare sets of values
+    fused_sorted, _ = fused_topk_lp.sort(dim=-1, descending=True)
+    torch.testing.assert_close(fused_sorted, ref_topk_vals, rtol=0, atol=1e-4)
+
+    # Check old_indices_current_lp
+    fused_old_lp = out["old_indices_current_lp"]  # [b, s, k_old]
+    ref_old_lp = full_lp.gather(2, old_top_indices)
+    torch.testing.assert_close(fused_old_lp, ref_old_lp, rtol=0, atol=1e-4)
+
+
+def test_fused_lm_head_trpl_backward():
+    """Test that gradients flow correctly through TRPL outputs."""
+    torch.manual_seed(123)
+    b, s, h, v = 1, 6, 8, 30
+    k = 4
+    k_old = 3
+    chunk_size = 7
+
+    hidden = torch.randn(b, s, h, dtype=torch.float32, requires_grad=True)
+    labels = torch.randint(0, v, (b, s), dtype=torch.long)
+    weight = torch.randn(v, h, dtype=torch.float32, requires_grad=True)
+    temperature = torch.full((b, s), 1.0, dtype=torch.float32)
+    old_top_indices = torch.randint(0, v, (b, s, k_old), dtype=torch.long)
+
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
+    lm.weight = torch.nn.Parameter(weight)
+
+    out = lm(hidden, labels, temperature=temperature, trpl_top_k=k, old_top_indices=old_top_indices)
+
+    # Loss that uses all TRPL outputs
+    loss = out["logprobs"].sum() + out["current_top_k_values"].sum() + out["old_indices_current_lp"].sum()
+    loss.backward()
+
+    assert hidden.grad is not None, "hidden should have gradients"
+    assert hidden.grad.isfinite().all(), "hidden gradients should be finite"
+    assert hidden.grad.abs().sum() > 0, "hidden gradients should be non-zero"
+
+    assert lm.weight.grad is not None, "weight should have gradients"
+    assert lm.weight.grad.isfinite().all(), "weight gradients should be finite"
+
+    # Compare with dense reference gradient
+    hidden_ref = hidden.detach().clone().requires_grad_(True)
+    weight_ref = lm.weight.data.detach().clone().requires_grad_(True)
+
+    full_logits = hidden_ref @ weight_ref.t()
+    inv_t = 1.0 / temperature.unsqueeze(-1)
+    full_lp = (full_logits * inv_t).log_softmax(dim=-1)
+
+    # Same loss computation using dense
+    ref_logprobs = full_lp.gather(2, labels.unsqueeze(-1)).squeeze(-1)
+    with torch.no_grad():
+        fused_topk_idx = out["current_top_k_indices"]
+    ref_topk_lp = full_lp.gather(2, fused_topk_idx)
+    ref_old_lp = full_lp.gather(2, old_top_indices)
+
+    ref_loss = ref_logprobs.sum() + ref_topk_lp.sum() + ref_old_lp.sum()
+    ref_loss.backward()
+
+    torch.testing.assert_close(hidden.grad, hidden_ref.grad, rtol=1e-3, atol=1e-4)
+    torch.testing.assert_close(lm.weight.grad, weight_ref.grad, rtol=1e-3, atol=1e-4)
+
+
+def test_fused_lm_head_no_trpl_backward_compatible():
+    """FusedOutputLinear should still work normally without TRPL params."""
+    torch.manual_seed(0)
+    b, s, h, v = 2, 4, 8, 37
+    chunk_size = 11
+
+    hidden = torch.randn(b, s, h, dtype=torch.float32, requires_grad=True)
+    labels = torch.randint(0, v, (b, s), dtype=torch.long)
+    weight = torch.randn(v, h, dtype=torch.float32, requires_grad=True)
+    temperature = torch.full((b, s), 1.7, dtype=torch.float32)
+
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
+    lm.weight = torch.nn.Parameter(weight)
+
+    # Call without TRPL params
+    out = lm(hidden, labels, temperature=temperature)
+
+    assert out.get("current_top_k_indices") is None
+    assert out.get("current_top_k_values") is None
+    assert out.get("old_indices_current_lp") is None
+    assert out.get("logprobs") is not None
+    assert out.get("entropy") is not None
+
+    # Should still compute correct logprobs/entropy
+    loss = out["logprobs"].sum()
+    loss.backward()
+    assert hidden.grad is not None

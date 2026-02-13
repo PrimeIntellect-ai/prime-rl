@@ -17,7 +17,7 @@ from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
-from prime_rl.trainer.rl.config import LossConfig, RLTrainerConfig
+from prime_rl.trainer.rl.config import LossConfig, RLTrainerConfig, TrplLossConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     setup_cp_params,
@@ -295,8 +295,10 @@ def train(config: RLTrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
+        needs_trpl = isinstance(config.loss, TrplLossConfig)
+
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        if isinstance(config.loss, LossConfig) and config.loss.ratio_type == "token":
+        if (isinstance(config.loss, LossConfig) and config.loss.ratio_type == "token") or needs_trpl:
             loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
         else:
             loss_scale = batch_size
@@ -358,6 +360,34 @@ def train(config: RLTrainerConfig):
             if cp_enabled:
                 temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
 
+            # Timing for TRPL profiling
+            if needs_trpl and micro_step == 0:
+                torch.cuda.synchronize()
+                _t_trpl_prep_start = time.perf_counter()
+
+            # TRPL: prepare old sparse data for fused LM head
+            trpl_fwd_top_k = None
+            old_top_indices_shifted = None
+            if needs_trpl:
+                assert micro_batch["inference_top_logprob_indices"] is not None, (
+                    "TRPL loss requires inference_top_logprob_indices. Set sampling.top_logprobs on the orchestrator."
+                )
+                old_top_indices_raw = micro_batch["inference_top_logprob_indices"].to("cuda")  # [1, seq, k]
+                old_top_values_raw = micro_batch["inference_top_logprob_values"].to("cuda")  # [1, seq, k]
+                trpl_fwd_top_k = config.loss.top_k
+                # Shift old_top_indices to labels space (left shift: position i gets token i+1's old distribution)
+                old_top_indices_shifted = torch.cat(
+                    [
+                        old_top_indices_raw[:, 1:, :],
+                        torch.zeros(1, 1, old_top_indices_raw.shape[2], device="cuda", dtype=old_top_indices_raw.dtype),
+                    ],
+                    dim=1,
+                )
+
+            if needs_trpl and micro_step == 0:
+                torch.cuda.synchronize()
+                _t_trpl_prep_end = time.perf_counter()
+
             # Forward pass with per-token temperatures
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 out = forward(
@@ -368,7 +398,13 @@ def train(config: RLTrainerConfig):
                     temperature=temperatures,
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
+                    trpl_top_k=trpl_fwd_top_k,
+                    old_top_indices=old_top_indices_shifted,
                 )
+
+            if needs_trpl and micro_step == 0:
+                torch.cuda.synchronize()
+                _t_forward_end = time.perf_counter()
 
             if out.get("logprobs") is None:
                 # VanillaOutputLinear was used - need to compute logprobs externally with per-token temps
@@ -397,8 +433,50 @@ def train(config: RLTrainerConfig):
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
 
+            # TRPL: shift fused outputs from labels space to input_ids space
+            if needs_trpl:
+                k_cur = out["current_top_k_indices"].shape[2]
+                k_old = out["old_indices_current_lp"].shape[2]
+                trpl_current_top_k_indices = torch.cat(
+                    [
+                        torch.zeros(1, 1, k_cur, device="cuda", dtype=torch.long),
+                        out["current_top_k_indices"][:, :-1, :],
+                    ],
+                    dim=1,
+                )
+                trpl_current_top_k_values = torch.cat(
+                    [
+                        torch.zeros(1, 1, k_cur, device="cuda", dtype=out["current_top_k_values"].dtype),
+                        out["current_top_k_values"][:, :-1, :],
+                    ],
+                    dim=1,
+                )
+                trpl_old_indices_current_lp = torch.cat(
+                    [
+                        torch.zeros(1, 1, k_old, device="cuda", dtype=out["old_indices_current_lp"].dtype),
+                        out["old_indices_current_lp"][:, :-1, :],
+                    ],
+                    dim=1,
+                )
+
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
+            trpl_kwargs = {}
+            if needs_trpl:
+                trpl_kwargs = dict(
+                    current_top_k_indices=trpl_current_top_k_indices.squeeze(0).split(response_lengths),
+                    current_top_k_values=trpl_current_top_k_values.squeeze(0).split(response_lengths),
+                    old_indices_current_lp=trpl_old_indices_current_lp.squeeze(0).split(response_lengths),
+                    old_top_indices=old_top_indices_raw.squeeze(0).split(response_lengths),
+                    old_top_values=old_top_values_raw.squeeze(0).split(response_lengths),
+                    token_ids=input_ids.squeeze(0).split(response_lengths),
+                    vocab_size=vocab_size,
+                )
+
+            if needs_trpl and micro_step == 0:
+                torch.cuda.synchronize()
+                _t_loss_start = time.perf_counter()
+
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -409,11 +487,20 @@ def train(config: RLTrainerConfig):
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_fn=loss_fn,
                 loss_scale=loss_scale,
+                **trpl_kwargs,
             )
+
+            if needs_trpl and micro_step == 0:
+                torch.cuda.synchronize()
+                _t_loss_end = time.perf_counter()
 
             # Backward pass
             with maybe_record_function("backward"):
                 loss.backward()
+
+            if needs_trpl and micro_step == 0:
+                torch.cuda.synchronize()
+                _t_backward_end = time.perf_counter()
 
             # Add relevant tensors to tensor dict for logging purposes
             tensors["trainer_probs"].append(torch.exp(out["logprobs"])[loss_mask].detach().to("cpu"))
@@ -440,7 +527,16 @@ def train(config: RLTrainerConfig):
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        # Optionally, clip the gradients
+        # Log TRPL timing breakdown for first micro-batch
+        if needs_trpl:
+            logger.info(
+                f"TRPL timing (micro_step=0): "
+                f"prep={_t_trpl_prep_end - _t_trpl_prep_start:.3f}s, "
+                f"forward={_t_forward_end - _t_trpl_prep_end:.3f}s, "
+                f"shift+prep_loss={_t_loss_start - _t_forward_end:.3f}s, "
+                f"compute_loss={_t_loss_end - _t_loss_start:.3f}s, "
+                f"backward={_t_backward_end - _t_loss_end:.3f}s"
+            )
 
         grad_norm = clip_grad_norm_(
             model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled

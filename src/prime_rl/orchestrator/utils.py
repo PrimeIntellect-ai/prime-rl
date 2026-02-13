@@ -45,9 +45,13 @@ def get_sampling_args(sampling_config: SamplingConfig, temperature: float) -> di
     sampling_args["temperature"] = temperature
     sampling_args["top_p"] = 1.0
     sampling_args["logprobs"] = True
+    top_logprobs = sampling_args.pop("top_logprobs", None)
+    if top_logprobs is not None:
+        sampling_args["top_logprobs"] = top_logprobs
     sampling_args["extra_body"] = {
         **sampling_config.extra_body,
         "return_token_ids": True,  # Always return token IDs
+        "return_tokens_as_token_ids": top_logprobs is not None,  # Format logprob tokens as "token_id:{id}" for TRPL
         "top_k": -1,
         "min_p": 0.0,
     }

@@ -15,6 +15,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     advantage: float | None = None
     reward: float | None = None
 
+    # TRPL: sparse old logits from inference (top-k per completion token)
+    completion_top_logprob_indices: list[list[int]] | None = None  # [num_completion_tokens, k]
+    completion_top_logprob_values: list[list[float]] | None = None  # [num_completion_tokens, k]
+
     # Multimodal fields (Qwen3-VL)
     # pixel_values: flattened image patches [num_patches, patch_dim] where patch_dim=1176 for Qwen3-VL
     pixel_values: list[list[float]] | None = None
@@ -42,6 +46,10 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     temperatures: list[float]  # Per-token temperatures used during generation
     teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
+
+    # TRPL: sparse old logits from inference (top-k per token, including prompt padding)
+    inference_top_logprob_indices: list[list[int]] | None = None  # [seq_len, k]
+    inference_top_logprob_values: list[list[float]] | None = None  # [seq_len, k]
 
     # Multimodal fields (Qwen3-VL)
     # pixel_values: flattened image patches [num_patches, patch_dim] where patch_dim=1176 for Qwen3-VL

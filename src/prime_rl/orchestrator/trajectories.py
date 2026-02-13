@@ -57,6 +57,14 @@ def interleave_rollout(
         key = output["example_id"] if cache_key is None else cache_key
         return vlm_cache.get_for_step(key, step_idx)
 
+    def _get_top_logprobs(tokens: dict) -> tuple[list[list[int]] | None, list[list[float]] | None]:
+        """Extract top_logprobs from tokens dict if present."""
+        indices = tokens.get("completion_top_logprob_indices")
+        values = tokens.get("completion_top_logprob_values")
+        if indices is not None and values is not None:
+            return indices, values
+        return None, None
+
     def make_sample(step: vf.TrajectoryStep, step_idx: int) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         tokens = step["tokens"]
@@ -67,6 +75,7 @@ def interleave_rollout(
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
         completion_ids = list(tokens["completion_ids"])
         pixel_values, image_grid_thw = get_images(step_idx)
+        top_indices, top_values = _get_top_logprobs(tokens)
         return TrainingSample(
             prompt_ids=list(tokens["prompt_ids"]),
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
@@ -76,6 +85,8 @@ def interleave_rollout(
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
             advantage=None,
+            completion_top_logprob_indices=top_indices,
+            completion_top_logprob_values=top_values,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
         )
@@ -92,6 +103,11 @@ def interleave_rollout(
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
         sample.completion_temperatures.extend([temperature] * len(new_prompt_ids))
 
+        # Extend top_logprobs: empty lists for prompt tokens (masked out)
+        if sample.completion_top_logprob_indices is not None:
+            sample.completion_top_logprob_indices.extend([] for _ in new_prompt_ids)
+            sample.completion_top_logprob_values.extend([] for _ in new_prompt_ids)
+
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
         sample.completion_ids.extend(completion_ids)
@@ -101,6 +117,16 @@ def interleave_rollout(
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
+
+        # Extend top_logprobs for completion tokens
+        top_indices, top_values = _get_top_logprobs(tokens)
+        if sample.completion_top_logprob_indices is not None and top_indices is not None:
+            sample.completion_top_logprob_indices.extend(top_indices)
+            sample.completion_top_logprob_values.extend(top_values)
+        elif sample.completion_top_logprob_indices is not None and top_indices is None:
+            # Sample has top_logprobs but this step doesn't — pad with empty entries
+            sample.completion_top_logprob_indices.extend([] for _ in completion_ids)
+            sample.completion_top_logprob_values.extend([] for _ in completion_ids)
 
         # Update cumulative images to include any new images from this step
         pixel_values, image_grid_thw = get_images(step_idx)

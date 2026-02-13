@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.trainer.rl.config import CustomLossConfig, LossConfig, LossConfigType
+from prime_rl.trainer.rl.config import CustomLossConfig, LossConfig, LossConfigType, TrplLossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -19,6 +19,16 @@ class LossInputs:
     teacher_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
+    # TRPL extensions (optional, backward-compatible)
+    # Sparse current policy data from fused forward:
+    current_top_k_indices: Int[Tensor, "seq k"] | None = None
+    current_top_k_values: Float[Tensor, "seq k"] | None = None
+    old_indices_current_lp: Float[Tensor, "seq k_old"] | None = None
+    # Old policy data from inference:
+    old_top_indices: Int[Tensor, "seq k"] | None = None
+    old_top_values: Float[Tensor, "seq k"] | None = None
+    token_ids: Int[Tensor, " seq"] | None = None
+    vocab_size: int | None = None
 
 
 @dataclass
@@ -184,6 +194,11 @@ def setup_loss_fn(loss_config: LossConfigType) -> LossFn:
 
         return loss_fn
 
+    if isinstance(loss_config, TrplLossConfig):
+        from prime_rl.trainer.rl.trpl_loss import setup_trpl_loss_fn
+
+        return setup_trpl_loss_fn(loss_config)
+
     def loss_fn(inputs: LossInputs) -> LossOutputs:
         return default_loss_fn(inputs, loss_config)
 
@@ -198,6 +213,14 @@ def compute_loss(
     loss_mask: list[Bool[Tensor, " seq_i"]],
     loss_fn: LossFn,
     loss_scale: int,
+    # TRPL extensions (optional, backward-compatible)
+    current_top_k_indices: list[Int[Tensor, "seq_i k"]] | None = None,
+    current_top_k_values: list[Float[Tensor, "seq_i k"]] | None = None,
+    old_indices_current_lp: list[Float[Tensor, "seq_i k_old"]] | None = None,
+    old_top_indices: list[Int[Tensor, "seq_i k"]] | None = None,
+    old_top_values: list[Float[Tensor, "seq_i k"]] | None = None,
+    token_ids: list[Int[Tensor, " seq_i"]] | None = None,
+    vocab_size: int | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -210,18 +233,48 @@ def compute_loss(
         loss_mask: Loss mask for each sequence
         loss_fn: Per-sequence loss function
         loss_scale: Scale factor to normalize the loss
+        current_top_k_indices: Current policy top-K indices from fused forward (TRPL only)
+        current_top_k_values: Current policy top-K log-probs with gradient (TRPL only)
+        old_indices_current_lp: Current log-probs at old top-K positions with gradient (TRPL only)
+        old_top_indices: Top-k token indices from old policy (TRPL only)
+        old_top_values: Top-k log-prob values from old policy (TRPL only)
+        token_ids: Actual token IDs (TRPL only)
+        vocab_size: Vocabulary size (TRPL only)
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
     """
     total_loss = 0.0
     all_metrics: dict[str, list[Tensor]] = {}
+    n = len(trainer_logprobs)
 
     if teacher_logprobs is None:
-        teacher_logprobs = [None] * len(trainer_logprobs)
+        teacher_logprobs = [None] * n
+    if current_top_k_indices is None:
+        current_top_k_indices = [None] * n
+    if current_top_k_values is None:
+        current_top_k_values = [None] * n
+    if old_indices_current_lp is None:
+        old_indices_current_lp = [None] * n
+    if old_top_indices is None:
+        old_top_indices = [None] * n
+    if old_top_values is None:
+        old_top_values = [None] * n
+    if token_ids is None:
+        token_ids = [None] * n
 
-    for t_logp, i_logp, teach_logp, adv, mask in zip(
-        trainer_logprobs, inference_logprobs, teacher_logprobs, advantages, loss_mask
+    for t_logp, i_logp, teach_logp, adv, mask, ctki, ctkv, oiclp, oti, otv, tids in zip(
+        trainer_logprobs,
+        inference_logprobs,
+        teacher_logprobs,
+        advantages,
+        loss_mask,
+        current_top_k_indices,
+        current_top_k_values,
+        old_indices_current_lp,
+        old_top_indices,
+        old_top_values,
+        token_ids,
     ):
         inputs = LossInputs(
             trainer_logprobs=t_logp,
@@ -229,6 +282,13 @@ def compute_loss(
             teacher_logprobs=teach_logp,
             advantages=adv,
             loss_mask=mask,
+            current_top_k_indices=ctki,
+            current_top_k_values=ctkv,
+            old_indices_current_lp=oiclp,
+            old_top_indices=oti,
+            old_top_values=otv,
+            token_ids=tids,
+            vocab_size=vocab_size,
         )
 
         result = loss_fn(inputs)

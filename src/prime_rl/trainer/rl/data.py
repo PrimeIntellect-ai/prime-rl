@@ -28,11 +28,39 @@ class TensorMicroBatch(TypedDict):
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
 
+    # TRPL: sparse old logits from inference (top-k per token)
+    inference_top_logprob_indices: Int[Tensor, "batch seq k"] | None
+    inference_top_logprob_values: Float[Tensor, "batch seq k"] | None
+
     # Multimodal fields (Qwen3-VL)
     # pixel_values: flattened image patches [num_patches, patch_dim] where patch_dim=1176 for Qwen3-VL
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None
     # image_grid_thw: grid dimensions [num_images, 3] where each entry is [temporal, height, width]
     image_grid_thw: Int[Tensor, "num_images 3"] | None
+
+
+def _pad_top_logprobs_to_tensor(indices: list[list[int]], values: list[list[float]]) -> tuple[Tensor, Tensor]:
+    """Convert variable-length top_logprob lists to padded [1, seq, k] tensors.
+
+    Positions with empty lists (prompt/padding tokens) are padded with 0/-inf.
+    """
+    k = max((len(idx) for idx in indices), default=0)
+    if k == 0:
+        seq_len = len(indices)
+        return (
+            torch.zeros(1, seq_len, 0, dtype=torch.long),
+            torch.full((1, seq_len, 0), float("-inf")),
+        )
+    padded_indices = []
+    padded_values = []
+    for idx_list, val_list in zip(indices, values):
+        pad_len = k - len(idx_list)
+        padded_indices.append(idx_list + [0] * pad_len)
+        padded_values.append(val_list + [float("-inf")] * pad_len)
+    return (
+        torch.tensor(padded_indices, dtype=torch.long).unsqueeze(0),
+        torch.tensor(padded_values, dtype=torch.float).unsqueeze(0),
+    )
 
 
 class FakeDataLoader:
@@ -102,6 +130,8 @@ class FakeDataLoader:
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "inference_top_logprob_indices": None,
+            "inference_top_logprob_values": None,
             "pixel_values": None,
             "image_grid_thw": None,
         }
@@ -126,6 +156,8 @@ class FakeDataLoader:
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "inference_top_logprob_indices": None,
+            "inference_top_logprob_values": None,
             "pixel_values": None,
             "image_grid_thw": None,
         }
@@ -177,6 +209,17 @@ class DataLoader:
         if micro_batch.lora_num_tokens is None:
             micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
+
+        # TRPL: convert variable-length top_logprob lists to padded tensors
+        if micro_batch.inference_top_logprob_indices is not None:
+            top_indices, top_values = _pad_top_logprobs_to_tensor(
+                micro_batch.inference_top_logprob_indices,
+                micro_batch.inference_top_logprob_values,
+            )
+        else:
+            top_indices = None
+            top_values = None
+
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -188,6 +231,8 @@ class DataLoader:
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
+            inference_top_logprob_indices=top_indices,
+            inference_top_logprob_values=top_values,
             # Multimodal fields - no batch dimension for these as they are variable-sized
             pixel_values=torch.tensor(micro_batch.pixel_values, dtype=torch.float)
             if micro_batch.pixel_values is not None

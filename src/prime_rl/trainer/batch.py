@@ -23,6 +23,15 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # computed via prefill in the orchestrator when a teacher model is configured
     teacher_logprobs = training_example.teacher_logprobs
 
+    # TRPL: prepend empty lists for prompt tokens, then append completion top_logprobs
+    if training_example.completion_top_logprob_indices is not None:
+        prompt_len = len(training_example.prompt_ids)
+        inference_top_indices = [[] for _ in range(prompt_len)] + training_example.completion_top_logprob_indices
+        inference_top_values = [[] for _ in range(prompt_len)] + training_example.completion_top_logprob_values
+    else:
+        inference_top_indices = None
+        inference_top_values = None
+
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]
         loss_mask = loss_mask[:seq_len]
@@ -32,6 +41,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures = temperatures[:seq_len]
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
+        if inference_top_indices is not None:
+            inference_top_indices = inference_top_indices[:seq_len]
+            inference_top_values = inference_top_values[:seq_len]
 
     assert (
         len(input_ids)
@@ -53,6 +65,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         inference_logprobs=inference_logprobs,
         teacher_logprobs=teacher_logprobs,
         temperatures=temperatures,
+        inference_top_logprob_indices=inference_top_indices,
+        inference_top_logprob_values=inference_top_values,
         # Multimodal fields (Qwen3-VL) - passed through without modification
         pixel_values=training_example.pixel_values,
         image_grid_thw=training_example.image_grid_thw,
@@ -105,6 +119,12 @@ def packed_samples_into_micro_bs(
                     if bin_content.teacher_logprobs is None:
                         bin_content.teacher_logprobs = []
                     bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
+                if sample.inference_top_logprob_indices is not None:
+                    if bin_content.inference_top_logprob_indices is None:
+                        bin_content.inference_top_logprob_indices = []
+                        bin_content.inference_top_logprob_values = []
+                    bin_content.inference_top_logprob_indices.extend(sample.inference_top_logprob_indices)
+                    bin_content.inference_top_logprob_values.extend(sample.inference_top_logprob_values)
                 bin_content.position_ids.extend(sample.position_ids)
                 bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break
@@ -141,6 +161,9 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.temperatures.extend([1.0] * padding_size)
     if micro_batch.teacher_logprobs is not None:
         micro_batch.teacher_logprobs.extend([0.0] * padding_size)
+    if micro_batch.inference_top_logprob_indices is not None:
+        micro_batch.inference_top_logprob_indices.extend([] for _ in range(padding_size))
+        micro_batch.inference_top_logprob_values.extend([] for _ in range(padding_size))
     micro_batch.lora_num_tokens[-1] += (
         padding_size  # We send padding to the last lora so that tokens have ascending lora idx
     )

@@ -514,7 +514,8 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_teacher_model(self):
-        if self.trainer.loss.teacher_tau > 0 and not self.orchestrator.teacher_model:
+        teacher_tau = getattr(self.trainer.loss, "teacher_tau", 0)
+        if teacher_tau > 0 and not self.orchestrator.teacher_model:
             raise ValueError(
                 "teacher_model must be configured when teacher_tau > 0. "
                 "Either set teacher_tau = 0, set teacher_gpu_ids, or configure teacher_model manually."
@@ -712,7 +713,7 @@ def rl(config: RLConfig):
             )
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
-        elif config.trainer.loss.teacher_tau > 0 or config.orchestrator.teacher_model:
+        elif getattr(config.trainer.loss, "teacher_tau", 0) > 0 or config.orchestrator.teacher_model:
             logger.warning(
                 "No teacher_inference config specified, skipping starting teacher inference server. "
                 "Is your teacher inference server running? Make sure orchestrator.teacher_model is configured."

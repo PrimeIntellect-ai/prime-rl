@@ -150,6 +150,17 @@ class SamplingConfig(BaseConfig):
         ),
     ] = None
 
+    top_logprobs: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of top log-probabilities to return per token from vLLM. "
+            "When set, the orchestrator captures top-k token IDs and their log-probabilities "
+            "for use with TRPL loss. Should match the trainer's loss.top_k setting. "
+            "None means disabled. vLLM supports arbitrary positive values (no 20-token limit).",
+        ),
+    ] = None
+
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
     extra_body: Annotated[
@@ -535,6 +546,7 @@ class AdvantageConfig(BaseConfig):
 
     type: Literal["default"] = "default"
     length_weighted_mean: bool = False
+    norm_by_std: bool = False
 
 
 class CustomAdvantageConfig(BaseModel):
