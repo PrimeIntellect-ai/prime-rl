@@ -29,9 +29,9 @@ from transformers import AutoProcessor, AutoTokenizer
 
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
-from prime_rl.orchestrator.config import BufferConfig, GibberishFilterConfig, OrchestratorConfig, RepetitionFilterConfig
+from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.eval_utils import evaluate_env
-from prime_rl.orchestrator.filters import GibberishFilter, RepetitionFilter, apply_filters
+from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -135,13 +135,7 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
     # Build rollout filters
-    rollout_filters = []
-    for fc in config.filters:
-        if isinstance(fc, GibberishFilterConfig):
-            vocab_size = fc.vocab_size or tokenizer.vocab_size
-            rollout_filters.append(GibberishFilter.from_config(fc, vocab_size))
-        elif isinstance(fc, RepetitionFilterConfig):
-            rollout_filters.append(RepetitionFilter.from_config(fc))
+    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
     if rollout_filters:
         logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
 

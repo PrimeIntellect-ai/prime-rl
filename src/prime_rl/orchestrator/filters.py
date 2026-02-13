@@ -6,11 +6,13 @@ completion mask cleared so they don't contribute to training.
 """
 
 import math
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Protocol
 
 import verifiers as vf
 from loguru import logger
+
+from prime_rl.orchestrator.config import FilterConfigType, GibberishFilterConfig, RepetitionFilterConfig
 
 
 @dataclass
@@ -19,16 +21,14 @@ class FilterResult:
     detection_index: int | None = None
 
 
-class RolloutFilter(ABC):
-    @property
-    @abstractmethod
-    def name(self) -> str: ...
+class RolloutFilter(Protocol):
+    name: str
 
-    @abstractmethod
     def check(self, rollout: vf.RolloutOutput) -> FilterResult: ...
 
 
-class GibberishFilter(RolloutFilter):
+@dataclass
+class GibberishFilter:
     """Flags rollouts containing rare tokens generated at high entropy.
 
     A token is flagged when both:
@@ -39,21 +39,9 @@ class GibberishFilter(RolloutFilter):
       Section 5.2, https://arxiv.org/abs/2510.02387
     """
 
-    def __init__(self, token_id_threshold: int, logprob_threshold: float):
-        self.token_id_threshold = token_id_threshold
-        self.logprob_threshold = logprob_threshold
-
-    @property
-    def name(self) -> str:
-        return "gibberish"
-
-    @classmethod
-    def from_config(cls, config, vocab_size: int) -> "GibberishFilter":
-        logprob_threshold = -math.log(vocab_size) - config.logprob_offset
-        return cls(
-            token_id_threshold=config.token_id_threshold,
-            logprob_threshold=logprob_threshold,
-        )
+    name: str
+    token_id_threshold: int
+    logprob_threshold: float
 
     def check(self, rollout: vf.RolloutOutput) -> FilterResult:
         global_idx = 0
@@ -68,7 +56,8 @@ class GibberishFilter(RolloutFilter):
         return FilterResult(detected=False)
 
 
-class RepetitionFilter(RolloutFilter):
+@dataclass
+class RepetitionFilter:
     """Flags rollouts with pathological repetition loops.
 
     Counts consecutive tokens where logprob > log(prob_threshold), indicating
@@ -79,20 +68,9 @@ class RepetitionFilter(RolloutFilter):
       Section 3.2, https://arxiv.org/abs/2506.13585
     """
 
-    def __init__(self, window: int, logprob_threshold: float):
-        self.window = window
-        self.logprob_threshold = logprob_threshold
-
-    @property
-    def name(self) -> str:
-        return "repetition"
-
-    @classmethod
-    def from_config(cls, config) -> "RepetitionFilter":
-        return cls(
-            window=config.window,
-            logprob_threshold=math.log(config.prob_threshold),
-        )
+    name: str
+    window: int
+    logprob_threshold: float
 
     def check(self, rollout: vf.RolloutOutput) -> FilterResult:
         consecutive = 0
@@ -110,6 +88,29 @@ class RepetitionFilter(RolloutFilter):
                     return FilterResult(detected=True, detection_index=global_idx)
                 global_idx += 1
         return FilterResult(detected=False)
+
+
+def setup_filter(config: FilterConfigType, vocab_size: int) -> RolloutFilter:
+    """Create a RolloutFilter from a filter config."""
+    if isinstance(config, GibberishFilterConfig):
+        vs = config.vocab_size or vocab_size
+        return GibberishFilter(
+            name="gibberish",
+            token_id_threshold=config.token_id_threshold,
+            logprob_threshold=-math.log(vs) - config.logprob_offset,
+        )
+    elif isinstance(config, RepetitionFilterConfig):
+        return RepetitionFilter(
+            name="repetition",
+            window=config.window,
+            logprob_threshold=math.log(config.prob_threshold),
+        )
+    raise ValueError(f"Unknown filter config type: {type(config)}")
+
+
+def setup_filters(configs: list[FilterConfigType], vocab_size: int) -> list[RolloutFilter]:
+    """Create RolloutFilters from a list of filter configs."""
+    return [setup_filter(config, vocab_size) for config in configs]
 
 
 def apply_filters(
