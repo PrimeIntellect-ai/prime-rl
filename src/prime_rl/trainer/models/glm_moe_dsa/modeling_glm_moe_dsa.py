@@ -64,11 +64,36 @@ try:
 except ImportError:
     flash_attn_4_varlen_func = None  # type: ignore
 
+# tilelang sparse MLA kernels (vendored)
+try:
+    from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_bwd
+    from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla_fwd_interface
+except ImportError:
+    sparse_mla_fwd_interface = None  # type: ignore
+    sparse_mla_bwd = None  # type: ignore
+
 
 def yarn_get_mscale(scale=1, mscale=1):
     if scale <= 1:
         return 1.0
     return 0.1 * mscale * math.log(scale) + 1.0
+
+
+class _SparseMLA(torch.autograd.Function):
+    """Autograd wrapper for tilelang sparse MLA forward/backward kernels."""
+
+    @staticmethod
+    def forward(ctx, q, kv, indices, sm_scale):
+        out, lse = sparse_mla_fwd_interface(q, kv, indices, sm_scale=sm_scale)
+        ctx.save_for_backward(q, kv, out, indices, lse)
+        ctx.sm_scale = sm_scale
+        return out
+
+    @staticmethod
+    def backward(ctx, do):
+        q, kv, out, indices, lse = ctx.saved_tensors
+        dq, dkv = sparse_mla_bwd(q, kv, out, do.contiguous(), indices, lse, sm_scale=ctx.sm_scale)
+        return dq, dkv, None, None
 
 
 class _MLABase(nn.Module):
@@ -111,8 +136,7 @@ class _MLABase(nn.Module):
         # Output projection
         self.o_proj = nn.Linear(self.num_heads * self.v_head_dim, config.hidden_size, bias=config.attention_bias)
 
-        # Indexer components for sparse attention (not used in dense forward path,
-        # but needed for state dict compatibility with HF checkpoints)
+        # Indexer: selects top-k tokens per query for sparse attention
         self.wq_b = nn.Linear(config.q_lora_rank, self.num_heads * self.qk_head_dim, bias=False)
         self.wk = nn.Linear(config.hidden_size, self.qk_head_dim, bias=config.attention_bias)
         self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.qk_head_dim, eps=config.rms_norm_eps))
@@ -177,6 +201,61 @@ class _MLABase(nn.Module):
         key_states = torch.cat((k_nope, k_rope), dim=-1)
 
         return query_states, key_states, value_states
+
+    @torch.no_grad()
+    def _compute_sparse_indices(
+        self,
+        hidden_states: torch.Tensor,
+        q_latent: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute top-k token indices using the indexer weights (bf16, varlen-aware).
+
+        For each query position, scores all KV positions within the same sequence
+        (causal), then selects the top index_topk positions.
+
+        Args:
+            hidden_states: [1, total_tokens, hidden_size]
+            q_latent: [1, total_tokens, q_lora_rank]
+            cu_seqlens: [num_seqs + 1] int32
+
+        Returns:
+            indices: [1, total_tokens, 1, index_topk] int32, absolute positions
+        """
+        total_tokens = hidden_states.shape[1]
+        index_topk = self.config.index_topk
+        assert index_topk % 64 == 0, f"index_topk must be divisible by 64 (block_I), got {index_topk}"
+
+        q_idx = self.wq_b(q_latent[0]).view(total_tokens, self.num_heads, self.qk_head_dim)
+        k_idx = self.k_norm(self.wk(hidden_states[0]))
+        w = self.weights_proj(hidden_states[0])
+
+        # Fold head weights into Q: single-vector score per (query, kv) pair
+        q_combined = (q_idx * w.unsqueeze(-1)).sum(dim=1)  # [total, qk_head_dim]
+
+        num_seqs = cu_seqlens.shape[0] - 1
+        indices = torch.zeros(total_tokens, index_topk, dtype=torch.int32, device=hidden_states.device)
+
+        for i in range(num_seqs):
+            start = cu_seqlens[i].item()
+            end = cu_seqlens[i + 1].item()
+            seq_len = end - start
+
+            scores = q_combined[start:end] @ k_idx[start:end].T  # [seq_len, seq_len]
+
+            causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=scores.device, dtype=torch.bool), diagonal=1)
+            scores.masked_fill_(causal_mask, float("-inf"))
+
+            actual_topk = min(index_topk, seq_len)
+            _, topk_idx = torch.topk(scores, actual_topk, dim=-1)
+
+            if actual_topk < index_topk:
+                padding = topk_idx[:, :1].expand(-1, index_topk - actual_topk)
+                topk_idx = torch.cat([topk_idx, padding], dim=-1)
+
+            indices[start:end] = (topk_idx + start).to(torch.int32)
+
+        return indices.view(1, total_tokens, 1, index_topk)
 
 
 class GlmMoeDsaFlashAttention(_MLABase):
@@ -273,11 +352,78 @@ class GlmMoeDsaSDPAAttention(_MLABase):
         return attn_output, None
 
 
+class GlmMoeDsaSparseAttention(_MLABase):
+    """MLA with Dynamic Sparse Attention via tilelang kernels.
+
+    Uses the absorption trick to operate in the compressed KV latent space:
+      sparse_q  = cat(Q_nope @ W_kv_b_k_nope^T, Q_rope)   →  [B, S, H, kv_lora_rank + rope_dim]
+      sparse_kv = cat(kv_a_layernorm(k_compressed), k_rope) →  [B, S, 1, kv_lora_rank + rope_dim]
+
+    The tilelang sparse_mla_fwd/bwd kernels attend only to top-k tokens per query
+    (selected by the bf16 indexer). Output is un-absorbed back to v_head_dim via
+    the V portion of kv_b_proj weight.
+    """
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        batch_size, total_tokens, _ = hidden_states.shape
+
+        # Q path
+        q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
+        q_full = self.q_b_proj(q_latent).view(batch_size, total_tokens, self.num_heads, self.qk_head_dim)
+        q_nope, q_rope = q_full.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+
+        # Compressed KV (no kv_b_proj up-projection)
+        compressed_kv = self.kv_a_proj_with_mqa(hidden_states)
+        k_compressed, k_rope = compressed_kv.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+        k_compressed_normed = self.kv_a_layernorm(k_compressed)
+
+        # RoPE — needs [batch, heads, seq, dim] layout
+        q_rope_r = q_rope.transpose(1, 2)
+        k_rope_r = k_rope.unsqueeze(1)
+        cos, sin = position_embeddings
+        if self.rope_interleave:
+            q_rope_r, k_rope_r = apply_rotary_pos_emb_interleave(q_rope_r, k_rope_r, cos, sin)
+        else:
+            q_rope_r, k_rope_r = apply_rotary_pos_emb(q_rope_r, k_rope_r, cos, sin)
+        q_rope = q_rope_r.transpose(1, 2)  # [B, total, H, rope_dim]
+        k_rope = k_rope_r.squeeze(1)  # [B, total, rope_dim]
+
+        # Indexer
+        indices = self._compute_sparse_indices(hidden_states, q_latent, cu_seqlens)
+
+        # Absorption: Q_nope @ W_kv_b_k_nope^T → [B, S, H, kv_lora_rank]
+        kv_b_w = self.kv_b_proj.weight.view(self.num_heads, self.qk_nope_head_dim + self.v_head_dim, self.kv_lora_rank)
+        w_k_nope = kv_b_w[:, : self.qk_nope_head_dim, :]  # [H, nope, kv_lora_rank]
+        w_v = kv_b_w[:, self.qk_nope_head_dim :, :]  # [H, v_head_dim, kv_lora_rank]
+
+        q_absorbed = torch.einsum("bshd,hdk->bshk", q_nope, w_k_nope)
+
+        # Build sparse tensors for tilelang
+        sparse_q = torch.cat([q_absorbed, q_rope], dim=-1)  # [B, S, H, 576]
+        sparse_kv = torch.cat([k_compressed_normed, k_rope], dim=-1).unsqueeze(2)  # [B, S, 1, 576]
+
+        # Sparse attention via tilelang
+        out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)  # [B, S, H, kv_lora_rank]
+
+        # Un-absorb: out @ W_v^T → [B, S, H, v_head_dim]
+        out = torch.einsum("bshk,hdk->bshd", out, w_v)
+
+        out = out.reshape(batch_size, total_tokens, -1)
+        return self.o_proj(out), None
+
+
 _MLA_ATTN_IMPL2CLASS = {
     "flash_attention_2": functools.partial(GlmMoeDsaFlashAttention, flash_attn_version=2),
     "sdpa": GlmMoeDsaSDPAAttention,
     "flash_attention_3": functools.partial(GlmMoeDsaFlashAttention, flash_attn_version=3),
     "fa4": functools.partial(GlmMoeDsaFlashAttention, flash_attn_version=4),
+    "sparse": GlmMoeDsaSparseAttention,
 }
 
 
@@ -424,7 +570,7 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
+        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4", "sparse"):
             flat_position_ids = position_ids.view(-1)
             seqlens = torch.cat(
                 [
