@@ -17,14 +17,15 @@ export NUM_INFER_NODES={{ num_infer_nodes }}
 export BASE_DIR={{ base_dir }}
 export CONFIG_DIR={{ config_dir }}
 export OUTPUT_DIR={{ output_dir }}
+export ORCHESTRATOR_OUTPUT_DIR={{ orchestrator_output_dir }}
 mkdir -p $OUTPUT_DIR/slurm
 
 # Clear previous weights and broadcast flags
 # We delete rollout dir to prevent the trainer from training on rollouts from a previous run.
 # We delete broadcast flags to prevent the orchestrator from prematurely notifying the inference to receive weights
 # WARN: This is potentially dangerous and could lead to data loss
-rm -rf $OUTPUT_DIR/run_default/rollouts
-rm -rf $OUTPUT_DIR/run_default/broadcasts
+rm -rf $ORCHESTRATOR_OUTPUT_DIR/rollouts
+rm -rf $ORCHESTRATOR_OUTPUT_DIR/broadcasts
 
 
 # General
@@ -111,7 +112,7 @@ else
             --client.base-url $INFER_URLS \
             --client.timeout 3600 \
             --num-train-workers $((NUM_TRAIN_NODES * 8)) \
-            --output-dir $OUTPUT_DIR/run_0 \
+            --output-dir $ORCHESTRATOR_OUTPUT_DIR \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
     fi
 

@@ -59,6 +59,7 @@ def render_slurm_script(config: RLSLURMConfig, config_dir: Path) -> str:
         job_name=config.job_name,
         base_dir=config.base_dir,
         output_dir=config.output_dir,
+        orchestrator_output_dir=config.orchestrator.output_dir,
         config_dir=config_dir,
         num_train_nodes=config.num_train_nodes,
         num_infer_nodes=config.num_infer_nodes,
