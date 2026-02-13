@@ -48,7 +48,7 @@ def test_orchestrator_metrics_update_and_cleanup():
     assert 'orchestrator_env_reward_mean{env="env_a"} 0.5' in content
     assert 'orchestrator_env_batch_ratio{env="env_b"} 0.45' in content
     assert 'orchestrator_worker_pending_count{worker="worker_a"} 3.0' in content
-    assert 'orchestrator_worker_lag_seconds{worker="worker_b",stat="max"} 0.2' in content
+    assert 'orchestrator_worker_lag_seconds{stat="max",worker="worker_b"} 0.2' in content
     assert 'orchestrator_event_loop_lag_seconds{stat="mean"} 0.02' in content
     assert "orchestrator_last_step_timestamp_seconds" in content
 
