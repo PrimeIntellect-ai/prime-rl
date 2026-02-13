@@ -25,11 +25,6 @@ api_key_var = "VLLM_API_KEY"
 [orchestrator.buffer]
 easy_threshold = 1.0
 
-[orchestrator.val]
-interval = 5
-num_examples = 256
-rollouts_per_example = 1
-
 # train on service-agent
 
 [[orchestrator.env]]
@@ -72,7 +67,7 @@ args = { domain = "car_rental", user_model = "openai/Qwen/Qwen3-4B-Instruct-2507
 [orchestrator.eval]
 interval = 20
 num_examples = -1
-rollouts_per_example = 2
+rollouts_per_example = 4
 eval_base_model = true
 
 [orchestrator.eval.sampling]
