@@ -55,5 +55,7 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`OrchestratorConfig`**: Removed `workers_per_env`, `max_env_worker_restarts`, and `mask_env_responses` (2026-02-06)
 - **`EvalSaveDiskConfig`**, **`EvalSaveConfig`**, **`RetryConfig`**, **`OnlineEvalConfig`**: Removed (2026-02-06)
 - **`TemperatureScheduleConfig`**: Renamed to `TemperatureSchedulerConfig` (2026-02-06)
-- **`client.api_key_var`**: Changed default from "OPENAI_API_KEY" to "VLLM_API_KEY" (2026-02-12)
 - **`optim.mu`**: Added Muon momentum (`mu`) config field (default: 0.95). Previously hardcoded to Muon class default. Also fixed `optim.betas1`/`optim.betas2` not being passed through to the Muon optimizer (2026-02-09)
+- **`dump_config`**: Added `--dump-config <path>` flag to the `rl` command. When set, writes the resolved subconfigs (trainer, orchestrator, inference, teacher_inference) to the given directory and exits without starting any processes (2026-02-12
+- **`client.api_key_var`**: Changed default from "OPENAI_API_KEY" to "VLLM_API_KEY" (2026-02-12)
+
