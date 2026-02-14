@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, Discriminator, Field, Tag, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
@@ -564,6 +564,8 @@ AdvantageConfigType: TypeAlias = Annotated[
 class GibberishFilterConfig(BaseModel):
     """Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387)."""
 
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["gibberish"] = "gibberish"
     enforce: Annotated[
         bool,
@@ -587,6 +589,8 @@ class GibberishFilterConfig(BaseModel):
 
 class RepetitionFilterConfig(BaseModel):
     """Flags pathological repetition loops (Section 3.2, https://arxiv.org/abs/2506.13585)."""
+
+    model_config = ConfigDict(extra="forbid")
 
     type: Literal["repetition"] = "repetition"
     enforce: Annotated[

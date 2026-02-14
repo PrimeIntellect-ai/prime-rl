@@ -140,14 +140,16 @@ def apply_filters(
     total_enforced = 0
 
     for rollout in rollouts:
+        if rollout.get("metrics") is None:
+            rollout["metrics"] = {}
+        for filt in filters:
+            rollout["metrics"].setdefault(f"filter/{filt.name}", 0.0)
+
         for filt in filters:
             result = filt.check(rollout)
             if result.detected:
                 counts[filt.name] += 1
                 total_detected += 1
-
-                if rollout.get("metrics") is None:
-                    rollout["metrics"] = {}
                 rollout["metrics"][f"filter/{filt.name}"] = 1.0
 
                 if filt.enforce:
