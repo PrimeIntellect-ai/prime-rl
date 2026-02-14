@@ -24,6 +24,16 @@ class RLSLURMConfig(BaseRLConfig):
     num_train_nodes: int
     num_infer_nodes: int
 
+    env_file: Path | None = Field(
+        default=None, description="Path to a .env file to source before running. If none, will source .env from base_dir."
+    )
+    hf_hub_offline: bool = Field(
+        default=False, description="Set HF_HUB_OFFLINE=1 on training nodes to prevent downloading models at runtime."
+    )
+    venv: Path = Field(
+        default=Path(".venv/bin/activate"), description="Path to the venv activate script, relative to base_dir or absolute."
+    )
+
     slurm_template: Path | None = Field(
         default=None, description="The path to the SLURM template file. If none, will use the default template."
     )
@@ -63,6 +73,9 @@ def render_slurm_script(config: RLSLURMConfig, config_dir: Path) -> str:
         config_dir=config_dir,
         num_train_nodes=config.num_train_nodes,
         num_infer_nodes=config.num_infer_nodes,
+        env_file=config.env_file,
+        hf_hub_offline=config.hf_hub_offline,
+        venv=config.venv,
     )
 
 

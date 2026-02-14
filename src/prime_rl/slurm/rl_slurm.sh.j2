@@ -63,9 +63,9 @@ echo "MASTER_PORT=${MASTER_PORT}"
 
 # Install environment
 cd $BASE_DIR
-source .env
+{% if env_file %}source {{ env_file }}{% else %}source .env{% endif %}
 
-source .venv/bin/activate
+source {{ venv }}
 
 # Install environment as local package
 uv sync --all-extras
@@ -75,8 +75,8 @@ uv sync --all-extras
 srun bash -c '
     # Setup environment
     cd $BASE_DIR
-    source .env
-    source .venv/bin/activate
+    {% if env_file %}source {{ env_file }}{% else %}source .env{% endif %}
+    source {{ venv }}
 
     # Disable sync to avoid conflicts with lockfile
 
@@ -116,7 +116,7 @@ else
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
     fi
 
-    export HF_HUB_OFFLINE=0
+    export HF_HUB_OFFLINE={{ 1 if hf_hub_offline else 0 }}
 
 
     # This is required for compilation to work correctly
