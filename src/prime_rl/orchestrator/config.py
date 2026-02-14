@@ -565,6 +565,12 @@ class GibberishFilterConfig(BaseModel):
     """Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387)."""
 
     type: Literal["gibberish"] = "gibberish"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, zero reward and mask for detected rollouts. If False, only track detection metrics."
+        ),
+    ] = False
     token_id_threshold: Annotated[
         int,
         Field(description="Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."),
@@ -583,6 +589,12 @@ class RepetitionFilterConfig(BaseModel):
     """Flags pathological repetition loops (Section 3.2, https://arxiv.org/abs/2506.13585)."""
 
     type: Literal["repetition"] = "repetition"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, zero reward and mask for detected rollouts. If False, only track detection metrics."
+        ),
+    ] = False
     window: Annotated[
         int,
         Field(ge=1, description="Number of consecutive high-probability steps before flagging."),
@@ -673,8 +685,8 @@ class OrchestratorConfig(BaseSettings):
     # The advantage configuration
     advantage: AdvantageConfigType | None = AdvantageConfig()
 
-    # Rollout filters (detect and zero out degenerate generations)
-    filters: list[FilterConfigType] = []
+    # Rollout filters (monitor by default, enforce optionally)
+    filters: list[FilterConfigType] = [GibberishFilterConfig(), RepetitionFilterConfig()]
 
     # The logging configuration
     log: LogConfig = LogConfig()

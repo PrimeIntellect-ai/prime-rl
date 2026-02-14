@@ -48,13 +48,17 @@ def _make_rollout(completion_ids, completion_logprobs, reward=1.0, multi_step=Fa
     }
 
 
-def _make_gibberish_filter(vocab_size=128_000, token_id_threshold=100_000, logprob_offset=2.0):
+def _make_gibberish_filter(vocab_size=128_000, token_id_threshold=100_000, logprob_offset=2.0, enforce=False):
     logprob_threshold = -math.log(vocab_size) - logprob_offset
-    return GibberishFilter(name="gibberish", token_id_threshold=token_id_threshold, logprob_threshold=logprob_threshold)
+    return GibberishFilter(
+        name="gibberish", token_id_threshold=token_id_threshold, logprob_threshold=logprob_threshold, enforce=enforce
+    )
 
 
-def _make_repetition_filter(window=5, prob_threshold=0.99):
-    return RepetitionFilter(name="repetition", window=window, logprob_threshold=math.log(prob_threshold))
+def _make_repetition_filter(window=5, prob_threshold=0.99, enforce=False):
+    return RepetitionFilter(
+        name="repetition", window=window, logprob_threshold=math.log(prob_threshold), enforce=enforce
+    )
 
 
 # --- GibberishFilter tests ---
@@ -175,12 +179,19 @@ def test_setup_filter_gibberish():
     assert gibberish_filter.name == "gibberish"
     assert gibberish_filter.token_id_threshold == 100_000
     assert abs(gibberish_filter.logprob_threshold - (-math.log(128_000) - 2.0)) < 1e-10
+    assert gibberish_filter.enforce is False
 
 
 def test_setup_filter_gibberish_uses_config_vocab_size():
     config = GibberishFilterConfig(vocab_size=64_000)
     gibberish_filter = setup_filter(config, vocab_size=128_000)
     assert abs(gibberish_filter.logprob_threshold - (-math.log(64_000) - 2.0)) < 1e-10
+
+
+def test_setup_filter_gibberish_enforce():
+    config = GibberishFilterConfig(enforce=True)
+    gibberish_filter = setup_filter(config, vocab_size=128_000)
+    assert gibberish_filter.enforce is True
 
 
 def test_setup_filter_repetition():
@@ -190,6 +201,13 @@ def test_setup_filter_repetition():
     assert repetition_filter.name == "repetition"
     assert repetition_filter.window == 3_000
     assert abs(repetition_filter.logprob_threshold - math.log(0.99)) < 1e-10
+    assert repetition_filter.enforce is False
+
+
+def test_setup_filter_repetition_enforce():
+    config = RepetitionFilterConfig(enforce=True)
+    repetition_filter = setup_filter(config, vocab_size=128_000)
+    assert repetition_filter.enforce is True
 
 
 def test_setup_filters_multiple():
@@ -203,11 +221,11 @@ def test_setup_filters_multiple():
     assert filters[1].name == "repetition"
 
 
-# --- apply_filters tests ---
+# --- apply_filters tests (enforce=True) ---
 
 
-def test_apply_filters_zeros_reward_and_mask():
-    gibberish_filter = _make_gibberish_filter()
+def test_apply_filters_enforced_zeros_reward_and_mask():
+    gibberish_filter = _make_gibberish_filter(enforce=True)
 
     rollout = _make_rollout(
         completion_ids=[120_000],
@@ -223,11 +241,12 @@ def test_apply_filters_zeros_reward_and_mask():
     assert rollout["metrics"]["filter/gibberish"] == 1.0
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/gibberish_rate"] == 1.0
-    assert metrics["filter/total_filtered_rate"] == 1.0
+    assert metrics["filter/total_detected_rate"] == 1.0
+    assert metrics["filter/total_enforced_rate"] == 1.0
 
 
 def test_apply_filters_preserves_clean_rollouts():
-    gibberish_filter = _make_gibberish_filter()
+    gibberish_filter = _make_gibberish_filter(enforce=True)
 
     rollout = _make_rollout(
         completion_ids=[50, 60, 70],
@@ -241,12 +260,13 @@ def test_apply_filters_preserves_clean_rollouts():
     assert all(m == 1 for m in rollout["trajectory"][0]["tokens"]["completion_mask"])
     assert rollout["stop_condition"] is None
     assert metrics["filter/gibberish_count"] == 0.0
-    assert metrics["filter/total_filtered_rate"] == 0.0
+    assert metrics["filter/total_detected_rate"] == 0.0
+    assert metrics["filter/total_enforced_rate"] == 0.0
 
 
 def test_apply_filters_first_filter_wins():
-    gibberish_filter = _make_gibberish_filter()
-    repetition_filter = _make_repetition_filter(window=2)
+    gibberish_filter = _make_gibberish_filter(enforce=True)
+    repetition_filter = _make_repetition_filter(window=2, enforce=True)
 
     rollout = _make_rollout(
         completion_ids=[120_000, 1, 2],
@@ -259,7 +279,8 @@ def test_apply_filters_first_filter_wins():
     assert rollout["stop_condition"] == "gibberish"
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/repetition_count"] == 0.0
-    assert metrics["filter/total_filtered_rate"] == 1.0
+    assert metrics["filter/total_detected_rate"] == 1.0
+    assert metrics["filter/total_enforced_rate"] == 1.0
 
 
 def test_apply_filters_empty_list():
@@ -273,7 +294,7 @@ def test_apply_filters_empty_list():
 
 
 def test_apply_filters_mixed_batch():
-    gibberish_filter = _make_gibberish_filter()
+    gibberish_filter = _make_gibberish_filter(enforce=True)
 
     clean = _make_rollout(completion_ids=[50], completion_logprobs=[-1.0], reward=1.0)
     dirty = _make_rollout(
@@ -286,4 +307,46 @@ def test_apply_filters_mixed_batch():
     assert dirty["reward"] == 0.0
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/gibberish_rate"] == 0.5
-    assert metrics["filter/total_filtered_rate"] == 0.5
+    assert metrics["filter/total_detected_rate"] == 0.5
+    assert metrics["filter/total_enforced_rate"] == 0.5
+
+
+# --- apply_filters tests (monitor-only, enforce=False) ---
+
+
+def test_apply_filters_monitor_only_tracks_detection():
+    gibberish_filter = _make_gibberish_filter(enforce=False)
+
+    rollout = _make_rollout(
+        completion_ids=[120_000],
+        completion_logprobs=[gibberish_filter.logprob_threshold - 1.0],
+        reward=1.0,
+    )
+
+    metrics = apply_filters([gibberish_filter], [rollout])
+
+    assert rollout["reward"] == 1.0
+    assert all(m == 1 for m in rollout["trajectory"][0]["tokens"]["completion_mask"])
+    assert rollout["stop_condition"] is None
+    assert rollout["metrics"]["filter/gibberish"] == 1.0
+    assert metrics["filter/gibberish_count"] == 1.0
+    assert metrics["filter/gibberish_rate"] == 1.0
+    assert metrics["filter/total_detected_rate"] == 1.0
+    assert metrics["filter/total_enforced_rate"] == 0.0
+
+
+def test_apply_filters_monitor_only_mixed_batch():
+    gibberish_filter = _make_gibberish_filter(enforce=False)
+
+    clean = _make_rollout(completion_ids=[50], completion_logprobs=[-1.0], reward=1.0)
+    dirty = _make_rollout(
+        completion_ids=[120_000], completion_logprobs=[gibberish_filter.logprob_threshold - 1.0], reward=1.0
+    )
+
+    metrics = apply_filters([gibberish_filter], [clean, dirty])
+
+    assert clean["reward"] == 1.0
+    assert dirty["reward"] == 1.0
+    assert metrics["filter/gibberish_rate"] == 0.5
+    assert metrics["filter/total_detected_rate"] == 0.5
+    assert metrics["filter/total_enforced_rate"] == 0.0
