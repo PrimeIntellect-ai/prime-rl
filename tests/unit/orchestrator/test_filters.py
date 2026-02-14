@@ -224,7 +224,7 @@ def test_setup_filters_multiple():
 # --- apply_filters tests (enforce=True) ---
 
 
-def test_apply_filters_enforced_zeros_reward_and_mask():
+def test_apply_filters_enforced_zeros_mask():
     gibberish_filter = _make_gibberish_filter(enforce=True)
 
     rollout = _make_rollout(
@@ -235,7 +235,7 @@ def test_apply_filters_enforced_zeros_reward_and_mask():
 
     metrics = apply_filters([gibberish_filter], [rollout])
 
-    assert rollout["reward"] == 0.0
+    assert rollout["reward"] == 1.0
     assert all(m == 0 for m in rollout["trajectory"][0]["tokens"]["completion_mask"])
     assert rollout["stop_condition"] == "gibberish"
     assert rollout["metrics"]["filter/gibberish"] == 1.0
@@ -304,7 +304,8 @@ def test_apply_filters_mixed_batch():
     metrics = apply_filters([gibberish_filter], [clean, dirty])
 
     assert clean["reward"] == 1.0
-    assert dirty["reward"] == 0.0
+    assert dirty["reward"] == 1.0
+    assert all(m == 0 for m in dirty["trajectory"][0]["tokens"]["completion_mask"])
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/gibberish_rate"] == 0.5
     assert metrics["filter/total_detected_rate"] == 0.5

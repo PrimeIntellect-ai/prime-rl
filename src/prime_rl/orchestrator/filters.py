@@ -151,7 +151,6 @@ def apply_filters(
                 rollout["metrics"][f"filter/{filt.name}"] = 1.0
 
                 if filt.enforce:
-                    rollout["reward"] = 0.0
                     for step in rollout["trajectory"]:
                         tokens = step["tokens"]
                         if tokens is not None:
