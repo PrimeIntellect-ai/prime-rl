@@ -76,9 +76,9 @@ class ClientConfig(BaseConfig):
     api_key_var: Annotated[
         str,
         Field(
-            description="Name of environment variable containing the API key to use for the OpenAI API. Will parse using `os.getenv(client_config.api_key_var)`. Can be set to an arbitrary string if the inference server is not protected by an API key. If multiple URLs are specified, the same API key will be used for all servers.",
+            description="Name of environment variable containing the API key to use for the inference API. Will parse using `os.getenv(client_config.api_key_var)`. Can be set to an arbitrary string if the inference server is not protected by an API key. If multiple URLs are specified, the same API key will be used for all servers.",
         ),
-    ] = "OPENAI_API_KEY"
+    ] = "VLLM_API_KEY"
 
     headers: Annotated[
         dict[str, str],

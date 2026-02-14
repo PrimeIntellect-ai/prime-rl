@@ -433,8 +433,13 @@ class AdamWConfig(BaseOptimizerConfig):
 class MuonConfig(BaseOptimizerConfig):
     type: Literal["muon"] = "muon"
 
-    betas1: Annotated[float, Field(ge=0)] = 0.9
-    betas2: Annotated[float, Field(ge=0)] = 0.999
+    mu: Annotated[float, Field(ge=0, description="Momentum factor for the Muon algorithm.")] = 0.95
+    betas1: Annotated[
+        float, Field(ge=0, description="Beta1 for the AdamW/Lion sub-optimizer used on non-Muon params.")
+    ] = 0.9
+    betas2: Annotated[
+        float, Field(ge=0, description="Beta2 for the AdamW/Lion sub-optimizer used on non-Muon params.")
+    ] = 0.95
 
 
 OptimizerConfigType: TypeAlias = SGDConfig | AdamWConfig | MuonConfig

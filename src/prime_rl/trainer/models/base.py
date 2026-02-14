@@ -6,10 +6,19 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     """
     Base class for all PrimeRL models that extends HuggingFace PreTrainedModel.
 
-    This class provides a unified interface for state dict conversion between different
-    formats (e.g., HuggingFace format vs. training-optimized format) and buffer initialization
+    Provides a unified interface for state dict conversion between different formats
+    (e.g., HuggingFace format vs. training-optimized format) and buffer initialization
     after loading with meta device.
     """
+
+    @classmethod
+    def _can_set_experts_implementation(cls) -> bool:
+        """PrimeRL models use custom MoE implementations and don't support dynamic experts implementation."""
+        return False
+
+    def get_correct_experts_implementation(self, requested_experts: str | None) -> str:
+        """PrimeRL models always use eager experts implementation."""
+        return "eager"
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
