@@ -4,7 +4,7 @@ from pathlib import Path
 
 import tomli_w
 from jinja2 import Environment, FileSystemLoader
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from prime_rl.rl_config import BaseRLConfig
 from prime_rl.utils.logger import setup_logger
@@ -16,28 +16,37 @@ TEMPLATE_NAME = "rl_slurm.sh.j2"
 
 class RLSLURMConfig(BaseRLConfig):
     output_dir: Path
-    base_dir: Path | None = Field(
-        default=None, description="The path to the base directory. If none, will use the current working directory."
-    )
 
     job_name: str
     num_train_nodes: int
     num_infer_nodes: int
+    gpus_per_node: int = Field(default=8, description="Number of GPUs per node.")
+    nodes_per_fsdp_group: int | None = Field(
+        default=None,
+        description="Number of train nodes per FSDP island. Auto-sets trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group.",
+    )
 
-    env_file: Path | None = Field(
-        default=None, description="Path to a .env file to source before running. If none, will source .env from base_dir."
+    project_dir: Path = Field(
+        description="Path to the project root. Used to source .env, activate .venv, and run uv sync."
     )
     hf_hub_offline: bool = Field(
         default=False, description="Set HF_HUB_OFFLINE=1 on training nodes to prevent downloading models at runtime."
-    )
-    venv: Path = Field(
-        default=Path(".venv/bin/activate"), description="Path to the venv activate script, relative to base_dir or absolute."
     )
 
     slurm_template: Path | None = Field(
         default=None, description="The path to the SLURM template file. If none, will use the default template."
     )
     dry_run: bool = Field(default=False, description="Only generate the SLURM script and configs without submitting.")
+
+    @model_validator(mode="after")
+    def auto_setup_dp_replicate(self):
+        if self.nodes_per_fsdp_group is not None:
+            if self.num_train_nodes % self.nodes_per_fsdp_group != 0:
+                raise ValueError(
+                    f"num_train_nodes ({self.num_train_nodes}) must be divisible by nodes_per_fsdp_group ({self.nodes_per_fsdp_group})"
+                )
+            self.trainer.dp_replicate = self.num_train_nodes // self.nodes_per_fsdp_group
+        return self
 
 
 def write_subconfigs(config: RLSLURMConfig, output_dir: Path) -> None:
@@ -67,15 +76,14 @@ def render_slurm_script(config: RLSLURMConfig, config_dir: Path) -> str:
     template = env.get_template(template_name)
     return template.render(
         job_name=config.job_name,
-        base_dir=config.base_dir,
         output_dir=config.output_dir,
         orchestrator_output_dir=config.orchestrator.output_dir,
         config_dir=config_dir,
         num_train_nodes=config.num_train_nodes,
         num_infer_nodes=config.num_infer_nodes,
-        env_file=config.env_file,
+        project_dir=config.project_dir,
+        gpus_per_node=config.gpus_per_node,
         hf_hub_offline=config.hf_hub_offline,
-        venv=config.venv,
     )
 
 
@@ -84,9 +92,6 @@ def rl_slurm(config: RLSLURMConfig):
 
     config_dir = config.output_dir / "configs"
     write_subconfigs(config, config_dir)
-
-    if config.base_dir is None:
-        config.base_dir = Path.cwd()
 
     logger.info(f"Wrote subconfigs to {config_dir}")
 

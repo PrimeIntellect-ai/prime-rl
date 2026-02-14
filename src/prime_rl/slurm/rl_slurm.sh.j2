@@ -3,7 +3,7 @@
 #SBATCH --job-name={{ job_name }}
 #SBATCH --nodes={{ num_train_nodes + num_infer_nodes }}
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:8
+#SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition=cluster
 #SBATCH --exclusive                 # Get the ENTIRE node exclusively
 #SBATCH --output=/shared/logs/job_%j.log
@@ -12,9 +12,10 @@
 # Configs
 export NUM_TRAIN_NODES={{ num_train_nodes }}
 export NUM_INFER_NODES={{ num_infer_nodes }}
+export GPUS_PER_NODE={{ gpus_per_node }}
 
 # Paths
-export BASE_DIR={{ base_dir }}
+export PROJECT_DIR={{ project_dir }}
 export CONFIG_DIR={{ config_dir }}
 export OUTPUT_DIR={{ output_dir }}
 export ORCHESTRATOR_OUTPUT_DIR={{ orchestrator_output_dir }}
@@ -62,21 +63,18 @@ echo "MASTER_PORT=${MASTER_PORT}"
 
 
 # Install environment
-cd $BASE_DIR
-{% if env_file %}source {{ env_file }}{% else %}source .env{% endif %}
-
-source {{ venv }}
+[ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
+source $PROJECT_DIR/.venv/bin/activate
 
 # Install environment as local package
-uv sync --all-extras
+cd $PROJECT_DIR && uv sync --all-extras
 
 
 # Run RL
 srun bash -c '
     # Setup environment
-    cd $BASE_DIR
-    {% if env_file %}source {{ env_file }}{% else %}source .env{% endif %}
-    source {{ venv }}
+    [ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
+    source $PROJECT_DIR/.venv/bin/activate
 
     # Disable sync to avoid conflicts with lockfile
 
@@ -111,8 +109,7 @@ else
             --weight_broadcast.timeout $BROADCAST_TIMEOUT \
             --client.base-url $INFER_URLS \
             --client.timeout 3600 \
-            --num-train-workers $((NUM_TRAIN_NODES * 8)) \
-            --output-dir $ORCHESTRATOR_OUTPUT_DIR \
+            --num-train-workers $((NUM_TRAIN_NODES * GPUS_PER_NODE)) \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
     fi
 
@@ -125,22 +122,21 @@ else
         echo $HOSTNAMES | tee  $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log
     uv run torchrun \
         --nnodes=$NUM_TRAIN_NODES \
-        --nproc-per-node=8 \
+        --nproc-per-node=$GPUS_PER_NODE \
         --node-rank=$TRAIN_NODE_RANK \
         --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
         --rdzv-id=job_$SLURM_JOB_ID \
         --log-dir=$OUTPUT_DIR/torchrun \
         --tee=3 \
         --redirects=3 \
-        --local-ranks-filter=0,1,2,3,4,5,6,7 \
-        src/prime_rl/trainer/rl/train.py \
+        --local-ranks-filter=$(seq -s, 0 $((GPUS_PER_NODE - 1))) \
+        -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.toml \
         --weight_broadcast.host 0.0.0.0 \
         --weight_broadcast.port $BROADCAST_PORT \
-        --weight_broadcast.inference_world_size $((8 * NUM_INFER_NODES)) \
+        --weight_broadcast.inference_world_size $((GPUS_PER_NODE * NUM_INFER_NODES)) \
         --weight_broadcast.timeout $BROADCAST_TIMEOUT \
         --dist_timeout_seconds $NCCL_COMM_TIMEOUT \
-        --output-dir $OUTPUT_DIR \
         2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${TRAIN_NODE_RANK}.log
     fi
 '
