@@ -120,6 +120,7 @@ def setup_clients(client_config: ClientConfig) -> list[vf.ClientConfig]:
     def _setup_client(client_idx: int, base_url: str) -> vf.ClientConfig:
         return vf.ClientConfig(
             client_idx=client_idx,
+            client_type="openai_chat_completions_token",
             api_base_url=base_url,
             api_key_var=client_config.api_key_var,
             timeout=client_config.timeout,

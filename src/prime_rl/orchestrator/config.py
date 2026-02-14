@@ -798,7 +798,6 @@ class OrchestratorConfig(BaseSettings):
     def resolve_extra_env_kwargs(self):
         train_extra_env_kwargs = dict(
             seq_len=self.seq_len,
-            interleaved_rollouts=True,
             score_rollouts=not self.buffer.skip_verification,
         )
         for env in self.env:
