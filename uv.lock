@@ -136,7 +136,7 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.71.0"
+version = "0.79.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -148,9 +148,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/82/4f/70682b068d897841f43223df82d96ec1d617435a8b759c4a2d901a50158b/anthropic-0.71.0.tar.gz", hash = "sha256:eb8e6fa86d049061b3ef26eb4cbae0174ebbff21affa6de7b3098da857d8de6a", size = 489102, upload-time = "2025-10-16T15:54:40.08Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/15/b1/91aea3f8fd180d01d133d931a167a78a3737b3fd39ccef2ae8d6619c24fd/anthropic-0.79.0.tar.gz", hash = "sha256:8707aafb3b1176ed6c13e2b1c9fb3efddce90d17aee5d8b83a86c70dcdcca871", size = 509825, upload-time = "2026-02-07T18:06:18.388Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/77/073e8ac488f335aec7001952825275582fb8f433737e90f24eeef9d878f6/anthropic-0.71.0-py3-none-any.whl", hash = "sha256:85c5015fcdbdc728390f11b17642a65a4365d03b12b799b18b6cc57e71fdb327", size = 355035, upload-time = "2025-10-16T15:54:38.238Z" },
+    { url = "https://files.pythonhosted.org/packages/95/b2/cc0b8e874a18d7da50b0fda8c99e4ac123f23bf47b471827c5f6f3e4a767/anthropic-0.79.0-py3-none-any.whl", hash = "sha256:04cbd473b6bbda4ca2e41dd670fe2f829a911530f01697d0a1e37321eb75f3cf", size = 405918, upload-time = "2026-02-07T18:06:20.246Z" },
 ]
 
 [[package]]
@@ -677,7 +677,7 @@ wheels = [
 [[package]]
 name = "dion"
 version = "0.1.0"
-source = { git = "https://github.com/samsja/dion.git?rev=d891eebbd950a6ff11d9b5f806282e33df83df9d#d891eebbd950a6ff11d9b5f806282e33df83df9d" }
+source = { git = "https://github.com/samsja/dion.git?rev=d891eeb#d891eebbd950a6ff11d9b5f806282e33df83df9d" }
 dependencies = [
     { name = "numpy" },
     { name = "torch" },
@@ -2591,7 +2591,7 @@ requires-dist = [
     { name = "blobfile", specifier = ">=3.0.0" },
     { name = "cydifflib", specifier = ">=1.2.0" },
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eebbd950a6ff11d9b5f806282e33df83df9d" },
+    { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.6.3%2Bcu128torch2.10-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl" },
     { name = "flash-attn-cute", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=main" },
@@ -2622,7 +2622,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=609e3d5" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=bc9fcd5" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0f1e334" },
     { name = "vllm", url = "https://github.com/vllm-project/vllm/releases/download/v0.16.0/vllm-0.16.0-cp38-abi3-manylinux_2_31_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
 ]
@@ -2654,16 +2654,16 @@ wheels = [
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.0"
+version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9b/c0/8ac67976d94d548076bdd840312d78957e9f9234d37b7a5cc7798caa34ce/prime_tunnel-0.1.0.tar.gz", hash = "sha256:bcf2a15770b2aa60b9f1aa696911c8f63b283fc195af6ba2fc66ce0f0bede041", size = 10617, upload-time = "2026-02-01T08:19:24.21Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/18/0e/19e74e9962479bea2ab4752b327d448bc0b122ef3043203eb45e5935550b/prime_tunnel-0.1.2.tar.gz", hash = "sha256:e15b67ffb6fbb44e13e764629e178dafb2415c7c23cbd56d63638ad8c530e163", size = 11506, upload-time = "2026-02-12T14:50:38.481Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/db/d5/42652ac36d57f2a9e781ed75c5770a47c08a16b2af4ec94aad8e9c065af7/prime_tunnel-0.1.0-py3-none-any.whl", hash = "sha256:dbf4ed8c2b7a61e0b37e97ce1466470be759d05cbb9e88f804ad2344c59bb0eb", size = 13042, upload-time = "2026-02-01T08:19:22.673Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/f8/3561a75acddd7c13bf905e435d870bbf70a109b52534ca253195aa0db353/prime_tunnel-0.1.2-py3-none-any.whl", hash = "sha256:2a0e5631d12a3b615a5ba6817cf9755a762cf22a9b6c3ef9d9125a76c7652793", size = 13511, upload-time = "2026-02-12T14:50:37.148Z" },
 ]
 
 [[package]]
@@ -4005,9 +4005,10 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.10.dev4"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=bc9fcd5#bc9fcd51c0e183bd9a9a6e5c322e041849df8f07" }
+version = "0.1.11.dev0"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0f1e334#0f1e33456d31fd6838da1325e9ed8bcc344e29b3" }
 dependencies = [
+    { name = "anthropic" },
     { name = "datasets" },
     { name = "gepa" },
     { name = "jinja2" },
