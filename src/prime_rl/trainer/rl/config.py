@@ -16,6 +16,7 @@ from prime_rl.trainer.config import (
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import HeartbeatConfig, LogConfig, MetricsServerConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.utils.usage import UsageConfig
 
 
 class LossConfig(BaseConfig):
@@ -221,6 +222,11 @@ class RLTrainerConfig(BaseSettings):
     metrics_server: Annotated[
         MetricsServerConfig | None,
         Field(description="Prometheus metrics server config. If set, exposes /metrics endpoint for scraping."),
+    ] = None
+
+    usage: Annotated[
+        UsageConfig | None,
+        Field(description="Usage reporting config. If set, reports training token usage."),
     ] = None
 
     max_concurrent_runs: Annotated[
