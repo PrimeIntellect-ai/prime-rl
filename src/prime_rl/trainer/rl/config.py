@@ -198,7 +198,7 @@ class RLTrainerConfig(BaseSettings):
         int,
         Field(
             ge=1,
-            description="Number of completion tokens to accumulate before taking a training step. The orchestrator streams individual group rollouts; the trainer accumulates them until this budget is met.",
+            description="Number of total tokens to accumulate before taking a training step. The orchestrator streams individual group rollouts; the trainer accumulates them until this budget is met.",
         ),
     ] = 32768
 

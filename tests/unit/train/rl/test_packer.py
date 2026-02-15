@@ -7,7 +7,7 @@ import torch
 import torch.distributed as dist
 
 import prime_rl.trainer.runs as runs
-from prime_rl.trainer.rl.packer import MultiPacker
+from prime_rl.trainer.rl.packer import MultiPacker, setup_packer
 from prime_rl.trainer.runs import setup_multi_run_manager
 from prime_rl.trainer.world import reset_world
 from prime_rl.transport.config import FileSystemTransportConfig
@@ -46,6 +46,38 @@ def make_training_sample() -> TrainingSample:
         completion_mask=[True],
         completion_logprobs=[-0.1],
         completion_temperatures=[1.0],
+    )
+
+
+def make_training_sample_with_completion_len(completion_len: int) -> TrainingSample:
+    completion_ids = [2] * completion_len
+    completion_mask = [True] * completion_len
+    completion_logprobs = [-0.1] * completion_len
+    completion_temperatures = [1.0] * completion_len
+    return TrainingSample(
+        prompt_ids=[1],
+        prompt_mask=[False],
+        completion_ids=completion_ids,
+        completion_mask=completion_mask,
+        completion_logprobs=completion_logprobs,
+        completion_temperatures=completion_temperatures,
+    )
+
+
+def make_training_sample_with_lengths(prompt_len: int, completion_len: int) -> TrainingSample:
+    prompt_ids = [1] * prompt_len
+    prompt_mask = [False] * prompt_len
+    completion_ids = [2] * completion_len
+    completion_mask = [True] * completion_len
+    completion_logprobs = [-0.1] * completion_len
+    completion_temperatures = [1.0] * completion_len
+    return TrainingSample(
+        prompt_ids=prompt_ids,
+        prompt_mask=prompt_mask,
+        completion_ids=completion_ids,
+        completion_mask=completion_mask,
+        completion_logprobs=completion_logprobs,
+        completion_temperatures=completion_temperatures,
     )
 
 
@@ -107,3 +139,100 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     sender = sender_holder["sender"]
     assert len(sender.sent) == 1
     assert len(sender.sent[0][0]) == 1
+
+
+def test_setup_packer_uses_total_token_batch_size_for_multi_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reset_world()
+    runs._MULTI_RUN_MANAGER = None
+    manager = setup_multi_run_manager(output_dir=tmp_path, max_runs=2, device=torch.device("cpu"))
+
+    create_run_with_config(tmp_path, "run_test123")
+    create_run_with_config(tmp_path, "run_test456")
+    manager.discover_runs()
+    run_idx = manager.id_2_idx["run_test123"]
+
+    class DummyReceiver:
+        def receive(self):
+            return []
+
+        def reset_run(self, idx: int) -> None:
+            pass
+
+    class DummySender:
+        def send(self, micro_batch_grid):
+            return
+
+    def fake_receiver(_config):
+        return DummyReceiver()
+
+    def fake_sender(_output_dir, _data_world_size, _current_step, _config):
+        return DummySender()
+
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_training_batch_receiver", fake_receiver)
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_micro_batch_sender", fake_sender)
+
+    packer = setup_packer(
+        dp_world_size=1,
+        seq_len=32,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        transport_config=FileSystemTransportConfig(),
+        token_batch_size=2,
+        start_step=0,
+    )
+    assert isinstance(packer, MultiPacker)
+
+    packer.buffers[run_idx].append((make_training_sample_with_lengths(prompt_len=1, completion_len=1), 0))
+    assert packer._has_enough_tokens()
+
+
+def test_multi_packer_keeps_oversized_first_sample(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_world()
+    runs._MULTI_RUN_MANAGER = None
+    manager = setup_multi_run_manager(output_dir=tmp_path, max_runs=2, device=torch.device("cpu"))
+
+    create_run_with_config(tmp_path, "run_test123")
+    create_run_with_config(tmp_path, "run_test456")
+    manager.discover_runs()
+    run_idx = manager.id_2_idx["run_test123"]
+
+    class DummyReceiver:
+        def receive(self):
+            return []
+
+        def reset_run(self, idx: int) -> None:
+            pass
+
+    class DummySender:
+        def send(self, micro_batch_grid):
+            return
+
+    def fake_receiver(_config):
+        return DummyReceiver()
+
+    def fake_sender(_output_dir, _data_world_size, _current_step, _config):
+        return DummySender()
+
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_training_batch_receiver", fake_receiver)
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_micro_batch_sender", fake_sender)
+
+    packer = setup_packer(
+        dp_world_size=1,
+        seq_len=32,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        transport_config=FileSystemTransportConfig(),
+        token_batch_size=1,
+        start_step=0,
+    )
+    assert isinstance(packer, MultiPacker)
+
+    sample = make_training_sample_with_completion_len(completion_len=3)
+    packer.buffers[run_idx].append((sample, 0))
+
+    selected = packer._select_samples_round_robin(token_budget=1)
+    assert len(selected) == 1
+    assert selected[0][1] == sample
+    assert len(packer.buffers[run_idx]) == 0

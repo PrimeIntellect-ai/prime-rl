@@ -71,14 +71,14 @@ class SinglePacker(BasePacker):
     def pack(self):
         """Accumulate samples from streamed group rollouts until the token budget is met."""
         accumulated_samples: list[TrainingSample] = []
-        completion_tokens = 0
+        total_tokens = 0
 
         pbar = ProgressTracker(
             total=self.token_batch_size,
-            desc="Accumulating completion tokens",
+            desc="Accumulating total tokens",
         )
 
-        while completion_tokens < self.token_batch_size:
+        while total_tokens < self.token_batch_size:
             self.multi_run_manager.discover_runs()
             batches = self.receiver.receive()
 
@@ -88,9 +88,9 @@ class SinglePacker(BasePacker):
 
             for batch in batches:
                 for sample in batch.examples:
-                    n_tokens = len(sample.completion_ids)
+                    n_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
                     accumulated_samples.append(sample)
-                    completion_tokens += n_tokens
+                    total_tokens += n_tokens
                     pbar.update(n_tokens)
 
         pbar.close()
@@ -117,9 +117,11 @@ class MultiPacker(BasePacker):
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
+        token_batch_size: int | None = None,
         start_step: int = 0,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
+        self.token_batch_size = token_batch_size if token_batch_size is not None else self.seq_len * self.dp_world_size
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -199,7 +201,7 @@ class MultiPacker(BasePacker):
         # This is necessary to forget evicted runs
         self.multi_run_manager.discover_runs()
 
-    def _count_tokens(self, threshold: int | None = None) -> int:
+    def _count_total_tokens(self, threshold: int | None = None) -> int:
         tokens = 0
 
         for run_idx in self.multi_run_manager.used_idxs:
@@ -215,10 +217,9 @@ class MultiPacker(BasePacker):
         return tokens
 
     def _has_enough_tokens(self) -> bool:
-        """Check if we have enough samples in buffer to pack a step"""
-        # When not using small batch granularity, require at least one full batch
-        threshold = self.seq_len * self.dp_world_size
-        return self._count_tokens(threshold) >= threshold
+        """Check if we have enough total tokens in buffer to pack a step."""
+        threshold = self.token_batch_size
+        return self._count_total_tokens(threshold) >= threshold
 
     def _select_samples_round_robin(self, token_budget: int) -> list[tuple[int, TrainingSample, int]]:
         """Select samples using round-robin from runs with buffered work."""
@@ -246,16 +247,12 @@ class MultiPacker(BasePacker):
                 if step > current_step:
                     # Samples from different steps should be consumed later
                     break
-                tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
-                if tokens_collected > token_budget:
-                    if tokens_collected == (len(sample.prompt_ids) + len(sample.completion_ids)):
-                        tokens_collected -= len(sample.prompt_ids) + len(sample.completion_ids)
-                        # This means we have a sample that has more tokens than max seqlen
-                        self.buffers[run_idx].popleft()
-                        continue
+                sample_total_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
+                if tokens_collected > 0 and tokens_collected + sample_total_tokens > token_budget:
                     return selected
                 selected.append((run_idx, sample, step))
                 self.buffers[run_idx].popleft()
+                tokens_collected += sample_total_tokens
 
         return selected
 
@@ -280,13 +277,13 @@ class MultiPacker(BasePacker):
         start_time = time.time()
 
         while not self._has_enough_tokens():
-            if time.time() - start_time > TIMEOUT_SECONDS and self._count_tokens() > 0:
+            if time.time() - start_time > TIMEOUT_SECONDS and self._count_total_tokens() > 0:
                 self.logger.warning("Timeout waiting for enough tokens to pack")
                 break
             time.sleep(1)
             self._get_batch()
 
-        token_budget = self.seq_len * self.dp_world_size
+        token_budget = self.token_batch_size
         selected_samples = self._select_samples_round_robin(token_budget)
         assert selected_samples, "No samples selected"
 
@@ -344,4 +341,12 @@ def setup_packer(
             dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, token_batch_size, start_step
         )
     else:
-        return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return MultiPacker(
+            dp_world_size,
+            seq_len,
+            pad_to_multiple_of,
+            tokenizer,
+            transport_config,
+            token_batch_size,
+            start_step,
+        )
