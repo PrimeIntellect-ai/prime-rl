@@ -1,0 +1,34 @@
+job_name = "reverse-text-rl"
+output_dir = "/shared/outputs/reverse-text-rl"
+num_train_nodes = 1
+num_infer_nodes = 1
+
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "reverse-text"
+name = "reverse-text-slurm"
+
+[weight_broadcast]
+type = "filesystem"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 128
+
+[[orchestrator.env]]
+id = "reverse-text"
+
+[trainer.optim]
+lr = 3e-6
+
+# [ckpt]
+
+[inference]

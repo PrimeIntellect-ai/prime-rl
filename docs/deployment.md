@@ -83,7 +83,7 @@ uv run torchrun \
 
 ### SLURM
 
-TBD.
+See the dedicated [SLURM guide](slurm.md).
 
 ## Inference
 
@@ -281,7 +281,7 @@ Of course, you can further scale up the number of nodes used by the trainer and 
 
 ### SLURM
 
-TBD.
+See the dedicated [SLURM guide](slurm.md).
 
 ## Kubernetes
 
