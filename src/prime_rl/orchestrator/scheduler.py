@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from collections import Counter
 from typing import NamedTuple
 
 import verifiers as vf
