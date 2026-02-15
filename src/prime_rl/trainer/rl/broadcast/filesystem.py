@@ -1,10 +1,12 @@
 import shutil
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
+from transformers.core_model_loading import revert_weight_conversion
+from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.trainer.config import LoRAConfig
 from prime_rl.trainer.lora import save_lora_config
@@ -41,16 +43,18 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
         adapter_only = self.lora_config is not None
+        state_dict = {}
 
         if not adapter_only:
             state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
+                state_dict = revert_weight_conversion(cast(PreTrainedModel, model), state_dict)
             else:
                 # For regular transformers models, revert internal format to original HF hub format
-                from transformers.core_model_loading import revert_weight_conversion
-
-                state_dict = revert_weight_conversion(model, state_dict)
+                if not isinstance(model, PreTrainedModel):
+                    raise TypeError(f"Expected PreTrainedModel for weight conversion, got {type(model)}")
+                state_dict = revert_weight_conversion(cast(PreTrainedModel, model), state_dict)
 
         for idx in self.multi_run_manager.ready_to_update_idxs:
             self.logger.debug(
@@ -79,7 +83,11 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     self.logger.debug(f"Saving weights for run {idx} to {save_dir}")
                     save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
                     if adapter_only:
+                        assert self.lora_config is not None
                         orch_lora = self.multi_run_manager.config[idx].model.lora
+                        assert orch_lora is not None
+                        assert orch_lora.rank is not None
+                        assert orch_lora.alpha is not None
                         save_lora_config(
                             model,
                             save_dir,

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
+AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "fa4", "sparse"]
 
 # User-facing name -> internal name. Users set `flash_attention_4` in configs,
 # which gets rewritten to `fa4` before pydantic validation.

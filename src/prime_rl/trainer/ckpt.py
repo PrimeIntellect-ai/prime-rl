@@ -16,6 +16,7 @@ from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torchdata.stateful_dataloader import StatefulDataLoader
+from transformers.core_model_loading import revert_weight_conversion
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
@@ -387,13 +388,12 @@ class WeightCheckpointManager:
             self.logger.debug("Converting PrimeRL format to HF format for weight checkpoint")
             start_time = time.perf_counter()
             model.convert_to_hf(state_dict)
+            state_dict = revert_weight_conversion(model, state_dict)
             self.logger.debug(
                 f"Converted PrimeRL format to HF format in {time.perf_counter() - start_time:.2f} seconds"
             )
         else:
             # For regular transformers models, revert internal format to original HF hub format
-            from transformers.core_model_loading import revert_weight_conversion
-
             self.logger.debug("Reverting transformers internal format to HF hub format for weight checkpoint")
             start_time = time.perf_counter()
             state_dict = revert_weight_conversion(model, state_dict)
