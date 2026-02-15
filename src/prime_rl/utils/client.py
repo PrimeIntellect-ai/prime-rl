@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -34,10 +33,6 @@ class InferencePool(Protocol):
         """Update the model name."""
         ...
 
-    async def get_next_client(self) -> vf.ClientConfig:
-        """Get next client in round-robin fashion."""
-        ...
-
     async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
         """Wait for inference pool to be ready."""
         ...
@@ -64,8 +59,6 @@ class StaticInferencePool:
         self._clients = clients
         self._admin_clients = admin_clients
         self._skip_model_check = skip_model_check
-        self._idx_to_client = {client.client_idx: client for client in clients}
-        self._client_cycle = cycle(clients)
         self.model_name = None  # unused
 
     @property
@@ -78,9 +71,6 @@ class StaticInferencePool:
 
     def update_model_name(self, model_name: str) -> None:
         self.model_name = model_name
-
-    async def get_next_client(self) -> vf.ClientConfig:
-        return next(self._client_cycle)
 
     async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
         await check_health(self._admin_clients, timeout=timeout)
