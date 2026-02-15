@@ -1,7 +1,7 @@
 import asyncio
 import logging
+import multiprocessing
 from itertools import cycle
-from multiprocessing import Process
 from typing import Any
 
 import verifiers as vf
@@ -32,7 +32,10 @@ def spawn_env_server(
     Mirrors vf.Environment.start_server().
     """
     address = address or f"tcp://127.0.0.1:{get_free_port()}"
-    Process(
+    # Use "spawn" to start a fresh interpreter. The default "fork" method copies
+    # the parent's file descriptors, including any ZMQ sockets, which can cause
+    # responses to be delivered to the wrong process and silently lost.
+    multiprocessing.get_context("spawn").Process(
         target=ZMQEnvServer.run_server,
         args=(
             env_id,
