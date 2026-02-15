@@ -25,10 +25,10 @@ jobs:
             const { owner, repo } = context.repo;
             const sha = context.sha;
 
-            let baseTag;
+            let latestTag;
             try {
               const latestRelease = await github.rest.repos.getLatestRelease({ owner, repo });
-              baseTag = latestRelease.data.tag_name;
+              latestTag = latestRelease.data.tag_name;
             } catch (error) {
               if (error.status === 404) {
                 core.notice("No releases found. Skipping .dev tag creation.");
@@ -36,6 +36,18 @@ jobs:
               }
               throw error;
             }
+
+            const semverMatch = /^(v?)(\d+)\.(\d+)(?:\.(\d+))?$/.exec(latestTag);
+            if (!semverMatch) {
+              core.setFailed(`Latest release tag '${latestTag}' is not semver-like.`);
+              return;
+            }
+
+            const [, versionPrefix, majorRaw, minorRaw, patchRaw] = semverMatch;
+            const major = Number.parseInt(majorRaw, 10);
+            const minor = Number.parseInt(minorRaw, 10);
+            const patch = Number.parseInt(patchRaw ?? "0", 10) + 1;
+            const baseTag = `${versionPrefix}${major}.${minor}.${patch}`;
 
             const prefix = `${baseTag}.dev`;
             const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
