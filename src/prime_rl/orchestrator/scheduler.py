@@ -20,7 +20,7 @@ from prime_rl.utils.utils import (
 
 
 class InflightRolloutInfo(NamedTuple):
-    """Metadata for an in-flight group rollout request."""
+    """Metadata for an in-flight rollout request."""
 
     off_policy_steps: int
     client_config: vf.ClientConfig
@@ -29,7 +29,7 @@ class InflightRolloutInfo(NamedTuple):
 class Scheduler:
     """
     Asynchronously manages scheduling of group rollout requests and policy
-    updates. Keeps a constant number of groups in-flight (continuous batching)
+    updates. Keeps a constant rollout budget in-flight (as fixed-size groups)
     and updates the policy as soon as it becomes available.
 
     References:
@@ -58,7 +58,7 @@ class Scheduler:
         self.model_name = config.model.name
 
         # Track in-flight requests: task -> info
-        self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
+        self.inflight_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
 
         self.ckpt_step = 0
         self.checkpoint_ready = asyncio.Event()
@@ -75,11 +75,11 @@ class Scheduler:
 
         Used when weights are updated to discard stale rollouts generated with old weights.
         """
-        count = len(self.inflight_group_rollouts)
-        for future in list(self.inflight_group_rollouts.keys()):
+        count = len(self.inflight_rollouts)
+        for future in list(self.inflight_rollouts.keys()):
             if not future.done():
                 future.cancel()
-        self.inflight_group_rollouts.clear()
+        self.inflight_rollouts.clear()
         self.cancelled_rollouts_count += count
 
     async def schedule_group_rollout(self):
@@ -99,7 +99,7 @@ class Scheduler:
                 max_retries=0,  # TODO: make configurable
             )
         )
-        self.inflight_group_rollouts[task] = InflightRolloutInfo(0, client_config)
+        self.inflight_rollouts[task] = InflightRolloutInfo(0, client_config)
 
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
@@ -133,7 +133,7 @@ class Scheduler:
             tasks_to_remove = []
             tasks_to_update = []
 
-            for task, info in self.inflight_group_rollouts.items():
+            for task, info in self.inflight_rollouts.items():
                 if info.off_policy_steps > self.config.max_off_policy_steps:
                     if not task.done():
                         task.cancel()
@@ -143,13 +143,13 @@ class Scheduler:
 
             # Remove cancelled
             for task, _ in tasks_to_remove:
-                self.inflight_group_rollouts.pop(task, None)
+                self.inflight_rollouts.pop(task, None)
             self.cancelled_rollouts_count += len(tasks_to_remove)
 
             # Update off-policy steps for remaining
             for task, off_policy_steps, client_config in tasks_to_update:
-                if task in self.inflight_group_rollouts:
-                    self.inflight_group_rollouts[task] = InflightRolloutInfo(
+                if task in self.inflight_rollouts:
+                    self.inflight_rollouts[task] = InflightRolloutInfo(
                         off_policy_steps=off_policy_steps, client_config=client_config
                     )
 
@@ -166,19 +166,19 @@ class Scheduler:
         Returns an empty list if the group was cancelled or failed.
         """
         # Top up the inflight pool
-        while len(self.inflight_group_rollouts) < self.config.max_inflight_groups:
+        while len(self.inflight_rollouts) * self.config.rollouts_per_example < self.config.max_inflight_rollouts:
             await self.schedule_group_rollout()
 
         # Wait for at least one future to complete
         done, _ = await asyncio.wait(
-            self.inflight_group_rollouts.keys(),
+            self.inflight_rollouts.keys(),
             return_when=asyncio.FIRST_COMPLETED,
         )
 
         await self.checkpoint_ready.wait()
 
         for finished_task in done:
-            if self.inflight_group_rollouts.pop(finished_task, None) is None:
+            if self.inflight_rollouts.pop(finished_task, None) is None:
                 continue
 
             rollouts: list[vf.RolloutOutput] = []
@@ -198,21 +198,21 @@ class Scheduler:
 
     @property
     def max_off_policy_level(self) -> int:
-        if not self.inflight_group_rollouts:
+        if not self.inflight_rollouts:
             return 0
-        return max(info.off_policy_steps for info in self.inflight_group_rollouts.values())
+        return max(info.off_policy_steps for info in self.inflight_rollouts.values())
 
     @property
     def min_off_policy_level(self) -> int:
-        if not self.inflight_group_rollouts:
+        if not self.inflight_rollouts:
             return 0
-        return min(info.off_policy_steps for info in self.inflight_group_rollouts.values())
+        return min(info.off_policy_steps for info in self.inflight_rollouts.values())
 
     @property
     def mean_off_policy_level(self) -> float:
-        if not self.inflight_group_rollouts:
+        if not self.inflight_rollouts:
             return 0
-        steps = [info.off_policy_steps for info in self.inflight_group_rollouts.values()]
+        steps = [info.off_policy_steps for info in self.inflight_rollouts.values()]
         return sum(steps) / len(steps)
 
     def get_metrics(self) -> dict[str, float]:

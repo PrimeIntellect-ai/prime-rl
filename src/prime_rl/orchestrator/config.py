@@ -652,11 +652,11 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    max_inflight_groups: Annotated[
+    max_inflight_rollouts: Annotated[
         int,
         Field(
             ge=1,
-            description="Maximum number of group rollout requests in flight concurrently. Controls orchestrator throughput — the trainer decides when to step based on token_batch_size.",
+            description="Maximum number of rollout samples in flight concurrently. Must be divisible by rollouts_per_example.",
         ),
     ] = 128
 
@@ -707,6 +707,12 @@ class OrchestratorConfig(BaseSettings):
     def validate_max_concurrent(self):
         if self.max_concurrent is not None and self.max_concurrent < self.rollouts_per_example:
             raise ValueError("max_concurrent must be at least the number of rollouts per example")
+        return self
+
+    @model_validator(mode="after")
+    def validate_max_inflight_rollouts(self):
+        if self.max_inflight_rollouts % self.rollouts_per_example != 0:
+            raise ValueError("max_inflight_rollouts must be divisible by rollouts_per_example")
         return self
 
     @model_validator(mode="after")

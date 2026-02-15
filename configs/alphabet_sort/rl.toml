@@ -10,7 +10,7 @@ name = "alphabet-sort"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-max_inflight_groups = 32
+max_inflight_rollouts = 512
 rollouts_per_example = 16
 
 [orchestrator.sampling]

@@ -20,7 +20,7 @@ rank = 8
 save_adapter_separately = true
 
 [orchestrator]
-max_inflight_groups = 8
+max_inflight_rollouts = 128
 rollouts_per_example = 16
 
 [orchestrator.model.lora]

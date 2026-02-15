@@ -67,8 +67,8 @@ from prime_rl.utils.utils import (
 from prime_rl.utils.vlm import is_vlm_model
 
 
-class OrchestratorContext:
-    """Holds shared orchestrator state passed to helper functions."""
+class Orchestrator:
+    """Holds orchestrator state and helper methods used in the main loop."""
 
     __slots__ = ("config", "scheduler", "buffer", "monitor", "progress", "tokenizer", "event_loop_lag_monitor")
 
@@ -80,6 +80,124 @@ class OrchestratorContext:
         self.progress = progress
         self.tokenizer = tokenizer
         self.event_loop_lag_monitor = event_loop_lag_monitor
+
+    def log_accumulated_metrics(
+        self,
+        accumulated_rollouts: list[vf.RolloutOutput],
+        accumulated_advantages: list[float],
+        ckpt_step: int,
+        step_start_time: float,
+    ) -> None:
+        """Log aggregated metrics for all rollouts accumulated between ckpt_step changes."""
+        config = self.config
+        scheduler = self.scheduler
+        buffer = self.buffer
+        monitor = self.monitor
+        progress = self.progress
+        event_loop_lag_monitor = self.event_loop_lag_monitor
+
+        accumulated_rewards = [r["reward"] for r in accumulated_rollouts]
+        results_df = pd.DataFrame(
+            {
+                "example_id": [r["example_id"] for r in accumulated_rollouts],
+                "task": [r["task"] for r in accumulated_rollouts],
+                "reward": [r["reward"] for r in accumulated_rollouts],
+                "is_truncated": [r["is_truncated"] for r in accumulated_rollouts],
+                "error": [r["error"] for r in accumulated_rollouts],
+                "seq_len": [get_seq_len(r) for r in accumulated_rollouts],
+                "num_turns": [len(r["trajectory"]) for r in accumulated_rollouts],
+                "generation_ms": [r["timing"]["generation_ms"] for r in accumulated_rollouts],
+                "scoring_ms": [r["timing"]["scoring_ms"] for r in accumulated_rollouts],
+            }
+        )
+        metrics_df = pd.DataFrame([r["metrics"] for r in accumulated_rollouts])
+
+        num_tokens = int(results_df.seq_len.sum())
+        num_samples = len(accumulated_rollouts)
+        num_problems = results_df.example_id.nunique()
+        step_time = time.perf_counter() - step_start_time
+        throughput = num_tokens / step_time if step_time > 0 else 0
+
+        solve_all = (
+            results_df.groupby("example_id")
+            .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
+            .mean()
+        )
+        solve_none = (
+            results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
+        )
+        effective_batch_size = 1 - solve_none - solve_all
+
+        temperature = compute_temperature(ckpt_step, config.sampling, config.max_steps)
+
+        to_log = {
+            "progress/tokens": num_tokens,
+            "progress/samples": num_samples,
+            "progress/problems": num_problems,
+            "progress/total_tokens": progress.total_tokens,
+            "progress/total_samples": progress.total_samples,
+            "progress/total_problems": progress.total_problems,
+            "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
+            "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
+            "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
+            "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
+            "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
+            "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
+            "num_turns/min": results_df.groupby("example_id").num_turns.mean().min(),
+            "generation_ms/mean": results_df.groupby("example_id").generation_ms.mean().mean(),
+            "generation_ms/max": results_df.groupby("example_id").generation_ms.mean().max(),
+            "generation_ms/min": results_df.groupby("example_id").generation_ms.mean().min(),
+            "scoring_ms/mean": results_df.groupby("example_id").scoring_ms.mean().mean(),
+            "scoring_ms/max": results_df.groupby("example_id").scoring_ms.mean().max(),
+            "scoring_ms/min": results_df.groupby("example_id").scoring_ms.mean().min(),
+            "perf/throughput": throughput,
+            "reward/mean": results_df.reward.mean(),
+            "sampling/temperature": temperature,
+            "batch/solve_none": solve_none,
+            "batch/solve_all": solve_all,
+            "batch/effective_batch_size": effective_batch_size,
+            "error/mean": (~results_df.error.isna()).mean(),
+            **{
+                f"error/{error}": error_rate
+                for error, error_rate in results_df.error.dropna()
+                .apply(lambda e: e.get("error") if isinstance(e, dict) else e)
+                .value_counts(normalize=True)
+                .items()
+            },
+            **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
+            "time/step": step_time,
+            **scheduler.get_metrics(),
+            **buffer.get_metrics(),
+            **event_loop_lag_monitor.get_metrics(),
+            "step": ckpt_step,
+        }
+
+        if results_df.task.nunique() > 1:
+            per_env_reward = results_df.groupby("task").reward.mean().to_dict()
+            to_log.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
+            per_env_ratio = results_df.task.value_counts(normalize=True).to_dict()
+            to_log.update({f"batch/{env}": ratio for env, ratio in per_env_ratio.items()})
+
+        monitor.log(to_log)
+
+        subset_train_rollouts = random.sample(accumulated_rollouts, min(8, len(accumulated_rollouts)))
+        monitor.log_samples(subset_train_rollouts, step=ckpt_step)
+
+        monitor.log_distributions(
+            distributions={
+                "rewards": accumulated_rewards,
+                "advantages": accumulated_advantages,
+            },
+            step=ckpt_step,
+        )
+
+        logger.success(
+            f"ckpt_step {ckpt_step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | "
+            f"Throughput: {throughput:.1f} tokens/s | Samples: {num_samples} | "
+            f"Max Off-Policy: {scheduler.max_off_policy_level}"
+        )
+
+        event_loop_lag_monitor.reset()
 
 
 def _should_run_eval(eval_config, ckpt_step: int, last_eval_step: int, is_final_step: bool) -> bool:
@@ -93,6 +211,23 @@ def _should_run_eval(eval_config, ckpt_step: int, last_eval_step: int, is_final_
     if ckpt_step == 0:
         return eval_config.eval_base_model
     return ckpt_step > 0
+
+
+def _should_save_checkpoint(
+    ckpt_interval: int | None,
+    ckpt_step: int,
+    is_final_step: bool,
+    *,
+    force_final: bool = False,
+) -> bool:
+    """Return whether orchestrator checkpoint should be written at this step."""
+    if ckpt_step <= 0:
+        return False
+    if force_final:
+        return True
+    if ckpt_interval is None:
+        return False
+    return ckpt_step % ckpt_interval == 0 or is_final_step
 
 
 @clean_exit
@@ -333,12 +468,12 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             logger.info("Training from scratch. Skipping base weight reload")
 
-    # Streaming loop: continuously get group rollouts and send them to the trainer.
+    # Continuously get group rollouts and send them to the trainer.
     # The trainer decides when to step based on accumulated completion tokens.
     logger.info(f"Starting orchestrator streaming loop (max_steps={config.max_steps or 'infinite'})")
     await set_semaphore(config.max_concurrent or -1)
 
-    ctx = OrchestratorContext(
+    orchestrator = Orchestrator(
         config=config,
         scheduler=scheduler,
         buffer=buffer,
@@ -348,8 +483,9 @@ async def orchestrate(config: OrchestratorConfig):
         event_loop_lag_monitor=event_loop_lag_monitor,
     )
 
-    # Set initial temperature / sampling args
-    temperature = compute_temperature(0, config.sampling, config.max_steps)
+    # Set initial temperature / sampling args.
+    # On resume we must continue from the resumed checkpoint step.
+    temperature = compute_temperature(scheduler.ckpt_step, config.sampling, config.max_steps)
     sampling_args = get_sampling_args(config.sampling, temperature=temperature)
     scheduler.set_sampling_args(sampling_args)
 
@@ -391,8 +527,31 @@ async def orchestrate(config: OrchestratorConfig):
     # Start update policy loop
     update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
 
-    # Monotonic send counter for TrainingBatch ordering
-    send_counter = 0
+    # Monotonic send counter for TrainingBatch ordering.
+    # Start from resumed ckpt step so trainer and orchestrator stay aligned on resume.
+    send_counter = scheduler.ckpt_step
+
+    last_saved_ckpt_step = -1
+
+    def maybe_save_checkpoint(ckpt_step: int, *, is_final_step: bool, force_final: bool = False) -> None:
+        nonlocal last_saved_ckpt_step
+        if ckpt_manager is None or config.ckpt is None or ckpt_step <= 0:
+            return
+        if ckpt_step == last_saved_ckpt_step:
+            return
+
+        should_save = _should_save_checkpoint(
+            config.ckpt.interval,
+            ckpt_step,
+            is_final_step,
+            force_final=force_final,
+        )
+        if not should_save:
+            return
+
+        logger.info(f"Saving checkpoint at ckpt_step {ckpt_step}")
+        ckpt_manager.save(progress, buffer, step=ckpt_step)
+        last_saved_ckpt_step = ckpt_step
 
     # Accumulate rollouts between ckpt_step changes for aggregate logging
     accumulated_rollouts: list[vf.RolloutOutput] = []
@@ -420,7 +579,12 @@ async def orchestrate(config: OrchestratorConfig):
         if ckpt_step > prev_ckpt_step:
             # Log accumulated metrics from the previous interval
             if accumulated_rollouts:
-                _log_accumulated_metrics(ctx, accumulated_rollouts, accumulated_advantages, prev_ckpt_step, step_start_time)
+                orchestrator.log_accumulated_metrics(
+                    accumulated_rollouts,
+                    accumulated_advantages,
+                    prev_ckpt_step,
+                    step_start_time,
+                )
                 accumulated_rollouts = []
                 accumulated_advantages = []
                 step_start_time = time.perf_counter()
@@ -428,16 +592,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Run evals at interval or on the final step
             is_final_step = config.max_steps and ckpt_step >= config.max_steps
 
-            # Save checkpoint
-            if (
-                ckpt_manager is not None
-                and config.ckpt
-                and config.ckpt.interval
-                and (ckpt_step % config.ckpt.interval == 0 or is_final_step)
-                and ckpt_step > 0
-            ):
-                logger.info(f"Saving checkpoint at ckpt_step {ckpt_step}")
-                ckpt_manager.save(progress, buffer, step=ckpt_step)
+            maybe_save_checkpoint(ckpt_step, is_final_step=is_final_step)
             await maybe_run_eval(ckpt_step, is_final_step=is_final_step)
 
             # Update temperature
@@ -484,24 +639,22 @@ async def orchestrate(config: OrchestratorConfig):
         if not train_examples:
             continue
 
-        # Skip sending to trainer if all advantages are zero 
-        if any(a != 0.0 for a in advantages):
-            # Compute teacher logprobs if teacher model is configured
-            if config.teacher_model and teacher_inference_pool:
-                teacher_logprobs_list = await compute_teacher_logprobs(
-                    clients=teacher_inference_pool.clients,
-                    model_name=config.teacher_model.model.name,
-                    samples=train_examples,
-                )
-                for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
-                    train_example.teacher_logprobs = teacher_logprobs
-
-            training_batch = TrainingBatch(
-                examples=train_examples,
-                step=send_counter,
+        # Compute teacher logprobs if teacher model is configured
+        if config.teacher_model and teacher_inference_pool:
+            teacher_logprobs_list = await compute_teacher_logprobs(
+                clients=teacher_inference_pool.clients,
+                model_name=config.teacher_model.model.name,
+                samples=train_examples,
             )
-            training_batch_sender.send(training_batch)
-            send_counter += 1
+            for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
+                train_example.teacher_logprobs = teacher_logprobs
+
+        training_batch = TrainingBatch(
+            examples=train_examples,
+            step=send_counter,
+        )
+        training_batch_sender.send(training_batch)
+        send_counter += 1
 
         # Accumulate for logging
         accumulated_rollouts.extend(train_rollouts)
@@ -519,7 +672,16 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Flush any remaining accumulated metrics
     if accumulated_rollouts:
-        _log_accumulated_metrics(ctx, accumulated_rollouts, accumulated_advantages, prev_ckpt_step, step_start_time)
+        orchestrator.log_accumulated_metrics(
+            accumulated_rollouts,
+            accumulated_advantages,
+            prev_ckpt_step,
+            step_start_time,
+        )
+
+    # Always attempt a final orchestrator checkpoint on shutdown if checkpointing is enabled.
+    # This preserves buffer/progress state even when no interval is configured.
+    maybe_save_checkpoint(scheduler.ckpt_step, is_final_step=True, force_final=True)
 
     # Log final (immutable) samples and distributions to monitor(s)
     monitor.log_final_samples()
@@ -546,123 +708,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Optionally, print benchmark table
     if config.bench:
         print_benchmark(to_col_format(monitor.history))
-
-
-def _log_accumulated_metrics(
-    ctx: OrchestratorContext,
-    accumulated_rollouts: list[vf.RolloutOutput],
-    accumulated_advantages: list[float],
-    ckpt_step: int,
-    step_start_time: float,
-):
-    """Log aggregated metrics for all rollouts accumulated between ckpt_step changes."""
-    config = ctx.config
-    scheduler = ctx.scheduler
-    buffer = ctx.buffer
-    monitor = ctx.monitor
-    progress = ctx.progress
-    event_loop_lag_monitor = ctx.event_loop_lag_monitor
-
-    accumulated_rewards = [r["reward"] for r in accumulated_rollouts]
-    results_df = pd.DataFrame(
-        {
-            "example_id": [r["example_id"] for r in accumulated_rollouts],
-            "task": [r["task"] for r in accumulated_rollouts],
-            "reward": [r["reward"] for r in accumulated_rollouts],
-            "is_truncated": [r["is_truncated"] for r in accumulated_rollouts],
-            "error": [r["error"] for r in accumulated_rollouts],
-            "seq_len": [get_seq_len(r) for r in accumulated_rollouts],
-            "num_turns": [len(r["trajectory"]) for r in accumulated_rollouts],
-            "generation_ms": [r["timing"]["generation_ms"] for r in accumulated_rollouts],
-            "scoring_ms": [r["timing"]["scoring_ms"] for r in accumulated_rollouts],
-        }
-    )
-    metrics_df = pd.DataFrame([r["metrics"] for r in accumulated_rollouts])
-
-    num_tokens = int(results_df.seq_len.sum())
-    num_samples = len(accumulated_rollouts)
-    num_problems = results_df.example_id.nunique()
-    step_time = time.perf_counter() - step_start_time
-    throughput = num_tokens / step_time if step_time > 0 else 0
-
-    solve_all = (
-        results_df.groupby("example_id")
-        .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
-        .mean()
-    )
-    solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
-    effective_batch_size = 1 - solve_none - solve_all
-
-    temperature = compute_temperature(ckpt_step, config.sampling, config.max_steps)
-
-    to_log = {
-        "progress/tokens": num_tokens,
-        "progress/samples": num_samples,
-        "progress/problems": num_problems,
-        "progress/total_tokens": progress.total_tokens,
-        "progress/total_samples": progress.total_samples,
-        "progress/total_problems": progress.total_problems,        
-        "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
-        "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
-        "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
-        "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
-        "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
-        "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
-        "num_turns/min": results_df.groupby("example_id").num_turns.mean().min(),
-        "generation_ms/mean": results_df.groupby("example_id").generation_ms.mean().mean(),
-        "generation_ms/max": results_df.groupby("example_id").generation_ms.mean().max(),
-        "generation_ms/min": results_df.groupby("example_id").generation_ms.mean().min(),
-        "scoring_ms/mean": results_df.groupby("example_id").scoring_ms.mean().mean(),
-        "scoring_ms/max": results_df.groupby("example_id").scoring_ms.mean().max(),
-        "scoring_ms/min": results_df.groupby("example_id").scoring_ms.mean().min(),
-        "perf/throughput": throughput,
-        "reward/mean": results_df.reward.mean(),
-        "sampling/temperature": temperature,
-        "batch/solve_none": solve_none,
-        "batch/solve_all": solve_all,
-        "batch/effective_batch_size": effective_batch_size,
-        "error/mean": (~results_df.error.isna()).mean(),
-        **{
-            f"error/{error}": error_rate
-            for error, error_rate in results_df.error.dropna()
-            .apply(lambda e: e.get("error") if isinstance(e, dict) else e)
-            .value_counts(normalize=True)
-            .items()
-        },
-        **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
-        "time/step": step_time,
-        **scheduler.get_metrics(),
-        **buffer.get_metrics(),
-        **event_loop_lag_monitor.get_metrics(),
-        "step": ckpt_step,
-    }
-
-    if results_df.task.nunique() > 1:
-        per_env_reward = results_df.groupby("task").reward.mean().to_dict()
-        to_log.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
-        per_env_ratio = results_df.task.value_counts(normalize=True).to_dict()
-        to_log.update({f"batch/{env}": ratio for env, ratio in per_env_ratio.items()})
-
-    monitor.log(to_log)
-
-    subset_train_rollouts = random.sample(accumulated_rollouts, min(8, len(accumulated_rollouts)))
-    monitor.log_samples(subset_train_rollouts, step=ckpt_step)
-
-    monitor.log_distributions(
-        distributions={
-            "rewards": accumulated_rewards,
-            "advantages": accumulated_advantages,
-        },
-        step=ckpt_step,
-    )
-
-    logger.success(
-        f"ckpt_step {ckpt_step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | "
-        f"Throughput: {throughput:.1f} tokens/s | Samples: {num_samples} | "
-        f"Max Off-Policy: {scheduler.max_off_policy_level}"
-    )
-
-    event_loop_lag_monitor.reset()
 
 
 def main():

@@ -55,3 +55,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`OrchestratorConfig`**: Removed `workers_per_env`, `max_env_worker_restarts`, and `mask_env_responses` (2026-02-06)
 - **`EvalSaveDiskConfig`**, **`EvalSaveConfig`**, **`RetryConfig`**, **`OnlineEvalConfig`**: Removed (2026-02-06)
 - **`TemperatureScheduleConfig`**: Renamed to `TemperatureSchedulerConfig` (2026-02-06)
+- **`orchestrator.max_inflight_rollouts`**: Renamed from `orchestrator.max_inflight_groups` and now validated to be divisible by `rollouts_per_example` so in-flight budgeting is measured in rollout samples rather than request groups (2026-02-15)
