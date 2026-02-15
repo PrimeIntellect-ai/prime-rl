@@ -12,7 +12,6 @@ import torch
 import torch.distributed as dist
 import torch.distributed.nn as dist_nn
 from torch.profiler import profile, ProfilerActivity, record_function
-from loguru import logger
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
@@ -63,7 +62,6 @@ from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
-@logger.catch(reraise=True)
 def train(config: RLTrainerConfig):
     # Setup world and logger
     world = get_world()

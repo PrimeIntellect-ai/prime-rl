@@ -24,7 +24,6 @@ monkey_patch_chat_completion_logprobs()
 
 import pandas as pd
 import verifiers as vf
-from loguru import logger
 from transformers import AutoProcessor, AutoTokenizer
 
 from prime_rl.orchestrator.buffer import Buffer
@@ -71,7 +70,6 @@ from prime_rl.utils.vlm import is_vlm_model
 
 
 @clean_exit
-@logger.catch(reraise=True)
 async def orchestrate(config: OrchestratorConfig):
     # Initialize the logger
     logger = setup_logger(

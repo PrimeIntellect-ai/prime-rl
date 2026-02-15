@@ -130,6 +130,7 @@ def clean_exit(func: Callable) -> Callable:
                 wandb.finish()
                 return ret
             except Exception as e:
+                get_logger().opt(exception=True).error(f"Fatal error in {func.__name__}")
                 wandb.finish(exit_code=1)
                 raise e
             finally:
@@ -146,6 +147,7 @@ def clean_exit(func: Callable) -> Callable:
                 wandb.finish()
                 return ret
             except Exception as e:
+                get_logger().opt(exception=True).error(f"Fatal error in {func.__name__}")
                 wandb.finish(exit_code=1)
                 raise e
             finally:
