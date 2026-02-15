@@ -639,22 +639,24 @@ async def orchestrate(config: OrchestratorConfig):
         if not train_examples:
             continue
 
-        # Compute teacher logprobs if teacher model is configured
-        if config.teacher_model and teacher_inference_pool:
-            teacher_logprobs_list = await compute_teacher_logprobs(
-                clients=teacher_inference_pool.clients,
-                model_name=config.teacher_model.model.name,
-                samples=train_examples,
-            )
-            for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
-                train_example.teacher_logprobs = teacher_logprobs
+        # Skip sending to trainer if all advantages are zero
+        if any(a != 0.0 for a in advantages):
+            # Compute teacher logprobs if teacher model is configured
+            if config.teacher_model and teacher_inference_pool:
+                teacher_logprobs_list = await compute_teacher_logprobs(
+                    clients=teacher_inference_pool.clients,
+                    model_name=config.teacher_model.model.name,
+                    samples=train_examples,
+                )
+                for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
+                    train_example.teacher_logprobs = teacher_logprobs
 
-        training_batch = TrainingBatch(
-            examples=train_examples,
-            step=send_counter,
-        )
-        training_batch_sender.send(training_batch)
-        send_counter += 1
+            training_batch = TrainingBatch(
+                examples=train_examples,
+                step=send_counter,
+            )
+            training_batch_sender.send(training_batch)
+            send_counter += 1
 
         # Accumulate for logging
         accumulated_rollouts.extend(train_rollouts)
