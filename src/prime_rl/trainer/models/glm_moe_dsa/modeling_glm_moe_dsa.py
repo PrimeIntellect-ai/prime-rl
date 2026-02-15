@@ -96,6 +96,76 @@ class _SparseMLA(torch.autograd.Function):
         return dq, dkv, None, None
 
 
+class LayerNorm(nn.Module):
+    """
+    Layer Normalization.
+    """
+
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim, dtype=torch.float32))
+        self.bias = nn.Parameter(torch.zeros(dim, dtype=torch.float32))
+
+    def forward(self, x: torch.Tensor):
+        return F.layer_norm(x.float(), (self.dim,), self.weight, self.bias, self.eps).type_as(x)
+
+
+class Indexer(nn.Module):
+    def __init__(self, config: GlmMoeDsaConfig):
+        super().__init__()
+        if config.q_lora_rank is None:
+            raise ValueError("Sparse indexer requires q_lora_rank to be set")
+
+        self.n_head = config.index_n_heads
+        self.head_dim = config.index_head_dim
+        self.wq_b = nn.Linear(config.q_lora_rank, self.n_head * self.head_dim, bias=False)
+        self.wk = nn.Linear(config.hidden_size, self.head_dim, bias=config.attention_bias)
+        self.k_norm = LayerNorm(dim=self.head_dim, eps=1e-6)
+        self.weights_proj = nn.Linear(config.hidden_size, self.n_head, bias=False)
+
+    @torch.no_grad()
+    def compute_sparse_indices(
+        self,
+        hidden_states: torch.Tensor,
+        q_latent: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        index_topk: int,
+    ) -> torch.Tensor:
+        total_tokens = hidden_states.shape[1]
+        assert index_topk % 64 == 0, f"index_topk must be divisible by 64 (block_I), got {index_topk}"
+
+        q_idx = self.wq_b(q_latent[0]).view(total_tokens, self.n_head, self.head_dim)
+        k_idx = self.k_norm(self.wk(hidden_states[0]))
+        w = self.weights_proj(hidden_states[0])
+
+        q_combined = (q_idx * w.unsqueeze(-1)).sum(dim=1)
+
+        num_seqs = cu_seqlens.shape[0] - 1
+        indices = torch.zeros(total_tokens, index_topk, dtype=torch.int32, device=hidden_states.device)
+
+        for i in range(num_seqs):
+            start = cu_seqlens[i].item()
+            end = cu_seqlens[i + 1].item()
+            seq_len = end - start
+
+            scores = q_combined[start:end] @ k_idx[start:end].T
+            causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=scores.device, dtype=torch.bool), diagonal=1)
+            scores.masked_fill_(causal_mask, float("-inf"))
+
+            actual_topk = min(index_topk, seq_len)
+            _, topk_idx = torch.topk(scores, actual_topk, dim=-1)
+
+            if actual_topk < index_topk:
+                padding = topk_idx[:, :1].expand(-1, index_topk - actual_topk)
+                topk_idx = torch.cat([topk_idx, padding], dim=-1)
+
+            indices[start:end] = (topk_idx + start).to(torch.int32)
+
+        return indices.view(1, total_tokens, 1, index_topk)
+
+
 class _MLABase(nn.Module):
     """Base class for MLA (Multi-head Latent Attention) with shared projection logic."""
 
@@ -137,10 +207,7 @@ class _MLABase(nn.Module):
         self.o_proj = nn.Linear(self.num_heads * self.v_head_dim, config.hidden_size, bias=config.attention_bias)
 
         # Indexer: selects top-k tokens per query for sparse attention
-        self.wq_b = nn.Linear(config.q_lora_rank, self.num_heads * self.qk_head_dim, bias=False)
-        self.wk = nn.Linear(config.hidden_size, self.qk_head_dim, bias=config.attention_bias)
-        self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.qk_head_dim, eps=config.rms_norm_eps))
-        self.weights_proj = nn.Linear(config.hidden_size, self.num_heads, bias=False)
+        self.indexer = Indexer(config)
 
         # Attention scaling
         self.scaling = self.qk_head_dim ** (-0.5)
@@ -209,53 +276,7 @@ class _MLABase(nn.Module):
         q_latent: torch.Tensor,
         cu_seqlens: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute top-k token indices using the indexer weights (bf16, varlen-aware).
-
-        For each query position, scores all KV positions within the same sequence
-        (causal), then selects the top index_topk positions.
-
-        Args:
-            hidden_states: [1, total_tokens, hidden_size]
-            q_latent: [1, total_tokens, q_lora_rank]
-            cu_seqlens: [num_seqs + 1] int32
-
-        Returns:
-            indices: [1, total_tokens, 1, index_topk] int32, absolute positions
-        """
-        total_tokens = hidden_states.shape[1]
-        index_topk = self.config.index_topk
-        assert index_topk % 64 == 0, f"index_topk must be divisible by 64 (block_I), got {index_topk}"
-
-        q_idx = self.wq_b(q_latent[0]).view(total_tokens, self.num_heads, self.qk_head_dim)
-        k_idx = self.k_norm(self.wk(hidden_states[0]))
-        w = self.weights_proj(hidden_states[0])
-
-        # Fold head weights into Q: single-vector score per (query, kv) pair
-        q_combined = (q_idx * w.unsqueeze(-1)).sum(dim=1)  # [total, qk_head_dim]
-
-        num_seqs = cu_seqlens.shape[0] - 1
-        indices = torch.zeros(total_tokens, index_topk, dtype=torch.int32, device=hidden_states.device)
-
-        for i in range(num_seqs):
-            start = cu_seqlens[i].item()
-            end = cu_seqlens[i + 1].item()
-            seq_len = end - start
-
-            scores = q_combined[start:end] @ k_idx[start:end].T  # [seq_len, seq_len]
-
-            causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=scores.device, dtype=torch.bool), diagonal=1)
-            scores.masked_fill_(causal_mask, float("-inf"))
-
-            actual_topk = min(index_topk, seq_len)
-            _, topk_idx = torch.topk(scores, actual_topk, dim=-1)
-
-            if actual_topk < index_topk:
-                padding = topk_idx[:, :1].expand(-1, index_topk - actual_topk)
-                topk_idx = torch.cat([topk_idx, padding], dim=-1)
-
-            indices[start:end] = (topk_idx + start).to(torch.int32)
-
-        return indices.view(1, total_tokens, 1, index_topk)
+        return self.indexer.compute_sparse_indices(hidden_states, q_latent, cu_seqlens, self.config.index_topk)
 
 
 class GlmMoeDsaFlashAttention(_MLABase):
@@ -535,7 +556,15 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
 @auto_docstring
 class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
     def __init__(self, config: GlmMoeDsaConfig):
+        requested_attn_impl = config._attn_implementation
+        if requested_attn_impl == "sparse":
+            config._attn_implementation = "sdpa"
+
         super().__init__(config)
+
+        if requested_attn_impl == "sparse":
+            config._attn_implementation = requested_attn_impl
+
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
@@ -608,10 +637,18 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
+        requested_attn_impl = config._attn_implementation
+        if requested_attn_impl == "sparse":
+            config._attn_implementation = "sdpa"
+
         super().__init__(config)
+
         self.model = GlmMoeDsaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
+        if requested_attn_impl == "sparse":
+            config._attn_implementation = requested_attn_impl
 
         self.post_init()
 

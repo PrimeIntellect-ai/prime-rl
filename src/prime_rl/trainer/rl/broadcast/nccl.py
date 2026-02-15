@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.distributed.tensor import DTensor
+from transformers.core_model_loading import revert_weight_conversion
+from transformers.modeling_utils import PreTrainedModel
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
@@ -129,11 +131,12 @@ class NCCLWeightBroadcastSender:
             # Convert to HF hub format for this layer if needed
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_layer_to_hf(state_dict, layer_id)
+                state_dict = revert_weight_conversion(cast(PreTrainedModel, model), state_dict)
             else:
                 # For regular transformers models, revert internal format to original HF hub format
-                from transformers.core_model_loading import revert_weight_conversion
-
-                state_dict = revert_weight_conversion(model, state_dict)
+                if not isinstance(model, PreTrainedModel):
+                    raise TypeError(f"Expected PreTrainedModel for weight conversion, got {type(model)}")
+                state_dict = revert_weight_conversion(cast(PreTrainedModel, model), state_dict)
 
             if self.world.is_master:
                 broadcast_state_dict(state_dict, self.communicator)

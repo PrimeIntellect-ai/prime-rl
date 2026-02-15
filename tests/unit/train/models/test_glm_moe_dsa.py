@@ -32,6 +32,9 @@ def get_model_pairs() -> tuple[HFGlmMoeDsaForCausalLM, PrimeRLGlmMoeDsaForCausal
         norm_topk_prob=True,
         max_position_embeddings=4096,
         rope_interleave=True,
+        index_n_heads=8,
+        index_head_dim=64,
+        indexer_rope_interleave=True,
         use_grouped_mm=False,
     )
     config._attn_implementation = "sdpa"
@@ -165,8 +168,8 @@ def test_glm_moe_dsa_sparse_attention() -> None:
         intermediate_size=2048,
         moe_intermediate_size=512,
         num_hidden_layers=1,
-        num_attention_heads=16,
-        num_key_value_heads=16,
+        num_attention_heads=32,
+        num_key_value_heads=32,
         kv_lora_rank=512,
         q_lora_rank=512,
         qk_rope_head_dim=64,
@@ -222,10 +225,9 @@ def test_glm_moe_dsa_sparse_attention() -> None:
                 assert param.grad is not None, f"{name} should have gradients"
                 assert param.grad.abs().sum() > 0, f"{name} gradients should be non-zero"
 
-    no_grad_params = ["wq_b", "wk", "k_norm", "weights_proj"]
+    no_grad_params = ["indexer.wq_b", "indexer.wk", "indexer.k_norm", "indexer.weights_proj"]
     for name, param in attn.named_parameters():
-        base_name = name.split(".")[0]
-        if base_name in no_grad_params:
+        if any(name.startswith(param_prefix) for param_prefix in no_grad_params):
             assert param.grad is None or param.grad.abs().sum() == 0, (
                 f"Indexer param {name} should have no gradient (topk is discrete)"
             )
@@ -246,8 +248,8 @@ def test_glm_moe_dsa_sparse_attention_varlen() -> None:
         intermediate_size=2048,
         moe_intermediate_size=512,
         num_hidden_layers=1,
-        num_attention_heads=16,
-        num_key_value_heads=16,
+        num_attention_heads=32,
+        num_key_value_heads=32,
         kv_lora_rank=512,
         q_lora_rank=512,
         qk_rope_head_dim=64,

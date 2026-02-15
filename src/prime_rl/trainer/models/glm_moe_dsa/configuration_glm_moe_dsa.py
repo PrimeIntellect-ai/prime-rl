@@ -65,8 +65,16 @@ class GlmMoeDsaConfig(PretrainedConfig):
             Whether to use bias in attention projections.
         attention_dropout (`float`, defaults to 0.0):
             Dropout for attention probabilities.
+        index_n_heads (`int`, defaults to 32):
+            Number of heads used by the sparse indexer.
+        index_head_dim (`int`, defaults to 128):
+            Head dimension used by the sparse indexer.
+        indexer_rope_interleave (`bool`, defaults to `True`):
+            Whether to use interleaved RoPE style in the sparse indexer.
         index_topk (`int`, defaults to 2048):
             Number of top tokens selected by the sparse indexer.
+        topk_method (`str`, defaults to `"noaux_tc"`):
+            MoE routing top-k method used by GLM-5 checkpoints.
         use_grouped_mm (`bool`, defaults to `True`):
             Whether to use grouped matrix multiplication for MoE.
     """
@@ -124,7 +132,11 @@ class GlmMoeDsaConfig(PretrainedConfig):
         mlp_layer_types=None,
         attention_bias=False,
         attention_dropout=0.0,
+        index_n_heads=32,
+        index_head_dim=128,
+        indexer_rope_interleave=True,
         index_topk=2048,
+        topk_method="noaux_tc",
         use_grouped_mm=True,
         pad_token_id=None,
         **kwargs,
@@ -173,7 +185,11 @@ class GlmMoeDsaConfig(PretrainedConfig):
         self.rope_theta = rope_theta
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.index_n_heads = index_n_heads
+        self.index_head_dim = index_head_dim
+        self.indexer_rope_interleave = indexer_rope_interleave
         self.index_topk = index_topk
+        self.topk_method = topk_method
         self.use_grouped_mm = use_grouped_mm
         self.pad_token_id = pad_token_id
 
