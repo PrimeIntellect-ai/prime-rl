@@ -1,3 +1,4 @@
+import shutil
 from functools import partial
 from pathlib import Path
 from typing import Callable
@@ -11,6 +12,7 @@ pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
 TIMEOUT = 900  # 15 minutes
+RESUME_STEP = 10
 
 
 @pytest.fixture(scope="module")
@@ -60,12 +62,26 @@ def rl_process(
 def rl_resume_process(
     rl_process,  # Resume training can only start when regular RL process is finished
     run_process: Callable[..., ProcessResult],
+    rl_output_dir: Path,
     rl_resume_output_dir: Path,
     wandb_project: str,
     wandb_name: str,
 ) -> ProcessResult:
     if rl_process.returncode != 0:
         pytest.skip("Alphabet sort RL process failed")
+
+    step_dir = f"step_{RESUME_STEP}"
+    trainer_ckpt_src = rl_output_dir / "checkpoints" / step_dir
+    trainer_ckpt_dst = rl_resume_output_dir / "checkpoints" / step_dir
+    trainer_ckpt_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(trainer_ckpt_src, trainer_ckpt_dst)
+
+    orchestrator_ckpt_src = rl_output_dir / "run_default" / "checkpoints" / step_dir
+    if orchestrator_ckpt_src.exists():
+        orchestrator_ckpt_dst = rl_resume_output_dir / "run_default" / "checkpoints" / step_dir
+        orchestrator_ckpt_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(orchestrator_ckpt_src, orchestrator_ckpt_dst)
+
     wandb_name = f"{wandb_name}-resume"
     cmd = [
         "uv",
