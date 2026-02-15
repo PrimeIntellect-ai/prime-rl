@@ -76,6 +76,11 @@ def rl_resume_process(
     trainer_ckpt_dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(trainer_ckpt_src, trainer_ckpt_dst)
 
+    weights_src = rl_output_dir / "weights" / step_dir
+    weights_dst = rl_resume_output_dir / "weights" / step_dir
+    weights_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(weights_src, weights_dst)
+
     orchestrator_ckpt_src = rl_output_dir / "run_default" / "checkpoints" / step_dir
     if orchestrator_ckpt_src.exists():
         orchestrator_ckpt_dst = rl_resume_output_dir / "run_default" / "checkpoints" / step_dir
