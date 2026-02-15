@@ -112,11 +112,11 @@ async def run_group(
 # TODO: migrate this to vf.Environment.generate() once it supports multiple clients
 async def generate(
     env: vf.Environment,
-    clients: list[vf.ClientConfig],
     model_name: str,
     examples: list,
     rollouts_per_example: int,
     sampling_args: dict,
+    clients: list[vf.ClientConfig] | None = None,
     get_client: Callable[[], Awaitable[vf.ClientConfig]] | None = None,
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
@@ -169,11 +169,11 @@ async def generate(
 
 async def evaluate(
     env: vf.Environment,
-    clients: list[vf.ClientConfig],
     model_name: str,
     sampling_args: dict,
     num_examples: int,
     rollouts_per_example: int,
+    clients: list[vf.ClientConfig] | None = None,
     get_client: Callable[[], Awaitable[vf.ClientConfig]] | None = None,
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,

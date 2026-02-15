@@ -391,7 +391,6 @@ async def orchestrate(config: OrchestratorConfig):
                     evaluate_env(
                         env=eval_env,
                         env_name=eval_env_name,
-                        clients=inference_pool.clients,
                         get_client=inference_pool.get_next_client,
                         model_name=scheduler.model_name,
                         sampling_args=eval_sampling_args,
@@ -421,11 +420,11 @@ async def orchestrate(config: OrchestratorConfig):
             val_task = asyncio.create_task(
                 generate(
                     env=train_env_group,
-                    clients=inference_pool.clients,
                     model_name=scheduler.model_name,
                     examples=val_examples,
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=sampling_args,
+                    clients=inference_pool.clients,
                     pbar_description="Generating rollouts (val)",
                 )
             )
@@ -728,7 +727,6 @@ async def orchestrate(config: OrchestratorConfig):
                 evaluate_env(
                     env=eval_env,
                     env_name=eval_env_name,
-                    clients=inference_pool.clients,
                     get_client=inference_pool.get_next_client,
                     model_name=scheduler.model_name,
                     sampling_args=eval_sampling_args,

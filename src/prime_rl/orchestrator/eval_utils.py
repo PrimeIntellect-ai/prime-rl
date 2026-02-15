@@ -66,7 +66,6 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
 async def evaluate_env(
     env: vf.Environment,
     env_name: str,
-    clients: list[vf.ClientConfig],
     model_name: str,
     sampling_args: dict,
     num_examples: int,
@@ -74,14 +73,13 @@ async def evaluate_env(
     max_retries: int,
     ckpt_step: int,
     step: int | None,
-    get_client: Callable[[], Awaitable[vf.ClientConfig]] | None = None,
+    get_client: Callable[[], Awaitable[vf.ClientConfig]],
 ):
     logger = get_logger()
     logger.info(f"Evaluating {env_name} ({num_examples=}, {rollouts_per_example=})")
     eval_start_time = time.perf_counter()
     outputs = await evaluate(
         env=env,
-        clients=clients,
         model_name=model_name,
         sampling_args=sampling_args,
         num_examples=num_examples,
