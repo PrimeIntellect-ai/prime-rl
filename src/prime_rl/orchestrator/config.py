@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, Discriminator, Field, Tag, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
@@ -572,6 +572,64 @@ AdvantageConfigType: TypeAlias = Annotated[
 ]
 
 
+class GibberishFilterConfig(BaseModel):
+    """Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["gibberish"] = "gibberish"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, zero reward and mask for detected rollouts. If False, only track detection metrics."
+        ),
+    ] = False
+    token_id_threshold: Annotated[
+        int,
+        Field(description="Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."),
+    ] = 100_000
+    logprob_offset: Annotated[
+        float,
+        Field(description="Offset from uniform distribution logprob. Threshold = -log(vocab_size) - logprob_offset."),
+    ] = 2.0
+    vocab_size: Annotated[
+        int | None,
+        Field(ge=1, description="Vocabulary size for computing logprob threshold. If None, uses tokenizer.vocab_size."),
+    ] = None
+
+
+class RepetitionFilterConfig(BaseModel):
+    """Flags pathological repetition loops (Section 3.2, https://arxiv.org/abs/2506.13585)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["repetition"] = "repetition"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, zero reward and mask for detected rollouts. If False, only track detection metrics."
+        ),
+    ] = False
+    window: Annotated[
+        int,
+        Field(ge=1, description="Number of consecutive high-probability steps before flagging."),
+    ] = 3_000
+    prob_threshold: Annotated[
+        float,
+        Field(
+            gt=0,
+            le=1,
+            description="Token probability threshold. Steps where sampled prob exceeds this count toward the window.",
+        ),
+    ] = 0.99
+
+
+FilterConfigType: TypeAlias = Annotated[
+    GibberishFilterConfig | RepetitionFilterConfig,
+    Field(discriminator="type"),
+]
+
+
 class FileSystemWeightBroadcastConfig(BaseModel):
     """Configures the filesystem weight broadcast."""
 
@@ -641,6 +699,9 @@ class OrchestratorConfig(BaseSettings):
 
     # The advantage configuration
     advantage: AdvantageConfigType | None = AdvantageConfig()
+
+    # Rollout filters (monitor by default, enforce optionally)
+    filters: list[FilterConfigType] = [GibberishFilterConfig(), RepetitionFilterConfig()]
 
     # The logging configuration
     log: LogConfig = LogConfig()
