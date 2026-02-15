@@ -112,6 +112,15 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
         if idx in self._received_steps:
             del self._received_steps[idx]
 
+    def set_start_step(self, idx: int, step: int) -> None:
+        """Set the starting receive step for a run, overriding lazy initialization.
+
+        This is needed when the rollout directory is cleaned but progress[idx].step
+        is non-zero (e.g. on resume), since the file step counter and training step
+        counter are independent in the streaming model.
+        """
+        self._received_steps[idx] = step
+
 
 class FileSystemMicroBatchSender(MicroBatchSender):
     """Filesystem-based micro batch sender that writes micro batches to disk."""

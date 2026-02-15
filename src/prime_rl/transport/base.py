@@ -57,6 +57,14 @@ class TrainingBatchReceiver(ABC):
         """
         pass
 
+    def set_start_step(self, idx: int, step: int) -> None:
+        """Set the starting receive step for a run, overriding any lazy initialization.
+
+        Use this after cleaning the rollout directory to ensure the receiver
+        looks for files starting from the correct step.
+        """
+        pass
+
     def close(self) -> None:
         """Clean up any resources. Override if needed."""
         pass

@@ -63,8 +63,10 @@ class SinglePacker(BasePacker):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
         assert self.multi_run_manager.max_runs == 1, "SinglePacker only supports one run"
         self.token_batch_size = token_batch_size
-        # Ensure the receiver is ready to accept step-0 batches after rollout dir cleanup
-        self.receiver._received_steps = {0: 0}
+        # The rollout dir was cleaned in BasePacker.__init__, so the orchestrator
+        # will write files starting from step_0. Override the receiver's lazy
+        # initialization (which falls back to progress[0].step) to match.
+        self.receiver.set_start_step(0, 0)
 
     def pack(self):
         """Accumulate samples from streamed group rollouts until the token budget is met."""

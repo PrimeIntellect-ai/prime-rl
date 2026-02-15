@@ -77,7 +77,7 @@ def _should_run_eval(eval_config, ckpt_step: int, last_eval_step: int, is_final_
         return False
     if ckpt_step == 0:
         return eval_config.eval_base_model
-    return ckpt_step > 0
+    return True
 
 
 class Orchestrator:

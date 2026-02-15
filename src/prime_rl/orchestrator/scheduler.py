@@ -87,8 +87,8 @@ class Scheduler:
         if self.rate_limiter:
             await self.rate_limiter.acquire()
         example = self.buffer.sample_examples(n=1)[0]
-        client_config = await self.inference_pool.get_next_client()
-        task = asyncio.create_task(
+        client_config = await self.inference_pool._select_least_loaded_client()
+        run_group_task = asyncio.create_task(
             run_group(
                 env=self.env,
                 client=client_config,
@@ -99,7 +99,7 @@ class Scheduler:
                 max_retries=0,  # TODO: make configurable
             )
         )
-        self.inflight_group_rollouts[task] = InflightRolloutInfo(0, client_config)
+        self.inflight_group_rollouts[run_group_task] = InflightRolloutInfo(0, client_config)
 
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
@@ -201,12 +201,6 @@ class Scheduler:
         if not self.inflight_group_rollouts:
             return 0
         return max(info.off_policy_steps for info in self.inflight_group_rollouts.values())
-
-    @property
-    def min_off_policy_level(self) -> int:
-        if not self.inflight_group_rollouts:
-            return 0
-        return min(info.off_policy_steps for info in self.inflight_group_rollouts.values())
 
     @property
     def mean_off_policy_level(self) -> float:

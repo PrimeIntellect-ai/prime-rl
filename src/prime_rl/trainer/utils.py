@@ -322,7 +322,7 @@ class MemoryProfiler:
 
 def maybe_clean(path: Path, step: int, keep_last: int, interval_to_keep: int | None) -> None:
     logger = get_logger()
-    step = max(step - (keep_last + 1), 0)  # Consider deleting keep_last + 1 steps ago
+    step = max(step - keep_last, 0)
     candidate_path_to_delete = get_step_path(path, step)
     keep = bool(interval_to_keep and step % interval_to_keep == 0)
     logger.debug(f"Considering deleting path {candidate_path_to_delete}")
