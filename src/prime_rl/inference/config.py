@@ -1,3 +1,4 @@
+import logging
 from argparse import Namespace
 from typing import Annotated, Any, Literal
 
@@ -5,6 +6,42 @@ from pydantic import Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
+
+logger = logging.getLogger(__name__)
+
+# Mapping from lowercase model name patterns to vLLM tool call parser names.
+# Order matters: first match wins. Patterns are matched against the lowercased model name.
+MODEL_TOOL_CALL_PARSER_MAP: list[tuple[str, str]] = [
+    # GLM family (must come before generic matches)
+    ("glm-4.7", "glm47"),
+    ("glm4.7", "glm47"),
+    ("glm-4.5", "glm45"),
+    ("glm4.5", "glm45"),
+    # PrimeIntellect
+    ("intellect-3", "qwen3_coder"),
+    # Qwen family (coder must come before generic qwen3)
+    ("qwen3-coder", "qwen3_coder"),
+    ("qwen2.5-coder", "qwen3_coder"),
+    ("qwen3", "hermes"),
+    ("qwen2.5", "hermes"),
+    # Meta Llama
+    ("llama-4", "llama4_json"),
+    ("llama-3", "llama3_json"),
+    # Allen AI
+    ("olmo-3", "olmo3"),
+    ("olmo3", "olmo3"),
+    # Arcee
+    ("trinity", "hermes"),
+    # HuggingFace
+    ("smollm3", "hermes"),
+    # Nvidia
+    ("nemotron", "hermes"),
+    # DeepSeek
+    ("deepseek-v3", "deepseek_v3"),
+    ("deepseek-r1", "deepseek_v3"),
+    # Mistral
+    ("mistral", "mistral"),
+]
 
 # TODO: Set thinking/ solution budget
 
@@ -84,11 +121,12 @@ class ModelConfig(BaseConfig):
     ] = False
 
     tool_call_parser: Annotated[
-        str,
+        str | None,
         Field(
-            description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`",
+            description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`. "
+            "If not set, automatically inferred from the model name.",
         ),
-    ] = "hermes"
+    ] = None
 
     reasoning_parser: Annotated[
         str | None,
@@ -103,6 +141,24 @@ class ModelConfig(BaseConfig):
             description='RoPE scaling configuration as a dict. For YaRN, use: {rope_type="yarn", factor=4.0, original_max_position_embeddings=32768} or. Passed to vLLM as `--rope-scaling`.',
         ),
     ] = None
+
+    @model_validator(mode="after")
+    def resolve_tool_call_parser(self):
+        if self.tool_call_parser is not None:
+            return self
+
+        model_name_lower = self.name.lower()
+        for pattern, parser in MODEL_TOOL_CALL_PARSER_MAP:
+            if pattern in model_name_lower:
+                logger.info(f"Auto-detected tool_call_parser='{parser}' for model '{self.name}'")
+                self.tool_call_parser = parser
+                return self
+
+        raise ValueError(
+            f"Could not auto-detect tool_call_parser for model '{self.name}'. "
+            f"Please set `model.tool_call_parser` explicitly in your config. "
+            f"Supported model patterns: {[p for p, _ in MODEL_TOOL_CALL_PARSER_MAP]}"
+        )
 
 
 class WeightBroadcastConfig(BaseSettings):
