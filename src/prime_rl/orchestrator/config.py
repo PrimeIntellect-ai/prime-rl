@@ -313,6 +313,13 @@ class EvalEnvConfig(EnvConfig):
         ),
     ] = 0
 
+    max_retries: Annotated[
+        int,
+        Field(
+            description="Maximum number of times the environment will try to retry running a rollout.",
+        ),
+    ] = 0
+
 
 class EvalConfig(BaseConfig):
     """Configures evaluation using verifiers environments."""

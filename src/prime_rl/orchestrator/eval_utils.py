@@ -70,13 +70,14 @@ async def evaluate_env(
     sampling_args: dict,
     num_examples: int,
     rollouts_per_example: int,
+    max_retries: int,
     ckpt_step: int,
     step: int | None,
 ):
     logger = get_logger()
     logger.info(f"Evaluating {env_name} ({num_examples=}, {rollouts_per_example=})")
     eval_start_time = time.perf_counter()
-    outputs = await evaluate(env, clients, model_name, sampling_args, num_examples, rollouts_per_example)
+    outputs = await evaluate(env, clients, model_name, sampling_args, num_examples, rollouts_per_example, max_retries)
     eval_time = time.perf_counter() - eval_start_time
 
     rows = []
