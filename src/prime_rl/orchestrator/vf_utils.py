@@ -159,10 +159,7 @@ async def generate(
     try:
         clients_for_examples = await asyncio.gather(*[get_client() for _ in examples])
         group_outputs_list: list[list[vf.RolloutOutput]] = await asyncio.gather(
-            *[
-                run_group_with_progress(client, example)
-                for client, example in zip(clients_for_examples, examples)
-            ]
+            *[run_group_with_progress(client, example) for client, example in zip(clients_for_examples, examples)]
         )
     finally:
         pbar.close()
