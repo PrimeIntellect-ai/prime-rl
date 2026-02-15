@@ -109,7 +109,7 @@ class LayerNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(dim, dtype=torch.float32))
 
     def forward(self, x: torch.Tensor):
-        return F.layer_norm(x.float(), (self.dim,), self.weight, self.bias, self.eps).type_as(x)
+        return F.layer_norm(x.float(), (self.dim,), self.weight.float(), self.bias.float(), self.eps).type_as(x)
 
 
 class Indexer(nn.Module):
@@ -120,6 +120,8 @@ class Indexer(nn.Module):
 
         self.n_head = config.index_n_heads
         self.head_dim = config.index_head_dim
+        self.rope_dim = config.qk_rope_head_dim
+        self.rope_interleave = config.indexer_rope_interleave
         self.wq_b = nn.Linear(config.q_lora_rank, self.n_head * self.head_dim, bias=False)
         self.wk = nn.Linear(config.hidden_size, self.head_dim, bias=config.attention_bias)
         self.k_norm = LayerNorm(dim=self.head_dim, eps=1e-6)
@@ -132,6 +134,7 @@ class Indexer(nn.Module):
         q_latent: torch.Tensor,
         cu_seqlens: torch.Tensor,
         index_topk: int,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
         total_tokens = hidden_states.shape[1]
         assert index_topk % 64 == 0, f"index_topk must be divisible by 64 (block_I), got {index_topk}"
@@ -139,6 +142,26 @@ class Indexer(nn.Module):
         q_idx = self.wq_b(q_latent[0]).view(total_tokens, self.n_head, self.head_dim)
         k_idx = self.k_norm(self.wk(hidden_states[0]))
         w = self.weights_proj(hidden_states[0])
+
+        # Split into rope and non-rope portions, apply RoPE to pe parts
+        q_pe = q_idx[..., : self.rope_dim]
+        q_nope = q_idx[..., self.rope_dim :]
+        k_pe = k_idx[..., : self.rope_dim]
+        k_nope = k_idx[..., self.rope_dim :]
+
+        cos, sin = position_embeddings
+        # apply_rotary_pos_emb* expects [batch, heads, seq, dim]
+        q_pe = q_pe.unsqueeze(0).transpose(1, 2)  # [1, n_head, total_tokens, rope_dim]
+        k_pe = k_pe.unsqueeze(0).unsqueeze(1)  # [1, 1, total_tokens, rope_dim]
+        if self.rope_interleave:
+            q_pe, k_pe = apply_rotary_pos_emb_interleave(q_pe, k_pe, cos, sin)
+        else:
+            q_pe, k_pe = apply_rotary_pos_emb(q_pe, k_pe, cos, sin)
+        q_pe = q_pe.transpose(1, 2).squeeze(0)  # [total_tokens, n_head, rope_dim]
+        k_pe = k_pe.squeeze(1).squeeze(0)  # [total_tokens, rope_dim]
+
+        q_idx = torch.cat([q_pe, q_nope], dim=-1)
+        k_idx = torch.cat([k_pe, k_nope], dim=-1)
 
         q_combined = (q_idx * w.unsqueeze(-1)).sum(dim=1)
 
@@ -157,11 +180,20 @@ class Indexer(nn.Module):
             actual_topk = min(index_topk, seq_len)
             _, topk_idx = torch.topk(scores, actual_topk, dim=-1)
 
+            # Convert local indices to global
+            topk_idx = topk_idx + start
+
             if actual_topk < index_topk:
-                padding = topk_idx[:, :1].expand(-1, index_topk - actual_topk)
+                # Pad with total_tokens (sentinel position) — causal mask rejects it
+                padding = torch.full(
+                    (seq_len, index_topk - actual_topk),
+                    total_tokens,
+                    dtype=topk_idx.dtype,
+                    device=topk_idx.device,
+                )
                 topk_idx = torch.cat([topk_idx, padding], dim=-1)
 
-            indices[start:end] = (topk_idx + start).to(torch.int32)
+            indices[start:end] = topk_idx.to(torch.int32)
 
         return indices.view(1, total_tokens, 1, index_topk)
 
@@ -275,8 +307,11 @@ class _MLABase(nn.Module):
         hidden_states: torch.Tensor,
         q_latent: torch.Tensor,
         cu_seqlens: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
-        return self.indexer.compute_sparse_indices(hidden_states, q_latent, cu_seqlens, self.config.index_topk)
+        return self.indexer.compute_sparse_indices(
+            hidden_states, q_latent, cu_seqlens, self.config.index_topk, position_embeddings
+        )
 
 
 class GlmMoeDsaFlashAttention(_MLABase):
@@ -416,7 +451,7 @@ class GlmMoeDsaSparseAttention(_MLABase):
         k_rope = k_rope_r.squeeze(1)  # [B, total, rope_dim]
 
         # Indexer
-        indices = self._compute_sparse_indices(hidden_states, q_latent, cu_seqlens)
+        indices = self._compute_sparse_indices(hidden_states, q_latent, cu_seqlens, position_embeddings)
 
         # Absorption: Q_nope @ W_kv_b_k_nope^T → [B, S, H, kv_lora_rank]
         kv_b_w = self.kv_b_proj.weight.view(self.num_heads, self.qk_nope_head_dim + self.v_head_dim, self.kv_lora_rank)
@@ -428,6 +463,10 @@ class GlmMoeDsaSparseAttention(_MLABase):
         # Build sparse tensors for tilelang
         sparse_q = torch.cat([q_absorbed, q_rope], dim=-1)  # [B, S, H, 576]
         sparse_kv = torch.cat([k_compressed_normed, k_rope], dim=-1).unsqueeze(2)  # [B, S, 1, 576]
+
+        # Append sentinel zero-token so padded indices (= total_tokens) are in-bounds
+        sentinel = torch.zeros(batch_size, 1, 1, sparse_kv.shape[-1], dtype=sparse_kv.dtype, device=sparse_kv.device)
+        sparse_kv = torch.cat([sparse_kv, sentinel], dim=1)  # [B, S+1, 1, 576]
 
         # Sparse attention via tilelang
         out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)  # [B, S, H, kv_lora_rank]
@@ -643,12 +682,13 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
 
         super().__init__(config)
 
+        # Restore before creating model so GlmMoeDsaModel sees the original impl
+        if requested_attn_impl == "sparse":
+            config._attn_implementation = requested_attn_impl
+
         self.model = GlmMoeDsaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-
-        if requested_attn_impl == "sparse":
-            config._attn_implementation = requested_attn_impl
 
         self.post_init()
 

@@ -73,6 +73,10 @@ class GlmMoeDsaConfig(PretrainedConfig):
             Whether to use interleaved RoPE style in the sparse indexer.
         index_topk (`int`, defaults to 2048):
             Number of top tokens selected by the sparse indexer.
+        scoring_func (`str`, defaults to `"sigmoid"`):
+            Scoring function for MoE router. Must match the vLLM inference
+            server's expectation (vLLM defaults to ``"softmax"`` when this
+            field is absent from the config).
         topk_method (`str`, defaults to `"noaux_tc"`):
             MoE routing top-k method used by GLM-5 checkpoints.
         use_grouped_mm (`bool`, defaults to `True`):
@@ -136,6 +140,7 @@ class GlmMoeDsaConfig(PretrainedConfig):
         index_head_dim=128,
         indexer_rope_interleave=True,
         index_topk=2048,
+        scoring_func="sigmoid",
         topk_method="noaux_tc",
         use_grouped_mm=True,
         pad_token_id=None,
@@ -189,6 +194,7 @@ class GlmMoeDsaConfig(PretrainedConfig):
         self.index_head_dim = index_head_dim
         self.indexer_rope_interleave = indexer_rope_interleave
         self.index_topk = index_topk
+        self.scoring_func = scoring_func
         self.topk_method = topk_method
         self.use_grouped_mm = use_grouped_mm
         self.pad_token_id = pad_token_id
