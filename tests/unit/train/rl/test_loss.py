@@ -11,6 +11,7 @@ from prime_rl.trainer.rl.loss import (
     reject_by_geo_mean,
     reject_by_geo_mean_k3,
     reject_by_sequence_minmax,
+    reject_by_sequence_sum,
     reject_by_token,
     setup_loss_fn,
 )
@@ -139,6 +140,34 @@ def test_reject_by_sequence_minmax_ignores_unmasked():
 
     assert high_mask.item() is False
 
+
+def test_reject_by_sequence_sum():
+    # product ratio = exp(1.5) ≈ 4.48
+    log_ratio = torch.tensor([0.5, 0.5, 0.5], device="cuda")
+    mask = torch.ones(3, dtype=torch.bool, device="cuda")
+    
+    low, high = reject_by_sequence_sum(log_ratio, mask, low=0.1, high=10.0)
+    assert low.item() is False
+    assert high.item() is False
+
+    _, high = reject_by_sequence_sum(log_ratio, mask, high=4.0)
+    assert high.item() is True
+
+    # negative product ratio = exp(-1.5) ≈ 0.22
+    low, _ = reject_by_sequence_sum(-log_ratio, mask, low=0.5)
+    assert low.item() is True
+    
+    # big log_ratio at index 1, but it's unmasked → product only over indices 0, 2
+    log_ratio = torch.tensor([0.1, 10.0, 0.1], device="cuda")
+    mask = torch.tensor([True, False, True], device="cuda")
+
+    _, high = reject_by_sequence_sum(log_ratio, mask, high=5.0)
+    assert high.item() is False
+
+     # None bounds
+    low, high = reject_by_sequence_sum(log_ratio, mask)
+    assert low.item() is False
+    assert high.item() is False
 
 def test_k1_cancellation_hides_mismatch_k3_catches_it():
     """k1 geo mean allows cancellation (e^2 and e^-2 average to 1); k3 KL does not."""
