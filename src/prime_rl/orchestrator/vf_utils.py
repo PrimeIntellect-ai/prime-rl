@@ -142,7 +142,8 @@ async def generate(
     total_rollouts = len(examples) * rollouts_per_example
     pbar = ProgressTracker(total=total_rollouts, desc=pbar_description)
 
-    async def run_group_with_progress(client, example):
+    async def run_group_with_progress(example):
+        client = await get_client()
         result = await run_group(
             env=env,
             client=client,
@@ -157,9 +158,8 @@ async def generate(
         return result
 
     try:
-        clients_for_examples = await asyncio.gather(*[get_client() for _ in examples])
         group_outputs_list: list[list[vf.RolloutOutput]] = await asyncio.gather(
-            *[run_group_with_progress(client, example) for client, example in zip(clients_for_examples, examples)]
+            *[run_group_with_progress(example) for example in examples]
         )
     finally:
         pbar.close()
