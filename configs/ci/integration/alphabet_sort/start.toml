@@ -1,7 +1,7 @@
 inference_gpu_ids = [0]
 trainer_gpu_ids = [1]
 
-max_steps = 20
+max_steps = 10
 seq_len = 2048
 
 [ckpt]

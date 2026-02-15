@@ -1,11 +1,11 @@
 inference_gpu_ids = [0]
 trainer_gpu_ids = [1]
 
-max_steps = 25
+max_steps = 12
 seq_len = 2048
 
 [ckpt]
-resume_step = 20
+resume_step = 10
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"
