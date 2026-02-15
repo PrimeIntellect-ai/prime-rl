@@ -8,7 +8,7 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_importance_weights,
     compute_loss,
-    reject_by_geo_mean_k1,
+    reject_by_geo_mean,
     reject_by_geo_mean_k3,
     reject_by_sequence_minmax,
     reject_by_token,
@@ -145,7 +145,7 @@ def test_k1_cancellation_hides_mismatch_k3_catches_it():
     log_ratio = torch.tensor([2.0, -2.0], device="cuda")
     mask = torch.ones(2, dtype=torch.bool, device="cuda")
 
-    k1_low, k1_high = reject_by_geo_mean_k1(log_ratio, mask, low=0.5, high=2.0)
+    k1_low, k1_high = reject_by_geo_mean(log_ratio, mask, low=0.5, high=2.0)
     assert k1_low.item() is False
     assert k1_high.item() is False
 

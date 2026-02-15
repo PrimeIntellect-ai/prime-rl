@@ -133,6 +133,16 @@ def compute_importance_weights(
     """Compute importance sampling weights from a log-ratio log(p/q).
 
     Optionally applies truncated importance sampling via per-level clipping.
+
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        mask: Which tokens to include in sequence-level aggregations.
+        token_clip_low: Lower clamp for per-token weights.
+        token_clip_high: Upper clamp for per-token weights.
+        sequence_clip_low: Lower clamp for the sequence (product) weight.
+        sequence_clip_high: Upper clamp for the sequence (product) weight.
+        geo_mean_clip_low: Lower clamp for the geometric mean weight.
+        geo_mean_clip_high: Upper clamp for the geometric mean weight.
     """
     token_weights = _safe_exp_log_ratio(log_ratio)
     if token_clip_low is not None or token_clip_high is not None:
@@ -161,11 +171,15 @@ def reject_by_token(
     low: float | None = None,
     high: float | None = None,
 ) -> tuple[Bool[Tensor, " seq"], Bool[Tensor, " seq"]]:
-    """Reject individual tokens where the importance ratio breaches bounds.
+    """Mask tokens where the importance ratio breaches bounds.
 
-    typical thresholds: 0.5 - 2
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        low: Tokens with ratio below this are masked.
+        high: Tokens with ratio above this are masked.
 
-    Returns (low_mask, high_mask) indicating which tokens were rejected by each bound.
+    Returns:
+        (low_mask, high_mask) where True means the token should be rejected.
     """
     token_ratio = _safe_exp_log_ratio(log_ratio)
     empty_mask = torch.zeros_like(token_ratio, dtype=torch.bool)
@@ -181,11 +195,16 @@ def reject_by_sequence_minmax(
     low: float | None = None,
     high: float | None = None,
 ) -> tuple[Bool[Tensor, ""], Bool[Tensor, ""]]:
-    """Reject entire sequence if any token's importance ratio breaches bounds.
+    """Mask sequence if any token's importance ratio breaches bounds.
 
-    typical thresholds: ?
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        mask: Which tokens to consider.
+        low: Sequence is masked if any token's ratio falls below this.
+        high: Sequence is masked if any token's ratio exceeds this.
 
-    Returns (low_mask, high_mask) as scalar masks.
+    Returns:
+        (low_mask, high_mask) as scalar bools.
     """
     token_ratio = _safe_exp_log_ratio(log_ratio)
 
@@ -197,25 +216,51 @@ def reject_by_sequence_minmax(
     return seq_rejected_low, seq_rejected_high
 
 
-
-def reject_by_geo_mean_k1(
+def reject_by_sequence_sum(
     log_ratio: Float[Tensor, " seq"],
     mask: Bool[Tensor, " seq"],
     low: float | None = None,
     high: float | None = None,
 ) -> tuple[Bool[Tensor, ""], Bool[Tensor, ""]]:
-    """Reject based on geometric mean importance ratio.
+    """Mask sequence if the product importance ratio (sum of log-ratios) breaches bounds.
 
-    Ideal ratio = 1.0
-    Typical bounds: "0.999_1.001" (~±0.1%)
-    
-    Why tight thresholds? For 100 tokens with per-token log-ratio = 0.01 each:
-    Arithmetic product ratio: 𝑒100×0.01 ≈2.7
-    Geometric ratio: 𝑒0.01 ≈1.010
-    
-    Bounds of 0.99-1.01 rejects sequences whose average per token log deviation exceeds 1%.  
+    Grows with sequence length — thresholds need to be higher than per-token bounds.
 
-    Returns (low_mask, high_mask) as scalar bools.
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        mask: Which tokens to include in the sum.
+        low: Sequence is masked if the product ratio falls below this.
+        high: Sequence is masked if the product ratio exceeds this.
+
+    Returns:
+        (low_mask, high_mask) as scalar bools.
+    """
+    sum_ratio = _safe_exp_log_ratio(log_ratio[mask].sum())
+    empty_mask = torch.tensor(False, device=log_ratio.device)
+    return (
+        (sum_ratio < low) if low is not None else empty_mask,
+        (sum_ratio > high) if high is not None else empty_mask,
+    )
+
+def reject_by_geo_mean(
+    log_ratio: Float[Tensor, " seq"],
+    mask: Bool[Tensor, " seq"],
+    low: float | None = None,
+    high: float | None = None,
+) -> tuple[Bool[Tensor, ""], Bool[Tensor, ""]]:
+    """Mask sequence if the geometric mean importance ratio breaches bounds.
+
+    Unlike the product ratio, this is length-normalized so thresholds are tight
+    (e.g. 0.99–1.01 rejects sequences with >1% average per-token log deviation).
+
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        mask: Which tokens to include in the geometric mean.
+        low: Sequence is masked if the geo-mean ratio falls below this.
+        high: Sequence is masked if the geo-mean ratio exceeds this.
+
+    Returns:
+        (low_mask, high_mask) as scalar bools.
     """
     geo_mean_ratio = _safe_exp_log_ratio(_safe_mean(log_ratio, mask))
     empty_mask = torch.tensor(False, device=log_ratio.device)
@@ -228,23 +273,21 @@ def reject_by_geo_mean_k1(
 def reject_by_geo_mean_k3(
     log_ratio: Float[Tensor, " seq"],
     mask: Bool[Tensor, " seq"],
-    high: float | None = None,
+    high: float,
 ) -> Bool[Tensor, ""]:
-    """Reject based on mean k3 KL divergence estimate. log_ratio is p = log(p/q).
+    """Mask sequence if the mean k3 KL divergence exceeds a threshold.
 
-    In expectation, k3 is the reverse KL divergence KL(q || p).
+    k3 per token: (p - log p - 1) where p = exp(log_ratio). In expectation this is KL(q || p).
+    Non-negative, so only an upper bound is meaningful. Unlike the geometric mean, k3 cannot
+    be fooled by cancellation (symmetric deviations like [+2, -2] still produce non-zero k3).
 
-    k3 per token: (p - log p - 1), strictly non-negative. The mean across masked tokens
-    gives average per-token divergence. K3 is more stable than direct KL. 
-    Because k3 >= 0, only an upper bound is meaningful.
-
-    typical bounds: 0.001 - 0.01
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        mask: Which tokens to include in the mean.
+        high: Sequence is masked if the mean k3 exceeds this.
     """
-    if high is None:
-        return torch.tensor(False, device=log_ratio.device)
     clamped_log_ratio = torch.clamp(log_ratio, min=-LOG_RATIO_EXP_BOUND, max=LOG_RATIO_EXP_BOUND)
-    token_ratio = torch.exp(clamped_log_ratio)
-    k3_per_token = token_ratio - clamped_log_ratio - 1.0
+    k3_per_token = torch.exp(clamped_log_ratio) - clamped_log_ratio - 1.0
     mean_k3 = _safe_mean(k3_per_token, mask)
     return mean_k3 > high
 
@@ -271,7 +314,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
     seq_low, seq_high = reject_by_sequence_minmax(
         log_importance_ratio, loss_mask, low=loss_config.sequence_mask_low, high=loss_config.sequence_mask_high
     )
-    geo_low, geo_high = reject_by_geo_mean_k1(
+    geo_low, geo_high = reject_by_geo_mean(
         log_importance_ratio, loss_mask, low=loss_config.geo_mask_low, high=loss_config.geo_mask_high
     )
 
