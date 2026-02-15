@@ -132,7 +132,8 @@ class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         """Check if the state dict contains MoE layers in HuggingFace format."""
-        return any("mlp.experts.1.up_proj" in module_name for module_name in state_dict.keys())
+        # Check for old per-expert format or new fused format (transformers 5.0+)
+        return any("mlp.experts.1.up_proj" in name or "mlp.experts.gate_up_proj" in name for name in state_dict.keys())
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

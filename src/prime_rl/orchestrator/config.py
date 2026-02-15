@@ -284,7 +284,7 @@ class EnvConfig(BaseConfig):
         dict[str, Any],
         Field(
             description=(
-                "Extra kwargs passed to an env (e.g. seq_len, interleaved_rollouts, score_rollouts). This field is auto-populated with the seq_len, interleaved_rollouts, and score_rollouts for training envs on the orchestrator. It is generally NOT recommended for this field to be overriden by the user. It's main use case is to match the extra_env_kwargs when running an env in an isolated environment server."
+                "Extra kwargs passed to an env (e.g. seq_len, score_rollouts). This field is auto-populated with the seq_len, and score_rollouts for training envs on the orchestrator. It is generally NOT recommended for this field to be overriden by the user. It's main use case is to match the extra_env_kwargs when running an env in an isolated environment server."
             ),
         ),
     ] = {}
@@ -313,6 +313,10 @@ class EvalEnvConfig(EnvConfig):
         ),
     ] = 0
 
+    # TODO: should live on the EnvConfig and also apply to training envs but
+    # this is hard right now because we use the vf.EnvGroup which treats all
+    # envs as one. for now training envs hardcode no retries, but we should
+    # probably treat them like environment groups long-term
     max_retries: Annotated[
         int,
         Field(
@@ -740,7 +744,6 @@ class OrchestratorConfig(BaseSettings):
     def resolve_extra_env_kwargs(self):
         train_extra_env_kwargs = dict(
             seq_len=self.seq_len,
-            interleaved_rollouts=True,
             score_rollouts=not self.buffer.skip_verification,
         )
         for env in self.env:

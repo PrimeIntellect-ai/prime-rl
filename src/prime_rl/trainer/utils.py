@@ -45,7 +45,8 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
 
 
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
-    torch.cuda.set_device(get_world().local_rank)
+    device_id = get_world().local_rank
+    torch.cuda.set_device(device_id)
     # Use Gloo backend for CPU and NCCL for GPU when CPU offloading is enabled
     # Otherwise use NCCL for better GPU performance
     backend = None  # by default nccl
@@ -53,7 +54,7 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
         get_logger().info("Using Gloo backend for CPU and NCCL backend for GPU")
         backend = "cpu:gloo,cuda:nccl"
 
-    dist.init_process_group(backend=backend, timeout=timeout)
+    dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
 
 
 def get_response_lengths(position_ids: torch.Tensor) -> list[int]:

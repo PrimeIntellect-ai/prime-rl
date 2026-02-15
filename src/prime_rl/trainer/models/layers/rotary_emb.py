@@ -1,8 +1,32 @@
 from dataclasses import dataclass
+from typing import Optional
 
 import torch
 from torch import nn
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
+
+
+def _compute_default_rope_parameters(
+    config: Optional["PreTrainedConfig"] = None,
+    device: Optional["torch.device"] = None,
+    seq_len: int | None = None,
+    layer_type: str | None = None,
+) -> tuple["torch.Tensor", float]:
+    """Computes standard RoPE inverse frequencies without any scaling (factor=1.0)."""
+    config.standardize_rope_params()
+    rope_parameters_dict = config.rope_parameters[layer_type] if layer_type is not None else config.rope_parameters
+
+    base = rope_parameters_dict["rope_theta"]
+    partial_rotary_factor = rope_parameters_dict.get("partial_rotary_factor", 1.0)
+    head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+    dim = int(head_dim * partial_rotary_factor)
+
+    inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim))
+    return inv_freq, 1.0
+
+
+if "default" not in ROPE_INIT_FUNCTIONS:
+    ROPE_INIT_FUNCTIONS["default"] = _compute_default_rope_parameters
 
 
 @dataclass
@@ -27,6 +51,10 @@ class RotaryEmbedding(nn.Module):
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
+
+    def compute_default_rope_parameters(self, config=None, device=None, seq_len=None, layer_type=None):
+        """Required by transformers 5.0.0 for weight initialization when rope_type is 'default'."""
+        return _compute_default_rope_parameters(config or self.config, device, seq_len, layer_type)
 
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)

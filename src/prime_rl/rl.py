@@ -28,7 +28,7 @@ from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLW
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
 from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pydantic_config import BaseSettings, get_temp_toml_file, parse_argv
+from prime_rl.utils.pydantic_config import BaseSettings, parse_argv
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_free_port,
@@ -215,6 +215,13 @@ class RLConfig(BaseSettings):
 
     weight_broadcast: Annotated[
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
+    ] = None
+
+    dump_config: Annotated[
+        Path | None,
+        Field(
+            description="If set, dump resolved subconfigs (trainer, orchestrator, inference) to this directory and exit without starting any processes."
+        ),
     ] = None
 
     @model_validator(mode="after")
@@ -574,6 +581,25 @@ def check_gpus_available(gpu_ids: list[int]) -> None:
         raise RuntimeError(msg)
 
 
+def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
+    """Write resolved subconfigs to disk as TOML files."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(output_dir / "trainer.toml", "wb") as f:
+        tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
+
+    with open(output_dir / "orchestrator.toml", "wb") as f:
+        tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
+
+    if config.inference is not None:
+        with open(output_dir / "inference.toml", "wb") as f:
+            tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
+
+    if config.teacher_inference is not None:
+        with open(output_dir / "teacher_inference.toml", "wb") as f:
+            tomli_w.dump(config.teacher_inference.model_dump(exclude_none=True, mode="json"), f)
+
+
 def rl(config: RLConfig):
     # Setup logger
     logger = setup_logger(
@@ -581,6 +607,24 @@ def rl(config: RLConfig):
         log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
+
+    # If dump_config is set, write resolved subconfigs and exit early
+    if config.dump_config is not None:
+        logger.warning(
+            "--dump-config is set. No RL training will be started. Only writing resolved subconfigs to disk."
+        )
+        write_subconfigs(config, config.dump_config)
+        logger.info(f"Dumping resolved subconfigs to {config.dump_config}")
+        logger.info(f"  Wrote trainer config to {config.dump_config / 'trainer.toml'}")
+        logger.info(f"  Wrote orchestrator config to {config.dump_config / 'orchestrator.toml'}")
+        if config.inference is not None:
+            logger.info(f"  Wrote inference config to {config.dump_config / 'inference.toml'}")
+        if config.teacher_inference is not None:
+            logger.info(f"  Wrote teacher inference config to {config.dump_config / 'teacher_inference.toml'}")
+        logger.success(f"Config dump complete. Files written to {config.dump_config}")
+        logger.warning("To start an RL run, remove --dump-config from your command.")
+        return
+
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
@@ -637,6 +681,10 @@ def rl(config: RLConfig):
         logger.info(f"Cleaning rollout dir ({rollout_dir})")
         shutil.rmtree(rollout_dir, ignore_errors=True)
 
+    # Write all resolved subconfigs to disk
+    config_dir = Path(".pydantic_config") / uuid.uuid4().hex
+    write_subconfigs(config, config_dir)
+
     # Start processes
     processes: list[Popen] = []
     monitor_threads: list[Thread] = []
@@ -646,11 +694,7 @@ def rl(config: RLConfig):
     try:
         # Optionally, start inference process
         if config.inference:
-            inference_file = get_temp_toml_file()
-            with open(inference_file, "wb") as f:
-                tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
-
-            inference_cmd = ["uv", "run", "inference", "@", inference_file.as_posix()]
+            inference_cmd = ["uv", "run", "inference", "@", (config_dir / "inference.toml").as_posix()]
             logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, config.inference_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
             # If we don't log stdout, the server hangs
@@ -686,11 +730,8 @@ def rl(config: RLConfig):
                     "Either set teacher_gpu_ids to start a teacher inference server, "
                     "or omit teacher_inference and configure orchestrator.teacher_model to use an existing server."
                 )
-            teacher_inference_file = get_temp_toml_file()
-            with open(teacher_inference_file, "wb") as f:
-                tomli_w.dump(config.teacher_inference.model_dump(exclude_none=True, mode="json"), f)
 
-            teacher_inference_cmd = ["uv", "run", "inference", "@", teacher_inference_file.as_posix()]
+            teacher_inference_cmd = ["uv", "run", "inference", "@", (config_dir / "teacher_inference.toml").as_posix()]
             logger.info(f"Starting teacher inference process on GPU(s) {' '.join(map(str, config.teacher_gpu_ids))}")
             logger.debug(f"Teacher inference start command: {' '.join(teacher_inference_cmd)}")
             with open(log_dir / "teacher_inference.stdout", "w") as log_file:
@@ -719,16 +760,12 @@ def rl(config: RLConfig):
             )
 
         # Start orchestrator process
-        orchestrator_file = get_temp_toml_file()
-        with open(orchestrator_file, "wb") as f:
-            tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
-
         orchestrator_cmd = [
             "uv",
             "run",
             "orchestrator",
             "@",
-            orchestrator_file.as_posix(),
+            (config_dir / "orchestrator.toml").as_posix(),
         ]
         logger.info("Starting orchestrator process")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
@@ -758,10 +795,6 @@ def rl(config: RLConfig):
         monitor_threads.append(monitor_thread)
 
         # Start training process
-        trainer_file = get_temp_toml_file()
-        with open(trainer_file, "wb") as f:
-            tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
-
         trainer_cmd = [
             "uv",
             "run",
@@ -780,7 +813,7 @@ def rl(config: RLConfig):
             "-m",
             "prime_rl.trainer.rl.train",
             "@",
-            trainer_file.as_posix(),
+            (config_dir / "trainer.toml").as_posix(),
         ]
         logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, config.trainer_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(trainer_cmd)}")

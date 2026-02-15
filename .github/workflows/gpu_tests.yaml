@@ -105,4 +105,5 @@ jobs:
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_HEAD_REF: ${{ github.head_ref }}
           PYTEST_OUTPUT_DIR: /tmp/outputs
+          VLLM_WORKER_MULTIPROC_METHOD: spawn
         run: uv run pytest ${{ matrix.pytest_args }}
