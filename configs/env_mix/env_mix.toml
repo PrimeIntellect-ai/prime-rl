@@ -12,7 +12,7 @@ name = "env-mix"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-batch_size = 512
+max_inflight_rollouts = 32
 rollouts_per_example = 16
 
 [[orchestrator.env]]

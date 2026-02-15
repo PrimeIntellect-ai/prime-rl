@@ -325,18 +325,6 @@ class EvalEnvConfig(EnvConfig):
     ] = 0
 
 
-class ValConfig(BaseConfig):
-    """Configures the validation of the model."""
-
-    num_examples: Annotated[
-        int, Field(ge=1, description="Number of examples to use for validation. If -1, will use all examples.")
-    ] = 16
-    rollouts_per_example: Annotated[
-        int, Field(ge=1, description="Number of samples to generate per example for validation.")
-    ] = 1
-    interval: Annotated[int, Field(description="Interval at which to validate the model.")] = 10
-
-
 class EvalConfig(BaseConfig):
     """Configures evaluation using verifiers environments."""
 
@@ -481,13 +469,6 @@ class BufferConfig(BaseConfig):
         ),
     ] = 0.0
 
-    online_difficulty_filtering: Annotated[
-        bool,
-        Field(
-            description="Whether to filter rollouts based on difficulty. If True, rollouts with average reward 0.0 or 1.0 are not added to the buffer.",
-        ),
-    ] = False
-
     hash_keys: Annotated[
         list[str],
         Field(
@@ -501,8 +482,7 @@ class BufferConfig(BaseConfig):
         Field(
             description=(
                 "Whether to skip verification of rollouts using the environment's rubric. "
-                "If True, rewards are always set to 0, online_difficulty_filtering is disabled, "
-                "and easy/hard thresholds are not used."
+                "If True, rewards are always set to 0 and easy/hard thresholds are not used."
             ),
         ),
     ] = False
@@ -523,11 +503,6 @@ class BufferConfig(BaseConfig):
     def validate_skip_verification(self):
         """Validate that skip_verification is not used with reward-dependent features."""
         if self.skip_verification:
-            if self.online_difficulty_filtering:
-                raise ValueError(
-                    "skip_verification cannot be True when online_difficulty_filtering is True. "
-                    "These features depend on rewards which are disabled when skip_verification=True."
-                )
             if self.easy_threshold is not None:
                 raise ValueError(
                     "skip_verification cannot be True when easy_threshold is set. "
@@ -660,9 +635,6 @@ class OrchestratorConfig(BaseSettings):
         Field(description="Whether to reset inference weights to the base model when starting from scratch."),
     ] = True
 
-    # The validation configuration
-    val: ValConfig | None = None
-
     weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
         FileSystemWeightBroadcastConfig()
     )
@@ -691,15 +663,13 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
-
-    oversampling_factor: Annotated[
-        float,
+    max_inflight_rollouts: Annotated[
+        int,
         Field(
             ge=1,
-            description="Factor by which to oversample the batch. Will lead to more in-flight group rollout requests at the same time.",
+            description="Maximum number of group rollout requests in flight concurrently. Controls orchestrator throughput — the trainer decides when to step based on token_batch_size.",
         ),
-    ] = 1.0
+    ] = 128
 
     rollouts_per_example: Annotated[
         int,
@@ -716,12 +686,6 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 2048
 
-    # TODO(Mika): This should be automatic from the number of ZMQ connections
-    num_train_workers: Annotated[
-        int,
-        Field(default=1, ge=1, description="Number of training workers to use for training."),
-    ] = 1
-
     max_steps: Annotated[
         int | None,
         Field(
@@ -737,25 +701,10 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = 8
 
-    max_async_level: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Maximum number of steps the inference can be ahead of training. If 0, will degenerate to synchronous on-policy RL. If >=1, training and inference will be overlapped.",
-        ),
-    ] = 1
-
-    strict_async_level: Annotated[
-        bool,
-        Field(
-            description="Whether to strictly enforce the max async level. If True, will always ensure that the policy used for generating rollouts is exactly `max_async_level` steps ahead of training. If False, any policy that is at most `max_async_level` steps ahead of training is allowed, i.e. we always use the latest available policy.",
-        ),
-    ] = False
-
     bench: Annotated[
         bool,
         Field(
-            description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 5, max async level to ~infinity and disable W&B.",
+            description="Whether to run in benchmark mode. Automatically sets max_steps to 4 and disables evaluation and W&B extras.",
         ),
     ] = False
 
@@ -772,19 +721,6 @@ class OrchestratorConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def nccl_max_async_level(self):
-        if self.weight_broadcast.type == "nccl":
-            if not self.max_async_level == 1:
-                raise ValueError("max_async_level must be 1 for NCCL broadcast")
-        return self
-
-    @model_validator(mode="after")
-    def validate_batch_size(self):
-        if self.batch_size % self.rollouts_per_example != 0:
-            raise ValueError("Batch size must be divisible by the number of samples per problem")
-        return self
-
-    @model_validator(mode="after")
     def validate_env_ratios(self):
         if self.buffer.env_ratios is not None:
             assert len(self.buffer.env_ratios) == len(self.env), "env_ratios length must match number of environments"
@@ -794,7 +730,6 @@ class OrchestratorConfig(BaseSettings):
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
-            self.max_async_level = int(1e9)  # Never wait for RL weight checkpoints
 
             # Disable evaluation
             self.eval = None
