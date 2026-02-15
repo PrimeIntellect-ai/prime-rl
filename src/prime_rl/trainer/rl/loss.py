@@ -346,7 +346,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
         "sequence_masked_high": seq_high.float(),
         "geo_masked_low": geo_low.float(),
         "geo_masked_high": geo_high.float(),
-        "geo_mean_ratio": is_weights.geo_mean_weight,
+        "geo_seq_ratio": is_weights.geo_mean_weight,
     }
     if teacher_kl is not None:
         metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
