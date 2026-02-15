@@ -11,7 +11,7 @@ from verifiers.workers import ZMQEnvClient, ZMQEnvServer
 
 from prime_rl.utils.logger import InterceptHandler, ProgressTracker, get_logger
 
-DEFAULT_RETRIES = 3
+DEFAULT_RETRIES = 0
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
 DEFAULT_STATE_COLUMNS = []
 
@@ -79,32 +79,6 @@ async def wait_for_env_servers(
         raise TimeoutError(msg)
 
     await asyncio.gather(*[wait_for_env_server(env_client) for env_client in env_clients])
-
-
-async def run_rollout(
-    env: vf.Environment,
-    client: vf.ClientConfig,
-    model_name: str,
-    example: dict,
-    sampling_args: dict,
-    max_retries: int = DEFAULT_RETRIES,
-    state_columns: list[str] = DEFAULT_STATE_COLUMNS,
-) -> vf.RolloutOutput:
-    """
-    Wrapper for vf.Environment.run_rollout().
-
-    Asynchronously generates and scores a rollout.
-    """
-    state_columns = state_columns + REQUIRED_STATE_COLUMNS
-    rollout_input = vf.RolloutInput(**example)
-    return await env.run_rollout(
-        rollout_input,
-        client=client,
-        model=model_name,
-        sampling_args=sampling_args,
-        max_retries=max_retries,
-        state_columns=state_columns,
-    )
 
 
 async def run_group(

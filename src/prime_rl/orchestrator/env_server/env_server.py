@@ -1,4 +1,3 @@
-from loguru import logger
 from verifiers.workers import ZMQEnvServer
 
 from prime_rl.orchestrator.env_server.config import EnvServerConfig
@@ -9,7 +8,6 @@ from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, install_env
 
 
 @clean_exit
-@logger.catch(reraise=True)
 def run_server(config: EnvServerConfig):
     setup_logger(config.log.level, json_logging=config.log.json_logging)
 

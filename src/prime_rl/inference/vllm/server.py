@@ -25,6 +25,7 @@ from prime_rl.inference.config import InferenceConfig
 from prime_rl.inference.patches import (
     monkey_patch_load_lora_adapter,
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
+    monkey_patch_tokenize_params_validation,
 )
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
@@ -35,6 +36,8 @@ from prime_rl.inference.vllm.serving_chat_with_tokens import (
 monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
 # NOTE: Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
 monkey_patch_load_lora_adapter()
+# NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
+monkey_patch_tokenize_params_validation()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 

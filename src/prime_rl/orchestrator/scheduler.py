@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
@@ -106,6 +107,15 @@ class Scheduler:
         self.inflight_group_rollouts.clear()
         self.cancelled_rollouts_count += count
 
+    async def _select_least_loaded_client(self) -> vf.ClientConfig:
+        """Select the client with the fewest in-flight tasks."""
+        clients = self.inference_pool.clients
+        while not clients:
+            await asyncio.sleep(1)
+            clients = self.inference_pool.clients
+        inflight_by_url = Counter(info.client_config.api_base_url for info in self.inflight_group_rollouts.values())
+        return min(clients, key=lambda c: inflight_by_url[c.api_base_url])
+
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
         if self.rate_limiter:
@@ -115,7 +125,7 @@ class Scheduler:
         controller_max_tokens = self.buffer.get_max_tokens(example["task"])
         if controller_max_tokens is not None:
             sampling_args = {**self.sampling_args, "max_tokens": controller_max_tokens}
-        client_config = await self.inference_pool.get_next_client()
+        client_config = await self._select_least_loaded_client()
         run_group_task = asyncio.create_task(
             run_group(
                 env=self.env,
