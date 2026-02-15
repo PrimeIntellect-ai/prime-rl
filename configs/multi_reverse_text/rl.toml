@@ -5,7 +5,7 @@ seq_len = 2048
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [orchestrator]
-max_inflight_groups = 8
+max_inflight_rollouts = 8
 rollouts_per_example = 16
 
 [orchestrator.sampling]

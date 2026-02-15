@@ -652,7 +652,7 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    max_inflight_groups: Annotated[
+    max_inflight_rollouts: Annotated[
         int,
         Field(
             ge=1,

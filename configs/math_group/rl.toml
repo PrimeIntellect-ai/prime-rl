@@ -11,7 +11,7 @@ name = "math-group"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-max_inflight_groups = 48
+max_inflight_rollouts = 48
 rollouts_per_example = 16
 
 [[orchestrator.env]]

@@ -29,7 +29,7 @@ target_modules = [
 ]
 
 [orchestrator]
-max_inflight_groups = 64
+max_inflight_rollouts = 64
 rollouts_per_example = 16
 
 [orchestrator.sampling]

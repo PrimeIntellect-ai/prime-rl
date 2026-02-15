@@ -8,7 +8,7 @@ seq_len = 4096
 name = "Qwen/Qwen3-VL-4B-Instruct"
 
 [orchestrator]
-max_inflight_groups = 16
+max_inflight_rollouts = 16
 rollouts_per_example = 16
 
 

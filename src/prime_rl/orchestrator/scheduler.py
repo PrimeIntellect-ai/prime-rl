@@ -166,7 +166,7 @@ class Scheduler:
         Returns an empty list if the group was cancelled or failed.
         """
         # Top up the inflight pool
-        while len(self.inflight_group_rollouts) < self.config.max_inflight_groups:
+        while len(self.inflight_group_rollouts) < self.config.max_inflight_rollouts:
             await self.schedule_group_rollout()
 
         # Wait for at least one future to complete
