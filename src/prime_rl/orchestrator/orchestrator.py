@@ -386,13 +386,13 @@ async def orchestrate(config: OrchestratorConfig):
             # this avoid doing eval across different checkpoints and avoid congestion
             scheduler.checkpoint_ready.clear()
             scheduler.cancel_all_inflight_rollouts()
-
             results = await asyncio.gather(
                 *[
                     evaluate_env(
                         env=eval_env,
                         env_name=eval_env_name,
                         clients=inference_pool.clients,
+                        get_client=inference_pool.get_next_client,
                         model_name=scheduler.model_name,
                         sampling_args=eval_sampling_args,
                         num_examples=eval_env_config.num_examples or config.eval.num_examples,
@@ -729,6 +729,7 @@ async def orchestrate(config: OrchestratorConfig):
                     env=eval_env,
                     env_name=eval_env_name,
                     clients=inference_pool.clients,
+                    get_client=inference_pool.get_next_client,
                     model_name=scheduler.model_name,
                     sampling_args=eval_sampling_args,
                     num_examples=eval_env_config.num_examples or config.eval.num_examples,
