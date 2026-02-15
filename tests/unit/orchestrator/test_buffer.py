@@ -6,7 +6,7 @@ import verifiers as vf
 from datasets import Dataset
 
 from prime_rl.orchestrator.buffer import Buffer
-from prime_rl.orchestrator.config import BufferConfig
+from prime_rl.orchestrator.config import BufferConfig, MaxTokensControllerConfig
 
 
 @pytest.fixture(autouse=True)
@@ -206,3 +206,257 @@ def test_buffer_no_cross_env_pool_assignment(mock_openai_client, tmp_path):
     assert len(new_buffer.easy_examples) == 0
     # Should still be in normal pool for env_b
     assert len(new_buffer.example_buffer["env_b"]) == 1
+
+
+# ── Max tokens controller tests ──────────────────────────────────────────
+
+
+def _make_controller_rollouts(
+    dataset: Dataset, rewards: list[float], is_truncated: list[bool] | bool = False
+) -> list[vf.RolloutOutput]:
+    """Helper to create rollouts with controllable truncation flags."""
+    if isinstance(is_truncated, bool):
+        is_truncated = [is_truncated] * len(rewards)
+    all_rollouts = []
+    for i, (reward, trunc) in enumerate(zip(rewards, is_truncated)):
+        rollout = vf.RolloutOutput(
+            example_id=dataset[i]["example_id"],
+            task=dataset[i]["task"],
+            prompt=dataset[i]["prompt"],
+            prompt_ids=[0],
+            prompt_mask=[1],
+            completion_ids=[1],
+            completion_mask=[1],
+            completion_logprobs=[0.0],
+            is_truncated=trunc,
+            reward=reward,
+            advantage=1.0,
+            metrics={},
+        )
+        all_rollouts.append(rollout)
+    return all_rollouts
+
+
+@pytest.fixture
+def single_env_group(mock_openai_client, dummy_dataset) -> vf.EnvGroup:
+    env = vf.SingleTurnEnv(
+        client=mock_openai_client,
+        model="test-model",
+        dataset=dummy_dataset,
+        rubric=vf.Rubric(),
+    )
+    return vf.EnvGroup(envs=[env], env_names=["env_a"])
+
+
+def test_max_tokens_controller_increase(single_env_group):
+    """Increases when reward < target and truncation > 0."""
+    dataset = single_env_group.get_dataset()
+    ctrl = MaxTokensControllerConfig(
+        target_reward=0.8, step_size=32, initial_max_tokens=256, min_max_tokens=64, max_max_tokens=1024
+    )
+    buffer = Buffer(dataset, single_env_group.env_names, BufferConfig(), max_tokens_controllers={"env_a": ctrl})
+
+    assert buffer.get_max_tokens("env_a") == 256
+
+    # Low reward + truncation -> should increase
+    rollouts = _make_controller_rollouts(dataset.select(range(3)), rewards=[0.2, 0.3, 0.1], is_truncated=True)
+    buffer.update(rollouts)
+    metrics = buffer.get_metrics()
+
+    assert buffer.get_max_tokens("env_a") == 288  # 256 + 32
+    assert "max_tokens/env_a" in metrics
+    assert "ema_reward/env_a" in metrics
+
+
+def test_max_tokens_controller_decrease(single_env_group):
+    """Decreases when reward > target and truncation rate <= threshold."""
+    dataset = single_env_group.get_dataset()
+    ctrl = MaxTokensControllerConfig(
+        target_reward=0.5,
+        step_size=32,
+        initial_max_tokens=512,
+        min_max_tokens=64,
+        max_max_tokens=1024,
+        truncation_threshold=0.1,
+    )
+    buffer = Buffer(dataset, single_env_group.env_names, BufferConfig(), max_tokens_controllers={"env_a": ctrl})
+
+    # High reward + no truncation -> should decrease
+    rollouts = _make_controller_rollouts(dataset.select(range(3)), rewards=[0.9, 0.8, 0.9], is_truncated=False)
+    buffer.update(rollouts)
+    buffer.get_metrics()
+
+    assert buffer.get_max_tokens("env_a") == 480  # 512 - 32
+
+
+def test_max_tokens_controller_no_increase_without_truncation(single_env_group):
+    """Holds steady when reward < target but truncation == 0."""
+    dataset = single_env_group.get_dataset()
+    ctrl = MaxTokensControllerConfig(
+        target_reward=0.8, step_size=32, initial_max_tokens=256, min_max_tokens=64, max_max_tokens=1024
+    )
+    buffer = Buffer(dataset, single_env_group.env_names, BufferConfig(), max_tokens_controllers={"env_a": ctrl})
+
+    # Low reward but NO truncation -> should not increase
+    rollouts = _make_controller_rollouts(dataset.select(range(3)), rewards=[0.2, 0.3, 0.1], is_truncated=False)
+    buffer.update(rollouts)
+    buffer.get_metrics()
+
+    assert buffer.get_max_tokens("env_a") == 256
+
+
+def test_max_tokens_controller_no_decrease_high_truncation(single_env_group):
+    """Holds steady when reward > target but truncation rate > threshold."""
+    dataset = single_env_group.get_dataset()
+    ctrl = MaxTokensControllerConfig(
+        target_reward=0.5,
+        step_size=32,
+        initial_max_tokens=512,
+        min_max_tokens=64,
+        max_max_tokens=1024,
+        truncation_threshold=0.1,
+    )
+    buffer = Buffer(dataset, single_env_group.env_names, BufferConfig(), max_tokens_controllers={"env_a": ctrl})
+
+    # High reward but high truncation -> should not decrease
+    rollouts = _make_controller_rollouts(dataset.select(range(3)), rewards=[0.9, 0.8, 0.9], is_truncated=True)
+    buffer.update(rollouts)
+    buffer.get_metrics()
+
+    assert buffer.get_max_tokens("env_a") == 512
+
+
+def test_max_tokens_controller_clamping(single_env_group):
+    """Respects min/max bounds."""
+    dataset = single_env_group.get_dataset()
+
+    # Test min clamping
+    ctrl = MaxTokensControllerConfig(
+        target_reward=0.5,
+        step_size=100,
+        initial_max_tokens=100,
+        min_max_tokens=64,
+        max_max_tokens=1024,
+        truncation_threshold=0.1,
+    )
+    buffer = Buffer(dataset, single_env_group.env_names, BufferConfig(), max_tokens_controllers={"env_a": ctrl})
+    rollouts = _make_controller_rollouts(dataset.select(range(3)), rewards=[0.9, 0.8, 0.9], is_truncated=False)
+    buffer.update(rollouts)
+    buffer.get_metrics()
+    assert buffer.get_max_tokens("env_a") == 64  # 100 - 100 = 0 -> clamped to 64
+
+    # Test max clamping
+    ctrl2 = MaxTokensControllerConfig(
+        target_reward=0.8, step_size=100, initial_max_tokens=980, min_max_tokens=64, max_max_tokens=1024
+    )
+    buffer2 = Buffer(dataset, single_env_group.env_names, BufferConfig(), max_tokens_controllers={"env_a": ctrl2})
+    rollouts2 = _make_controller_rollouts(dataset.select(range(3)), rewards=[0.2, 0.3, 0.1], is_truncated=True)
+    buffer2.update(rollouts2)
+    buffer2.get_metrics()
+    assert buffer2.get_max_tokens("env_a") == 1024  # 980 + 100 = 1080 -> clamped to 1024
+
+
+def test_max_tokens_controller_ema(single_env_group):
+    """EMA smooths the signal correctly over multiple updates."""
+    dataset = single_env_group.get_dataset()
+    ctrl = MaxTokensControllerConfig(
+        target_reward=0.5,
+        step_size=32,
+        momentum=0.5,
+        initial_max_tokens=512,
+        min_max_tokens=64,
+        max_max_tokens=1024,
+        truncation_threshold=0.1,
+    )
+    buffer = Buffer(dataset, single_env_group.env_names, BufferConfig(), max_tokens_controllers={"env_a": ctrl})
+
+    # Step 1: reward=0.2, truncation=True -> ema seeds to 0.2 (< 0.5 target) -> increase
+    rollouts = _make_controller_rollouts(dataset.select(range(1)), rewards=[0.2], is_truncated=True)
+    buffer.update(rollouts)
+    buffer.get_metrics()
+    assert buffer.ema_reward_per_env["env_a"] == pytest.approx(0.2)
+    assert buffer.get_max_tokens("env_a") == 544  # 512 + 32
+
+    # Step 2: reward=0.8, truncation=False -> ema = 0.5*0.2 + 0.5*0.8 = 0.5
+    # ema == target (not > target), so no decrease
+    rollouts = _make_controller_rollouts(dataset.select(range(1)), rewards=[0.8], is_truncated=False)
+    buffer.update(rollouts)
+    buffer.get_metrics()
+    assert buffer.ema_reward_per_env["env_a"] == pytest.approx(0.5)
+    assert buffer.get_max_tokens("env_a") == 544  # unchanged
+
+    # Step 3: reward=0.9, truncation=False -> ema = 0.5*0.5 + 0.5*0.9 = 0.7 > 0.5 target -> decrease
+    rollouts = _make_controller_rollouts(dataset.select(range(1)), rewards=[0.9], is_truncated=False)
+    buffer.update(rollouts)
+    buffer.get_metrics()
+    assert buffer.ema_reward_per_env["env_a"] == pytest.approx(0.7)
+    assert buffer.get_max_tokens("env_a") == 512  # 544 - 32
+
+
+def test_max_tokens_controller_save_load(single_env_group, tmp_path):
+    """State persists across save/load."""
+    dataset = single_env_group.get_dataset()
+    ctrl = MaxTokensControllerConfig(
+        target_reward=0.8, step_size=32, initial_max_tokens=256, min_max_tokens=64, max_max_tokens=1024
+    )
+    buffer = Buffer(dataset, single_env_group.env_names, BufferConfig(), max_tokens_controllers={"env_a": ctrl})
+
+    # Trigger a step to get some ema state
+    rollouts = _make_controller_rollouts(dataset.select(range(3)), rewards=[0.2, 0.3, 0.1], is_truncated=True)
+    buffer.update(rollouts)
+    buffer.get_metrics()
+
+    saved_max_tokens = buffer.get_max_tokens("env_a")
+    saved_ema = buffer.ema_reward_per_env["env_a"]
+
+    buffer.save(tmp_path / "buffer")
+
+    # Load into new buffer
+    new_buffer = Buffer(dataset, single_env_group.env_names, BufferConfig(), max_tokens_controllers={"env_a": ctrl})
+    new_buffer.load(tmp_path / "buffer")
+
+    assert new_buffer.get_max_tokens("env_a") == saved_max_tokens
+    assert new_buffer.ema_reward_per_env["env_a"] == pytest.approx(saved_ema)
+
+
+def test_max_tokens_controller_per_env(dummy_env_group):
+    """Only active for envs with config; others return None from get_max_tokens."""
+    dataset = dummy_env_group.get_dataset()
+    ctrl = MaxTokensControllerConfig(
+        target_reward=0.7, step_size=32, initial_max_tokens=256, min_max_tokens=64, max_max_tokens=1024
+    )
+    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig(), max_tokens_controllers={"env_a": ctrl})
+
+    assert buffer.get_max_tokens("env_a") == 256
+    assert buffer.get_max_tokens("env_b") is None
+
+
+def test_max_tokens_controller_validation():
+    """Config validators reject invalid bounds."""
+    from pydantic import ValidationError
+
+    # min > max
+    with pytest.raises(ValidationError, match="min_max_tokens must be <= max_max_tokens"):
+        MaxTokensControllerConfig(target_reward=0.5, min_max_tokens=1024, max_max_tokens=64)
+
+    # initial out of bounds
+    with pytest.raises(ValidationError, match="initial_max_tokens must be within"):
+        MaxTokensControllerConfig(target_reward=0.5, initial_max_tokens=2048, min_max_tokens=64, max_max_tokens=1024)
+
+    # initial below min
+    with pytest.raises(ValidationError, match="initial_max_tokens must be within"):
+        MaxTokensControllerConfig(target_reward=0.5, initial_max_tokens=32, min_max_tokens=64, max_max_tokens=1024)
+
+
+def test_max_tokens_controller_initial_from_sampling(single_env_group):
+    """Falls back to initial_max_tokens from sampling config when controller.initial_max_tokens is None."""
+    dataset = single_env_group.get_dataset()
+    ctrl = MaxTokensControllerConfig(target_reward=0.7, step_size=32, min_max_tokens=64, max_max_tokens=1024)
+    buffer = Buffer(
+        dataset,
+        single_env_group.env_names,
+        BufferConfig(),
+        max_tokens_controllers={"env_a": ctrl},
+        initial_max_tokens=512,
+    )
+    assert buffer.get_max_tokens("env_a") == 512

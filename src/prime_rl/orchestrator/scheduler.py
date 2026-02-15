@@ -111,6 +111,10 @@ class Scheduler:
         if self.rate_limiter:
             await self.rate_limiter.acquire()
         example = self.buffer.sample_examples(n=1)[0]
+        sampling_args = self.sampling_args
+        controller_max_tokens = self.buffer.get_max_tokens(example["task"])
+        if controller_max_tokens is not None:
+            sampling_args = {**self.sampling_args, "max_tokens": controller_max_tokens}
         client_config = await self.inference_pool.get_next_client()
         run_group_task = asyncio.create_task(
             run_group(
@@ -119,7 +123,7 @@ class Scheduler:
                 example=example,
                 model_name=self.model_name,
                 rollouts_per_example=self.config.rollouts_per_example,
-                sampling_args=self.sampling_args,
+                sampling_args=sampling_args,
                 max_retries=0,  # TODO: make configurable
             )
         )
