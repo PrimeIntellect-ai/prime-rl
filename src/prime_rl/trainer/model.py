@@ -191,11 +191,11 @@ def get_model(
         )
 
     with device:
-        # For VLM models, use AutoModelForVision2Seq or import specific model class
+        # For VLM models, use AutoModelForImageTextToText (renamed from AutoModelForVision2Seq in transformers v5)
         if is_vlm:
-            from transformers import AutoModelForVision2Seq
+            from transformers import AutoModelForImageTextToText
 
-            model_cls = AutoModelForVision2Seq
+            model_cls = AutoModelForImageTextToText
         else:
             match impl_to_use:
                 case "hf":
