@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
 from typing import Optional, Union
 
 import torch
@@ -456,6 +457,11 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
         self.model = GlmMoeDsaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
+        warnings.warn(
+            "GlmMoeDsaForCausalLM is currently experimental, results may not be 100% accurate and performance may not be optimal."
+        )
+        warnings.warn("Ignoring provided attention implementation, using sparse attention instead.")
 
         self.post_init()
 
