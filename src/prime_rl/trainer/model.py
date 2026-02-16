@@ -151,7 +151,8 @@ def get_model(
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
     if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
         gen_config = GenerationConfig.from_model_config(model_config)
-        model_config.pad_token_id = gen_config.eos_token_id
+        pad_token_id = gen_config.pad_token_id or gen_config.eos_token_id or getattr(model_config, "eos_token_id", None)
+        model_config.pad_token_id = pad_token_id
 
     # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
     # The model should load in its default dtype (bf16) to match vLLM inference.
