@@ -26,8 +26,5 @@ max_tokens = 1024
 
 [trainer] # Default trainer config
 
-[trainer.model]
-attn = "sdpa"
-
 [inference.parallel]
 dp = 6

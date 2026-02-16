@@ -188,8 +188,8 @@ async def custom_init_app_state(
         enable_log_outputs=args.enable_log_outputs,
         log_error_stack=args.log_error_stack,
     )
-    state.openai_serving_chat = serving_chat
-    state.openai_serving_chat_with_tokens = serving_chat
+    state.openai_serving_chat = serving_chat if "generate" in supported_tasks else None
+    state.openai_serving_chat_with_tokens = serving_chat if "generate" in supported_tasks else None
 
 
 def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:

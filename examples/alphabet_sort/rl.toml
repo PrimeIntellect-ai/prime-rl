@@ -2,30 +2,30 @@
 max_steps = 200
 seq_len = 2048
 
-[log]
-level = "debug"
-
 [ckpt] # Checkpoint at the end of training
 
 [model]
-name = "./outputs/mini_moe"
+name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [wandb]
 project = "alphabet-sort"
 name = "alphabet-sort"
 
 [trainer.model]
-impl = "custom"
-attn = "sdpa"
+impl = "auto"
 
 [trainer.model.ac]
 freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
 
 [trainer.optim]
 lr = 1e-5
 
 [orchestrator]
-batch_size = 32
+batch_size = 512
 rollouts_per_example = 8
 
 [orchestrator.sampling]
@@ -37,5 +37,3 @@ name = "alphabet-sort"
 args = { min_turns = 3, max_turns = 5, power_per_turn = false }
 
 [inference] # Default inference config
-enable_return_routed_experts = true
-

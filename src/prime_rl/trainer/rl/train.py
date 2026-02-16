@@ -325,6 +325,10 @@ def train(config: RLTrainerConfig):
                     "You must set `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server to use router replay."
                 )
 
+            if routed_experts is not None and not config.enable_router_replay:
+                # we could've gotten routed experts from the inference server, but we didn't enable router replay
+                routed_experts = None
+
             # Multimodal fields (Qwen3-VL) - only present for VLM training
             pixel_values = (
                 micro_batch["pixel_values"].to("cuda") if micro_batch.get("pixel_values") is not None else None
