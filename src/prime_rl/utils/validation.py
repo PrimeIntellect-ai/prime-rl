@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import warnings
 from typing import Optional
 
 from prime_rl.inference.config import InferenceConfig
@@ -124,12 +123,14 @@ def validate_shared_mlflow_config(
     orchestrator: OrchestratorConfig,
 ) -> None:
     if trainer.mlflow and not orchestrator.mlflow:
-        warnings.warn(
+        raise ValueError(
             "Trainer MLflow config is specified, but orchestrator MLflow config is not. "
-            "Only trainer metrics will be logged to MLflow. Use [mlflow] to configure both at once."
+            "This means only trainer metrics will be logged. Please specify [orchestrator.mlflow] to log orchestrator metrics as well, "
+            "or use [mlflow] to configure both at once."
         )
     if orchestrator.mlflow and not trainer.mlflow:
-        warnings.warn(
+        raise ValueError(
             "Orchestrator MLflow config is specified, but trainer MLflow config is not. "
-            "Only orchestrator metrics will be logged to MLflow. Use [mlflow] to configure both at once."
+            "This means only orchestrator metrics will be logged. Please specify [trainer.mlflow] to log trainer metrics as well, "
+            "or use [mlflow] to configure both at once."
         )
