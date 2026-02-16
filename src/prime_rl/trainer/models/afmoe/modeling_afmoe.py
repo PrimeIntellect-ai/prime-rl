@@ -330,6 +330,7 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
 
@@ -346,7 +347,7 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
 
         residual = hidden_states
         hidden_states = self.pre_mlp_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
         hidden_states = self.post_mlp_layernorm(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states
@@ -435,6 +436,7 @@ class AfmoeModel(AfmoePreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        routed_experts: Optional[torch.LongTensor] = None,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -485,8 +487,9 @@ class AfmoeModel(AfmoePreTrainedModel):
 
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for decoder_layer in self.layers:
+        for layer_idx, decoder_layer in enumerate(self.layers):
             mask = causal_mask_mapping[decoder_layer.attention_type] if causal_mask_mapping is not None else None
+            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
 
             hidden_states = decoder_layer(
                 hidden_states,
@@ -494,6 +497,7 @@ class AfmoeModel(AfmoePreTrainedModel):
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                routed_experts=routed_experts_layer,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -546,6 +550,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         token_type_ids: Optional[torch.Tensor] = None,  # will be ignored
         temperature: Optional[torch.Tensor] = None,
+        routed_experts: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -563,6 +568,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
             attention_mask=attention_mask,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
+            routed_experts=routed_experts,
         )
 
         hidden_states = outputs.last_hidden_state

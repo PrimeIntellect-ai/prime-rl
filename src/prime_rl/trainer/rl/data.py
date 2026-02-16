@@ -195,4 +195,9 @@ class DataLoader:
             image_grid_thw=torch.tensor(micro_batch.image_grid_thw, dtype=torch.long)
             if micro_batch.image_grid_thw is not None
             else None,
+            routed_experts=torch.tensor(micro_batch.routed_experts, dtype=torch.int32).unsqueeze(
+                0
+            )  # [1, seq_len, layers, topk]
+            if micro_batch.routed_experts is not None
+            else None,
         )

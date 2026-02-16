@@ -58,4 +58,5 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`optim.mu`**: Added Muon momentum (`mu`) config field (default: 0.95). Previously hardcoded to Muon class default. Also fixed `optim.betas1`/`optim.betas2` not being passed through to the Muon optimizer (2026-02-09)
 - **`dump_config`**: Added `--dump-config <path>` flag to the `rl` command. When set, writes the resolved subconfigs (trainer, orchestrator, inference, teacher_inference) to the given directory and exits without starting any processes (2026-02-12
 - **`client.api_key_var`**: Changed default from "OPENAI_API_KEY" to "VLLM_API_KEY" (2026-02-12)
-
+- **`trainer.enable_router_replay`**: Added flag to enable router replay. If True, will return routed experts in the batch. This is only supported if `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server. This is only supported for custom models. (2026-02-16)
+- **`inference.enable_return_routed_experts`**: Added flag to enable return routed experts. Passed to vLLM as `--enable-return-routed-experts` (2026-02-16)
