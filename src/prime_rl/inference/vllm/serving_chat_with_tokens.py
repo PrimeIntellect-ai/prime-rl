@@ -1,5 +1,5 @@
 import base64
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import ClassVar, Optional, Union
 
 import numpy as np
@@ -93,7 +93,40 @@ class ChatCompletionRequestWithTokens(ChatCompletionRequest):
 
 
 class OpenAIServingChatWithTokens(OpenAIServingChat):
-    """OpenAI-compatible generate API that allows token-in."""
+    """OpenAI-compatible generate API that allows token-in and routed experts capture."""
+
+    async def chat_completion_full_generator(
+        self,
+        request: ChatCompletionRequest,
+        result_generator: AsyncIterator[RequestOutput],
+        request_id: str,
+        model_name: str,
+        conversation,
+        tokenizer,
+        request_metadata: RequestResponseMetadata,
+        reasoning_parser: ReasoningParser | None = None,
+    ) -> ErrorResponse | ChatCompletionResponse:
+        if self.model_config.enable_return_routed_experts:
+            capture = _RoutedExpertsCapture(result_generator)
+            result_generator = capture
+        else:
+            capture = None
+
+        response = await super().chat_completion_full_generator(
+            request,
+            result_generator,
+            request_id,
+            model_name,
+            conversation,
+            tokenizer,
+            request_metadata,
+            reasoning_parser,
+        )
+
+        if capture and isinstance(response, ChatCompletionResponse):
+            capture.post_process(response)
+
+        return response
 
     async def create_chat_completion_with_tokens(
         self,
@@ -255,14 +288,8 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 reasoning_parser,
             )
 
-        if self.model_config.enable_return_routed_experts:
-            routed_experts_capture = _RoutedExpertsCapture(result_generator)
-            result_generator = routed_experts_capture
-        else:
-            routed_experts_capture = None
-
         try:
-            response = await self.chat_completion_full_generator(
+            return await self.chat_completion_full_generator(
                 request,
                 result_generator,
                 request_id,
@@ -276,8 +303,3 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
             return self._convert_generation_error_to_response(e)
         except ValueError as e:
             return self.create_error_response(e)
-
-        if routed_experts_capture:
-            routed_experts_capture.post_process(response)
-
-        return response
