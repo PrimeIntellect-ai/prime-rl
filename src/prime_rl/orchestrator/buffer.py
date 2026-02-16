@@ -231,7 +231,7 @@ class Buffer:
                 target_pool.append(example)
 
             self.num_examples_per_step[env_name][pool] += 1
-            if self.config.online_difficulty_filtering:
+            if not self.config.skip_verification:
                 if avg_reward == 0.0:
                     self.num_rollouts_per_step[env_name]["hard"] += len(example_rollouts)
                     continue

@@ -108,24 +108,20 @@ def test_buffer_problem_pool_assignment(dummy_env_group, make_rollouts):
 
 
 def test_buffer_online_difficulty_filtering(dummy_env_group, make_rollouts):
-    """With online_difficulty_filtering=True, only partial reward rollouts are kept."""
+    """Extreme rewards are filtered out by default."""
     dataset = dummy_env_group.get_dataset()
-    buffer = Buffer(
-        dataset,
-        dummy_env_group.env_names,
-        BufferConfig(online_difficulty_filtering=True),
-    )
+    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig())
     buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 0.5, 0.0, 0.5, 0.5]))
 
     # Only 3 problems with reward 0.5 -> 6 rollouts kept
     assert len(buffer.rollout_buffer) == 6
 
 
-def test_buffer_no_filtering_by_default(dummy_env_group, make_rollouts):
-    """With online_difficulty_filtering=False (default), all rollouts are kept."""
+def test_buffer_skip_verification_disables_filtering(dummy_env_group, make_rollouts):
+    """When verification is skipped, reward-based filtering is bypassed."""
     dataset = dummy_env_group.get_dataset()
-    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig())
-    buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 0.5, 0.0, 0.5, 0.5]))
+    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig(skip_verification=True))
+    buffer.update(make_rollouts(dataset.select(range(5)), rewards=[0.0, 0.0, 0.0, 0.0, 0.0]))
 
     # All 5 problems -> 10 rollouts kept
     assert len(buffer.rollout_buffer) == 10
