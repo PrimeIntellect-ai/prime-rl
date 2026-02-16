@@ -2,16 +2,13 @@
 max_steps = 200
 seq_len = 2048
 
-trainer_gpu_ids = [0,1,2,3]
-inference_gpu_ids = [4,5,6,7]
-
 [log]
 level = "debug"
 
 [ckpt] # Checkpoint at the end of training
 
 [model]
-name = "Qwen/Qwen3-30B-A3B"
+name = "./outputs/mini_moe"
 
 [wandb]
 project = "alphabet-sort"
@@ -28,7 +25,7 @@ freq = 1
 lr = 1e-5
 
 [orchestrator]
-batch_size = 64
+batch_size = 32
 rollouts_per_example = 8
 
 [orchestrator.sampling]
@@ -42,5 +39,3 @@ args = { min_turns = 3, max_turns = 5, power_per_turn = false }
 [inference] # Default inference config
 enable_return_routed_experts = true
 
-[inference.parallel]
-tp = 4

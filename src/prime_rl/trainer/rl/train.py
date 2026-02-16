@@ -316,6 +316,14 @@ def train(config: RLTrainerConfig):
             teacher_logprobs = (
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
             )
+            routed_experts = (
+                micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
+            )
+
+            if routed_experts is None and config.enable_router_replay:
+                raise ValueError(
+                    "You must set `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server to use router replay."
+                )
 
             # Multimodal fields (Qwen3-VL) - only present for VLM training
             pixel_values = (
@@ -334,6 +342,7 @@ def train(config: RLTrainerConfig):
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
+                routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
 
@@ -366,6 +375,7 @@ def train(config: RLTrainerConfig):
                     temperature=temperatures,
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
+                    routed_experts=routed_experts,
                 )
 
             if out.get("logprobs") is None:

@@ -12,6 +12,27 @@ from prime_rl.utils.logger import get_logger
 # primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
 
 
+def _align_routed_experts(
+    routed_experts: list[list[list[int]]] | None,
+    expected_len: int,
+) -> list[list[list[int]]] | None:
+    """Align routed_experts length with the expected token count.
+
+    VLLM's capturer uses `num_tokens - 1` slot mappings because the final
+    generated token was never fed as input to a forward pass and has no
+    routing decision. Append zero-filled entries for the missing positions.
+    """
+    if routed_experts is None or not routed_experts:
+        return routed_experts
+    deficit = expected_len - len(routed_experts)
+    if deficit <= 0:
+        return routed_experts
+    num_layers = len(routed_experts[0])
+    topk = len(routed_experts[0][0])
+    zero_entry = [[0] * topk for _ in range(num_layers)]
+    return routed_experts + [zero_entry for _ in range(deficit)]
+
+
 def interleave_rollout(
     output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
@@ -67,6 +88,11 @@ def interleave_rollout(
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
         completion_ids = list(tokens["completion_ids"])
         pixel_values, image_grid_thw = get_images(step_idx)
+        routed_experts = _align_routed_experts(
+            tokens["routed_experts"],
+            len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
+        )
+
         return TrainingSample(
             prompt_ids=list(tokens["prompt_ids"]),
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
@@ -78,6 +104,7 @@ def interleave_rollout(
             advantage=None,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
+            routed_experts=routed_experts,
         )
 
     def extend_sample(sample: TrainingSample, step: vf.TrajectoryStep, prefix_len: int, step_idx: int) -> None:
@@ -106,6 +133,13 @@ def interleave_rollout(
         pixel_values, image_grid_thw = get_images(step_idx)
         sample.pixel_values = pixel_values
         sample.image_grid_thw = image_grid_thw
+
+        # Extend with new routed experts (skip prefix, same as prompt_ids).
+        # Then align to account for VLLM's per-request num_tokens-1 deficit.
+        if tokens["routed_experts"] is not None and sample.routed_experts is not None:
+            sample.routed_experts.extend(tokens["routed_experts"][prefix_len:])
+            expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
+            sample.routed_experts = _align_routed_experts(sample.routed_experts, expected_len)
 
     # Track multiple active (prefix, sample) pairs to handle interleaved agents
     # Each entry is [prefix_tokens, sample] where prefix_tokens is the accumulated token sequence

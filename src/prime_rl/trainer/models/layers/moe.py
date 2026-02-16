@@ -202,13 +202,14 @@ class TokenChoiceTopKRouter(nn.Module):
         self.route_scale = route_scale
 
     def forward(
-        self, x: torch.Tensor, expert_bias: torch.Tensor | None = None
+        self, x: torch.Tensor, expert_bias: torch.Tensor | None = None, routed_experts: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs*slen, dim)``.
             expert_bias (torch.Tensor | None, optional): Optional bias tensor for experts with shape ``(num_experts,)``.
                 Used for load balancing. Defaults to None.
+            routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs * slen, top_k)``.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -220,6 +221,9 @@ class TokenChoiceTopKRouter(nn.Module):
                     Number of tokens assigned to each expert with shape ``(num_experts,)``.
         """
         # scores shape (bs*slen, num_experts)
+        assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
+            f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
+        )
         scores = self.gate(x)
 
         # By default, sigmoid or softmax is performed in float32 to avoid loss explosion
@@ -233,7 +237,11 @@ class TokenChoiceTopKRouter(nn.Module):
         # top scores shape (bs*slen, top_k)
         # NOTE: The expert_bias is only used for routing. The gating value
         #       top_scores is still derived from the original scores.
-        if expert_bias is not None:
+
+        if routed_experts is not None:
+            top_scores = scores.gather(dim=1, index=routed_experts)
+            selected_experts_indices = routed_experts
+        elif expert_bias is not None:
             _, selected_experts_indices = torch.topk(scores + expert_bias, k=self.top_k, dim=1)
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
         else:
@@ -246,7 +254,7 @@ class TokenChoiceTopKRouter(nn.Module):
 
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
         num_tokens_per_expert = torch.histc(
-            selected_experts_indices.view(-1),
+            selected_experts_indices.reshape(-1),
             bins=self.num_experts,
             min=0,
             max=self.num_experts,
@@ -296,8 +304,9 @@ class TokenReorderer(nn.Module):
                 - num_tokens_per_expert: Number of tokens assigned to each expert
         """
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
+        selected_experts_indices = selected_experts_indices.reshape(-1)
         num_tokens_per_expert = torch.histc(
-            selected_experts_indices.view(-1),
+            selected_experts_indices,
             bins=self.num_experts,
             min=0,
             max=self.num_experts,
@@ -305,7 +314,7 @@ class TokenReorderer(nn.Module):
 
         # Reorder the token indices to match the order of the experts
         # token_indices_experts_sorted shape (bs*slen*top_k,)
-        token_indices_experts_sorted = torch.argsort(selected_experts_indices.view(-1), stable=True)
+        token_indices_experts_sorted = torch.argsort(selected_experts_indices, stable=True)
 
         top_scores_experts_sorted = top_scores.view(-1)[token_indices_experts_sorted]
         token_indices_experts_sorted = token_indices_experts_sorted // self.top_k
@@ -366,10 +375,11 @@ class MoE(nn.Module):
             persistent=False,
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
+            routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs, slen, top_k)``.
 
         Returns:
             out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
@@ -377,13 +387,17 @@ class MoE(nn.Module):
         bs, slen, dim = x.shape
         x = x.view(-1, dim)
 
+        if routed_experts is not None:
+            _, _, top_k = routed_experts.shape
+            routed_experts = routed_experts.view(-1, top_k)
+
         # top_scores and selected_experts_indices shape (bs*slen*top_k,)
         # num_tokens_per_expert shape (num_experts,)
         (
             top_scores,
             selected_experts_indices,
             num_tokens_per_expert,
-        ) = self.router(x, self.expert_bias)
+        ) = self.router(x, self.expert_bias, routed_experts=routed_experts)
 
         # tokens_per_expert will be used to update the expert bias for load balancing.
         # and also to count the expert usage

@@ -90,6 +90,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         cu_seqlens: Optional[torch.LongTensor] = None,
         max_seqlen: Optional[int] = None,
+        routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -105,7 +106,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -201,6 +202,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        routed_experts: Optional[torch.LongTensor] = None,
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -227,12 +229,14 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                routed_experts=routed_experts_layer,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -266,6 +270,7 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[torch.Tensor] = None,
+        routed_experts: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -304,6 +309,7 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
+            routed_experts=routed_experts,
         )
 
         hidden_states = outputs.last_hidden_state
