@@ -1,7 +1,8 @@
 import asyncio
 import logging
+import multiprocessing as mp
+from collections.abc import Awaitable, Callable
 from itertools import cycle
-from multiprocessing import Process
 from typing import Any
 
 import verifiers as vf
@@ -11,7 +12,7 @@ from verifiers.workers import ZMQEnvClient, ZMQEnvServer
 
 from prime_rl.utils.logger import InterceptHandler, ProgressTracker, get_logger
 
-DEFAULT_RETRIES = 3
+DEFAULT_RETRIES = 0
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
 DEFAULT_STATE_COLUMNS = []
 
@@ -32,7 +33,10 @@ def spawn_env_server(
     Mirrors vf.Environment.start_server().
     """
     address = address or f"tcp://127.0.0.1:{get_free_port()}"
-    Process(
+    # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
+    # the parent process, which has caused hangs when multiple env server
+    # subprocesses share the same fds.
+    mp.get_context("spawn").Process(
         target=ZMQEnvServer.run_server,
         args=(
             env_id,
@@ -81,32 +85,6 @@ async def wait_for_env_servers(
     await asyncio.gather(*[wait_for_env_server(env_client) for env_client in env_clients])
 
 
-async def run_rollout(
-    env: vf.Environment,
-    client: vf.ClientConfig,
-    model_name: str,
-    example: dict,
-    sampling_args: dict,
-    max_retries: int = DEFAULT_RETRIES,
-    state_columns: list[str] = DEFAULT_STATE_COLUMNS,
-) -> vf.RolloutOutput:
-    """
-    Wrapper for vf.Environment.run_rollout().
-
-    Asynchronously generates and scores a rollout.
-    """
-    state_columns = state_columns + REQUIRED_STATE_COLUMNS
-    rollout_input = vf.RolloutInput(**example)
-    return await env.run_rollout(
-        rollout_input,
-        client=client,
-        model=model_name,
-        sampling_args=sampling_args,
-        max_retries=max_retries,
-        state_columns=state_columns,
-    )
-
-
 async def run_group(
     env: vf.Environment,
     client: vf.ClientConfig,
@@ -137,11 +115,12 @@ async def run_group(
 # TODO: migrate this to vf.Environment.generate() once it supports multiple clients
 async def generate(
     env: vf.Environment,
-    clients: list[vf.ClientConfig],
     model_name: str,
     examples: list,
     rollouts_per_example: int,
     sampling_args: dict,
+    clients: list[vf.ClientConfig] | None = None,
+    get_client: Callable[[], Awaitable[vf.ClientConfig]] | None = None,
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
     pbar_description: str = "Generating rollouts",
@@ -154,10 +133,20 @@ async def generate(
     Asynchronously generates and scores a list of groups.
     """
 
+    if not clients and get_client is None:
+        raise ValueError("generate requires at least one client or a get_client callback")
+
+    if get_client is None:
+        client_cycle = cycle(clients)
+
+        async def get_client() -> vf.ClientConfig:
+            return next(client_cycle)
+
     total_rollouts = len(examples) * rollouts_per_example
     pbar = ProgressTracker(total=total_rollouts, desc=pbar_description)
 
-    async def run_group_with_progress(client, example):
+    async def run_group_with_progress(example):
+        client = await get_client()
         result = await run_group(
             env=env,
             client=client,
@@ -173,7 +162,7 @@ async def generate(
 
     try:
         group_outputs_list: list[list[vf.RolloutOutput]] = await asyncio.gather(
-            *[run_group_with_progress(client, example) for client, example in zip(cycle(clients), examples)]
+            *[run_group_with_progress(example) for example in examples]
         )
     finally:
         pbar.close()
@@ -183,11 +172,12 @@ async def generate(
 
 async def evaluate(
     env: vf.Environment,
-    clients: list[vf.ClientConfig],
     model_name: str,
     sampling_args: dict,
     num_examples: int,
     rollouts_per_example: int,
+    clients: list[vf.ClientConfig] | None = None,
+    get_client: Callable[[], Awaitable[vf.ClientConfig]] | None = None,
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
 ) -> list[vf.RolloutOutput]:
@@ -202,6 +192,7 @@ async def evaluate(
     outputs = await generate(
         env=env,
         clients=clients,
+        get_client=get_client,
         model_name=model_name,
         examples=inputs,
         # _get_eval_inputs() already repeats the examples, this currently means

@@ -126,9 +126,14 @@ class NCCLWeightBroadcastSender:
                     value = cast(DTensor, value.to(self.dtype)).full_tensor()
                 state_dict[key] = value
 
-            # Convert PrimeRL format to HF format for this layer if needed
+            # Convert to HF hub format for this layer if needed
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_layer_to_hf(state_dict, layer_id)
+            else:
+                # For regular transformers models, revert internal format to original HF hub format
+                from transformers.core_model_loading import revert_weight_conversion
+
+                state_dict = revert_weight_conversion(model, state_dict)
 
             if self.world.is_master:
                 broadcast_state_dict(state_dict, self.communicator)
