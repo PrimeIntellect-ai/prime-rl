@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
 from typing import Optional, Union
 
 import torch
@@ -52,12 +51,6 @@ try:
 except ImportError:
     sparse_mla_fwd_interface = None  # type: ignore
     sparse_mla_bwd = None  # type: ignore
-
-
-def yarn_get_mscale(scale=1, mscale=1):
-    if scale <= 1:
-        return 1.0
-    return 0.1 * mscale * math.log(scale) + 1.0
 
 
 class _SparseMLA(torch.autograd.Function):
