@@ -189,6 +189,8 @@ def get_logger():
 def reset_logger():
     """Reset the logger. Useful mainly in tests."""
     global _LOGGER, _JSON_LOGGING
+    if _LOGGER is not None:
+        _LOGGER.remove()
     _LOGGER = None
     _JSON_LOGGING = False
 
