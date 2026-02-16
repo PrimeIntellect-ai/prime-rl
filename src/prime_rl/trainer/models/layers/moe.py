@@ -254,7 +254,7 @@ class TokenChoiceTopKRouter(nn.Module):
 
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
         num_tokens_per_expert = torch.histc(
-            selected_experts_indices.reshape(-1),
+            selected_experts_indices.view(-1),
             bins=self.num_experts,
             min=0,
             max=self.num_experts,
@@ -304,7 +304,7 @@ class TokenReorderer(nn.Module):
                 - num_tokens_per_expert: Number of tokens assigned to each expert
         """
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
-        selected_experts_indices = selected_experts_indices.reshape(-1)
+        selected_experts_indices = selected_experts_indices.view(-1)
         num_tokens_per_expert = torch.histc(
             selected_experts_indices,
             bins=self.num_experts,
@@ -389,7 +389,9 @@ class MoE(nn.Module):
 
         if routed_experts is not None:
             _, _, top_k = routed_experts.shape
-            routed_experts = routed_experts.view(-1, top_k)
+            routed_experts = routed_experts.reshape(
+                -1, top_k
+            )  # we have to reshape here because the original is non-contiguous
 
         # top_scores and selected_experts_indices shape (bs*slen*top_k,)
         # num_tokens_per_expert shape (num_experts,)
