@@ -17,6 +17,32 @@ from vllm.v1.sample.logits_processor import validate_logits_processors_parameter
 logger = init_logger(__name__)
 
 
+class _RoutedExpertsCapture:
+    """Wraps a RequestOutput async generator to capture routed_experts data.
+
+    Passes through all RequestOutput objects unchanged while storing
+    routed_experts (converted from np.ndarray to nested list) keyed by
+    output index, so they can be injected into the response after the
+    parent's chat_completion_full_generator finishes.
+    """
+
+    def __init__(self, generator: AsyncGenerator[RequestOutput, None]):
+        self._generator = generator
+        self.routed_experts: dict[int, list] = {}
+
+    async def __aiter__(self):
+        async for request_output in self._generator:
+            for output in request_output.outputs:
+                if output.routed_experts is not None:
+                    self.routed_experts[output.index] = output.routed_experts.tolist()
+            yield request_output
+
+    def post_process(self, response: ChatCompletionResponse):
+        for choice in response.choices:
+            if choice.index in self.routed_experts:
+                choice.routed_experts = self.routed_experts[choice.index]
+
+
 def _collapse_image_placeholders(
     original_tokens: list[int],
     override_tokens: list[int],
@@ -229,8 +255,14 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 reasoning_parser,
             )
 
+        if self.model_config.enable_return_routed_experts:
+            routed_experts_capture = _RoutedExpertsCapture(result_generator)
+            result_generator = routed_experts_capture
+        else:
+            routed_experts_capture = None
+
         try:
-            return await self.chat_completion_full_generator(
+            response = await self.chat_completion_full_generator(
                 request,
                 result_generator,
                 request_id,
@@ -244,3 +276,8 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
             return self._convert_generation_error_to_response(e)
         except ValueError as e:
             return self.create_error_response(e)
+
+        if routed_experts_capture:
+            routed_experts_capture.post_process(response)
+
+        return response
