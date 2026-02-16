@@ -571,7 +571,6 @@ class RLConfig(BaseSettings):
                 warnings.warn(
                     "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server. Setting to True."
                 )
-                self.inference.enable_return_routed_experts = True
         return self
 
 
