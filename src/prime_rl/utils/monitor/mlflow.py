@@ -47,23 +47,26 @@ class MLflowMonitor(Monitor):
 
         mlflow.set_tracking_uri(config.tracking_uri)
 
-        client = mlflow.MlflowClient()
-        experiment = client.get_experiment_by_name(config.experiment_name)
-        if experiment is None and config.artifact_location:
-            experiment_id = client.create_experiment(config.experiment_name, artifact_location=config.artifact_location)
-            mlflow.set_experiment(experiment_id=experiment_id)
-        else:
-            mlflow.set_experiment(config.experiment_name)
+        if config.artifact_location:
+            from mlflow.exceptions import MlflowException
+
+            client = mlflow.MlflowClient()
+            try:
+                client.create_experiment(config.experiment_name, artifact_location=config.artifact_location)
+            except MlflowException:
+                pass
+        mlflow.set_experiment(config.experiment_name)
 
         self.run = mlflow.start_run(run_name=config.run_name)
 
         if run_config is not None:
             params = run_config.model_dump()
-            # MLflow has a 500-param limit per batch; flatten and truncate values
             flat_params = _flatten_dict(params)
-            # MLflow param values are limited to 500 chars
             flat_params = {k: str(v)[:500] for k, v in flat_params.items()}
-            mlflow.log_params(flat_params)
+            # MLflow has a 500-param limit per batch; log in chunks
+            items = list(flat_params.items())
+            for i in range(0, len(items), 100):
+                mlflow.log_params(dict(items[i : i + 100]))
 
         if isinstance(config, MLflowWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
@@ -122,11 +125,13 @@ class MLflowMonitor(Monitor):
                 "reward": rollout["reward"],
             }
             rows.append(row)
-            self.samples.append(row)
 
-        if rows and self.config.log_artifacts:
-            df = pd.DataFrame(rows)
-            self._mlflow.log_table(df, artifact_file=f"samples/step_{step}.json")
+        if not rows or not self.config.log_artifacts:
+            return
+
+        self.samples.extend(rows)
+        df = pd.DataFrame(rows)
+        self._mlflow.log_table(df, artifact_file=f"samples/step_{step}.json")
 
         self.logger.debug(f"Logged samples at step {step} to MLflow in {time.perf_counter() - start_time:.2f}s")
 
