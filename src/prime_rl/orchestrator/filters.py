@@ -2,8 +2,9 @@
 
 Filters run after rollouts complete, inspecting token IDs and logprobs to
 detect gibberish or repetition. Detection metrics are always tracked.
-When enforce=True, detected rollouts also get reward zeroed and completion
-mask cleared so they don't contribute to training.
+When enforce=True, detected rollouts get their completion mask cleared so
+they don't contribute to training. Reward is kept as-is for baseline
+calculation.
 """
 
 import math
@@ -124,8 +125,9 @@ def apply_filters(
 ) -> dict[str, float]:
     """Apply filters to rollouts. Detection metrics are always tracked.
 
-    When a filter has enforce=True, detected rollouts also get reward zeroed,
-    completion mask cleared, and stop_condition set.
+    When a filter has enforce=True, detected rollouts get their completion
+    mask cleared and stop_condition set. Reward is kept as-is for baseline
+    calculation.
 
     First matching filter wins per rollout (no double-counting).
 
