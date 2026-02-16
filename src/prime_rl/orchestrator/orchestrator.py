@@ -747,6 +747,7 @@ async def orchestrate(config: OrchestratorConfig):
                     sampling_args=eval_sampling_args,
                     num_examples=eval_env_config.num_examples or config.eval.num_examples,
                     rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
+                    max_retries=eval_env_config.max_retries,
                     ckpt_step=ckpt_step,
                     step=progress.step,
                 )
