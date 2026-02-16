@@ -29,6 +29,11 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
+    def mark_stable(self, step: int) -> None:
+        """Write STABLE file to indicate checkpoint is complete."""
+        step_path = get_step_path(self.ckpt_dir, step)
+        (step_path / "STABLE").touch()
+
     def _save_to_path(
         self,
         ckpt_path: Path,
@@ -88,6 +93,7 @@ class CheckpointManager:
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         self._save_to_path(ckpt_path, progress, buffer)
+        self.mark_stable(step)
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
