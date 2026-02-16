@@ -570,7 +570,7 @@ class GibberishFilterConfig(BaseModel):
     enforce: Annotated[
         bool,
         Field(
-            description="If True, zero reward and mask for detected rollouts. If False, only track detection metrics."
+            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
         ),
     ] = False
     token_id_threshold: Annotated[
@@ -581,14 +581,12 @@ class GibberishFilterConfig(BaseModel):
         float,
         Field(description="Offset from uniform distribution logprob. Threshold = -log(vocab_size) - logprob_offset."),
     ] = 2.0
-    vocab_size: Annotated[
-        int | None,
-        Field(ge=1, description="Vocabulary size for computing logprob threshold. If None, uses tokenizer.vocab_size."),
-    ] = None
 
 
 class RepetitionFilterConfig(BaseModel):
-    """Flags pathological repetition loops (Section 3.2, https://arxiv.org/abs/2506.13585)."""
+    """Flags rollouts where the model gets stuck in a repetition loop, emitting high-confidence tokens
+    for an extended stretch. A rollout is flagged when `window` consecutive tokens are each sampled
+    with probability above `prob_threshold`. (Section 3.2, https://arxiv.org/abs/2506.13585)"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -596,7 +594,7 @@ class RepetitionFilterConfig(BaseModel):
     enforce: Annotated[
         bool,
         Field(
-            description="If True, zero reward and mask for detected rollouts. If False, only track detection metrics."
+            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
         ),
     ] = False
     window: Annotated[
@@ -608,7 +606,7 @@ class RepetitionFilterConfig(BaseModel):
         Field(
             gt=0,
             le=1,
-            description="Token probability threshold. Steps where sampled prob exceeds this count toward the window.",
+            description="Tokens sampled with probability above this are considered repetitive. Consecutive such tokens count toward the window.",
         ),
     ] = 0.99
 
@@ -814,6 +812,13 @@ class OrchestratorConfig(BaseSettings):
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
+
+    @model_validator(mode="after")
+    def validate_unique_filter_types(self):
+        types = [f.type for f in self.filters]
+        if len(types) != len(set(types)):
+            raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
+        return self
 
     @model_validator(mode="after")
     def validate_max_concurrent(self):

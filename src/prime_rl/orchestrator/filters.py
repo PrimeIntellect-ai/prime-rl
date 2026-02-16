@@ -13,7 +13,7 @@ from typing import Protocol
 import verifiers as vf
 from loguru import logger
 
-from prime_rl.orchestrator.config import FilterConfigType, GibberishFilterConfig, RepetitionFilterConfig
+from prime_rl.orchestrator.config import FilterConfigType
 
 
 @dataclass
@@ -96,22 +96,21 @@ class RepetitionFilter:
 
 def setup_filter(config: FilterConfigType, vocab_size: int) -> RolloutFilter:
     """Create a RolloutFilter from a filter config."""
-    if isinstance(config, GibberishFilterConfig):
-        vs = config.vocab_size or vocab_size
+    if config.type == "gibberish":
         return GibberishFilter(
             name="gibberish",
             token_id_threshold=config.token_id_threshold,
-            logprob_threshold=-math.log(vs) - config.logprob_offset,
+            logprob_threshold=-math.log(vocab_size) - config.logprob_offset,
             enforce=config.enforce,
         )
-    elif isinstance(config, RepetitionFilterConfig):
+    elif config.type == "repetition":
         return RepetitionFilter(
             name="repetition",
             window=config.window,
             logprob_threshold=math.log(config.prob_threshold),
             enforce=config.enforce,
         )
-    raise ValueError(f"Unknown filter config type: {type(config)}")
+    raise ValueError(f"Unknown filter type: {config.type}")
 
 
 def setup_filters(configs: list[FilterConfigType], vocab_size: int) -> list[RolloutFilter]:

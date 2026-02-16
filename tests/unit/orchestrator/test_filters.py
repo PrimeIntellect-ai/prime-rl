@@ -182,12 +182,6 @@ def test_setup_filter_gibberish():
     assert gibberish_filter.enforce is False
 
 
-def test_setup_filter_gibberish_uses_config_vocab_size():
-    config = GibberishFilterConfig(vocab_size=64_000)
-    gibberish_filter = setup_filter(config, vocab_size=128_000)
-    assert abs(gibberish_filter.logprob_threshold - (-math.log(64_000) - 2.0)) < 1e-10
-
-
 def test_setup_filter_gibberish_enforce():
     config = GibberishFilterConfig(enforce=True)
     gibberish_filter = setup_filter(config, vocab_size=128_000)
