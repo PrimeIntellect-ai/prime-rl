@@ -1,6 +1,8 @@
+import base64
 from collections.abc import AsyncGenerator
 from typing import ClassVar, Optional, Union
 
+import numpy as np
 from fastapi import Request
 from pydantic import Field
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest, ChatCompletionResponse
@@ -18,23 +20,21 @@ logger = init_logger(__name__)
 
 
 class _RoutedExpertsCapture:
-    """Wraps a RequestOutput async generator to capture routed_experts data.
-
-    Passes through all RequestOutput objects unchanged while storing
-    routed_experts (converted from np.ndarray to nested list) keyed by
-    output index, so they can be injected into the response after the
-    parent's chat_completion_full_generator finishes.
-    """
-
     def __init__(self, generator: AsyncGenerator[RequestOutput, None]):
         self._generator = generator
-        self.routed_experts: dict[int, list] = {}
+        self.routed_experts: dict[int, dict] = {}
+
+    def _encode_routed_experts(self, arr: np.ndarray) -> dict:
+        return {
+            "data": base64.b85encode(arr.tobytes()).decode("ascii"),
+            "shape": list(arr.shape),
+        }
 
     async def __aiter__(self):
         async for request_output in self._generator:
             for output in request_output.outputs:
                 if output.routed_experts is not None:
-                    self.routed_experts[output.index] = output.routed_experts.tolist()
+                    self.routed_experts[output.index] = self._encode_routed_experts(output.routed_experts)
             yield request_output
 
     def post_process(self, response: ChatCompletionResponse):
