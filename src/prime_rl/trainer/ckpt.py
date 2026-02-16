@@ -401,7 +401,7 @@ class WeightCheckpointManager:
         # Save weight checkpoint on master rank
         if self.world.is_master:
             self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
-        self.mark_stable(step)
+            self.mark_stable(step)
         bisect.insort(self.ckpt_steps, step)
 
     def maybe_clean(self) -> None:
