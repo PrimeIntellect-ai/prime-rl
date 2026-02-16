@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import functools
 import math
 from typing import Optional, Union
 
@@ -43,26 +42,8 @@ from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import (
     RotaryEmbedding,
     RotaryEmbeddingConfig,
-    apply_rotary_pos_emb,
     apply_rotary_pos_emb_interleave,
 )
-
-# flash-attention-2
-try:
-    from flash_attn import flash_attn_varlen_func
-except ImportError:
-    flash_attn_varlen_func = None  # type: ignore
-
-# flash-attention-3
-try:
-    from flash_attn_interface import flash_attn_varlen_func as flash_attn_3_varlen_func
-except ImportError:
-    flash_attn_3_varlen_func = None  # type: ignore
-
-try:
-    from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
-except ImportError:
-    flash_attn_4_varlen_func = None  # type: ignore
 
 # tilelang sparse MLA kernels (vendored)
 try:
@@ -121,7 +102,6 @@ class Indexer(nn.Module):
         self.n_head = config.index_n_heads
         self.head_dim = config.index_head_dim
         self.rope_dim = config.qk_rope_head_dim
-        self.rope_interleave = config.indexer_rope_interleave
         self.wq_b = nn.Linear(config.q_lora_rank, self.n_head * self.head_dim, bias=False)
         self.wk = nn.Linear(config.hidden_size, self.head_dim, bias=config.attention_bias)
         self.k_norm = LayerNorm(dim=self.head_dim, eps=1e-6)
@@ -153,10 +133,7 @@ class Indexer(nn.Module):
         # apply_rotary_pos_emb* expects [batch, heads, seq, dim]
         q_pe = q_pe.unsqueeze(0).transpose(1, 2)  # [1, n_head, total_tokens, rope_dim]
         k_pe = k_pe.unsqueeze(0).unsqueeze(1)  # [1, 1, total_tokens, rope_dim]
-        if self.rope_interleave:
-            q_pe, k_pe = apply_rotary_pos_emb_interleave(q_pe, k_pe, cos, sin)
-        else:
-            q_pe, k_pe = apply_rotary_pos_emb(q_pe, k_pe, cos, sin)
+        q_pe, k_pe = apply_rotary_pos_emb_interleave(q_pe, k_pe, cos, sin)
         q_pe = q_pe.transpose(1, 2).squeeze(0)  # [total_tokens, n_head, rope_dim]
         k_pe = k_pe.squeeze(1).squeeze(0)  # [total_tokens, rope_dim]
 
@@ -198,29 +175,32 @@ class Indexer(nn.Module):
         return indices.view(1, total_tokens, 1, index_topk)
 
 
-class _MLABase(nn.Module):
-    """Base class for MLA (Multi-head Latent Attention) with shared projection logic."""
+class GlmMoeDsaAttention(nn.Module):
+    """MLA with Dynamic Sparse Attention via tilelang kernels.
+
+    Uses the absorption trick to operate in the compressed KV latent space:
+      sparse_q  = cat(Q_nope @ W_kv_b_k_nope^T, Q_rope)   →  [B, S, H, kv_lora_rank + rope_dim]
+      sparse_kv = cat(kv_a_layernorm(k_compressed), k_rope) →  [B, S, 1, kv_lora_rank + rope_dim]
+
+    The tilelang sparse_mla_fwd/bwd kernels attend only to top-k tokens per query
+    (selected by the bf16 indexer). Output is un-absorbed back to v_head_dim via
+    the V portion of kv_b_proj weight.
+    """
 
     def __init__(self, config: GlmMoeDsaConfig):
         super().__init__()
         self.config = config
         self.num_heads = config.num_attention_heads
-        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.q_lora_rank = config.q_lora_rank
         self.kv_lora_rank = config.kv_lora_rank
         self.qk_rope_head_dim = config.qk_rope_head_dim
         self.qk_nope_head_dim = config.qk_nope_head_dim
         self.qk_head_dim = config.qk_head_dim
         self.v_head_dim = config.v_head_dim
-        self.rope_interleave = config.rope_interleave
 
-        # Query projection (LoRA path)
-        if self.q_lora_rank is None:
-            self.q_proj = nn.Linear(config.hidden_size, self.num_heads * self.qk_head_dim, bias=False)
-        else:
-            self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=config.attention_bias)
-            self.q_a_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.q_lora_rank, eps=config.rms_norm_eps))
-            self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.qk_head_dim, bias=False)
+        # Query projection (LoRA)
+        self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=config.attention_bias)
+        self.q_a_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.q_lora_rank, eps=config.rms_norm_eps))
+        self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.qk_head_dim, bias=False)
 
         # Key-Value compressed projection (MQA-style compression + rope key)
         self.kv_a_proj_with_mqa = nn.Linear(
@@ -243,182 +223,6 @@ class _MLABase(nn.Module):
 
         # Attention scaling
         self.scaling = self.qk_head_dim ** (-0.5)
-        rope_parameters = getattr(config, "rope_parameters", None) or {}
-        rope_type = rope_parameters.get("rope_type", "default") if isinstance(rope_parameters, dict) else "default"
-        if rope_type != "default":
-            mscale_all_dim = rope_parameters.get("mscale_all_dim", 0)
-            scaling_factor = rope_parameters["factor"]
-            if mscale_all_dim:
-                mscale = yarn_get_mscale(scaling_factor, mscale_all_dim)
-                self.scaling = self.scaling * mscale * mscale
-
-    def _project_qkv(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Project hidden states into query, key, value with MLA decomposition.
-
-        Returns (query_states, key_states, value_states) all in shape
-        (batch, num_heads, seq_len, head_dim).
-        """
-        batch_size, seq_length = hidden_states.shape[:2]
-        query_shape = (batch_size, seq_length, -1, self.qk_head_dim)
-        kv_shape = (batch_size, seq_length, -1, self.qk_nope_head_dim + self.v_head_dim)
-
-        # Query path
-        if self.q_lora_rank is None:
-            q_states = self.q_proj(hidden_states)
-        else:
-            q_states = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden_states)))
-
-        q_states = q_states.view(query_shape).transpose(1, 2)
-        q_nope, q_rope = torch.split(q_states, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
-
-        # KV path: compress then up-project
-        compressed_kv = self.kv_a_proj_with_mqa(hidden_states)
-        k_compressed, k_rope = torch.split(compressed_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-
-        k_upproj = self.kv_b_proj(self.kv_a_layernorm(k_compressed)).view(kv_shape).transpose(1, 2)
-        k_nope, value_states = torch.split(k_upproj, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
-
-        # k_rope is shared across heads (MQA for the rope portion)
-        k_rope = k_rope.view(batch_size, 1, seq_length, self.qk_rope_head_dim)
-
-        # Apply RoPE
-        cos, sin = position_embeddings
-        if self.rope_interleave:
-            q_rope, k_rope = apply_rotary_pos_emb_interleave(q_rope, k_rope, cos, sin)
-        else:
-            q_rope, k_rope = apply_rotary_pos_emb(q_rope, k_rope, cos, sin)
-
-        # Expand rope key to all heads
-        k_rope = k_rope.expand(*k_nope.shape[:-1], -1)
-
-        # Concatenate nope + rope parts
-        query_states = torch.cat((q_nope, q_rope), dim=-1)
-        key_states = torch.cat((k_nope, k_rope), dim=-1)
-
-        return query_states, key_states, value_states
-
-    @torch.no_grad()
-    def _compute_sparse_indices(
-        self,
-        hidden_states: torch.Tensor,
-        q_latent: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-    ) -> torch.Tensor:
-        return self.indexer.compute_sparse_indices(
-            hidden_states, q_latent, cu_seqlens, self.config.index_topk, position_embeddings
-        )
-
-
-class GlmMoeDsaFlashAttention(_MLABase):
-    """MLA attention using Flash Attention."""
-
-    _funcs = {
-        2: flash_attn_varlen_func,
-        3: flash_attn_3_varlen_func,
-        4: flash_attn_4_varlen_func,
-    }
-
-    def __init__(self, config: GlmMoeDsaConfig, flash_attn_version: int = 2):
-        super().__init__(config)
-        self._flash_attn_version = flash_attn_version
-        self.func = self._funcs[flash_attn_version]
-        self._flash_attn_call = self.func
-        if self._flash_attn_version == 4:
-            self._flash_attn_call = torch._dynamo.disable(self.func)
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        query_states, key_states, value_states = self._project_qkv(hidden_states, position_embeddings)
-
-        # FA2 requires q_head_dim == v_head_dim; pad value if they differ
-        needs_padding = self.qk_head_dim != self.v_head_dim
-        if needs_padding:
-            value_states = F.pad(value_states, [0, self.qk_head_dim - self.v_head_dim])
-
-        # Flash attention expects (total_tokens, num_heads, head_dim)
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
-        value_states = value_states.transpose(1, 2)
-
-        args = [
-            query_states[0],
-            key_states[0],
-            value_states[0],
-            cu_seqlens,
-            cu_seqlens,
-        ]
-        if self._flash_attn_version != 4:
-            args.extend([max_seqlen, max_seqlen])
-
-        out = self._flash_attn_call(*args, causal=True)
-        if isinstance(out, tuple):
-            out = out[0]
-
-        if needs_padding:
-            out = out[..., : self.v_head_dim]
-
-        out = out.contiguous()
-        attn_output = out.view(1, out.shape[0], -1)
-        attn_output = self.o_proj(attn_output)
-        return attn_output, None
-
-
-class GlmMoeDsaSDPAAttention(_MLABase):
-    """MLA attention using PyTorch SDPA."""
-
-    def __init__(self, config: GlmMoeDsaConfig):
-        super().__init__(config)
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        query_states, key_states, value_states = self._project_qkv(hidden_states, position_embeddings)
-
-        # SDPA needs matching last dims for Q @ K^T; pad value if they differ
-        needs_padding = self.qk_head_dim != self.v_head_dim
-        if needs_padding:
-            value_states = F.pad(value_states, [0, self.qk_head_dim - self.v_head_dim])
-
-        # SDPA with GQA: repeat KV heads to match query head count
-        key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
-        value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
-
-        out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
-
-        if needs_padding:
-            out = out[..., : self.v_head_dim]
-
-        out = out.transpose(1, 2).contiguous()
-        attn_output = out.view(out.shape[0], out.shape[1], -1)
-        attn_output = self.o_proj(attn_output)
-        return attn_output, None
-
-
-class GlmMoeDsaSparseAttention(_MLABase):
-    """MLA with Dynamic Sparse Attention via tilelang kernels.
-
-    Uses the absorption trick to operate in the compressed KV latent space:
-      sparse_q  = cat(Q_nope @ W_kv_b_k_nope^T, Q_rope)   →  [B, S, H, kv_lora_rank + rope_dim]
-      sparse_kv = cat(kv_a_layernorm(k_compressed), k_rope) →  [B, S, 1, kv_lora_rank + rope_dim]
-
-    The tilelang sparse_mla_fwd/bwd kernels attend only to top-k tokens per query
-    (selected by the bf16 indexer). Output is un-absorbed back to v_head_dim via
-    the V portion of kv_b_proj weight.
-    """
 
     def forward(
         self,
@@ -443,15 +247,14 @@ class GlmMoeDsaSparseAttention(_MLABase):
         q_rope_r = q_rope.transpose(1, 2)
         k_rope_r = k_rope.unsqueeze(1)
         cos, sin = position_embeddings
-        if self.rope_interleave:
-            q_rope_r, k_rope_r = apply_rotary_pos_emb_interleave(q_rope_r, k_rope_r, cos, sin)
-        else:
-            q_rope_r, k_rope_r = apply_rotary_pos_emb(q_rope_r, k_rope_r, cos, sin)
+        q_rope_r, k_rope_r = apply_rotary_pos_emb_interleave(q_rope_r, k_rope_r, cos, sin)
         q_rope = q_rope_r.transpose(1, 2)  # [B, total, H, rope_dim]
         k_rope = k_rope_r.squeeze(1)  # [B, total, rope_dim]
 
         # Indexer
-        indices = self._compute_sparse_indices(hidden_states, q_latent, cu_seqlens, position_embeddings)
+        indices = self.indexer.compute_sparse_indices(
+            hidden_states, q_latent, cu_seqlens, self.config.index_topk, position_embeddings
+        )
 
         # Absorption: Q_nope @ W_kv_b_k_nope^T → [B, S, H, kv_lora_rank]
         kv_b_w = self.kv_b_proj.weight.view(self.num_heads, self.qk_nope_head_dim + self.v_head_dim, self.kv_lora_rank)
@@ -478,20 +281,11 @@ class GlmMoeDsaSparseAttention(_MLABase):
         return self.o_proj(out), None
 
 
-_MLA_ATTN_IMPL2CLASS = {
-    "flash_attention_2": functools.partial(GlmMoeDsaFlashAttention, flash_attn_version=2),
-    "sdpa": GlmMoeDsaSDPAAttention,
-    "flash_attention_3": functools.partial(GlmMoeDsaFlashAttention, flash_attn_version=3),
-    "fa4": functools.partial(GlmMoeDsaFlashAttention, flash_attn_version=4),
-    "sparse": GlmMoeDsaSparseAttention,
-}
-
-
 class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: GlmMoeDsaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = _MLA_ATTN_IMPL2CLASS[config._attn_implementation](config)
+        self.self_attn = GlmMoeDsaAttention(config)
 
         moe_args = MoEArgs(
             num_experts=config.n_routed_experts,
@@ -551,11 +345,11 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["GlmMoeDsaDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
-    _supports_flash_attn = True
-    _supports_sdpa = True
-    _supports_flex_attn = True
+    _supports_flash_attn = False
+    _supports_sdpa = False
+    _supports_flex_attn = False
     _can_compile_fullgraph = False
-    _supports_attention_backend = True
+    _supports_attention_backend = False
     _can_record_outputs = {
         "hidden_states": GlmMoeDsaDecoderLayer,
     }
@@ -595,14 +389,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
 @auto_docstring
 class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
     def __init__(self, config: GlmMoeDsaConfig):
-        requested_attn_impl = config._attn_implementation
-        if requested_attn_impl == "sparse":
-            config._attn_implementation = "sdpa"
-
         super().__init__(config)
-
-        if requested_attn_impl == "sparse":
-            config._attn_implementation = requested_attn_impl
 
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -638,21 +425,17 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4", "sparse"):
-            flat_position_ids = position_ids.view(-1)
-            seqlens = torch.cat(
-                [
-                    flat_position_ids[0:1],
-                    flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
-                    flat_position_ids[-1:] + 1,
-                ]
-            )
-            max_seqlen = seqlens.max().item()
-            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        else:
-            max_seqlen = None
-            cu_seqlens = None
+        flat_position_ids = position_ids.view(-1)
+        seqlens = torch.cat(
+            [
+                flat_position_ids[0:1],
+                flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
+                flat_position_ids[-1:] + 1,
+            ]
+        )
+        max_seqlen = seqlens.max().item()
+        cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -676,16 +459,7 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
-        requested_attn_impl = config._attn_implementation
-        if requested_attn_impl == "sparse":
-            config._attn_implementation = "sdpa"
-
         super().__init__(config)
-
-        # Restore before creating model so GlmMoeDsaModel sees the original impl
-        if requested_attn_impl == "sparse":
-            config._attn_implementation = requested_attn_impl
-
         self.model = GlmMoeDsaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
