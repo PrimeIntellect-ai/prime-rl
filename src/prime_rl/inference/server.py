@@ -1,6 +1,7 @@
 import os
 
 from prime_rl.inference.config import InferenceConfig
+from prime_rl.inference.patches import install_transformers_compat_hook
 from prime_rl.utils.pydantic_config import parse_argv
 
 
@@ -17,6 +18,7 @@ def setup_vllm_env(config: InferenceConfig):
 def main():
     config = parse_argv(InferenceConfig, allow_extras=True)
     setup_vllm_env(config)
+    install_transformers_compat_hook()
 
     # We import here to be able to set environment variables before importing vLLM
     from prime_rl.inference.vllm.server import server  # pyright: ignore
