@@ -41,7 +41,6 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.orchestrator.vf_utils import (
     generate,
     get_completion_len,
-    get_prompt_len,
     get_seq_len,
     setup_env_client,
     spawn_env_server,
@@ -473,12 +472,26 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Collect results and assign advantages
         train_examples: list[TrainingSample] = []
+        rollout_prefill_lens: list[int] = []
+        rollout_decode_lens: list[int] = []
+        num_prefill_tokens = 0
+        num_decode_tokens = 0
         for rollout, advantage, samples in zip(train_rollouts, advantages, results):
+            rollout_prefill_tokens = 0
+            rollout_decode_tokens = 0
             if samples is not None:
                 for sample in samples:
                     sample.advantage = advantage
                     sample.reward = rollout["reward"]
-                train_examples.extend(samples)
+                    sample_decode_tokens = sum(sample.completion_mask)
+                    sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
+                    rollout_decode_tokens += sample_decode_tokens
+                    rollout_prefill_tokens += sample_prefill_tokens
+                    train_examples.append(sample)
+            rollout_prefill_lens.append(rollout_prefill_tokens)
+            rollout_decode_lens.append(rollout_decode_tokens)
+            num_prefill_tokens += rollout_prefill_tokens
+            num_decode_tokens += rollout_decode_tokens
 
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
@@ -539,9 +552,9 @@ async def orchestrate(config: OrchestratorConfig):
                 "reward": [rollout["reward"] for rollout in train_rollouts],
                 "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
                 "error": [rollout["error"] for rollout in train_rollouts],
-                "completion_len": [get_completion_len(rollout) for rollout in train_rollouts],
-                "prompt_len": [get_prompt_len(rollout) for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
+                "prefill_len": rollout_prefill_lens,
+                "decode_len": rollout_decode_lens,
                 "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
                 "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
                 "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
@@ -598,6 +611,8 @@ async def orchestrate(config: OrchestratorConfig):
         to_log = {
             # Progress metrics
             "progress/tokens": num_tokens,
+            "progress/prefill_tokens": num_prefill_tokens,
+            "progress/decode_tokens": num_decode_tokens,
             "progress/samples": config.batch_size,
             "progress/problems": config.batch_size // config.rollouts_per_example,
             "progress/total_tokens": progress.total_tokens,
@@ -608,12 +623,12 @@ async def orchestrate(config: OrchestratorConfig):
             "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
             "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
             "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
-            "prompt_len/mean": results_df.groupby("example_id").prompt_len.mean().mean(),
-            "prompt_len/max": results_df.groupby("example_id").prompt_len.mean().max(),
-            "prompt_len/min": results_df.groupby("example_id").prompt_len.mean().min(),
-            "completion_len/mean": results_df.groupby("example_id").completion_len.mean().mean(),
-            "completion_len/max": results_df.groupby("example_id").completion_len.mean().max(),
-            "completion_len/min": results_df.groupby("example_id").completion_len.mean().min(),
+            "prefill_len/mean": results_df.groupby("example_id").prefill_len.mean().mean(),
+            "prefill_len/max": results_df.groupby("example_id").prefill_len.mean().max(),
+            "prefill_len/min": results_df.groupby("example_id").prefill_len.mean().min(),
+            "decode_len/mean": results_df.groupby("example_id").decode_len.mean().mean(),
+            "decode_len/max": results_df.groupby("example_id").decode_len.mean().max(),
+            "decode_len/min": results_df.groupby("example_id").decode_len.mean().min(),
             "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
             "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
             "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
