@@ -33,6 +33,7 @@ dependencies = [
     "verifiers",
     "dion",
     "reverse-text",
+    "tilelang>=0.1.8",
 ]
 
 [project.scripts]

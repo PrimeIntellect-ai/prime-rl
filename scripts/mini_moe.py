@@ -57,6 +57,7 @@ ARCH_PRESETS = {
         "prime_model_class": PrimeRLGlm4MoeForCausalLM,
         "tokenizer_source": "THUDM/GLM-4-9B-0414",
     },
+    # glm_moe_dsa is not supported as HF model is wrong
 }
 
 
@@ -107,7 +108,7 @@ def verify(arch: str, model_dir: Path) -> None:
         input_ids = torch.randint(0, config.vocab_size, (1, 64))
         position_ids = torch.arange(1, 65).unsqueeze(0)
 
-    hf_output = hf_model(input_ids, position_ids)
+    hf_output = hf_model(input_ids=input_ids, position_ids=position_ids)
     prime_output = prime_model(input_ids, position_ids)
 
     logits_diff = prime_output["logits"] - hf_output.logits
@@ -121,7 +122,7 @@ def verify(arch: str, model_dir: Path) -> None:
         hf_roundtrip = preset["hf_model_class"]._from_config(config)
         hf_roundtrip.load_state_dict(roundtrip_state_dict)
 
-    hf_roundtrip_output = hf_roundtrip(input_ids, position_ids)
+    hf_roundtrip_output = hf_roundtrip(input_ids=input_ids, position_ids=position_ids)
     roundtrip_diff = hf_roundtrip_output.logits - hf_output.logits
     max_roundtrip_diff = roundtrip_diff.abs().max().item()
     print(f"  HF -> PrimeRL -> HF roundtrip max logits diff: {max_roundtrip_diff:.6f}")
