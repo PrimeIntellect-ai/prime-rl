@@ -29,13 +29,14 @@ PRIME-RL: Async RL Training at Scale
 
 ## Overview
 
-PRIME-RL is a framework for large-scale asynchronous reinforcement learning. It is designed to be easy-to-use and hackable, yet capable of scaling to 1000+ GPUs. Beyond that, here is why we think you might like it:
+PRIME-RL is a framework for large-scale reinforcement learning. It is designed to be easy-to-use and hackable, yet capable of training large MoE (400B+) over more than 1000 GPUs. Beyond that, here is why we think you might like it:
 
 1. Integrates natively with [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environments via the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars)
-2. Supports end-to-end post-training, including SFT and RL training and evals
-3. Multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
-4. Designed for asynchronous agentic RL training at scale
-5. Hackable, modular and extensible by nature
+2. Supports end-to-end post-training, including Rl, SFT, On Policy distilation training and evals
+3. Support all major model including performant MoE out of the box ( GLM 4.7 and GLM 5, Minimax M2.1 - M2.5, gpt-oss, deepseek v3.2, kimi k2.5, ...)
+4. Multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
+5. Designed for asynchronous agentic RL training at scale
+6. Hackable, modular and extensible by nature. Advantages and RL algorithm can be modified via [plug in](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/bring-your-own-algorithms.md) 
 
 ## Setup
 
