@@ -298,6 +298,12 @@ class WeightCheckpointManager:
         """Get the path to write the weight checkpoint for a given step."""
         return get_step_path(self.weights_dir, step)
 
+    def mark_stable(self, step: int) -> None:
+        """Write STABLE file to indicate checkpoint is complete (for eval to safely read)."""
+        if self.world.is_master:
+            step_path = self.get_step_path(step)
+            (step_path / "STABLE").touch()
+
     def save_to_path(
         self,
         path: Path,
@@ -395,8 +401,7 @@ class WeightCheckpointManager:
         # Save weight checkpoint on master rank
         if self.world.is_master:
             self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
-            # Write STABLE file to indicate checkpoint is complete (for eval to safely read)
-            (step_path / "STABLE").touch()
+        self.mark_stable(step)
         bisect.insort(self.ckpt_steps, step)
 
     def maybe_clean(self) -> None:
