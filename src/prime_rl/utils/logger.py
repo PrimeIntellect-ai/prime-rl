@@ -111,6 +111,10 @@ def setup_logger(
     global _LOGGER, _JSON_LOGGING
     _JSON_LOGGING = json_logging
 
+    # Clean up old logger instance to prevent resource leaks
+    if _LOGGER is not None:
+        _LOGGER.remove()
+
     # Format message with optional tag prefix
     tag_prefix = f"[{tag}] " if tag else ""
     message = "".join(
