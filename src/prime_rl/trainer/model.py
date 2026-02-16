@@ -17,7 +17,7 @@ from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor.parallel import parallelize_module
 from torchtitan.distributed.expert_parallel import ExpertParallel
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
@@ -147,9 +147,11 @@ def get_model(
     model_config.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
 
-    # Ensure pad_token_id is set (some models like Qwen3MoE don't have it)
+    # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
+    # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
     if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
-        model_config.pad_token_id = model_config.eos_token_id
+        gen_config = GenerationConfig.from_model_config(model_config)
+        model_config.pad_token_id = gen_config.eos_token_id
 
     # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
     # The model should load in its default dtype (bf16) to match vLLM inference.
