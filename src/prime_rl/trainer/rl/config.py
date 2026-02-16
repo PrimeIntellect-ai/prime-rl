@@ -258,6 +258,14 @@ class RLTrainerConfig(BaseSettings):
         Field(description="Prometheus metrics server config. If set, exposes /metrics endpoint for scraping."),
     ] = None
 
+    gradient_steps_per_batch: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of gradient (optimizer) steps per batch. Splits micro-batches into groups and does optimizer.step() after each group. Useful for multiple updates per rollout batch without weight broadcast overhead.",
+        ),
+    ] = 1
+
     max_concurrent_runs: Annotated[
         int,
         Field(
