@@ -562,11 +562,16 @@ class RLConfig(BaseSettings):
     def auto_setup_router_replay(self):
         if self.trainer.enable_router_replay:
             if self.inference is not None:
+                if self.inference.enable_return_routed_experts is False:
+                    warnings.warn(
+                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True."
+                    )
                 self.inference.enable_return_routed_experts = True
             else:
                 warnings.warn(
-                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server."
+                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server. Setting to True."
                 )
+                self.inference.enable_return_routed_experts = True
         return self
 
 
