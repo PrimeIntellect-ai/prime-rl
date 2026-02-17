@@ -214,8 +214,12 @@ class CheckpointManager:
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
-        self.logger.debug(
-            f"Signatures after loading training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
+        self.logger.opt(lazy=True).debug(
+            "Signatures after loading training checkpoint: model={model_signature}, optimizers={optimizer_signature}",
+            model_signature=lambda: get_module_signature(model, compress=True),
+            optimizer_signature=lambda: ", ".join(
+                get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers
+            ),
         )
 
     def save(
@@ -230,8 +234,12 @@ class CheckpointManager:
         """Save the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        self.logger.debug(
-            f"Signatures before saving training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
+        self.logger.opt(lazy=True).debug(
+            "Signatures before saving training checkpoint: model={model_signature}, optimizers={optimizer_signature}",
+            model_signature=lambda: get_module_signature(model, compress=True),
+            optimizer_signature=lambda: ", ".join(
+                get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers
+            ),
         )
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)

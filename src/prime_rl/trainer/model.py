@@ -669,7 +669,10 @@ def setup_model(
         else:
             load_dcp_from_hf(model, config, parallel_dims)
 
-    logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
+    logger.opt(lazy=True).debug(
+        "Model signature: {model_signature}",
+        model_signature=lambda: get_module_signature(model, compress=True),
+    )
     return model
 
 
