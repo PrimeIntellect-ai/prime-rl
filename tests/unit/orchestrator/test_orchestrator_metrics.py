@@ -21,6 +21,8 @@ def test_orchestrator_metrics_update_and_cleanup():
             "time/step": 1.5,
             "time/generate_completions": 0.7,
             "batch/async_level": 2,
+            "batch/inflight_rollouts": 4,
+            "batch/inflight_samples": 8,
             "batch/off_policy_level/max": 3,
             "batch/off_policy_level/mean": 1.5,
             "batch/cancelled_rollouts": 1,
@@ -47,6 +49,8 @@ def test_orchestrator_metrics_update_and_cleanup():
     assert "orchestrator_throughput_tokens_per_sec 55.0" in content
     assert 'orchestrator_env_reward_mean{env="env_a"} 0.5' in content
     assert 'orchestrator_env_batch_ratio{env="env_b"} 0.45' in content
+    assert 'orchestrator_env_batch_ratio{env="inflight_rollouts"}' not in content
+    assert 'orchestrator_env_batch_ratio{env="inflight_samples"}' not in content
     assert 'orchestrator_worker_pending_count{worker="worker_a"} 3.0' in content
     assert 'orchestrator_worker_lag_seconds{stat="max",worker="worker_b"} 0.2' in content
     assert 'orchestrator_event_loop_lag_seconds{stat="mean"} 0.02' in content

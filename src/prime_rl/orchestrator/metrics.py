@@ -56,7 +56,8 @@ class OrchestratorPrometheusMetrics:
         )
         self.pool_ratio = Gauge("orchestrator_pool_ratio", "Pool distribution", ["pool"], registry=registry)
 
-        self._known_envs: set[str] = set()
+        self._known_reward_envs: set[str] = set()
+        self._known_batch_envs: set[str] = set()
         self._known_workers: set[str] = set()
         self._known_worker_lag: set[tuple[str, str]] = set()
 
@@ -93,11 +94,12 @@ class OrchestratorPrometheusMetrics:
             if key in to_log:
                 self.event_loop_lag.labels(stat=stat).set(to_log[key])
 
-        current_envs = set()
+        current_reward_envs = set()
+        current_batch_envs = set()
         for key, value in to_log.items():
             if key.startswith("reward/") and key != "reward/mean":
                 env = key.replace("reward/", "", 1)
-                current_envs.add(env)
+                current_reward_envs.add(env)
                 self.env_reward.labels(env=env).set(value)
 
             if key.startswith("batch/"):
@@ -106,20 +108,27 @@ class OrchestratorPrometheusMetrics:
                     "batch/solve_all",
                     "batch/effective_batch_size",
                     "batch/async_level",
+                    "batch/inflight_rollouts",
+                    "batch/inflight_samples",
                     "batch/cancelled_rollouts",
                 }:
                     continue
                 if key.startswith("batch/off_policy_level/"):
                     continue
                 env = key.replace("batch/", "", 1)
-                current_envs.add(env)
+                current_batch_envs.add(env)
                 self.env_batch_ratio.labels(env=env).set(value)
 
-        removed_envs = self._known_envs - current_envs
-        for env in removed_envs:
+        removed_reward_envs = self._known_reward_envs - current_reward_envs
+        for env in removed_reward_envs:
             self.env_reward.remove(env)
+
+        removed_batch_envs = self._known_batch_envs - current_batch_envs
+        for env in removed_batch_envs:
             self.env_batch_ratio.remove(env)
-        self._known_envs = current_envs
+
+        self._known_reward_envs = current_reward_envs
+        self._known_batch_envs = current_batch_envs
 
         current_workers = set()
         current_worker_lag = set()
