@@ -1,4 +1,5 @@
 job_name = "hendrycks-math-moe"
+output_dir = "outputs/hendrycks-math-moe"
 
 num_train_nodes = 1
 num_infer_nodes = 1
