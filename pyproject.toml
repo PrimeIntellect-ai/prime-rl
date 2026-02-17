@@ -25,6 +25,7 @@ dependencies = [
     "prime>=0.5.37",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
+    "math-env",
     "tenacity>=8.2.0",
     "openai>=1.106.1",
     "rich>=14.0.0",
@@ -77,6 +78,7 @@ override-dependencies = [
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
+math-env = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "ad77074" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
