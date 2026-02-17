@@ -56,7 +56,8 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`EvalSaveDiskConfig`**, **`EvalSaveConfig`**, **`RetryConfig`**, **`OnlineEvalConfig`**: Removed (2026-02-06)
 - **`TemperatureScheduleConfig`**: Renamed to `TemperatureSchedulerConfig` (2026-02-06)
 - **`optim.mu`**: Added Muon momentum (`mu`) config field (default: 0.95). Previously hardcoded to Muon class default. Also fixed `optim.betas1`/`optim.betas2` not being passed through to the Muon optimizer (2026-02-09)
-- **`dump_config`**: Added `--dump-config <path>` flag to the `rl` command. When set, writes the resolved subconfigs (trainer, orchestrator, inference, teacher_inference) to the given directory and exits without starting any processes (2026-02-12
+- **`dump_config`**: Added `--dump-config <path>` flag to the `rl` command. When set, writes the resolved subconfigs (trainer, orchestrator, inference, teacher_inference) to the given directory and exits without starting any processes (2026-02-12)
 - **`client.api_key_var`**: Changed default from "OPENAI_API_KEY" to "VLLM_API_KEY" (2026-02-12)
 - **`inference.model.tool_call_parser`**: Changed default from `"hermes"` to auto-detection from model name. Uses `MODEL_TOOL_CALL_PARSER_MAP` to infer the correct vLLM tool call parser (e.g. Qwen3→`hermes`, GLM-4.7→`glm47`, Llama-3→`llama3_json`, INTELLECT-3→`qwen3_coder`). Raises an error for unknown models when not explicitly set. Explicit values still take priority. (#1795, 2026-02-16)
+- **`orchestrator.eval.cancel_inflight_rollouts_on_eval`**: Added flag to optionally cancel in-flight training rollouts before starting online evals. When enabled, avoids congestion by preventing training and eval rollouts from running simultaneously, but slows training as the rollout pipeline must refill after each eval (default: False) (2026-02-16)
 
