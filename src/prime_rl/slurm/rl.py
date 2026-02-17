@@ -49,6 +49,30 @@ class RLSLURMConfig(BaseRLConfig):
             self.trainer.dp_replicate = self.num_train_nodes // self.nodes_per_fsdp_group
         return self
 
+    @model_validator(mode="after")
+    def auto_setup_slurm_nccl(self):
+        """Set SLURM-specific values for NCCL weight broadcast and num_train_workers."""
+        # Set num_train_workers based on SLURM topology
+        self.orchestrator.num_train_workers = self.num_train_nodes * self.gpus_per_node
+
+        # Set NCCL-specific values if using NCCL weight broadcast
+        if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+            # Trainer listens on all interfaces
+            self.trainer.weight_broadcast.host = "0.0.0.0"
+            # Compute inference world size from SLURM topology
+            self.trainer.weight_broadcast.inference_world_size = self.gpus_per_node * self.num_infer_nodes
+        return self
+
+    @model_validator(mode="after")
+    def validate_inference_config(self):
+        """Validate that inference config is provided when num_infer_nodes > 0."""
+        if self.num_infer_nodes > 0 and self.inference is None:
+            raise ValueError(
+                f"inference config is required when num_infer_nodes > 0 (got {self.num_infer_nodes}). "
+                "The SLURM template will launch inference servers on these nodes."
+            )
+        return self
+
 
 def write_subconfigs(config: RLSLURMConfig, output_dir: Path) -> None:
     """Write resolved subconfigs to disk as TOML files."""

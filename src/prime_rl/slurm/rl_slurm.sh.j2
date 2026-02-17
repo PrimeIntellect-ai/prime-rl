@@ -38,9 +38,6 @@ export OMP_NUM_THREADS=1
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 export INFER_HOSTS=${HOSTNAMES[@]:0:$NUM_INFER_NODES}
 export TRAIN_HOSTS=${HOSTNAMES[@]:$NUM_INFER_NODES:$SLURM_JOB_NUM_NODES}
-export BROADCAST_PORT=${BROADCAST_PORT:-29501}
-export BROADCAST_TIMEOUT=${BROADCAST_TIMEOUT:-12000}
-export NCCL_COMM_TIMEOUT=${NCCL_BROADCAST_TIMEOUT:-12000}
 
 INFER_URLS=""
 for host in ${INFER_HOSTS[@]}; do
@@ -105,11 +102,7 @@ else
         uv run orchestrator \
             @ $CONFIG_DIR/orchestrator.toml \
             --weight_broadcast.host $MASTER_ADDR \
-            --weight_broadcast.port $BROADCAST_PORT \
-            --weight_broadcast.timeout $BROADCAST_TIMEOUT \
             --client.base-url $INFER_URLS \
-            --client.timeout 3600 \
-            --num-train-workers $((NUM_TRAIN_NODES * GPUS_PER_NODE)) \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
     fi
 
@@ -132,11 +125,6 @@ else
         --local-ranks-filter=$(seq -s, 0 $((GPUS_PER_NODE - 1))) \
         -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.toml \
-        --weight_broadcast.host 0.0.0.0 \
-        --weight_broadcast.port $BROADCAST_PORT \
-        --weight_broadcast.inference_world_size $((GPUS_PER_NODE * NUM_INFER_NODES)) \
-        --weight_broadcast.timeout $BROADCAST_TIMEOUT \
-        --dist_timeout_seconds $NCCL_COMM_TIMEOUT \
         2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${TRAIN_NODE_RANK}.log
     fi
 '
