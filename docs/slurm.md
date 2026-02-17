@@ -3,7 +3,7 @@
 For SLURM clusters, use the `rl_slurm` entrypoint. It resolves the full config (trainer, orchestrator, inference), dumps sub-configs as TOML files, renders a SLURM batch script from a Jinja2 template, and submits it with `sbatch`.
 
 ```bash
-uv run python -m prime_rl.slurm.rl @ examples/slurm/hendrycks_math.toml
+uv run rl_slurm @ examples/slurm/hendrycks_math.toml
 ```
 
 This will:
@@ -15,7 +15,7 @@ This will:
 To only generate the script without submitting, use `--dry-run`:
 
 ```bash
-uv run python -m prime_rl.slurm.rl @ examples/slurm/hendrycks_math.toml --dry-run
+uv run rl_slurm @ examples/slurm/hendrycks_math.toml --dry-run
 ```
 
 ## Configuration
@@ -123,7 +123,7 @@ dp = 2
 The default template handles a standard multi-node setup with NCCL weight broadcast, InfiniBand detection, and `srun`-based process dispatch. For more advanced use cases (custom partitions, account settings, module loads, different networking setups, etc.), provide your own Jinja2 template:
 
 ```bash
-uv run python -m prime_rl.slurm.rl \
+uv run rl_slurm \
     @ my_config.toml \
     --slurm-template path/to/my_template.sh.j2
 ```
