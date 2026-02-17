@@ -3,7 +3,6 @@ import asyncio
 from verifiers.workers import ZMQEnvServer
 
 from prime_rl.orchestrator.env_server.config import EnvServerConfig
-from prime_rl.orchestrator.vf_utils import intercept_vf_logging
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import get_log_dir
 from prime_rl.utils.pydantic_config import parse_argv
@@ -32,7 +31,6 @@ def run_server(config: EnvServerConfig):
         log_file=log_file,
         **{"address": config.env.address} if config.env.address is not None else {},
     )
-    intercept_vf_logging(level=config.log.vf_level)
     asyncio.run(server.run())
 
 
