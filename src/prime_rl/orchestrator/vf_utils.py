@@ -22,6 +22,7 @@ def spawn_env_server(
     env_args: dict[str, Any],
     extra_env_kwargs: dict[str, Any],
     address: str | None = None,
+    # logging configs
     log_level: str | None = None,
     log_file: str | None = None,
     log_file_level: str | None = None,
@@ -53,9 +54,22 @@ def spawn_env_server(
     return address
 
 
-def setup_env_client(address: str) -> EnvClient:
+def setup_env_client(
+    address: str,
+    # health check configs
+    health_check_interval: float = 10.0,  # 10s
+    startup_timeout: float = 600.0,  # 10m
+    recovery_timeout: float = 600.0,  # 10m
+    max_auto_retries: int = 3,
+) -> EnvClient:
     """Sets up a ZMQEnvClient for a given address."""
-    return ZMQEnvClient(address=address)
+    return ZMQEnvClient(
+        address=address,
+        health_check_interval=health_check_interval,
+        startup_timeout=startup_timeout,
+        recovery_timeout=recovery_timeout,
+        max_auto_retries=max_auto_retries,
+    )
 
 
 async def wait_for_env_servers(
@@ -249,9 +263,9 @@ def get_completion_len(output: vf.RolloutOutput) -> int:
     return get_seq_len(output) - get_prompt_len(output)
 
 
-def intercept_vf_logging(level: str = "DEBUG", prefix: str = "verifiers"):
+def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str = "verifiers"):
     """Intercepts verifiers logging and routes through prime-rl logger with [verifiers] prefix."""
-    vf_logger = logging.getLogger("verifiers")
+    vf_logger = logging.getLogger(logger)
     vf_logger.handlers.clear()
     vf_logger.addHandler(InterceptHandler(prefix=prefix))
     vf_logger.setLevel(level.upper())
