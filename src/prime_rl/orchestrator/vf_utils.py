@@ -56,6 +56,7 @@ def spawn_env_server(
 
 def setup_env_client(
     address: str,
+    name: str | None = None,
     # health check configs
     health_check_interval: float = 1.0,  # 10s
     startup_timeout: float = 600.0,  # 10m
@@ -64,6 +65,7 @@ def setup_env_client(
     """Sets up a ZMQEnvClient for a given address."""
     return ZMQEnvClient(
         address=address,
+        name=name,
         health_check_interval=health_check_interval,
         startup_timeout=startup_timeout,
         recovery_timeout=recovery_timeout,
@@ -238,7 +240,7 @@ def get_completion_len(output: vf.RolloutOutput) -> int:
     return get_seq_len(output) - get_prompt_len(output)
 
 
-def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str = "verifiers"):
+def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = "verifiers"):
     """Intercepts verifiers logging and routes through prime-rl logger with [verifiers] prefix."""
     vf_logger = logging.getLogger(logger)
     vf_logger.handlers.clear()

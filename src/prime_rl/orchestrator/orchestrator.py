@@ -77,7 +77,7 @@ async def orchestrate(config: OrchestratorConfig):
         log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
-    intercept_vf_logging(logger="verifiers.workers", level=config.log.vf_level)
+    intercept_vf_logging(logger="verifiers.workers", level=config.log.vf_level, prefix=None)
     logger.info("Starting orchestrator")
 
     event_loop_lag_monitor = EventLoopLagMonitor()
@@ -152,14 +152,15 @@ async def orchestrate(config: OrchestratorConfig):
         f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
     )
     env_ids = [strip_env_version(env.id) for env in config.env]
+    train_env_names = [env.name or env_id for env_id, env in zip(env_ids, config.env)]
     train_env_group = vf.EnvGroup(
         envs=[vf.load_environment(env_id, **env.args) for env_id, env in zip(env_ids, config.env)],
-        env_names=[env.name or env_id for env_id, env in zip(env_ids, config.env)],
+        env_names=train_env_names,
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
 
     train_env_addresses = []
-    for env_id, env, env_name in zip(env_ids, config.env, train_env_group.env_names):
+    for env_id, env, env_name in zip(env_ids, config.env, train_env_names):
         if env.address is None:
             address = spawn_env_server(
                 env_id=env_id,
@@ -173,7 +174,9 @@ async def orchestrate(config: OrchestratorConfig):
             address = env.address
         logger.info(f"Connecting train environment {env_name} to server at {address}")
         train_env_addresses.append(address)
-    train_env_clients = [setup_env_client(address) for address in train_env_addresses]
+    train_env_clients = [
+        setup_env_client(address=address, name=name) for name, address in zip(train_env_names, train_env_addresses)
+    ]
 
     logger.info("Waiting for train environment servers to be ready")
     await wait_for_env_servers(train_env_clients)
@@ -206,7 +209,9 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Connecting eval environment {eval_env_name} to server at {address}")
             eval_env_addresses.append(address)
 
-        eval_env_clients = [setup_env_client(address) for address in eval_env_addresses]
+        eval_env_clients = [
+            setup_env_client(address=address, name=name) for name, address in zip(eval_env_names, eval_env_addresses)
+        ]
 
         logger.info("Waiting for eval environment servers to be ready")
         await wait_for_env_servers(eval_env_clients)
