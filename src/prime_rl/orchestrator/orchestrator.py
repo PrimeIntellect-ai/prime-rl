@@ -77,7 +77,6 @@ async def orchestrate(config: OrchestratorConfig):
         log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
-    vf.setup_logging(level="CRITICAL")
     intercept_vf_logging(logger="verifiers.workers", level=config.log.vf_level)
     logger.info("Starting orchestrator")
 

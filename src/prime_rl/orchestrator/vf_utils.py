@@ -57,7 +57,7 @@ def spawn_env_server(
 def setup_env_client(
     address: str,
     # health check configs
-    health_check_interval: float = 10.0,  # 10s
+    health_check_interval: float = 1.0,  # 10s
     startup_timeout: float = 600.0,  # 10m
     recovery_timeout: float = 600.0,  # 10m
 ) -> EnvClient:
