@@ -23,5 +23,7 @@ max_tokens = 128
 id = "reverse-text"
 
 [inference]
-gpu-memory-utilization = 0.7
-model.max-model-len = 2048
+gpu_memory_utilization = 0.7
+
+[inference.model]
+max_model_len = 2048
