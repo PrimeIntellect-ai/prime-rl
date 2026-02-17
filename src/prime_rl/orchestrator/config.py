@@ -684,7 +684,7 @@ class OrchestratorConfig(BaseSettings):
             ge=1,
             description="Number of output sequences to return per example during training.",
         ),
-    ] = 1
+    ] = 8
 
     seq_len: Annotated[
         int,
