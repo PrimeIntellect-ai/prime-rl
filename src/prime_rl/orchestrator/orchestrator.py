@@ -24,7 +24,6 @@ monkey_patch_chat_completion_logprobs()
 
 import pandas as pd
 import verifiers as vf
-from loguru import logger
 from transformers import AutoProcessor, AutoTokenizer
 
 from prime_rl.orchestrator.buffer import Buffer
@@ -52,7 +51,7 @@ from prime_rl.utils.client import (
     setup_inference_pool,
 )
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
@@ -84,24 +83,25 @@ def _should_run_eval(eval_config, ckpt_step: int, last_eval_step: int, is_final_
 class Orchestrator:
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
+        self.logger = get_logger()
 
     @clean_exit
     async def run(self) -> None:
         config = self.config
-        setup_logger(
+        self.logger = setup_logger(
             config.log.level,
             log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
             json_logging=config.log.json_logging,
         )
         vf.setup_logging(level="CRITICAL")
-        logger.info("Starting orchestrator")
+        self.logger.info("Starting orchestrator")
 
         event_loop_lag_monitor = EventLoopLagMonitor()
         event_loop_lag_monitor_task = asyncio.create_task(event_loop_lag_monitor.run())
 
         # Print warning if running in benchmark mode
         if config.bench:
-            logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
+            self.logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
         # Save configs to output directory
         config_dir = config.output_dir / "control"
@@ -123,7 +123,7 @@ class Orchestrator:
 
         # Setup teacher inference pool if configured
         if config.teacher_model:
-            logger.info(
+            self.logger.info(
                 f"Initializing teacher inference pool (base_url={', '.join(config.teacher_model.client.base_url)}, "
                 f"model={config.teacher_model.model.name})"
             )
@@ -137,18 +137,18 @@ class Orchestrator:
         is_vlm = is_vlm_model(config.model.name)
 
         # Load tokenizer and processor (processor only for VLM models)
-        logger.info(f"Initializing tokenizer for {config.model.name}")
+        self.logger.info(f"Initializing tokenizer for {config.model.name}")
         tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
 
         processor = None
         if is_vlm:
-            logger.info(f"Loading VLM processor for {config.model.name}")
+            self.logger.info(f"Loading VLM processor for {config.model.name}")
             processor = AutoProcessor.from_pretrained(
                 config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
             )
 
         # Setup monitor
-        logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
+        self.logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
         monitor = setup_monitor(
             wandb_config=config.wandb,
             prime_config=config.prime_monitor,
@@ -160,11 +160,11 @@ class Orchestrator:
         # Setup heartbeat (only on rank 0, orchestrator is single process)
         heart = None
         if config.heartbeat is not None:
-            logger.info("Initializing heartbeat")
+            self.logger.info("Initializing heartbeat")
             heart = Heartbeat(config.heartbeat.url)
 
         # Load environment and extract dataset
-        logger.info(
+        self.logger.info(
             f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
         )
         env_ids = [strip_env_version(env.id) for env in config.env]
@@ -193,12 +193,12 @@ class Orchestrator:
             eval_sampling_args = {}
 
         # Setup buffer
-        logger.info(f"Setting up buffer ({config.buffer})")
+        self.logger.info(f"Setting up buffer ({config.buffer})")
         train_dataset = train_env_group.get_dataset(seed=config.buffer.seed)
         buffer = Buffer(train_dataset, train_env_group.env_names, config.buffer)
 
         # Get checkpoint manager
-        logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+        self.logger.info(f"Initializing checkpoint manager ({config.ckpt})")
         ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
         checkpoint_step = None
@@ -220,18 +220,18 @@ class Orchestrator:
             scheduler.model_name = config.model.lora.name
 
         # Check health of the inference pool
-        logger.info("Waiting for inference pool to be ready")
+        self.logger.info("Waiting for inference pool to be ready")
         await inference_pool.wait_for_ready(config.model.name)
-        logger.success("Inference pool ready")
+        self.logger.success("Inference pool ready")
 
         # Check health of teacher inference server if configured
         if config.teacher_model and teacher_inference_pool:
-            logger.info("Waiting for teacher inference pool to be ready")
+            self.logger.info("Waiting for teacher inference pool to be ready")
             await teacher_inference_pool.wait_for_ready(config.teacher_model.model.name)
-            logger.success("Teacher inference pool ready")
+            self.logger.success("Teacher inference pool ready")
 
         # Set up weight broadcast backend
-        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        self.logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
                 inference_pool.admin_clients,
@@ -241,7 +241,7 @@ class Orchestrator:
             )
 
         # Setup training batch sender for sending training examples to trainer
-        logger.info(f"Initializing training batch sender ({config.rollout_transport})")
+        self.logger.info(f"Initializing training batch sender ({config.rollout_transport})")
         training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
         self.last_eval_step = -1
@@ -255,11 +255,11 @@ class Orchestrator:
 
         if checkpoint_step is not None and ckpt_manager is not None:
             ckpt_manager.load(progress, buffer, step=checkpoint_step)
-            logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
+            self.logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
             scheduler.ckpt_step = checkpoint_step
             if config.eval and config.eval.skip_eval_on_resume:
                 self.last_eval_step = scheduler.ckpt_step
-                logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
+                self.logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
 
             # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
             check_exists = config.weight_broadcast.type != "nccl"
@@ -272,16 +272,16 @@ class Orchestrator:
         else:
             if config.reload_weights_on_start:
                 if config.model.lora is None:
-                    logger.info("Training from scratch. Resetting weights to base model")
+                    self.logger.info("Training from scratch. Resetting weights to base model")
                     await reload_weights(inference_pool.admin_clients)
                 else:
-                    logger.info("Training from scratch. Skipping base weight reload because LoRA is enabled")
+                    self.logger.info("Training from scratch. Skipping base weight reload because LoRA is enabled")
             else:
-                logger.info("Training from scratch. Skipping base weight reload")
+                self.logger.info("Training from scratch. Skipping base weight reload")
 
         # Continuously get group rollouts and send them to the trainer.
         # The trainer decides when to step based on accumulated total tokens.
-        logger.info(f"Starting orchestrator streaming loop (max_steps={config.max_steps or 'infinite'})")
+        self.logger.info(f"Starting orchestrator streaming loop (max_steps={config.max_steps or 'infinite'})")
         await set_semaphore(config.max_concurrent or -1)
 
         # Set initial temperature / sampling args
@@ -297,7 +297,7 @@ class Orchestrator:
 
             assert config.eval is not None
             self.last_eval_step = ckpt_step
-            logger.info(f"Running evals for checkpoint step {ckpt_step}")
+            self.logger.info(f"Running evals for checkpoint step {ckpt_step}")
 
             # Pause weight updates and re-scheduling of training rollouts during eval
             # to avoid evaluating across different checkpoints and avoid congestion
@@ -305,7 +305,7 @@ class Orchestrator:
 
             # For heavy eval workloads, it might be necessary additionally cancel in-flight training rollouts
             if config.eval.cancel_inflight_rollouts_on_eval:
-                logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
+                self.logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
                 scheduler.cancel_inflight_rollouts()
 
             try:
@@ -399,7 +399,7 @@ class Orchestrator:
                         or (config.ckpt and config.ckpt.interval is not None and ckpt_step % config.ckpt.interval == 0)
                     )
                 ):
-                    logger.info(f"Saving checkpoint at ckpt_step {ckpt_step}")
+                    self.logger.info(f"Saving checkpoint at ckpt_step {ckpt_step}")
                     ckpt_manager.save(progress, buffer, step=ckpt_step)
 
                 await maybe_run_eval(ckpt_step, is_final_step=is_final_step)
@@ -438,7 +438,7 @@ class Orchestrator:
             # VLM: build image cache for efficient batched preprocessing
             if is_vlm:
                 vlm_cache = build_vlm_image_cache(train_rollouts, processor)
-                logger.info(
+                self.logger.info(
                     f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s"
                 )
             else:
@@ -477,7 +477,7 @@ class Orchestrator:
                 rollout_decode_lens.append(rollout_decode_tokens)
 
             parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
-            logger.debug(
+            self.logger.debug(
                 f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
                 f"to {len(train_examples)} training examples in {parallel_preprocess_time:.2f}s"
             )
@@ -490,7 +490,7 @@ class Orchestrator:
                         f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
                     )
                 backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
-                logger.warning(
+                self.logger.warning(
                     f"Step {progress.step} produced 0 training samples "
                     f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
                 )
@@ -546,7 +546,7 @@ class Orchestrator:
 
         # Run final evals
         if config.eval:
-            logger.info("Running final evals")
+            self.logger.info("Running final evals")
             await asyncio.gather(
                 *[
                     evaluate_env(
@@ -571,7 +571,7 @@ class Orchestrator:
 
         # Write final checkpoint
         if ckpt_manager is not None:
-            logger.info("Writing final checkpoint")
+            self.logger.info("Writing final checkpoint")
             ckpt_manager.save(progress, buffer, step=progress.step)
 
         # Close training batch sender
@@ -593,7 +593,7 @@ class Orchestrator:
         # Cancel event loop lag monitor task
         event_loop_lag_monitor_task.cancel()
 
-        logger.success("Orchestrator finished.")
+        self.logger.success("Orchestrator finished.")
 
         # Optionally, print benchmark table
         if config.bench:
@@ -615,12 +615,12 @@ class Orchestrator:
                 )
             else:
                 address = env.address
-            logger.info(f"Connecting {label} environment {env_name} to server at {address}")
+            self.logger.info(f"Connecting {label} environment {env_name} to server at {address}")
             addresses.append(address)
         clients = [setup_env_client(address) for address in addresses]
-        logger.info(f"Waiting for {label} environment servers to be ready")
+        self.logger.info(f"Waiting for {label} environment servers to be ready")
         await wait_for_env_servers(clients)
-        logger.success(f"{label.capitalize()} environment servers ready")
+        self.logger.success(f"{label.capitalize()} environment servers ready")
         return clients
 
     def _log_accumulated_metrics(
@@ -765,7 +765,7 @@ class Orchestrator:
             step=progress.step,
         )
 
-        logger.success(
+        self.logger.success(
             f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} | "
             f"Throughput: {throughput:.1f} tokens/s | Samples: {num_samples} | "
             f"Max. Off-Policy Level: {scheduler.max_off_policy_level}"
