@@ -7,7 +7,7 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.envs.environment import EnvClient
-from verifiers.utils.worker_utils import get_free_port
+from verifiers.utils.worker_utils import get_free_port_pair
 from verifiers.workers import ZMQEnvClient, ZMQEnvServer
 
 from prime_rl.utils.logger import InterceptHandler, ProgressTracker
@@ -33,7 +33,7 @@ def spawn_env_server(
 
     Mirrors vf.Environment.start_server().
     """
-    address = address or f"tcp://127.0.0.1:{get_free_port()}"
+    address = address or f"tcp://127.0.0.1:{get_free_port_pair()}"
     # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
     # the parent process, which has caused hangs when multiple env server
     # subprocesses share the same fds.
