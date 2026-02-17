@@ -111,10 +111,13 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         stable_file.touch()
 
     def maybe_clean(self, keep_last: int, interval_to_keep: int | None):
+        # Keep one extra stable broadcast step to avoid deleting weights while
+        # the orchestrator is still catching up and loading the previous step.
+        effective_keep_last = keep_last + 1
         for idx in self.multi_run_manager.used_idxs:
             maybe_clean(
                 get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
                 self.multi_run_manager.progress[idx].step,
-                keep_last,
+                effective_keep_last,
                 interval_to_keep,
             )

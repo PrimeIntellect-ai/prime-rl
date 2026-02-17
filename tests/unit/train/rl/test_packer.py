@@ -93,6 +93,28 @@ def packer_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return manager, run_idx, receiver, sender
 
 
+@pytest.fixture
+def multi_packer_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Set up a multi-run manager with dummy transport for packer tests."""
+    reset_world()
+    runs._MULTI_RUN_MANAGER = None
+    manager = setup_multi_run_manager(output_dir=tmp_path, max_runs=2, device=torch.device("cpu"))
+    create_run_with_config(tmp_path, "run_a")
+    manager.discover_runs()
+    run_idx = manager.id_2_idx["run_a"]
+
+    receiver = DummyReceiver()
+    sender = DummySender()
+
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_training_batch_receiver", lambda _config: receiver)
+    monkeypatch.setattr(
+        "prime_rl.trainer.rl.packer.setup_micro_batch_sender",
+        lambda _output_dir, _data_world_size, _current_step, _config: sender,
+    )
+
+    return manager, run_idx, receiver, sender
+
+
 def test_packer_progress_updates_once_per_run(packer_env) -> None:
     manager, run_idx, receiver, sender = packer_env
 
@@ -182,3 +204,41 @@ def test_single_packer_sets_receiver_start_step_to_zero(packer_env) -> None:
     )
 
     assert receiver.start_steps == [(0, 0)]
+
+
+def test_multi_packer_sets_receiver_start_step_to_zero_for_existing_runs(multi_packer_env) -> None:
+    manager, run_idx, receiver, sender = multi_packer_env
+
+    MultiPacker(
+        dp_world_size=1,
+        seq_len=8,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        config=FileSystemTransportConfig(),
+        token_batch_size=4,
+        start_step=0,
+    )
+
+    assert (run_idx, 0) in receiver.start_steps
+
+
+def test_multi_packer_sets_receiver_start_step_to_zero_for_new_runs(multi_packer_env, tmp_path: Path) -> None:
+    manager, run_idx, receiver, sender = multi_packer_env
+
+    MultiPacker(
+        dp_world_size=1,
+        seq_len=8,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        config=FileSystemTransportConfig(),
+        token_batch_size=4,
+        start_step=0,
+    )
+    existing_steps = list(receiver.start_steps)
+
+    create_run_with_config(tmp_path, "run_b")
+    manager.discover_runs()
+
+    new_run_idx = manager.id_2_idx["run_b"]
+    assert (new_run_idx, 0) in receiver.start_steps
+    assert len(receiver.start_steps) == len(existing_steps) + 1

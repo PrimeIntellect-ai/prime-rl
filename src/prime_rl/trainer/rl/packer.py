@@ -133,6 +133,12 @@ class MultiPacker(BasePacker):
         # Register forgotten hook for receiver reset (master only, called during discover_runs)
         # This must happen when a run is deleted to prevent stale data from remaining
         self.multi_run_manager.register_forgotten_hook(self._on_run_data_deleted)
+        self.multi_run_manager.register_discovered_hook(self._on_run_discovered)
+
+        # TrainingBatch.step counters are local to orchestrator process lifetime and
+        # start at 0 on resume/restart. Align receiver state to step 0 for all current runs.
+        for idx in self.multi_run_manager.used_idxs:
+            self.receiver.set_start_step(idx, 0)
 
     def _on_run_data_deleted(self, idx: int, run_id: str) -> None:
         """Reset run state when run data is deleted (master only)."""
@@ -141,6 +147,11 @@ class MultiPacker(BasePacker):
 
         # Reset run state
         self.buffers[idx].clear()
+
+    def _on_run_discovered(self, idx: int, run_id: str, _config) -> None:
+        """Align receiver state for newly discovered runs (master only)."""
+        self.logger.debug(f"Packing is setting receiver start step to zero for discovered run {idx} ({run_id})")
+        self.receiver.set_start_step(idx, 0)
 
     def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
         """Validate a sample to ensure it won't crash the trainer."""
