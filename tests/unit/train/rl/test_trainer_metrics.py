@@ -1,6 +1,6 @@
 from prometheus_client import CollectorRegistry, generate_latest
 
-from prime_rl.trainer.rl.metrics import RunStats, TrainerPrometheusMetrics
+from prime_rl.trainer.metrics import RunStats, TrainerPrometheusMetrics
 
 
 def test_trainer_metrics_update():

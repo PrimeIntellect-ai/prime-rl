@@ -51,7 +51,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_multi_run_manager, Progress, get_multi_run_manager
-from prime_rl.trainer.rl.metrics import RunStats, TrainerPrometheusMetrics
+from prime_rl.trainer.metrics import RunStats, TrainerPrometheusMetrics
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer
