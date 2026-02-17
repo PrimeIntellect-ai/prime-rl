@@ -94,7 +94,7 @@ def train(config: TrainerConfig):
     trainer_metrics = None
     if config.metrics_server is not None and world.local_rank == 0:
         if world.is_master:
-            logger.info(f"Initializing metrics server on port {config.metrics_server.port}")
+            logger.info(f"Initializing metrics/health server on port {config.metrics_server.port}")
             registry = CollectorRegistry()
             trainer_metrics = TrainerPrometheusMetrics(registry)
             metrics_server = MetricsServer(config.metrics_server, registry=registry)

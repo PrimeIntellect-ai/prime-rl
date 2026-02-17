@@ -164,7 +164,7 @@ async def orchestrate(config: OrchestratorConfig):
     metrics_server = None
     orchestrator_metrics = None
     if config.metrics_server is not None:
-        logger.info(f"Initializing metrics server on port {config.metrics_server.port}")
+        logger.info(f"Initializing metrics/health server on port {config.metrics_server.port}")
         registry = CollectorRegistry()
         orchestrator_metrics = OrchestratorPrometheusMetrics(registry)
         metrics_server = MetricsServer(config.metrics_server, registry=registry)

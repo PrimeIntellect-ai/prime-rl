@@ -1,3 +1,5 @@
+"""Prometheus metric definitions for trainer processes."""
+
 import time
 from dataclasses import dataclass
 
@@ -6,6 +8,8 @@ from prometheus_client import CollectorRegistry, Gauge
 
 @dataclass
 class RunStats:
+    """Statistics for a single run/LoRA adapter."""
+
     run_id: str
     step: int
     total_tokens: int
@@ -14,7 +18,10 @@ class RunStats:
 
 
 class TrainerPrometheusMetrics:
+    """Container for trainer Prometheus metrics and update helpers."""
+
     def __init__(self, registry: CollectorRegistry):
+        """Register all trainer metrics in the provided Prometheus registry."""
         self.step = Gauge("trainer_step", "Current training step", registry=registry)
         self.loss = Gauge("trainer_loss", "Current training loss", registry=registry)
         self.throughput = Gauge(
@@ -63,7 +70,7 @@ class TrainerPrometheusMetrics:
         entropy: float = 0.0,
         mismatch_kl: float = 0.0,
     ) -> None:
-        """Update metrics after a training step."""
+        """Update step-level trainer metrics after a training step."""
         self.step.set(step)
         self.loss.set(loss)
         self.throughput.set(throughput)
@@ -77,6 +84,7 @@ class TrainerPrometheusMetrics:
 
     def update_runs(self, runs_discovered: int, runs_max: int, run_stats: list[RunStats]) -> None:
         """Update run/LoRA metrics.
+
         Args:
             runs_discovered: Number of run_* folders found in output directory
             runs_max: Maximum run capacity
