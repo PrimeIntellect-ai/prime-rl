@@ -1,10 +1,15 @@
+"""Prometheus metric definitions for the orchestrator."""
+
 import time
 
 from prometheus_client import CollectorRegistry, Gauge
 
 
 class OrchestratorPrometheusMetrics:
+    """Container for orchestrator Prometheus metrics and update helpers."""
+
     def __init__(self, registry: CollectorRegistry):
+        """Register all orchestrator metrics in the provided Prometheus registry."""
         self.step = Gauge("orchestrator_step", "Current orchestrator step", registry=registry)
         self.total_tokens = Gauge("orchestrator_total_tokens", "Total tokens processed", registry=registry)
         self.total_samples = Gauge("orchestrator_total_samples", "Total samples processed", registry=registry)
@@ -56,6 +61,12 @@ class OrchestratorPrometheusMetrics:
         self._known_worker_lag: set[tuple[str, str]] = set()
 
     def update(self, to_log: dict[str, float]) -> None:
+        """
+        Update orchestrator metrics from a single monitor log payload.
+
+        Note: only using a subset of metrics from the monitor log that are
+        stable, low cardinality metrics that are suitable for Prometheus.
+        """
         self.step.set(to_log.get("step", 0))
         self.total_tokens.set(to_log.get("progress/total_tokens", 0))
         self.total_samples.set(to_log.get("progress/total_samples", 0))
