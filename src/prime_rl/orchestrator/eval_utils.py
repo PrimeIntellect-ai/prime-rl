@@ -1,4 +1,5 @@
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import numpy as np
@@ -65,18 +66,27 @@ def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
 async def evaluate_env(
     env: vf.Environment,
     env_name: str,
-    clients: list[vf.ClientConfig],
     model_name: str,
     sampling_args: dict,
     num_examples: int,
     rollouts_per_example: int,
+    max_retries: int,
     ckpt_step: int,
     step: int | None,
+    get_client: Callable[[], Awaitable[vf.ClientConfig]],
 ):
     logger = get_logger()
     logger.info(f"Evaluating {env_name} ({num_examples=}, {rollouts_per_example=})")
     eval_start_time = time.perf_counter()
-    outputs = await evaluate(env, clients, model_name, sampling_args, num_examples, rollouts_per_example)
+    outputs = await evaluate(
+        env=env,
+        model_name=model_name,
+        sampling_args=sampling_args,
+        num_examples=num_examples,
+        rollouts_per_example=rollouts_per_example,
+        get_client=get_client,
+        max_retries=max_retries,
+    )
     eval_time = time.perf_counter() - eval_start_time
 
     rows = []
@@ -106,7 +116,7 @@ async def evaluate_env(
         logger.warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
 
     # Log statistics to console
-    message = f"Evaluated {env.env_id} in {eval_time:.2f}s (Avg@{rollouts_per_example}={results_df.reward.mean():.4f}"
+    message = f"Evaluated {env_name} in {eval_time:.2f}s (Avg@{rollouts_per_example}={results_df.reward.mean():.4f}"
     if could_be_binary:
         assert pass_at_k is not None
         for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
@@ -120,9 +130,9 @@ async def evaluate_env(
 
     # Log statistics to monitor
     eval_metrics = {
-        f"avg@{rollouts_per_example}": results_df.reward.mean(),
-        "no_response/mean": results_df.no_response.mean(),
-        "no_response/count": results_df.no_response.sum(),
+        f"avg@{rollouts_per_example}": float(results_df.reward.mean()),
+        "no_response/mean": float(results_df.no_response.mean()),
+        "no_response/count": int(results_df.no_response.sum()),
         "completion_len/mean": results_df.completion_len.mean().item(),
         "completion_len/max": results_df.completion_len.max().item(),
         "completion_len/min": results_df.completion_len.min().item(),

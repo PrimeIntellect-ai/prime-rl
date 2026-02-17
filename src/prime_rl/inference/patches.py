@@ -34,15 +34,18 @@ def monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode():
 
 # Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
 def monkey_patch_load_lora_adapter():
-    from vllm.entrypoints.openai.serving_models import (
-        ErrorResponse,
-        HTTPStatus,
-        LoadLoRAAdapterRequest,
-        LoRARequest,
+    from http import HTTPStatus
+
+    from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+    from vllm.entrypoints.openai.models.serving import (
         OpenAIServingModels,
         create_error_response,
-        logger,
     )
+    from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
+    from vllm.logger import init_logger
+    from vllm.lora.request import LoRARequest
+
+    logger = init_logger(__name__)
 
     async def _patched_load_lora_adapter(
         self: OpenAIServingModels, request: LoadLoRAAdapterRequest, base_model_name: str | None = None
@@ -137,3 +140,54 @@ def monkey_patch_LRUCacheWorkerLoRAManager():
 
     LRUCacheWorkerLoRAManager._apply_adapters = _patched__apply_adapters
     LRUCacheWorkerLoRAManager.add_adapter = _patched_add_adapter
+
+
+# Monkeypatch TokenizeParams to fix overly conservative validation
+def monkey_patch_tokenize_params_validation():
+    """
+    Patch TokenizeParams validation to only reject requests where the prompt
+    itself exceeds max_model_len, not where prompt + max_tokens > max_model_len.
+
+    Original behavior:
+        - Rejects if prompt_len > (max_model_len - max_tokens)
+
+    Patched behavior:
+        - Only rejects if prompt_len > max_model_len
+        - Lets the engine naturally cap generation at max_model_len
+    """
+    from vllm.exceptions import VLLMValidationError
+    from vllm.renderers.params import TokenizeParams
+
+    def _patched_token_len_check(self, tokenizer, tokens):
+        """Only validate that prompt fits in max_model_len, not prompt+max_tokens"""
+        if self.max_total_tokens is not None and len(tokens) > self.max_total_tokens:
+            raise VLLMValidationError(
+                f"The prompt is {len(tokens)} tokens, which exceeds the "
+                f"model's maximum context length of {self.max_total_tokens} tokens. "
+                f"Please reduce the length of the input prompt.",
+                parameter="input_tokens",
+                value=len(tokens),
+            )
+        return tokens
+
+    def _patched_text_len_check(self, tokenizer, text):
+        """Only validate text length against max_model_len, not max_input_tokens"""
+        if self.max_total_tokens is None or tokenizer is None:
+            return text
+
+        if self.truncate_prompt_tokens is None:
+            max_chars = self.max_total_tokens * tokenizer.max_chars_per_token
+            if len(text) > max_chars:
+                raise VLLMValidationError(
+                    f"You passed {len(text)} input characters. "
+                    f"However, the model's context length is only "
+                    f"{self.max_total_tokens} tokens "
+                    f"(at most {max_chars} characters). "
+                    f"Please reduce the length of the input prompt.",
+                    parameter="input_text",
+                    value=len(text),
+                )
+        return text
+
+    TokenizeParams._token_len_check = _patched_token_len_check
+    TokenizeParams._text_len_check = _patched_text_len_check

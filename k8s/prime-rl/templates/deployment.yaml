@@ -27,7 +27,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-      - name: prime-rl
+      - name: prime-rl-orchestrator
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.orchestrator.autoStart }}
@@ -133,7 +133,7 @@ spec:
       runtimeClassName: {{ .Values.inference.runtimeClassName }}
       {{- end }}
       containers:
-      - name: prime-rl
+      - name: prime-rl-inference
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.inference.autoStart }}
@@ -262,7 +262,7 @@ spec:
       runtimeClassName: {{ .Values.trainer.runtimeClassName }}
       {{- end }}
       containers:
-      - name: prime-rl
+      - name: prime-rl-trainer
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.trainer.autoStart }}

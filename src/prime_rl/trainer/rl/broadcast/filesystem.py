@@ -46,6 +46,11 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
+            else:
+                # For regular transformers models, revert internal format to original HF hub format
+                from transformers.core_model_loading import revert_weight_conversion
+
+                state_dict = revert_weight_conversion(model, state_dict)
 
         for idx in self.multi_run_manager.ready_to_update_idxs:
             self.logger.debug(
@@ -74,7 +79,14 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     self.logger.debug(f"Saving weights for run {idx} to {save_dir}")
                     save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
                     if adapter_only:
-                        save_lora_config(self.lora_config, model, save_dir)
+                        orch_lora = self.multi_run_manager.config[idx].model.lora
+                        save_lora_config(
+                            model,
+                            save_dir,
+                            rank=orch_lora.rank,
+                            alpha=orch_lora.alpha,
+                            dropout=self.lora_config.dropout,
+                        )
 
                     self._notify_orchestrator(save_dir)
 

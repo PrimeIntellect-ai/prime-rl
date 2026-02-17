@@ -1,18 +1,3 @@
-# coding=utf-8
-# Copyright 2025 The ZhipuAI Inc. team and HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from typing import Optional, Union
 
 import torch
@@ -22,78 +7,68 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring
-from transformers.utils.deprecation import deprecate_kwarg
+from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
-from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import (
+from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
+from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
+from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.trainer.models.minimax_m2.configuration_minimax_m2 import MiniMaxM2Config
+from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import (
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
-from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
-from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
-from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
-from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+
+logger = logging.get_logger(__name__)
 
 
-class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
-    def __init__(self, config: Glm4MoeConfig, layer_idx: int):
+class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: MiniMaxM2Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
+
         attn_config = AttentionConfig(
             hidden_size=config.hidden_size,
-            head_dim=getattr(config, "head_dim", config.hidden_size // config.num_attention_heads),
+            head_dim=config.head_dim,
             num_attention_heads=config.num_attention_heads,
             num_key_value_heads=config.num_key_value_heads,
             is_causal=True,
             attention_bias=config.attention_bias,
             use_qk_norm=config.use_qk_norm,
             rms_norm_eps=config.rms_norm_eps,
+            qk_norm_type=config.qk_norm_type,
         )
         self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
 
         moe_args = MoEArgs(
-            num_experts=config.n_routed_experts,
-            num_shared_experts=config.n_shared_experts,
-            score_func="sigmoid",
-            route_norm=config.norm_topk_prob,
-            route_scale=config.routed_scaling_factor,
+            num_experts=config.num_local_experts,
+            num_shared_experts=0,
+            score_func=config.scoring_func,
+            route_norm=True,
+            route_scale=1.0,
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
-            load_balance_coeff=1e-3,
             use_grouped_mm=config.use_grouped_mm,
+            load_balance_coeff=1e-3 if config.use_routing_bias else None,
         )
-        mlp_config = MLPConfig(
-            hidden_size=config.hidden_size,
-            intermediate_size=config.intermediate_size,
-            gate_act=config.hidden_act,
-            bias=False,
-        )
-
-        if layer_idx >= config.first_k_dense_replace:
-            self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
-        else:
-            self.mlp = MLP(mlp_config)
+        self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.intermediate_size)
 
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
-    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
         self,
         hidden_states: torch.Tensor,
-        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
-        cu_seqlens: Optional[torch.LongTensor] = None,
-        max_seqlen: Optional[int] = None,
-    ) -> torch.Tensor:
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        # Self Attention
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
@@ -102,7 +77,6 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         )
         hidden_states = residual + hidden_states
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
@@ -111,11 +85,11 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
 
 
 @auto_docstring
-class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
-    config: Glm4MoeConfig
+class MiniMaxM2PreTrainedModel(PreTrainedModelPrimeRL):
+    config: MiniMaxM2Config
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["Glm4MoeDecoderLayer"]
+    _no_split_modules = ["MiniMaxM2DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
     _supports_sdpa = True
@@ -123,60 +97,48 @@ class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
     _can_compile_fullgraph = False
     _supports_attention_backend = True
     _can_record_outputs = {
-        "hidden_states": Glm4MoeDecoderLayer,
+        "hidden_states": MiniMaxM2DecoderLayer,
     }
-
-    def _init_weights(self, module):
-        super()._init_weights(module)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        """Check if the state dict contains MoE layers in HuggingFace format."""
-        # Check for old per-expert format or new fused format (transformers 5.0+)
-        return any("mlp.experts.1.up_proj" in name or "mlp.experts.gate_up_proj" in name for name in state_dict.keys())
+        return any("block_sparse_moe.experts.1.w1" in name for name in state_dict.keys())
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        """Check if the state dict contains MoE layers in PrimeRL training format."""
-        return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
+        return any("mlp.experts.w1" in name for name in state_dict.keys())
 
     @classmethod
     def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Convert MoE weights from PrimeRL training format to HuggingFace format in-place."""
         convert_tt_to_hf_moe(state_dict)
         return state_dict
 
     @classmethod
     def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Convert MoE weights from HuggingFace format to PrimeRL training format in-place."""
         convert_hf_to_tt_moe(state_dict)
         return state_dict
 
     @classmethod
     def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert a single layer's MoE weights from PrimeRL format to HuggingFace format in-place."""
         convert_tt_layer_to_hf(state_dict, layer_idx)
         return state_dict
 
     @classmethod
     def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert a single layer's MoE weights from HuggingFace format to PrimeRL format in-place."""
         convert_hf_layer_to_tt(state_dict, layer_idx)
         return state_dict
 
 
 @auto_docstring
-class Glm4MoeModel(Glm4MoePreTrainedModel):
-    _keys_to_ignore_on_load_unexpected = [r"model\.layers\.92.*", r"model\.layers\.46.*"]
-
-    def __init__(self, config: Glm4MoeConfig):
+class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
+    def __init__(self, config: MiniMaxM2Config):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [Glm4MoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [MiniMaxM2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
@@ -192,7 +154,6 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         self.rotary_emb = RotaryEmbedding(rotary_config)
         self.gradient_checkpointing = False
 
-        # Initialize weights and apply final processing
         self.post_init()
 
     @auto_docstring
@@ -206,7 +167,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
         if inputs_embeds is None:
-            inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
+            inputs_embeds = self.embed_tokens(input_ids)
 
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
             flat_position_ids = position_ids.view(-1)
@@ -240,24 +201,25 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
 
 
 @auto_docstring
-class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
+class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = Glm4MoeModel(config)
+        self.model = MiniMaxM2Model(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        # Initialize weights and apply final processing
         self.post_init()
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
@@ -265,34 +227,17 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
-        temperature: Optional[torch.Tensor] = None,
+        temperature: Union[torch.Tensor, None] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
-            If not provided, the wrapped LM head returns logits only.
+            Labels for computing the masked language modeling loss.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Per-token temperatures for logprobs/entropy computation when `labels` are provided.
-
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, Glm4MoeForCausalLM
-
-        >>> model = Glm4MoeForCausalLM.from_pretrained("meta-glm4_moe/Glm4Moe-2-7b-hf")
-        >>> tokenizer = AutoTokenizer.from_pretrained("meta-glm4_moe/Glm4Moe-2-7b-hf")
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-        ```"""
-        assert use_cache is None, "use_cache is not supported for custom glm4_moe for now"
-        assert past_key_values is None, "past_key_values is not supported for custom glm4_moe for now"
+            Per-token temperatures for logprobs/entropy computation.
+        """
+        assert use_cache is None, "use_cache is not supported for custom minimax_m2 for now"
+        assert past_key_values is None, "past_key_values is not supported for custom minimax_m2 for now"
 
         if position_ids is None:
             if inputs_embeds is not None:
@@ -307,7 +252,6 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         )
 
         hidden_states = outputs.last_hidden_state
-        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         return self.lm_head(
             hidden_states[:, slice_indices, :],
@@ -317,7 +261,6 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
 
     def init_buffers_post_meta(self):
         buffer_names = [name for name, _ in self.named_buffers()]
-        # HF standard transformer model
         if "model.rotary_emb.inv_freq" in buffer_names:
             rotary_emb = self.model.rotary_emb
             inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(
@@ -325,8 +268,9 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
             )
             rotary_emb.inv_freq.copy_(inv_freq)
 
-        # TODO: Init TT MoE buffers
-        # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
 
-
-__all__ = ["Glm4MoeConfig", "Glm4MoePreTrainedModel", "Glm4MoeModel", "Glm4MoeForCausalLM"]
+__all__ = [
+    "MiniMaxM2ForCausalLM",
+    "MiniMaxM2Model",
+    "MiniMaxM2PreTrainedModel",
+]

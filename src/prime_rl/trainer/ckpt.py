@@ -1,3 +1,4 @@
+import bisect
 import shutil
 import time
 import warnings
@@ -31,6 +32,14 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
 from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
+
+
+def _try_rmtree(path: Path, logger) -> None:
+    """Remove a directory tree, logging and skipping on failure."""
+    try:
+        shutil.rmtree(path)
+    except OSError as e:
+        logger.warning(f"Failed to remove {path}: {e}, skipping cleanup")
 
 
 class AppState(Stateful):
@@ -226,7 +235,7 @@ class CheckpointManager:
         )
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
-        self.ckpt_steps.append(step)
+        bisect.insort(self.ckpt_steps, step)
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
@@ -257,7 +266,7 @@ class CheckpointManager:
                 ckpt_path = trainer_ckpt_path.parent
                 if ckpt_path.exists():
                     self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                    shutil.rmtree(ckpt_path)
+                    _try_rmtree(ckpt_path, self.logger)
 
         # Update checkpoint steps
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
@@ -320,7 +329,14 @@ class WeightCheckpointManager:
             # Save model config, generation arguments and tokenizer
             model.config.save_pretrained(path)
             if model.generation_config:
-                model.generation_config.save_pretrained(path)
+                # training sets use_cache=False which can conflict with
+                # cache_implementation — save with use_cache=True without
+                # mutating the model's config
+                from copy import deepcopy
+
+                gen_config = deepcopy(model.generation_config)
+                gen_config.use_cache = True
+                gen_config.save_pretrained(path)
             tokenizer.save_pretrained(path)
 
         if self.config.save_adapter_separately and lora_state_dict is not None:
@@ -328,7 +344,13 @@ class WeightCheckpointManager:
             adapter_path.mkdir(parents=True, exist_ok=True)
             torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
             if self.lora_config:
-                save_lora_config(self.lora_config, model, adapter_path)  # Pass model
+                save_lora_config(
+                    model,
+                    adapter_path,
+                    rank=self.lora_config.rank,
+                    alpha=self.lora_config.alpha,
+                    dropout=self.lora_config.dropout,
+                )
         self.logger.debug(f"Saved weight checkpoint to {path} in {time.perf_counter() - start_time:.2f} seconds")
 
     def save(
@@ -347,6 +369,11 @@ class WeightCheckpointManager:
         state_dict = gather_weights_on_master(model, self.world.is_master, dtype=torch.bfloat16)
         self.logger.debug(f"Gathered weights on master rank in {time.perf_counter() - start_time:.2f} seconds")
 
+        # Remove tied weight keys to match original model format
+        if getattr(model.config, "tie_word_embeddings", False):
+            for key in getattr(model, "_tied_weights_keys", []):
+                state_dict.pop(key, None)
+
         if has_lora_layers(model):
             self.logger.debug("Getting LoRA state dict on master rank for weight checkpoint")
             start_time = time.perf_counter()
@@ -355,7 +382,7 @@ class WeightCheckpointManager:
         else:
             lora_state_dict = None
 
-        # Convert PrimeRL format to HF format if needed
+        # Convert to HF hub format if needed
         if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
             self.logger.debug("Converting PrimeRL format to HF format for weight checkpoint")
             start_time = time.perf_counter()
@@ -363,13 +390,21 @@ class WeightCheckpointManager:
             self.logger.debug(
                 f"Converted PrimeRL format to HF format in {time.perf_counter() - start_time:.2f} seconds"
             )
+        else:
+            # For regular transformers models, revert internal format to original HF hub format
+            from transformers.core_model_loading import revert_weight_conversion
+
+            self.logger.debug("Reverting transformers internal format to HF hub format for weight checkpoint")
+            start_time = time.perf_counter()
+            state_dict = revert_weight_conversion(model, state_dict)
+            self.logger.debug(f"Reverted to HF hub format in {time.perf_counter() - start_time:.2f} seconds")
 
         # Save weight checkpoint on master rank
         if self.world.is_master:
             self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
             # Write STABLE file to indicate checkpoint is complete (for eval to safely read)
             (step_path / "STABLE").touch()
-        self.ckpt_steps.append(step)
+        bisect.insort(self.ckpt_steps, step)
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
@@ -399,7 +434,7 @@ class WeightCheckpointManager:
                 ckpt_path = self.get_step_path(ckpt_step)
                 if ckpt_path.exists():
                     self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                    shutil.rmtree(ckpt_path)
+                    _try_rmtree(ckpt_path, self.logger)
 
         # Update checkpoint steps
         self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
