@@ -45,6 +45,9 @@ inference = "prime_rl.inference.server:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
 sft = "prime_rl.trainer.sft.train:main"
 
+[project.entry-points."vllm.general_plugins"]
+prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
+
 [project.optional-dependencies]
 flash-attn = [
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3%2Bcu128torch2.10-cp312-cp312-linux_x86_64.whl",
