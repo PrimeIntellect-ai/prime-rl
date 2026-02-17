@@ -21,12 +21,12 @@ export OUTPUT_DIR={{ output_dir }}
 export ORCHESTRATOR_OUTPUT_DIR={{ orchestrator_output_dir }}
 mkdir -p $OUTPUT_DIR/slurm
 
-# Clear previous weights and broadcast flags
-# We delete rollout dir to prevent the trainer from training on rollouts from a previous run.
-# We delete broadcast flags to prevent the orchestrator from prematurely notifying the inference to receive weights
+# Clear previous rollouts and broadcast flags from ALL runs (not just the current one)
+# to prevent the trainer from training on stale data from old run_* directories.
 # WARN: This is potentially dangerous and could lead to data loss
-rm -rf $ORCHESTRATOR_OUTPUT_DIR/rollouts
-rm -rf $ORCHESTRATOR_OUTPUT_DIR/broadcasts
+rm -rf $OUTPUT_DIR/run_*/rollouts
+rm -rf $OUTPUT_DIR/run_*/broadcasts
+rm -rf $OUTPUT_DIR/rollouts
 
 
 # General

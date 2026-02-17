@@ -177,6 +177,20 @@ class BaseRLConfig(BaseSettings):
     ### Setup and validate shared configs
 
     @model_validator(mode="after")
+    def auto_setup_logs(self):
+        if self.log is not None:
+            if self.log.level is not None:
+                self.trainer.log.level = self.log.level
+                self.orchestrator.log.level = self.log.level
+            if self.log.file is not None:
+                self.trainer.log.file = self.log.file
+                self.orchestrator.log.file = self.log.file
+            self.trainer.log.json_logging = self.log.json_logging
+            self.orchestrator.log.json_logging = self.log.json_logging
+
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_ckpt(self):
         # If specified, automatically setup checkpoint configs for trainer and orchestrator
         if self.ckpt is not None:

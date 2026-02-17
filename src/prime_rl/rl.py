@@ -160,21 +160,6 @@ class RLConfig(BaseRLConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_logs(self):
-        # Copy log level
-        if self.log is not None:
-            if self.log.level is not None:
-                self.trainer.log.level = self.log.level
-                self.orchestrator.log.level = self.log.level
-            if self.log.file is not None:
-                self.trainer.log.file = self.log.file
-                self.orchestrator.log.file = self.log.file
-            self.trainer.log.json_logging = self.log.json_logging
-            self.orchestrator.log.json_logging = self.log.json_logging
-
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             # Set trainer and orchestrator to benchmark mode

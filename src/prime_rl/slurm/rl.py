@@ -27,7 +27,8 @@ class RLSLURMConfig(BaseRLConfig):
     )
 
     project_dir: Path = Field(
-        description="Path to the project root. Used to source .env, activate .venv, and run uv sync."
+        default_factory=lambda: Path.cwd(),
+        description="Path to the project root. Used to source .env, activate .venv, and run uv sync.",
     )
     hf_hub_offline: bool = Field(
         default=False, description="Set HF_HUB_OFFLINE=1 on training nodes to prevent downloading models at runtime."
