@@ -1650,6 +1650,19 @@ wheels = [
 ]
 
 [[package]]
+name = "math-env"
+version = "0.1.2"
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple/" }
+dependencies = [
+    { name = "math-verify" },
+    { name = "prime-sandboxes" },
+    { name = "verifiers" },
+]
+wheels = [
+    { url = "https://hub.primeintellect.ai/primeintellect/math-env/@07fdeaab/math_env-0.1.2-py3-none-any.whl", hash = "sha256:87003ca56c65818e7a7707f12e80511180038190abe4df5ec66cb2012d38b6d9" },
+]
+
+[[package]]
 name = "math-verify"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2495,6 +2508,7 @@ dependencies = [
     { name = "liger-kernel" },
     { name = "loguru" },
     { name = "lovely-tensors" },
+    { name = "math-env" },
     { name = "math-verify" },
     { name = "nltk" },
     { name = "numpy" },
@@ -2559,6 +2573,7 @@ requires-dist = [
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lovely-tensors", specifier = ">=0.1.18" },
+    { name = "math-env", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = ">=2.2.6" },
