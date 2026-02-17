@@ -191,7 +191,6 @@ def get_model(
         )
 
     with device:
-        # For VLM models, use AutoModelForImageTextToText (renamed from AutoModelForVision2Seq in transformers v5)
         if is_vlm:
             from transformers import AutoModelForImageTextToText
 
