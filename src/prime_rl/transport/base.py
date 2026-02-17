@@ -50,6 +50,14 @@ class TrainingBatchReceiver(ABC):
         """
         pass
 
+    @abstractmethod
+    def set_start_step(self, idx: int, step: int) -> None:
+        """Set the starting step for receiving batches for a run.
+
+        Useful after transport cleanup when progress and on-disk step indices can diverge.
+        """
+        pass
+
     def reset_run(self, idx: int) -> None:
         """Reset state for a run index. Called when a run is deleted and replaced.
 

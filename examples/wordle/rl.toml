@@ -14,7 +14,7 @@ name = "wordle"
 name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 
 [orchestrator]
-batch_size = 1024
+max_inflight_rollouts = 64
 rollouts_per_example = 16
 
 [[orchestrator.env]]

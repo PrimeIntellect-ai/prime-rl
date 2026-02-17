@@ -162,6 +162,17 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
 
         return batches
 
+    def set_start_step(self, idx: int, step: int) -> None:
+        """Best-effort alignment of buffered data to a target step for a run."""
+        run_id = self.multi_run_manager.idx_2_id.get(idx)
+        if run_id is None:
+            return
+        run_key = run_id.encode("utf-8")
+        per_id_batches = self._pending.get(run_key)
+        if not per_id_batches:
+            return
+        self._pending[run_key] = {s: b for s, b in per_id_batches.items() if s >= step}
+
     def close(self) -> None:
         try:
             self.socket.close(linger=0)

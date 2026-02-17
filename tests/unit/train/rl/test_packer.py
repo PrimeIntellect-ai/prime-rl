@@ -7,7 +7,7 @@ import torch
 import torch.distributed as dist
 
 import prime_rl.trainer.runs as runs
-from prime_rl.trainer.rl.packer import MultiPacker
+from prime_rl.trainer.rl.packer import MultiPacker, SinglePacker
 from prime_rl.trainer.runs import setup_multi_run_manager
 from prime_rl.trainer.world import reset_world
 from prime_rl.transport.config import FileSystemTransportConfig
@@ -28,7 +28,7 @@ def create_run_with_config(output_dir: Path, run_name: str) -> Path:
     control_dir.mkdir()
     config = {
         "model": {"name": "test-model"},
-        "batch_size": 2,
+        "max_inflight_rollouts": 2,
         "rollouts_per_example": 1,
         "env": [{"id": "test-env"}],
         "sampling": {"temperature": 1.0},
@@ -91,6 +91,7 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
         pad_to_multiple_of=1,
         tokenizer=None,
         config=FileSystemTransportConfig(),
+        token_batch_size=4,
         start_step=0,
     )
 
@@ -107,3 +108,146 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     sender = sender_holder["sender"]
     assert len(sender.sent) == 1
     assert len(sender.sent[0][0]) == 1
+
+
+def test_multi_packer_token_budget_threshold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_world()
+    runs._MULTI_RUN_MANAGER = None
+    manager = setup_multi_run_manager(output_dir=tmp_path, max_runs=1, device=torch.device("cpu"))
+    create_run_with_config(tmp_path, "run_test123")
+    manager.discover_runs()
+    run_idx = manager.id_2_idx["run_test123"]
+
+    class DummyReceiver:
+        def receive(self):
+            return []
+
+        def reset_run(self, idx: int) -> None:
+            pass
+
+    class DummySender:
+        def send(self, micro_batch_grid):
+            pass
+
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_training_batch_receiver", lambda _config: DummyReceiver())
+    monkeypatch.setattr(
+        "prime_rl.trainer.rl.packer.setup_micro_batch_sender",
+        lambda _output_dir, _data_world_size, _current_step, _config: DummySender(),
+    )
+
+    packer = MultiPacker(
+        dp_world_size=1,
+        seq_len=8,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        config=FileSystemTransportConfig(),
+        token_batch_size=5,
+        start_step=0,
+    )
+
+    packer.buffers[run_idx].append((make_training_sample(), 0))  # 2 tokens
+    packer.buffers[run_idx].append((make_training_sample(), 0))  # 2 tokens
+    assert not packer._has_enough_tokens()
+    packer.buffers[run_idx].append((make_training_sample(), 0))  # +2 = 6 tokens
+    assert packer._has_enough_tokens()
+
+
+def test_multi_packer_keeps_first_oversized_sample(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_world()
+    runs._MULTI_RUN_MANAGER = None
+    manager = setup_multi_run_manager(output_dir=tmp_path, max_runs=1, device=torch.device("cpu"))
+    create_run_with_config(tmp_path, "run_test123")
+    manager.discover_runs()
+    run_idx = manager.id_2_idx["run_test123"]
+
+    class DummyReceiver:
+        def receive(self):
+            return []
+
+        def reset_run(self, idx: int) -> None:
+            pass
+
+    class DummySender:
+        def send(self, micro_batch_grid):
+            pass
+
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_training_batch_receiver", lambda _config: DummyReceiver())
+    monkeypatch.setattr(
+        "prime_rl.trainer.rl.packer.setup_micro_batch_sender",
+        lambda _output_dir, _data_world_size, _current_step, _config: DummySender(),
+    )
+
+    packer = MultiPacker(
+        dp_world_size=1,
+        seq_len=16,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        config=FileSystemTransportConfig(),
+        token_batch_size=4,
+        start_step=0,
+    )
+
+    oversized = TrainingSample(
+        prompt_ids=[1, 2, 3],
+        prompt_mask=[False, False, False],
+        completion_ids=[4, 5],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+    )  # 5 tokens > token budget (4)
+    packer.buffers[run_idx].append((oversized, 0))
+
+    selected = packer._select_samples_round_robin(token_budget=4)
+    assert len(selected) == 1
+    assert selected[0][0] == run_idx
+    assert selected[0][1] is oversized
+
+
+def test_single_packer_sets_receiver_start_step_to_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_world()
+    runs._MULTI_RUN_MANAGER = None
+    manager = setup_multi_run_manager(output_dir=tmp_path, max_runs=1, device=torch.device("cpu"))
+    create_run_with_config(tmp_path, "run_test123")
+    manager.discover_runs()
+
+    class DummyReceiver:
+        def __init__(self):
+            self.start_steps: list[tuple[int, int]] = []
+
+        def receive(self):
+            return []
+
+        def reset_run(self, idx: int) -> None:
+            pass
+
+        def set_start_step(self, idx: int, step: int) -> None:
+            self.start_steps.append((idx, step))
+
+    class DummySender:
+        def send(self, micro_batch_grid):
+            pass
+
+    receiver_holder: dict[str, DummyReceiver] = {}
+
+    def fake_receiver(_config):
+        receiver = DummyReceiver()
+        receiver_holder["receiver"] = receiver
+        return receiver
+
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_training_batch_receiver", fake_receiver)
+    monkeypatch.setattr(
+        "prime_rl.trainer.rl.packer.setup_micro_batch_sender",
+        lambda _output_dir, _data_world_size, _current_step, _config: DummySender(),
+    )
+
+    SinglePacker(
+        dp_world_size=1,
+        seq_len=8,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        config=FileSystemTransportConfig(),
+        token_batch_size=4,
+        start_step=0,
+    )
+
+    assert receiver_holder["receiver"].start_steps == [(0, 0)]
