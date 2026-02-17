@@ -2358,7 +2358,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=609e3d5" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=87b9a13" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=4d00259" },
     { name = "vllm", url = "https://github.com/vllm-project/vllm/releases/download/v0.16.0/vllm-0.16.0-cp38-abi3-manylinux_2_31_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
 ]
@@ -3687,7 +3687,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.11.dev0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=87b9a13#87b9a131c170f83b93a33f7aceeb1e15e6c8ac3a" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=4d00259#4d002593fc6f7e72c889902c8717113b584e70d2" }
 dependencies = [
     { name = "anthropic" },
     { name = "datasets" },
