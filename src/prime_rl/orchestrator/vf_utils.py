@@ -58,7 +58,7 @@ def setup_env_client(
     address: str,
     name: str | None = None,
     # health check configs
-    health_check_interval: float = 1.0,  # 10s
+    health_check_interval: float = 10.0,  # 10s
     startup_timeout: float = 600.0,  # 10m
     recovery_timeout: float = 600.0,  # 10m
 ) -> EnvClient:
