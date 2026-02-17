@@ -240,8 +240,8 @@ def get_completion_len(output: vf.RolloutOutput) -> int:
     return get_seq_len(output) - get_prompt_len(output)
 
 
-def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = "verifiers"):
-    """Intercepts verifiers logging and routes through prime-rl logger with [verifiers] prefix."""
+def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
+    """Intercepts verifiers logging and routes through prime-rl logger with optional prefix."""
     vf_logger = logging.getLogger(logger)
     vf_logger.handlers.clear()
     vf_logger.addHandler(InterceptHandler(prefix=prefix))

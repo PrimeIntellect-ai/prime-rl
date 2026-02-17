@@ -1,6 +1,7 @@
 from verifiers.workers import ZMQEnvServer
 
 from prime_rl.orchestrator.env_server.config import EnvServerConfig
+from prime_rl.orchestrator.vf_utils import intercept_vf_logging
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import get_log_dir
 from prime_rl.utils.pydantic_config import parse_argv
@@ -10,6 +11,7 @@ from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, install_env
 @clean_exit
 def run_server(config: EnvServerConfig):
     setup_logger(config.log.level, json_logging=config.log.json_logging)
+    intercept_vf_logging(level=config.log.vf_level)
 
     # install environment if not already installed
     env_ids_to_install = set()

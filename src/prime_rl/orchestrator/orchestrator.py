@@ -77,7 +77,7 @@ async def orchestrate(config: OrchestratorConfig):
         log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
-    intercept_vf_logging(logger="verifiers.workers", level=config.log.vf_level, prefix=None)
+    intercept_vf_logging(logger="verifiers.workers", level=config.log.vf_level)  # show logs from env clients
     logger.info("Starting orchestrator")
 
     event_loop_lag_monitor = EventLoopLagMonitor()
