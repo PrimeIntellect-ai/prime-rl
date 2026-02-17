@@ -2,7 +2,7 @@ inference_gpu_ids = [0]
 trainer_gpu_ids = [1]
 
 max_steps = 3000
-seq_len = 4096
+seq_len = 8192
 
 [wandb]
 project = "hendrycks-math-debug"
@@ -29,7 +29,7 @@ name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 [trainer.model.compile]
 
 [inference.model]
-max_model_len = 4096
+max_model_len = 8192
 
 [log]
 level = "debug"
