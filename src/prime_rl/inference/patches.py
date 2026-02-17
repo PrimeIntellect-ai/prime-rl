@@ -4,10 +4,8 @@ def transformers_v5_compat():
     Registered as a ``vllm.general_plugins`` entry-point so it runs automatically
     in every vLLM process, including spawned workers.
     """
-    try:
-        from transformers import Qwen3VLMoeTextConfig
-    except ImportError:
-        return
+    from transformers import Qwen3VLMoeTextConfig
+
     if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
