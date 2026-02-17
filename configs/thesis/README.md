@@ -30,8 +30,10 @@ uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-mis-0
 
 uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-dppo-bin-tv-0.2 --trainer.loss.dppo-tv-clip-low 0.2 --trainer.loss.dppo-tv-clip-high 0.2
 uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-ppo-clip-0.2 --trainer.loss.ppo-clip-low 0.2 --trainer.loss.ppo-clip-high 0.2
+uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-ipo-bin-tv-0.2 --trainer.loss.ipo-bin-tv-low 0.2 --trainer.loss.ipo-bin-tv-high 0.2
 
 uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-dppo-bin-tv-0.2-kl-1e-3 --trainer.loss.dppo-tv-clip-low 0.2 --trainer.loss.dppo-tv-clip-high 0.2 --trainer.loss.kl-tau 1e-3
+uv run rl @ configs/thesis/hendrycks_math.toml --wandb.name hendrycks-math-ipo-bin-tv-0.2-kl-1e-3 --trainer.loss.ipo-bin-tv-low 0.2 --trainer.loss.ipo-bin-tv-high 0.2 --trainer.loss.kl-tau 1e-3
 ```
 
 ## Wiki Search
