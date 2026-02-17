@@ -30,6 +30,7 @@ from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.eval_utils import evaluate_env
+from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -58,7 +59,6 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
-    count_chinese_chars,
     get_env_ids_to_install,
     install_env,
     resolve_latest_ckpt_step,
@@ -129,6 +129,11 @@ async def orchestrate(config: OrchestratorConfig):
         processor = AutoProcessor.from_pretrained(
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
         )
+
+    # Build rollout filters
+    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
+    if rollout_filters:
+        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
 
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -440,6 +445,9 @@ async def orchestrate(config: OrchestratorConfig):
         generate_completions_time = scheduler.last_batch_generation_time
         train_rollouts = train_task.result()
 
+        # Apply rollout filters (zeros reward/mask for degenerate generations)
+        filter_metrics = apply_filters(rollout_filters, train_rollouts)
+
         # Compute advantages
         example_ids = [r["example_id"] for r in train_rollouts]
         rewards = [r["reward"] for r in train_rollouts]
@@ -569,21 +577,6 @@ async def orchestrate(config: OrchestratorConfig):
         # Gather individual reward function metrics
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
 
-        # Count Chinese characters in completions
-        chinese_stats = []
-        for rollout in train_rollouts:
-            trajectory = rollout["trajectory"]
-            if not trajectory:
-                continue
-            last_step = trajectory[-1]
-            tokens = last_step["tokens"]
-            completion_text = tokenizer.decode(tokens["completion_ids"])
-            chinese_count, total_count = count_chinese_chars(completion_text)
-            chinese_stats.append(
-                {"chinese_chars": chinese_count, "total_chars": total_count, "has_chinese": chinese_count > 0}
-            )
-        chinese_df = pd.DataFrame(chinese_stats)
-
         val_results_df = (
             pd.DataFrame(
                 {
@@ -668,14 +661,6 @@ async def orchestrate(config: OrchestratorConfig):
             },
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
-            # Chinese character metrics (cast to native Python types for JSON serialization)
-            "chinese/char_count": int(chinese_df.chinese_chars.sum()),
-            "chinese/char_ratio": (
-                float(chinese_df.chinese_chars.sum() / chinese_df.total_chars.sum())
-                if chinese_df.total_chars.sum() > 0
-                else 0.0
-            ),
-            "chinese/rollout_ratio": float(chinese_df.has_chinese.mean()),
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
@@ -688,6 +673,8 @@ async def orchestrate(config: OrchestratorConfig):
             **buffer.get_metrics(),
             # Event loop lag metrics
             **event_loop_lag_monitor.get_metrics(),
+            # Rollout filter metrics
+            **filter_metrics,
             # W&B axis
             "step": progress.step,
         }
