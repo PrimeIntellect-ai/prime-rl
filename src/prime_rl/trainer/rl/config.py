@@ -86,6 +86,21 @@ class LossConfig(BaseConfig):
         ),
     ] = float("inf")
 
+    ipo_bin_tv_low: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="IPO-Bin-TV: mask when (prob - rollout_prob) < -this (independent of advantage). Default inf = do not apply.",
+        ),
+    ] = float("inf")
+    ipo_bin_tv_high: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="IPO-Bin-TV: mask when (prob - rollout_prob) > this (independent of advantage). Default inf = do not apply.",
+        ),
+    ] = float("inf")
+
     ppo_clip_low: Annotated[
         float,
         Field(

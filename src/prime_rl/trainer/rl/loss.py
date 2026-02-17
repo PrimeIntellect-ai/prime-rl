@@ -172,6 +172,11 @@ def compute_loss(
         invalid_tv_negative = (prob - rollout_prob) < -loss_config.dppo_tv_clip_low
         invalid_dppo_tv = torch.where(advantages > 0, invalid_tv_positive, invalid_tv_negative)
 
+        # IPO-Bin-TV: mask when |prob - rollout_prob| outside [ipo_bin_tv_low, ipo_bin_tv_high] (independent of advantage)
+        invalid_ipo_tv_positive = (prob - rollout_prob) > loss_config.ipo_bin_tv_high
+        invalid_ipo_tv_negative = (prob - rollout_prob) < -loss_config.ipo_bin_tv_low
+        invalid_ipo_tv = invalid_ipo_tv_positive | invalid_ipo_tv_negative
+
         # PPO: mask when ratio outside [1 - clip_low, 1 + clip_high], conditionally on advantage
         invalid_ppo_positive = token_importance_ratio > (1.0 + loss_config.ppo_clip_high)
         invalid_ppo_negative = token_importance_ratio < (1.0 - loss_config.ppo_clip_low)
@@ -181,6 +186,7 @@ def compute_loss(
             token_mask_low
             | token_mask_high
             | invalid_dppo_tv
+            | invalid_ipo_tv
             | invalid_ppo
             | geo_mask_low
             | geo_mask_high
