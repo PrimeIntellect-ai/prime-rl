@@ -78,7 +78,7 @@ async def orchestrate(config: OrchestratorConfig):
         json_logging=config.log.json_logging,
     )
     vf.setup_logging(level="CRITICAL")
-    intercept_vf_logging(logger="verifiers.workers", level=config.log.vf_level, prefix="EnvClient")
+    intercept_vf_logging(logger="verifiers.workers", level=config.log.vf_level)
     logger.info("Starting orchestrator")
 
     event_loop_lag_monitor = EventLoopLagMonitor()
