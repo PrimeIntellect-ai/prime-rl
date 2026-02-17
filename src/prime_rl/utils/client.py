@@ -106,7 +106,7 @@ async def setup_inference_pool(client_config: ClientConfig, model_name: str) -> 
         return await ElasticInferencePool.from_config(client_config, model_name=model_name)
 
     logger.info(
-        f"Initializing OpenAI client (base_url={', '.join(client_config.base_url)}, "
+        f"Initializing static inference pool (base_url={', '.join(client_config.base_url)}, "
         f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
     )
     return StaticInferencePool(
@@ -117,9 +117,10 @@ async def setup_inference_pool(client_config: ClientConfig, model_name: str) -> 
 
 
 def setup_clients(client_config: ClientConfig) -> list[vf.ClientConfig]:
-    def _setup_client(client_idx: int, base_url: str) -> vf.ClientConfig:
+    def setup_client(client_idx: int, base_url: str) -> vf.ClientConfig:
         return vf.ClientConfig(
             client_idx=client_idx,
+            client_type="openai_chat_completions_token",
             api_base_url=base_url,
             api_key_var=client_config.api_key_var,
             timeout=client_config.timeout,
@@ -129,7 +130,7 @@ def setup_clients(client_config: ClientConfig) -> list[vf.ClientConfig]:
             extra_headers=client_config.headers,
         )
 
-    return [_setup_client(client_idx, base_url) for client_idx, base_url in enumerate(client_config.base_url)]
+    return [setup_client(client_idx, base_url) for client_idx, base_url in enumerate(client_config.base_url)]
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:

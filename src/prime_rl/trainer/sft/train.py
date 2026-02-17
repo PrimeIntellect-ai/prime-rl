@@ -12,7 +12,6 @@ from prime_rl.trainer.models.layers.attn import substitute_prime_rl_flash_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
-from loguru import logger
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.trainer.sft.config import SFTTrainerConfig
@@ -51,7 +50,6 @@ from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
-@logger.catch(reraise=True)
 def train(config: SFTTrainerConfig):
     # Setup world and logger
     world = get_world()
