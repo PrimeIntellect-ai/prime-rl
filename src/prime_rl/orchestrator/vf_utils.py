@@ -1,8 +1,8 @@
 import asyncio
 import logging
+import multiprocessing as mp
 from collections.abc import Awaitable, Callable
 from itertools import cycle
-from multiprocessing import Process
 from typing import Any
 
 import verifiers as vf
@@ -33,7 +33,10 @@ def spawn_env_server(
     Mirrors vf.Environment.start_server().
     """
     address = address or f"tcp://127.0.0.1:{get_free_port()}"
-    Process(
+    # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
+    # the parent process, which has caused hangs when multiple env server
+    # subprocesses share the same fds.
+    mp.get_context("spawn").Process(
         target=ZMQEnvServer.run_server,
         args=(
             env_id,
