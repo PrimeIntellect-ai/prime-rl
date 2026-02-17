@@ -386,10 +386,15 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step}")
 
-            # Pause weight updates during eval and cancel inflight rollouts
-            # this avoid doing eval across different checkpoints and avoid congestion
+            # Pause weight updates and re-scheduling of training rollouts during eval
+            # to avoid evaluating across different checkpoints and avoid congestion
             scheduler.checkpoint_ready.clear()
-            scheduler.cancel_all_inflight_rollouts()
+
+            # For heavy eval workloads, it might be necessary additionally cancel in-flight training rollouts
+            if config.eval.cancel_inflight_rollouts_on_eval:
+                logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
+                scheduler.cancel_inflight_rollouts()
+
             results = await asyncio.gather(
                 *[
                     evaluate_env(
@@ -734,6 +739,7 @@ async def orchestrate(config: OrchestratorConfig):
                     sampling_args=eval_sampling_args,
                     num_examples=eval_env_config.num_examples or config.eval.num_examples,
                     rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
+                    max_retries=eval_env_config.max_retries,
                     ckpt_step=ckpt_step,
                     step=progress.step,
                 )
@@ -757,7 +763,7 @@ async def orchestrate(config: OrchestratorConfig):
     rollout_executor.shutdown(wait=False)
 
     # Stop scheduler
-    scheduler.cancel_all_inflight_rollouts()
+    scheduler.cancel_inflight_rollouts()
     update_policy_task.cancel()
 
     # Stop inference pool

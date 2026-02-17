@@ -59,3 +59,5 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`dump_config`**: Added `--dump-config <path>` flag to the `rl` command. When set, writes the resolved subconfigs (trainer, orchestrator, inference, teacher_inference) to the given directory and exits without starting any processes (2026-02-12)
 - **`client.api_key_var`**: Changed default from "OPENAI_API_KEY" to "VLLM_API_KEY" (2026-02-12)
 - **`orchestrator.filters`**: Added orchestrator-side rollout filters for detecting degenerate generations. Supports `[[filters]] type = "gibberish"` (rare tokens at high entropy) and `[[filters]] type = "repetition"` (high-confidence token streaks). Detected rollouts get reward zeroed and completion mask cleared (2026-02-13)
+- **`orchestrator.eval.cancel_inflight_rollouts_on_eval`**: Added flag to optionally cancel in-flight training rollouts before starting online evals. When enabled, avoids congestion by preventing training and eval rollouts from running simultaneously, but slows training as the rollout pipeline must refill after each eval (default: False) (2026-02-16)
+
