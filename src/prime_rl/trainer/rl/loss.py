@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.trainer.rl.config import CustomLossConfig, LossConfig, LossConfigType
+from prime_rl.trainer.rl.config import CustomLossConfig, LossConfig, LossConfigType, SAPOLossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -173,6 +173,56 @@ def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+def sapo_loss_fn(inputs: LossInputs, loss_config: SAPOLossConfig) -> LossOutputs:
+    """SAPO (Soft Adaptive Policy Optimization) loss function.
+    
+    Uses smooth, temperature-controlled soft gating instead of hard clipping.
+    Reference: https://arxiv.org/abs/2511.20347
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    teacher_logprobs = inputs.teacher_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    # Compute importance ratio r_i,t(θ)
+    log_importance_ratio = trainer_logprobs - inference_logprobs
+    token_importance_ratio = torch.exp(log_importance_ratio)
+    
+    # Compute teacher KL if available
+    teacher_kl = teacher_logprobs - trainer_logprobs if teacher_logprobs is not None else None
+    
+    # Compute advantages with scaling
+    scaled_advantages = loss_config.adv_tau * advantages
+    if teacher_logprobs is not None:
+        scaled_advantages = scaled_advantages + loss_config.teacher_tau * teacher_kl.detach()
+    scaled_advantages = scaled_advantages - loss_config.kl_tau * log_importance_ratio
+    
+    # Select temperature based on advantage sign (asymmetric design)
+    # tau_i,t = tau_pos if advantage > 0, else tau_neg
+    tau = torch.where(advantages > 0, loss_config.tau_pos, loss_config.tau_neg)
+    
+    # Compute soft gate: f_i,t(r) = (4/τ) * sigmoid(τ * (r - 1))
+    # This creates a smooth trust region centered at r = 1
+    gate_logit = tau * (token_importance_ratio - 1.0)
+    sigmoid_gate = torch.sigmoid(gate_logit)
+    soft_gate = (4.0 / tau) * sigmoid_gate
+    
+    # Compute loss: weighted by soft gate and advantages
+    coeff = soft_gate * scaled_advantages.detach()
+    loss = -(coeff * trainer_logprobs)[loss_mask].sum()
+    
+    # Track metrics
+    metrics = {
+        "soft_gate_weight": _safe_mean(soft_gate, loss_mask),
+        "importance_ratio": _safe_mean(token_importance_ratio, loss_mask),
+    }
+    if teacher_kl is not None:
+        metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
+    
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def setup_loss_fn(loss_config: LossConfigType) -> LossFn:
     """Setup the loss function based on config."""
     if isinstance(loss_config, CustomLossConfig):
@@ -182,6 +232,12 @@ def setup_loss_fn(loss_config: LossConfigType) -> LossFn:
         def loss_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
 
+        return loss_fn
+    
+    if isinstance(loss_config, SAPOLossConfig):
+        def loss_fn(inputs: LossInputs) -> LossOutputs:
+            return sapo_loss_fn(inputs, loss_config)
+        
         return loss_fn
 
     def loss_fn(inputs: LossInputs) -> LossOutputs:

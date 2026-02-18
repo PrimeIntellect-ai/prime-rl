@@ -1,0 +1,22 @@
+# Example configuration for SAPO (Soft Adaptive Policy Optimization)
+# Based on reverse_text example with SAPO loss
+
+[loss]
+type = "sapo"
+tau_pos = 1.0    # Temperature for positive advantage tokens
+tau_neg = 1.05   # Temperature for negative advantages (>= tau_pos for stability)
+adv_tau = 1.0
+teacher_tau = 0.0
+kl_tau = 0.0
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+seq_len = 512
+
+[optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.01
+
+[scheduler]
+type = "constant"
