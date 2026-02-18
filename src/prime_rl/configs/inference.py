@@ -49,6 +49,20 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = "auto"
 
+    quantization: Annotated[
+        str | None,
+        Field(
+            description="Quantization method passed to vLLM as `--quantization` (for example: fp8, awq, gptq, compressed-tensors).",
+        ),
+    ] = None
+
+    kv_cache_dtype: Annotated[
+        Literal["auto", "bfloat16", "fp8", "fp8_ds_mla", "fp8_e4m3", "fp8_e5m2", "fp8_inc"] | None,
+        Field(
+            description="KV cache data type passed to vLLM as `--kv-cache-dtype`.",
+        ),
+    ] = None
+
     max_model_len: Annotated[
         int | None,
         Field(
@@ -173,6 +187,13 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 0.9
 
+    calculate_kv_scales: Annotated[
+        bool,
+        Field(
+            description="Whether to dynamically calculate KV scales when using FP8 KV cache. Passed to vLLM as `--calculate-kv-scales`.",
+        ),
+    ] = False
+
     api_server_count: Annotated[
         int,
         Field(
@@ -271,6 +292,20 @@ class InferenceConfig(BaseSettings):
             self.api_server_count = 1  # LoRA requires only one API server
         return self
 
+    @model_validator(mode="after")
+    def validate_optimization_config(self):
+        fp8_quantization = self.model.quantization is not None and "fp8" in self.model.quantization
+        if fp8_quantization and self.model.dtype == "float32":
+            raise ValueError("FP8 quantization requires model.dtype to be auto, float16, or bfloat16.")
+
+        fp8_kv_cache = self.model.kv_cache_dtype is not None and self.model.kv_cache_dtype.startswith("fp8")
+        if self.calculate_kv_scales and not fp8_kv_cache:
+            raise ValueError(
+                "calculate_kv_scales requires model.kv_cache_dtype to be an FP8 variant (fp8, fp8_e4m3, fp8_e5m2, etc.)."
+            )
+
+        return self
+
     def to_vllm(self) -> Namespace:
         """Convert InferenceConfig to vLLM-compatible Namespace."""
         namespace = Namespace()
@@ -279,6 +314,8 @@ class InferenceConfig(BaseSettings):
             "server.port": "port",
             "model.name": "model",
             "model.dtype": "dtype",
+            "model.quantization": "quantization",
+            "model.kv_cache_dtype": "kv_cache_dtype",
             "model.max_model_len": "max_model_len",
             "model.enforce_eager": "enforce_eager",
             "model.trust_remote_code": "trust_remote_code",
@@ -295,6 +332,7 @@ class InferenceConfig(BaseSettings):
             "max_cpu_loras": "max_cpu_loras",
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
+            "calculate_kv_scales": "calculate_kv_scales",
             "api_server_count": "api_server_count",
             "enable_return_routed_experts": "enable_return_routed_experts",
             "enable_expert_parallel": "enable_expert_parallel",
@@ -309,13 +347,14 @@ class InferenceConfig(BaseSettings):
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
 
-        # Remove reasoning_parser if not set (vLLM doesn't accept None)
-        if namespace.reasoning_parser is None:
-            delattr(namespace, "reasoning_parser")
-
-        # Remove rope_scaling if not set (vLLM doesn't accept None)
-        if hasattr(namespace, "rope_scaling"):
-            if namespace.rope_scaling is None:
-                delattr(namespace, "rope_scaling")
+        optional_fields = [
+            "reasoning_parser",
+            "rope_scaling",
+            "quantization",
+            "kv_cache_dtype",
+        ]
+        for field_name in optional_fields:
+            if hasattr(namespace, field_name) and getattr(namespace, field_name) is None:
+                delattr(namespace, field_name)
 
         return namespace
