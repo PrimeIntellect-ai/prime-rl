@@ -3,9 +3,9 @@ from collections.abc import Callable, Iterable, Iterator
 import torch
 from torch.nn import Module
 
-_TRITON_BLOCKWISE_CAST_TO_FP8: (
-    Callable[[torch.Tensor, tuple[int, int]], tuple[torch.Tensor, torch.Tensor]] | None
-) = None
+_TRITON_BLOCKWISE_CAST_TO_FP8: Callable[[torch.Tensor, tuple[int, int]], tuple[torch.Tensor, torch.Tensor]] | None = (
+    None
+)
 
 
 def unwrap_worker_model(model: Module) -> Module:
@@ -226,10 +226,7 @@ def maybe_convert_weights_for_fp8_refit(
                 candidate != scale_name and candidate in parameter_names for candidate in scale_name_candidates
             )
             should_quantize = (
-                name.endswith("weight")
-                and tensor.ndim == 2
-                and tensor.dtype != torch.float8_e4m3fn
-                and has_exact_scale
+                name.endswith("weight") and tensor.ndim == 2 and tensor.dtype != torch.float8_e4m3fn and has_exact_scale
             )
 
             if should_quantize:
@@ -280,11 +277,7 @@ def load_checkpoint_weights_layerwise(
 
     load_config = getattr(vllm_config, "load_config", None)
     device_config = getattr(vllm_config, "device_config", None)
-    load_device = (
-        getattr(load_config, "device", None)
-        or getattr(device_config, "device", None)
-        or torch.device("cuda")
-    )
+    load_device = getattr(load_config, "device", None) or getattr(device_config, "device", None) or torch.device("cuda")
     with torch.device(load_device):
         _initialize_layerwise_reload(model)
         try:

@@ -184,15 +184,11 @@ class _DummyRunnerWithModelConfig:
 def test_layerwise_load_wraps_model_load_with_init_and_finalize(monkeypatch) -> None:
     events: list[str] = []
     monkeypatch.setattr(fp8_refit, "_initialize_layerwise_reload", lambda model: events.append("init"))
-    monkeypatch.setattr(
-        fp8_refit, "_finalize_layerwise_reload", lambda model, model_config: events.append("finalize")
-    )
+    monkeypatch.setattr(fp8_refit, "_finalize_layerwise_reload", lambda model, model_config: events.append("finalize"))
 
     model = _CaptureLoadModel()
     runner = _DummyRunnerWithModelConfig()
-    loaded = load_checkpoint_weights_layerwise(
-        runner, model, [("layer.weight", torch.ones((1,), dtype=torch.float32))]
-    )
+    loaded = load_checkpoint_weights_layerwise(runner, model, [("layer.weight", torch.ones((1,), dtype=torch.float32))])
 
     assert loaded == {"layer.weight"}
     assert events == ["init", "finalize"]
