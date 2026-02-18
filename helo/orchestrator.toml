@@ -1,0 +1,89 @@
+output_dir = "outputs/run_default"
+batch_size = 128
+oversampling_factor = 1.0
+rollouts_per_example = 16
+seq_len = 2048
+num_train_workers = 1
+max_steps = 20
+max_off_policy_steps = 8
+max_async_level = 1
+strict_async_level = false
+bench = false
+seed = 42
+
+[client]
+timeout = 1200
+base_url = [
+    "http://localhost:8000/v1",
+]
+api_key_var = "VLLM_API_KEY"
+skip_model_check = false
+
+[client.headers]
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+trust_remote_code = false
+
+[optim]
+lr = 0.0001
+
+[sampling]
+temperature = 1.0
+repetition_penalty = 1.0
+max_tokens = 128
+min_tokens = 0
+
+[sampling.extra_body]
+
+[[env]]
+id = "reverse-text"
+
+[env.args]
+
+[env.extra_env_kwargs]
+seq_len = 2048
+interleaved_rollouts = true
+score_rollouts = true
+
+[buffer]
+easy_fraction = 0.0
+hard_fraction = 0.0
+online_difficulty_filtering = false
+hash_keys = [
+    "task",
+    "prompt",
+]
+skip_verification = false
+
+[advantage]
+type = "default"
+length_weighted_mean = false
+
+[log]
+level = "info"
+vf_level = "warn"
+file = true
+env_worker_logs = false
+log_data = false
+json_logging = false
+
+[wandb]
+project = "reverse-text"
+name = "reverse-text-orchestrator"
+offline = false
+
+[wandb.log_extras]
+samples = true
+distributions = true
+interval = 10
+
+[ckpt]
+skip_progress = false
+skip_buffer = false
+
+[weight_broadcast]
+type = "filesystem"
+
+[rollout_transport]
+type = "filesystem"

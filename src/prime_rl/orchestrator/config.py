@@ -720,11 +720,6 @@ class OrchestratorConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    reload_weights_on_start: Annotated[
-        bool,
-        Field(description="Whether to reset inference weights to the base model when training from scratch."),
-    ] = False
-
     # The validation configuration
     val: ValConfig | None = None
 

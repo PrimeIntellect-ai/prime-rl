@@ -50,7 +50,6 @@ from prime_rl.orchestrator.vf_utils import (
 )
 from prime_rl.utils.client import (
     init_nccl_broadcast,
-    reload_weights,
     setup_inference_pool,
 )
 from prime_rl.utils.heartbeat import Heartbeat
@@ -321,14 +320,7 @@ async def orchestrate(config: OrchestratorConfig):
         lora_name = config.model.lora.name if config.model.lora else None
         await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
-        if config.reload_weights_on_start:
-            if config.model.lora is None:
-                logger.info("Training from scratch. Resetting weights to base model")
-                await reload_weights(inference_pool.admin_clients)
-            else:
-                logger.info("Training from scratch. Skipping base weight reload because LoRA is enabled")
-        else:
-            logger.info("Training from scratch. Skipping base weight reload")
+        logger.info("Training from scratch")
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
