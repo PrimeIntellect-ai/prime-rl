@@ -25,9 +25,7 @@ class FileSystemWeightUpdateWorker(Worker):
         model = unwrap_worker_model(self.model_runner.get_model())
         model_loader = get_model_loader(self.model_runner.load_config)
         if not hasattr(model_loader, "get_all_weights"):
-            raise NotImplementedError(
-                f"Model reloading with `{self.model_runner.load_config.load_format}` format"
-            )
+            raise NotImplementedError(f"Model reloading with `{self.model_runner.load_config.load_format}` format")
 
         self.model_runner.model_config.model = weight_path
         weights_iter = model_loader.get_all_weights(self.model_runner.model_config, model)
