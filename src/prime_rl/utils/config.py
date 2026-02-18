@@ -73,6 +73,17 @@ class ClientConfig(BaseConfig):
         ),
     ] = ["http://localhost:8000/v1"]
 
+    admin_base_url: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "Optional base URLs used for admin endpoints like /update_weights, /reload_weights, and /health. "
+                "If None, falls back to base_url. This is useful when chat completions are routed through a proxy "
+                "(e.g. ThunderAgent) but admin endpoints must target backend inference servers directly."
+            ),
+        ),
+    ] = None
+
     api_key_var: Annotated[
         str,
         Field(

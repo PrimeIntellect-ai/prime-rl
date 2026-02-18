@@ -71,6 +71,7 @@ async def evaluate_env(
     num_examples: int,
     rollouts_per_example: int,
     max_retries: int,
+    auto_program_id: bool,
     ckpt_step: int,
     step: int | None,
     get_client: Callable[[], Awaitable[vf.ClientConfig]],
@@ -86,6 +87,8 @@ async def evaluate_env(
         rollouts_per_example=rollouts_per_example,
         get_client=get_client,
         max_retries=max_retries,
+        auto_program_id=auto_program_id,
+        program_id_prefix=f"eval-step-{ckpt_step}",
     )
     eval_time = time.perf_counter() - eval_start_time
 

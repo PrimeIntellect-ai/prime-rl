@@ -1,10 +1,12 @@
 import asyncio
 import logging
 import multiprocessing as mp
+import os
 from collections.abc import Awaitable, Callable
-from itertools import cycle
+from itertools import count, cycle
 from typing import Any
 
+import httpx
 import verifiers as vf
 from verifiers.envs.environment import EnvClient
 from verifiers.utils.worker_utils import get_free_port
@@ -15,6 +17,55 @@ from prime_rl.utils.logger import InterceptHandler, ProgressTracker, get_logger
 DEFAULT_RETRIES = 0
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
 DEFAULT_STATE_COLUMNS = []
+
+
+def has_program_id(sampling_args: dict[str, Any]) -> bool:
+    """Check if sampling args already define extra_body.program_id."""
+    extra_body = sampling_args.get("extra_body")
+    if not isinstance(extra_body, dict):
+        return False
+    return "program_id" in extra_body
+
+
+def with_program_id(sampling_args: dict[str, Any], program_id: str | None) -> dict[str, Any]:
+    """Return sampling args with extra_body.program_id set if provided."""
+    if program_id is None:
+        return sampling_args
+
+    base_extra_body = sampling_args.get("extra_body")
+    extra_body = base_extra_body.copy() if isinstance(base_extra_body, dict) else {}
+    extra_body["program_id"] = program_id
+    return {**sampling_args, "extra_body": extra_body}
+
+
+def get_program_release_url(api_base_url: str) -> str:
+    """Build ThunderAgent release URL from an OpenAI API base URL."""
+    return f"{api_base_url.rstrip('/').removesuffix('/v1')}/programs/release"
+
+
+async def release_program(client: vf.ClientConfig, program_id: str) -> None:
+    """Best-effort release of ThunderAgent program state.
+
+    If the endpoint does not exist (e.g., direct vLLM), this is a no-op.
+    """
+    headers = client.extra_headers.copy() if client.extra_headers else {}
+    api_key = os.getenv(client.api_key_var, "EMPTY")
+    if api_key and api_key != "EMPTY":
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    timeout_s = max(1, min(int(client.timeout), 5))
+    release_url = get_program_release_url(client.api_base_url)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s, headers=headers) as http_client:
+            response = await http_client.post(release_url, json={"program_id": program_id})
+            if response.status_code in (200, 404):
+                return
+            get_logger().debug(
+                f"ThunderAgent program release returned status {response.status_code} for {program_id} at {release_url}"
+            )
+    except Exception as e:
+        get_logger().debug(f"ThunderAgent program release failed for {program_id} at {release_url}: {e}")
 
 
 def spawn_env_server(
@@ -92,6 +143,7 @@ async def run_group(
     example: dict,
     rollouts_per_example: int,
     sampling_args: dict,
+    program_id: str | None = None,
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
 ) -> list[vf.RolloutOutput]:
@@ -102,14 +154,19 @@ async def run_group(
     """
     state_columns = state_columns + REQUIRED_STATE_COLUMNS
     group_inputs = [vf.RolloutInput(**example) for _ in range(rollouts_per_example)]
-    return await env.run_group(
-        group_inputs,
-        client=client,
-        model=model_name,
-        sampling_args=sampling_args,
-        max_retries=max_retries,
-        state_columns=state_columns,
-    )
+    request_sampling_args = with_program_id(sampling_args, program_id=program_id)
+    try:
+        return await env.run_group(
+            group_inputs,
+            client=client,
+            model=model_name,
+            sampling_args=request_sampling_args,
+            max_retries=max_retries,
+            state_columns=state_columns,
+        )
+    finally:
+        if program_id is not None:
+            await asyncio.shield(release_program(client, program_id))
 
 
 # TODO: migrate this to vf.Environment.generate() once it supports multiple clients
@@ -124,6 +181,8 @@ async def generate(
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
     pbar_description: str = "Generating rollouts",
+    auto_program_id: bool = False,
+    program_id_prefix: str = "prime-rl",
 ) -> list[vf.RolloutOutput]:
     """
     Wrapper for vf.Environment.generate().
@@ -144,9 +203,17 @@ async def generate(
 
     total_rollouts = len(examples) * rollouts_per_example
     pbar = ProgressTracker(total=total_rollouts, desc=pbar_description)
+    program_counter = count()
+    inject_program_id = auto_program_id and not has_program_id(sampling_args)
 
     async def run_group_with_progress(example):
         client = await get_client()
+        program_id = None
+        if inject_program_id:
+            rollout_idx = next(program_counter)
+            example_id = example.get("example_id") if isinstance(example, dict) else None
+            program_suffix = example_id if example_id is not None else rollout_idx
+            program_id = f"{program_id_prefix}-{program_suffix}-{rollout_idx}"
         result = await run_group(
             env=env,
             client=client,
@@ -156,6 +223,7 @@ async def generate(
             max_retries=max_retries,
             state_columns=state_columns,
             sampling_args=sampling_args,
+            program_id=program_id,
         )
         pbar.update(rollouts_per_example)
         return result
@@ -180,6 +248,8 @@ async def evaluate(
     get_client: Callable[[], Awaitable[vf.ClientConfig]] | None = None,
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
+    auto_program_id: bool = False,
+    program_id_prefix: str = "eval",
 ) -> list[vf.RolloutOutput]:
     """
     Wrapper for vf.Environment.evaluate().
@@ -203,6 +273,8 @@ async def evaluate(
         sampling_args=sampling_args,
         max_retries=max_retries,
         state_columns=state_columns,
+        auto_program_id=auto_program_id,
+        program_id_prefix=program_id_prefix,
     )
     return outputs
 

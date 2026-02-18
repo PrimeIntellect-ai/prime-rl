@@ -12,7 +12,7 @@ from aiolimiter import AsyncLimiter
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args
-from prime_rl.orchestrator.vf_utils import run_group
+from prime_rl.orchestrator.vf_utils import has_program_id, run_group
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.temp_scheduling import compute_temperature
@@ -90,6 +90,7 @@ class Scheduler:
         self.update_policy_task = None
         self.cancelled_rollouts_count = 0
         self.last_batch_generation_time = 0.0
+        self.program_id_counter = 0
 
     def set_sampling_args(self, sampling_args: dict) -> None:
         """Update sampling args for future rollout requests."""
@@ -119,6 +120,11 @@ class Scheduler:
             await self.rate_limiter.acquire()
         example = self.buffer.sample_examples(n=1)[0]
         client_config = await self._select_least_loaded_client()
+        program_id = None
+        if self.config.sampling.auto_program_id and not has_program_id(self.sampling_args):
+            example_id = example.get("example_id", "unknown") if isinstance(example, dict) else "unknown"
+            program_id = f"train-{example_id}-{self.program_id_counter}"
+            self.program_id_counter += 1
         run_group_task = asyncio.create_task(
             run_group(
                 env=self.env,
@@ -127,6 +133,7 @@ class Scheduler:
                 model_name=self.model_name,
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
+                program_id=program_id,
                 max_retries=0,  # TODO: make configurable
             )
         )

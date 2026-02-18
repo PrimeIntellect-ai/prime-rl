@@ -29,6 +29,21 @@ The server extends vLLM with:
 - `/load_lora_adapter` — load LoRA adapters at runtime
 - `/init_broadcaster` — initialize weight broadcast for distributed training
 
+## ThunderAgent proxy
+
+When routing rollout traffic through ThunderAgent, only these orchestrator fields are required:
+
+```toml
+[client]
+base_url = ["http://localhost:9000/v1"]         # ThunderAgent
+admin_base_url = ["http://localhost:8000/v1"]   # backend inference server(s)
+
+[sampling]
+auto_program_id = true
+```
+
+This routes chat requests to ThunderAgent while keeping admin endpoints (`/health`, `/update_weights`, `/reload_weights`) on backend inference servers. With `auto_program_id = true`, PRIME-RL also issues best-effort `POST /programs/release` calls after rollout groups complete.
+
 ## Testing the server
 
 ```bash

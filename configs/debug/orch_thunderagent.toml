@@ -1,0 +1,16 @@
+# Debug orchestrator config for routing rollout traffic through ThunderAgent.
+# Expected setup:
+# - ThunderAgent OpenAI proxy at http://localhost:9000/v1
+# - Backend inference server at http://localhost:8000/v1
+
+max_steps = 5
+max_async_level = 5
+batch_size = 16
+
+[client]
+base_url = ["http://localhost:9000/v1"]
+admin_base_url = ["http://localhost:8000/v1"]
+
+[sampling]
+max_tokens = 16
+auto_program_id = true
