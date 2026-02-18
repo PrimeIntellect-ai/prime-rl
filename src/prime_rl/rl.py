@@ -611,7 +611,7 @@ def rl(config: RLConfig):
         # Monitor all processes for failures
         logger.success("Startup complete. Showing trainer logs...")
 
-        tail_process = Popen(["tail", "-F", log_dir / "trainer.stdout"])
+        tail_process = Popen(["tail", "-F", str(log_dir / "trainer.stdout")])
         processes.append(tail_process)
 
         # Check for errors from monitor threads
