@@ -7,7 +7,7 @@ seq_len = 2048
 [ckpt]
 
 [model]
-name = "samsja/mini-glm-moe"
+name = "PrimeIntellect/glm4-moe-tiny"
 
 [trainer.optim]
 lr = 3e-6

@@ -1,0 +1,29 @@
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
+max_steps = 20
+seq_len = 2048
+
+[ckpt]
+
+[model]
+name = "PrimeIntellect/qwen3-moe-tiny"
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 128
+
+[[orchestrator.env]]
+id = "reverse-text"
+
+[inference]
+gpu_memory_utilization = 0.7
+
+[inference.model]
+max_model_len = 2048
