@@ -9,6 +9,9 @@
 #SBATCH --output=/shared/logs/job_%j.log
 #SBATCH --error=/shared/logs/job_%j.log
 
+# Dump a traceback on SIGABRT / SIGSEGV
+export PYTHONFAULTHANDLER=1
+
 # Configs
 export NUM_TRAIN_NODES={{ num_train_nodes }}
 export NUM_INFER_NODES={{ num_infer_nodes }}
@@ -27,7 +30,6 @@ mkdir -p $OUTPUT_DIR/slurm
 rm -rf $OUTPUT_DIR/run_*/rollouts
 rm -rf $OUTPUT_DIR/run_*/broadcasts
 rm -rf $OUTPUT_DIR/rollouts
-
 
 # General
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -58,6 +60,10 @@ export MASTER_PORT=29500
 echo "MASTER_ADDR=${MASTER_ADDR}"
 echo "MASTER_PORT=${MASTER_PORT}"
 
+# Kill stale processes from previous runs
+srun bash -c 'pkill -9 -f torchrun || true && fuser -k ${MASTER_PORT}/tcp || true'
+srun bash -c 'pkill -9 -f prime-rl || true'
+srun bash -c 'pkill -9 -f VLLM || true && fuser -k 8000/tcp || true'
 
 # Install environment
 [ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
@@ -84,6 +90,12 @@ srun bash -c '
     export NCCL_IB_HCA=$IB_HCA
 
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
+{% if hf_hub_offline %}
+    export HF_HUB_OFFLINE=1
+    export TRANSFORMERS_OFFLINE=1
+    export HF_DATASETS_OFFLINE=1
+{% endif %}
+
     # This is required for vLLM graph compile to work
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     INFER_NODE_RANK=$SLURM_PROCID
@@ -103,11 +115,15 @@ else
             @ $CONFIG_DIR/orchestrator.toml \
             --weight_broadcast.host $MASTER_ADDR \
             --client.base-url $INFER_URLS \
+            ${BETTER_STACK_URL_ORCH:+--heartbeat.url $BETTER_STACK_URL_ORCH} \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
     fi
 
     export HF_HUB_OFFLINE={{ 1 if hf_hub_offline else 0 }}
-
+{% if hf_hub_offline %}
+    export TRANSFORMERS_OFFLINE=1
+    export HF_DATASETS_OFFLINE=1
+{% endif %}
 
     # This is required for compilation to work correctly
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
