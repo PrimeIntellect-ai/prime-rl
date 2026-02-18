@@ -1482,6 +1482,19 @@ wheels = [
 ]
 
 [[package]]
+name = "math-env"
+version = "0.1.2"
+source = { registry = "https://hub.primeintellect.ai/primeintellect/simple/" }
+dependencies = [
+    { name = "math-verify" },
+    { name = "prime-sandboxes" },
+    { name = "verifiers" },
+]
+wheels = [
+    { url = "https://hub.primeintellect.ai/primeintellect/math-env/@07fdeaab/math_env-0.1.2-py3-none-any.whl", hash = "sha256:87003ca56c65818e7a7707f12e80511180038190abe4df5ec66cb2012d38b6d9" },
+]
+
+[[package]]
 name = "math-verify"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2285,6 +2298,7 @@ dependencies = [
     { name = "jaxtyping" },
     { name = "liger-kernel" },
     { name = "loguru" },
+    { name = "math-env" },
     { name = "numpy" },
     { name = "openai" },
     { name = "prime" },
@@ -2340,6 +2354,7 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
+    { name = "math-env", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "prime", specifier = ">=0.5.37" },
@@ -2358,7 +2373,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=609e3d5" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=013d4da" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=ad77074" },
     { name = "vllm", url = "https://github.com/vllm-project/vllm/releases/download/v0.16.0/vllm-0.16.0-cp38-abi3-manylinux_2_31_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
 ]
@@ -3687,7 +3702,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.11.dev0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=013d4da#013d4da8a906bef2e1cbb6b4bc4347214c1fd534" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=ad77074#ad77074e6e8585242425aabd598fc102584a0777" }
 dependencies = [
     { name = "anthropic" },
     { name = "datasets" },
