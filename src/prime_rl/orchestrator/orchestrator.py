@@ -174,6 +174,7 @@ async def orchestrate(config: OrchestratorConfig):
                 log_level="CRITICAL",
                 log_file=(get_log_dir(config.output_dir) / "train" / f"{env_name}.log").as_posix(),
                 log_file_level=config.log.vf_level,
+                json_logging=config.log.json_logging,
             )
         else:
             address = env.address
@@ -208,6 +209,7 @@ async def orchestrate(config: OrchestratorConfig):
                     log_level="CRITICAL",
                     log_file=(get_log_dir(config.output_dir) / "eval" / f"{eval_env_name}.log").as_posix(),
                     log_file_level=config.log.vf_level,
+                    json_logging=config.log.json_logging,
                 )
             else:
                 address = env.address

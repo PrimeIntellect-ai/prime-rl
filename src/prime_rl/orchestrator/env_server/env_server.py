@@ -29,6 +29,7 @@ def run_server(config: EnvServerConfig):
         log_level=config.log.level,
         log_file_level=config.log.vf_level,
         log_file=log_file,
+        json_logging=config.log.json_logging,
         **{"address": config.env.address} if config.env.address is not None else {},
     )
     asyncio.run(server.run())
