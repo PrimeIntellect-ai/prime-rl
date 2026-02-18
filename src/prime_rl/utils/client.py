@@ -4,12 +4,11 @@ import asyncio
 import os
 from itertools import cycle
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Awaitable, Callable, Protocol, runtime_checkable
 
 import httpx
 import verifiers as vf
 from httpx import AsyncClient
-from openai import NotFoundError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from prime_rl.utils.config import ClientConfig
@@ -84,7 +83,12 @@ class StaticInferencePool:
 
     async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
         await check_health(self._admin_clients, timeout=timeout)
-        await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
+        await maybe_check_has_model(
+            self._admin_clients,
+            model_name,
+            skip_model_check=self._skip_model_check,
+            timeout=timeout,
+        )
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
@@ -158,52 +162,158 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     return [_setup_admin_client(base_url) for base_url in client_config.base_url]
 
 
+class ModelNotServedError(ValueError):
+    """Raised when the requested model is not exposed by an otherwise-ready server."""
+
+
+async def _poll_until_ready(
+    *,
+    base_url: str,
+    probe_name: str,
+    probe: Callable[[], Awaitable[None]],
+    interval: float,
+    log_interval: int,
+    timeout: int,
+    non_retryable_exceptions: tuple[type[Exception], ...] = (),
+) -> None:
+    logger = get_logger()
+    wait_time = 0.0
+    next_log_at = float(log_interval)
+
+    while wait_time < timeout:
+        try:
+            await probe()
+            return
+        except non_retryable_exceptions:
+            raise
+        except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+            if wait_time >= next_log_at:
+                logger.warning(f"{probe_name} not ready after {wait_time:.1f}s on {base_url} (Error: {e})")
+                next_log_at += float(log_interval)
+            await asyncio.sleep(interval)
+            wait_time += interval
+
+    msg = f"{probe_name} timed out after {timeout}s on {base_url}."
+    logger.error(msg)
+    raise TimeoutError(msg)
+
+
 async def maybe_check_has_model(
-    admin_clients: list[AsyncClient], model_name: str, skip_model_check: bool = False
+    admin_clients: list[AsyncClient],
+    model_name: str,
+    skip_model_check: bool = False,
+    interval: float = 1.0,
+    log_interval: int = 10,
+    timeout: int = 1800,
 ) -> None:
     if skip_model_check:
         return
     logger = get_logger()
     logger.debug(f"Checking if model {model_name} is in the inference pool")
-    results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
-    for admin_client, result in zip(admin_clients, results):
-        models = result.json()["data"]
-        if not any(model["id"] == model_name for model in models):
-            raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
+
+    async def _check_client_model(admin_client: AsyncClient) -> None:
+        async def _probe() -> None:
+            response = await admin_client.get("/v1/models")
+            response.raise_for_status()
+            payload = response.json()
+            models = payload.get("data")
+            if not isinstance(models, list):
+                raise RuntimeError(
+                    f"/v1/models returned unexpected payload shape on {admin_client.base_url}: {payload}"
+                )
+
+            if any(isinstance(model, dict) and model.get("id") == model_name for model in models):
+                return
+
+            available_models = [
+                model.get("id") for model in models if isinstance(model, dict) and isinstance(model.get("id"), str)
+            ]
+            raise ModelNotServedError(
+                f"Model {model_name} was not found in the inference pool on {admin_client.base_url}. "
+                f"Available models: {available_models}"
+            )
+
+        await _poll_until_ready(
+            base_url=str(admin_client.base_url),
+            probe_name="/v1/models check",
+            probe=_probe,
+            interval=interval,
+            log_interval=log_interval,
+            timeout=timeout,
+            non_retryable_exceptions=(ModelNotServedError,),
+        )
+
+    await asyncio.gather(*[_check_client_model(admin_client) for admin_client in admin_clients])
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 
 async def check_health(
-    admin_clients: list[AsyncClient], interval: int = 1, log_interval: int = 10, timeout: int = 1800
+    admin_clients: list[AsyncClient], interval: float = 1.0, log_interval: int = 10, timeout: int = 1800
 ) -> None:
     logger = get_logger()
 
     async def _check_health(admin_client: AsyncClient) -> None:
-        wait_time = 0
         logger.debug("Starting pinging /health to check health")
-        while wait_time < timeout:
-            try:
-                await admin_client.get("/health")
-                logger.debug(f"Inference pool is ready after {wait_time} seconds")
-                return
-            except NotFoundError:
+
+        async def _probe() -> None:
+            response = await admin_client.get("/health")
+            if response.status_code == 404:
                 logger.warning("The route /health does not exist. Skipping health check.")
                 return
-            except Exception as e:
-                if wait_time % log_interval == 0 and wait_time > 0:
-                    logger.warning(
-                        f"Inference server was not reached after {wait_time} seconds (Error: {e}) on {admin_client.base_url}"
-                    )
-                await asyncio.sleep(interval)
-                wait_time += interval
-        msg = f"Inference server is not ready after {wait_time} (>{timeout}) seconds. Aborting..."
-        logger.error(msg)
-        raise TimeoutError(msg)
+            if response.status_code >= 400:
+                raise RuntimeError(f"/health returned {response.status_code}")
+
+        await _poll_until_ready(
+            base_url=str(admin_client.base_url),
+            probe_name="/health check",
+            probe=_probe,
+            interval=interval,
+            log_interval=log_interval,
+            timeout=timeout,
+        )
+        logger.debug("Inference pool health check succeeded")
 
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
 NCCL_READY_MARKER = "NCCL_READY"
+
+
+def _is_retryable_admin_error(exception: BaseException) -> bool:
+    """Retry transient upstream/proxy failures for admin endpoints."""
+    if isinstance(exception, httpx.HTTPStatusError):
+        return exception.response.status_code in (502, 503, 504)
+    return isinstance(exception, httpx.TransportError)
+
+
+def _admin_retry() -> Callable:
+    return retry(
+        retry=retry_if_exception(_is_retryable_admin_error),
+        stop=stop_after_attempt(10),
+        wait=wait_exponential(multiplier=0.1, min=0.1, max=2),
+        reraise=True,
+    )
+
+
+async def _post_admin_with_retry(
+    admin_client: AsyncClient,
+    path: str,
+    payload: dict[str, object],
+    *,
+    missing_route_warning: str | None = None,
+) -> None:
+    @_admin_retry()
+    async def _request() -> None:
+        response = await admin_client.post(path, json=payload)
+        response.raise_for_status()
+
+    try:
+        await _request()
+    except httpx.HTTPStatusError as e:
+        if missing_route_warning is not None and e.response.status_code == 404:
+            get_logger().warning(missing_route_warning)
+            return
+        raise
 
 
 async def update_weights(
@@ -228,17 +338,6 @@ async def update_weights(
     if lora_name is not None and weight_dir is not None:
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
-
-        async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
-            try:
-                response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
-                response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 404:
-                    logger.warning("The route /update_weights does not exist. Skipping weight update.")
-                    return
-                raise
-
         # Create ready marker before servers enter receive path (used by NCCL broadcast)
         if weight_dir is not None:
             nccl_ready_file = weight_dir / NCCL_READY_MARKER
@@ -246,25 +345,34 @@ async def update_weights(
             nccl_ready_file.touch()
             logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
-        await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
+        await asyncio.gather(
+            *[
+                _post_admin_with_retry(
+                    admin_client,
+                    "/update_weights",
+                    {"weight_dir": weight_dir_posix},
+                    missing_route_warning="The route /update_weights does not exist. Skipping weight update.",
+                )
+                for admin_client in admin_clients
+            ]
+        )
 
 
 async def reload_weights(admin_clients: list[AsyncClient]) -> None:
     """Make a HTTP post request to the vLLM server to reload weights (reset to base model)."""
     logger = get_logger()
-
-    async def _reload_weights(admin_client: AsyncClient) -> None:
-        logger.debug("Sending request to reload weights (reset to base model)")
-        try:
-            response = await admin_client.post("/reload_weights", json={})
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /reload_weights does not exist. Skipping weight reload.")
-                return
-            raise
-
-    await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
+    logger.debug("Sending request to reload weights (reset to base model)")
+    await asyncio.gather(
+        *[
+            _post_admin_with_retry(
+                admin_client,
+                "/reload_weights",
+                {},
+                missing_route_warning="The route /reload_weights does not exist. Skipping weight reload.",
+            )
+            for admin_client in admin_clients
+        ]
+    )
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:

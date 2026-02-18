@@ -1,0 +1,21 @@
+toml_files = ["rl_pd_disagg.toml"]
+
+[model]
+name = "Qwen/Qwen3-30B-A3B"
+
+[orchestrator]
+batch_size = 64
+rollouts_per_example = 8
+
+[inference]
+enable_expert_parallel = true
+all2all_backend = "allgather_reducescatter"
+enable_eplb = false
+# all2all choices: "allgather_reducescatter" | "deepep_high_throughput" | "deepep_low_latency" | "flashinfer_all2allv" | "mori" | "naive" | "pplx"
+# Use allgather_reducescatter as safe fallback when specialized kernels are unavailable.
+
+[pd_disagg]
+# Optional role-specific EP backend overrides:
+# prefill_all2all_backend = "deepep_high_throughput"  # prefill-focused throughput
+# decode_all2all_backend = "deepep_low_latency"       # decode-focused latency
+# same choices as inference.all2all_backend

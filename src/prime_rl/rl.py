@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import shutil
@@ -15,7 +16,7 @@ import pynvml
 import tomli_w
 from pydantic import Field, model_validator
 
-from prime_rl.inference.config import InferenceConfig
+from prime_rl.inference.config import All2AllBackend, InferenceConfig
 from prime_rl.inference.config import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.orchestrator.config import CheckpointConfig as OrchestratorCheckpointConfig
 from prime_rl.orchestrator.config import FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig
@@ -112,6 +113,108 @@ class SharedWeightBroadcastConfig(BaseSettings):
     )
 
 
+class PDDisaggConfig(BaseSettings):
+    """Configures PD disaggregation with dedicated prefill/decode servers."""
+
+    enabled: Annotated[
+        bool,
+        Field(description="Whether to enable prefill/decode disaggregation for inference."),
+    ] = False
+
+    prefill_gpu_ids: Annotated[
+        list[int],
+        Field(
+            description="Flattened GPU IDs for prefill workers. IDs are grouped in contiguous chunks of `prefill_tp` (or `inference.parallel.tp` if unset), one TP group per prefill worker.",
+        ),
+    ] = Field(default_factory=list)
+
+    decode_gpu_ids: Annotated[
+        list[int],
+        Field(
+            description="Flattened GPU IDs for decode workers. IDs are grouped in contiguous chunks of `decode_tp` (or `inference.parallel.tp` if unset), one TP group per decode worker.",
+        ),
+    ] = Field(default_factory=list)
+
+    prefill_tp: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Tensor-parallel size for prefill workers. If None, falls back to inference.parallel.tp.",
+        ),
+    ] = None
+
+    decode_tp: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Tensor-parallel size for decode workers. If None, falls back to inference.parallel.tp.",
+        ),
+    ] = None
+
+    host: Annotated[
+        str | None,
+        Field(
+            description="Host used by the local PD proxy and backend URLs. If None, defaults to inference.server.host when set, otherwise 127.0.0.1.",
+        ),
+    ] = None
+
+    proxy_port: Annotated[
+        int,
+        Field(description="Port for the PD proxy OpenAI-compatible endpoint."),
+    ] = 8000
+
+    prefill_port: Annotated[
+        int,
+        Field(description="Base HTTP port for prefill workers. Worker i uses `prefill_port + i`."),
+    ] = 8100
+
+    decode_port: Annotated[
+        int,
+        Field(description="Base HTTP port for decode workers. Worker i uses `decode_port + i`."),
+    ] = 8200
+
+    prefill_kv_port: Annotated[
+        int,
+        Field(description="Base KV transfer port for prefill workers. Worker i uses `prefill_kv_port + i`."),
+    ] = 14579
+
+    decode_kv_port: Annotated[
+        int,
+        Field(description="Base KV transfer port for decode workers. Worker i uses `decode_kv_port + i`."),
+    ] = 14580
+
+    kv_connector: Annotated[
+        str,
+        Field(description="vLLM KV connector to use for PD disaggregation."),
+    ] = "P2pNcclConnector"
+
+    kv_send_type: Annotated[
+        Literal["PUT_ASYNC", "PUT", "GET"],
+        Field(description="Transfer mode for P2pNcclConnector."),
+    ] = "PUT_ASYNC"
+
+    prefill_all2all_backend: Annotated[
+        All2AllBackend | None,
+        Field(
+            description="Optional all2all backend override for prefill workers (used with expert parallelism). If None, uses inference.all2all_backend.",
+        ),
+    ] = None
+
+    decode_all2all_backend: Annotated[
+        All2AllBackend | None,
+        Field(
+            description="Optional all2all backend override for decode workers (used with expert parallelism). If None, uses inference.all2all_backend.",
+        ),
+    ] = None
+
+    auto_ports: Annotated[
+        bool,
+        Field(
+            description="Automatically pick available, non-overlapping proxy/server/KV ports at runtime. Recommended for simple local setups.",
+        ),
+    ] = True
+
+
 class RLConfig(BaseSettings):
     """Configures an RL training run."""
 
@@ -157,6 +260,13 @@ class RLConfig(BaseSettings):
             description="The teacher inference config. If None, will use the same config as inference (if available) or a default config. Only used when teacher_gpu_ids is set."
         ),
     ] = None
+
+    pd_disagg: Annotated[
+        PDDisaggConfig,
+        Field(
+            description="Prefill/decode disaggregation setup for vLLM-based inference. Uses a local proxy that routes requests through prefill then decode.",
+        ),
+    ] = PDDisaggConfig()
 
     ### Shared configurations
 
@@ -234,11 +344,67 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_dp(self):
-        if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
+        if (
+            self.inference
+            and not self.pd_disagg.enabled
+            and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp
+        ):
             assert len(self.inference_gpu_ids) % self.inference.parallel.tp == 0, (
                 "Number of inference GPUs must be divisible by the tensor parallel size"
             )
             self.inference.parallel.dp = len(self.inference_gpu_ids) // self.inference.parallel.tp
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_pd_disagg(self):
+        if not self.pd_disagg.enabled:
+            return self
+
+        if self.inference is None:
+            raise ValueError("pd_disagg.enabled requires an [inference] config.")
+
+        if self.orchestrator.client.is_elastic:
+            raise ValueError("pd_disagg is not supported with orchestrator.client.elastic.")
+
+        default_tp = self.inference.parallel.tp
+        prefill_tp = self.pd_disagg.prefill_tp or default_tp
+        decode_tp = self.pd_disagg.decode_tp or default_tp
+        if len(self.pd_disagg.prefill_gpu_ids) == 0:
+            raise ValueError("pd_disagg.prefill_gpu_ids cannot be empty when pd_disagg.enabled is true.")
+        if len(self.pd_disagg.decode_gpu_ids) == 0:
+            raise ValueError("pd_disagg.decode_gpu_ids cannot be empty when pd_disagg.enabled is true.")
+
+        if len(self.pd_disagg.prefill_gpu_ids) % prefill_tp != 0:
+            raise ValueError(
+                f"pd_disagg.prefill_gpu_ids must be a multiple of prefill_tp ({prefill_tp}); "
+                "each prefill worker uses one TP group."
+            )
+        if len(self.pd_disagg.decode_gpu_ids) % decode_tp != 0:
+            raise ValueError(
+                f"pd_disagg.decode_gpu_ids must be a multiple of decode_tp ({decode_tp}); "
+                "each decode worker uses one TP group."
+            )
+
+        prefill_workers = len(self.pd_disagg.prefill_gpu_ids) // prefill_tp
+        decode_workers = len(self.pd_disagg.decode_gpu_ids) // decode_tp
+
+        if len(set(self.pd_disagg.prefill_gpu_ids + self.pd_disagg.decode_gpu_ids)) != len(
+            self.pd_disagg.prefill_gpu_ids + self.pd_disagg.decode_gpu_ids
+        ):
+            raise ValueError("pd_disagg.prefill_gpu_ids and pd_disagg.decode_gpu_ids must not overlap.")
+
+        if not self.pd_disagg.auto_ports:
+            ports = [self.pd_disagg.proxy_port]
+            ports.extend(get_contiguous_ports(self.pd_disagg.prefill_port, prefill_workers))
+            ports.extend(get_contiguous_ports(self.pd_disagg.decode_port, decode_workers))
+            ports.extend(get_contiguous_ports(self.pd_disagg.prefill_kv_port, prefill_workers))
+            ports.extend(get_contiguous_ports(self.pd_disagg.decode_kv_port, decode_workers))
+            if len(set(ports)) != len(ports):
+                raise ValueError("pd_disagg proxy/server/KV port ranges must all be distinct.")
+
+        host = self.pd_disagg.host or self.inference.server.host or "127.0.0.1"
+        self.pd_disagg.host = host
+        self.orchestrator.client.base_url = [f"http://{host}:{self.pd_disagg.proxy_port}/v1"]
         return self
 
     @model_validator(mode="after")
@@ -413,6 +579,16 @@ class RLConfig(BaseSettings):
         if self.weight_broadcast is not None:
             if self.weight_broadcast.type == "nccl":
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+                if self.pd_disagg.enabled:
+                    default_tp = self.inference.parallel.tp
+                    prefill_tp = self.pd_disagg.prefill_tp or default_tp
+                    decode_tp = self.pd_disagg.decode_tp or default_tp
+                    if prefill_tp != decode_tp:
+                        raise ValueError(
+                            "pd_disagg with NCCL weight broadcast currently requires matching prefill_tp and "
+                            "decode_tp so inference ranks can be assigned consistently."
+                        )
+                    inference_world_size = len(self.pd_disagg.prefill_gpu_ids) + len(self.pd_disagg.decode_gpu_ids)
                 self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type, inference_world_size=inference_world_size
                 )
@@ -502,7 +678,12 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_enough_devices_for_nccl(self):
         if self.trainer.weight_broadcast.type == "nccl":
-            num_gpus = len(set(self.trainer_gpu_ids + self.inference_gpu_ids))
+            inference_gpu_ids = (
+                self.pd_disagg.prefill_gpu_ids + self.pd_disagg.decode_gpu_ids
+                if self.pd_disagg.enabled
+                else self.inference_gpu_ids
+            )
+            num_gpus = len(set(self.trainer_gpu_ids + inference_gpu_ids))
             if num_gpus < 2:
                 raise ValueError("NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group.")
         return self
@@ -630,6 +811,218 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             tomli_w.dump(config.teacher_inference.model_dump(exclude_none=True, mode="json"), f)
 
 
+def write_toml_file(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        tomli_w.dump(data, f)
+
+
+def get_contiguous_ports(base_port: int, count: int) -> list[int]:
+    return [base_port + i for i in range(count)]
+
+
+def chunk_gpu_ids(gpu_ids: list[int], chunk_size: int) -> list[list[int]]:
+    return [gpu_ids[i : i + chunk_size] for i in range(0, len(gpu_ids), chunk_size)]
+
+
+def is_port_available(port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("", port))
+            sock.listen(1)
+            return True
+        except OSError:
+            return False
+
+
+def reserve_contiguous_ports(count: int, start_port: int, used_ports: set[int]) -> list[int]:
+    if count <= 0:
+        return []
+
+    port = max(start_port, 1024)
+    while True:
+        candidates = [port + i for i in range(count)]
+        if any(candidate in used_ports for candidate in candidates):
+            port += 1
+            continue
+        if all(is_port_available(candidate) for candidate in candidates):
+            used_ports.update(candidates)
+            return candidates
+        port += 1
+
+
+def resolve_pd_runtime_endpoints(config: RLConfig, logger) -> None:
+    if config.inference is None or not config.pd_disagg.enabled:
+        return
+
+    pd = config.pd_disagg
+    default_tp = config.inference.parallel.tp
+    prefill_tp = pd.prefill_tp or default_tp
+    decode_tp = pd.decode_tp or default_tp
+    prefill_workers = len(pd.prefill_gpu_ids) // prefill_tp
+    decode_workers = len(pd.decode_gpu_ids) // decode_tp
+
+    if pd.host is None:
+        pd.host = config.inference.server.host or "127.0.0.1"
+
+    if pd.auto_ports:
+        used_ports: set[int] = set()
+        pd.proxy_port = reserve_contiguous_ports(1, pd.proxy_port, used_ports)[0]
+        prefill_ports = reserve_contiguous_ports(prefill_workers, pd.prefill_port, used_ports)
+        decode_ports = reserve_contiguous_ports(decode_workers, pd.decode_port, used_ports)
+        prefill_kv_ports = reserve_contiguous_ports(prefill_workers, pd.prefill_kv_port, used_ports)
+        decode_kv_ports = reserve_contiguous_ports(decode_workers, pd.decode_kv_port, used_ports)
+        pd.prefill_port = prefill_ports[0]
+        pd.decode_port = decode_ports[0]
+        pd.prefill_kv_port = prefill_kv_ports[0]
+        pd.decode_kv_port = decode_kv_ports[0]
+
+        ports = [pd.proxy_port]
+        ports.extend(get_contiguous_ports(pd.prefill_port, prefill_workers))
+        ports.extend(get_contiguous_ports(pd.decode_port, decode_workers))
+        ports.extend(get_contiguous_ports(pd.prefill_kv_port, prefill_workers))
+        ports.extend(get_contiguous_ports(pd.decode_kv_port, decode_workers))
+        if len(set(ports)) != len(ports):
+            raise ValueError("pd_disagg proxy/server/KV port ranges must all be distinct.")
+
+    config.orchestrator.client.base_url = [f"http://{pd.host}:{pd.proxy_port}/v1"]
+    logger.info(f"Resolved PD proxy endpoint: {config.orchestrator.client.base_url[0]}")
+
+
+def build_pd_worker_inference_config(
+    base_inference: InferenceConfig,
+    *,
+    tp: int,
+    http_port: int,
+    kv_port: int,
+    kv_role: Literal["kv_producer", "kv_consumer"],
+    kv_rank: int,
+    kv_parallel_size: int,
+    kv_connector: str,
+    kv_send_type: Literal["PUT_ASYNC", "PUT", "GET"],
+    all2all_backend_override: All2AllBackend | None,
+) -> InferenceConfig:
+    worker_inference = copy.deepcopy(base_inference)
+    worker_inference.parallel.tp = tp
+    worker_inference.parallel.dp = 1
+    if all2all_backend_override is not None:
+        worker_inference.all2all_backend = all2all_backend_override
+    worker_inference.server.port = http_port
+    worker_inference.kv_transfer_config = {
+        "kv_connector": kv_connector,
+        "kv_role": kv_role,
+        "kv_rank": kv_rank,
+        "kv_parallel_size": kv_parallel_size,
+        "kv_port": kv_port,
+        "kv_connector_extra_config": {
+            "http_port": http_port,
+            "send_type": kv_send_type,
+        },
+    }
+    return worker_inference
+
+
+def start_monitored_process(
+    *,
+    command: list[str],
+    log_path: Path,
+    process_key: str,
+    process_name: str,
+    processes: list[Popen],
+    stop_events: dict[str, Event],
+    monitor_threads: list[Thread],
+    error_queue: list[Exception],
+    env: dict[str, str] | None = None,
+) -> Popen:
+    with open(log_path, "w") as log_file:
+        process = Popen(
+            command,
+            env=env,
+            stdout=log_file,
+            stderr=log_file,
+        )
+    processes.append(process)
+
+    stop_event = Event()
+    stop_events[process_key] = stop_event
+    monitor_thread = Thread(
+        target=monitor_process,
+        args=(process, stop_event, error_queue, process_name),
+        daemon=True,
+    )
+    monitor_thread.start()
+    monitor_threads.append(monitor_thread)
+    return process
+
+
+def start_pd_role_workers(
+    *,
+    role_name: Literal["prefill", "decode"],
+    base_inference: InferenceConfig,
+    gpu_groups: list[list[int]],
+    tp: int,
+    http_ports: list[int],
+    kv_ports: list[int],
+    kv_role: Literal["kv_producer", "kv_consumer"],
+    rank_offset: int,
+    kv_parallel_size: int,
+    kv_connector: str,
+    kv_send_type: Literal["PUT_ASYNC", "PUT", "GET"],
+    all2all_backend_override: All2AllBackend | None,
+    host: str,
+    config_dir: Path,
+    log_dir: Path,
+    processes: list[Popen],
+    stop_events: dict[str, Event],
+    monitor_threads: list[Thread],
+    error_queue: list[Exception],
+    logger,
+) -> tuple[list[str], list[str]]:
+    urls: list[str] = []
+    kv_addrs: list[str] = []
+
+    for worker_idx, (gpu_group, http_port, kv_port) in enumerate(zip(gpu_groups, http_ports, kv_ports, strict=True)):
+        worker_inference = build_pd_worker_inference_config(
+            base_inference,
+            tp=tp,
+            http_port=http_port,
+            kv_port=kv_port,
+            kv_role=kv_role,
+            kv_rank=rank_offset + worker_idx,
+            kv_parallel_size=kv_parallel_size,
+            kv_connector=kv_connector,
+            kv_send_type=kv_send_type,
+            all2all_backend_override=all2all_backend_override,
+        )
+
+        worker_inference_path = config_dir / f"{role_name}_inference_{worker_idx}.toml"
+        write_toml_file(worker_inference_path, worker_inference.model_dump(exclude_none=True, mode="json"))
+        worker_cmd = ["uv", "run", "inference", "@", worker_inference_path.as_posix()]
+
+        logger.info(f"Starting PD {role_name} inference worker {worker_idx} on GPU(s) {' '.join(map(str, gpu_group))}")
+        logger.debug(f"PD {role_name} worker {worker_idx} start command: {' '.join(worker_cmd)}")
+        process_key = f"{role_name}_inference_{worker_idx}"
+        start_monitored_process(
+            command=worker_cmd,
+            log_path=log_dir / f"{role_name}_inference_{worker_idx}.stdout",
+            process_key=process_key,
+            process_name=f"{role_name} inference {worker_idx}",
+            processes=processes,
+            stop_events=stop_events,
+            monitor_threads=monitor_threads,
+            error_queue=error_queue,
+            env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_group))},
+        )
+
+        urls.append(f"http://{host}:{http_port}")
+        kv_addrs.append(f"{host}:{kv_port}")
+
+    return urls, kv_addrs
+
+
 def rl(config: RLConfig):
     # Setup logger
     logger = setup_logger(
@@ -660,8 +1053,16 @@ def rl(config: RLConfig):
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
     # Check for existing processes on GPUs
-    all_gpu_ids = list(set(config.inference_gpu_ids + config.trainer_gpu_ids + (config.teacher_gpu_ids or [])))
+    inference_gpu_ids = (
+        config.pd_disagg.prefill_gpu_ids + config.pd_disagg.decode_gpu_ids
+        if config.pd_disagg.enabled
+        else config.inference_gpu_ids
+    )
+    all_gpu_ids = list(set(inference_gpu_ids + config.trainer_gpu_ids + (config.teacher_gpu_ids or [])))
     check_gpus_available(all_gpu_ids)
+
+    if config.pd_disagg.enabled:
+        resolve_pd_runtime_endpoints(config, logger)
 
     # Validate client port matches inference server port
     if config.inference is not None and not config.orchestrator.client.is_elastic:
@@ -670,11 +1071,11 @@ def rl(config: RLConfig):
         base_url = config.orchestrator.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
-        expected_port = config.inference.server.port
+        expected_port = config.pd_disagg.proxy_port if config.pd_disagg.enabled else config.inference.server.port
         if client_port != expected_port:
             raise ValueError(
                 f"orchestrator.client.base_url port ({client_port}) does not match "
-                f"inference.server.port ({expected_port}). "
+                f"inference endpoint port ({expected_port}). "
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
 
@@ -722,31 +1123,126 @@ def rl(config: RLConfig):
     stop_events: dict[str, Event] = {}
 
     try:
-        # Optionally, start inference process
+        # Optionally, start inference process(es)
         if config.inference:
-            inference_cmd = ["uv", "run", "inference", "@", (config_dir / "inference.toml").as_posix()]
-            logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, config.inference_gpu_ids))}")
-            logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
-            # If we don't log stdout, the server hangs
-            with open(log_dir / "inference.stdout", "w") as log_file:
-                inference_process = Popen(
-                    inference_cmd,
-                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.inference_gpu_ids))},
-                    stdout=log_file,
-                    stderr=log_file,
-                )
-            processes.append(inference_process)
+            if config.pd_disagg.enabled:
+                pd = config.pd_disagg
+                default_tp = config.inference.parallel.tp
+                prefill_tp = pd.prefill_tp or default_tp
+                decode_tp = pd.decode_tp or default_tp
+                prefill_gpu_groups = chunk_gpu_ids(pd.prefill_gpu_ids, prefill_tp)
+                decode_gpu_groups = chunk_gpu_ids(pd.decode_gpu_ids, decode_tp)
+                prefill_ports = get_contiguous_ports(pd.prefill_port, len(prefill_gpu_groups))
+                decode_ports = get_contiguous_ports(pd.decode_port, len(decode_gpu_groups))
+                prefill_kv_ports = get_contiguous_ports(pd.prefill_kv_port, len(prefill_gpu_groups))
+                decode_kv_ports = get_contiguous_ports(pd.decode_kv_port, len(decode_gpu_groups))
+                kv_parallel_size = len(prefill_gpu_groups) + len(decode_gpu_groups)
 
-            # Start monitoring thread
-            stop_event = Event()
-            stop_events["inference"] = stop_event
-            monitor_thread = Thread(
-                target=monitor_process,
-                args=(inference_process, stop_event, error_queue, "inference"),
-                daemon=True,
-            )
-            monitor_thread.start()
-            monitor_threads.append(monitor_thread)
+                prefill_urls, prefill_kv_addrs = start_pd_role_workers(
+                    role_name="prefill",
+                    base_inference=config.inference,
+                    gpu_groups=prefill_gpu_groups,
+                    tp=prefill_tp,
+                    http_ports=prefill_ports,
+                    kv_ports=prefill_kv_ports,
+                    kv_role="kv_producer",
+                    rank_offset=0,
+                    kv_parallel_size=kv_parallel_size,
+                    kv_connector=pd.kv_connector,
+                    kv_send_type=pd.kv_send_type,
+                    all2all_backend_override=pd.prefill_all2all_backend,
+                    host=pd.host,
+                    config_dir=config_dir,
+                    log_dir=log_dir,
+                    processes=processes,
+                    stop_events=stop_events,
+                    monitor_threads=monitor_threads,
+                    error_queue=error_queue,
+                    logger=logger,
+                )
+                decode_urls, decode_kv_addrs = start_pd_role_workers(
+                    role_name="decode",
+                    base_inference=config.inference,
+                    gpu_groups=decode_gpu_groups,
+                    tp=decode_tp,
+                    http_ports=decode_ports,
+                    kv_ports=decode_kv_ports,
+                    kv_role="kv_consumer",
+                    rank_offset=len(prefill_gpu_groups),
+                    kv_parallel_size=kv_parallel_size,
+                    kv_connector=pd.kv_connector,
+                    kv_send_type=pd.kv_send_type,
+                    all2all_backend_override=pd.decode_all2all_backend,
+                    host=pd.host,
+                    config_dir=config_dir,
+                    log_dir=log_dir,
+                    processes=processes,
+                    stop_events=stop_events,
+                    monitor_threads=monitor_threads,
+                    error_queue=error_queue,
+                    logger=logger,
+                )
+
+                pd_proxy_cmd = [
+                    "uv",
+                    "run",
+                    "python",
+                    "-m",
+                    "prime_rl.inference.vllm.pd_proxy",
+                    "--host",
+                    pd.host,
+                    "--port",
+                    str(pd.proxy_port),
+                    "--prefill-urls",
+                    ",".join(prefill_urls),
+                    "--decode-urls",
+                    ",".join(decode_urls),
+                    "--prefill-kv-addrs",
+                    ",".join(prefill_kv_addrs),
+                    "--decode-kv-addrs",
+                    ",".join(decode_kv_addrs),
+                    "--timeout",
+                    str(config.orchestrator.client.timeout),
+                ]
+                logger.info(
+                    f"Starting PD proxy process on {pd.host}:{pd.proxy_port} "
+                    f"for {len(prefill_urls)} prefill and {len(decode_urls)} decode workers"
+                )
+                logger.debug(f"PD proxy start command: {' '.join(pd_proxy_cmd)}")
+                start_monitored_process(
+                    command=pd_proxy_cmd,
+                    log_path=log_dir / "pd_proxy.stdout",
+                    process_key="pd_proxy",
+                    process_name="pd proxy",
+                    processes=processes,
+                    stop_events=stop_events,
+                    monitor_threads=monitor_threads,
+                    error_queue=error_queue,
+                )
+            else:
+                inference_cmd = ["uv", "run", "inference", "@", (config_dir / "inference.toml").as_posix()]
+                logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, config.inference_gpu_ids))}")
+                logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
+                # If we don't log stdout, the server hangs
+                with open(log_dir / "inference.stdout", "w") as log_file:
+                    inference_process = Popen(
+                        inference_cmd,
+                        env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.inference_gpu_ids))},
+                        stdout=log_file,
+                        stderr=log_file,
+                    )
+                processes.append(inference_process)
+
+                # Start monitoring thread
+                stop_event = Event()
+                stop_events["inference"] = stop_event
+                monitor_thread = Thread(
+                    target=monitor_process,
+                    args=(inference_process, stop_event, error_queue, "inference"),
+                    daemon=True,
+                )
+                monitor_thread.start()
+                monitor_threads.append(monitor_thread)
         else:
             logger.warning(
                 "No inference config specified, skipping starting inference server. Is your inference server running?"

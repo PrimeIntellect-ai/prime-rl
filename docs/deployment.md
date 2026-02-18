@@ -197,6 +197,26 @@ uv run rl \
   --inference.parallel.dp 6
 ```
 
+### PD and EP Inference Deployment
+
+PD disaggregation and expert-parallel setup now live in dedicated pages:
+
+- [PD Disaggregation Deployment](deployment_pd.md)
+- [Expert Parallel Deployment](deployment_ep.md)
+
+Quick smoke-test commands:
+
+```bash
+# PD only
+uv run rl @ configs/debug/rl_pd_disagg.toml
+
+# PD + EP
+uv run rl @ configs/debug/rl_pd_disagg_ep.toml
+
+# EP only (no PD)
+uv run rl @ configs/debug/rl_ep.toml
+```
+
 ### Parallel Experiments
 
 For quick ablations, it can be more efficient to parallelize experiments within a node (e.g. split your GPUs to run two experiments in parallel). For example, if you have access to 4 GPUs and your experiment fits on 2 GPUs, you can parallelize two experiments as follows:

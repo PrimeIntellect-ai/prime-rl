@@ -1,0 +1,55 @@
+inference_gpu_ids = [0]
+trainer_gpu_ids = [2]
+
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 128
+
+[[orchestrator.env]]
+id = "reverse-text"
+
+[inference]
+# Optional EP knobs for MoE models:
+# enable_expert_parallel = true
+# all2all_backend = "allgather_reducescatter"
+# all2all choices: "allgather_reducescatter" | "deepep_high_throughput" | "deepep_low_latency" | "flashinfer_all2allv" | "mori" | "naive" | "pplx"
+# enable_eplb = false
+
+[inference.model]
+enforce_eager = true
+
+[pd_disagg]
+enabled = true
+# Keep this true for simple local runs (host/ports auto-resolved).
+auto_ports = true
+# KV connector choice:
+# kv_connector = "P2pNcclConnector"  # simple default for local bring-up
+# kv_connector = "NixlConnector"      # typically preferred for larger distributed setups
+# kv_send_type mainly applies to P2P NCCL flows (PUT_ASYNC is usually best).
+# kv_send_type = "PUT_ASYNC"
+prefill_gpu_ids = [0]
+decode_gpu_ids = [1]
+
+# Optional per-role TP overrides (default: inference.parallel.tp):
+# prefill_tp = 1
+# decode_tp = 1
+
+# Optional per-role EP all2all overrides:
+# prefill_all2all_backend = "deepep_high_throughput"  # prefill-heavy profile
+# decode_all2all_backend = "deepep_low_latency"       # decode-latency profile
+# same choices as inference.all2all_backend
+
+# xPyD example (tp=1): prefill_gpu_ids = [0, 1], decode_gpu_ids = [2, 3]
+# Mixed role TP example: prefill_tp = 1, decode_tp = 2, prefill_gpu_ids = [0, 1], decode_gpu_ids = [2, 3, 4, 5]
