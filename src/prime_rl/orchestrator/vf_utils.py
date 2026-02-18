@@ -26,6 +26,7 @@ def spawn_env_server(
     log_level: str | None = None,
     log_file: str | None = None,
     log_file_level: str | None = None,
+    json_logging: bool = False,
     daemon: bool = True,
 ) -> str:
     """
@@ -47,7 +48,7 @@ def spawn_env_server(
             log_file,
             log_file_level,
         ),
-        kwargs=dict(address=address),
+        kwargs=dict(address=address, json_logging=json_logging),
         daemon=daemon,
     ).start()
 
