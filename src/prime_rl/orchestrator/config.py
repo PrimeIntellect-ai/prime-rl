@@ -16,6 +16,8 @@ from prime_rl.utils.config import (
 )
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
+DEFAULT_ROLLOUT_BATCH_SIZE = 128
+
 
 class OptimizerConfig(BaseConfig):
     """Per-run optimizer configuration for multi-run training."""
@@ -670,13 +672,29 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    max_inflight_rollouts: Annotated[
-        int,
+    batch_size: Annotated[
+        int | None,
         Field(
             ge=1,
-            description="Maximum number of group rollout requests in flight concurrently. Controls orchestrator throughput — the trainer decides when to step based on token_batch_size.",
+            description=f"Number of rollout samples to accumulate per trainer step in rollout-based batching mode. If neither batch_size nor token_batch_size is set, defaults to {DEFAULT_ROLLOUT_BATCH_SIZE}.",
         ),
-    ] = 128
+    ] = None
+
+    token_batch_size: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of total tokens to accumulate per trainer step when using token-based batching. If set, token-based batching is enabled.",
+        ),
+    ] = None
+
+    max_inflight_rollouts: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Maximum number of group rollout requests in flight concurrently. Required in token-based batching mode. In rollout-based batching mode, defaults to batch_size if not set.",
+        ),
+    ] = None
 
     rollouts_per_example: Annotated[
         int,
@@ -725,6 +743,26 @@ class OrchestratorConfig(BaseSettings):
     def validate_max_concurrent(self):
         if self.max_concurrent is not None and self.max_concurrent < self.rollouts_per_example:
             raise ValueError("max_concurrent must be at least the number of rollouts per example")
+        return self
+
+    @model_validator(mode="after")
+    def validate_batching_config(self):
+        if self.batch_size is not None and self.token_batch_size is not None:
+            raise ValueError("Set either batch_size or token_batch_size, not both")
+
+        if self.batch_size is None and self.token_batch_size is None:
+            self.batch_size = DEFAULT_ROLLOUT_BATCH_SIZE
+
+        if self.token_batch_size is not None and self.max_inflight_rollouts is None:
+            raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
+
+        if self.batch_size is not None:
+            if self.batch_size % self.rollouts_per_example != 0:
+                raise ValueError("batch_size must be divisible by rollouts_per_example")
+            if self.max_inflight_rollouts is None:
+                self.max_inflight_rollouts = self.batch_size
+
+        assert self.max_inflight_rollouts is not None
         return self
 
     @model_validator(mode="after")

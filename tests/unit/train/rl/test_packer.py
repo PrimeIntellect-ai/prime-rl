@@ -43,18 +43,19 @@ class DummySender:
         self.sent.append(micro_batch_grid)
 
 
-def create_run_with_config(output_dir: Path, run_name: str) -> Path:
+def create_run_with_config(output_dir: Path, run_name: str, config: dict | None = None) -> Path:
     run_dir = output_dir / run_name
     run_dir.mkdir()
     control_dir = run_dir / "control"
     control_dir.mkdir()
-    config = {
-        "model": {"name": "test-model"},
-        "max_inflight_rollouts": 2,
-        "rollouts_per_example": 1,
-        "env": [{"id": "test-env"}],
-        "sampling": {"temperature": 1.0},
-    }
+    if config is None:
+        config = {
+            "model": {"name": "test-model"},
+            "max_inflight_rollouts": 2,
+            "rollouts_per_example": 1,
+            "env": [{"id": "test-env"}],
+            "sampling": {"temperature": 1.0},
+        }
     with open(control_dir / "orch.toml", "wb") as f:
         tomli_w.dump(config, f)
     return run_dir
@@ -156,9 +157,9 @@ def test_multi_packer_token_budget_threshold(packer_env) -> None:
 
     packer.buffers[run_idx].append((make_training_sample(), 0))  # 2 tokens
     packer.buffers[run_idx].append((make_training_sample(), 0))  # 2 tokens
-    assert not packer._has_enough_tokens()
+    assert not packer._has_enough_batch_units()
     packer.buffers[run_idx].append((make_training_sample(), 0))  # +2 = 6 tokens
-    assert packer._has_enough_tokens()
+    assert packer._has_enough_batch_units()
 
 
 def test_multi_packer_keeps_first_oversized_sample(packer_env) -> None:
@@ -184,10 +185,56 @@ def test_multi_packer_keeps_first_oversized_sample(packer_env) -> None:
     )
     packer.buffers[run_idx].append((oversized, 0))
 
-    selected = packer._select_samples_round_robin(token_budget=4)
+    selected = packer._select_samples_round_robin()
     assert len(selected) == 1
     assert selected[0][0] == run_idx
     assert selected[0][1] is oversized
+
+
+def test_multi_packer_rollout_budget_threshold(packer_env) -> None:
+    manager, run_idx, receiver, sender = packer_env
+
+    packer = MultiPacker(
+        dp_world_size=1,
+        seq_len=8,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        config=FileSystemTransportConfig(),
+        rollout_batch_size=3,
+        start_step=0,
+    )
+
+    packer.buffers[run_idx].append((make_training_sample(), 0))
+    packer.buffers[run_idx].append((make_training_sample(), 0))
+    assert not packer._has_enough_batch_units()
+    packer.buffers[run_idx].append((make_training_sample(), 0))
+    assert packer._has_enough_batch_units()
+
+
+def test_multi_packer_rollout_budget_selection(multi_packer_env, tmp_path: Path) -> None:
+    manager, run_idx, receiver, sender = multi_packer_env
+    create_run_with_config(tmp_path, "run_b")
+    manager.discover_runs()
+    run_b_idx = manager.id_2_idx["run_b"]
+
+    packer = MultiPacker(
+        dp_world_size=1,
+        seq_len=8,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        config=FileSystemTransportConfig(),
+        rollout_batch_size=3,
+        start_step=0,
+    )
+
+    packer.buffers[run_idx].append((make_training_sample(), 0))
+    packer.buffers[run_idx].append((make_training_sample(), 0))
+    packer.buffers[run_b_idx].append((make_training_sample(), 0))
+    packer.buffers[run_b_idx].append((make_training_sample(), 0))
+
+    selected = packer._select_samples_round_robin()
+    assert len(selected) == 3
+    assert {idx for idx, _sample, _step in selected} == {run_idx, run_b_idx}
 
 
 def test_single_packer_sets_receiver_start_step_to_zero(packer_env) -> None:
@@ -236,7 +283,18 @@ def test_multi_packer_sets_receiver_start_step_to_zero_for_new_runs(multi_packer
     )
     existing_steps = list(receiver.start_steps)
 
-    create_run_with_config(tmp_path, "run_b")
+    create_run_with_config(
+        tmp_path,
+        "run_b",
+        config={
+            "model": {"name": "test-model"},
+            "token_batch_size": 4,
+            "max_inflight_rollouts": 2,
+            "rollouts_per_example": 1,
+            "env": [{"id": "test-env"}],
+            "sampling": {"temperature": 1.0},
+        },
+    )
     manager.discover_runs()
 
     new_run_idx = manager.id_2_idx["run_b"]

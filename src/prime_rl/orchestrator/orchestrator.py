@@ -280,7 +280,7 @@ class Orchestrator:
                 self.logger.info("Training from scratch. Skipping base weight reload")
 
         # Continuously get group rollouts and send them to the trainer.
-        # The trainer decides when to step based on accumulated total tokens.
+        # The trainer decides when to step based on the configured batch budget.
         self.logger.info(f"Starting orchestrator streaming loop (max_steps={config.max_steps or 'infinite'})")
         await set_semaphore(config.max_concurrent or -1)
 

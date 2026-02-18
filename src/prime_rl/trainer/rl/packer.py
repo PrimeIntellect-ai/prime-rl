@@ -2,6 +2,7 @@ import shutil
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from typing import Literal
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -19,6 +20,56 @@ from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.pathing import get_rollout_dir
 
 TIMEOUT_SECONDS = 0.1
+
+
+def _sample_num_tokens(sample: TrainingSample) -> int:
+    return len(sample.prompt_ids) + len(sample.completion_ids)
+
+
+def _resolve_batch_target(
+    token_batch_size: int | None,
+    rollout_batch_size: int | None,
+    *,
+    default_token_batch_size: int | None = None,
+) -> tuple[int, Literal["tokens", "rollouts"]]:
+    if token_batch_size is not None and rollout_batch_size is not None:
+        raise ValueError("Only one of token_batch_size or rollout_batch_size can be set")
+
+    if token_batch_size is None and rollout_batch_size is None:
+        if default_token_batch_size is None:
+            raise ValueError("Either token_batch_size or rollout_batch_size is required")
+        token_batch_size = default_token_batch_size
+
+    if token_batch_size is not None:
+        return token_batch_size, "tokens"
+
+    assert rollout_batch_size is not None
+    return rollout_batch_size, "rollouts"
+
+
+def _resolve_batch_target_from_orchestrator_config(orch_config) -> tuple[int, Literal["tokens", "rollouts"]]:
+    return _resolve_batch_target(orch_config.token_batch_size, orch_config.batch_size)
+
+
+def _resolve_batch_target_from_discovered_runs(
+    default_token_batch_size: int,
+) -> tuple[int, Literal["tokens", "rollouts"]]:
+    multi_run_manager = get_multi_run_manager()
+    multi_run_manager.discover_runs()
+
+    run_targets = {
+        _resolve_batch_target_from_orchestrator_config(multi_run_manager.config[run_idx])
+        for run_idx in multi_run_manager.used_idxs
+        if run_idx in multi_run_manager.config
+    }
+
+    if not run_targets:
+        return default_token_batch_size, "tokens"
+
+    if len(run_targets) > 1:
+        raise ValueError("All runs must share the same batching config.")
+
+    return next(iter(run_targets))
 
 
 class BasePacker(ABC):
@@ -57,28 +108,34 @@ class SinglePacker(BasePacker):
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
-        token_batch_size: int,
+        token_batch_size: int | None = None,
+        rollout_batch_size: int | None = None,
         start_step: int = 0,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
         assert self.multi_run_manager.max_runs == 1, "SinglePacker only supports one run"
-        self.token_batch_size = token_batch_size
+        self.batch_target, self.batch_unit = _resolve_batch_target(token_batch_size, rollout_batch_size)
         # The rollout dir was cleaned in BasePacker.__init__, so the orchestrator
         # will write files starting from step_0. Override the receiver's lazy
         # initialization (which falls back to progress[0].step) to match.
         self.receiver.set_start_step(0, 0)
 
+    def _sample_batch_units(self, sample: TrainingSample) -> int:
+        if self.batch_unit == "tokens":
+            return _sample_num_tokens(sample)
+        return 1
+
     def pack(self):
-        """Accumulate samples from streamed group rollouts until the token budget is met."""
+        """Accumulate samples from streamed group rollouts until the batch budget is met."""
         accumulated_samples: list[TrainingSample] = []
-        total_tokens = 0
+        total_batch_units = 0
 
         pbar = ProgressTracker(
-            total=self.token_batch_size,
-            desc="Accumulating total tokens",
+            total=self.batch_target,
+            desc="Accumulating total tokens" if self.batch_unit == "tokens" else "Accumulating rollouts",
         )
 
-        while total_tokens < self.token_batch_size:
+        while total_batch_units < self.batch_target:
             self.multi_run_manager.discover_runs()
             batches = self.receiver.receive()
 
@@ -88,10 +145,10 @@ class SinglePacker(BasePacker):
 
             for batch in batches:
                 for sample in batch.examples:
-                    n_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
                     accumulated_samples.append(sample)
-                    total_tokens += n_tokens
-                    pbar.update(n_tokens)
+                    sample_batch_units = self._sample_batch_units(sample)
+                    total_batch_units += sample_batch_units
+                    pbar.update(sample_batch_units)
 
         pbar.close()
 
@@ -118,10 +175,15 @@ class MultiPacker(BasePacker):
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
         token_batch_size: int | None = None,
+        rollout_batch_size: int | None = None,
         start_step: int = 0,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
-        self.token_batch_size = token_batch_size if token_batch_size is not None else self.seq_len * self.dp_world_size
+        self.batch_target, self.batch_unit = _resolve_batch_target(
+            token_batch_size,
+            rollout_batch_size,
+            default_token_batch_size=self.seq_len * self.dp_world_size,
+        )
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -148,8 +210,16 @@ class MultiPacker(BasePacker):
         # Reset run state
         self.buffers[idx].clear()
 
-    def _on_run_discovered(self, idx: int, run_id: str, _config) -> None:
+    def _on_run_discovered(self, idx: int, run_id: str, config) -> None:
         """Align receiver state for newly discovered runs (master only)."""
+        run_target, run_unit = _resolve_batch_target_from_orchestrator_config(config)
+        if run_target != self.batch_target or run_unit != self.batch_unit:
+            self.multi_run_manager.evict_run(
+                idx,
+                f"Run batching config ({run_unit}={run_target}) does not match trainer batching "
+                f"({self.batch_unit}={self.batch_target})",
+            )
+            return
         self.logger.debug(f"Packing is setting receiver start step to zero for discovered run {idx} ({run_id})")
         self.receiver.set_start_step(idx, 0)
 
@@ -212,8 +282,13 @@ class MultiPacker(BasePacker):
         # This is necessary to forget evicted runs
         self.multi_run_manager.discover_runs()
 
-    def _count_total_tokens(self, threshold: int | None = None) -> int:
-        tokens = 0
+    def _sample_batch_units(self, sample: TrainingSample) -> int:
+        if self.batch_unit == "tokens":
+            return _sample_num_tokens(sample)
+        return 1
+
+    def _count_total_batch_units(self, threshold: int | None = None) -> int:
+        total_units = 0
 
         for run_idx in self.multi_run_manager.used_idxs:
             buffer = self.buffers[run_idx]
@@ -222,22 +297,21 @@ class MultiPacker(BasePacker):
             for sample, step in buffer:
                 if step > current_step:
                     break
-                tokens += len(sample.prompt_ids) + len(sample.completion_ids)
-                if threshold is not None and tokens >= threshold:
-                    return tokens
-        return tokens
+                total_units += self._sample_batch_units(sample)
+                if threshold is not None and total_units >= threshold:
+                    return total_units
+        return total_units
 
-    def _has_enough_tokens(self) -> bool:
-        """Check if we have enough total tokens in buffer to pack a step."""
-        threshold = self.token_batch_size
-        return self._count_total_tokens(threshold) >= threshold
+    def _has_enough_batch_units(self) -> bool:
+        """Check if we have enough total work in buffer to pack a step."""
+        return self._count_total_batch_units(self.batch_target) >= self.batch_target
 
-    def _select_samples_round_robin(self, token_budget: int) -> list[tuple[int, TrainingSample, int]]:
+    def _select_samples_round_robin(self) -> list[tuple[int, TrainingSample, int]]:
         """Select samples using round-robin from runs with buffered work."""
         selected: list[tuple[int, TrainingSample, int]] = []
-        tokens_collected = 0
+        collected_units = 0
 
-        while tokens_collected < token_budget:
+        while collected_units < self.batch_target:
             # Round-robin until we find a run with work for the current step
             for _ in range(len(self.buffers)):
                 if len(self.buffers[self._round_robin_position]) > 0:
@@ -246,7 +320,7 @@ class MultiPacker(BasePacker):
                         break
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
             else:
-                # TODO: We could probably make the logic safer. This is basically counting on _has_enough_tokens() to be correct.
+                # TODO: We could probably make the logic safer. This is basically counting on _has_enough_batch_items() to be correct.
                 # We also need to cover the timeout case here.
                 break
             run_idx = self._round_robin_position
@@ -258,12 +332,14 @@ class MultiPacker(BasePacker):
                 if step > current_step:
                     # Samples from different steps should be consumed later
                     break
-                sample_total_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
-                if tokens_collected > 0 and tokens_collected + sample_total_tokens > token_budget:
+                sample_batch_units = self._sample_batch_units(sample)
+                if collected_units > 0 and collected_units + sample_batch_units > self.batch_target:
                     return selected
                 selected.append((run_idx, sample, step))
                 self.buffers[run_idx].popleft()
-                tokens_collected += sample_total_tokens
+                collected_units += sample_batch_units
+                if collected_units >= self.batch_target:
+                    return selected
 
         return selected
 
@@ -287,15 +363,14 @@ class MultiPacker(BasePacker):
         self._get_batch()
         start_time = time.time()
 
-        while not self._has_enough_tokens():
-            if time.time() - start_time > TIMEOUT_SECONDS and self._count_total_tokens() > 0:
-                self.logger.warning("Timeout waiting for enough tokens to pack")
+        while not self._has_enough_batch_units():
+            if time.time() - start_time > TIMEOUT_SECONDS and self._count_total_batch_units() > 0:
+                self.logger.warning(f"Timeout waiting for enough {self.batch_unit} to pack")
                 break
             time.sleep(1)
             self._get_batch()
 
-        token_budget = self.token_batch_size
-        selected_samples = self._select_samples_round_robin(token_budget)
+        selected_samples = self._select_samples_round_robin()
         assert selected_samples, "No samples selected"
 
         # Group samples by run_idx - each microbatch must contain samples from only ONE run
@@ -307,7 +382,7 @@ class MultiPacker(BasePacker):
                 samples_by_run[run_idx] = []
             samples_by_run[run_idx].append(sample)
 
-            num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
+            num_tokens = _sample_num_tokens(sample)
             if run_idx in per_run_stats:
                 cur_samples, cur_tokens = per_run_stats[run_idx]
                 per_run_stats[run_idx] = (cur_samples + 1, cur_tokens + num_tokens)
@@ -343,13 +418,29 @@ def setup_packer(
     tokenizer: PreTrainedTokenizer,
     transport_config: TransportConfigType,
     token_batch_size: int | None = None,
+    rollout_batch_size: int | None = None,
     start_step: int = 0,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
+    if token_batch_size is None and rollout_batch_size is None:
+        batch_target, batch_unit = _resolve_batch_target_from_discovered_runs(
+            default_token_batch_size=seq_len * dp_world_size
+        )
+        if batch_unit == "tokens":
+            token_batch_size = batch_target
+        else:
+            rollout_batch_size = batch_target
+
     if multi_run_manager.max_runs == 1:
-        assert token_batch_size is not None, "token_batch_size is required for SinglePacker"
         return SinglePacker(
-            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, token_batch_size, start_step
+            dp_world_size,
+            seq_len,
+            pad_to_multiple_of,
+            tokenizer,
+            transport_config,
+            token_batch_size=token_batch_size,
+            rollout_batch_size=rollout_batch_size,
+            start_step=start_step,
         )
     else:
         return MultiPacker(
@@ -359,5 +450,6 @@ def setup_packer(
             tokenizer,
             transport_config,
             token_batch_size,
+            rollout_batch_size,
             start_step,
         )

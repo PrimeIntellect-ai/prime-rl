@@ -201,7 +201,6 @@ def train(config: RLTrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
-            token_batch_size=config.token_batch_size,
         )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")

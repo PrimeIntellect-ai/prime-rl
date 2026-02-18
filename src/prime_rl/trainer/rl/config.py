@@ -194,14 +194,6 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = None
 
-    token_batch_size: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of total tokens to accumulate before taking a training step. The orchestrator streams individual group rollouts; the trainer accumulates them until this budget is met.",
-        ),
-    ] = 32768
-
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
     bench: Annotated[

@@ -143,7 +143,6 @@ class DataLoader:
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfigType,
-        token_batch_size: int | None = None,
     ):
         self.world = get_world()
 
@@ -154,7 +153,6 @@ class DataLoader:
                 tokenizer=tokenizer,
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
-                token_batch_size=token_batch_size,
                 start_step=start_step,
             )
 
