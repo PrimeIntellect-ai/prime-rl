@@ -53,6 +53,8 @@ except ImportError:
     sparse_mla_fwd_interface = None  # type: ignore
     sparse_mla_bwd = None  # type: ignore
 
+from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+
 
 class _SparseMLA(torch.autograd.Function):
     """Autograd wrapper for tilelang sparse MLA forward/backward kernels."""
@@ -106,7 +108,8 @@ class Indexer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         q_latent: torch.Tensor,
-        cu_seqlens: torch.Tensor,
+        ks: torch.Tensor,
+        ke: torch.Tensor,
         index_topk: int,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
@@ -134,38 +137,7 @@ class Indexer(nn.Module):
         q_idx = torch.cat([q_pe, q_nope], dim=-1)
         k_idx = torch.cat([k_pe, k_nope], dim=-1)
 
-        q_combined = (q_idx * w.unsqueeze(-1)).sum(dim=1)
-
-        num_seqs = cu_seqlens.shape[0] - 1
-        indices = torch.zeros(total_tokens, index_topk, dtype=torch.int32, device=hidden_states.device)
-
-        for i in range(num_seqs):
-            start = cu_seqlens[i].item()
-            end = cu_seqlens[i + 1].item()
-            seq_len = end - start
-
-            scores = q_combined[start:end] @ k_idx[start:end].T
-            causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=scores.device, dtype=torch.bool), diagonal=1)
-            scores.masked_fill_(causal_mask, float("-inf"))
-
-            actual_topk = min(index_topk, seq_len)
-            _, topk_idx = torch.topk(scores, actual_topk, dim=-1)
-
-            # Convert local indices to global
-            topk_idx = topk_idx + start
-
-            if actual_topk < index_topk:
-                # Pad with total_tokens (sentinel position) — causal mask rejects it
-                padding = torch.full(
-                    (seq_len, index_topk - actual_topk),
-                    total_tokens,
-                    dtype=topk_idx.dtype,
-                    device=topk_idx.device,
-                )
-                topk_idx = torch.cat([topk_idx, padding], dim=-1)
-
-            indices[start:end] = topk_idx.to(torch.int32)
-
+        indices = fp8_indexer(q_idx, k_idx, w, ks, ke, index_topk)
         return indices.view(1, total_tokens, 1, index_topk)
 
 
@@ -222,8 +194,8 @@ class GlmMoeDsaAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
+        ks: torch.Tensor | None = None,
+        ke: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         batch_size, total_tokens, _ = hidden_states.shape
 
@@ -247,7 +219,7 @@ class GlmMoeDsaAttention(nn.Module):
 
         # Indexer
         indices = self.indexer.compute_sparse_indices(
-            hidden_states, q_latent, cu_seqlens, self.config.index_topk, position_embeddings
+            hidden_states, q_latent, ks, ke, self.config.index_topk, position_embeddings
         )
 
         # Absorption: Q_nope @ W_kv_b_k_nope^T → [B, S, H, kv_lora_rank]
@@ -312,16 +284,16 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
-        cu_seqlens: Optional[torch.LongTensor] = None,
-        max_seqlen: Optional[int] = None,
+        ks: Optional[torch.Tensor] = None,
+        ke: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=max_seqlen,
+            ks=ks,
+            ke=ke,
         )
         hidden_states = residual + hidden_states
 
@@ -339,11 +311,11 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["GlmMoeDsaDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
-    _supports_flash_attn = False
-    _supports_sdpa = False
-    _supports_flex_attn = False
+    _supports_flash_attn = True
+    _supports_sdpa = True
+    _supports_flex_attn = True
     _can_compile_fullgraph = False
-    _supports_attention_backend = False
+    _supports_attention_backend = True
     _can_record_outputs = {
         "hidden_states": GlmMoeDsaDecoderLayer,
     }
@@ -420,16 +392,9 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
         flat_position_ids = position_ids.view(-1)
-        seqlens = torch.cat(
-            [
-                flat_position_ids[0:1],
-                flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
-                flat_position_ids[-1:] + 1,
-            ]
-        )
-        max_seqlen = seqlens.max().item()
-        cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
-        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        S = flat_position_ids.shape[0]
+        ks = torch.arange(S, dtype=torch.int32, device=flat_position_ids.device) - flat_position_ids.to(torch.int32)
+        ke = torch.arange(1, S + 1, dtype=torch.int32, device=flat_position_ids.device)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -438,8 +403,8 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
+                ks=ks,
+                ke=ke,
             )
 
         hidden_states = self.norm(hidden_states)

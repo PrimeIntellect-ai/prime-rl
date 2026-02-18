@@ -139,11 +139,11 @@ class GlmMoeDsaConfig(PretrainedConfig):
         index_n_heads=32,
         index_head_dim=128,
         indexer_rope_interleave=True,
+        pad_token_id=154820,
         index_topk=2048,
         scoring_func="sigmoid",
         topk_method="noaux_tc",
         use_grouped_mm=True,
-        pad_token_id=None,
         **kwargs,
     ):
         self.vocab_size = vocab_size
