@@ -46,14 +46,31 @@ def get_stable_ckpt_steps(ckpt_dir: Path) -> list[int]:
 
 
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
-    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
+    """Gets the latest resumable checkpoint step from the checkpoint directory.
+
+    Only considers checkpoints that have the orchestrator subdirectory,
+    ensuring we don't try to resume from a partially written checkpoint
+    (e.g. trainer created the step directory but orchestrator never saved).
+
+    Returns None if no valid checkpoints are found.
+    """
     steps = get_all_ckpt_steps(ckpt_dir)
-    if len(steps) == 0:
-        logger = get_logger()
-        logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
-        return None
-    latest_step = steps[-1]
+    # Filter to steps that have the orchestrator checkpoint data
+    resumable = [s for s in steps if (ckpt_dir / f"step_{s}" / "orchestrator").exists()]
     logger = get_logger()
+    if len(resumable) == 0:
+        if len(steps) > 0:
+            logger.warning(
+                f"Found {len(steps)} checkpoint dir(s) in {ckpt_dir} but none have orchestrator data. "
+                "Starting from scratch."
+            )
+        else:
+            logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
+        return None
+    latest_step = resumable[-1]
+    if len(resumable) < len(steps):
+        skipped = sorted(set(steps) - set(resumable))
+        logger.warning(f"Skipping incomplete checkpoint(s) without orchestrator data: {skipped}")
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
 
