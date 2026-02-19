@@ -41,13 +41,13 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.orchestrator.vf_utils import (
     get_completion_len,
     get_seq_len,
+    intercept_vf_logging,
     setup_env_client,
     spawn_env_server,
     wait_for_env_servers,
 )
 from prime_rl.utils.client import (
     init_nccl_broadcast,
-    reload_weights,
     setup_inference_pool,
 )
 from prime_rl.utils.heartbeat import Heartbeat
@@ -93,7 +93,7 @@ class Orchestrator:
             log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
             json_logging=config.log.json_logging,
         )
-        vf.setup_logging(level="CRITICAL")
+        intercept_vf_logging(logger="verifiers.workers", level=config.log.vf_level)  # show logs from env clients
         self.logger.info("Starting orchestrator")
 
         event_loop_lag_monitor = EventLoopLagMonitor()
@@ -168,13 +168,14 @@ class Orchestrator:
             f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
         )
         env_ids = [strip_env_version(env.id) for env in config.env]
+        train_env_names = [env.name or env_id for env_id, env in zip(env_ids, config.env)]
         train_env_group = vf.EnvGroup(
             envs=[vf.load_environment(env_id, **env.args) for env_id, env in zip(env_ids, config.env)],
-            env_names=[env.name or env_id for env_id, env in zip(env_ids, config.env)],
+            env_names=train_env_names,
             map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
         )
 
-        train_env_clients = await self._setup_env_servers(config.env, env_ids, train_env_group.env_names, "train")
+        train_env_clients = await self._setup_env_servers(config.env, env_ids, train_env_names, "train")
         for env, env_client in zip(train_env_group.envs, train_env_clients):
             env.env_client = env_client
 
@@ -270,14 +271,7 @@ class Orchestrator:
             lora_name = config.model.lora.name if config.model.lora else None
             await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
         else:
-            if config.reload_weights_on_start:
-                if config.model.lora is None:
-                    self.logger.info("Training from scratch. Resetting weights to base model")
-                    await reload_weights(inference_pool.admin_clients)
-                else:
-                    self.logger.info("Training from scratch. Skipping base weight reload because LoRA is enabled")
-            else:
-                self.logger.info("Training from scratch. Skipping base weight reload")
+            logger.info("Training from scratch")
 
         # Continuously get group rollouts and send them to the trainer.
         # The trainer decides when to step based on the configured batch budget.
@@ -594,12 +588,15 @@ class Orchestrator:
                     log_level="CRITICAL",
                     log_file=(get_log_dir(config.output_dir) / label / f"{env_name}.log").as_posix(),
                     log_file_level=config.log.vf_level,
+                    json_logging=config.log.json_logging,
                 )
             else:
                 address = env.address
             self.logger.info(f"Connecting {label} environment {env_name} to server at {address}")
             addresses.append(address)
-        clients = [setup_env_client(address) for address in addresses]
+        clients = [
+            setup_env_client(address=address, name=name) for name, address in zip(env_names, addresses)
+            ]
         self.logger.info(f"Waiting for {label} environment servers to be ready")
         await wait_for_env_servers(clients)
         self.logger.success(f"{label.capitalize()} environment servers ready")
