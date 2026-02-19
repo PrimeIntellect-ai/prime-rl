@@ -58,7 +58,7 @@ def _pass_at_k(n: int, c: int, k: int) -> float:
 def compute_pass_at_k(rewards: list[float]) -> dict[str, float]:
     n = len(rewards)
     c = sum(r == 1.0 for r in rewards)
-    ks = [k for k in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024) if k <= n]
+    ks = [2**i for i in range(n.bit_length()) if 2**i <= n]
     return {f"pass@{k}": _pass_at_k(n, c, k) for k in ks}
 
 
