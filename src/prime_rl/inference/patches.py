@@ -203,3 +203,58 @@ def monkey_patch_tokenize_params_validation():
 
     TokenizeParams._token_len_check = _patched_token_len_check
     TokenizeParams._text_len_check = _patched_text_len_check
+
+
+def monkey_patch_minimax_m2_for_lora():
+    """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
+
+    Two issues:
+    1. The MoE gate (router) uses params_dtype=torch.float32 and casts inputs
+       to float32, but vLLM's LoRA Triton kernel only supports float16/bfloat16.
+       Fix: recreate the gate in model dtype and remove the float32 cast.
+
+    2. PrimeRL saves adapter keys as mlp.experts.{j}.gate_proj/down_proj/up_proj
+       but vLLM's MiniMax M2 expects block_sparse_moe.experts.{j}.w1/w2/w3.
+       Fix: add hf_to_vllm_mapper on the model to remap adapter keys on load.
+    """
+    from vllm.model_executor.models.minimax_m2 import MiniMaxM2ForCausalLM, MiniMaxM2MoE
+    from vllm.model_executor.models.utils import WeightsMapper
+
+    # --- Gate dtype fix ---
+    _original_init = MiniMaxM2MoE.__init__
+
+    def _patched_init(self, config, quant_config=None, prefix=""):
+        _original_init(self, config, quant_config, prefix)
+        from vllm.model_executor.layers.linear import ReplicatedLinear
+
+        self.gate = ReplicatedLinear(
+            config.hidden_size,
+            config.num_local_experts,
+            bias=False,
+            quant_config=None,
+            prefix=f"{prefix}.gate",
+        )
+
+    def _patched_forward(self, hidden_states):
+        from vllm.distributed import tensor_model_parallel_all_reduce
+
+        num_tokens, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        router_logits, _ = self.gate(hidden_states)
+        final_hidden_states = self.experts(hidden_states=hidden_states, router_logits=router_logits)
+        if self.tp_size > 1:
+            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+        return final_hidden_states.view(num_tokens, hidden_dim)
+
+    MiniMaxM2MoE.__init__ = _patched_init
+    MiniMaxM2MoE.forward = _patched_forward
+
+    # --- Adapter key remapping ---
+    MiniMaxM2ForCausalLM.hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_substr={
+            ".mlp.experts.": ".block_sparse_moe.experts.",
+            ".gate_proj.": ".w1.",
+            ".down_proj.": ".w2.",
+            ".up_proj.": ".w3.",
+        },
+    )
