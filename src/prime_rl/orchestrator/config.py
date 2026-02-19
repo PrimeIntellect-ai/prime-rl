@@ -555,6 +555,61 @@ AdvantageConfigType: TypeAlias = Annotated[
     Discriminator(_advantage_config_discriminator),
 ]
 
+class GibberishFilterConfig(BaseModel):
+    """Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["gibberish"] = "gibberish"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+        ),
+    ] = False
+    token_id_threshold: Annotated[
+        int,
+        Field(description="Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."),
+    ] = 100_000
+    logprob_offset: Annotated[
+        float,
+        Field(description="Offset from uniform distribution logprob. Threshold = -log(vocab_size) - logprob_offset."),
+    ] = 2.0
+
+
+class RepetitionFilterConfig(BaseModel):
+    """Flags rollouts where the model gets stuck in a repetition loop, emitting high-confidence tokens
+    for an extended stretch. A rollout is flagged when `window` consecutive tokens are each sampled
+    with probability above `prob_threshold`. (Section 3.2, https://arxiv.org/abs/2506.13585)"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["repetition"] = "repetition"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+        ),
+    ] = False
+    window: Annotated[
+        int,
+        Field(ge=1, description="Number of consecutive high-probability steps before flagging."),
+    ] = 3_000
+    prob_threshold: Annotated[
+        float,
+        Field(
+            gt=0,
+            le=1,
+            description="Tokens sampled with probability above this are considered repetitive. Consecutive such tokens count toward the window.",
+        ),
+    ] = 0.99
+
+
+FilterConfigType: TypeAlias = Annotated[
+    GibberishFilterConfig | RepetitionFilterConfig,
+    Field(discriminator="type"),
+]
+
 
 class FileSystemWeightBroadcastConfig(BaseModel):
     """Configures the filesystem weight broadcast."""

@@ -96,7 +96,9 @@ def _aggregate_filter_metrics(metrics_df: pd.DataFrame, stop_conditions: list[st
     if n > 0:
         detected_mask = filter_df.sum(axis=1) > 0
         filter_metrics["filter/total_detected_rate"] = float(detected_mask.mean())
-        filter_metrics["filter/total_enforced_rate"] = float(sum(condition is not None for condition in stop_conditions) / n)
+        filter_metrics["filter/total_enforced_rate"] = float(
+            sum(condition is not None for condition in stop_conditions) / n
+        )
     else:
         filter_metrics["filter/total_detected_rate"] = 0.0
         filter_metrics["filter/total_enforced_rate"] = 0.0
