@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
@@ -433,50 +433,63 @@ async def chat_completions(
         sampling_args = _normalize_sampling_args(rollout.config.sampling_params)
         sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
 
-        if rollout.turn_count == 0:
-            request_mode = "chat_completions"
-            rollout.vf_state["prompt"] = messages
-            response = await _call_chat_with_messages(
-                rollout=rollout,
-                messages=messages,
-                tools=tools,
-                sampling_args=dict(sampling_args),
-            )
-        else:
-            prev_step = rollout.vf_state["trajectory"][-1]
-            prev_context = cast(Messages, concat_messages([prev_step["prompt"], prev_step["completion"]]))
-            is_prefix_extension = (
-                len(messages) > len(prev_context)
-                and messages[: len(prev_context)] == prev_context
-            )
-            if is_prefix_extension:
-                request_mode = "chat_completions_tokens"
-                prompt_ids = await get_prompt_ids(
-                    state=rollout.vf_state,
-                    prompt_messages=messages,
-                    client=rollout.localhost_client,
-                )
-                logger.info(
-                    "rollout=%s turn=%d prompt_ids_len=%d",
-                    rollout_id,
-                    turn_index,
-                    len(prompt_ids),
-                )
-                response = await _call_chat_with_tokens(
-                    rollout=rollout,
-                    messages=messages,
-                    tools=tools,
-                    prompt_ids=prompt_ids,
-                    sampling_args=dict(sampling_args),
-                )
-            else:
+        try:
+            if rollout.turn_count == 0:
                 request_mode = "chat_completions"
+                rollout.vf_state["prompt"] = messages
                 response = await _call_chat_with_messages(
                     rollout=rollout,
                     messages=messages,
                     tools=tools,
                     sampling_args=dict(sampling_args),
                 )
+            else:
+                prev_step = rollout.vf_state["trajectory"][-1]
+                prev_context = cast(Messages, concat_messages([prev_step["prompt"], prev_step["completion"]]))
+                is_prefix_extension = (
+                    len(messages) > len(prev_context)
+                    and messages[: len(prev_context)] == prev_context
+                )
+                if is_prefix_extension:
+                    request_mode = "chat_completions_tokens"
+                    prompt_ids = await get_prompt_ids(
+                        state=rollout.vf_state,
+                        prompt_messages=messages,
+                        client=rollout.localhost_client,
+                    )
+                    logger.info(
+                        "rollout=%s turn=%d prompt_ids_len=%d",
+                        rollout_id,
+                        turn_index,
+                        len(prompt_ids),
+                    )
+                    response = await _call_chat_with_tokens(
+                        rollout=rollout,
+                        messages=messages,
+                        tools=tools,
+                        prompt_ids=prompt_ids,
+                        sampling_args=dict(sampling_args),
+                    )
+                else:
+                    request_mode = "chat_completions"
+                    response = await _call_chat_with_messages(
+                        rollout=rollout,
+                        messages=messages,
+                        tools=tools,
+                        sampling_args=dict(sampling_args),
+                    )
+        except BadRequestError as exc:
+            detail: str | dict[str, Any] = str(exc)
+            body = getattr(exc, "body", None)
+            if isinstance(body, dict):
+                detail = body
+            logger.warning(
+                "rollout=%s turn=%d upstream_bad_request=%r",
+                rollout_id,
+                turn_index,
+                detail,
+            )
+            raise HTTPException(status_code=400, detail=detail) from exc
 
         completion_messages = await parse_response_messages(response, "chat")
         response_is_truncated = await parse_is_truncated(response, "chat")
