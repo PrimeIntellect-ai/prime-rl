@@ -544,26 +544,8 @@ class Orchestrator:
                 step_start_time,
             )
 
-        # Run final evals
-        if config.eval:
-            self.logger.info("Running final evals")
-            await asyncio.gather(
-                *[
-                    evaluate_env(
-                        env=eval_env,
-                        env_name=eval_env_name,
-                        get_client=inference_pool.get_next_client,
-                        model_name=scheduler.model_name,
-                        sampling_args=eval_sampling_args,
-                        num_examples=eval_env_config.num_examples or config.eval.num_examples,
-                        rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
-                        max_retries=eval_env_config.max_retries,
-                        ckpt_step=scheduler.ckpt_step,
-                        step=progress.step,
-                    )
-                    for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
-                ]
-            )
+        # Ensure final-step eval runs once at most.
+        await maybe_run_eval(scheduler.ckpt_step, is_final_step=True)
 
         # Log final (immutable) samples and distributions to monitor(s)
         monitor.log_final_samples()
