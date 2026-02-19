@@ -249,24 +249,6 @@ async def update_weights(
         await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
 
-async def reload_weights(admin_clients: list[AsyncClient]) -> None:
-    """Make a HTTP post request to the vLLM server to reload weights (reset to base model)."""
-    logger = get_logger()
-
-    async def _reload_weights(admin_client: AsyncClient) -> None:
-        logger.debug("Sending request to reload weights (reset to base model)")
-        try:
-            response = await admin_client.post("/reload_weights", json={})
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /reload_weights does not exist. Skipping weight reload.")
-                return
-            raise
-
-    await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
-
-
 def _is_retryable_lora_error(exception: BaseException) -> bool:
     """Check if an exception should trigger a retry for LoRA loading."""
     if isinstance(exception, httpx.HTTPStatusError):

@@ -17,7 +17,7 @@ from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor.parallel import parallelize_module
 from torchtitan.distributed.expert_parallel import ExpertParallel
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
@@ -40,7 +40,6 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.tensor_hashing import get_module_signature
 from prime_rl.utils.vlm import is_vlm_model
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
@@ -147,9 +146,20 @@ def get_model(
     model_config.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
 
-    # Ensure pad_token_id is set (some models like Qwen3MoE don't have it)
+    # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
+    # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
     if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
-        model_config.pad_token_id = model_config.eos_token_id
+        gen_config = GenerationConfig.from_model_config(model_config)
+        # Use `is not None` instead of truthiness: token ID 0 is valid.
+        pad_token_id = next(
+            (
+                v
+                for v in [gen_config.pad_token_id, gen_config.eos_token_id, getattr(model_config, "eos_token_id", None)]
+                if v is not None
+            ),
+            None,
+        )
+        model_config.pad_token_id = pad_token_id
 
     # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
     # The model should load in its default dtype (bf16) to match vLLM inference.
@@ -180,11 +190,10 @@ def get_model(
         )
 
     with device:
-        # For VLM models, use AutoModelForVision2Seq or import specific model class
         if is_vlm:
-            from transformers import AutoModelForVision2Seq
+            from transformers import AutoModelForImageTextToText
 
-            model_cls = AutoModelForVision2Seq
+            model_cls = AutoModelForImageTextToText
         else:
             match impl_to_use:
                 case "hf":
@@ -669,7 +678,6 @@ def setup_model(
         else:
             load_dcp_from_hf(model, config, parallel_dims)
 
-    logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
 
 

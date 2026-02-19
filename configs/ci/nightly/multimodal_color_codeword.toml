@@ -1,0 +1,35 @@
+# Based on configs/multimodal/rl_color_codeword.toml but tuned for CI
+inference_gpu_ids = [0,1,2,3]
+trainer_gpu_ids = [4,5,6,7]
+
+max_steps = 25
+seq_len = 4096
+
+[model]
+name = "Qwen/Qwen3-VL-4B-Instruct"
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 64
+
+[[orchestrator.env]]
+id = "primeintellect/color-codeword"
+args = { images_per_turn = 1, max_turns = 3, num_examples = 1000, seed = 42 }
+
+[orchestrator.val]
+interval = 5
+num_examples = 100
+
+[trainer]
+
+[trainer.model]
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]

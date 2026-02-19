@@ -1,3 +1,15 @@
+def transformers_v5_compat():
+    """vLLM general plugin: patch transformers v5 config attrs that vLLM 0.16 still expects.
+
+    Registered as a ``vllm.general_plugins`` entry-point so it runs automatically
+    in every vLLM process, including spawned workers.
+    """
+    from transformers import Qwen3VLMoeTextConfig
+
+    if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
+        Qwen3VLMoeTextConfig.tie_word_embeddings = False
+
+
 # Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 def monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode():
     from vllm.v1.metrics import loggers as vllm_metrics_loggers

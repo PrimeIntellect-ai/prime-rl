@@ -116,6 +116,39 @@ def check_reward_in_range(
     )
 
 
+def check_avg_reward_in_range(
+    lines: list[str],
+    last_n_steps: int,
+    min_threshold: float | None = None,
+    max_threshold: float | None = None,
+):
+    """Helper to assert that the average reward over the last N steps is within a threshold"""
+    pattern = r"Reward:\s*(\d+\.\d{4})"
+    step_lines = [line for line in lines if "SUCCESS" in line and "Step" in line and re.search(pattern, line)]
+    assert len(step_lines) >= last_n_steps, (
+        f"Not enough step lines found. Expected at least {last_n_steps}, got {len(step_lines)}"
+    )
+
+    recent_lines = step_lines[-last_n_steps:]
+    rewards = []
+    for line in recent_lines:
+        match = re.search(pattern, line)
+        assert match is not None, f"Could not find Reward in line: {line}"
+        rewards.append(float(match.group(1)))
+
+    avg_reward = sum(rewards) / len(rewards)
+    if min_threshold is not None:
+        assert avg_reward >= min_threshold, (
+            f"Average reward over last {last_n_steps} steps did not reach minimum threshold. "
+            f"Found avg_reward={avg_reward:.4f} < {min_threshold} (rewards={rewards})"
+        )
+    if max_threshold is not None:
+        assert avg_reward <= max_threshold, (
+            f"Average reward over last {last_n_steps} steps exceeded maximum threshold. "
+            f"Found avg_reward={avg_reward:.4f} > {max_threshold} (rewards={rewards})"
+        )
+
+
 def check_mismatch_kl_in_range(
     lines: list[str],
     step: int = -1,
