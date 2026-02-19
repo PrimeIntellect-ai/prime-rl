@@ -40,7 +40,6 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.tensor_hashing import get_module_signature
 from prime_rl.utils.vlm import is_vlm_model
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
@@ -679,7 +678,6 @@ def setup_model(
         else:
             load_dcp_from_hf(model, config, parallel_dims)
 
-    logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
 
 
