@@ -208,19 +208,39 @@ def monkey_patch_tokenize_params_validation():
 def monkey_patch_minimax_m2_for_lora():
     """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
 
-    Two issues:
-    1. The MoE gate (router) uses params_dtype=torch.float32 and casts inputs
-       to float32, but vLLM's LoRA Triton kernel only supports float16/bfloat16.
-       Fix: recreate the gate in model dtype and remove the float32 cast.
+    These patches are only needed when using LoRA with MiniMax M2 but are safe
+    to apply unconditionally (verified with non-LoRA runs). We apply them at
+    import time because the worker __init__ runs before the vLLM config is
+    available, so we can't check if LoRA is enabled.
 
-    2. PrimeRL saves adapter keys as mlp.experts.{j}.gate_proj/down_proj/up_proj
-       but vLLM's MiniMax M2 expects block_sparse_moe.experts.{j}.w1/w2/w3.
-       Fix: add hf_to_vllm_mapper on the model to remap adapter keys on load.
+    Problem 1 — Gate dtype mismatch:
+        vLLM's MiniMaxM2MoE creates the gate (router) with params_dtype=float32
+        and casts inputs to float32. When LoRA is enabled, vLLM wraps ALL
+        ReplicatedLinear layers (including the gate) with LoRA support. Even
+        though our adapter has no gate LoRA weights, the LoRA Triton kernel
+        still runs for all wrapped layers when any adapter is active — and it
+        asserts inputs are float16/bfloat16. Qwen3 MoE doesn't have this
+        problem because its gate uses the model dtype.
+        Fix: recreate the gate in model dtype and remove the float32 cast.
+        FusedMoE already has router_logits_dtype=float32, so routing precision
+        is preserved inside the expert dispatch.
+
+    Problem 2 — Adapter key naming mismatch:
+        PrimeRL saves adapter keys using its internal naming convention
+        (mlp.experts.{j}.gate_proj/down_proj/up_proj), which matches Qwen3 MoE
+        but not MiniMax M2. vLLM's MiniMax M2 model expects HF-style keys
+        (block_sparse_moe.experts.{j}.w1/w2/w3). For full model weights this
+        is handled by vLLM's load_weights(), but LoRA adapters are loaded
+        through a separate path (LoRAModel.from_local_checkpoint) that doesn't
+        have model-specific key translation.
+        Fix: set hf_to_vllm_mapper on the model class so vLLM remaps adapter
+        keys during LoRA loading. This attribute is only read by _load_adapter
+        in the LoRA worker manager — it has no effect without LoRA.
     """
     from vllm.model_executor.models.minimax_m2 import MiniMaxM2ForCausalLM, MiniMaxM2MoE
     from vllm.model_executor.models.utils import WeightsMapper
 
-    # --- Gate dtype fix ---
+    # --- Gate dtype fix (only matters with LoRA, safe without) ---
     _original_init = MiniMaxM2MoE.__init__
 
     def _patched_init(self, config, quant_config=None, prefix=""):
@@ -249,7 +269,7 @@ def monkey_patch_minimax_m2_for_lora():
     MiniMaxM2MoE.__init__ = _patched_init
     MiniMaxM2MoE.forward = _patched_forward
 
-    # --- Adapter key remapping ---
+    # --- Adapter key remapping (only read by vLLM's LoRA adapter loader) ---
     MiniMaxM2ForCausalLM.hf_to_vllm_mapper = WeightsMapper(
         orig_to_new_substr={
             ".mlp.experts.": ".block_sparse_moe.experts.",
