@@ -18,7 +18,6 @@ from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.pydantic_config import BaseSettings
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
-    validate_shared_max_async_level,
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
@@ -166,13 +165,6 @@ class BaseRLConfig(BaseSettings):
         ),
     ] = None
 
-    max_async_level: Annotated[
-        int | None,
-        Field(
-            description="The async level to use. If None, will fallback to the async level specified on submodule configs."
-        ),
-    ] = None
-
     weight_broadcast: Annotated[
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
@@ -274,17 +266,6 @@ class BaseRLConfig(BaseSettings):
             self.orchestrator.max_steps = self.max_steps
 
         validate_shared_max_steps(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_async_level(self):
-        # If specified, use the same async level for trainer and orchestrator
-        if self.max_async_level is not None:
-            self.trainer.max_async_level = self.max_async_level
-            self.orchestrator.max_async_level = self.max_async_level
-
-        validate_shared_max_async_level(self.trainer, self.orchestrator)
 
         return self
 
