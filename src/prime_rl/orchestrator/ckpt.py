@@ -29,7 +29,12 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def _save_to_path(
+    def mark_stable(self, step: int) -> None:
+        """Write STABLE file to indicate checkpoint is complete."""
+        step_path = get_step_path(self.ckpt_dir, step)
+        (step_path / "STABLE").touch()
+
+    def save_to_path(
         self,
         ckpt_path: Path,
         progress: Progress,
@@ -47,7 +52,7 @@ class CheckpointManager:
 
         self.logger.debug(f"Orchestrator checkpoint saved in {time.perf_counter() - start_time:.2f} seconds")
 
-    def _load_from_path(self, ckpt_path: Path, progress: Progress, buffer: Buffer) -> None:
+    def load_from_path(self, ckpt_path: Path, progress: Progress, buffer: Buffer) -> None:
         """Loads a checkpoint from a given path in-place."""
         self.logger.debug(f"Loading checkpoint from {ckpt_path}")
         start_time = time.perf_counter()
@@ -76,7 +81,7 @@ class CheckpointManager:
         ckpt_path = self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
-        self._load_from_path(ckpt_path, progress, buffer)
+        self.load_from_path(ckpt_path, progress, buffer)
 
     def save(
         self,
@@ -87,7 +92,8 @@ class CheckpointManager:
         """Saves the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
-        self._save_to_path(ckpt_path, progress, buffer)
+        self.save_to_path(ckpt_path, progress, buffer)
+        self.mark_stable(step)
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
