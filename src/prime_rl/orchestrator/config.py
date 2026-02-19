@@ -801,6 +801,13 @@ class OrchestratorConfig(BaseSettings):
     ] = None
 
     @model_validator(mode="after")
+    def validate_unique_filter_types(self):
+        types = [f.type for f in self.filters]
+        if len(types) != len(set(types)):
+            raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
+        return self
+
+    @model_validator(mode="after")
     def validate_max_concurrent(self):
         if self.max_concurrent is not None and self.max_concurrent < self.rollouts_per_example:
             raise ValueError("max_concurrent must be at least the number of rollouts per example")
