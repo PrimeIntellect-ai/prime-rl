@@ -594,9 +594,7 @@ class Orchestrator:
                 address = env.address
             self.logger.info(f"Connecting {label} environment {env_name} to server at {address}")
             addresses.append(address)
-        clients = [
-            setup_env_client(address=address, name=name) for name, address in zip(env_names, addresses)
-            ]
+        clients = [setup_env_client(address=address, name=name) for name, address in zip(env_names, addresses)]
         self.logger.info(f"Waiting for {label} environment servers to be ready")
         await wait_for_env_servers(clients)
         self.logger.success(f"{label.capitalize()} environment servers ready")
