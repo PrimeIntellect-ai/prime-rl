@@ -16,7 +16,7 @@ project = "acereason-math"
 name = "stage2"
 
 [orchestrator]
-max_inflight_rollouts = 128
+batch_size = 2048
 rollouts_per_example = 16
 
 [orchestrator.sampling]

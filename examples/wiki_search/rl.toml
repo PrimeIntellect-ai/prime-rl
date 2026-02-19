@@ -29,14 +29,18 @@ target_modules = [
 ]
 
 [orchestrator]
-max_inflight_rollouts = 64
+batch_size = 512
 rollouts_per_example = 16
+oversampling_factor = 2.0
 
 [orchestrator.model.lora]
 name = "qwen3-4b-wiki-search"
 
 [orchestrator.sampling]
 max_tokens = 512
+
+[orchestrator.buffer]
+online_difficulty_filtering = true
 
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"

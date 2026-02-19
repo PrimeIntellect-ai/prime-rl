@@ -12,7 +12,7 @@ name = "gsm8k"
 name = "PrimeIntellect/Qwen3-0.6B"
 
 [orchestrator]
-max_inflight_rollouts = 32
+batch_size = 512
 rollouts_per_example = 16
 
 [orchestrator.sampling]

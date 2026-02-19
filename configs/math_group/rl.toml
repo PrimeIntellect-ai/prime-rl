@@ -11,8 +11,9 @@ name = "math-group"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-max_inflight_rollouts = 48
+batch_size = 512
 rollouts_per_example = 16
+oversampling_factor = 1.5
 
 [[orchestrator.env]]
 id = "primeintellect/math-env"
@@ -27,6 +28,10 @@ args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", que
 [orchestrator.buffer]
 easy_threshold = 1.0
 hard_threshold = 0.0
+
+[orchestrator.val]
+interval = 5
+num_examples = 128
 
 [orchestrator.eval]
 interval = 50
