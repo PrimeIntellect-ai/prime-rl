@@ -76,14 +76,6 @@ async def update_weights(request: Request):
     return {"status": "ok"}
 
 
-@router.post("/reload_weights")
-async def reload_weights(request: Request):
-    await engine_client(request).collective_rpc("reload_weights")
-    # Reset prefix cache to invalidate KV states computed with old weights
-    await engine_client(request).reset_prefix_cache()
-    return {"status": "ok"}
-
-
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
     """Load a LoRA adapter and reset the prefix cache.
