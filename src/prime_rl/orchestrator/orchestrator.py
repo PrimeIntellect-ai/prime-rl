@@ -150,8 +150,9 @@ class Orchestrator:
         # Build rollout filters
         rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
         if rollout_filters:
-            self.logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
-
+            self.logger.info(
+                f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}"
+            )
 
         # Setup monitor
         self.logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -419,7 +420,7 @@ class Orchestrator:
             train_rollouts = await scheduler.next_completed_group()
             if not train_rollouts:
                 continue
-            
+
             # Apply rollout filters (zeros reward/mask for degenerate generations)
             filter_metrics = apply_filters(rollout_filters, train_rollouts)
 
