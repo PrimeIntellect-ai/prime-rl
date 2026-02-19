@@ -80,6 +80,30 @@ def _should_run_eval(eval_config, ckpt_step: int, last_eval_step: int, is_final_
     return True
 
 
+def _aggregate_filter_metrics(metrics_df: pd.DataFrame, stop_conditions: list[str | None]) -> dict[str, float]:
+    filter_columns = [column for column in metrics_df.columns if column.startswith("filter/")]
+    if not filter_columns:
+        return {}
+
+    filter_df = metrics_df[filter_columns].fillna(0.0)
+    n = len(filter_df)
+    filter_metrics: dict[str, float] = {}
+
+    for column in filter_columns:
+        filter_metrics[f"{column}_count"] = float(filter_df[column].sum())
+        filter_metrics[f"{column}_rate"] = float(filter_df[column].mean()) if n > 0 else 0.0
+
+    if n > 0:
+        detected_mask = filter_df.sum(axis=1) > 0
+        filter_metrics["filter/total_detected_rate"] = float(detected_mask.mean())
+        filter_metrics["filter/total_enforced_rate"] = float(sum(condition is not None for condition in stop_conditions) / n)
+    else:
+        filter_metrics["filter/total_detected_rate"] = 0.0
+        filter_metrics["filter/total_enforced_rate"] = 0.0
+
+    return filter_metrics
+
+
 class Orchestrator:
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
@@ -422,7 +446,7 @@ class Orchestrator:
                 continue
 
             # Apply rollout filters (zeros reward/mask for degenerate generations)
-            filter_metrics = apply_filters(rollout_filters, train_rollouts)
+            apply_filters(rollout_filters, train_rollouts)
 
             # Compute advantages
             example_ids = [r["example_id"] for r in train_rollouts]
@@ -625,7 +649,6 @@ class Orchestrator:
         buffer = self.buffer
         monitor = self.monitor
         progress = self.progress
-        tokenizer = self.tokenizer
         event_loop_lag_monitor = self.event_loop_lag_monitor
 
         results_df = pd.DataFrame(
@@ -644,6 +667,9 @@ class Orchestrator:
             }
         )
         metrics_df = pd.DataFrame([r["metrics"] for r in accumulated_rollouts])
+        stop_conditions = [r.get("stop_condition") for r in accumulated_rollouts]
+        filter_metrics = _aggregate_filter_metrics(metrics_df, stop_conditions)
+        rollout_metric_columns = [column for column in metrics_df.columns if not column.startswith("filter/")]
 
         num_tokens = int(results_df.seq_len.sum())
         num_samples = len(accumulated_rollouts)
@@ -703,12 +729,12 @@ class Orchestrator:
                 .value_counts(normalize=True)
                 .items()
             },
-            **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
+            **{f"metrics/{metric}": metrics_df[metric].mean() for metric in rollout_metric_columns},
+            **filter_metrics,
             "time/step": step_time,
             **scheduler.get_metrics(),
             **buffer.get_metrics(),
             **event_loop_lag_monitor.get_metrics(),
-            **filter_metrics,
             "step": progress.step,
         }
 
