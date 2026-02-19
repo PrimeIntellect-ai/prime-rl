@@ -45,22 +45,21 @@ def get_eval_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any
     return sampling_args
 
 
-def compute_pass_at_k(rewards: list[int]) -> dict[str, float]:
-    total_attempts = len(rewards)
-    k = total_attempts // 2
+def _pass_at_k(n: int, c: int, k: int) -> float:
+    """Unbiased estimator of pass@k (Chen et al., 2021).
 
-    if k == 0:
-        return {"pass@1": float(any(reward == 1.0 for reward in rewards))}
+    Computes 1 - C(n-c, k) / C(n, k) in a numerically stable way.
+    """
+    if n - c < k:
+        return 1.0
+    return 1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1))
 
-    num_trials = 100
-    pass_rates = []
 
-    for _ in range(num_trials):
-        sampled_rewards = np.random.choice(rewards, size=k, replace=False)
-        pass_rate = float(any(reward == 1.0 for reward in sampled_rewards))
-        pass_rates.append(pass_rate)
-
-    return {f"pass@{k}": float(np.mean(pass_rates))}
+def compute_pass_at_k(rewards: list[float]) -> dict[str, float]:
+    n = len(rewards)
+    c = sum(r == 1.0 for r in rewards)
+    ks = [k for k in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024) if k <= n]
+    return {f"pass@{k}": _pass_at_k(n, c, k) for k in ks}
 
 
 async def evaluate_env(
