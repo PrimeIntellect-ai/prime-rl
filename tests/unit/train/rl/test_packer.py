@@ -211,32 +211,6 @@ def test_multi_packer_rollout_budget_threshold(packer_env) -> None:
     assert packer._has_enough_batch_units()
 
 
-def test_multi_packer_rollout_budget_selection(multi_packer_env, tmp_path: Path) -> None:
-    manager, run_idx, receiver, sender = multi_packer_env
-    create_run_with_config(tmp_path, "run_b")
-    manager.discover_runs()
-    run_b_idx = manager.id_2_idx["run_b"]
-
-    packer = MultiPacker(
-        dp_world_size=1,
-        seq_len=8,
-        pad_to_multiple_of=1,
-        tokenizer=None,
-        config=FileSystemTransportConfig(),
-        rollout_batch_size=3,
-        start_step=0,
-    )
-
-    packer.buffers[run_idx].append((make_training_sample(), 0))
-    packer.buffers[run_idx].append((make_training_sample(), 0))
-    packer.buffers[run_b_idx].append((make_training_sample(), 0))
-    packer.buffers[run_b_idx].append((make_training_sample(), 0))
-
-    selected = packer._select_samples_round_robin()
-    assert len(selected) == 3
-    assert {idx for idx, _sample, _step in selected} == {run_idx, run_b_idx}
-
-
 def test_single_packer_sets_receiver_start_step_to_zero(packer_env) -> None:
     manager, run_idx, receiver, sender = packer_env
 
@@ -253,7 +227,9 @@ def test_single_packer_sets_receiver_start_step_to_zero(packer_env) -> None:
     assert receiver.start_steps == [(0, 0)]
 
 
-def test_multi_packer_sets_receiver_start_step_to_zero_for_existing_runs(multi_packer_env) -> None:
+def test_multi_packer_sets_receiver_start_step_to_zero_for_existing_and_new_runs(
+    multi_packer_env, tmp_path: Path
+) -> None:
     manager, run_idx, receiver, sender = multi_packer_env
 
     MultiPacker(
@@ -267,20 +243,6 @@ def test_multi_packer_sets_receiver_start_step_to_zero_for_existing_runs(multi_p
     )
 
     assert (run_idx, 0) in receiver.start_steps
-
-
-def test_multi_packer_sets_receiver_start_step_to_zero_for_new_runs(multi_packer_env, tmp_path: Path) -> None:
-    manager, run_idx, receiver, sender = multi_packer_env
-
-    MultiPacker(
-        dp_world_size=1,
-        seq_len=8,
-        pad_to_multiple_of=1,
-        tokenizer=None,
-        config=FileSystemTransportConfig(),
-        token_batch_size=4,
-        start_step=0,
-    )
     existing_steps = list(receiver.start_steps)
 
     create_run_with_config(

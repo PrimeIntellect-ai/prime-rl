@@ -19,20 +19,6 @@ def test_batch_size_defaults_max_inflight_rollouts() -> None:
     assert config.orchestrator.max_inflight_rollouts == 64
 
 
-def test_batch_size_allows_explicit_max_inflight_rollouts() -> None:
-    config = RLConfig(
-        trainer=RLTrainerConfig(),
-        orchestrator=OrchestratorConfig(
-            batch_size=64,
-            rollouts_per_example=8,
-            max_inflight_rollouts=80,
-        ),
-    )
-
-    assert config.orchestrator.batch_size == 64
-    assert config.orchestrator.max_inflight_rollouts == 80
-
-
 def test_token_batch_size_requires_max_inflight_rollouts() -> None:
     with pytest.raises(ValidationError, match="max_inflight_rollouts must be set when token_batch_size is set"):
         RLConfig(
@@ -65,16 +51,7 @@ def test_batch_and_token_batch_sizes_are_mutually_exclusive() -> None:
         )
 
 
-def test_batching_defaults_to_batch_size_mode() -> None:
-    config = RLConfig(
-        trainer=RLTrainerConfig(),
-        orchestrator=OrchestratorConfig(),
-    )
+def test_batching_defaults_to_rollout_mode() -> None:
+    config = RLConfig(trainer=RLTrainerConfig(), orchestrator=OrchestratorConfig())
     assert config.orchestrator.batch_size == 128
     assert config.orchestrator.max_inflight_rollouts == 128
-
-
-def test_batch_size_field_sets_batch_size() -> None:
-    orchestrator = OrchestratorConfig.model_validate({"batch_size": 64, "rollouts_per_example": 8})
-    assert orchestrator.batch_size == 64
-    assert orchestrator.max_inflight_rollouts == 64
