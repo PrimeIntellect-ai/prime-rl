@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, Discriminator, Field, Tag, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
@@ -554,6 +554,7 @@ AdvantageConfigType: TypeAlias = Annotated[
     Annotated[AdvantageConfig, Tag("default")] | Annotated[CustomAdvantageConfig, Tag("custom")],
     Discriminator(_advantage_config_discriminator),
 ]
+
 
 class GibberishFilterConfig(BaseModel):
     """Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387)."""
