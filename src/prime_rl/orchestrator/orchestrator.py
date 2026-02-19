@@ -271,7 +271,7 @@ class Orchestrator:
             lora_name = config.model.lora.name if config.model.lora else None
             await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
         else:
-            logger.info("Training from scratch")
+            self.logger.info("Training from scratch")
 
         # Continuously get group rollouts and send them to the trainer.
         # The trainer decides when to step based on the configured batch budget.

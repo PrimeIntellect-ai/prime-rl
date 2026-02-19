@@ -12,6 +12,7 @@ from prime_rl.utils.utils import get_ckpt_dir, get_step_path
 
 @dataclass
 class Progress:
+    step: int = 0
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0
