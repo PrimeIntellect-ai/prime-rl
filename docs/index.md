@@ -10,6 +10,7 @@ This directory maintains the documentation for PRIME-RL. It is organized into th
 - [**MultiRunManager**](multi_run_manager.md) - Multi-run training with the MultiRunManager object for concurrent LoRA adapters
 - [**Checkpointing**](checkpointing.md) - Saving and resuming training from checkpoints
 - [**Benchmarking**](benchmarking.md) - Performance benchmarking and throughput measurement
+- [**Experimental Grouped GEMM**](grouped_gemm_experimental.md) - Current FP8 grouped GEMM prototype and multi-GPU benchmark entrypoints
 - [**Deployment**](deployment.md) - Training deployment on single-GPU, multi-GPU, and multi-node clusters
 - [**Kubernetes**](kubernetes.md) - Deploying PRIME-RL on Kubernetes with Helm
 - [**Troubleshooting**](troubleshooting.md) - Common issues and their solutions
