@@ -62,4 +62,9 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`trainer.token_batch_size`** and **`orchestrator.max_inflight_rollouts`**: Replaced throughput controls previously configured via `batch_size` and `max_async_level` in RL configs. Use `token_batch_size` to control trainer accumulation and `max_inflight_rollouts` to control orchestrator concurrency (2026-02-17)
 - **`orchestrator.rollouts_per_example`**: Changed default from `1` to `8` (2026-02-17)
 - **`orchestrator.batch_size`**, **`orchestrator.token_batch_size`**, and **`orchestrator.max_inflight_rollouts`**: Batch sizing is orchestrator-owned in RL configs. Use exactly one of `batch_size` (rollout-based) or `token_batch_size` (token-based). If `batch_size` is set and `max_inflight_rollouts` is not set, it defaults to `batch_size`. If `token_batch_size` is set, `max_inflight_rollouts` must also be set. RL config wiring maps these settings to trainer accumulation internally. (2026-02-18)
+- **`orchestrator.oversampling_factor`**: Removed from `OrchestratorConfig`. Use `batch_size`/`token_batch_size` plus `max_inflight_rollouts` for throughput control (2026-02-18)
+- **`orchestrator.max_async_level`**, **`orchestrator.strict_async_level`**, **`orchestrator.num_train_workers`**, and **`trainer.max_async_level`**: Removed from RL config surface. Use `orchestrator.max_inflight_rollouts` to control rollout concurrency (2026-02-18)
+- **`orchestrator.val`** (`ValConfig`): Removed. Use `orchestrator.eval` for online evaluation configuration (2026-02-18)
+- **`orchestrator.buffer.online_difficulty_filtering`**: Removed from `BufferConfig` (2026-02-18)
+- **`trainer.weight_broadcast.keep_last`**: Added on trainer weight broadcast config. Keeps only the most recent N broadcast directories (default: `1`) (2026-02-18)
 
