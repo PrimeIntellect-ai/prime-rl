@@ -255,6 +255,13 @@ class ModelConfig(BaseConfig):
         ),
     ] = True
 
+    freeze_moe_router: Annotated[
+        bool,
+        Field(
+            description="Whether to freeze the MoE router parameters during training.",
+        ),
+    ] = False
+
     lora: Annotated[
         LoRAConfig | None,
         Field(
