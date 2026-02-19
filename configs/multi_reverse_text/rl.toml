@@ -19,10 +19,6 @@ address = "tcp://127.0.0.1:5000" # requires: uv run env-server --env.id reverse-
 id = "reverse-text"
 name = "reverse-text-2"
 
-[orchestrator.val]
-interval = 1
-num_examples = 16
-
 [orchestrator.eval]
 interval = 5
 

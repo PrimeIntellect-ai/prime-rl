@@ -682,6 +682,9 @@ class OrchestratorConfig(BaseSettings):
     # The advantage configuration
     advantage: AdvantageConfigType | None = AdvantageConfig()
 
+    # Rollout filters (monitor by default, enforce optionally)
+    filters: list[FilterConfigType] = [GibberishFilterConfig(), RepetitionFilterConfig()]
+
     # The logging configuration
     log: LogConfig = LogConfig()
 
@@ -760,6 +763,14 @@ class OrchestratorConfig(BaseSettings):
             description="Sequence length to use for training. If a sample is shorter than this, it will be padded. If a sequence is longer than this, it will be truncated.",
         ),
     ] = 2048
+
+    num_train_workers: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of training workers to use for training.",
+        ),
+    ] = 1
 
     max_steps: Annotated[
         int | None,
