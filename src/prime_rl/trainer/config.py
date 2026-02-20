@@ -13,11 +13,6 @@ AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_atte
 # to attempt installing a kernel from hub.
 _ATTN_ALIASES = {"flash_attention_4": "fa4"}
 
-MOE_MODEL_MAPS = {
-    "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
-    "moonshotai/Moonlight-16B-A3B-Instruct": "Jackmin108/Moonlight-16B-A3B-Instruct-Fast",
-}
-
 
 class ActivationCheckpointConfig(BaseConfig):
     """Configures activation checkpointing."""
@@ -297,13 +292,6 @@ class ModelConfig(BaseConfig):
         if isinstance(data, dict) and data.get("attn") in _ATTN_ALIASES:
             data["attn"] = _ATTN_ALIASES[data["attn"]]
         return data
-
-    @model_validator(mode="after")
-    def _map_model_name_for_moe(self):
-        """Map model name if it exists in MOE_MODEL_MAPS."""
-        if self.name in MOE_MODEL_MAPS:
-            self.name = MOE_MODEL_MAPS[self.name]
-        return self
 
     @model_validator(mode="after")
     def trust_remote_code_only_with_hf(self):
