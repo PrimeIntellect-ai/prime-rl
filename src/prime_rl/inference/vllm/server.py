@@ -23,6 +23,7 @@ from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.inference.patches import (
+    monkey_patch_hermes_tool_parser_thread_safety,
     monkey_patch_load_lora_adapter,
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
     monkey_patch_tokenize_params_validation,
@@ -38,6 +39,8 @@ monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
 monkey_patch_load_lora_adapter()
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
 monkey_patch_tokenize_params_validation()
+# NOTE: Monkeypatch Hermes tool parser to cache tokenizer.encode() results (huggingface/tokenizers#537)
+monkey_patch_hermes_tool_parser_thread_safety()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 

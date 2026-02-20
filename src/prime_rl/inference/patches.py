@@ -278,3 +278,72 @@ def monkey_patch_minimax_m2_for_lora():
             ".up_proj.": ".w3.",
         },
     )
+
+
+def monkey_patch_hermes_tool_parser_thread_safety():
+    """Cache tokenized tool-call markers to avoid calling tokenizer.encode()
+    in Hermes2ProToolParser.__init__(), which runs per-request.
+
+    The race: AsyncMicrobatchTokenizer runs tokenizer.encode() in a
+    ThreadPoolExecutor while __init__ calls tokenizer.encode("<tool_call>")
+    on the main thread. The Rust tokenizer panics with
+    "RuntimeError: Already borrowed" (huggingface/tokenizers#537).
+
+    Fix: on first instantiation per tokenizer, run the original __init__
+    and cache the 4 tokenizer-derived attributes. Subsequent instantiations
+    set those attributes from the cache without touching the tokenizer.
+    """
+    import threading
+
+    import regex as re
+    from vllm.tool_parsers.abstract_tool_parser import ToolParser
+    from vllm.tool_parsers.hermes_tool_parser import Hermes2ProToolParser, MistralTokenizer
+
+    _original_init = Hermes2ProToolParser.__init__
+    _cache_lock = threading.Lock()
+    _cache: dict[int, dict] = {}
+
+    def _patched_init(self, tokenizer):
+        # Run the base class init (sets self.model_tokenizer, counters)
+        ToolParser.__init__(self, tokenizer)
+
+        if isinstance(tokenizer, MistralTokenizer):
+            self.model_tokenizer = tokenizer.tokenizer
+
+        # Per-instance state (cheap, no tokenizer calls)
+        self.current_tool_name_sent = False
+        self.prev_tool_call_arr = []
+        self.current_tool_id = -1
+        self.streamed_args_for_tool = []
+        self.tool_call_start_token = "<tool_call>"
+        self.tool_call_end_token = "</tool_call>"
+        self.tool_call_regex = re.compile(r"<tool_call>(.*?)</tool_call>|<tool_call>(.*)", re.DOTALL)
+        self.scratch_pad_regex = re.compile(r"<scratch_pad>(.*?)</scratch_pad>", re.DOTALL)
+        self.buffered_delta_text = ""
+
+        if not self.model_tokenizer:
+            raise ValueError("The model tokenizer must be passed to the ToolParser constructor during construction.")
+
+        # Tokenizer-derived attributes: cache to avoid encode()/decode() race
+        tok_id = id(self.model_tokenizer)
+        if tok_id not in _cache:
+            with _cache_lock:
+                if tok_id not in _cache:
+                    _cache[tok_id] = {
+                        "start_ids": self.model_tokenizer.encode("<tool_call>", add_special_tokens=False),
+                        "end_ids": self.model_tokenizer.encode("</tool_call>", add_special_tokens=False),
+                    }
+                    _cache[tok_id]["start_array"] = [
+                        self.model_tokenizer.decode([tid]) for tid in _cache[tok_id]["start_ids"]
+                    ]
+                    _cache[tok_id]["end_array"] = [
+                        self.model_tokenizer.decode([tid]) for tid in _cache[tok_id]["end_ids"]
+                    ]
+
+        cached = _cache[tok_id]
+        self.tool_call_start_token_ids = cached["start_ids"]
+        self.tool_call_end_token_ids = cached["end_ids"]
+        self.tool_call_start_token_array = cached["start_array"]
+        self.tool_call_end_token_array = cached["end_array"]
+
+    Hermes2ProToolParser.__init__ = _patched_init
