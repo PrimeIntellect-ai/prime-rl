@@ -28,7 +28,7 @@ def test_orchestrator_metrics_update_and_cleanup():
             "batch/cancelled_rollouts": 1,
             "error/mean": 0.05,
             "seq_len/mean": 128,
-            "completion_len/mean": 64,
+            "decode_len/mean": 64,
             "event_loop_lag/mean": 0.02,
             "reward/env_a": 0.5,
             "reward/env_b": 0.3,
@@ -47,6 +47,7 @@ def test_orchestrator_metrics_update_and_cleanup():
     content = generate_latest(registry).decode()
     assert "orchestrator_step 7.0" in content
     assert "orchestrator_throughput_tokens_per_sec 55.0" in content
+    assert "orchestrator_decode_len_mean 64.0" in content
     assert 'orchestrator_env_reward_mean{env="env_a"} 0.5' in content
     assert 'orchestrator_env_batch_ratio{env="env_b"} 0.45' in content
     assert 'orchestrator_env_batch_ratio{env="inflight_rollouts"}' not in content
