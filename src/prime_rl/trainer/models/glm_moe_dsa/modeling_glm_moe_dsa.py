@@ -102,6 +102,7 @@ class Indexer(nn.Module):
         self.wk = nn.Linear(config.hidden_size, self.head_dim, bias=config.attention_bias)
         self.k_norm = LayerNorm(dim=self.head_dim, eps=1e-6)
         self.weights_proj = nn.Linear(config.hidden_size, self.n_head, bias=False)
+        self.weight_scale = (self.head_dim**-0.5) * (self.n_head**-0.5)
 
     @torch.no_grad()
     def compute_sparse_indices(
@@ -118,7 +119,7 @@ class Indexer(nn.Module):
 
         q_idx = self.wq_b(q_latent[0]).view(total_tokens, self.n_head, self.head_dim)
         k_idx = self.k_norm(self.wk(hidden_states[0]))
-        w = self.weights_proj(hidden_states[0])
+        w = self.weights_proj(hidden_states[0]) * self.weight_scale
 
         # Split into rope and non-rope portions, apply RoPE to pe parts
         q_pe = q_idx[..., : self.rope_dim]
