@@ -60,4 +60,5 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`client.api_key_var`**: Changed default from "OPENAI_API_KEY" to "VLLM_API_KEY" (2026-02-12)
 - **`orchestrator.filters`**: Added orchestrator-side rollout filters for detecting degenerate generations. Supports `[[filters]] type = "gibberish"` (rare tokens at high entropy) and `[[filters]] type = "repetition"` (high-confidence token streaks). Detected rollouts get reward zeroed and completion mask cleared (2026-02-13)
 - **`orchestrator.eval.cancel_inflight_rollouts_on_eval`**: Added flag to optionally cancel in-flight training rollouts before starting online evals. When enabled, avoids congestion by preventing training and eval rollouts from running simultaneously, but slows training as the rollout pipeline must refill after each eval (default: False) (2026-02-16)
+- **`orchestrator.use_verifier_step_advantages`**: Added flag to use verifier-provided per-step completion_advantages when present and valid. If disabled, or if verifier data is missing/invalid, fall back to orchestrator-computed rollout advantages (default: False) (2026-02-19)
 
