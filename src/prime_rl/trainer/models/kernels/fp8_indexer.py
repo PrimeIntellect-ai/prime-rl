@@ -1,9 +1,13 @@
 """Triton FP8 indexer kernel for DSA sparse token selection.
 
-Implements the correct DeepSeek V3.2 scoring formula:
+Implements the DeepSeek V3.2 scoring formula:
     I_{t,s} = Σ_j w_{t,j} · ReLU(q_{t,j} · k_s)
 
-Uses FP8 tensor cores with per-row absmax scaling for Q and K.
+Uses FP8 tensor cores with per-token-group UE8M0 quantization to match
+the vLLM sparse MLA indexer.
+
+FP8 quantization vendored from vLLM (Apache 2.0):
+  vllm/model_executor/layers/quantization/utils/fp8_utils.py
 """
 
 import torch
@@ -11,14 +15,108 @@ import triton
 import triton.language as tl
 
 FP8_MAX = 448.0
+FP8_MIN = -448.0
+FP8_EPS = 1e-10
 
 
-def per_custom_dims_cast_to_fp8(x, dims):
-    excluded_dims = tuple(i for i in range(x.dim()) if i not in set(dims))
-    x_amax = x.abs().float().amax(dim=excluded_dims, keepdim=True).clamp(1e-4)
-    sf = x_amax / FP8_MAX
-    x_scaled = (x * (1.0 / sf)).to(torch.float8_e4m3fn)
-    return x_scaled, sf.squeeze()
+# ---------------------------------------------------------------------------
+# Vendored from vLLM: per-token-group FP8 quantization with UE8M0 scales
+# ---------------------------------------------------------------------------
+
+
+@triton.jit
+def _per_token_group_quant_fp8(
+    y_ptr,
+    y_q_ptr,
+    y_s_ptr,
+    group_size,
+    y_num_columns,
+    y_row_stride,
+    eps,
+    fp8_min,
+    fp8_max,
+    use_ue8m0: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    """Per-token-group FP8 quantization (vendored from vLLM).
+
+    When use_ue8m0=True, the scale is rounded up to the nearest power of 2:
+        scale = 2^ceil(log2(absmax / fp8_max))
+    This matches the UE8M0 scale format used by DeepGEMM / vLLM indexer.
+    """
+    groups_per_row = y_num_columns // group_size
+
+    g_id = tl.program_id(0)
+    row = g_id // groups_per_row
+    row_g_id = g_id % groups_per_row
+
+    y_ptr_offset = (row.to(tl.int64) * y_row_stride) + (row_g_id.to(tl.int64) * group_size)
+    y_ptr += y_ptr_offset
+
+    y_q_ptr_offset = g_id.to(tl.int64) * group_size
+    y_q_ptr += y_q_ptr_offset
+    y_s_ptr += g_id
+
+    cols = tl.arange(0, BLOCK)
+    mask = cols < group_size
+
+    y = tl.load(y_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+
+    _absmax = tl.maximum(tl.max(tl.abs(y)), eps)
+    scale_raw = _absmax / fp8_max
+    y_s = tl.math.exp2(tl.ceil(tl.log2(scale_raw))) if use_ue8m0 else scale_raw
+    y_q = tl.clamp(y / y_s, fp8_min, fp8_max).to(y_q_ptr.dtype.element_ty)
+
+    tl.store(y_q_ptr + cols, y_q, mask=mask)
+    tl.store(y_s_ptr, y_s)
+
+
+def per_token_group_quant_fp8(
+    x: torch.Tensor, group_size: int, use_ue8m0: bool = True
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-token-group FP8 quantization matching vLLM's implementation.
+
+    Args:
+        x: Input tensor with shape [..., D] where D is divisible by group_size.
+        group_size: Number of contiguous elements per quantization group.
+        use_ue8m0: If True, round scales to nearest power of 2 (UE8M0 format).
+
+    Returns:
+        (x_q, x_s): Quantized FP8 tensor and per-group float32 scales.
+    """
+    assert x.shape[-1] % group_size == 0
+    assert x.stride(-1) == 1
+
+    x_q = torch.empty(x.shape, device=x.device, dtype=torch.float8_e4m3fn)
+    shape = x.shape[:-1] + (x.shape[-1] // group_size,)
+    x_s = torch.empty(shape, device=x.device, dtype=torch.float32)
+
+    M = x.numel() // group_size
+    N = group_size
+    BLOCK = triton.next_power_of_2(N)
+    num_warps = min(max(BLOCK // 256, 1), 8)
+
+    _per_token_group_quant_fp8[(M,)](
+        x,
+        x_q,
+        x_s,
+        group_size,
+        x.shape[-1],
+        x.stride(-2),
+        FP8_EPS,
+        FP8_MIN,
+        FP8_MAX,
+        use_ue8m0=use_ue8m0,
+        BLOCK=BLOCK,
+        num_warps=num_warps,
+        num_stages=1,
+    )
+    return x_q, x_s
+
+
+# ---------------------------------------------------------------------------
+# FP8 indexer scoring kernel
+# ---------------------------------------------------------------------------
 
 
 @triton.autotune(
@@ -101,7 +199,10 @@ def _triton_fp8_indexer_kernel(
 
 
 def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
-    """Triton FP8 indexer: FP8 cast + fused kernel + topk.
+    """Triton FP8 indexer: UE8M0 quantization + fused scoring kernel + topk.
+
+    Uses per-token-group FP8 quantization with UE8M0 (power-of-2) scales,
+    matching the vLLM sparse attention indexer.
 
     Args:
         q: [S, H, D] bf16 — query vectors per head
@@ -118,17 +219,16 @@ def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
     S, H, D = q.shape
     device = q.device
 
+    # Per-token-group FP8 quantization with UE8M0 scales (matching vLLM)
     q_flat = q.reshape(S * H, D).contiguous()
-    q_fp8, q_scales = per_custom_dims_cast_to_fp8(q_flat, dims=(0,))
-    k_fp8, k_scales = per_custom_dims_cast_to_fp8(k, dims=(0,))
+    q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True)
+    k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True)
 
     q_fp8 = q_fp8.view(S, H, D).permute(1, 0, 2).contiguous()
 
-    # The FP8 dot product gives (q · k) / (q_scale * k_scale). The kernel only
-    # compensates k_scale, so fold q_scale into the weights to keep the correct
-    # per-head contribution: w_j * q_scale_j * ReLU(fp8_dot * k_scale).
-    # weight_scale (head_dim^-0.5 * n_head^-0.5) is applied here in float32
-    # to match vLLM/slime convention.
+    # Fold q_scale into weights (same convention as vLLM):
+    #   weights = raw_weights * q_scale * softmax_scale * n_head^(-0.5)
+    # where weight_scale = softmax_scale * n_head^(-0.5) = head_dim^(-0.5) * n_head^(-0.5)
     q_scales = q_scales.view(S, H)
     w = w * q_scales * weight_scale
 
