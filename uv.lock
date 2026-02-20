@@ -826,11 +826,11 @@ wheels = [
 
 [[package]]
 name = "fastcore"
-version = "1.12.14"
+version = "1.12.16"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/92/b0/c30721504c916c871b1c3d2f209ad0fa9320a26c7e9041436e9231f3aa1d/fastcore-1.12.14.tar.gz", hash = "sha256:09190c46360c57dbba5e6b991df4b5fd6d2720ea4b4959309151d7fe6b2bf520", size = 92366, upload-time = "2026-02-14T06:54:56.272Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/17/426c8c8cad0d820cae92e6b624c274fdaa77f0570a4db4974fe5dbeb4a6b/fastcore-1.12.16.tar.gz", hash = "sha256:bc7223f47bc55d1aa056ac8aa3022f6eb468ee8e8334b57003ad6f3a27978953", size = 92534, upload-time = "2026-02-20T22:39:45.146Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/c0/b7fa771dda08001eb004112114094370d6b94b857ed902a32472ed74a8fe/fastcore-1.12.14-py3-none-any.whl", hash = "sha256:19e5adcee3af6f357af4f66954e17f335f208bb9cb422dcdef03d2e9d586eca3", size = 96584, upload-time = "2026-02-14T06:54:54.315Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/ff/8b3235c55313ef7c2a7dad00238d34c21139f52039ba2d0479a75ba22482/fastcore-1.12.16-py3-none-any.whl", hash = "sha256:83b1b9a121030eb8f2b5cd3c3c1b2a41a6bdebaf6789868ef73ca0ae14b55ab5", size = 96748, upload-time = "2026-02-20T22:39:43.216Z" },
 ]
 
 [[package]]
@@ -2618,7 +2618,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", specifier = ">=4.57.6" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=013d4da" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0317556" },
     { name = "vllm", specifier = "==0.14.0" },
     { name = "wandb", specifier = ">=0.24.2" },
 ]
@@ -3994,7 +3994,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.11.dev0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=013d4da#013d4da8a906bef2e1cbb6b4bc4347214c1fd534" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0317556#031755682c1572be2bacad7c808680c95bfcdaef" }
 dependencies = [
     { name = "anthropic" },
     { name = "datasets" },
