@@ -24,6 +24,7 @@ def test_trainer_metrics_update():
     assert "trainer_loss 0.25" in content
     assert "trainer_throughput_tokens_per_sec 100.0" in content
     assert "trainer_mismatch_kl 0.05" in content
+    assert "trainer_kl_ent_ratio 0.5" in content
     assert "trainer_last_step_timestamp_seconds" in content
 
 
