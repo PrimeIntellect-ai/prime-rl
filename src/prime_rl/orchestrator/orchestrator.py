@@ -1,4 +1,5 @@
 import asyncio
+import multiprocessing as mp
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -164,9 +165,10 @@ async def orchestrate(config: OrchestratorConfig):
     )
 
     train_env_addresses = []
+    env_processes: list[mp.Process] = []
     for env_id, env, env_name in zip(env_ids, config.env, train_env_names):
         if env.address is None:
-            address = spawn_env_server(
+            address, process = spawn_env_server(
                 env_id=env_id,
                 env_args=env.args,
                 extra_env_kwargs=env.extra_env_kwargs,
@@ -175,6 +177,7 @@ async def orchestrate(config: OrchestratorConfig):
                 log_file_level=config.log.vf_level,
                 json_logging=config.log.json_logging,
             )
+            env_processes.append(process)
         else:
             address = env.address
         logger.info(f"Connecting train environment {env_name} to server at {address}")
@@ -201,7 +204,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         for env_id, env, eval_env_name in zip(env_ids, config.eval.env, eval_env_names):
             if env.address is None:
-                address = spawn_env_server(
+                address, process = spawn_env_server(
                     env_id=env_id,
                     env_args=env.args,
                     extra_env_kwargs=env.extra_env_kwargs,
@@ -210,6 +213,7 @@ async def orchestrate(config: OrchestratorConfig):
                     log_file_level=config.log.vf_level,
                     json_logging=config.log.json_logging,
                 )
+                env_processes.append(process)
             else:
                 address = env.address
             logger.info(f"Connecting eval environment {eval_env_name} to server at {address}")
@@ -774,6 +778,14 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
+
+    # Shutdown env processes
+    for process in env_processes:
+        process.terminate()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
 
     logger.success("Orchestrator finished.")
 

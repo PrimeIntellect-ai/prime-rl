@@ -27,7 +27,7 @@ def spawn_env_server(
     log_file: str | None = None,
     log_file_level: str | None = None,
     json_logging: bool = False,
-) -> str:
+) -> tuple[str, mp.Process]:
     """
     Starts a ZMQEnvServer process in a subprocess.
 
@@ -37,7 +37,7 @@ def spawn_env_server(
     # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
     # the parent process, which has caused hangs when multiple env server
     # subprocesses share the same fds.
-    mp.get_context("spawn").Process(
+    process = mp.get_context("spawn").Process(
         target=ZMQEnvServer.run_server,
         args=(
             env_id,
@@ -49,9 +49,10 @@ def spawn_env_server(
         ),
         kwargs=dict(address=address, json_logging=json_logging),
         daemon=False,  # cannot run daemon because env server uses subprocesses
-    ).start()
+    )
+    process.start()
 
-    return address
+    return address, process
 
 
 def setup_env_client(
