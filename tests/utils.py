@@ -1,7 +1,31 @@
 import re
 from pathlib import Path
 
+from prometheus_client import CollectorRegistry, generate_latest
+from prometheus_client.parser import text_string_to_metric_families
+
 from tests.conftest import ProcessResult
+
+
+def prom_sample_key(name: str, **labels: str) -> tuple[str, tuple[tuple[str, str], ...]]:
+    """Build a stable key for a Prometheus sample name and labels."""
+    return name, tuple(sorted(labels.items()))
+
+
+def prom_collect_samples(registry: CollectorRegistry) -> dict[tuple[str, tuple[tuple[str, str], ...]], float]:
+    """Parse all Prometheus samples from a registry into a keyed value map."""
+    samples = {}
+    for family in text_string_to_metric_families(generate_latest(registry).decode()):
+        for sample in family.samples:
+            samples[prom_sample_key(sample.name, **sample.labels)] = sample.value
+    return samples
+
+
+def prom_sample_value(samples: dict[tuple[str, tuple[tuple[str, str], ...]], float], name: str, **labels: str) -> float:
+    """Return one Prometheus sample value and assert that it exists."""
+    key = prom_sample_key(name, **labels)
+    assert key in samples
+    return samples[key]
 
 
 def strip_escape_codes(text: str) -> str:
