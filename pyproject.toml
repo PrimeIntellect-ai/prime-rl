@@ -34,6 +34,8 @@ dependencies = [
     "verifiers",
     "dion",
     "reverse-text",
+    "deepdive",
+    "ddbc"
 ]
 
 [project.scripts]
@@ -90,6 +92,8 @@ transformers = { git = "https://github.com/huggingface/transformers.git", rev = 
 vllm = { url = "https://github.com/vllm-project/vllm/releases/download/v0.16.0/vllm-0.16.0-cp38-abi3-manylinux_2_31_x86_64.whl" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
 reverse-text = { index = "primeintellect" }
+deepdive = { git = "https://github.com/PrimeIntellect-ai/research-environments.git", rev = "d0d291b", subdirectory = "environments/deepdive" }
+ddbc = { git = "https://github.com/PrimeIntellect-ai/research-environments.git", rev = "d0d291b", subdirectory = "environments/ddbc" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
