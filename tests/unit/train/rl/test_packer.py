@@ -46,6 +46,7 @@ def make_training_sample() -> TrainingSample:
         completion_mask=[True],
         completion_logprobs=[-0.1],
         completion_temperatures=[1.0],
+        completion_advantages=[1.0],
     )
 
 

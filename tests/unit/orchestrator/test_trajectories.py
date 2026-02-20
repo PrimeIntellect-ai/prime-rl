@@ -341,6 +341,7 @@ def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
     assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_advantages is None
 
 
 def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_output):
@@ -356,6 +357,85 @@ def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_output):
     assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
     # Temperatures: 2 completion tokens at temp 1.0, then 2 prompt tokens at temp 1.0, then 2 completion tokens at temp 1.0
     assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    assert rollout.completion_advantages is None
+
+
+def test_interleave_rollout_ignores_step_advantages_without_verifier_mode(multi_step_trajectory_output):
+    trajectory = multi_step_trajectory_output["trajectory"]
+    trajectory[0]["advantage"] = 1.25
+    trajectory[1]["advantage"] = -0.75
+
+    rollouts = interleave_rollout(multi_step_trajectory_output)
+    assert rollouts is not None
+    assert len(rollouts) == 1
+    rollout = rollouts[0]
+
+    assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
+    assert rollout.completion_advantages is None
+
+
+def test_interleave_rollout_ignores_mixed_step_advantages_without_verifier_mode(multi_step_trajectory_output):
+    trajectory = multi_step_trajectory_output["trajectory"]
+    trajectory[0]["advantage"] = None
+    trajectory[1]["advantage"] = 0.5
+
+    rollouts = interleave_rollout(multi_step_trajectory_output)
+    assert rollouts is not None
+    assert len(rollouts) == 1
+    rollout = rollouts[0]
+
+    assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
+    assert rollout.completion_advantages is None
+
+
+def test_interleave_rollout_uses_step_completion_advantages_when_opted_in(multi_step_trajectory_output):
+    trajectory = multi_step_trajectory_output["trajectory"]
+    multi_step_trajectory_output["use_verifiers_advantages"] = True
+    trajectory[0]["completion_advantages"] = [0.1, 0.2]
+    trajectory[1]["completion_advantages"] = [0.3, 0.4]
+    trajectory[0]["advantage"] = -9.0
+    trajectory[1]["advantage"] = -9.0
+
+    rollouts = interleave_rollout(multi_step_trajectory_output, use_verifier_step_advantages=True)
+    assert rollouts is not None
+    assert len(rollouts) == 1
+    rollout = rollouts[0]
+
+    assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
+    assert rollout.completion_advantages == [0.1, 0.2, 0.0, 0.0, 0.3, 0.4]
+
+
+def test_interleave_rollout_falls_back_when_step_completion_advantages_invalid(multi_step_trajectory_output):
+    trajectory = multi_step_trajectory_output["trajectory"]
+    multi_step_trajectory_output["use_verifiers_advantages"] = True
+    trajectory[0]["completion_advantages"] = [0.1]
+    trajectory[1]["completion_advantages"] = [0.3, 0.4]
+    trajectory[0]["advantage"] = 1.25
+    trajectory[1]["advantage"] = -0.75
+
+    rollouts = interleave_rollout(multi_step_trajectory_output, use_verifier_step_advantages=True)
+    assert rollouts is not None
+    assert len(rollouts) == 1
+    rollout = rollouts[0]
+
+    assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
+    assert rollout.completion_advantages is None
+
+
+def test_interleave_rollout_falls_back_when_rollout_flag_not_set(multi_step_trajectory_output):
+    trajectory = multi_step_trajectory_output["trajectory"]
+    trajectory[0]["completion_advantages"] = [0.1, 0.2]
+    trajectory[1]["completion_advantages"] = [0.3, 0.4]
+    trajectory[0]["advantage"] = 1.25
+    trajectory[1]["advantage"] = -0.75
+
+    rollouts = interleave_rollout(multi_step_trajectory_output, use_verifier_step_advantages=True)
+    assert rollouts is not None
+    assert len(rollouts) == 1
+    rollout = rollouts[0]
+
+    assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
+    assert rollout.completion_advantages is None
 
 
 def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_trajectory_with_tool_calls_output):
