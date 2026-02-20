@@ -1,6 +1,7 @@
 import base64
 import time
 from io import BytesIO
+from typing import Any, cast
 
 import verifiers as vf
 from PIL import Image
@@ -16,6 +17,7 @@ def interleave_rollout(
     output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
+    use_verifier_step_advantages: bool = False,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -51,6 +53,29 @@ def interleave_rollout(
     # this field should be guaranteed because we set temperature in get_sampling_args
     temperature = output["sampling_args"]["temperature"]
 
+    def get_step_completion_advantages(step: vf.TrajectoryStep) -> list[float] | None:
+        value = cast(dict[str, Any], step).get("completion_advantages")
+        return value if isinstance(value, list) else None
+
+    # need to ensure that for each trajectory step, the completion_advantages are set and the number of completion_ids is equal to the number of completion_advantages
+    has_valid_step_completion_advantages = all(
+        step["tokens"] is None
+        or (
+            (step_completion_advantages := get_step_completion_advantages(step)) is not None
+            and len(step["tokens"]["completion_ids"]) == len(step_completion_advantages)
+        )
+        for step in trajectory
+    )
+    rollout_requests_step_advantages = bool(output.get("use_verifiers_advantages", False))
+    use_step_completion_advantages = (
+        use_verifier_step_advantages and rollout_requests_step_advantages and has_valid_step_completion_advantages
+    )
+    if use_verifier_step_advantages and rollout_requests_step_advantages and not has_valid_step_completion_advantages:
+        logger.debug(
+            f"Invalid step completion_advantages for example {output['example_id']}. Falling back to rollout-level "
+            "advantage computation."
+        )
+
     def get_images(step_idx: int) -> tuple[list | None, list | None]:
         if vlm_cache is None:
             return None, None
@@ -66,6 +91,12 @@ def interleave_rollout(
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
         completion_ids = list(tokens["completion_ids"])
+        if use_step_completion_advantages:
+            step_completion_advantages = get_step_completion_advantages(step)
+            assert step_completion_advantages is not None
+            completion_advantages = list(step_completion_advantages)
+        else:
+            completion_advantages = None
         pixel_values, image_grid_thw = get_images(step_idx)
         return TrainingSample(
             prompt_ids=list(tokens["prompt_ids"]),
@@ -75,7 +106,7 @@ def interleave_rollout(
             completion_logprobs=list(tokens["completion_logprobs"]),
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
-            advantage=None,
+            completion_advantages=completion_advantages,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
         )
@@ -101,6 +132,18 @@ def interleave_rollout(
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
+
+        if use_step_completion_advantages:
+            step_completion_advantages = get_step_completion_advantages(step)
+            assert step_completion_advantages is not None
+            assert sample.completion_advantages is not None
+            sample.completion_advantages.extend([0.0] * len(new_prompt_ids))
+            sample.completion_advantages.extend(step_completion_advantages)
+        if sample.completion_advantages is not None:
+            assert len(sample.completion_advantages) == len(sample.completion_ids), (
+                f"completion_advantages: {len(sample.completion_advantages)}, "
+                f"completion_ids: {len(sample.completion_ids)}"
+            )
 
         # Update cumulative images to include any new images from this step
         pixel_values, image_grid_thw = get_images(step_idx)

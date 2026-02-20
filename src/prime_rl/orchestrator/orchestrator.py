@@ -254,6 +254,7 @@ async def orchestrate(config: OrchestratorConfig):
             checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
         else:
             checkpoint_step = config.ckpt.resume_step
+    verifiers_state_columns = ["use_verifiers_advantages"] if config.use_verifier_step_advantages else []
 
     scheduler = Scheduler(
         env=train_env_group,
@@ -267,6 +268,7 @@ async def orchestrate(config: OrchestratorConfig):
         lora_name=config.model.lora.name if config.model.lora else None,
         output_dir=config.output_dir,
         config=config,
+        rollout_state_columns=verifiers_state_columns,
     )
 
     if checkpoint_step is not None and config.model.lora is not None:
@@ -442,6 +444,7 @@ async def orchestrate(config: OrchestratorConfig):
                     rollouts_per_example=config.val.rollouts_per_example,
                     sampling_args=sampling_args,
                     clients=inference_pool.clients,
+                    state_columns=verifiers_state_columns,
                     pbar_description="Generating rollouts (val)",
                 )
             )
@@ -482,7 +485,12 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Process rollouts in parallel
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
-            return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
+            return interleave_rollout(
+                rollout,
+                vlm_cache=vlm_cache,
+                cache_key=rollout_idx,
+                use_verifier_step_advantages=config.use_verifier_step_advantages,
+            )
 
         loop = asyncio.get_event_loop()
         futures = [
@@ -497,12 +505,17 @@ async def orchestrate(config: OrchestratorConfig):
         rollout_decode_lens: list[int] = []
         num_prefill_tokens = 0
         num_decode_tokens = 0
-        for rollout, advantage, samples in zip(train_rollouts, advantages, results):
+        for rollout, rollout_advantage, samples in zip(train_rollouts, advantages, results):
             rollout_prefill_tokens = 0
             rollout_decode_tokens = 0
             if samples is not None:
                 for sample in samples:
-                    sample.advantage = advantage
+                    if sample.completion_advantages is None:
+                        sample.completion_advantages = [rollout_advantage] * len(sample.completion_ids)
+                    assert len(sample.completion_advantages) == len(sample.completion_ids), (
+                        f"completion_advantages: {len(sample.completion_advantages)}, "
+                        f"completion_ids: {len(sample.completion_ids)}"
+                    )
                     sample.reward = rollout["reward"]
                     sample_decode_tokens = sum(sample.completion_mask)
                     sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens

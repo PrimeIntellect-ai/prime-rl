@@ -705,6 +705,17 @@ class OrchestratorConfig(BaseSettings):
     # The advantage configuration
     advantage: AdvantageConfigType | None = AdvantageConfig()
 
+    use_verifier_step_advantages: Annotated[
+        bool,
+        Field(
+            description=(
+                "Use verifier-provided per-step completion_advantages when present and valid. "
+                "If disabled, or if verifier data is missing/invalid, fall back to orchestrator-computed rollout "
+                "advantages."
+            )
+        ),
+    ] = False
+
     # Rollout filters (monitor by default, enforce optionally)
     filters: list[FilterConfigType] = [GibberishFilterConfig(), RepetitionFilterConfig()]
 

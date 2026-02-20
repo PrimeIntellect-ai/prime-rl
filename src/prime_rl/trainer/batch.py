@@ -11,7 +11,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = training_example.prompt_mask + training_example.completion_mask
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
-    advantages = [training_example.advantage] * len(input_ids)
+    assert training_example.completion_advantages is not None, "completion_advantages must be set before packing"
+    assert len(training_example.completion_advantages) == len(training_example.completion_ids), (
+        f"completion_advantages: {len(training_example.completion_advantages)}, "
+        f"completion_ids: {len(training_example.completion_ids)}"
+    )
+    advantages = [0.0] * len(training_example.prompt_ids) + training_example.completion_advantages
     position_ids = list(range(len(input_ids)))
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)

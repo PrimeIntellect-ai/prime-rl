@@ -12,7 +12,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_logprobs: list[float]
     completion_temperatures: list[float]  # Per-token temperatures used during generation
     teacher_logprobs: list[float] | None = None
-    advantage: float | None = None
+    completion_advantages: list[float] | None = None
     reward: float | None = None
 
     # Multimodal fields (Qwen3-VL)
