@@ -14,7 +14,7 @@ AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_atte
 _ATTN_ALIASES = {"flash_attention_4": "fa4"}
 
 MOE_MODEL_MAPS = {
-    "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
+    # "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
     "moonshotai/Moonlight-16B-A3B-Instruct": "Jackmin108/Moonlight-16B-A3B-Instruct-Fast",
 }
 
