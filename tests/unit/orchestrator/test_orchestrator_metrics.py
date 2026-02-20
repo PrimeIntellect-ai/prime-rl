@@ -1,12 +1,17 @@
-from prometheus_client import CollectorRegistry, generate_latest
+import time
+
+import pytest
+from prometheus_client import CollectorRegistry
 
 from prime_rl.orchestrator.metrics import OrchestratorPrometheusMetrics
+from tests.utils import prom_collect_samples, prom_sample_key, prom_sample_value
 
 
 def test_orchestrator_metrics_update_and_cleanup():
     registry = CollectorRegistry()
     metrics = OrchestratorPrometheusMetrics(registry)
 
+    update_start = time.time()
     metrics.update(
         {
             "step": 7,
@@ -43,19 +48,48 @@ def test_orchestrator_metrics_update_and_cleanup():
             "pool/hard": 0.2,
         }
     )
+    update_end = time.time()
 
-    content = generate_latest(registry).decode()
-    assert "orchestrator_step 7.0" in content
-    assert "orchestrator_throughput_tokens_per_sec 55.0" in content
-    assert "orchestrator_decode_len_mean 64.0" in content
-    assert 'orchestrator_env_reward_mean{env="env_a"} 0.5' in content
-    assert 'orchestrator_env_batch_ratio{env="env_b"} 0.45' in content
-    assert 'orchestrator_env_batch_ratio{env="inflight_rollouts"}' not in content
-    assert 'orchestrator_env_batch_ratio{env="inflight_samples"}' not in content
-    assert 'orchestrator_worker_pending_count{worker="worker_a"} 3.0' in content
-    assert 'orchestrator_worker_lag_seconds{stat="max",worker="worker_b"} 0.2' in content
-    assert 'orchestrator_event_loop_lag_seconds{stat="mean"} 0.02' in content
-    assert "orchestrator_last_step_timestamp_seconds" in content
+    samples = prom_collect_samples(registry)
+    assert prom_sample_value(samples, "orchestrator_step") == pytest.approx(7.0)
+    assert prom_sample_value(samples, "orchestrator_total_tokens") == pytest.approx(120.0)
+    assert prom_sample_value(samples, "orchestrator_total_samples") == pytest.approx(12.0)
+    assert prom_sample_value(samples, "orchestrator_throughput_tokens_per_sec") == pytest.approx(55.0)
+    assert prom_sample_value(samples, "orchestrator_reward_mean") == pytest.approx(0.4)
+    assert prom_sample_value(samples, "orchestrator_effective_batch_size") == pytest.approx(0.6)
+    assert prom_sample_value(samples, "orchestrator_solve_none") == pytest.approx(0.2)
+    assert prom_sample_value(samples, "orchestrator_solve_all") == pytest.approx(0.1)
+    assert prom_sample_value(samples, "orchestrator_ckpt_step") == pytest.approx(6.0)
+    assert prom_sample_value(samples, "orchestrator_step_duration_seconds") == pytest.approx(1.5)
+    assert prom_sample_value(samples, "orchestrator_generate_completions_duration_seconds") == pytest.approx(0.7)
+    assert prom_sample_value(samples, "orchestrator_async_level") == pytest.approx(2.0)
+    assert prom_sample_value(samples, "orchestrator_off_policy_level_max") == pytest.approx(3.0)
+    assert prom_sample_value(samples, "orchestrator_off_policy_level_mean") == pytest.approx(1.5)
+    assert prom_sample_value(samples, "orchestrator_cancelled_rollouts") == pytest.approx(1.0)
+    assert prom_sample_value(samples, "orchestrator_error_rate") == pytest.approx(0.05)
+    assert prom_sample_value(samples, "orchestrator_seq_len_mean") == pytest.approx(128.0)
+    assert prom_sample_value(samples, "orchestrator_decode_len_mean") == pytest.approx(64.0)
+    assert prom_sample_value(samples, "orchestrator_event_loop_lag_seconds", stat="mean") == pytest.approx(0.02)
+    assert prom_sample_value(samples, "orchestrator_env_reward_mean", env="env_a") == pytest.approx(0.5)
+    assert prom_sample_value(samples, "orchestrator_env_reward_mean", env="env_b") == pytest.approx(0.3)
+    assert prom_sample_value(samples, "orchestrator_env_batch_ratio", env="env_a") == pytest.approx(0.55)
+    assert prom_sample_value(samples, "orchestrator_env_batch_ratio", env="env_b") == pytest.approx(0.45)
+    assert prom_sample_value(samples, "orchestrator_worker_pending_count", worker="worker_a") == pytest.approx(3.0)
+    assert prom_sample_value(samples, "orchestrator_worker_pending_count", worker="worker_b") == pytest.approx(1.0)
+    assert prom_sample_value(
+        samples, "orchestrator_worker_lag_seconds", worker="worker_a", stat="mean"
+    ) == pytest.approx(0.1)
+    assert prom_sample_value(
+        samples, "orchestrator_worker_lag_seconds", worker="worker_b", stat="max"
+    ) == pytest.approx(0.2)
+    assert prom_sample_value(samples, "orchestrator_pool_ratio", pool="easy") == pytest.approx(0.2)
+    assert prom_sample_value(samples, "orchestrator_pool_ratio", pool="normal") == pytest.approx(0.6)
+    assert prom_sample_value(samples, "orchestrator_pool_ratio", pool="hard") == pytest.approx(0.2)
+    last_step_ts = prom_sample_value(samples, "orchestrator_last_step_timestamp_seconds")
+    assert update_start <= last_step_ts <= update_end
+
+    assert prom_sample_key("orchestrator_env_batch_ratio", env="inflight_rollouts") not in samples
+    assert prom_sample_key("orchestrator_env_batch_ratio", env="inflight_samples") not in samples
 
     metrics.update(
         {
@@ -67,6 +101,16 @@ def test_orchestrator_metrics_update_and_cleanup():
         }
     )
 
-    content = generate_latest(registry).decode()
-    assert 'env="env_b"' not in content
-    assert 'worker="worker_b"' not in content
+    samples = prom_collect_samples(registry)
+    assert prom_sample_value(samples, "orchestrator_step") == pytest.approx(8.0)
+    assert prom_sample_value(samples, "orchestrator_env_reward_mean", env="env_a") == pytest.approx(0.6)
+    assert prom_sample_value(samples, "orchestrator_env_batch_ratio", env="env_a") == pytest.approx(0.7)
+    assert prom_sample_value(samples, "orchestrator_worker_pending_count", worker="worker_a") == pytest.approx(2.0)
+    assert prom_sample_value(
+        samples, "orchestrator_worker_lag_seconds", worker="worker_a", stat="mean"
+    ) == pytest.approx(0.05)
+
+    assert prom_sample_key("orchestrator_env_reward_mean", env="env_b") not in samples
+    assert prom_sample_key("orchestrator_env_batch_ratio", env="env_b") not in samples
+    assert prom_sample_key("orchestrator_worker_pending_count", worker="worker_b") not in samples
+    assert prom_sample_key("orchestrator_worker_lag_seconds", worker="worker_b", stat="max") not in samples
