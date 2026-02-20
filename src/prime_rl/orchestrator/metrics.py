@@ -36,9 +36,7 @@ class OrchestratorPrometheusMetrics:
         )
         self.error_rate = Gauge("orchestrator_error_rate", "Error rate across rollouts", registry=registry)
         self.seq_len_mean = Gauge("orchestrator_seq_len_mean", "Mean sequence length", registry=registry)
-        self.completion_len_mean = Gauge(
-            "orchestrator_completion_len_mean", "Mean completion length", registry=registry
-        )
+        self.decode_len_mean = Gauge("orchestrator_decode_len_mean", "Mean decode length", registry=registry)
         self.event_loop_lag = Gauge(
             "orchestrator_event_loop_lag_seconds", "Event loop lag", ["stat"], registry=registry
         )
@@ -87,7 +85,7 @@ class OrchestratorPrometheusMetrics:
         self.cancelled_rollouts.set(to_log.get("batch/cancelled_rollouts", 0))
         self.error_rate.set(to_log.get("error/mean", 0))
         self.seq_len_mean.set(to_log.get("seq_len/mean", 0))
-        self.completion_len_mean.set(to_log.get("completion_len/mean", 0))
+        self.decode_len_mean.set(to_log.get("decode_len/mean", 0))
 
         for stat in ["min", "mean", "med", "p90", "max"]:
             key = f"event_loop_lag/{stat}"
