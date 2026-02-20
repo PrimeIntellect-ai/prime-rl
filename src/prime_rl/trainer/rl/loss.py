@@ -173,6 +173,114 @@ def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+def dppo_loss(
+    inputs: LossInputs,
+    dppo_clip_value: float = 0.2,
+    adv_tau: float = 1.0,
+    teacher_tau: float = 0.0,
+    kl_tau: float = 1e-3,
+) -> LossOutputs:
+    """DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879) + Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)"""
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    teacher_logprobs = inputs.teacher_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    trainer_probs = torch.exp(trainer_logprobs)
+    inference_probs = torch.exp(inference_logprobs)
+    probs_diff = trainer_probs - inference_probs
+    dppo_pos_invalid_mask = probs_diff > dppo_clip_value
+    dppo_neg_invalid_mask = probs_diff < -dppo_clip_value
+    dppo_invalid_mask_low = (advantages > 0) & dppo_pos_invalid_mask
+    dppo_invalid_mask_high = (advantages < 0) & dppo_neg_invalid_mask
+    dppo_invalid_mask = torch.where(advantages > 0, dppo_pos_invalid_mask, dppo_neg_invalid_mask)
+
+    is_masked = dppo_invalid_mask
+    is_masked_low = dppo_invalid_mask_low
+    is_masked_high = dppo_invalid_mask_high
+    keep_mask = loss_mask & ~is_masked
+
+    log_importance_ratio = trainer_logprobs - inference_logprobs
+    importance_ratio = torch.exp(log_importance_ratio)
+    mismatch_kl = importance_ratio - log_importance_ratio - 1
+
+    advantages = adv_tau * advantages
+    if teacher_logprobs is not None:
+        teacher_kl = teacher_logprobs - trainer_logprobs
+        advantages = advantages + teacher_tau * teacher_kl.detach()
+
+    pg_loss = keep_mask * advantages * importance_ratio
+    kl_loss = loss_mask * log_importance_ratio**2
+    loss = (-pg_loss + kl_tau * kl_loss).sum()
+
+    metrics = {
+        "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+        "is_masked": _safe_mean(is_masked, loss_mask),
+        "is_masked_low": _safe_mean(is_masked_low, loss_mask),
+        "is_masked_high": _safe_mean(is_masked_high, loss_mask),
+    }
+    if teacher_logprobs is not None:
+        metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
+def ipo_loss(
+    inputs: LossInputs,
+    ipo_clip_value: float = 0.2,
+    adv_tau: float = 1.0,
+    teacher_tau: float = 0.0,
+    kl_tau: float = 1e-3,
+) -> LossOutputs:
+    """CISPO-style DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879) + Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)"""
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    teacher_logprobs = inputs.teacher_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    trainer_probs = torch.exp(trainer_logprobs)
+    inference_probs = torch.exp(inference_logprobs)
+    probs_diff = trainer_probs - inference_probs
+    ipo_invalid_mask_low = probs_diff > ipo_clip_value
+    ipo_invalid_mask_high = probs_diff < -ipo_clip_value
+    ipo_invalid_mask = ipo_invalid_mask_low | ipo_invalid_mask_high
+
+    is_masked = ipo_invalid_mask
+    is_masked_low = ipo_invalid_mask_low
+    is_masked_high = ipo_invalid_mask_high
+    keep_mask = loss_mask & ~is_masked
+
+    log_importance_ratio = trainer_logprobs - inference_logprobs
+    importance_ratio = torch.exp(log_importance_ratio)
+    mismatch_kl = importance_ratio - log_importance_ratio - 1
+
+    advantages = adv_tau * advantages
+    if teacher_logprobs is not None:
+        teacher_kl = teacher_logprobs - trainer_logprobs
+        advantages = advantages + teacher_tau * teacher_kl.detach()
+
+    pg_loss = keep_mask * advantages * importance_ratio
+    kl_loss = loss_mask * log_importance_ratio**2
+    loss = (-pg_loss + kl_tau * kl_loss).sum()
+
+    metrics = {
+        "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+        "is_masked": _safe_mean(is_masked, loss_mask),
+        "is_masked_low": _safe_mean(is_masked_low, loss_mask),
+        "is_masked_high": _safe_mean(is_masked_high, loss_mask),
+    }
+    if teacher_logprobs is not None:
+        metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def setup_loss_fn(loss_config: LossConfigType) -> LossFn:
     """Setup the loss function based on config."""
     if isinstance(loss_config, CustomLossConfig):

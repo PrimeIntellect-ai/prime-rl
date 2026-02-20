@@ -1,5 +1,5 @@
-job_name = "qwen30-a3b-deepdive-baseline"
-output_dir = "/shared/mika/qwen30-a3b-deepdive-baseline"
+job_name = "qwen30-a3b-deepdive-dppo"
+output_dir = "/shared/mika/qwen30-a3b-deepdive-dppo"
 
 num_train_nodes = 1
 num_infer_nodes = 1
@@ -14,7 +14,7 @@ level = "debug"
 
 [wandb]
 project = "deepdive-loss-ablations"
-name = "qwen30-a3b-deepdive-baseline"
+name = "qwen30-a3b-deepdive-dppo"
 
 [weight_broadcast]
 type = "nccl"
@@ -46,9 +46,9 @@ freq = 1
 [trainer.model.compile]
 
 [trainer.loss]
-kl_tau = 1e-3
-token_mask_low = 0.25
-token_mask_high = 8
+type = "custom"
+import_path = "prime_rl.trainer.rl.loss.dppo_loss"
+kwargs = { dppo_clip_value = 0.2, kl_tau = 1e-3 }
 
 [trainer.ckpt.weights]
 save_format = "safetensors"
@@ -82,6 +82,9 @@ max_tokens = 16384
 interval = 20
 skip_eval_on_resume = true
 eval_base_model = true
+
+[orchestrator.eval.sampling]
+max_tokens = 16384
 
 [[orchestrator.eval.env]]
 id = "ddbc"
