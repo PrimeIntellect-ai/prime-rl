@@ -19,7 +19,7 @@ from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
 class LossConfig(BaseConfig):
-    """Config for the default loss."""
+    """Config for the default loss (AIPO with hard clipping)."""
 
     type: Literal["default"] = "default"
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
@@ -73,6 +73,30 @@ class LossConfig(BaseConfig):
         return self
 
 
+class SAPOLossConfig(BaseModel):
+    """Config for SAPO (Soft Adaptive Policy Optimization) loss.
+    
+    SAPO replaces hard clipping with smooth, temperature-controlled soft gating.
+    Reference: https://arxiv.org/abs/2511.20347
+    """
+
+    type: Literal["sapo"] = "sapo"
+    
+    tau_pos: Annotated[
+        float, 
+        Field(gt=0, description="Temperature for positive advantage tokens. Controls decay rate of soft gate.")
+    ] = 1.0
+    
+    tau_neg: Annotated[
+        float, 
+        Field(gt=0, description="Temperature for negative advantage tokens. Should typically be >= tau_pos for stability.")
+    ] = 1.05
+    
+    adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
+    teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
+    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
+
+
 class CustomLossConfig(BaseModel):
     """Config for a custom external loss function."""
 
@@ -88,7 +112,7 @@ def _loss_config_discriminator(v: Any) -> str:
 
 
 LossConfigType: TypeAlias = Annotated[
-    Annotated[LossConfig, Tag("default")] | Annotated[CustomLossConfig, Tag("custom")],
+    Annotated[LossConfig, Tag("default")] | Annotated[SAPOLossConfig, Tag("sapo")] | Annotated[CustomLossConfig, Tag("custom")],
     Discriminator(_loss_config_discriminator),
 ]
 
