@@ -162,7 +162,7 @@ class ModelConfig(BaseConfig):
         Field(
             description="Whether to enable auto tool choice. Passed to vLLM as `--enable-auto-tool-choice`",
         ),
-    ] = False
+    ] = True
 
     tool_call_parser: Annotated[
         str | None,
