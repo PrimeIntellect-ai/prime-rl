@@ -119,7 +119,7 @@ class Indexer(nn.Module):
 
         q_idx = self.wq_b(q_latent[0]).view(total_tokens, self.n_head, self.head_dim)
         k_idx = self.k_norm(self.wk(hidden_states[0]))
-        w = self.weights_proj(hidden_states[0]) * self.weight_scale
+        w = self.weights_proj(hidden_states[0])
 
         # Split into rope and non-rope portions, apply RoPE to pe parts
         q_pe = q_idx[..., : self.rope_dim]
@@ -138,7 +138,7 @@ class Indexer(nn.Module):
         q_idx = torch.cat([q_pe, q_nope], dim=-1)
         k_idx = torch.cat([k_pe, k_nope], dim=-1)
 
-        indices = fp8_indexer(q_idx, k_idx, w, ks, ke, index_topk)
+        indices = fp8_indexer(q_idx, k_idx, w, ks, ke, index_topk, self.weight_scale)
         return indices.view(1, total_tokens, 1, index_topk)
 
 

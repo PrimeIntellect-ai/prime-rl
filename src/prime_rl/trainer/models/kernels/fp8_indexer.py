@@ -100,7 +100,7 @@ def _triton_fp8_indexer_kernel(
     tl.store(out_ptrs, acc, mask=out_mask)
 
 
-def fp8_indexer(q, k, w, ks, ke, topk):
+def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
     """Triton FP8 indexer: FP8 cast + fused kernel + topk.
 
     Args:
@@ -110,6 +110,7 @@ def fp8_indexer(q, k, w, ks, ke, topk):
         ks: [S] int32 — sequence start per token
         ke: [S] int32 — causal end per token (= position + 1)
         topk: int — number of top indices to return
+        weight_scale: float — constant scaling factor for weights (applied in float32)
 
     Returns:
         [S, topk] int32 — selected token indices per query
@@ -126,8 +127,10 @@ def fp8_indexer(q, k, w, ks, ke, topk):
     # The FP8 dot product gives (q · k) / (q_scale * k_scale). The kernel only
     # compensates k_scale, so fold q_scale into the weights to keep the correct
     # per-head contribution: w_j * q_scale_j * ReLU(fp8_dot * k_scale).
+    # weight_scale (head_dim^-0.5 * n_head^-0.5) is applied here in float32
+    # to match vLLM/slime convention.
     q_scales = q_scales.view(S, H)
-    w = w * q_scales
+    w = w * q_scales * weight_scale
 
     logits = torch.empty(S, S, dtype=torch.float32, device=device)
 
