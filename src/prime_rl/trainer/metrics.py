@@ -38,6 +38,7 @@ class TrainerPrometheusMetrics:
         self.mismatch_kl = Gauge(
             "trainer_mismatch_kl", "KL divergence between trainer and inference model", registry=registry
         )
+        self.kl_ent_ratio = Gauge("trainer_kl_ent_ratio", "Ratio of mismatch KL to entropy", registry=registry)
 
         # Aggregate run metrics
         self.runs_discovered = Gauge("trainer_runs_discovered", "Number of run folders discovered", registry=registry)
@@ -80,6 +81,8 @@ class TrainerPrometheusMetrics:
         self.mfu.set(mfu)
         self.entropy.set(entropy)
         self.mismatch_kl.set(mismatch_kl)
+        if entropy > 0:
+            self.kl_ent_ratio.set(mismatch_kl / entropy)
         self.last_step_ts.set(time.time())
 
     def update_runs(self, runs_discovered: int, runs_max: int, run_stats: list[RunStats]) -> None:
