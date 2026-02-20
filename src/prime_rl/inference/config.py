@@ -10,11 +10,81 @@ from prime_rl.utils.utils import rgetattr, rsetattr
 logger = get_logger()
 
 MODEL_TOOL_CALL_PARSER: dict[str, str] = {
-    "glm-4.5": "glm45",
-    "glm-4.7": "glm47",
-    "minimax-m2": "minimax_m2",
-    "intellect-3": "hermes",
-    "qwen3": "hermes",
+    # GLM-4.5
+    "zai-org/GLM-4.5": "glm45",
+    "zai-org/GLM-4.5-FP8": "glm45",
+    "zai-org/GLM-4.5-Base": "glm45",
+    "zai-org/GLM-4.5-Air": "glm45",
+    "zai-org/GLM-4.5-Air-FP8": "glm45",
+    "zai-org/GLM-4.5-Air-Base": "glm45",
+    "zai-org/GLM-4.5V": "glm45",
+    "zai-org/GLM-4.5V-FP8": "glm45",
+    # GLM-4.7
+    "zai-org/GLM-4.7": "glm47",
+    "zai-org/GLM-4.7-FP8": "glm47",
+    "zai-org/GLM-4.7-Flash": "glm47",
+    # MiniMax M2
+    "MiniMaxAI/MiniMax-M2": "minimax_m2",
+    "MiniMaxAI/MiniMax-M2.1": "minimax_m2",
+    "MiniMaxAI/MiniMax-M2.5": "minimax_m2",
+    # INTELLECT-3
+    "PrimeIntellect/INTELLECT-3": "hermes",
+    "PrimeIntellect/INTELLECT-3-FP8": "hermes",
+    "PrimeIntellect/INTELLECT-3.1": "hermes",
+    # Qwen3 dense
+    "Qwen/Qwen3-0.6B": "hermes",
+    "Qwen/Qwen3-0.6B-Base": "hermes",
+    "Qwen/Qwen3-0.6B-FP8": "hermes",
+    "Qwen/Qwen3-1.7B": "hermes",
+    "Qwen/Qwen3-1.7B-Base": "hermes",
+    "Qwen/Qwen3-1.7B-FP8": "hermes",
+    "Qwen/Qwen3-4B": "hermes",
+    "Qwen/Qwen3-4B-Base": "hermes",
+    "Qwen/Qwen3-4B-FP8": "hermes",
+    "Qwen/Qwen3-8B": "hermes",
+    "Qwen/Qwen3-8B-Base": "hermes",
+    "Qwen/Qwen3-8B-FP8": "hermes",
+    "Qwen/Qwen3-14B": "hermes",
+    "Qwen/Qwen3-14B-Base": "hermes",
+    "Qwen/Qwen3-14B-FP8": "hermes",
+    "Qwen/Qwen3-32B": "hermes",
+    "Qwen/Qwen3-32B-FP8": "hermes",
+    # Qwen3 MoE
+    "Qwen/Qwen3-30B-A3B": "hermes",
+    "Qwen/Qwen3-30B-A3B-Base": "hermes",
+    "Qwen/Qwen3-30B-A3B-FP8": "hermes",
+    "Qwen/Qwen3-235B-A22B": "hermes",
+    "Qwen/Qwen3-235B-A22B-FP8": "hermes",
+    # Qwen3 2507
+    "Qwen/Qwen3-4B-Instruct-2507": "hermes",
+    "Qwen/Qwen3-4B-Thinking-2507": "hermes",
+    "Qwen/Qwen3-4B-Instruct-2507-FP8": "hermes",
+    "Qwen/Qwen3-4B-Thinking-2507-FP8": "hermes",
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": "hermes",
+    "Qwen/Qwen3-30B-A3B-Thinking-2507": "hermes",
+    "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8": "hermes",
+    "Qwen/Qwen3-30B-A3B-Thinking-2507-FP8": "hermes",
+    "Qwen/Qwen3-235B-A22B-Instruct-2507": "hermes",
+    "Qwen/Qwen3-235B-A22B-Thinking-2507": "hermes",
+    "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8": "hermes",
+    "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8": "hermes",
+    # Qwen3-Next
+    "Qwen/Qwen3-Next-80B-A3B-Instruct": "hermes",
+    "Qwen/Qwen3-Next-80B-A3B-Thinking": "hermes",
+    "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8": "hermes",
+    "Qwen/Qwen3-Next-80B-A3B-Thinking-FP8": "hermes",
+    # Qwen3-Coder
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct": "hermes",
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "hermes",
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct": "hermes",
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8": "hermes",
+    # Qwen3-Coder-Next
+    "Qwen/Qwen3-Coder-Next": "hermes",
+    "Qwen/Qwen3-Coder-Next-Base": "hermes",
+    "Qwen/Qwen3-Coder-Next-FP8": "hermes",
+    # Qwen3.5
+    "Qwen/Qwen3.5-397B-A17B": "hermes",
+    "Qwen/Qwen3.5-397B-A17B-FP8": "hermes",
 }
 
 # TODO: Set thinking/ solution budget
@@ -121,12 +191,10 @@ class ModelConfig(BaseConfig):
         if self.tool_call_parser is not None:
             return self
 
-        model_name_lower = self.name.lower()
-        for pattern, parser in MODEL_TOOL_CALL_PARSER.items():
-            if pattern in model_name_lower:
-                logger.info(f"Auto-detected tool_call_parser='{parser}' for model '{self.name}'")
-                self.tool_call_parser = parser
-                return self
+        parser = MODEL_TOOL_CALL_PARSER.get(self.name)
+        if parser is not None:
+            logger.info(f"Auto-detected tool_call_parser='{parser}' for model '{self.name}'")
+            self.tool_call_parser = parser
 
         return self
 
