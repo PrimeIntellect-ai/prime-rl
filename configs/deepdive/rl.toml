@@ -1,0 +1,106 @@
+job_name = "qwen30-a3b-deepdive-baseline"
+output_dir = "/shared/mika/qwen30-a3b-deepdive-baseline"
+
+num_train_nodes = 1
+num_infer_nodes = 1
+
+max_steps = 10000
+seq_len = 32768
+
+hf_hub_offline = true
+
+[log]
+level = "debug"
+
+[wandb]
+project = "deepdive-loss-ablations"
+name = "qwen30-a3b-deepdive-baseline"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 12000
+
+[ckpt]
+interval = 50
+keep_last = 2
+keep_interval = 200
+# resume_step = -1
+
+[model]
+name = "Qwen/Qwen3-30B-A3B"
+
+# --- Trainer ---
+
+[trainer]
+dist_timeout_seconds = 12000
+
+[trainer.model]
+attn = "flash_attention_3"
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.loss]
+kl_tau = 1e-3
+token_mask_low = 0.25
+token_mask_high = 8
+
+[trainer.ckpt.weights]
+save_format = "safetensors"
+save_sharded = true
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 8
+oversampling_factor = 2.0
+max_off_policy_steps = 16
+
+[orchestrator.log]
+vf_level = "debug"
+
+[[orchestrator.env]]
+id = "deepdive"
+name = "deepdive-1"
+args = { log_level = "DEBUG" }
+
+[[orchestrator.env]]
+id = "deepdive"
+name = "deepdive-2"
+args = { log_level = "DEBUG" }
+
+[orchestrator.sampling]
+max_tokens = 16384
+
+[orchestrator.eval]
+interval = 20
+skip_eval_on_resume = true
+eval_base_model = true
+
+[[orchestrator.eval.env]]
+id = "ddbc"
+num_examples = -1
+rollouts_per_example = 1
+
+[orchestrator.wandb.log_extras]
+samples = true
+interval = 1
+
+# --- Inference ---
+
+[inference]
+gpu_memory_utilization = 0.85
+api_server_count = 4
+
+[inference.model]
+tool_call_parser = "hermes"
+
+[inference.parallel]
+tp = 2
+dp = 4
