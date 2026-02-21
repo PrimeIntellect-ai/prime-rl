@@ -193,10 +193,7 @@ class MultiPacker(BasePacker):
             default_token_batch_size=self.seq_len * self.dp_world_size,
         )
         self._batch_config_provisional = batch_config_provisional
-        # Per-run buffer: stores (TrainingSample, step) tuples
-        self.buffers: list[deque[tuple[TrainingSample, int]]] = [
-            deque() for _ in range(self.multi_run_manager.max_runs)
-        ]
+        self.buffers: list[deque[TrainingSample]] = [deque() for _ in range(self.multi_run_manager.max_runs)]
 
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
@@ -291,7 +288,7 @@ class MultiPacker(BasePacker):
                 if not valid:
                     self.multi_run_manager.evict_run(batch.run_idx, f"Run wrote a sample with invalid data: {reason}")
                     break
-                self.buffers[batch.run_idx].append((sample, batch.step))
+                self.buffers[batch.run_idx].append(sample)
 
         # This is necessary to forget evicted runs
         self.multi_run_manager.discover_runs()
@@ -305,12 +302,7 @@ class MultiPacker(BasePacker):
         total_units = 0
 
         for run_idx in self.multi_run_manager.used_idxs:
-            buffer = self.buffers[run_idx]
-            current_step = self.multi_run_manager.progress[run_idx].step
-
-            for sample, step in buffer:
-                if step > current_step:
-                    break
+            for sample in self.buffers[run_idx]:
                 total_units += self._sample_batch_units(sample)
                 if threshold is not None and total_units >= threshold:
                     return total_units
@@ -320,36 +312,27 @@ class MultiPacker(BasePacker):
         """Check if we have enough total work in buffer to pack a step."""
         return self._count_total_batch_units(self.batch_target) >= self.batch_target
 
-    def _select_samples_round_robin(self) -> list[tuple[int, TrainingSample, int]]:
+    def _select_samples_round_robin(self) -> list[tuple[int, TrainingSample]]:
         """Select samples using round-robin from runs with buffered work."""
-        selected: list[tuple[int, TrainingSample, int]] = []
+        selected: list[tuple[int, TrainingSample]] = []
         collected_units = 0
 
         while collected_units < self.batch_target:
-            # Round-robin until we find a run with work for the current step
             for _ in range(len(self.buffers)):
                 if len(self.buffers[self._round_robin_position]) > 0:
-                    _, step = self.buffers[self._round_robin_position][0]
-                    if step <= self.multi_run_manager.progress[self._round_robin_position].step:
-                        break
+                    break
                 self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
             else:
-                # TODO: We could probably make the logic safer. This is basically counting on _has_enough_batch_items() to be correct.
-                # We also need to cover the timeout case here.
                 break
             run_idx = self._round_robin_position
             self._round_robin_position = (self._round_robin_position + 1) % len(self.buffers)
-            current_step = self.multi_run_manager.progress[run_idx].step
 
             while len(self.buffers[run_idx]) > 0:
-                sample, step = self.buffers[run_idx][0]
-                if step > current_step:
-                    # Samples from different steps should be consumed later
-                    break
+                sample = self.buffers[run_idx][0]
                 sample_batch_units = self._sample_batch_units(sample)
                 if collected_units > 0 and collected_units + sample_batch_units > self.batch_target:
                     return selected
-                selected.append((run_idx, sample, step))
+                selected.append((run_idx, sample))
                 self.buffers[run_idx].popleft()
                 collected_units += sample_batch_units
                 if collected_units >= self.batch_target:
@@ -358,17 +341,9 @@ class MultiPacker(BasePacker):
         return selected
 
     def _update_run_progress(self, run_idx: int, num_samples: int, num_tokens: int) -> None:
-        """Update run progress; increment step when all samples from the current step have been consumed."""
-        # HACK: This fixes the issue with branching rollouts having unpredictable batch size
-        # However, it makes us unable to do incremental orchestrator rollouts
-        # Removing the len(self.buffers[run_idx]) == 0 check would allow incremental orchestrator rollouts
-        if (
-            len(self.buffers[run_idx]) == 0
-            or self.buffers[run_idx][0][1] > self.multi_run_manager.progress[run_idx].step
-        ):
-            self.multi_run_manager.progress[run_idx].step += 1
-            self.multi_run_manager.ready_to_update[run_idx] = True
-
+        """Update run progress after packing a full batch."""
+        self.multi_run_manager.progress[run_idx].step += 1
+        self.multi_run_manager.ready_to_update[run_idx] = True
         self.multi_run_manager.progress[run_idx].total_tokens += num_tokens
         self.multi_run_manager.progress[run_idx].total_samples += num_samples
 
@@ -391,7 +366,7 @@ class MultiPacker(BasePacker):
         # because MultiLoRAGroupedExperts (MoE) only supports one adapter per microbatch
         samples_by_run: dict[int, list[TrainingSample]] = {}
         per_run_stats: dict[int, tuple[int, int]] = {}
-        for run_idx, sample, step in selected_samples:
+        for run_idx, sample in selected_samples:
             if run_idx not in samples_by_run:
                 samples_by_run[run_idx] = []
             samples_by_run[run_idx].append(sample)

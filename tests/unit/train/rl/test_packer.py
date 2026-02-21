@@ -129,8 +129,8 @@ def test_packer_progress_updates_once_per_run(packer_env) -> None:
         start_step=0,
     )
 
-    packer.buffers[run_idx].append((make_training_sample(), 0))
-    packer.buffers[run_idx].append((make_training_sample(), 0))
+    packer.buffers[run_idx].append(make_training_sample())
+    packer.buffers[run_idx].append(make_training_sample())
     packer.pack()
 
     progress = manager.progress[run_idx]
@@ -155,10 +155,10 @@ def test_multi_packer_token_budget_threshold(packer_env) -> None:
         start_step=0,
     )
 
-    packer.buffers[run_idx].append((make_training_sample(), 0))  # 2 tokens
-    packer.buffers[run_idx].append((make_training_sample(), 0))  # 2 tokens
+    packer.buffers[run_idx].append(make_training_sample())  # 2 tokens
+    packer.buffers[run_idx].append(make_training_sample())  # 2 tokens
     assert not packer._has_enough_batch_units()
-    packer.buffers[run_idx].append((make_training_sample(), 0))  # +2 = 6 tokens
+    packer.buffers[run_idx].append(make_training_sample())  # +2 = 6 tokens
     assert packer._has_enough_batch_units()
 
 
@@ -183,7 +183,7 @@ def test_multi_packer_keeps_first_oversized_sample(packer_env) -> None:
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
     )
-    packer.buffers[run_idx].append((oversized, 0))
+    packer.buffers[run_idx].append(oversized)
 
     selected = packer._select_samples_round_robin()
     assert len(selected) == 1
@@ -204,10 +204,10 @@ def test_multi_packer_rollout_budget_threshold(packer_env) -> None:
         start_step=0,
     )
 
-    packer.buffers[run_idx].append((make_training_sample(), 0))
-    packer.buffers[run_idx].append((make_training_sample(), 0))
+    packer.buffers[run_idx].append(make_training_sample())
+    packer.buffers[run_idx].append(make_training_sample())
     assert not packer._has_enough_batch_units()
-    packer.buffers[run_idx].append((make_training_sample(), 0))
+    packer.buffers[run_idx].append(make_training_sample())
     assert packer._has_enough_batch_units()
 
 
