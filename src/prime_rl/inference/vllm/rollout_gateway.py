@@ -479,10 +479,16 @@ async def chat_completions(
                         sampling_args=dict(sampling_args),
                     )
         except BadRequestError as exc:
-            detail: str | dict[str, Any] = str(exc)
+            detail = str(exc)
             body = getattr(exc, "body", None)
             if isinstance(body, dict):
-                detail = body
+                error = body.get("error")
+                if isinstance(error, dict):
+                    message = error.get("message")
+                    detail = message if isinstance(message, str) else str(error)
+                else:
+                    message = body.get("message")
+                    detail = message if isinstance(message, str) else str(body)
             logger.warning(
                 "rollout=%s turn=%d upstream_bad_request=%r",
                 rollout_id,
