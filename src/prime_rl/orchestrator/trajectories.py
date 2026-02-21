@@ -89,11 +89,24 @@ def fix_vlm_prompt_tokens(rollouts: list[vf.RolloutOutput], processor) -> None:
             normalized_prompt = _normalize_messages_for_vlm(prompt)
 
             # Re-tokenize the prompt using the processor which handles images correctly
-            correct_prompt_ids = processor.apply_chat_template(
+            result = processor.apply_chat_template(
                 normalized_prompt,
                 tokenize=True,
                 add_generation_prompt=True,
             )
+
+            # Handle different return formats from apply_chat_template
+            if isinstance(result, dict):
+                correct_prompt_ids = result.get("input_ids", result)
+            else:
+                correct_prompt_ids = result
+
+            # Flatten if nested (batch dimension)
+            if correct_prompt_ids and isinstance(correct_prompt_ids[0], list):
+                correct_prompt_ids = correct_prompt_ids[0]
+
+            # Ensure it's a plain list of ints
+            correct_prompt_ids = list(correct_prompt_ids)
 
             old_len = len(tokens["prompt_ids"])
             new_len = len(correct_prompt_ids)
