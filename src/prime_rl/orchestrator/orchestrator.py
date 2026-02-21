@@ -433,11 +433,7 @@ class Orchestrator:
                         and step > 0
                         and (
                             is_final_step
-                            or (
-                                config.ckpt
-                                and config.ckpt.interval is not None
-                                and step % config.ckpt.interval == 0
-                            )
+                            or (config.ckpt and config.ckpt.interval is not None and step % config.ckpt.interval == 0)
                         )
                     ):
                         self.logger.info(f"Saving checkpoint at ckpt_step {step}")
@@ -802,4 +798,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
