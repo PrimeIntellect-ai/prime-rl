@@ -2,12 +2,12 @@ import pickle
 from typing import TYPE_CHECKING, Generator, cast
 
 import torch
-from torch.nn import Module
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.parallel_state import get_dp_group, get_tp_group
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
-from vllm.model_executor.model_loader.utils import process_weights_after_loading
+
+from .fp8_refit import load_checkpoint_weights_layerwise, unwrap_worker_model
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -110,13 +110,6 @@ class NCCLWeightUpdateWorker(Worker):
 
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator."""
-        model_runner = self.model_runner
-        model = model_runner.model.runnable
-        assert isinstance(model, Module)
-
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        model.load_weights(state_iter)  # type: ignore
-
-        # # Process weights after loading (important for some models)
-        device = next(model.parameters()).device
-        process_weights_after_loading(model, self.model_runner.model_config, device)
+        model = unwrap_worker_model(self.model_runner.get_model())
+        load_checkpoint_weights_layerwise(self.model_runner, model, state_iter)
