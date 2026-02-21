@@ -73,7 +73,7 @@ class Scheduler:
         self.strict_async_level = strict_async_level
         self.lora_name = lora_name
         initial_temp = compute_temperature(step=0, sampling_config=config.sampling, max_steps=config.max_steps)
-        self.sampling_args = get_sampling_args(config.sampling, temperature=initial_temp)
+        self.sampling_args = get_sampling_args(config.sampling, temperature=initial_temp, client_config=config.client)
         self.model_name = self.config.model.name
         self.json_logging = config.log.json_logging
 

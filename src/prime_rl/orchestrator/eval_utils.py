@@ -7,13 +7,15 @@ import pandas as pd
 import verifiers as vf
 
 from prime_rl.orchestrator.config import EvalSamplingConfig
+from prime_rl.orchestrator.utils import apply_client_sampling_overrides
 from prime_rl.orchestrator.vf_utils import evaluate, get_completion_len
+from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize
 
 
-def get_eval_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]:
+def get_eval_sampling_args(sampling_config: EvalSamplingConfig, client_config: ClientConfig) -> dict[str, Any]:
     """Get sampling args for evaluation."""
     # Initialize sampling args
     sampling_args: dict[str, Any] = {}
@@ -41,8 +43,7 @@ def get_eval_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any
         extra_body["repetition_penalty"] = sampling_config.repetition_penalty
 
     sampling_args["extra_body"] = extra_body
-
-    return sampling_args
+    return apply_client_sampling_overrides(sampling_args, client_config)
 
 
 def _pass_at_k(n: int, c: int, k: int) -> float:

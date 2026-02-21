@@ -15,6 +15,7 @@ from verifiers.utils.client_utils import setup_openai_client
 
 from prime_rl.orchestrator.config import SamplingConfig
 from prime_rl.transport import TrainingSample
+from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.utils import (
     format_num,
     format_time,
@@ -37,22 +38,40 @@ async def get_semaphore() -> AsyncContextManager:
     return SEMAPHORE
 
 
-def get_sampling_args(sampling_config: SamplingConfig, temperature: float) -> dict:
+def apply_client_sampling_overrides(
+    sampling_args: dict[str, Any],
+    client_config: ClientConfig,
+) -> dict[str, Any]:
+    sampling_args = dict(sampling_args)
+    extra_body = dict(sampling_args.get("extra_body") or {})
+    extra_body.update(client_config.extra_body_overrides)
+    sampling_args["extra_body"] = extra_body
+
+    sampling_args.update({k: v for k, v in client_config.sampling_overrides.items() if k != "extra_body"})
+    return sampling_args
+
+
+def get_sampling_args(sampling_config: SamplingConfig, temperature: float, client_config: ClientConfig) -> dict:
     # Convert SamplingConfig to vLLM OAI sampling args
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
     sampling_args = dict(sampling_config)
     sampling_args.pop("temp_scheduler", None)
     sampling_args["temperature"] = temperature
     sampling_args["top_p"] = 1.0
-    sampling_args["logprobs"] = True
     sampling_args["extra_body"] = {
-        **sampling_config.extra_body,
-        "return_token_ids": True,  # Always return token IDs
         "top_k": -1,
         "min_p": 0.0,
+        **sampling_config.extra_body,
     }
     sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
     sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
+
+    sampling_args = apply_client_sampling_overrides(sampling_args, client_config)
+
+    # Token-level outputs are required by rollout-to-training conversion.
+    sampling_args["logprobs"] = True
+    sampling_args["extra_body"]["return_token_ids"] = True
+
     return sampling_args
 
 

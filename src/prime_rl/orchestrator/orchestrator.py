@@ -199,7 +199,7 @@ async def orchestrate(config: OrchestratorConfig):
         env_ids = [strip_env_version(env.id) for env in config.eval.env]
         eval_envs = [vf.load_environment(env_id, **env.args) for env_id, env in zip(env_ids, config.eval.env)]
         eval_env_names = [env.name or env_id for env_id, env in zip(env_ids, config.eval.env)]
-        eval_sampling_args = get_eval_sampling_args(config.eval.sampling)
+        eval_sampling_args = get_eval_sampling_args(config.eval.sampling, config.client)
         eval_env_addresses = []
 
         for env_id, env, eval_env_name in zip(env_ids, config.eval.env, eval_env_names):
@@ -422,7 +422,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Schedule generating the training batch
         temperature = compute_temperature(progress.step, config.sampling, config.max_steps)
-        sampling_args = get_sampling_args(config.sampling, temperature=temperature)
+        sampling_args = get_sampling_args(config.sampling, temperature=temperature, client_config=config.client)
         scheduler.set_sampling_args(sampling_args)
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
