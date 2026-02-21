@@ -1,3 +1,8 @@
+job_name = "sft-moe-math"
+output_dir = "/shared/outputs/sft-moe-math"
+num_nodes = 1
+gpus_per_node = 8
+
 max_steps = 500
 
 [wandb]
@@ -8,6 +13,7 @@ name = "sft-moe-math"
 name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 impl = "custom"
 attn = "flash_attention_3"
+optim_cpu_offload = true
 
 [model.compile]
 

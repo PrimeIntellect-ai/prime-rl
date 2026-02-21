@@ -159,81 +159,10 @@ The trainer and inference panes use glob patterns (`latest_train_node_rank_*.log
 
 ## SFT
 
-For SFT on SLURM clusters, use the `sft_slurm` entrypoint. It extends the standard SFT trainer config with SLURM-specific fields, writes the resolved trainer config, renders a SLURM batch script, and submits it with `sbatch`. No inference or orchestrator nodes are needed.
+For SFT on SLURM, use the `sft_slurm` entrypoint. It works the same way as `rl_slurm` but only needs a trainer config — no inference or orchestrator nodes.
 
 ```bash
-uv run sft_slurm @ examples/slurm/my_sft_config.toml
+uv run sft_slurm @ examples/slurm/sft_moe.toml
 ```
 
-This will:
-
-1. Write the resolved trainer config to `{output_dir}/configs/trainer.toml`
-2. Render the SLURM script to `{output_dir}/sft.sh`
-3. Submit the job via `sbatch`
-
-To only generate the script without submitting, use `--dry-run`:
-
-```bash
-uv run sft_slurm @ examples/slurm/my_sft_config.toml --dry-run
-```
-
-### Configuration
-
-The SLURM config extends the standard SFT trainer config with the following fields:
-
-| Field | Description |
-|---|---|
-| `job_name` | SLURM job name |
-| `output_dir` | Directory for outputs, configs, and logs |
-| `project_dir` | Path to the project root on the cluster (defaults to cwd) |
-| `num_nodes` | Number of training nodes (default: 1) |
-| `gpus_per_node` | Number of GPUs per node (default: 8) |
-| `nodes_per_fsdp_group` | Number of nodes per FSDP island (optional, auto-sets `model.dp_replicate`) |
-| `slurm_template` | Path to a custom Jinja2 template (optional) |
-| `dry_run` | Only generate the script without submitting (default: false) |
-
-All standard SFT trainer config fields (`model`, `data`, `optim`, `scheduler`, `wandb`, `ckpt`, etc.) are available at the top level — no `[trainer]` nesting needed.
-
-### Example
-
-```toml
-job_name = "sft-qwen"
-output_dir = "/shared/outputs/sft-qwen"
-num_nodes = 2
-gpus_per_node = 8
-
-max_steps = 1000
-
-[model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
-
-[data]
-type = "sft"
-name = "PrimeIntellect/Reverse-Text-SFT"
-batch_size = 128
-seq_len = 2048
-
-[wandb]
-project = "sft-qwen"
-name = "sft-qwen"
-```
-
-### Custom SLURM Templates
-
-Provide your own Jinja2 template for custom cluster setups:
-
-```bash
-uv run sft_slurm \
-    @ my_config.toml \
-    --slurm-template path/to/my_template.sh.j2
-```
-
-The template receives the following variables: `job_name`, `project_dir`, `output_dir`, `config_dir`, `num_nodes`, `gpus_per_node`, `hf_hub_offline`. See `src/prime_rl/slurm/sft_slurm.sh.j2` for the default template.
-
-### Monitoring
-
-After submission, the logs are available at:
-
-```bash
-tail -f {output_dir}/slurm/latest_train_node_rank_0.log
-```
+See [`examples/slurm/sft_moe.toml`](../examples/slurm/sft_moe.toml) for a MoE example with activation checkpointing, CPU offload, and compilation. Use `--dry-run` to generate the script without submitting.
