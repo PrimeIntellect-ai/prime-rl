@@ -1,4 +1,5 @@
 import asyncio
+import multiprocessing as mp
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -208,7 +209,7 @@ class Orchestrator:
             map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
         )
 
-        train_env_clients = await self._setup_env_servers(config.env, env_ids, train_env_names, "train")
+        train_env_clients, train_env_processes = await self._setup_env_servers(config.env, env_ids, train_env_names, "train")
         for env, env_client in zip(train_env_group.envs, train_env_clients):
             env.env_client = env_client
 
@@ -218,7 +219,7 @@ class Orchestrator:
             eval_env_names = [env.name or env_id for env_id, env in zip(env_ids, config.eval.env)]
             eval_sampling_args = get_eval_sampling_args(config.eval.sampling)
 
-            eval_env_clients = await self._setup_env_servers(config.eval.env, env_ids, eval_env_names, "eval")
+            eval_env_clients, eval_env_processes = await self._setup_env_servers(config.eval.env, env_ids, eval_env_names, "eval")
             for eval_env, eval_env_client in zip(eval_envs, eval_env_clients):
                 eval_env.env_client = eval_env_client
         else:
@@ -605,19 +606,28 @@ class Orchestrator:
         # Cancel event loop lag monitor task
         event_loop_lag_monitor_task.cancel()
 
+        # Shutdown env processes
+        for process in train_env_processes + eval_env_processes:
+            process.terminate()
+            process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=5)
+
         self.logger.success("Orchestrator finished.")
 
         # Optionally, print benchmark table
         if config.bench:
             print_benchmark(to_col_format(monitor.history))
 
-    async def _setup_env_servers(self, env_configs, env_ids: list[str], env_names: list[str], label: str) -> list:
+    async def _setup_env_servers(self, env_configs, env_ids: list[str], env_names: list[str], label: str) -> tuple[list, list[mp.Process]]:
         """Spawn or connect to environment servers, wait for readiness, and return clients."""
         config = self.config
         addresses = []
+        env_processes: list[mp.Process] = []
         for env_id, env, env_name in zip(env_ids, env_configs, env_names):
             if env.address is None:
-                address = spawn_env_server(
+                address, process = spawn_env_server(
                     env_id=env_id,
                     env_args=env.args,
                     extra_env_kwargs=env.extra_env_kwargs,
@@ -626,6 +636,7 @@ class Orchestrator:
                     log_file_level=config.log.vf_level,
                     json_logging=config.log.json_logging,
                 )
+                env_processes.append(process)
             else:
                 address = env.address
             self.logger.info(f"Connecting {label} environment {env_name} to server at {address}")
@@ -634,7 +645,7 @@ class Orchestrator:
         self.logger.info(f"Waiting for {label} environment servers to be ready")
         await wait_for_env_servers(clients)
         self.logger.success(f"{label.capitalize()} environment servers ready")
-        return clients
+        return clients, env_processes
 
     def _log_accumulated_metrics(
         self,
