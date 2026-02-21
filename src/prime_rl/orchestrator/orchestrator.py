@@ -700,7 +700,6 @@ class Orchestrator:
         by_example = results_df.groupby("example_id")
         group_reward_sums = by_example.reward.sum()
         group_sizes = by_example.reward.count()
-        num_groups = len(group_reward_sums)
         solve_all = float((group_reward_sums == group_sizes).mean())
         solve_none = float((group_reward_sums == 0).mean())
         effective_batch_size = 1 - solve_none - solve_all
