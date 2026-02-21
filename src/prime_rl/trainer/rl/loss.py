@@ -9,6 +9,8 @@ from torch import Tensor
 from prime_rl.trainer.rl.config import CustomLossConfig, LossConfig, LossConfigType
 from prime_rl.utils.utils import import_object
 
+LOG_RATIO_EXP_BOUND: float = 30.0
+
 
 @dataclass
 class LossInputs:
@@ -36,6 +38,15 @@ Expected signature:
     def my_loss(inputs: LossInputs, **kwargs) -> LossOutputs:
         ...
 """
+
+
+@dataclass
+class ImportanceWeights:
+    """Importance sampling weights at different aggregation levels."""
+
+    token_weights: Float[Tensor, " seq"]
+    sequence_weight: Float[Tensor, ""]
+    geo_mean_weight: Float[Tensor, ""]
 
 
 @jaxtyped(typechecker=typechecker)
@@ -104,6 +115,183 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
+def _safe_exp_log_ratio(log_ratio: Tensor) -> Tensor:
+    """Compute exp(log_ratio) with clamping to prevent overflow/underflow."""
+    return torch.exp(torch.clamp(log_ratio, min=-LOG_RATIO_EXP_BOUND, max=LOG_RATIO_EXP_BOUND))
+
+
+def compute_importance_weights(
+    log_ratio: Float[Tensor, " seq"],
+    mask: Bool[Tensor, " seq"],
+    token_clip_low: float | None = None,
+    token_clip_high: float | None = None,
+    sequence_clip_low: float | None = None,
+    sequence_clip_high: float | None = None,
+    geo_mean_clip_low: float | None = None,
+    geo_mean_clip_high: float | None = None,
+) -> ImportanceWeights:
+    """Compute importance sampling weights from a log-ratio log(p/q).
+
+    Optionally applies truncated importance sampling via per-level clipping.
+
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        mask: Which tokens to include in sequence-level aggregations.
+        token_clip_low: Lower clamp for per-token weights.
+        token_clip_high: Upper clamp for per-token weights.
+        sequence_clip_low: Lower clamp for the sequence (product) weight.
+        sequence_clip_high: Upper clamp for the sequence (product) weight.
+        geo_mean_clip_low: Lower clamp for the geometric mean weight.
+        geo_mean_clip_high: Upper clamp for the geometric mean weight.
+    """
+    token_weights = _safe_exp_log_ratio(log_ratio)
+    if token_clip_low is not None or token_clip_high is not None:
+        token_weights = torch.clamp(token_weights, min=token_clip_low, max=token_clip_high)
+
+    masked_sum = log_ratio[mask].sum()
+    n_masked = torch.clamp_min(mask.sum(), 1)
+
+    sequence_weight = _safe_exp_log_ratio(masked_sum)
+    if sequence_clip_low is not None or sequence_clip_high is not None:
+        sequence_weight = torch.clamp(sequence_weight, min=sequence_clip_low, max=sequence_clip_high)
+
+    geo_mean_weight = _safe_exp_log_ratio(masked_sum / n_masked)
+    if geo_mean_clip_low is not None or geo_mean_clip_high is not None:
+        geo_mean_weight = torch.clamp(geo_mean_weight, min=geo_mean_clip_low, max=geo_mean_clip_high)
+
+    return ImportanceWeights(
+        token_weights=token_weights,
+        sequence_weight=sequence_weight,
+        geo_mean_weight=geo_mean_weight,
+    )
+
+
+def reject_by_token(
+    log_ratio: Float[Tensor, " seq"],
+    low: float | None = None,
+    high: float | None = None,
+) -> tuple[Bool[Tensor, " seq"], Bool[Tensor, " seq"]]:
+    """Mask tokens where the importance ratio breaches bounds.
+
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        low: Tokens with ratio below this are masked.
+        high: Tokens with ratio above this are masked.
+
+    Returns:
+        (low_mask, high_mask) where True means the token should be rejected.
+    """
+    token_ratio = _safe_exp_log_ratio(log_ratio)
+    empty_mask = torch.zeros_like(token_ratio, dtype=torch.bool)
+    return (
+        (token_ratio < low) if low is not None else empty_mask,
+        (token_ratio > high) if high is not None else empty_mask,
+    )
+
+
+def reject_by_sequence_minmax(
+    log_ratio: Float[Tensor, " seq"],
+    mask: Bool[Tensor, " seq"],
+    low: float | None = None,
+    high: float | None = None,
+) -> tuple[Bool[Tensor, ""], Bool[Tensor, ""]]:
+    """Mask sequence if any token's importance ratio breaches bounds.
+
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        mask: Which tokens to consider.
+        low: Sequence is masked if any token's ratio falls below this.
+        high: Sequence is masked if any token's ratio exceeds this.
+
+    Returns:
+        (low_mask, high_mask) as scalar bools.
+    """
+    token_ratio = _safe_exp_log_ratio(log_ratio)
+
+    seq_min = torch.where(mask, token_ratio, torch.inf).min()
+    seq_max = torch.where(mask, token_ratio, -torch.inf).max()
+    seq_rejected_low = (seq_min < low) if low is not None else torch.tensor(False, device=log_ratio.device)
+    seq_rejected_high = (seq_max > high) if high is not None else torch.tensor(False, device=log_ratio.device)
+    
+    return seq_rejected_low, seq_rejected_high
+
+
+def reject_by_sequence_sum(
+    log_ratio: Float[Tensor, " seq"],
+    mask: Bool[Tensor, " seq"],
+    low: float | None = None,
+    high: float | None = None,
+) -> tuple[Bool[Tensor, ""], Bool[Tensor, ""]]:
+    """Mask sequence if the product importance ratio (sum of log-ratios) breaches bounds.
+
+    Grows with sequence length — thresholds need to be higher than per-token bounds.
+
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        mask: Which tokens to include in the sum.
+        low: Sequence is masked if the product ratio falls below this.
+        high: Sequence is masked if the product ratio exceeds this.
+
+    Returns:
+        (low_mask, high_mask) as scalar bools.
+    """
+    sum_ratio = _safe_exp_log_ratio(log_ratio[mask].sum())
+    empty_mask = torch.tensor(False, device=log_ratio.device)
+    return (
+        (sum_ratio < low) if low is not None else empty_mask,
+        (sum_ratio > high) if high is not None else empty_mask,
+    )
+
+def reject_by_geo_mean(
+    log_ratio: Float[Tensor, " seq"],
+    mask: Bool[Tensor, " seq"],
+    low: float | None = None,
+    high: float | None = None,
+) -> tuple[Bool[Tensor, ""], Bool[Tensor, ""]]:
+    """Mask sequence if the geometric mean importance ratio breaches bounds.
+
+    Unlike the product ratio, this is length-normalized so thresholds are tight
+    (e.g. 0.99–1.01 rejects sequences with >1% average per-token log deviation).
+
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        mask: Which tokens to include in the geometric mean.
+        low: Sequence is masked if the geo-mean ratio falls below this.
+        high: Sequence is masked if the geo-mean ratio exceeds this.
+
+    Returns:
+        (low_mask, high_mask) as scalar bools.
+    """
+    geo_mean_ratio = _safe_exp_log_ratio(_safe_mean(log_ratio, mask))
+    empty_mask = torch.tensor(False, device=log_ratio.device)
+    return (
+        (geo_mean_ratio < low) if low is not None else empty_mask,
+        (geo_mean_ratio > high) if high is not None else empty_mask,
+    )
+
+
+def reject_by_geo_mean_k3(
+    log_ratio: Float[Tensor, " seq"],
+    mask: Bool[Tensor, " seq"],
+    high: float,
+) -> Bool[Tensor, ""]:
+    """Mask sequence if the mean k3 KL divergence exceeds a threshold.
+
+    k3 per token: (p - log p - 1) where p = exp(log_ratio). In expectation this is KL(q || p).
+    Non-negative, so only an upper bound is meaningful. Unlike the geometric mean, k3 cannot
+    be fooled by cancellation (symmetric deviations like [+2, -2] still produce non-zero k3).
+
+    Args:
+        log_ratio: Per-token log importance ratio log(p/q).
+        mask: Which tokens to include in the mean.
+        high: Sequence is masked if the mean k3 exceeds this.
+    """
+    clamped_log_ratio = torch.clamp(log_ratio, min=-LOG_RATIO_EXP_BOUND, max=LOG_RATIO_EXP_BOUND)
+    k3_per_token = torch.exp(clamped_log_ratio) - clamped_log_ratio - 1.0
+    mean_k3 = _safe_mean(k3_per_token, mask)
+    return mean_k3 > high
+
+
 def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
     """Masked importance sampling with KL against the inference policy, and optional masking strategies."""
     trainer_logprobs = inputs.trainer_logprobs
@@ -113,42 +301,35 @@ def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
     loss_mask = inputs.loss_mask
 
     log_importance_ratio = trainer_logprobs - inference_logprobs
-    teacher_kl = teacher_logprobs - trainer_logprobs if teacher_logprobs is not None else None
 
-    token_importance_ratio = torch.exp(log_importance_ratio)
-    geo_seq_ratio = torch.exp(_safe_mean(log_importance_ratio, loss_mask))
-    token_mismatch_kl = token_importance_ratio - log_importance_ratio - 1
-
-    seq_log_importance_ratio = torch.clamp(log_importance_ratio[loss_mask].sum().detach(), max=10.0)
-    seq_importance_ratio = torch.clamp(torch.exp(seq_log_importance_ratio), max=loss_config.sequence_clip_high)
-
-    seq_min_ratio = torch.where(loss_mask, token_importance_ratio, torch.inf).min()
-    seq_max_ratio = torch.where(loss_mask, token_importance_ratio, -torch.inf).max()
-    seq_mask_low = seq_min_ratio < loss_config.sequence_mask_low
-    seq_mask_high = seq_max_ratio > loss_config.sequence_mask_high
-
-    token_mask_low_mask = token_importance_ratio < loss_config.token_mask_low
-    token_mask_high_mask = token_importance_ratio > loss_config.token_mask_high
-
-    geo_mask_low_mask = geo_seq_ratio < loss_config.geo_mask_low
-    geo_mask_high_mask = geo_seq_ratio > loss_config.geo_mask_high
-
-    is_masked = (
-        token_mask_low_mask
-        | token_mask_high_mask
-        | geo_mask_low_mask
-        | geo_mask_high_mask
-        | seq_mask_low
-        | seq_mask_high
+    is_weights = compute_importance_weights(
+        log_importance_ratio, loss_mask, sequence_clip_high=loss_config.sequence_clip_high
     )
+    clamped_log_ratio = torch.clamp(log_importance_ratio, min=-LOG_RATIO_EXP_BOUND, max=LOG_RATIO_EXP_BOUND)
+    token_mismatch_kl = is_weights.token_weights - clamped_log_ratio - 1
+
+    token_low, token_high = reject_by_token(
+        log_importance_ratio, low=loss_config.token_mask_low, high=loss_config.token_mask_high
+    )
+    seq_low, seq_high = reject_by_sequence_minmax(
+        log_importance_ratio, loss_mask, low=loss_config.sequence_mask_low, high=loss_config.sequence_mask_high
+    )
+    geo_low, geo_high = reject_by_geo_mean(
+        log_importance_ratio, loss_mask, low=loss_config.geo_mask_low, high=loss_config.geo_mask_high
+    )
+
+    is_masked = token_low | token_high | seq_low | seq_high | geo_low | geo_high
     keep_mask = loss_mask & ~is_masked
 
-    importance_ratio = seq_importance_ratio if loss_config.ratio_type == "sequence" else token_importance_ratio
+    importance_weight = (
+        is_weights.sequence_weight if loss_config.ratio_type == "sequence" else is_weights.token_weights
+    )
 
+    teacher_kl = teacher_logprobs - trainer_logprobs if teacher_logprobs is not None else None
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:
         advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
-    coeff = importance_ratio * (advantages - loss_config.kl_tau * log_importance_ratio)
+    coeff = importance_weight * (advantages - loss_config.kl_tau * log_importance_ratio)
     loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
 
     if loss_config.ratio_type == "sequence":
@@ -159,13 +340,13 @@ def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
         "masked_mismatch_kl": _safe_mean(token_mismatch_kl, loss_mask & is_masked),
         "unmasked_mismatch_kl": _safe_mean(token_mismatch_kl, keep_mask),
         "is_masked": is_masked[loss_mask].float(),
-        "is_masked_low": token_mask_low_mask[loss_mask].float(),
-        "is_masked_high": token_mask_high_mask[loss_mask].float(),
-        "sequence_masked_low": seq_mask_low.float(),
-        "sequence_masked_high": seq_mask_high.float(),
-        "geo_masked_low": geo_mask_low_mask.float(),
-        "geo_masked_high": geo_mask_high_mask.float(),
-        "geo_seq_ratio": geo_seq_ratio,
+        "is_masked_low": token_low[loss_mask].float(),
+        "is_masked_high": token_high[loss_mask].float(),
+        "sequence_masked_low": seq_low.float(),
+        "sequence_masked_high": seq_high.float(),
+        "geo_masked_low": geo_low.float(),
+        "geo_masked_high": geo_high.float(),
+        "geo_seq_ratio": is_weights.geo_mean_weight,
     }
     if teacher_kl is not None:
         metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
