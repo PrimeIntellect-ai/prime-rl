@@ -698,13 +698,11 @@ class Orchestrator:
         throughput = num_tokens / step_time if step_time > 0 else 0
 
         by_example = results_df.groupby("example_id")
-        group_reward_sums = [
-            sum(r["reward"] for r in accumulated_rollouts[i : i + config.rollouts_per_example])
-            for i in range(0, len(accumulated_rollouts), config.rollouts_per_example)
-        ]
+        group_reward_sums = by_example.reward.sum()
+        group_sizes = by_example.reward.count()
         num_groups = len(group_reward_sums)
-        solve_all = sum(reward_sum == config.rollouts_per_example for reward_sum in group_reward_sums) / num_groups
-        solve_none = sum(reward_sum == 0 for reward_sum in group_reward_sums) / num_groups
+        solve_all = float((group_reward_sums == group_sizes).mean())
+        solve_none = float((group_reward_sums == 0).mean())
         effective_batch_size = 1 - solve_none - solve_all
 
         temperature = compute_temperature(ckpt_step, config.sampling, config.max_steps)
