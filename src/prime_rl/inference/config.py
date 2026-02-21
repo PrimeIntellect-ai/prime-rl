@@ -160,9 +160,10 @@ class ModelConfig(BaseConfig):
     enable_auto_tool_choice: Annotated[
         bool,
         Field(
-            description="Whether to enable auto tool choice. Passed to vLLM as `--enable-auto-tool-choice`",
+            description="Whether to enable auto tool choice. Passed to vLLM as `--enable-auto-tool-choice`. "
+            "Automatically set to True when tool_call_parser is configured.",
         ),
-    ] = True
+    ] = False
 
     tool_call_parser: Annotated[
         str | None,
@@ -188,13 +189,20 @@ class ModelConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_tool_call_parser(self):
-        if self.tool_call_parser is not None:
-            return self
+        if self.tool_call_parser is None:
+            parser = MODEL_TOOL_CALL_PARSER.get(self.name)
+            if parser is not None:
+                logger.info(f"Auto-detected tool_call_parser='{parser}' for model '{self.name}'")
+                self.tool_call_parser = parser
+            else:
+                logger.warning(
+                    f"Model '{self.name}' not found in MODEL_TOOL_CALL_PARSER, defaulting to 'hermes'. "
+                    f"Set `model.tool_call_parser` explicitly if this is incorrect."
+                )
+                self.tool_call_parser = "hermes"
 
-        parser = MODEL_TOOL_CALL_PARSER.get(self.name)
-        if parser is not None:
-            logger.info(f"Auto-detected tool_call_parser='{parser}' for model '{self.name}'")
-            self.tool_call_parser = parser
+        if self.tool_call_parser is not None and not self.enable_auto_tool_choice:
+            self.enable_auto_tool_choice = True
 
         return self
 

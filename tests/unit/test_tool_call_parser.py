@@ -39,8 +39,3 @@ def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
 def test_explicit_parser_overrides_auto_detect():
     config = ModelConfig(name="Qwen/Qwen3-4B-Instruct-2507", tool_call_parser="qwen3_xml")
     assert config.tool_call_parser == "qwen3_xml"
-
-
-def test_unknown_model_leaves_parser_none():
-    config = ModelConfig(name="unknown-org/mystery-model-7B")
-    assert config.tool_call_parser is None
