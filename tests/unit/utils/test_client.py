@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter
+from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, setup_clients
+from prime_rl.utils.config import ClientConfig
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -83,3 +84,12 @@ def test_load_lora_adapter_raises_non_retryable_error_immediately():
 
     assert exc_info.value.response.status_code == 400
     assert mock_client.post.call_count == 1
+
+
+def test_setup_clients_uses_configured_client_type():
+    config = ClientConfig(base_url=["http://localhost:8000/v1"], client_type="openai_chat_completions")
+
+    clients = setup_clients(config)
+
+    assert len(clients) == 1
+    assert clients[0].client_type == "openai_chat_completions"

@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -19,6 +19,7 @@ class ModelConfig(BaseConfig):
 
 
 ServerType = Literal["vllm", "openai"]
+ClientType = Literal["openai_chat_completions", "openai_chat_completions_token"]
 
 
 class ElasticConfig(BaseConfig):
@@ -66,6 +67,17 @@ class ClientConfig(BaseConfig):
         ),
     ] = 1200
 
+    client_type: Annotated[
+        ClientType,
+        Field(
+            description=(
+                "Verifiers client type used by the orchestrator. "
+                "Use openai_chat_completions for standard /v1/chat/completions calls, "
+                "or openai_chat_completions_token for vLLM /chat/completions/tokens routing on multi-turn generation."
+            ),
+        ),
+    ] = "openai_chat_completions_token"
+
     base_url: Annotated[
         list[str],
         Field(
@@ -84,6 +96,24 @@ class ClientConfig(BaseConfig):
         dict[str, str],
         Field(
             description="Headers to use for the OpenAI API. By default, it is set to an empty dictionary.",
+        ),
+    ] = {}
+
+    sampling_overrides: Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                'Top-level request fields to hardcode/override on generation requests (e.g. {"logprobs": true}).'
+            ),
+        ),
+    ] = {}
+
+    extra_body_overrides: Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                'extra_body fields to hardcode/override on generation requests (e.g. {"return_token_ids": true}).'
+            ),
         ),
     ] = {}
 

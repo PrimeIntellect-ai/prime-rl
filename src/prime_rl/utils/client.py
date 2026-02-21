@@ -107,7 +107,7 @@ async def setup_inference_pool(client_config: ClientConfig, model_name: str) -> 
 
     logger.info(
         f"Initializing static inference pool (base_url={', '.join(client_config.base_url)}, "
-        f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
+        f"api_key_var={client_config.api_key_var}, client_type={client_config.client_type}, headers={client_config.headers})"
     )
     return StaticInferencePool(
         clients=setup_clients(client_config),
@@ -120,7 +120,7 @@ def setup_clients(client_config: ClientConfig) -> list[vf.ClientConfig]:
     def setup_client(client_idx: int, base_url: str) -> vf.ClientConfig:
         return vf.ClientConfig(
             client_idx=client_idx,
-            client_type="openai_chat_completions_token",
+            client_type=client_config.client_type,
             api_base_url=base_url,
             api_key_var=client_config.api_key_var,
             timeout=client_config.timeout,

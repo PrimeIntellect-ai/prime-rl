@@ -165,9 +165,12 @@ class ElasticInferencePool:
                 setup_clients(
                     ClientConfig(
                         timeout=self.client_config.timeout,
+                        client_type=self.client_config.client_type,
                         base_url=urls,
                         api_key_var=self.client_config.api_key_var,
                         headers=self.client_config.headers,
+                        sampling_overrides=self.client_config.sampling_overrides,
+                        extra_body_overrides=self.client_config.extra_body_overrides,
                     )
                 )
                 if urls
@@ -203,9 +206,12 @@ class ElasticInferencePool:
         url = self._build_url(ip)
         config = ClientConfig(
             timeout=self.client_config.timeout,
+            client_type=self.client_config.client_type,
             base_url=[f"{url}/v1"],
             api_key_var=self.client_config.api_key_var,
             headers=self.client_config.headers,
+            sampling_overrides=self.client_config.sampling_overrides,
+            extra_body_overrides=self.client_config.extra_body_overrides,
         )
         return setup_admin_clients(config)[0]
 
