@@ -194,14 +194,8 @@ class ModelConfig(BaseConfig):
             if parser is not None:
                 logger.info(f"Auto-detected tool_call_parser='{parser}' for model '{self.name}'")
                 self.tool_call_parser = parser
-            else:
-                logger.warning(
-                    f"Model '{self.name}' not found in MODEL_TOOL_CALL_PARSER, defaulting to 'hermes'. "
-                    f"Set `model.tool_call_parser` explicitly if this is incorrect."
-                )
-                self.tool_call_parser = "hermes"
 
-        if self.tool_call_parser is not None and not self.enable_auto_tool_choice:
+        if self.tool_call_parser is not None:
             self.enable_auto_tool_choice = True
 
         return self
