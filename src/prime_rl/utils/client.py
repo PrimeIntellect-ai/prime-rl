@@ -107,6 +107,7 @@ async def setup_inference_pool(client_config: ClientConfig, model_name: str) -> 
 
     logger.info(
         f"Initializing static inference pool (base_url={', '.join(client_config.base_url)}, "
+        f"admin_base_url={', '.join(client_config.admin_base_url or client_config.base_url)}, "
         f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
     )
     return StaticInferencePool(
@@ -155,7 +156,8 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             timeout=httpx.Timeout(client_config.timeout),
         )
 
-    return [_setup_admin_client(base_url) for base_url in client_config.base_url]
+    admin_urls = client_config.admin_base_url or client_config.base_url
+    return [_setup_admin_client(base_url) for base_url in admin_urls]
 
 
 async def maybe_check_has_model(

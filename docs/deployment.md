@@ -133,6 +133,52 @@ uv run inference \
 
 ## RL
 
+### ThunderAgent Proxy
+
+Use this setup when routing PRIME-RL rollouts through [ThunderAgent](https://github.com/HaoKang-Timmy/ThunderAgent).
+
+ThunderAgent-specific orchestrator config:
+
+```toml
+[client]
+base_url = ["http://localhost:9000/v1"]         # ThunderAgent
+admin_base_url = ["http://localhost:8000/v1"]   # Backend inference server(s)
+
+[sampling]
+auto_program_id = true
+```
+
+`client.base_url` routes chat requests to ThunderAgent, `client.admin_base_url` keeps admin endpoints (`/health`, `/update_weights`, `/reload_weights`) on backend inference servers, and `auto_program_id` injects `extra_body.program_id` per rollout. PRIME-RL also sends best-effort `POST /programs/release` calls for those auto-generated program IDs after each rollout group completes.
+
+Minimal local startup:
+
+```bash
+# Install once
+uv pip install -e "./ThunderAgent"
+```
+
+```bash
+# Start backend inference server
+uv run inference @ configs/debug/infer.toml --server.port 8000
+```
+
+```bash
+# Start ThunderAgent proxy
+uv run thunderagent \
+  --backend-type vllm \
+  --backends http://localhost:8000 \
+  --port 9000 \
+  --metrics \
+  --profile
+```
+
+```bash
+# Start orchestrator with ThunderAgent-aware config
+uv run orchestrator @ configs/debug/orch_thunderagent.toml --seq-len 1024 --output-dir outputs/thunderagent-debug
+```
+
+`configs/debug/orch_thunderagent.toml` contains the ThunderAgent routing fields above.
+
 ### Single-GPU Training
 
 If you only have access to a single GPU, you may still be able to run small RL experiments. To do so, configure your inference server to use only a fraction of the available memory to leave some space for the trainer.

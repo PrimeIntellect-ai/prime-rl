@@ -159,6 +159,16 @@ class SamplingConfig(BaseConfig):
         ),
     ] = {}
 
+    auto_program_id: Annotated[
+        bool,
+        Field(
+            description=(
+                "Automatically inject a unique extra_body.program_id per rollout request. "
+                "Useful when routing requests through ThunderAgent."
+            ),
+        ),
+    ] = False
+
 
 class EvalSamplingConfig(BaseConfig):
     """Configures how tokens are sampled from the model for evaluation. Largely follows the vLLM sampling parameters."""
@@ -236,6 +246,16 @@ class EvalSamplingConfig(BaseConfig):
             description="Extra body to use for the OpenAI API. By default, it is set to an empty dictionary.",
         ),
     ] = {}
+
+    auto_program_id: Annotated[
+        bool,
+        Field(
+            description=(
+                "Automatically inject a unique extra_body.program_id per rollout request during evaluation. "
+                "Useful when routing requests through ThunderAgent."
+            ),
+        ),
+    ] = False
 
 
 class EvalSaveHFConfig(BaseConfig):

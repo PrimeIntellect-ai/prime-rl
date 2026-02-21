@@ -42,6 +42,7 @@ def get_sampling_args(sampling_config: SamplingConfig, temperature: float) -> di
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
     sampling_args = dict(sampling_config)
     sampling_args.pop("temp_scheduler", None)
+    sampling_args.pop("auto_program_id", None)
     sampling_args["temperature"] = temperature
     sampling_args["top_p"] = 1.0
     sampling_args["logprobs"] = True

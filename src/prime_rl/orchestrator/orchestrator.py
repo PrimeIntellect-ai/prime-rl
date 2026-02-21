@@ -410,6 +410,7 @@ async def orchestrate(config: OrchestratorConfig):
                         num_examples=eval_env_config.num_examples or config.eval.num_examples,
                         rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
                         max_retries=eval_env_config.max_retries,
+                        auto_program_id=config.eval.sampling.auto_program_id,
                         ckpt_step=ckpt_step,
                         step=progress.step,
                     )
@@ -439,6 +440,8 @@ async def orchestrate(config: OrchestratorConfig):
                     sampling_args=sampling_args,
                     clients=inference_pool.clients,
                     pbar_description="Generating rollouts (val)",
+                    auto_program_id=config.sampling.auto_program_id,
+                    program_id_prefix=f"val-step-{progress.step}",
                 )
             )
         else:
@@ -744,6 +747,7 @@ async def orchestrate(config: OrchestratorConfig):
                     num_examples=eval_env_config.num_examples or config.eval.num_examples,
                     rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
                     max_retries=eval_env_config.max_retries,
+                    auto_program_id=config.eval.sampling.auto_program_id,
                     ckpt_step=ckpt_step,
                     step=progress.step,
                 )
