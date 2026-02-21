@@ -12,6 +12,19 @@ from prime_rl.utils.logger import get_logger
 # primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
 
 
+def _prompt_has_images(prompt: list) -> bool:
+    """Check if a prompt contains any images."""
+    if not prompt or not isinstance(prompt, list):
+        return False
+    for msg in prompt:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    return True
+    return False
+
+
 def fix_vlm_prompt_tokens(rollouts: list[vf.RolloutOutput], processor) -> None:
     """
     Re-tokenize VLM prompts using the processor to include image placeholder tokens.
@@ -39,6 +52,10 @@ def fix_vlm_prompt_tokens(rollouts: list[vf.RolloutOutput], processor) -> None:
             tokens = step.get("tokens")
             prompt = step.get("prompt")
             if tokens is None or prompt is None:
+                continue
+
+            # Only re-tokenize if the prompt actually contains images
+            if not _prompt_has_images(prompt):
                 continue
 
             # Re-tokenize the prompt using the processor which handles images correctly
