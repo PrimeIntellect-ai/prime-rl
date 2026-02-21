@@ -5,10 +5,10 @@ and verifies the HF <-> PrimeRL weight conversion roundtrip.
 
 Usage:
     # Create and verify
-    uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
+    uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./glm4-moe-tiny
 
     # Verify only (on an existing checkpoint)
-    uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
+    uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./glm4-moe-tiny --verify-only
 """
 
 import argparse
@@ -17,12 +17,16 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
+from transformers import MiniMaxM2ForCausalLM as HFMiniMaxM2ForCausalLM
+from transformers import Qwen3MoeForCausalLM as HFQwen3MoeForCausalLM
 
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2ForCausalLM as PrimeRLMiniMaxM2ForCausalLM
+from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig
+from prime_rl.trainer.models.qwen3_moe import Qwen3MoeForCausalLM as PrimeRLQwen3MoeForCausalLM
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.utils import default_dtype
 
@@ -81,11 +85,37 @@ ARCH_PRESETS = {
             use_qk_norm=True,
             qk_norm_type="per_layer",
             use_grouped_mm=False,
-            auto_map={"AutoModelForCausalLM": "MiniMaxAI/MiniMax-M2.1--modeling_minimax_m2.MiniMaxM2ForCausalLM"},
         ),
-        "hf_model_class": None,  # uses AutoModelForCausalLM with trust_remote_code
+        "hf_model_class": HFMiniMaxM2ForCausalLM,
         "prime_model_class": PrimeRLMiniMaxM2ForCausalLM,
         "tokenizer_source": "MiniMaxAI/MiniMax-M2.1",
+    },
+    "qwen3_moe": {
+        "config_class": Qwen3MoeConfig,
+        "config_kwargs": dict(
+            vocab_size=151936,
+            hidden_size=1024,
+            intermediate_size=2048,
+            num_hidden_layers=24,
+            num_attention_heads=16,
+            num_key_value_heads=4,
+            head_dim=64,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            rms_norm_eps=1e-6,
+            rope_theta=1000000.0,
+            num_experts=16,
+            num_experts_per_tok=4,
+            moe_intermediate_size=256,
+            norm_topk_prob=True,
+            decoder_sparse_step=1,
+            mlp_only_layers=[0],
+            use_qk_norm=True,
+            use_grouped_mm=False,
+        ),
+        "hf_model_class": HFQwen3MoeForCausalLM,
+        "prime_model_class": PrimeRLQwen3MoeForCausalLM,
+        "tokenizer_source": "Qwen/Qwen2.5-0.5B",
     },
 }
 
