@@ -46,14 +46,29 @@ def get_stable_ckpt_steps(ckpt_dir: Path) -> list[int]:
 
 
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
-    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
-    steps = get_all_ckpt_steps(ckpt_dir)
-    if len(steps) == 0:
-        logger = get_logger()
-        logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
-        return None
-    latest_step = steps[-1]
+    """Gets the latest stable checkpoint step from the checkpoint directory.
+
+    Only considers checkpoints with a STABLE marker, ensuring we don't
+    resume from a partially written checkpoint.
+
+    Returns None if no stable checkpoints are found.
+    """
     logger = get_logger()
+    all_steps = get_all_ckpt_steps(ckpt_dir)
+    stable_steps = get_stable_ckpt_steps(ckpt_dir)
+    if len(stable_steps) == 0:
+        if len(all_steps) > 0:
+            logger.warning(
+                f"Found {len(all_steps)} checkpoint dir(s) in {ckpt_dir} but none are stable. "
+                "Starting from scratch."
+            )
+        else:
+            logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
+        return None
+    latest_step = stable_steps[-1]
+    if len(stable_steps) < len(all_steps):
+        skipped = sorted(set(all_steps) - set(stable_steps))
+        logger.warning(f"Skipping incomplete checkpoint(s) without STABLE marker: {skipped}")
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
 
