@@ -10,7 +10,7 @@ from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
+from prime_rl.orchestrator.trajectories import build_vlm_image_cache, fix_vlm_prompt_tokens, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
 
@@ -473,8 +473,13 @@ async def orchestrate(config: OrchestratorConfig):
         parallel_preprocess_start = time.perf_counter()
         num_unique_examples = len(set(example_ids))
 
-        # VLM: build image cache for efficient batched preprocessing
+        # VLM: fix prompt tokens and build image cache for efficient batched preprocessing
         if is_vlm:
+            # Re-tokenize prompts to include image placeholder tokens.
+            # vLLM's /tokenize API doesn't handle images, so stored prompt_ids are missing
+            # image tokens. This fixes the mismatch between pixel_values and input_ids.
+            fix_vlm_prompt_tokens(train_rollouts, processor)
+
             vlm_cache = build_vlm_image_cache(train_rollouts, processor)
             logger.info(
                 f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s"
