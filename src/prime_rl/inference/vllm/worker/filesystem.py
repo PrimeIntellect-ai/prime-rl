@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from torch.nn import Module
@@ -31,11 +32,14 @@ class FileSystemWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
+        # Resolve to absolute path - vLLM treats relative paths as HuggingFace repo IDs
+        absolute_weight_path = str(Path(weight_path).resolve())
+
         # Get vLLM model loader
         model_loader = get_model_loader(self.load_config)
         assert isinstance(model_loader, DefaultModelLoader)
         local_source = DefaultModelLoader.Source(
-            weight_path,
+            absolute_weight_path,
             revision=None,  # TODO: Check that this is correct or if we should use the default (model_config.revision)
             prefix="",
             fall_back_to_pt=getattr(model, "fall_back_to_pt_during_load", True),
