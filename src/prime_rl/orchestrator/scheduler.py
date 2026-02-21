@@ -55,6 +55,7 @@ class Scheduler:
         tasks_per_minute: int | None,
         lora_name: str | None = None,
         output_dir: Path | None = None,
+        rollout_state_columns: list[str] | None = None,
     ):
         self.logger = get_logger()
         if tasks_per_minute is not None:
@@ -76,6 +77,7 @@ class Scheduler:
         self.sampling_args = get_sampling_args(config.sampling, temperature=initial_temp)
         self.model_name = self.config.model.name
         self.json_logging = config.log.json_logging
+        self.rollout_state_columns = rollout_state_columns or []
 
         # Inference pool - used for admin operations (adapter sync) and metrics
         self.inference_pool = inference_pool
@@ -128,6 +130,7 @@ class Scheduler:
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
                 max_retries=0,  # TODO: make configurable
+                state_columns=self.rollout_state_columns,
             )
         )
         self.inflight_group_rollouts[run_group_task] = InflightRolloutInfo(0, client_config)
