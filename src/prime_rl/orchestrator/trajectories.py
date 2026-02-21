@@ -12,6 +12,55 @@ from prime_rl.utils.logger import get_logger
 # primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
 
 
+def fix_vlm_prompt_tokens(rollouts: list[vf.RolloutOutput], processor) -> None:
+    """
+    Re-tokenize VLM prompts using the processor to include image placeholder tokens.
+
+    vLLM's /tokenize API doesn't handle multimodal content - it only tokenizes text.
+    This causes a mismatch where pixel_values exist but input_ids lack image tokens.
+
+    This function uses the HuggingFace processor's apply_chat_template to correctly
+    tokenize prompts with images, adding <|vision_start|>, <|image_pad|>, <|vision_end|>
+    tokens as needed.
+
+    Args:
+        rollouts: List of rollout outputs containing trajectories to fix
+        processor: HuggingFace processor for the VLM model
+    """
+    if processor is None:
+        return
+
+    logger = get_logger()
+    fixed_count = 0
+
+    for rollout in rollouts:
+        trajectory = rollout.get("trajectory", [])
+        for step in trajectory:
+            tokens = step.get("tokens")
+            prompt = step.get("prompt")
+            if tokens is None or prompt is None:
+                continue
+
+            # Re-tokenize the prompt using the processor which handles images correctly
+            correct_prompt_ids = processor.apply_chat_template(
+                prompt,
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+
+            old_len = len(tokens["prompt_ids"])
+            new_len = len(correct_prompt_ids)
+
+            if old_len != new_len:
+                # Replace with correctly tokenized prompt
+                tokens["prompt_ids"] = correct_prompt_ids
+                tokens["prompt_mask"] = [0] * new_len
+                fixed_count += 1
+
+    if fixed_count > 0:
+        logger.debug(f"Fixed {fixed_count} VLM prompt tokenizations with image placeholders")
+
+
 def interleave_rollout(
     output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
