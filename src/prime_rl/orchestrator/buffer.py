@@ -10,7 +10,7 @@ import verifiers as vf
 from datasets import Dataset
 from verifiers.utils.save_utils import make_serializable
 
-from prime_rl.orchestrator.config import BufferConfig
+from prime_rl.orchestrator.config import BufferConfig, MaxTokensControllerConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_num, mean, mean_normalize
 
@@ -25,11 +25,21 @@ class Buffer:
         dataset: Dataset,
         env_names: list[str],
         buffer_config: BufferConfig,
+        max_tokens_controllers: dict[str, MaxTokensControllerConfig] | None = None,
+        initial_max_tokens: int | None = None,
     ):
         self.dataset = dataset
         self.env_names = env_names
         self.config = buffer_config
         self.logger = get_logger()
+
+        # Max tokens controller state
+        self.controller_configs: dict[str, MaxTokensControllerConfig] = max_tokens_controllers or {}
+        self.max_tokens_per_env: dict[str, int] = {}
+        self.ema_reward_per_env: dict[str, float | None] = {}
+        for env_name, ctrl in self.controller_configs.items():
+            self.max_tokens_per_env[env_name] = ctrl.initial_max_tokens or initial_max_tokens
+            self.ema_reward_per_env[env_name] = None
 
         if self.config.seed is not None:
             random.seed(self.config.seed)
@@ -95,6 +105,17 @@ class Buffer:
         write_jsonl(self.easy_examples, path / "easy_examples.jsonl")
         write_jsonl(self.hard_examples, path / "hard_examples.jsonl")
         write_jsonl(self.rollout_buffer, path / "rollout_buffer.jsonl")
+
+        if self.controller_configs:
+            controller_states = {
+                env_name: {
+                    "current_max_tokens": self.max_tokens_per_env[env_name],
+                    "ema_reward": self.ema_reward_per_env[env_name],
+                }
+                for env_name in self.controller_configs
+            }
+            with open(path / "controller_states.json", "w") as f:
+                json.dump(controller_states, f)
 
     def load(self, path: Path) -> None:
         """Loads pool assignments and rollouts."""
@@ -191,6 +212,19 @@ class Buffer:
         else:
             self.logger.debug("No easy/ hard examples or rollouts found in checkpoint")
 
+        controller_states_path = path / "controller_states.json"
+        if controller_states_path.exists() and self.controller_configs:
+            with open(controller_states_path, "r") as f:
+                saved_states = json.load(f)
+            for env_name in self.controller_configs:
+                if env_name in saved_states:
+                    self.max_tokens_per_env[env_name] = saved_states[env_name]["current_max_tokens"]
+                    self.ema_reward_per_env[env_name] = saved_states[env_name]["ema_reward"]
+                    self.logger.debug(
+                        f"Restored controller state for {env_name}: "
+                        f"max_tokens={self.max_tokens_per_env[env_name]}, ema_reward={self.ema_reward_per_env[env_name]}"
+                    )
+
     def sample_examples(self, n: int) -> list[dict]:
         """Samples n examples from the buffer, respecting env ratios."""
 
@@ -230,6 +264,11 @@ class Buffer:
                 target_pool = self.easy_examples if pool == "easy" else self.hard_examples
                 target_pool.append(example)
 
+            if env_name in self.controller_configs:
+                self.controller_rewards_per_step[env_name].append(avg_reward)
+                for rollout in example_rollouts:
+                    self.controller_truncations_per_step[env_name].append(rollout["is_truncated"])
+
             self.num_examples_per_step[env_name][pool] += 1
             if self.config.online_difficulty_filtering:
                 if avg_reward == 0.0:
@@ -256,11 +295,55 @@ class Buffer:
         self.num_examples_per_step = {env: zero_per_pool() for env in self.env_names}
         # num rollouts per env per step per pool (env_name -> (pool -> num_rollouts))
         self.num_rollouts_per_step = {env: zero_per_pool() for env in self.env_names}
+        # controller accumulators
+        self.controller_rewards_per_step: dict[str, list[float]] = {env: [] for env in self.controller_configs}
+        self.controller_truncations_per_step: dict[str, list[bool]] = {env: [] for env in self.controller_configs}
+
+    def _update_max_tokens_controllers(self) -> dict[str, float]:
+        """Update max_tokens controllers and return metrics."""
+        metrics: dict[str, float] = {}
+        for env_name, ctrl in self.controller_configs.items():
+            rewards = self.controller_rewards_per_step[env_name]
+            truncations = self.controller_truncations_per_step[env_name]
+            if not rewards:
+                continue
+
+            batch_reward = mean(rewards)
+            truncation_rate = sum(truncations) / len(truncations)
+
+            old_ema = self.ema_reward_per_env[env_name]
+            if old_ema is None:
+                self.ema_reward_per_env[env_name] = batch_reward
+            else:
+                self.ema_reward_per_env[env_name] = ctrl.momentum * old_ema + (1 - ctrl.momentum) * batch_reward
+
+            ema = self.ema_reward_per_env[env_name]
+            current = self.max_tokens_per_env[env_name]
+
+            if ema < ctrl.target_reward and truncation_rate > 0:
+                current += ctrl.step_size
+            elif ema > ctrl.target_reward and truncation_rate <= ctrl.truncation_threshold:
+                current -= ctrl.step_size
+
+            self.max_tokens_per_env[env_name] = max(ctrl.min_max_tokens, min(ctrl.max_max_tokens, current))
+
+            metrics[f"max_tokens/{env_name}"] = self.max_tokens_per_env[env_name]
+            metrics[f"ema_reward/{env_name}"] = ema
+            metrics[f"truncation_rate/{env_name}"] = truncation_rate
+
+        return metrics
+
+    def get_max_tokens(self, env_name: str) -> int | None:
+        """Returns the controller max_tokens for the env, or None if no controller is active."""
+        return self.max_tokens_per_env.get(env_name)
 
     def get_metrics(self) -> dict[str, float]:
         """Returns the buffer metrics for the current step."""
 
         metrics = {}
+
+        # Max tokens controller metrics
+        metrics.update(self._update_max_tokens_controllers())
 
         # sum over envs (e.g. log globally)
         num_examples_per_step_per_pool = {
