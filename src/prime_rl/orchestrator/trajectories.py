@@ -25,6 +25,27 @@ def _prompt_has_images(prompt: list) -> bool:
     return False
 
 
+def _normalize_messages_for_vlm(messages: list) -> list:
+    """
+    Normalize messages to have consistent list content format for VLM processing.
+
+    The HuggingFace processor expects all messages to have list content when
+    processing multimodal inputs. This converts string content to list format.
+    """
+    normalized = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            # Convert string content to list format
+            normalized.append({
+                **msg,
+                "content": [{"type": "text", "text": content}]
+            })
+        else:
+            normalized.append(msg)
+    return normalized
+
+
 def fix_vlm_prompt_tokens(rollouts: list[vf.RolloutOutput], processor) -> None:
     """
     Re-tokenize VLM prompts using the processor to include image placeholder tokens.
@@ -58,9 +79,12 @@ def fix_vlm_prompt_tokens(rollouts: list[vf.RolloutOutput], processor) -> None:
             if not _prompt_has_images(prompt):
                 continue
 
+            # Normalize messages to have consistent list content format
+            normalized_prompt = _normalize_messages_for_vlm(prompt)
+
             # Re-tokenize the prompt using the processor which handles images correctly
             correct_prompt_ids = processor.apply_chat_template(
-                prompt,
+                normalized_prompt,
                 tokenize=True,
                 add_generation_prompt=True,
             )
