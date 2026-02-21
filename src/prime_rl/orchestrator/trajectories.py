@@ -30,12 +30,18 @@ def _normalize_messages_for_vlm(messages: list) -> list:
     Normalize messages to have consistent list content format for VLM processing.
 
     The HuggingFace processor expects all messages to have list content when
-    processing multimodal inputs. This converts string content to list format.
+    processing multimodal inputs. This converts string/None content to list format.
     """
     normalized = []
     for msg in messages:
         content = msg.get("content")
-        if isinstance(content, str):
+        if content is None:
+            # Assistant messages with tool_calls have None content
+            normalized.append({
+                **msg,
+                "content": []
+            })
+        elif isinstance(content, str):
             # Convert string content to list format
             normalized.append({
                 **msg,
