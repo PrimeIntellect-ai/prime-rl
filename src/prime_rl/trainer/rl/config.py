@@ -128,6 +128,13 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     save_format: Annotated[
         Literal["safetensors", "torch"], Field(description="The format to save the weight checkpoint in.")
     ] = "safetensors"
+    min_broadcast_interval: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            description="Minimum interval in seconds between filesystem broadcasts. If the previous broadcast is newer, the trainer skips the current broadcast cycle.",
+        ),
+    ] = 1.0
 
 
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):

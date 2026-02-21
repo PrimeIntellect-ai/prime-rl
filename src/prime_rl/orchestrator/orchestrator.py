@@ -403,7 +403,10 @@ class Orchestrator:
             # Capture ckpt_step once for consistency (it's updated by update_policy_loop concurrently)
             ckpt_step = scheduler.ckpt_step
 
-            # On ckpt_step change: log accumulated metrics, run evals, save checkpoint, update temperature
+            # On ckpt_step change: log accumulated metrics, run evals, save checkpoint, update
+            # temperature. ckpt_step can advance by more than 1 when the trainer completes
+            # multiple steps between scheduler polls (keep_last pruning + 1s poll interval).
+            # Iterate through each intermediate step so eval/checkpoint intervals aren't missed.
             if ckpt_step > prev_ckpt_step:
                 if accumulated_rollouts:
                     progress.step = prev_ckpt_step
@@ -420,24 +423,28 @@ class Orchestrator:
                     accumulated_prefill_lens = []
                     accumulated_decode_lens = []
                     step_start_time = time.perf_counter()
-                progress.step = ckpt_step
 
-                # Save checkpoint when reaching an interval or final step
-                is_final_step = bool(config.max_steps is not None and ckpt_step >= config.max_steps)
-                if (
-                    ckpt_manager is not None
-                    and ckpt_step > 0
-                    and (
-                        is_final_step
-                        or (config.ckpt and config.ckpt.interval is not None and ckpt_step % config.ckpt.interval == 0)
-                    )
-                ):
-                    self.logger.info(f"Saving checkpoint at ckpt_step {ckpt_step}")
-                    ckpt_manager.save(progress, buffer, step=ckpt_step)
+                for step in range(prev_ckpt_step + 1, ckpt_step + 1):
+                    progress.step = step
+                    is_final_step = bool(config.max_steps is not None and step >= config.max_steps)
 
-                await maybe_run_eval(ckpt_step, is_final_step=is_final_step)
+                    if (
+                        ckpt_manager is not None
+                        and step > 0
+                        and (
+                            is_final_step
+                            or (
+                                config.ckpt
+                                and config.ckpt.interval is not None
+                                and step % config.ckpt.interval == 0
+                            )
+                        )
+                    ):
+                        self.logger.info(f"Saving checkpoint at ckpt_step {step}")
+                        ckpt_manager.save(progress, buffer, step=step)
 
-                # Update temperature
+                    await maybe_run_eval(step, is_final_step=is_final_step)
+
                 temperature = compute_temperature(ckpt_step, config.sampling, config.max_steps)
                 sampling_args = get_sampling_args(config.sampling, temperature=temperature)
                 scheduler.set_sampling_args(sampling_args)
@@ -794,4 +801,6 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
+ame__ == "__main__":
     main()

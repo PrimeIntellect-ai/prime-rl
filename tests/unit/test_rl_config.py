@@ -55,3 +55,10 @@ def test_batching_defaults_to_rollout_mode() -> None:
     config = RLConfig(trainer=RLTrainerConfig(), orchestrator=OrchestratorConfig())
     assert config.orchestrator.batch_size == 128
     assert config.orchestrator.max_inflight_rollouts == 128
+
+
+def test_filesystem_weight_broadcast_defaults() -> None:
+    config = RLTrainerConfig()
+    assert config.weight_broadcast.type == "filesystem"
+    assert config.weight_broadcast.keep_last == 10
+    assert config.weight_broadcast.min_broadcast_interval == 1.0

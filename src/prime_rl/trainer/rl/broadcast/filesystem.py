@@ -30,16 +30,31 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         super().__init__(output_dir, lora_config)
         self.save_format: Literal["safetensors", "torch"] = config.save_format
         self.save_sharded = config.save_sharded if lora_config is None else False
+        self.min_broadcast_interval = config.min_broadcast_interval
+        self._last_broadcast_time = 0.0
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
         self.logger.debug(
-            f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={self.save_sharded})"
+            "Filesystem broadcast initialized "
+            f"(save_format={config.save_format}, save_sharded={self.save_sharded}, "
+            f"min_broadcast_interval={self.min_broadcast_interval}s)"
         )
 
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
+        should_broadcast = True
+        if self.world.is_master:
+            since_last_broadcast = start_time - self._last_broadcast_time
+            should_broadcast = since_last_broadcast >= self.min_broadcast_interval
+            if not should_broadcast:
+                self.logger.debug(
+                    "Skipping filesystem broadcast to rate-limit updates "
+                    f"(since_last={since_last_broadcast:.2f}s, min_interval={self.min_broadcast_interval:.2f}s)"
+                )
+
+        did_broadcast = False
         adapter_only = self.lora_config is not None
 
         if not adapter_only:
@@ -69,6 +84,8 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
             # TODO: Broadcast ready to update in sync, then we dont need to gather on not ready
             if self.world.is_master:
+                if not should_broadcast:
+                    continue
                 try:
                     save_dir = get_step_path(
                         get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
@@ -89,6 +106,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                         )
 
                     self._notify_orchestrator(save_dir)
+                    did_broadcast = True
 
                     # If the run is deleted, remove the run directory
                     # This is avoid the creation of zombie runs when the directory is deleted while we are broadcasting which recreates the directory
@@ -103,6 +121,8 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     self.multi_run_manager.ready_to_update[idx] = False
 
         if self.world.is_master:
+            if did_broadcast:
+                self._last_broadcast_time = start_time
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
     def _notify_orchestrator(self, save_dir: Path):
