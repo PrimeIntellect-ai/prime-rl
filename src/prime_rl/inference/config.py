@@ -84,11 +84,11 @@ class ModelConfig(BaseConfig):
     ] = False
 
     tool_call_parser: Annotated[
-        str,
+        str | None,
         Field(
-            description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`",
+            description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`. Defaults to None (disabled).",
         ),
-    ] = "hermes"
+    ] = None
 
     reasoning_parser: Annotated[
         str | None,
