@@ -53,7 +53,13 @@ def _resolve_batch_target_from_orchestrator_config(orch_config) -> tuple[int, Li
 
 def _resolve_batch_target_from_discovered_runs(
     default_token_batch_size: int,
-) -> tuple[int, Literal["tokens", "rollouts"]]:
+) -> tuple[int, Literal["tokens", "rollouts"], bool]:
+    """Resolve batch target from orchestrator configs already on disk.
+
+    Returns (target, unit, is_provisional).  ``is_provisional`` is True when no
+    runs were found and the caller received the default; the MultiPacker should
+    adopt the first real run's config instead of evicting it.
+    """
     multi_run_manager = get_multi_run_manager()
     multi_run_manager.discover_runs()
 
@@ -64,12 +70,13 @@ def _resolve_batch_target_from_discovered_runs(
     }
 
     if not run_targets:
-        return default_token_batch_size, "tokens"
+        return default_token_batch_size, "tokens", True
 
     if len(run_targets) > 1:
         raise ValueError("All runs must share the same batching config.")
 
-    return next(iter(run_targets))
+    target, unit = next(iter(run_targets))
+    return target, unit, False
 
 
 class BasePacker(ABC):
@@ -177,6 +184,7 @@ class MultiPacker(BasePacker):
         token_batch_size: int | None = None,
         rollout_batch_size: int | None = None,
         start_step: int = 0,
+        batch_config_provisional: bool = False,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
         self.batch_target, self.batch_unit = _resolve_batch_target(
@@ -184,6 +192,7 @@ class MultiPacker(BasePacker):
             rollout_batch_size,
             default_token_batch_size=self.seq_len * self.dp_world_size,
         )
+        self._batch_config_provisional = batch_config_provisional
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -213,7 +222,14 @@ class MultiPacker(BasePacker):
     def _on_run_discovered(self, idx: int, run_id: str, config) -> None:
         """Align receiver state for newly discovered runs (master only)."""
         run_target, run_unit = _resolve_batch_target_from_orchestrator_config(config)
-        if run_target != self.batch_target or run_unit != self.batch_unit:
+        if self._batch_config_provisional:
+            self.logger.info(
+                f"Adopting batch config from run {idx} ({run_id}): {run_unit}={run_target}"
+            )
+            self.batch_target = run_target
+            self.batch_unit = run_unit
+            self._batch_config_provisional = False
+        elif run_target != self.batch_target or run_unit != self.batch_unit:
             self.multi_run_manager.evict_run(
                 idx,
                 f"Run batching config ({run_unit}={run_target}) does not match trainer batching "
@@ -422,8 +438,9 @@ def setup_packer(
     start_step: int = 0,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
+    batch_config_provisional = False
     if token_batch_size is None and rollout_batch_size is None:
-        batch_target, batch_unit = _resolve_batch_target_from_discovered_runs(
+        batch_target, batch_unit, batch_config_provisional = _resolve_batch_target_from_discovered_runs(
             default_token_batch_size=seq_len * dp_world_size
         )
         if batch_unit == "tokens":
@@ -452,4 +469,5 @@ def setup_packer(
             token_batch_size,
             rollout_batch_size,
             start_step,
+            batch_config_provisional=batch_config_provisional,
         )
