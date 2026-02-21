@@ -1,0 +1,26 @@
+max_steps = 500
+
+[wandb]
+project = "sft-moe-intellect"
+name = "sft-moe-math"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+impl = "custom"
+attn = "flash_attention_3"
+
+[model.compile]
+
+[model.ac_offloading]
+max_inflight_activations = 5
+
+[model.ac]
+freq = 1
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+subsets = ["default"]
+splits = ["math"]
+batch_size = 128
+seq_len = 8192
