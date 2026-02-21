@@ -85,6 +85,34 @@ def freeze_vision_encoder(model: nn.Module) -> None:
     logger.info(f"Froze {num_frozen} parameters in vision encoder")
 
 
+def freeze_moe_router(model: nn.Module) -> None:
+    """Freeze MoE router parameters to maintain stable routing during training."""
+    logger = get_logger()
+    language_model = get_language_model(model)
+    num_frozen = 0
+
+    for layer in language_model.layers:
+        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        if mlp is None:
+            continue
+
+        # Custom implementation: MoE class with router attribute
+        if isinstance(mlp, MoE):
+            for param in mlp.router.parameters():
+                param.requires_grad = False
+                num_frozen += 1
+        # HuggingFace implementation: gate attribute (nn.Linear)
+        elif hasattr(mlp, "gate") and isinstance(mlp.gate, nn.Linear):
+            for param in mlp.gate.parameters():
+                param.requires_grad = False
+                num_frozen += 1
+
+    if num_frozen == 0:
+        raise ValueError("No MoE router parameters found to freeze. Is this a MoE model?")
+
+    logger.info(f"Froze {num_frozen} MoE router parameters")
+
+
 def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
@@ -640,6 +668,9 @@ def setup_model(
     # Apply LoRA before FSDP setup
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
+
+    if config.freeze_moe_router:
+        freeze_moe_router(model)
 
     if parallel_dims.ep_enabled:
         apply_ep(model, parallel_dims)

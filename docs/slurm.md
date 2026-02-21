@@ -1,6 +1,8 @@
 # SLURM
 
-For SLURM clusters, use the `rl_slurm` entrypoint. It resolves the full config (trainer, orchestrator, inference), dumps sub-configs as TOML files, renders a SLURM batch script from a Jinja2 template, and submits it with `sbatch`.
+## RL
+
+For RL on SLURM clusters, use the `rl_slurm` entrypoint. It resolves the full config (trainer, orchestrator, inference), dumps sub-configs as TOML files, renders a SLURM batch script from a Jinja2 template, and submits it with `sbatch`.
 
 ```bash
 uv run rl_slurm @ examples/slurm/hendrycks_math.toml
@@ -118,9 +120,9 @@ tp = 4
 dp = 2
 ```
 
-## Custom SLURM Templates
+### Custom SLURM Templates
 
-The default template handles a standard multi-node setup with NCCL weight broadcast, InfiniBand detection, and `srun`-based process dispatch. For more advanced use cases (custom partitions, account settings, module loads, different networking setups, etc.), provide your own Jinja2 template:
+The default RL template handles a standard multi-node setup with NCCL weight broadcast, InfiniBand detection, and `srun`-based process dispatch. For more advanced use cases (custom partitions, account settings, module loads, different networking setups, etc.), provide your own Jinja2 template:
 
 ```bash
 uv run rl_slurm \
@@ -130,7 +132,7 @@ uv run rl_slurm \
 
 The template receives the following variables: `job_name`, `project_dir`, `output_dir`, `config_dir`, `num_train_nodes`, `num_infer_nodes`, `gpus_per_node`, `hf_hub_offline`. See `src/prime_rl/slurm/rl_slurm.sh.j2` for the default template as a starting point.
 
-## Monitoring
+### Monitoring
 
 After submission, the logs are available at:
 
@@ -152,3 +154,15 @@ This creates a tmux session `slurm-my-rl-job` with two windows:
 - **Window 1 (Logs)**: three vertical panes tailing trainer, orchestrator, and inference logs
 
 The trainer and inference panes use glob patterns (`latest_train_node_rank_*.log`, `latest_infer_node_rank_*.log`) to follow logs from all node ranks. Re-running the same command attaches to the existing session.
+
+---
+
+## SFT
+
+For SFT on SLURM, use the `sft_slurm` entrypoint. It works the same way as `rl_slurm` but only needs a trainer config — no inference or orchestrator nodes.
+
+```bash
+uv run sft_slurm @ examples/slurm/sft_moe.toml
+```
+
+See [`examples/slurm/sft_moe.toml`](../examples/slurm/sft_moe.toml) for a MoE example with activation checkpointing, CPU offload, and compilation. Use `--dry-run` to generate the script without submitting.

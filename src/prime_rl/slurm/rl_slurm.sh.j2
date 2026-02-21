@@ -91,9 +91,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
     uv run inference \
         @ $CONFIG_DIR/inference.toml \
-        --enable-auto-tool-choice \
-        --enable-log-requests \
-        --no-disable-log-requests \
         2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${INFER_NODE_RANK}_infer_node_rank_${INFER_NODE_RANK}.log
 else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
