@@ -2,19 +2,56 @@
     "$schema": "https://mintlify.com/docs.json",
     "navigation": [
         {
-            "group": "PRIME-RL",
+            "group": "Getting Started",
             "pages": [
-                "index",
-                "entrypoints",
-                "configs",
-                "environments",
-                "async",
-                "logging",
-                "runs",
-                "checkpointing",
-                "benchmarking",
-                "deployment",
-                "kubernetes",
+                "getting-started/index",
+                "getting-started/async",
+                "getting-started/entrypoints",
+                "getting-started/configs",
+                "getting-started/environments"
+            ]
+        },
+        {
+            "group": "Training",
+            "pages": [
+                "training/trajectories",
+                "training/checkpointing",
+                "training/on-policy-distillation",
+                "training/multimodal"
+            ]
+        },
+        {
+            "group": "Deployment",
+            "pages": [
+                "deployment/deployment",
+                "deployment/slurm",
+                "deployment/kubernetes"
+            ]
+        },
+        {
+            "group": "Extending",
+            "pages": [
+                "extending/bring-your-own-algorithms",
+                "extending/testing-moe-at-small-scale"
+            ]
+        },
+        {
+            "group": "Multi-Run Manager",
+            "pages": [
+                "multi-run-manager/multi-run-manager"
+            ]
+        },
+        {
+            "group": "Observability",
+            "pages": [
+                "observability/logging",
+                "observability/metrics",
+                "observability/benchmarking"
+            ]
+        },
+        {
+            "group": "Support",
+            "pages": [
                 "troubleshooting"
             ]
         }

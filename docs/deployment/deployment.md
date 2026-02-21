@@ -31,7 +31,7 @@ uv run torchrun \
   src/prime_rl/trainer/sft/train.py ...
 ```
 
-*The `--local-rank-filter` flag is used to only log the logs from the master rank, as detailed in [logging](logging.md).*
+*The `--local-rank-filter` flag is used to only log the logs from the master rank, as detailed in [logging](../observability/logging.md).*
 
 ### Multi-Node
 

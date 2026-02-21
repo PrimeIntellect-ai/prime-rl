@@ -44,7 +44,7 @@ uv run rl \
     ...
 ```
 
-For more details on multi-node deployment options, see the [deployment](deployment.md) documentation and see the [examples](examples) for concrete training configurations. To see all available configuration options, run `uv run rl --help`.
+For more details on multi-node deployment options, see the [deployment](../deployment/deployment.md) documentation and see the [examples](examples) for concrete training configurations. To see all available configuration options, run `uv run rl --help`.
 
 ## SFT
 
@@ -64,4 +64,4 @@ If you have access to multiple GPUs, use [`torchrun`](https://docs.pytorch.org/d
 uv run torchrun --nproc-per-node 8 src/prime_rl/trainer/sft/train.py ...
 ```
 
-For more details on multi-node deployment options, see the [deployment](deployment.md) documentation and see the [examples](examples) for concrete training configurations. To see all available configuration options, run `uv run sft --help`.
+For more details on multi-node deployment options, see the [deployment](../deployment/deployment.md) documentation and see the [examples](examples) for concrete training configurations. To see all available configuration options, run `uv run sft --help`.
