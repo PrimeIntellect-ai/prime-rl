@@ -209,7 +209,9 @@ class Orchestrator:
             map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
         )
 
-        train_env_clients, train_env_processes = await self._setup_env_servers(config.env, env_ids, train_env_names, "train")
+        train_env_clients, train_env_processes = await self._setup_env_servers(
+            config.env, env_ids, train_env_names, "train"
+        )
         for env, env_client in zip(train_env_group.envs, train_env_clients):
             env.env_client = env_client
 
@@ -219,12 +221,15 @@ class Orchestrator:
             eval_env_names = [env.name or env_id for env_id, env in zip(env_ids, config.eval.env)]
             eval_sampling_args = get_eval_sampling_args(config.eval.sampling)
 
-            eval_env_clients, eval_env_processes = await self._setup_env_servers(config.eval.env, env_ids, eval_env_names, "eval")
+            eval_env_clients, eval_env_processes = await self._setup_env_servers(
+                config.eval.env, env_ids, eval_env_names, "eval"
+            )
             for eval_env, eval_env_client in zip(eval_envs, eval_env_clients):
                 eval_env.env_client = eval_env_client
         else:
             eval_envs: list[vf.Environment] = []
             eval_env_names: list[str] = []
+            eval_env_processes: list[mp.Process] = []
             eval_sampling_args = {}
 
         # Setup buffer
@@ -620,7 +625,9 @@ class Orchestrator:
         if config.bench:
             print_benchmark(to_col_format(monitor.history))
 
-    async def _setup_env_servers(self, env_configs, env_ids: list[str], env_names: list[str], label: str) -> tuple[list, list[mp.Process]]:
+    async def _setup_env_servers(
+        self, env_configs, env_ids: list[str], env_names: list[str], label: str
+    ) -> tuple[list, list[mp.Process]]:
         """Spawn or connect to environment servers, wait for readiness, and return clients."""
         config = self.config
         addresses = []

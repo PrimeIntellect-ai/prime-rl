@@ -223,9 +223,7 @@ class MultiPacker(BasePacker):
         """Align receiver state for newly discovered runs (master only)."""
         run_target, run_unit = _resolve_batch_target_from_orchestrator_config(config)
         if self._batch_config_provisional:
-            self.logger.info(
-                f"Adopting batch config from run {idx} ({run_id}): {run_unit}={run_target}"
-            )
+            self.logger.info(f"Adopting batch config from run {idx} ({run_id}): {run_unit}={run_target}")
             self.batch_target = run_target
             self.batch_unit = run_unit
             self._batch_config_provisional = False
