@@ -245,7 +245,17 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
     train_dataset = train_env_group.get_dataset(seed=config.buffer.seed)
-    buffer = Buffer(train_dataset, train_env_group.env_names, config.buffer)
+    max_tokens_controllers = {}
+    for env_config, env_name in zip(config.env, train_env_group.env_names):
+        if env_config.max_tokens_controller is not None:
+            max_tokens_controllers[env_name] = env_config.max_tokens_controller
+    buffer = Buffer(
+        train_dataset,
+        train_env_group.env_names,
+        config.buffer,
+        max_tokens_controllers=max_tokens_controllers or None,
+        initial_max_tokens=config.sampling.max_tokens,
+    )
     if config.val is not None:
         val_buffer_config = BufferConfig(env_ratios=config.buffer.env_ratios)
         val_dataset = train_env_group.get_eval_dataset(seed=val_buffer_config.seed)

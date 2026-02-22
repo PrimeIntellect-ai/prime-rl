@@ -268,6 +268,33 @@ class EvalSaveHFConfig(BaseConfig):
     ] = False
 
 
+class MaxTokensControllerConfig(BaseConfig):
+    """Adaptively adjusts max_tokens per environment based on observed reward."""
+
+    target_reward: Annotated[float, Field(ge=0, le=1, description="Target reward to drive each environment toward.")]
+    step_size: Annotated[int, Field(ge=1, description="Amount to increase or decrease max_tokens per step.")] = 32
+    momentum: Annotated[float, Field(ge=0, le=1, description="EMA momentum for smoothing reward signal.")] = 0.9
+    min_max_tokens: Annotated[int, Field(ge=1, description="Lower bound for max_tokens.")] = 64
+    max_max_tokens: Annotated[int, Field(ge=1, description="Upper bound for max_tokens.")] = 32768
+    initial_max_tokens: Annotated[
+        int | None,
+        Field(ge=1, description="Initial max_tokens. Falls back to SamplingConfig.max_tokens if None."),
+    ] = None
+    truncation_threshold: Annotated[
+        float,
+        Field(ge=0, le=1, description="Don't decrease max_tokens when truncation rate exceeds this threshold."),
+    ] = 0.1
+
+    @model_validator(mode="after")
+    def validate_bounds(self):
+        if self.min_max_tokens > self.max_max_tokens:
+            raise ValueError("min_max_tokens must be <= max_max_tokens")
+        if self.initial_max_tokens is not None:
+            if not (self.min_max_tokens <= self.initial_max_tokens <= self.max_max_tokens):
+                raise ValueError("initial_max_tokens must be within [min_max_tokens, max_max_tokens]")
+        return self
+
+
 class EnvConfig(BaseConfig):
     """Configures an environment for training."""
 
@@ -288,6 +315,10 @@ class EnvConfig(BaseConfig):
             ),
         ),
     ] = {}
+    max_tokens_controller: Annotated[
+        MaxTokensControllerConfig | None,
+        Field(description="Adaptive max_tokens controller config. If None, uses the global sampling max_tokens."),
+    ] = None
 
 
 class EvalEnvConfig(EnvConfig):
@@ -889,6 +920,18 @@ class OrchestratorConfig(BaseSettings):
             # extra_env_kwargs is not meant to be used by the user, we shamelessly override here
             env.extra_env_kwargs.update(train_extra_env_kwargs)
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_max_tokens_controller(self):
+        for env in self.env:
+            if env.max_tokens_controller is not None:
+                ctrl = env.max_tokens_controller
+                if ctrl.initial_max_tokens is None and self.sampling.max_tokens is None:
+                    raise ValueError(
+                        f"Environment '{env.name or env.id}' has a max_tokens_controller but neither "
+                        "controller.initial_max_tokens nor sampling.max_tokens is set."
+                    )
         return self
 
     @model_validator(mode="after")
