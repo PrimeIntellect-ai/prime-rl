@@ -58,6 +58,7 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
+from prime_rl.utils.usage import init_usage_reporter, report_inference_usage
 from prime_rl.utils.utils import (
     clean_exit,
     get_env_ids_to_install,
@@ -92,6 +93,8 @@ async def orchestrate(config: OrchestratorConfig):
     config_dir.mkdir(parents=True, exist_ok=True)
     with open(config_dir / "orch.toml", "wb") as f:
         tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
+
+    init_usage_reporter(config.usage)
 
     # Install environments
     env_ids_to_install = set()
@@ -605,6 +608,8 @@ async def orchestrate(config: OrchestratorConfig):
         progress.total_samples += config.batch_size
         progress.total_problems += config.batch_size // config.rollouts_per_example
         throughput = num_tokens / generate_completions_time
+
+        report_inference_usage(progress.step, train_rollouts)
 
         # Compute solve all and none tensors
         solve_all = (

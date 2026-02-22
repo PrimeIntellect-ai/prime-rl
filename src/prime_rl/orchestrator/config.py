@@ -15,6 +15,7 @@ from prime_rl.utils.config import (
     ModelConfig as BaseModelConfig,
 )
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.utils.usage import UsageConfig
 
 
 class OptimizerConfig(BaseConfig):
@@ -716,6 +717,13 @@ class OrchestratorConfig(BaseSettings):
 
     # The prime monitor configuration
     prime_monitor: PrimeMonitorConfig | None = None
+
+    usage: Annotated[
+        UsageConfig | None,
+        Field(
+            description="Internal platform usage reporting. Tracks inference tokens for billing. Not intended for end users."
+        ),
+    ] = None
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

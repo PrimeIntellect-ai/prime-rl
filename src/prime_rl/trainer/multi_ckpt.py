@@ -19,9 +19,11 @@ from prime_rl.trainer.runs import Progress, get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_stable_ckpt_steps
+from prime_rl.utils.usage import UsageConfig, UsageReporter
 
 if TYPE_CHECKING:
     from prime_rl.trainer.optim import MultiLoRAOptimizer
+    from prime_rl.trainer.rl.data import DataLoader
     from prime_rl.trainer.scheduler import MultiLoRAScheduler
 
 
@@ -78,6 +80,15 @@ class MultiCheckpointManager:
         self.managers: list[CheckpointManager | None] = [None] * self.multi_run_manager.max_runs
         self.multi_run_manager.register_deletion_hook(self._run_deletion_hook)
         self.multi_run_manager.register_creation_hook(self._run_creation_hook)
+
+        # Usage reporting (set via set_usage_reporting after dataloader is created)
+        self._dataloader: "DataLoader | None" = None
+        self._usage_reporter: UsageReporter | None = None
+
+    def set_usage_reporting(self, dataloader: "DataLoader", usage_config: UsageConfig | None) -> None:
+        """Configure usage reporting after checkpoint success."""
+        self._dataloader = dataloader
+        self._usage_reporter = UsageReporter(usage_config)
 
     def _run_deletion_hook(self, idx: int, run_id: str) -> None:
         self.managers[idx] = None
@@ -155,6 +166,19 @@ class MultiCheckpointManager:
                 dist.barrier()
                 manager.mark_stable(step)
                 manager.ckpt_steps.append(step)
+
+                # Report training usage after successful checkpoint (master only)
+                if (
+                    self.world.is_master
+                    and self._usage_reporter
+                    and self._usage_reporter.is_enabled
+                    and self._dataloader
+                ):
+                    run_id = self.multi_run_manager.idx_2_id.get(idx)
+                    if run_id:
+                        tokens = self._dataloader.get_accumulated_tokens(idx)
+                        if tokens > 0:
+                            self._usage_reporter.report_training(run_id, step, tokens)
             except FileNotFoundError:
                 self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
             except Exception as e:

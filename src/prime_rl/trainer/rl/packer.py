@@ -106,6 +106,10 @@ class MultiPacker(BasePacker):
         # Round-robin position (persists across pack() calls)
         self._round_robin_position: int = 0
 
+        # Accumulated tokens per run since last checkpoint
+        # Key: run_idx, Value: total tokens since last checkpoint for that run
+        self._accumulated_tokens: dict[int, int] = {}
+
         # Register forgotten hook for receiver reset (master only, called during discover_runs)
         # This must happen when a run is deleted to prevent stale data from remaining
         self.multi_run_manager.register_forgotten_hook(self._on_run_data_deleted)
@@ -117,6 +121,11 @@ class MultiPacker(BasePacker):
 
         # Reset run state
         self.buffers[idx].clear()
+        self._accumulated_tokens.pop(idx, None)
+
+    def get_accumulated_tokens(self, run_idx: int) -> int:
+        """Get and clear accumulated tokens for a run (called after checkpoint)."""
+        return self._accumulated_tokens.pop(run_idx, 0)
 
     def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
         """Validate a sample to ensure it won't crash the trainer."""
@@ -271,6 +280,7 @@ class MultiPacker(BasePacker):
         # Group samples by run_idx - each microbatch must contain samples from only ONE run
         # because MultiLoRAGroupedExperts (MoE) only supports one adapter per microbatch
         samples_by_run: dict[int, list[TrainingSample]] = {}
+        # Track (num_samples, num_tokens) per run
         per_run_stats: dict[int, tuple[int, int]] = {}
         for run_idx, sample, step in selected_samples:
             if run_idx not in samples_by_run:
@@ -284,8 +294,12 @@ class MultiPacker(BasePacker):
             else:
                 per_run_stats[run_idx] = (1, num_tokens)
 
+        # Update progress and accumulate tokens for billing (reported after checkpoint)
         for run_idx, (num_samples, num_tokens) in per_run_stats.items():
             self._update_run_progress(run_idx, num_samples, num_tokens)
+
+            # Accumulate tokens for this run (will be reported at next checkpoint)
+            self._accumulated_tokens[run_idx] = self._accumulated_tokens.get(run_idx, 0) + num_tokens
 
         # Pack each run separately to ensure no mixing of runs in microbatches
         all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]

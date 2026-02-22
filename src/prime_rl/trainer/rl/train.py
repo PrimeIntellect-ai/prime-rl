@@ -203,6 +203,10 @@ def train(config: RLTrainerConfig):
             config.rollout_transport,
         )
 
+    # Set usage reporting on multi-run checkpoint manager (reports after checkpoint succeeds)
+    if config.max_concurrent_runs > 1:
+        ckpt_manager.set_usage_reporting(dataloader, config.usage)
+
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
     maybe_record_function = nullcontext
