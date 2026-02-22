@@ -20,18 +20,11 @@ from openai.types.chat.chat_completion_chunk import (
     Choice as ChatCompletionChunkChoice,
 )
 from pydantic import BaseModel, Field
+from verifiers.clients.openai_chat_completions_token_client import OpenAIChatCompletionsTokenClient
 from verifiers.types import Messages, TrajectoryStep, TrajectoryStepTokens
 from verifiers.types import State as VfState
 from verifiers.utils.message_utils import concat_messages
-from verifiers.utils.response_utils import (
-    parse_is_truncated,
-    parse_response_messages,
-    parse_response_tokens,
-)
-from verifiers.utils.token_utils import (
-    get_prompt_ids,
-    prepare_sampling_args_for_token_prompts,
-)
+from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from vllm.entrypoints.openai.api_server import router
 from vllm.logger import init_logger
 
@@ -58,6 +51,7 @@ class RolloutConfig:
 class RolloutState:
     config: RolloutConfig
     localhost_client: AsyncOpenAI
+    vf_client: OpenAIChatCompletionsTokenClient
     vf_state: VfState
     turn_count: int = 0
     status: RolloutStatus = "active"
@@ -81,6 +75,7 @@ class RolloutRegistry:
                 api_key="EMPTY",
                 max_retries=0,
             )
+            vf_client = OpenAIChatCompletionsTokenClient(localhost_client)
             vf_state = VfState(
                 model=config.model,
                 oai_tools=[],
@@ -94,6 +89,7 @@ class RolloutRegistry:
             rollout_state = RolloutState(
                 config=config,
                 localhost_client=localhost_client,
+                vf_client=vf_client,
                 vf_state=vf_state,
             )
             self._rollouts[rollout_id] = rollout_state
@@ -428,7 +424,9 @@ async def chat_completions(
             rollout.vf_state["oai_tools"] = tools
 
         sampling_args = _normalize_sampling_args(rollout.config.sampling_params)
-        sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
+        sampling_args["logprobs"] = True
+        extra_body = sampling_args.setdefault("extra_body", {})
+        extra_body["return_token_ids"] = True
 
         try:
             if rollout.turn_count == 0:
@@ -441,6 +439,10 @@ async def chat_completions(
                     sampling_args=sampling_args,
                 )
             else:
+                # Agents like OpenCode may compact (summarize) old messages or prune
+                # tool outputs mid-conversation, breaking the prefix assumption that
+                # the token path relies on.  Fall back to regular chat completions
+                # when that happens.
                 prev_step = rollout.vf_state["trajectory"][-1]
                 prev_context = concat_messages([prev_step["prompt"], prev_step["completion"]])
                 is_prefix_extension = (
@@ -448,10 +450,10 @@ async def chat_completions(
                 )
                 if is_prefix_extension:
                     request_mode = "chat_completions_tokens"
-                    prompt_ids = await get_prompt_ids(
+                    prompt_ids = await rollout.vf_client.get_prompt_ids(
                         state=rollout.vf_state,
                         prompt_messages=messages,
-                        client=rollout.localhost_client,
+                        oai_tools=rollout.vf_state.get("oai_tools"),
                     )
                     logger.info(f"rollout={rollout_id} turn={turn_index} prompt_ids_len={len(prompt_ids)}")
                     response = await _call_chat_with_tokens(
@@ -485,20 +487,17 @@ async def chat_completions(
             )
             raise HTTPException(status_code=400, detail=detail) from exc
 
-        completion_messages = await parse_response_messages(response, "chat")
-        response_is_truncated = await parse_is_truncated(response, "chat")
-        tokens = await parse_response_tokens(
-            response=response,
-            message_type="chat",
-            max_seq_len=rollout.config.max_seq_len,
-        )
+        vf_response = await rollout.vf_client.from_native_response(response)
+        completion_messages = await parse_response_message(vf_response)
+        response_is_truncated = vf_response.message.is_truncated or False
+        tokens = await parse_response_tokens(vf_response, max_seq_len=rollout.config.max_seq_len)
         token_is_truncated = tokens is not None and tokens["is_truncated"]
         step_is_truncated = response_is_truncated or token_is_truncated
 
         trajectory_step = TrajectoryStep(
             prompt=messages,
             completion=completion_messages,
-            response=response,
+            response=vf_response,
             tokens=tokens,
             reward=None,
             advantage=None,
