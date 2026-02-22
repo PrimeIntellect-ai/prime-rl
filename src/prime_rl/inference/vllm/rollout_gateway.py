@@ -576,7 +576,7 @@ async def get_trajectory(rollout_id: str, request: Request):
 
     async with rollout.lock:
         vf_state = rollout.vf_state
-        trajectory_payload = [_serialize_trajectory_step(step) for step in vf_state.trajectory]
+        trajectory_payload = [_serialize_trajectory_step(step) for step in vf_state["trajectory"]]
         completion = vf_state.get("completion") or _render_completion(vf_state)
         logger.info(
             f"rollout={rollout_id} trajectory_fetch status={rollout.status} turns={rollout.turn_count} steps={len(trajectory_payload)} truncated={rollout.is_truncated}"
