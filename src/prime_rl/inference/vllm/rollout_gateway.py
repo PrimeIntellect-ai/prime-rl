@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal, cast
 
-from fastapi import HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncOpenAI, BadRequestError
 from openai.types.chat import ChatCompletion, ChatCompletionToolParam
@@ -25,8 +25,9 @@ from verifiers.types import Messages, TrajectoryStep, TrajectoryStepTokens
 from verifiers.types import State as VfState
 from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
-from vllm.entrypoints.openai.api_server import router
 from vllm.logger import init_logger
+
+router = APIRouter()
 
 RolloutStatus = Literal["active", "cancelled", "completed"]
 logger = init_logger("vllm.entrypoints.openai.rollout_gateway")

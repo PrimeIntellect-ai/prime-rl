@@ -28,11 +28,12 @@ from prime_rl.inference.patches import (
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
     monkey_patch_tokenize_params_validation,
 )
+from prime_rl.inference.vllm.rollout_gateway import RolloutRegistry
+from prime_rl.inference.vllm.rollout_gateway import router as rollout_router
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
     OpenAIServingChatWithTokens,
 )
-from prime_rl.inference.vllm.rollout_gateway import RolloutRegistry
 
 # NOTE: Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
@@ -222,6 +223,7 @@ def custom_build_app(args: Namespace, supported_tasks: tuple):
     """
     app = _original_build_app(args, supported_tasks)
     app.include_router(router)
+    app.include_router(rollout_router)
     return app
 
 
