@@ -86,7 +86,7 @@ ARCH_PRESETS = {
         "hf_model_class": None,  # uses AutoModelForCausalLM with trust_remote_code
         "prime_model_class": PrimeRLMiniMaxM2ForCausalLM,
         "tokenizer_source": "MiniMaxAI/MiniMax-M2.1",
-    }
+    },
     # glm_moe_dsa: HF implementation is incorrect, not supported here
 }
 
