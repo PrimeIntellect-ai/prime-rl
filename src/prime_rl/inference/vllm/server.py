@@ -190,9 +190,8 @@ async def custom_init_app_state(engine_client: EngineClient, state: State, args:
 
     if args.api_server_count > 1:
         logger.warning(
-            "Rollout gateway disabled because api_server_count=%s. "
-            "Set api_server_count=1 to enable /v1/rollouts endpoints.",
-            args.api_server_count,
+            f"Rollout gateway disabled because api_server_count={args.api_server_count}. "
+            "Set api_server_count=1 to enable /v1/rollouts endpoints."
         )
         state.rollout_registry = None
     else:

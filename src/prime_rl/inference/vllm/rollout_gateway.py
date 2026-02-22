@@ -9,7 +9,7 @@ from typing import Any, Literal, cast
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncOpenAI, BadRequestError
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion, ChatCompletionToolParam
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     ChoiceDelta,
@@ -81,7 +81,16 @@ class RolloutRegistry:
                 api_key="EMPTY",
                 max_retries=0,
             )
-            vf_state = _init_vf_state(config.model)
+            vf_state = VfState(
+                model=config.model,
+                oai_tools=[],
+                trajectory=[],
+                trajectory_id="",
+                prompt=[],
+                completion=[],
+                is_truncated=False,
+                _cached_suffix_ids=None,
+            )
             rollout_state = RolloutState(
                 config=config,
                 localhost_client=localhost_client,
@@ -110,19 +119,6 @@ class RolloutRegistry:
         return rollout
 
 
-def _init_vf_state(model: str) -> VfState:
-    state = VfState()
-    state["model"] = model
-    state["oai_tools"] = []
-    state["trajectory"] = []
-    state["trajectory_id"] = ""
-    state["prompt"] = []
-    state["completion"] = []
-    state["is_truncated"] = False
-    state["_cached_suffix_ids"] = None
-    return state
-
-
 def _normalize_sampling_args(sampling_params: dict[str, Any]) -> dict[str, Any]:
     args = dict(sampling_params)
     if "max_tokens" in args:
@@ -143,24 +139,22 @@ def _get_rollout_registry(request: Request) -> RolloutRegistry:
         raise HTTPException(
             status_code=503,
             detail=(
-                "Rollout gateway is disabled. Start vLLM with api_server_count=1 "
-                "to enable /v1/rollouts endpoints."
+                "Rollout gateway is disabled. Start vLLM with api_server_count=1 to enable /v1/rollouts endpoints."
             ),
         )
-    return cast(RolloutRegistry, registry)
+    return registry
 
 
-def _require_rollout_state(
+def _assert_rollout(
     rollout: RolloutState | None,
     rollout_id: str,
-) -> RolloutState:
+) -> None:
     if rollout is None:
         raise HTTPException(status_code=404, detail=f"Rollout not found: {rollout_id}")
-    return rollout
 
 
 def _render_completion(vf_state: VfState) -> Messages:
-    trajectory = vf_state.get("trajectory", [])
+    trajectory = vf_state.trajectory
     if not trajectory:
         return []
 
@@ -168,12 +162,12 @@ def _render_completion(vf_state: VfState) -> Messages:
     last_completion = trajectory[-1]["completion"]
     full_conversation = concat_messages([last_prompt, last_completion])
 
-    final_env_response = vf_state.get("final_env_response")
+    final_env_response = vf_state.final_env_response
     if final_env_response:
         full_conversation = concat_messages([full_conversation, final_env_response])
 
-    rollout_prompt = cast(Messages, vf_state.get("prompt", []))
-    return cast(Messages, full_conversation[len(cast(list[dict[str, Any]], rollout_prompt)) :])
+    rollout_prompt = vf_state.prompt
+    return full_conversation[len(rollout_prompt) :]
 
 
 def _serialize_tokens(tokens: TrajectoryStepTokens | None) -> dict[str, Any] | None:
@@ -214,8 +208,7 @@ def _validate_rollout_accepting_requests(rollout: RolloutState, rollout_id: str)
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Rollout reached max turns ({max_turns}): {rollout_id}. "
-                "Register a new rollout for additional turns."
+                f"Rollout reached max turns ({max_turns}): {rollout_id}. Register a new rollout for additional turns."
             ),
         )
 
@@ -258,7 +251,7 @@ def _should_log_full_turn(rollout_id: str, turn_index: int) -> bool:
     return not turns or turn_index in turns
 
 
-def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
+def _serialize_tool_calls(tool_calls: list[ChatCompletionToolParam] | None) -> list[dict[str, Any]]:
     serialized: list[dict[str, Any]] = []
     for tool_call in tool_calls or []:
         if hasattr(tool_call, "model_dump"):
@@ -316,7 +309,10 @@ async def _call_chat_with_tokens(
     )
 
 
-async def _synthesize_stream(response: ChatCompletion):
+async def _fake_stream(response: ChatCompletion):
+    """
+    Fake two chunks stream response for the rollout gateway.
+    """
     choice = response.choices[0]
     message = choice.message
 
@@ -405,13 +401,14 @@ async def chat_completions(
     request: Request,
 ):
     registry = _get_rollout_registry(request)
-    rollout = _require_rollout_state(await registry.get(rollout_id), rollout_id)
+    rollout = await registry.get(rollout_id)
+    _assert_rollout(rollout, rollout_id)
 
-    stream = bool(body.get("stream", False))
-    messages = cast(Messages, body.get("messages"))
+    stream = body.get("stream", False)
+    messages = body.get("messages")
     if not isinstance(messages, list):
         raise HTTPException(status_code=400, detail="Chat request must include a `messages` array.")
-    tools = cast(list[dict[str, Any]] | None, body.get("tools"))
+    tools = body.get("tools")
 
     async with rollout.lock:
         _validate_rollout_accepting_requests(rollout, rollout_id)
@@ -441,14 +438,13 @@ async def chat_completions(
                     rollout=rollout,
                     messages=messages,
                     tools=tools,
-                    sampling_args=dict(sampling_args),
+                    sampling_args=sampling_args,
                 )
             else:
                 prev_step = rollout.vf_state["trajectory"][-1]
-                prev_context = cast(Messages, concat_messages([prev_step["prompt"], prev_step["completion"]]))
+                prev_context = concat_messages([prev_step["prompt"], prev_step["completion"]])
                 is_prefix_extension = (
-                    len(messages) > len(prev_context)
-                    and messages[: len(prev_context)] == prev_context
+                    len(messages) > len(prev_context) and messages[: len(prev_context)] == prev_context
                 )
                 if is_prefix_extension:
                     request_mode = "chat_completions_tokens"
@@ -457,18 +453,13 @@ async def chat_completions(
                         prompt_messages=messages,
                         client=rollout.localhost_client,
                     )
-                    logger.info(
-                        "rollout=%s turn=%d prompt_ids_len=%d",
-                        rollout_id,
-                        turn_index,
-                        len(prompt_ids),
-                    )
+                    logger.info(f"rollout={rollout_id} turn={turn_index} prompt_ids_len={len(prompt_ids)}")
                     response = await _call_chat_with_tokens(
                         rollout=rollout,
                         messages=messages,
                         tools=tools,
                         prompt_ids=prompt_ids,
-                        sampling_args=dict(sampling_args),
+                        sampling_args=sampling_args,
                     )
                 else:
                     request_mode = "chat_completions"
@@ -476,7 +467,7 @@ async def chat_completions(
                         rollout=rollout,
                         messages=messages,
                         tools=tools,
-                        sampling_args=dict(sampling_args),
+                        sampling_args=sampling_args,
                     )
         except BadRequestError as exc:
             detail = str(exc)
@@ -490,10 +481,7 @@ async def chat_completions(
                     message = body.get("message")
                     detail = message if isinstance(message, str) else str(body)
             logger.warning(
-                "rollout=%s turn=%d upstream_bad_request=%r",
-                rollout_id,
-                turn_index,
-                detail,
+                f"rollout={rollout_id} turn={turn_index} upstream_bad_request={detail!r}",
             )
             raise HTTPException(status_code=400, detail=detail) from exc
 
@@ -504,7 +492,7 @@ async def chat_completions(
             message_type="chat",
             max_seq_len=rollout.config.max_seq_len,
         )
-        token_is_truncated = tokens is not None and bool(tokens.get("is_truncated"))
+        token_is_truncated = tokens is not None and tokens["is_truncated"]
         step_is_truncated = response_is_truncated or token_is_truncated
 
         trajectory_step = TrajectoryStep(
@@ -515,7 +503,7 @@ async def chat_completions(
             reward=None,
             advantage=None,
             is_truncated=step_is_truncated,
-            trajectory_id=cast(str, rollout.vf_state["trajectory_id"]),
+            trajectory_id=rollout.vf_state["trajectory_id"],
             extras={},
         )
         rollout.vf_state["trajectory"].append(trajectory_step)
@@ -532,38 +520,20 @@ async def chat_completions(
         assistant_content = response.choices[0].message.content if response.choices else None
         preview = None
         if assistant_content:
-            preview = (
-                assistant_content[:200] + "..."
-                if len(assistant_content) > 200
-                else assistant_content
-            )
+            preview = assistant_content[:200] + "..." if len(assistant_content) > 200 else assistant_content
         prompt_token_count = len(tokens["prompt_ids"]) if tokens is not None else None
-        completion_token_count = (
-            len(tokens["completion_ids"]) if tokens is not None else None
-        )
+        completion_token_count = len(tokens["completion_ids"]) if tokens is not None else None
         logger.info(
-            "rollout=%s turn=%d response mode=%s finish=%s truncated=%s prompt_tokens=%s completion_tokens=%s steps=%d preview=%r",
-            rollout_id,
-            turn_index,
-            request_mode,
-            finish_reason,
-            step_is_truncated,
-            prompt_token_count,
-            completion_token_count,
-            len(rollout.vf_state["trajectory"]),
-            preview,
+            f"rollout={rollout_id} turn={turn_index} response mode={request_mode} "
+            f"finish={finish_reason} truncated={step_is_truncated} "
+            f"prompt_tokens={prompt_token_count} completion_tokens={completion_token_count} "
+            f"steps={len(rollout.vf_state['trajectory'])} preview={preview!r}"
         )
 
         if _should_log_full_turn(rollout_id, turn_index):
-            tool_calls = (
-                _serialize_tool_calls(response.choices[0].message.tool_calls)
-                if response.choices
-                else []
-            )
+            tool_calls = _serialize_tool_calls(response.choices[0].message.tool_calls) if response.choices else []
             prompt_tool_responses = [
-                message
-                for message in messages
-                if isinstance(message, dict) and message.get("role") == "tool"
+                message for message in messages if isinstance(message, dict) and message.get("role") == "tool"
             ]
             logger.info(
                 "rollout=%s turn=%d full_completion=%s",
@@ -587,7 +557,7 @@ async def chat_completions(
 
     if stream:
         return StreamingResponse(
-            _synthesize_stream(response),
+            _fake_stream(response),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -601,22 +571,15 @@ async def chat_completions(
 @router.get("/v1/rollouts/{rollout_id}/trajectory")
 async def get_trajectory(rollout_id: str, request: Request):
     registry = _get_rollout_registry(request)
-    rollout = _require_rollout_state(await registry.get(rollout_id), rollout_id)
+    rollout = await registry.get(rollout_id)
+    _assert_rollout(rollout, rollout_id)
 
     async with rollout.lock:
         vf_state = rollout.vf_state
-        trajectory_payload = [
-            _serialize_trajectory_step(cast(TrajectoryStep, step))
-            for step in vf_state.get("trajectory", [])
-        ]
+        trajectory_payload = [_serialize_trajectory_step(step) for step in vf_state.trajectory]
         completion = vf_state.get("completion") or _render_completion(vf_state)
         logger.info(
-            "rollout=%s trajectory_fetch status=%s turns=%d steps=%d truncated=%s",
-            rollout_id,
-            rollout.status,
-            rollout.turn_count,
-            len(trajectory_payload),
-            rollout.is_truncated,
+            f"rollout={rollout_id} trajectory_fetch status={rollout.status} turns={rollout.turn_count} steps={len(trajectory_payload)} truncated={rollout.is_truncated}"
         )
 
         return {
@@ -634,7 +597,8 @@ async def get_trajectory(rollout_id: str, request: Request):
 @router.post("/v1/rollouts/{rollout_id}/cancel")
 async def cancel_rollout(rollout_id: str, request: Request):
     registry = _get_rollout_registry(request)
-    rollout = _require_rollout_state(await registry.cancel(rollout_id), rollout_id)
+    rollout = await registry.cancel(rollout_id)
+    _assert_rollout(rollout, rollout_id)
     return {
         "rollout_id": rollout_id,
         "status": rollout.status,
@@ -644,7 +608,8 @@ async def cancel_rollout(rollout_id: str, request: Request):
 @router.post("/v1/rollouts/{rollout_id}/unregister")
 async def unregister_rollout(rollout_id: str, request: Request):
     registry = _get_rollout_registry(request)
-    rollout = _require_rollout_state(await registry.unregister(rollout_id), rollout_id)
+    rollout = await registry.unregister(rollout_id)
+    _assert_rollout(rollout, rollout_id)
     return {
         "rollout_id": rollout_id,
         "status": rollout.status,
