@@ -105,7 +105,13 @@ async def orchestrate(config: OrchestratorConfig):
         install_env(env_id)
 
     # Setup inference pool (handles both static and elastic modes)
-    inference_pool = await setup_inference_pool(config.client, model_name=config.model.name)
+    client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
+    if config.use_token_client:
+        logger.warning(
+            "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a linear "
+            "history and the chat template has the extension property."
+        )
+    inference_pool = await setup_inference_pool(config.client, model_name=config.model.name, client_type=client_type)
 
     # Setup teacher inference pool if configured
     if config.teacher_model:
