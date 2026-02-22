@@ -745,7 +745,7 @@ class OrchestratorConfig(BaseSettings):
         int | None,
         Field(
             ge=1,
-            description="Maximum number of group rollout requests in flight concurrently. Required in token-based batching mode. In rollout-based batching mode, defaults to batch_size if not set.",
+            description="Maximum number of rollout samples in flight concurrently. Required in token-based batching mode. In rollout-based batching mode, defaults to batch_size if not set.",
         ),
     ] = None
 

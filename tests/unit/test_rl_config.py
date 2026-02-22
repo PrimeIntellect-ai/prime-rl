@@ -60,5 +60,5 @@ def test_batching_defaults_to_rollout_mode() -> None:
 def test_filesystem_weight_broadcast_defaults() -> None:
     config = RLTrainerConfig()
     assert config.weight_broadcast.type == "filesystem"
-    assert config.weight_broadcast.keep_last == 10
-    assert config.weight_broadcast.min_broadcast_interval == 1.0
+    assert config.weight_broadcast.keep_last == 1
+    assert config.weight_broadcast.min_broadcast_interval == 0.0

@@ -132,9 +132,9 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
         float,
         Field(
             ge=0.0,
-            description="Minimum interval in seconds between filesystem broadcasts. If the previous broadcast is newer, the trainer skips the current broadcast cycle.",
+            description="Minimum interval in seconds between filesystem broadcasts. Set to 0 to broadcast every step.",
         ),
-    ] = 1.0
+    ] = 0.0
 
 
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):

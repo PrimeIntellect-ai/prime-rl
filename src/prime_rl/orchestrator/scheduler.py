@@ -71,6 +71,11 @@ class Scheduler:
         """Update sampling args for future rollout requests."""
         self.sampling_args = sampling_args
 
+    @property
+    def max_inflight_groups(self) -> int:
+        """Convert rollout-level inflight budget to group requests."""
+        return max(1, self.config.max_inflight_rollouts // self.config.rollouts_per_example)
+
     def cancel_inflight_rollouts(self):
         """Cancel all in-flight rollout requests."""
         count = len(self.inflight_group_rollouts)
@@ -174,7 +179,7 @@ class Scheduler:
         Returns an empty list if the group was cancelled or failed.
         """
         # Top up the inflight pool
-        while len(self.inflight_group_rollouts) < self.config.max_inflight_rollouts:
+        while len(self.inflight_group_rollouts) < self.max_inflight_groups:
             await self.schedule_group_rollout()
 
         # Wait for at least one future to complete
