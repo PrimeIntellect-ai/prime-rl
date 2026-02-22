@@ -203,6 +203,7 @@ class GlmMoeDsaConfig(PretrainedConfig):
             warnings.warn("not using grouped mm for moe is very slow, should only be used for debugging")
 
         super().__init__(
+            pad_token_id=pad_token_id,
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
