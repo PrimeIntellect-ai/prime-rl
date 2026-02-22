@@ -1,11 +1,5 @@
 """Benchmark: Triton BF16 / Triton FP8 / TileLang FP8 indexers.
 
-All implement the correct DSA scoring: I_{t,s} = Σ_j w_{t,j} · ReLU(q_{t,j} · k_s)
-
-Triton BF16:  fused 2D-grid kernel, BF16 tensor cores, causal mask built-in
-Triton FP8:   same 2D-grid structure, FP8 tensor cores, k_scales applied after ReLU
-TileLang FP8: 1D-grid kernel with FP8 GEMM + separate clean_logits pass
-
 Run:    uv run python benchmarks/bench_fp8_indexer.py
 Output: benchmarks/results/bench_fp8_indexer.md
 """
@@ -22,9 +16,6 @@ import triton.language as tl
 from tilelang import language as T
 from tilelang.profiler import do_bench
 
-# ---------------------------------------------------------------------------
-# Config defaults (from configuration_glm_moe_dsa.py)
-# ---------------------------------------------------------------------------
 H = 32  # index_n_heads
 D = 128  # index_head_dim
 TOPK = 2048
@@ -42,11 +33,6 @@ PROFILES = {
 
 DEVICE = "cuda"
 RESULTS_DIR = Path(__file__).parent / "results"
-
-
-# ===========================================================================
-# Helpers
-# ===========================================================================
 
 
 def make_cu_seqlens(profile_fn, S):
@@ -77,9 +63,6 @@ def generate_inputs(S):
     return q, k, w
 
 
-# ---------------------------------------------------------------------------
-# FP8 quantization (from tilelang examples/deepseek_v32/utils.py)
-# ---------------------------------------------------------------------------
 FP8_MAX = 448.0
 
 
@@ -91,11 +74,6 @@ def per_custom_dims_cast_to_fp8(x, dims, use_ue8m0=False):
         sf = torch.pow(2.0, torch.ceil(torch.log2(sf.abs())))
     x_scaled = (x * (1.0 / sf)).to(torch.float8_e4m3fn)
     return x_scaled, sf.squeeze()
-
-
-# ===========================================================================
-# Triton BF16 indexer
-# ===========================================================================
 
 
 @triton.autotune(
@@ -137,11 +115,9 @@ def _triton_mqa_indexer_kernel(
     mask_m = offs_m < S
     mask_n = offs_n < S
 
-    # Causal bounds for early exit
     ks_vals = tl.load(KS + offs_m, mask=mask_m, other=S)
     ke_vals = tl.load(KE + offs_m, mask=mask_m, other=0)
 
-    # Use int64 for output pointers to avoid overflow when S >= 32768
     offs_m_64 = offs_m.to(tl.int64)
     offs_n_64 = offs_n.to(tl.int64)
     out_ptrs = Out + offs_m_64[:, None] * S + offs_n_64[None, :]
@@ -151,12 +127,10 @@ def _triton_mqa_indexer_kernel(
     ke_max = tl.max(ke_vals)
     n_lo = pid_n * BLOCK_N
 
-    # Skip blocks entirely outside the causal window
     if n_lo >= ke_max or n_lo + BLOCK_N <= ks_min:
         tl.store(out_ptrs, tl.full([BLOCK_M, BLOCK_N], float("-inf"), tl.float32), mask=out_mask)
         return
 
-    # Load K block once: [BLOCK_N, D]
     k_block = tl.load(
         K + offs_n[:, None] * stride_ks + offs_d[None, :],
         mask=mask_n[:, None],
@@ -166,21 +140,17 @@ def _triton_mqa_indexer_kernel(
     acc = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
 
     for h in range(H):
-        # Q[m, h, :]: [BLOCK_M, D]
         q_h = tl.load(
             Q + offs_m[:, None] * stride_qs + h * stride_qh + offs_d[None, :],
             mask=mask_m[:, None],
             other=0.0,
         )
-        # W[m, h]: [BLOCK_M]
         w_h = tl.load(W + offs_m * stride_ws + h, mask=mask_m, other=0.0).to(tl.float32)
 
-        # [BLOCK_M, D] @ [D, BLOCK_N] -> [BLOCK_M, BLOCK_N]
         scores = tl.dot(q_h, tl.trans(k_block))
         scores = tl.maximum(scores, 0.0)
         acc += scores * w_h[:, None]
 
-    # Causal + sequence boundary mask
     valid = (offs_n[None, :] >= ks_vals[:, None]) & (offs_n[None, :] < ke_vals[:, None])
     acc = tl.where(valid, acc, float("-inf"))
 
@@ -220,11 +190,6 @@ def triton_indexer(q, k, w, ks, ke, topk):
     return indices.to(torch.int32)
 
 
-# ===========================================================================
-# Triton FP8 indexer
-# ===========================================================================
-
-
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2),
@@ -247,7 +212,7 @@ def _triton_fp8_indexer_kernel(
     KE,
     S,
     stride_qh,
-    stride_qs,  # Q_fp8 is [H, S, D]: stride_qh = S*D, stride_qs = D
+    stride_qs,
     stride_ks,
     stride_ws,
     H: tl.constexpr,
@@ -281,27 +246,19 @@ def _triton_fp8_indexer_kernel(
         tl.store(out_ptrs, tl.full([BLOCK_M, BLOCK_N], float("-inf"), tl.float32), mask=out_mask)
         return
 
-    # Clamp indices for FP8 loads (can't use mask+other with fp8 dtype).
-    # Out-of-bounds positions are masked out by the causal check below.
     offs_n_safe = tl.minimum(offs_n, S - 1)
     offs_m_safe = tl.minimum(offs_m, S - 1)
 
-    # Load K_fp8 block: [BLOCK_N, D]
     k_block = tl.load(K_fp8 + offs_n_safe[:, None] * stride_ks + offs_d[None, :])
-
-    # Load K_scales: [BLOCK_N]
     k_sc = tl.load(K_scales + offs_n_safe, mask=mask_n, other=0.0).to(tl.float32)
 
     acc = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
 
     for h in range(H):
-        # Q_fp8[h, m, :]: [BLOCK_M, D]
         q_h = tl.load(Q_fp8 + h * stride_qh + offs_m_safe[:, None] * stride_qs + offs_d[None, :])
         w_h = tl.load(W + offs_m * stride_ws + h, mask=mask_m, other=0.0).to(tl.float32)
 
-        # FP8 matmul: [BLOCK_M, D] @ [D, BLOCK_N] -> [BLOCK_M, BLOCK_N]
         scores = tl.dot(q_h, tl.trans(k_block)).to(tl.float32)
-        # ReLU then apply weight and k_scale (matching TileLang order)
         scores = tl.maximum(scores, 0.0) * k_sc[None, :]
         acc += scores * w_h[:, None]
 
@@ -315,12 +272,10 @@ def triton_fp8_indexer(q, k, w, ks, ke, topk):
     """Triton FP8 indexer: FP8 cast + fused kernel + topk."""
     S = q.shape[0]
 
-    # FP8 quantize (same as TileLang): per-row absmax scaling
     q_flat = q.reshape(S * H, D).contiguous()
     q_fp8, _ = per_custom_dims_cast_to_fp8(q_flat, dims=(0,))
     k_fp8, k_scales = per_custom_dims_cast_to_fp8(k, dims=(0,))
 
-    # Rearrange Q_fp8 from [S*H, D] to [H, S, D] for contiguous per-head access
     q_fp8 = q_fp8.view(S, H, D).permute(1, 0, 2).contiguous()
 
     logits = torch.empty(S, S, dtype=torch.float32, device=DEVICE)
@@ -352,12 +307,6 @@ def triton_fp8_indexer(q, k, w, ks, ke, topk):
         padding = torch.full((S, topk - actual_topk), S, dtype=indices.dtype, device=indices.device)
         indices = torch.cat([indices, padding], dim=-1)
     return indices.to(torch.int32)
-
-
-# ===========================================================================
-# TileLang FP8 lightning indexer kernels
-# (vendored from tilelang examples/deepseek_v32/fp8_lighting_indexer.py)
-# ===========================================================================
 
 
 @tilelang.jit(
@@ -490,11 +439,6 @@ def tilelang_indexer(q, k, w, ks, ke, topk, kernel_logits, kernel_clean):
     return indices.to(torch.int32)
 
 
-# ===========================================================================
-# Correctness metrics
-# ===========================================================================
-
-
 def _compute_logits_triton_bf16(q, k, w, ks, ke):
     S = q.shape[0]
     logits = torch.empty(S, S, dtype=torch.float32, device=DEVICE)
@@ -595,11 +539,6 @@ def jaccard_topk_fast(idx_a, idx_b):
     return jaccard.mean().item()
 
 
-# ===========================================================================
-# Memory helpers
-# ===========================================================================
-
-
 def estimate_logits_memory_mb(S):
     return S * S * 4 / (1024 * 1024)
 
@@ -607,11 +546,6 @@ def estimate_logits_memory_mb(S):
 def check_memory_available_mb():
     free, _ = torch.cuda.mem_get_info()
     return free / (1024 * 1024)
-
-
-# ===========================================================================
-# Benchmark harness
-# ===========================================================================
 
 
 def run_single_benchmark(S, profile_name, profile_fn, kernel_logits, kernel_clean):
@@ -640,7 +574,6 @@ def run_single_benchmark(S, profile_name, profile_fn, kernel_logits, kernel_clea
         print(f"  SKIP S={S} {profile_name}: need ~{logits_mem * 2.5:.0f}MB, have {avail:.0f}MB")
         return result
 
-    # --- Triton BF16 indexer ---
     torch.cuda.reset_peak_memory_stats()
     torch.cuda.synchronize()
     triton_bf16_ms = do_bench(lambda: triton_indexer(q, k, w, ks, ke, TOPK), warmup=WARMUP, rep=REP)
@@ -648,7 +581,6 @@ def run_single_benchmark(S, profile_name, profile_fn, kernel_logits, kernel_clea
     result["triton_bf16_ms"] = triton_bf16_ms
     result["triton_bf16_mem_mb"] = torch.cuda.max_memory_allocated() / (1024 * 1024)
 
-    # --- Triton FP8 indexer ---
     torch.cuda.reset_peak_memory_stats()
     torch.cuda.synchronize()
     triton_fp8_ms = do_bench(lambda: triton_fp8_indexer(q, k, w, ks, ke, TOPK), warmup=WARMUP, rep=REP)
@@ -656,7 +588,6 @@ def run_single_benchmark(S, profile_name, profile_fn, kernel_logits, kernel_clea
     result["triton_fp8_ms"] = triton_fp8_ms
     result["triton_fp8_mem_mb"] = torch.cuda.max_memory_allocated() / (1024 * 1024)
 
-    # --- TileLang FP8 indexer ---
     torch.cuda.reset_peak_memory_stats()
     torch.cuda.synchronize()
     tilelang_ms = do_bench(
@@ -666,7 +597,6 @@ def run_single_benchmark(S, profile_name, profile_fn, kernel_logits, kernel_clea
     result["tilelang_ms"] = tilelang_ms
     result["tilelang_mem_mb"] = torch.cuda.max_memory_allocated() / (1024 * 1024)
 
-    # --- Correctness ---
     result["jac_fp8_tl"] = jaccard_topk_fast(fp8_indices, tl_indices)
     result["jac_bf16_tl"] = jaccard_topk_fast(bf16_indices, tl_indices)
 

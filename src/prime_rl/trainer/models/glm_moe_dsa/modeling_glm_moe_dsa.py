@@ -1,18 +1,3 @@
-# coding=utf-8
-# Copyright 2026 The ZhipuAI Inc. team and HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import warnings
 from typing import Optional, Union
 
@@ -45,7 +30,6 @@ from prime_rl.trainer.models.layers.rotary_emb import (
     apply_rotary_pos_emb_interleave,
 )
 
-# tilelang sparse MLA kernels (vendored)
 try:
     from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_bwd
     from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla_fwd_interface
@@ -74,10 +58,6 @@ class _SparseMLA(torch.autograd.Function):
 
 
 class LayerNorm(nn.Module):
-    """
-    Layer Normalization.
-    """
-
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.dim = dim
@@ -121,19 +101,17 @@ class Indexer(nn.Module):
         k_idx = self.k_norm(self.wk(hidden_states[0]))
         w = self.weights_proj(hidden_states[0])
 
-        # Split into rope and non-rope portions, apply RoPE to pe parts
         q_pe = q_idx[..., : self.rope_dim]
         q_nope = q_idx[..., self.rope_dim :]
         k_pe = k_idx[..., : self.rope_dim]
         k_nope = k_idx[..., self.rope_dim :]
 
         cos, sin = position_embeddings
-        # apply_rotary_pos_emb* expects [batch, heads, seq, dim]
-        q_pe = q_pe.unsqueeze(0).transpose(1, 2)  # [1, n_head, total_tokens, rope_dim]
-        k_pe = k_pe.unsqueeze(0).unsqueeze(1)  # [1, 1, total_tokens, rope_dim]
+        q_pe = q_pe.unsqueeze(0).transpose(1, 2)
+        k_pe = k_pe.unsqueeze(0).unsqueeze(1)
         q_pe, k_pe = apply_rotary_pos_emb_interleave(q_pe, k_pe, cos, sin)
-        q_pe = q_pe.transpose(1, 2).squeeze(0)  # [total_tokens, n_head, rope_dim]
-        k_pe = k_pe.squeeze(1).squeeze(0)  # [total_tokens, rope_dim]
+        q_pe = q_pe.transpose(1, 2).squeeze(0)
+        k_pe = k_pe.squeeze(1).squeeze(0)
 
         q_idx = torch.cat([q_pe, q_nope], dim=-1)
         k_idx = torch.cat([k_pe, k_nope], dim=-1)
@@ -143,17 +121,6 @@ class Indexer(nn.Module):
 
 
 class GlmMoeDsaAttention(nn.Module):
-    """MLA with Dynamic Sparse Attention via tilelang kernels.
-
-    Uses the absorption trick to operate in the compressed KV latent space:
-      sparse_q  = cat(Q_nope @ W_kv_b_k_nope^T, Q_rope)   →  [B, S, H, kv_lora_rank + rope_dim]
-      sparse_kv = cat(kv_a_layernorm(k_compressed), k_rope) →  [B, S, 1, kv_lora_rank + rope_dim]
-
-    The tilelang sparse_mla_fwd/bwd kernels attend only to top-k tokens per query
-    (selected by the bf16 indexer). Output is un-absorbed back to v_head_dim via
-    the V portion of kv_b_proj weight.
-    """
-
     def __init__(self, config: GlmMoeDsaConfig):
         super().__init__()
         self.config = config
@@ -164,12 +131,10 @@ class GlmMoeDsaAttention(nn.Module):
         self.qk_head_dim = config.qk_head_dim
         self.v_head_dim = config.v_head_dim
 
-        # Query projection (LoRA)
         self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=config.attention_bias)
         self.q_a_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.q_lora_rank, eps=config.rms_norm_eps))
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.qk_head_dim, bias=False)
 
-        # Key-Value compressed projection (MQA-style compression + rope key)
         self.kv_a_proj_with_mqa = nn.Linear(
             config.hidden_size,
             self.kv_lora_rank + self.qk_rope_head_dim,
@@ -182,13 +147,8 @@ class GlmMoeDsaAttention(nn.Module):
             bias=False,
         )
 
-        # Output projection
         self.o_proj = nn.Linear(self.num_heads * self.v_head_dim, config.hidden_size, bias=config.attention_bias)
-
-        # Indexer: selects top-k tokens per query for sparse attention
         self.indexer = Indexer(config)
-
-        # Attention scaling
         self.scaling = self.qk_head_dim ** (-0.5)
 
     def forward(
@@ -200,48 +160,42 @@ class GlmMoeDsaAttention(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         batch_size, total_tokens, _ = hidden_states.shape
 
-        # Q path
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
         q_full = self.q_b_proj(q_latent).view(batch_size, total_tokens, self.num_heads, self.qk_head_dim)
         q_nope, q_rope = q_full.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
 
-        # Compressed KV (no kv_b_proj up-projection)
         compressed_kv = self.kv_a_proj_with_mqa(hidden_states)
         k_compressed, k_rope = compressed_kv.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
         k_compressed_normed = self.kv_a_layernorm(k_compressed)
 
-        # RoPE — needs [batch, heads, seq, dim] layout
         q_rope_r = q_rope.transpose(1, 2)
         k_rope_r = k_rope.unsqueeze(1)
         cos, sin = position_embeddings
         q_rope_r, k_rope_r = apply_rotary_pos_emb_interleave(q_rope_r, k_rope_r, cos, sin)
-        q_rope = q_rope_r.transpose(1, 2)  # [B, total, H, rope_dim]
-        k_rope = k_rope_r.squeeze(1)  # [B, total, rope_dim]
+        q_rope = q_rope_r.transpose(1, 2)
+        k_rope = k_rope_r.squeeze(1)
 
-        # Indexer
         indices = self.indexer.compute_sparse_indices(
             hidden_states, q_latent, ks, ke, self.config.index_topk, position_embeddings
         )
 
-        # Absorption: Q_nope @ W_kv_b_k_nope^T → [B, S, H, kv_lora_rank]
+        # KV absorption
         kv_b_w = self.kv_b_proj.weight.view(self.num_heads, self.qk_nope_head_dim + self.v_head_dim, self.kv_lora_rank)
-        w_k_nope = kv_b_w[:, : self.qk_nope_head_dim, :]  # [H, nope, kv_lora_rank]
-        w_v = kv_b_w[:, self.qk_nope_head_dim :, :]  # [H, v_head_dim, kv_lora_rank]
+        w_k_nope = kv_b_w[:, : self.qk_nope_head_dim, :]
+        w_v = kv_b_w[:, self.qk_nope_head_dim :, :]
 
         q_absorbed = torch.einsum("bshd,hdk->bshk", q_nope, w_k_nope)
 
-        # Build sparse tensors for tilelang
-        sparse_q = torch.cat([q_absorbed, q_rope], dim=-1)  # [B, S, H, 576]
-        sparse_kv = torch.cat([k_compressed_normed, k_rope], dim=-1).unsqueeze(2)  # [B, S, 1, 576]
+        sparse_q = torch.cat([q_absorbed, q_rope], dim=-1)
+        sparse_kv = torch.cat([k_compressed_normed, k_rope], dim=-1).unsqueeze(2)
 
-        # Append sentinel zero-token so padded indices (= total_tokens) are in-bounds
+        # Sentinel zero-token so padded indices (= total_tokens) are in-bounds
         sentinel = torch.zeros(batch_size, 1, 1, sparse_kv.shape[-1], dtype=sparse_kv.dtype, device=sparse_kv.device)
-        sparse_kv = torch.cat([sparse_kv, sentinel], dim=1)  # [B, S+1, 1, 576]
+        sparse_kv = torch.cat([sparse_kv, sentinel], dim=1)
 
-        # Sparse attention via tilelang
-        out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)  # [B, S, H, kv_lora_rank]
+        out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)
 
-        # Un-absorb: out @ W_v^T → [B, S, H, v_head_dim]
+        # Un-absorb
         out = torch.einsum("bshk,hdk->bshd", out, w_v)
 
         out = out.reshape(batch_size, total_tokens, -1)
@@ -424,10 +378,7 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        warnings.warn(
-            "GlmMoeDsaForCausalLM is currently experimental, results may not be 100% accurate and performance may not be optimal."
-        )
-        warnings.warn("Ignoring provided attention implementation, using sparse attention instead.")
+        warnings.warn("GlmMoeDsaForCausalLM is experimental — accuracy and performance may vary.")
 
         self.post_init()
 

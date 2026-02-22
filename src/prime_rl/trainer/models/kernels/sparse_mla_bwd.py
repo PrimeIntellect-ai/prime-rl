@@ -1,7 +1,4 @@
-# Vendored from tile-ai/tilelang examples/deepseek_v32/sparse_mla_bwd.py
-# License: Apache 2.0
-# Stripped of test/benchmark/reference code — kernels + interface only.
-# Modified: B, S, S_kv use T.dynamic() to avoid recompilation per shape.
+# Vendored from tile-ai/tilelang (Apache 2.0), modified for dynamic shapes.
 
 import tilelang
 import torch

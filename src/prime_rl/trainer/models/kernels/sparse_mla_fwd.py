@@ -1,6 +1,4 @@
-# Vendored from tile-ai/tilelang examples/deepseek_v32/sparse_mla_fwd.py
-# License: Apache 2.0
-# Stripped of test/benchmark/reference code — kernel + interface only.
+# Vendored from tile-ai/tilelang (Apache 2.0), modified for dynamic shapes.
 
 import tilelang
 from tilelang import language as T

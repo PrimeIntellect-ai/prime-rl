@@ -1,5 +1,3 @@
-## a bit of context here, this basically copy AutoModelForCausalLM from transformers, but use our own model instead
-
 from collections import OrderedDict
 
 from transformers import AutoConfig

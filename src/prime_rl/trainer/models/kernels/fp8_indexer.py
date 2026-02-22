@@ -1,13 +1,8 @@
 """Triton FP8 indexer kernel for DSA sparse token selection.
 
-Implements the DeepSeek V3.2 scoring formula:
-    I_{t,s} = Σ_j w_{t,j} · ReLU(q_{t,j} · k_s)
+Scoring formula: I_{t,s} = Σ_j w_{t,j} · ReLU(q_{t,j} · k_s)
 
-Uses FP8 tensor cores with per-token-group UE8M0 quantization to match
-the vLLM sparse MLA indexer.
-
-FP8 quantization vendored from vLLM (Apache 2.0):
-  vllm/model_executor/layers/quantization/utils/fp8_utils.py
+FP8 quantization vendored from vLLM (Apache 2.0).
 """
 
 import torch
@@ -17,11 +12,6 @@ import triton.language as tl
 FP8_MAX = 448.0
 FP8_MIN = -448.0
 FP8_EPS = 1e-10
-
-
-# ---------------------------------------------------------------------------
-# Vendored from vLLM: per-token-group FP8 quantization with UE8M0 scales
-# ---------------------------------------------------------------------------
 
 
 @triton.jit
@@ -38,12 +28,6 @@ def _per_token_group_quant_fp8(
     use_ue8m0: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
-    """Per-token-group FP8 quantization (vendored from vLLM).
-
-    When use_ue8m0=True, the scale is rounded up to the nearest power of 2:
-        scale = 2^ceil(log2(absmax / fp8_max))
-    This matches the UE8M0 scale format used by DeepGEMM / vLLM indexer.
-    """
     groups_per_row = y_num_columns // group_size
 
     g_id = tl.program_id(0)
@@ -74,16 +58,6 @@ def _per_token_group_quant_fp8(
 def per_token_group_quant_fp8(
     x: torch.Tensor, group_size: int, use_ue8m0: bool = True
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Per-token-group FP8 quantization matching vLLM's implementation.
-
-    Args:
-        x: Input tensor with shape [..., D] where D is divisible by group_size.
-        group_size: Number of contiguous elements per quantization group.
-        use_ue8m0: If True, round scales to nearest power of 2 (UE8M0 format).
-
-    Returns:
-        (x_q, x_s): Quantized FP8 tensor and per-group float32 scales.
-    """
     assert x.shape[-1] % group_size == 0
     assert x.stride(-1) == 1
 
@@ -112,11 +86,6 @@ def per_token_group_quant_fp8(
         num_stages=1,
     )
     return x_q, x_s
-
-
-# ---------------------------------------------------------------------------
-# FP8 indexer scoring kernel
-# ---------------------------------------------------------------------------
 
 
 @triton.autotune(
@@ -201,37 +170,30 @@ def _triton_fp8_indexer_kernel(
 def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
     """Triton FP8 indexer: UE8M0 quantization + fused scoring kernel + topk.
 
-    Uses per-token-group FP8 quantization with UE8M0 (power-of-2) scales,
-    matching the vLLM sparse attention indexer.
-
     Args:
-        q: [S, H, D] bf16 — query vectors per head
-        k: [S, D] bf16 — key vectors (shared across heads)
-        w: [S, H] bf16 — per-head weights
-        ks: [S] int32 — sequence start per token
-        ke: [S] int32 — causal end per token (= position + 1)
-        topk: int — number of top indices to return
-        weight_scale: float — constant scaling factor for weights (applied in float32)
+        q: [S, H, D] bf16 query vectors per head
+        k: [S, D] bf16 key vectors (shared across heads)
+        w: [S, H] bf16 per-head weights
+        ks: [S] int32 sequence start per token
+        ke: [S] int32 causal end per token (= position + 1)
+        topk: number of top indices to return
+        weight_scale: constant scaling factor for weights
 
     Returns:
-        [S, topk] int32 — selected token indices per query
+        [S, topk] int32 selected token indices per query
     """
-    _weight_scale = weight_scale # this currently produces higher KL mismatch, unused for now
     S, H, D = q.shape
     device = q.device
 
-    # Per-token-group FP8 quantization with UE8M0 scales (matching vLLM)
     q_flat = q.reshape(S * H, D).contiguous()
     q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True)
     k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True)
 
     q_fp8 = q_fp8.view(S, H, D).permute(1, 0, 2).contiguous()
 
-    # Fold q_scale into weights (same convention as vLLM):
-    #   weights = raw_weights * q_scale * softmax_scale * n_head^(-0.5)
-    # where weight_scale = softmax_scale * n_head^(-0.5) = head_dim^(-0.5) * n_head^(-0.5)
+    # Fold q_scale into weights
     q_scales = q_scales.view(S, H)
-    w = w * q_scales # * weight_scale
+    w = w * q_scales
 
     logits = torch.empty(S, S, dtype=torch.float32, device=device)
 
@@ -262,12 +224,7 @@ def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
         padding = torch.full((S, topk - actual_topk), S, dtype=indices.dtype, device=device)
         indices = torch.cat([indices, padding], dim=-1)
 
-    # Replace out-of-range indices with sentinel index S.
-    # The indexer marks cross-sequence tokens as -inf, but topk still returns
-    # their indices. The sparse MLA kernel's causal mask (Indices <= query_pos)
-    # doesn't respect sequence boundaries, so we must replace these indices
-    # with S which maps to the zero-valued sentinel KV and always fails the
-    # kernel's causal check (S > any query position).
+    # Replace cross-sequence indices with sentinel S (maps to zero-valued KV)
     ks_exp = ks.unsqueeze(1).expand_as(indices)
     ke_exp = ke.unsqueeze(1).expand_as(indices)
     out_of_range = (indices < ks_exp) | (indices >= ke_exp)

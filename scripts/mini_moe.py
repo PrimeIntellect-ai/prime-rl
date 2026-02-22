@@ -57,7 +57,7 @@ ARCH_PRESETS = {
         "prime_model_class": PrimeRLGlm4MoeForCausalLM,
         "tokenizer_source": "THUDM/GLM-4-9B-0414",
     },
-    # glm_moe_dsa is not supported as HF model is wrong
+    # glm_moe_dsa: HF implementation is incorrect, not supported here
 }
 
 
