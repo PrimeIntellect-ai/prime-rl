@@ -1,8 +1,8 @@
 from pathlib import Path
 from typing import TypedDict
 
-import torch
 import tomli
+import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
