@@ -2,8 +2,10 @@ import shutil
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from pathlib import Path
 from typing import Literal
 
+import tomli
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.batch import prepare_batch
@@ -16,7 +18,7 @@ from prime_rl.transport import (
     setup_micro_batch_sender,
     setup_training_batch_receiver,
 )
-from prime_rl.utils.logger import ProgressTracker, get_logger
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
 
 TIMEOUT_SECONDS = 0.1
@@ -79,6 +81,22 @@ def _resolve_batch_target_from_discovered_runs(
     return target, unit, False
 
 
+def _resolve_single_run_batch_target_from_root_config(
+    output_dir: Path,
+) -> tuple[int | None, int | None]:
+    config_path = output_dir / "control" / "orch.toml"
+    if not config_path.exists():
+        return None, None
+
+    with open(config_path, "rb") as f:
+        config_dict = tomli.load(f)
+
+    from prime_rl.orchestrator.config import OrchestratorConfig
+
+    orch_config = OrchestratorConfig(**config_dict)
+    return orch_config.token_batch_size, orch_config.batch_size
+
+
 class BasePacker(ABC):
     def __init__(
         self,
@@ -137,11 +155,6 @@ class SinglePacker(BasePacker):
         accumulated_samples: list[TrainingSample] = []
         total_batch_units = 0
 
-        pbar = ProgressTracker(
-            total=self.batch_target,
-            desc="Accumulating total tokens" if self.batch_unit == "tokens" else "Accumulating rollouts",
-        )
-
         while total_batch_units < self.batch_target:
             self.multi_run_manager.discover_runs()
             batches = self.receiver.receive()
@@ -155,9 +168,6 @@ class SinglePacker(BasePacker):
                     accumulated_samples.append(sample)
                     sample_batch_units = self._sample_batch_units(sample)
                     total_batch_units += sample_batch_units
-                    pbar.update(sample_batch_units)
-
-        pbar.close()
 
         self.multi_run_manager.ready_to_update[0] = True
         self.multi_run_manager.progress[0].step += 1
@@ -413,13 +423,20 @@ def setup_packer(
     multi_run_manager = get_multi_run_manager()
     batch_config_provisional = False
     if token_batch_size is None and rollout_batch_size is None:
-        batch_target, batch_unit, batch_config_provisional = _resolve_batch_target_from_discovered_runs(
-            default_token_batch_size=seq_len * dp_world_size
-        )
-        if batch_unit == "tokens":
-            token_batch_size = batch_target
+        if multi_run_manager.max_runs == 1:
+            token_batch_size, rollout_batch_size = _resolve_single_run_batch_target_from_root_config(
+                multi_run_manager.output_dir
+            )
+            if token_batch_size is None and rollout_batch_size is None:
+                token_batch_size = seq_len * dp_world_size
         else:
-            rollout_batch_size = batch_target
+            batch_target, batch_unit, batch_config_provisional = _resolve_batch_target_from_discovered_runs(
+                default_token_batch_size=seq_len * dp_world_size
+            )
+            if batch_unit == "tokens":
+                token_batch_size = batch_target
+            else:
+                rollout_batch_size = batch_target
 
     if multi_run_manager.max_runs == 1:
         return SinglePacker(

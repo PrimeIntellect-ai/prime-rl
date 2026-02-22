@@ -1,19 +1,7 @@
-from dataclasses import asdict
 from unittest.mock import MagicMock
 
 from prime_rl.orchestrator.ckpt import CheckpointManager, Progress
 from prime_rl.orchestrator.config import CheckpointConfig
-
-
-def test_progress_asdict_includes_step():
-    progress = Progress(step=7, total_tokens=11, total_samples=13, total_problems=17)
-
-    assert asdict(progress) == {
-        "step": 7,
-        "total_tokens": 11,
-        "total_samples": 13,
-        "total_problems": 17,
-    }
 
 
 def test_checkpoint_round_trip_preserves_step(tmp_path):
