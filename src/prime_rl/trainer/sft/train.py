@@ -8,7 +8,7 @@ from torch.nn import CrossEntropyLoss
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.trainer.models.layers.attn import substitute_prime_rl_flash_attn
+from prime_rl.trainer.models.layers.attn import substitute_afmoe_flash_attn, substitute_prime_rl_flash_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
@@ -95,6 +95,11 @@ def train(config: SFTTrainerConfig):
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
         substitute_prime_rl_flash_attn(
+            parallel_dims.world_mesh["cp"].get_group(),
+            heads_k_stride=1,
+            attn_impl=config.model.attn,
+        )
+        substitute_afmoe_flash_attn(
             parallel_dims.world_mesh["cp"].get_group(),
             heads_k_stride=1,
             attn_impl=config.model.attn,
