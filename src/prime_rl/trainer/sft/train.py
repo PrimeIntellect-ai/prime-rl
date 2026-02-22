@@ -141,6 +141,13 @@ def train(config: SFTConfig):
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
+    val_dataiter = None
+    if config.eval is not None and config.val_data is not None:
+        logger.info(f"Initializing validation data ({config.val_data})")
+        val_dataset = setup_dataset(tokenizer, config.val_data, config.model.cp * config.model.tp)
+        val_dataloader = setup_dataloader(val_dataset, config.val_data)
+        val_dataiter = iter(val_dataloader)
+
     # Optionally, resume training from a checkpoint
     progress = Progress()
 
@@ -173,6 +180,71 @@ def train(config: SFTConfig):
             ce_loss = CrossEntropyLoss(reduction="none")
         case _:
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
+
+    def run_validation(eval_step: int) -> None:
+        assert config.eval is not None
+        assert val_dataiter is not None
+
+        was_training = model.training
+        model.eval()
+
+        val_loss_sum = torch.tensor(0.0, device="cuda")
+        val_loss_count = torch.tensor(0.0, device="cuda")
+
+        with torch.no_grad():
+            for _ in range(config.eval.num_batches):
+                micro_batch = next(val_dataiter)
+                input_ids = micro_batch["input_ids"].to("cuda")
+                position_ids = micro_batch["position_ids"].to("cuda")
+                target_ids = micro_batch["target_ids"].to("cuda")
+                loss_mask = micro_batch["loss_mask"].to("cuda")
+
+                if cp_enabled:
+                    input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+                    target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
+                    loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+
+                if config.model.lora is not None:
+                    lora_num_tokens = torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda")
+                    set_lora_num_tokens(lora_num_tokens)
+
+                out = forward(model, input_ids, position_ids)
+                logits = out["logits"]
+                B, L, V = logits.shape
+                loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+                loss = loss[loss_mask].mean()
+
+                if not torch.isnan(loss):
+                    val_loss_sum += loss.detach()
+                    val_loss_count += 1
+
+                del logits
+
+        dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(val_loss_count, op=dist.ReduceOp.SUM)
+
+        if val_loss_count.item() == 0:
+            logger.warning(f"Validation at step {eval_step} had only NaN losses")
+            val_metrics = {
+                "val/loss": float("nan"),
+                "val/num_batches": 0.0,
+                "step": eval_step,
+            }
+        else:
+            mean_val_loss = (val_loss_sum / val_loss_count).item()
+            logger.success(
+                f"Validation | Step {eval_step} | Loss: {mean_val_loss:.4f} | Batches: {int(val_loss_count.item())}"
+            )
+            val_metrics = {
+                "val/loss": mean_val_loss,
+                "val/num_batches": val_loss_count.item(),
+                "step": eval_step,
+            }
+
+        monitor.log(val_metrics, step=eval_step)
+
+        if was_training:
+            model.train()
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
@@ -404,6 +476,9 @@ def train(config: SFTConfig):
                 "step": progress.step,
             }
             monitor.log(max_vio_log_metrics, step=progress.step)
+
+        if config.eval is not None and val_dataiter is not None and (progress.step + 1) % config.eval.interval == 0:
+            run_validation(progress.step)
 
         is_first_step = False
         progress.step += 1

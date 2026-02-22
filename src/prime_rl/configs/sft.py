@@ -106,6 +106,11 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+class SFTEvalConfig(BaseConfig):
+    interval: Annotated[int, Field(ge=1, description="Run validation every N training steps.")] = 50
+    num_batches: Annotated[int, Field(ge=1, description="Number of validation batches per evaluation.")] = 8
+
+
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
@@ -172,6 +177,12 @@ class SFTConfig(BaseSettings):
 
     # The data configuration
     data: DataConfig = SFTDataConfig()
+
+    # Optional validation data configuration
+    val_data: SFTDataConfig | None = None
+
+    # Optional validation evaluation configuration
+    eval: SFTEvalConfig | None = None
 
     # The optimizer configuration
     optim: OptimizerConfig = AdamWConfig()
@@ -310,6 +321,12 @@ class SFTConfig(BaseSettings):
                     "save_adapter_separately=True requires LoRA to be enabled. "
                     "Set model.lora or disable save_adapter_separately."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_eval_and_val_data(self):
+        if (self.eval is None) != (self.val_data is None):
+            raise ValueError("SFT validation requires both eval and val_data to be set")
         return self
 
     @model_validator(mode="after")
