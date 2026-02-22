@@ -1743,11 +1743,6 @@ def test_build_vlm_image_cache_no_images():
     assert grid is None
 
 
-# =============================================================================
-# Routed experts alignment tests
-# =============================================================================
-
-
 def test_align_routed_experts_none():
     assert _align_routed_experts(None, 10) is None
 
@@ -1780,11 +1775,6 @@ def test_align_routed_experts_excess_length():
     result = _align_routed_experts(experts, expected_len=2)
     # No truncation, just returns as-is
     assert result == experts
-
-
-# =============================================================================
-# Interleave rollout with routed experts
-# =============================================================================
 
 
 def test_interleave_rollout_single_step_with_routed_experts():
