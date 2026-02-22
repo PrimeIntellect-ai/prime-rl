@@ -107,28 +107,23 @@ def test_buffer_problem_pool_assignment(dummy_env_group, make_rollouts):
     assert len(get_normal_ids(buffer)) == 7
 
 
-def test_buffer_online_difficulty_filtering(dummy_env_group, make_rollouts):
-    """With online_difficulty_filtering=True, only partial reward rollouts are kept."""
+def test_buffer_pool_metrics(dummy_env_group, make_rollouts):
+    """Buffer metrics include pool split for examples and rollouts."""
     dataset = dummy_env_group.get_dataset()
-    buffer = Buffer(
-        dataset,
-        dummy_env_group.env_names,
-        BufferConfig(online_difficulty_filtering=True),
-    )
-    buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 0.5, 0.0, 0.5, 0.5]))
+    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig(easy_threshold=1.0, hard_threshold=0.0))
+    # 5 examples from env_a: easy,easy,normal,normal,hard (2 rollouts each)
+    buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 1.0, 0.5, 0.5, 0.0]))
 
-    # Only 3 problems with reward 0.5 -> 6 rollouts kept
-    assert len(buffer.rollout_buffer) == 6
+    metrics = buffer.get_metrics()
 
-
-def test_buffer_no_filtering_by_default(dummy_env_group, make_rollouts):
-    """With online_difficulty_filtering=False (default), all rollouts are kept."""
-    dataset = dummy_env_group.get_dataset()
-    buffer = Buffer(dataset, dummy_env_group.env_names, BufferConfig())
-    buffer.update(make_rollouts(dataset.select(range(5)), rewards=[1.0, 0.5, 0.0, 0.5, 0.5]))
-
-    # All 5 problems -> 10 rollouts kept
-    assert len(buffer.rollout_buffer) == 10
+    assert metrics["evicted_examples/easy"] == 2 / 5
+    assert metrics["evicted_examples/hard"] == 1 / 5
+    assert metrics["rollouts/easy"] == 2 / 5
+    assert metrics["rollouts/hard"] == 1 / 5
+    # Total pool split over whole dataset (10 examples): easy=2, hard=1, normal=7
+    assert metrics["pool/easy"] == 2 / 10
+    assert metrics["pool/hard"] == 1 / 10
+    assert metrics["pool/normal"] == 7 / 10
 
 
 def test_buffer_save_load_with_conversion(dummy_env_group, make_rollouts, tmp_path):

@@ -9,7 +9,7 @@ import warnings
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
-from typing import Annotated, Literal
+from typing import Annotated
 
 import pynvml
 import tomli_w
@@ -19,79 +19,13 @@ from prime_rl.inference.config import InferenceConfig
 from prime_rl.rl_config import BaseRLConfig
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pydantic_config import BaseSettings, parse_argv
+from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_free_port,
     get_log_dir,
     get_rollout_dir,
 )
-
-
-class SharedLogConfig(BaseSettings):
-    """Configures shared logging."""
-
-    level: Annotated[str | None, Field(description="The log level to use.")] = "info"
-
-    file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
-
-    json_logging: Annotated[
-        bool,
-        Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
-    ] = False
-
-
-class SharedWandbConfig(BaseSettings):
-    """Configures shared W&B configs."""
-
-    project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
-
-    name: Annotated[str | None, Field(description="The W&B run name to use.")] = None
-
-    offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
-
-
-class SharedCheckpointConfig(BaseSettings):
-    """Configures shared checkpoint configs."""
-
-    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
-
-    resume_step: Annotated[
-        int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
-    ] = None
-
-    keep_last: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
-        ),
-    ] = None
-
-    keep_interval: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
-        ),
-    ] = None
-
-
-class SharedModelConfig(BaseSettings):
-    """Configures shared model settings."""
-
-    name: Annotated[
-        str,
-        Field(description="The name of the model to use."),
-    ] = "Qwen/Qwen3-0.6B"
-
-
-class SharedWeightBroadcastConfig(BaseSettings):
-    """Configures shared weight broadcast settings."""
-
-    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
-        "filesystem"
-    )
 
 
 class RLConfig(BaseRLConfig):
@@ -119,8 +53,6 @@ class RLConfig(BaseRLConfig):
             description="The teacher inference config. If None, will use the same config as inference (if available) or a default config. Only used when teacher_gpu_ids is set."
         ),
     ] = None
-
-    ### Shared configurations
 
     output_dir: Annotated[
         Path,
@@ -166,10 +98,8 @@ class RLConfig(BaseRLConfig):
             self.trainer.bench = True
             self.orchestrator.bench = True
 
-            # Configure the trainer fake data to match the orchestrator config
-            self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size,
-            )
+            # Configure the trainer to use fake data in bench mode
+            self.trainer.data.fake = FakeDataLoaderConfig()
 
         trainer_bench_enabled = self.trainer.bench is not None
         if trainer_bench_enabled != self.orchestrator.bench:

@@ -72,9 +72,6 @@ class Buffer:
         self.easy_examples: list[dict] = []
         self.hard_examples: list[dict] = []
 
-        # Initialize rollout buffer (flat list of rollouts)
-        self.rollout_buffer: list[vf.RolloutOutput] = []
-
         self.reset_step_metrics()
 
     def get_example_hash(self, example: dict) -> str:
@@ -84,7 +81,7 @@ class Buffer:
         return hashlib.sha256(json.dumps([example[key] for key in hash_keys]).encode()).hexdigest()
 
     def save(self, path: Path) -> None:
-        """Saves pool assignments and rollout buffer."""
+        """Saves pool assignments."""
         path.mkdir(parents=True, exist_ok=True)
 
         def write_jsonl(lst: list, path: Path) -> None:
@@ -94,10 +91,9 @@ class Buffer:
 
         write_jsonl(self.easy_examples, path / "easy_examples.jsonl")
         write_jsonl(self.hard_examples, path / "hard_examples.jsonl")
-        write_jsonl(self.rollout_buffer, path / "rollout_buffer.jsonl")
 
     def load(self, path: Path) -> None:
-        """Loads pool assignments and rollouts."""
+        """Loads pool assignments."""
 
         def read_jsonl(path: Path) -> list[dict]:
             with open(path, "r") as f:
@@ -105,9 +101,8 @@ class Buffer:
 
         saved_easy_examples = read_jsonl(path / "easy_examples.jsonl")
         saved_hard_examples = read_jsonl(path / "hard_examples.jsonl")
-        saved_rollout_buffer = cast(list[vf.RolloutOutput], read_jsonl(path / "rollout_buffer.jsonl"))
 
-        if any(saved_easy_examples) or any(saved_hard_examples) or any(saved_rollout_buffer):
+        if any(saved_easy_examples) or any(saved_hard_examples):
             # Build hash lookup for example buffer (env -> (example_hash -> example_id))
             example_hash_lookup = defaultdict(dict)
             all_hashes = set()
@@ -158,15 +153,6 @@ class Buffer:
                         f"Could not move {num_not_moved} example(s) from checkpoint to hard pool. This usually means you resumed with an env mix that does not contain all previous examples."
                     )
 
-            if any(saved_rollout_buffer):
-                # Extend rollout buffer, but only include rollouts for which the example still exists in the example buffer
-                valid_saved_rollouts = [
-                    rollout for rollout in saved_rollout_buffer if rollout["task"] in self.env_names
-                ]
-                self.rollout_buffer.extend(valid_saved_rollouts)
-                self.logger.debug(f"Loaded {len(valid_saved_rollouts)} rollout(s) from checkpoint.")
-
-            # Load rollouts, filtering out removed environments and problems
             def convert_examples_to_normal(examples: list[dict], fraction: float) -> int:
                 """Moves a fraction of examples from the given pool back to normal."""
                 if fraction <= 0.0 or not examples:
@@ -189,7 +175,7 @@ class Buffer:
             num_moved = convert_examples_to_normal(self.hard_examples, self.config.hard_fraction)
             self.logger.debug(f"Converted {num_moved}/{num_hard_examples} example(s) back to normal from hard pool.")
         else:
-            self.logger.debug("No easy/ hard examples or rollouts found in checkpoint")
+            self.logger.debug("No easy/hard examples found in checkpoint")
 
     def sample_examples(self, n: int) -> list[dict]:
         """Samples n examples from the buffer, respecting env ratios."""
@@ -231,23 +217,7 @@ class Buffer:
                 target_pool.append(example)
 
             self.num_examples_per_step[env_name][pool] += 1
-            if self.config.online_difficulty_filtering:
-                if avg_reward == 0.0:
-                    self.num_rollouts_per_step[env_name]["hard"] += len(example_rollouts)
-                    continue
-                elif avg_reward == 1.0:
-                    self.num_rollouts_per_step[env_name]["easy"] += len(example_rollouts)
-                    continue
-
-            self.num_rollouts_per_step[env_name]["normal"] += len(example_rollouts)
-            self.rollout_buffer.extend(example_rollouts)
-
-    def sample_rollouts(self, n: int) -> list[vf.RolloutOutput]:
-        """Samples the latest n rollouts from the buffer."""
-        n = min(n, len(self.rollout_buffer))
-        sampled_rollouts = self.rollout_buffer[-n:]
-        self.rollout_buffer = self.rollout_buffer[:-n]
-        return sampled_rollouts
+            self.num_rollouts_per_step[env_name][pool] += len(example_rollouts)
 
     def reset_step_metrics(self) -> None:
         """Reset per-step metrics (called after get_metrics)."""
@@ -276,7 +246,7 @@ class Buffer:
             if num_examples_per_step:
                 metrics[f"evicted_examples/{pool}"] = num_examples_per_step_per_pool[pool] / num_examples_per_step
             if num_rollouts_per_step:
-                metrics[f"filtered_rollouts/{pool}"] = num_rollouts_per_step_per_pool[pool] / num_rollouts_per_step
+                metrics[f"rollouts/{pool}"] = num_rollouts_per_step_per_pool[pool] / num_rollouts_per_step
 
         total_normal = sum(len(self.example_buffer[env]) for env in self.env_names)
         pool_counts = [len(self.easy_examples), total_normal, len(self.hard_examples)]

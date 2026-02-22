@@ -27,10 +27,6 @@ args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "defau
 easy_threshold = 1.0
 hard_threshold = 0.0
 
-[orchestrator.val]
-interval = 5
-num_examples = 128
-
 [orchestrator.eval]
 interval = 10
 

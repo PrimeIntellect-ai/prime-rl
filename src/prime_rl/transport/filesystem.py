@@ -103,6 +103,10 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
                     self.logger.error(f"Error loading rollouts for run {idx}: {e}")
         return batches
 
+    def set_start_step(self, idx: int, step: int) -> None:
+        """Override the next step to receive for a run."""
+        self._received_steps[idx] = step
+
     def reset_run(self, idx: int) -> None:
         """Reset received step tracking for a run index.
 
