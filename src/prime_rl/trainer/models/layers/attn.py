@@ -323,3 +323,74 @@ def substitute_prime_rl_flash_attn(
             return attn_output, attn_weights
 
     FlashAttention.forward = RingFlashAttention.forward
+
+
+def substitute_afmoe_flash_attn(
+    process_group: torch.distributed.ProcessGroup,
+    heads_k_stride: int,
+    attn_impl: str = "flash_attention_2",
+) -> None:
+    from ring_flash_attn import llama3_flash_attn_varlen_func
+
+    from .ring_attn import ring_fa3_varlen_func
+
+    use_fa3 = attn_impl == "flash_attention_3"
+    ring_func = ring_fa3_varlen_func if use_fa3 else llama3_flash_attn_varlen_func
+
+    from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
+
+    class RingAfmoeFlashAttention(AfmoeFlashAttention):
+        def forward(
+            self,
+            hidden_states: torch.Tensor,
+            position_embeddings: tuple[torch.Tensor, torch.Tensor],
+            attention_mask: torch.Tensor | None = None,
+            cu_seqlens: torch.LongTensor | None = None,
+            max_seqlen: int | None = None,
+        ) -> tuple[torch.Tensor, None]:
+            input_shape = hidden_states.shape[:-1]
+            hidden_shape = (*input_shape, -1, self.head_dim)
+
+            query_states = self.q_proj(hidden_states).view(hidden_shape)
+            key_states = self.k_proj(hidden_states).view(hidden_shape)
+            value_states = self.v_proj(hidden_states).view(hidden_shape)
+            gate_states = self.gate_proj(hidden_states)
+
+            query_states = self.q_norm(query_states)
+            key_states = self.k_norm(key_states)
+
+            if self.is_local_attention:
+                query_states = query_states.transpose(1, 2)
+                key_states = key_states.transpose(1, 2)
+                cos, sin = position_embeddings
+                query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+                query_states = query_states.transpose(1, 2)
+                key_states = key_states.transpose(1, 2)
+
+            from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
+
+            window_size = (self.sliding_window - 1, 0) if self.sliding_window is not None else (-1, -1)
+
+            out = ring_func(
+                query_states[0],
+                key_states[0],
+                value_states[0],
+                cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
+                cu_seqlens_k=DATA_PARAMS["cu_seqlens_k"],
+                max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
+                max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
+                local_k_slice=DATA_PARAMS["local_k_slice"],
+                causal=True,
+                window_size=window_size,
+                group=process_group,
+                heads_k_stride=heads_k_stride,
+            )
+            if isinstance(out, tuple):
+                out = out[0]
+
+            attn_output = out.contiguous().view(*input_shape, -1)
+            attn_output = attn_output * torch.sigmoid(gate_states)
+            attn_output = self.o_proj(attn_output)
+            return attn_output, None
+
+    AfmoeFlashAttention.forward = RingAfmoeFlashAttention.forward
