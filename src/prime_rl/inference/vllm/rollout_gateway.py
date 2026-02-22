@@ -4,12 +4,12 @@ import asyncio
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncOpenAI, BadRequestError
-from openai.types.chat import ChatCompletion, ChatCompletionToolParam
+from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     ChoiceDelta,
@@ -250,10 +250,7 @@ def _get_full_turn_log_config() -> tuple[str | None, set[int] | None]:
         try:
             turns.add(int(token))
         except ValueError:
-            logger.warning(
-                "Ignoring invalid PRIME_ROLLOUT_LOG_FULL_TURNS token: %r",
-                token,
-            )
+            logger.warning(f"Ignoring invalid PRIME_ROLLOUT_LOG_FULL_TURNS token: {token!r}")
     return rollout_filter, turns if turns else None
 
 
@@ -265,16 +262,6 @@ def _should_log_full_turn(rollout_id: str, turn_index: int) -> bool:
         return False
     # empty set is sentinel for "all turns"
     return not turns or turn_index in turns
-
-
-def _serialize_tool_calls(tool_calls: list[ChatCompletionToolParam] | None) -> list[dict[str, Any]]:
-    serialized: list[dict[str, Any]] = []
-    for tool_call in tool_calls or []:
-        if hasattr(tool_call, "model_dump"):
-            serialized.append(cast(dict[str, Any], tool_call.model_dump(mode="json")))
-        elif isinstance(tool_call, dict):
-            serialized.append(tool_call)
-    return serialized
 
 
 async def _call_chat_with_messages(
@@ -431,13 +418,7 @@ async def chat_completions(
         turn_index = rollout.turn_count
 
         logger.info(
-            "rollout=%s turn=%d request messages=%d tools=%d stream=%s status=%s",
-            rollout_id,
-            turn_index,
-            len(messages),
-            len(tools or []),
-            stream,
-            rollout.status,
+            f"rollout={rollout_id} turn={turn_index} request messages={len(messages)} tools={len(tools or [])} stream={stream} status={rollout.status}"
         )
 
         if tools is not None:
@@ -475,7 +456,6 @@ async def chat_completions(
                         prompt_messages=messages,
                         oai_tools=rollout.vf_state.get("oai_tools"),
                     )
-                    logger.info(f"rollout={rollout_id} turn={turn_index} prompt_ids_len={len(prompt_ids)}")
                     response = await _call_chat_with_tokens(
                         rollout=rollout,
                         messages=messages,
@@ -550,29 +530,15 @@ async def chat_completions(
         )
 
         if _should_log_full_turn(rollout_id, turn_index):
-            tool_calls = _serialize_tool_calls(response.choices[0].message.tool_calls) if response.choices else []
+            raw_tool_calls = response.choices[0].message.tool_calls if response.choices else []
+            tool_calls = [tc.model_dump(mode="json") for tc in (raw_tool_calls or [])]
             prompt_tool_responses = [
                 message for message in messages if isinstance(message, dict) and message.get("role") == "tool"
             ]
-            logger.info(
-                "rollout=%s turn=%d full_completion=%s",
-                rollout_id,
-                turn_index,
-                assistant_content,
-            )
-            logger.info(
-                "rollout=%s turn=%d full_tool_calls=%s",
-                rollout_id,
-                turn_index,
-                tool_calls,
-            )
+            logger.info(f"rollout={rollout_id} turn={turn_index} full_completion={assistant_content}")
+            logger.info(f"rollout={rollout_id} turn={turn_index} full_tool_calls={tool_calls}")
             if prompt_tool_responses:
-                logger.info(
-                    "rollout=%s turn=%d prompt_tool_responses=%s",
-                    rollout_id,
-                    turn_index,
-                    prompt_tool_responses,
-                )
+                logger.info(f"rollout={rollout_id} turn={turn_index} prompt_tool_responses={prompt_tool_responses}")
 
     if stream:
         return StreamingResponse(
