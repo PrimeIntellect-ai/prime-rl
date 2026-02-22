@@ -12,6 +12,7 @@ from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_di
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
+from torch.distributed.tensor import DTensor
 from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
@@ -22,7 +23,7 @@ from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpo
 from prime_rl.trainer.lora import has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.optim import CPUOffloadOptimizer
-from prime_rl.trainer.runs import Progress
+from prime_rl.trainer.runs import Progress, get_multi_run_manager
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
     get_adapter_state_dict,
@@ -313,6 +314,18 @@ class WeightCheckpointManager:
         tokenizer: PreTrainedTokenizer,
     ):
         """Save HF-compatible weight checkpoint to a given path."""
+        # Gather LoRA run state on all ranks: full_tensor() is a collective
+        # that must be called by every rank simultaneously under FSDP.
+        if self.config.save_adapter_separately and lora_state_dict is not None:
+            lora_run_state = {
+                f"base_model.model.{key}": (
+                    value.full_tensor() if isinstance(value, DTensor) else value
+                ).to("cpu", non_blocking=False)
+                for key, value in get_multi_run_manager().get_state_dict_for_run(0).items()
+            }
+        else:
+            lora_run_state = None
+
         if self.world.is_master:
             path.mkdir(parents=True, exist_ok=True)
             start_time = time.perf_counter()
@@ -342,7 +355,13 @@ class WeightCheckpointManager:
             if self.config.save_adapter_separately and lora_state_dict is not None:
                 adapter_path = path / "lora_adapters"
                 adapter_path.mkdir(parents=True, exist_ok=True)
-                torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
+                lora_state_dict = {
+                    key: value
+                    for key, value in lora_state_dict.items()
+                    if "lora_A" not in key and "lora_B" not in key
+                }
+                lora_state_dict.update(lora_run_state)
+                save_state_dict(lora_state_dict, adapter_path, self.config.save_format, save_sharded=False, adapter=True)
                 if self.lora_config:
                     save_lora_config(
                         model,
