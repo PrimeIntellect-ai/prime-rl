@@ -151,7 +151,7 @@ def _assert_rollout(
 
 
 def _render_completion(vf_state: VfState) -> Messages:
-    trajectory = vf_state.trajectory
+    trajectory = vf_state["trajectory"]
     if not trajectory:
         return []
 
@@ -159,11 +159,11 @@ def _render_completion(vf_state: VfState) -> Messages:
     last_completion = trajectory[-1]["completion"]
     full_conversation = concat_messages([last_prompt, last_completion])
 
-    final_env_response = vf_state.final_env_response
+    final_env_response = vf_state.get("final_env_response")
     if final_env_response:
         full_conversation = concat_messages([full_conversation, final_env_response])
 
-    rollout_prompt = vf_state.prompt
+    rollout_prompt = vf_state["prompt"]
     return full_conversation[len(rollout_prompt) :]
 
 
