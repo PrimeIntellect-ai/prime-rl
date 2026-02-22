@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import TypedDict
 
 import torch
+import tomli
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -11,6 +12,23 @@ from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
+
+
+def _resolve_single_run_batch_target(
+    output_dir: Path,
+) -> tuple[int | None, int | None]:
+    """Read single-run batch target from output_dir/control/orch.toml when available."""
+    config_path = output_dir / "control" / "orch.toml"
+    if not config_path.exists():
+        return None, None
+
+    with open(config_path, "rb") as f:
+        config_dict = tomli.load(f)
+
+    from prime_rl.orchestrator.config import OrchestratorConfig
+
+    orch_config = OrchestratorConfig(**config_dict)
+    return orch_config.token_batch_size, orch_config.batch_size
 
 
 class TensorMicroBatch(TypedDict):
@@ -145,6 +163,11 @@ class DataLoader:
         config: TransportConfigType,
     ):
         self.world = get_world()
+        self.multi_run_manager = get_multi_run_manager()
+        token_batch_size = None
+        rollout_batch_size = None
+        if self.multi_run_manager.max_runs == 1:
+            token_batch_size, rollout_batch_size = _resolve_single_run_batch_target(output_dir)
 
         if self.world.is_master:
             self.packer: BasePacker = setup_packer(
@@ -153,12 +176,13 @@ class DataLoader:
                 tokenizer=tokenizer,
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
+                token_batch_size=token_batch_size,
+                rollout_batch_size=rollout_batch_size,
                 start_step=start_step,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
-        self.multi_run_manager = get_multi_run_manager()
 
         self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, dp_rank, start_step, config)
 
