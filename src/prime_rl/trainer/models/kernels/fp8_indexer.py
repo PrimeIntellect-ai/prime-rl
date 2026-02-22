@@ -216,6 +216,7 @@ def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
     Returns:
         [S, topk] int32 — selected token indices per query
     """
+    _weight_scale = weight_scale # this currently produces higher KL mismatch, unused for now
     S, H, D = q.shape
     device = q.device
 
@@ -230,7 +231,7 @@ def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
     #   weights = raw_weights * q_scale * softmax_scale * n_head^(-0.5)
     # where weight_scale = softmax_scale * n_head^(-0.5) = head_dim^(-0.5) * n_head^(-0.5)
     q_scales = q_scales.view(S, H)
-    w = w * q_scales * weight_scale
+    w = w * q_scales # * weight_scale
 
     logits = torch.empty(S, S, dtype=torch.float32, device=device)
 
