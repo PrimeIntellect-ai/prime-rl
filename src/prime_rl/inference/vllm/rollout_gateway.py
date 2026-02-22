@@ -21,7 +21,7 @@ from openai.types.chat.chat_completion_chunk import (
 )
 from pydantic import BaseModel, Field
 from verifiers.clients.openai_chat_completions_token_client import OpenAIChatCompletionsTokenClient
-from verifiers.types import Messages, TrajectoryStep, TrajectoryStepTokens
+from verifiers.types import Messages, TrajectoryStep
 from verifiers.types import State as VfState
 from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
@@ -38,6 +38,52 @@ class RegisterRolloutRequest(BaseModel):
     sampling_params: dict[str, Any] = Field(default_factory=dict)
     max_turns: int = -1
     max_seq_len: int | None = None
+
+
+class TokensResponse(BaseModel):
+    prompt_ids: list[int]
+    prompt_mask: list[int]
+    completion_ids: list[int]
+    completion_mask: list[int]
+    completion_logprobs: list[float]
+    overlong_prompt: bool
+    is_truncated: bool
+    routed_experts: list[list[list[int]]] | None = None
+
+
+class TrajectoryStepResponse(BaseModel):
+    prompt: list[dict[str, Any]]
+    completion: list[dict[str, Any]]
+    tokens: TokensResponse | None = None
+    reward: float | None = None
+    advantage: float | None = None
+    is_truncated: bool = False
+    trajectory_id: str = ""
+    extras: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrajectoryResponse(BaseModel):
+    rollout_id: str
+    status: RolloutStatus
+    num_turns: int
+    model: str
+    prompt: list[dict[str, Any]]
+    completion: list[dict[str, Any]]
+    is_truncated: bool
+    trajectory: list[TrajectoryStepResponse]
+
+
+class RegisterRolloutResponse(BaseModel):
+    rollout_id: str
+    status: RolloutStatus
+    model: str
+    max_turns: int
+    max_seq_len: int | None
+
+
+class RolloutStatusResponse(BaseModel):
+    rollout_id: str
+    status: RolloutStatus
 
 
 @dataclass
@@ -165,33 +211,6 @@ def _render_completion(vf_state: VfState) -> Messages:
 
     rollout_prompt = vf_state["prompt"]
     return full_conversation[len(rollout_prompt) :]
-
-
-def _serialize_tokens(tokens: TrajectoryStepTokens | None) -> dict[str, Any] | None:
-    if tokens is None:
-        return None
-    return {
-        "prompt_ids": list(tokens["prompt_ids"]),
-        "prompt_mask": list(tokens["prompt_mask"]),
-        "completion_ids": list(tokens["completion_ids"]),
-        "completion_mask": list(tokens["completion_mask"]),
-        "completion_logprobs": list(tokens["completion_logprobs"]),
-        "overlong_prompt": bool(tokens["overlong_prompt"]),
-        "is_truncated": bool(tokens["is_truncated"]),
-    }
-
-
-def _serialize_trajectory_step(step: TrajectoryStep) -> dict[str, Any]:
-    return {
-        "prompt": step["prompt"],
-        "completion": step["completion"],
-        "tokens": _serialize_tokens(step["tokens"]),
-        "reward": step["reward"],
-        "advantage": step["advantage"],
-        "is_truncated": bool(step["is_truncated"]),
-        "trajectory_id": step["trajectory_id"],
-        "extras": step["extras"],
-    }
 
 
 def _validate_rollout_accepting_requests(rollout: RolloutState, rollout_id: str) -> None:
@@ -364,7 +383,7 @@ async def _fake_stream(response: ChatCompletion):
     yield "data: [DONE]\n\n"
 
 
-@router.post("/v1/rollouts/{rollout_id}/register")
+@router.post("/v1/rollouts/{rollout_id}/register", response_model=RegisterRolloutResponse)
 async def register_rollout(
     rollout_id: str,
     body: RegisterRolloutRequest,
@@ -382,13 +401,13 @@ async def register_rollout(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    return {
-        "rollout_id": rollout_id,
-        "status": rollout.status,
-        "model": rollout.config.model,
-        "max_turns": rollout.config.max_turns,
-        "max_seq_len": rollout.config.max_seq_len,
-    }
+    return RegisterRolloutResponse(
+        rollout_id=rollout_id,
+        status=rollout.status,
+        model=rollout.config.model,
+        max_turns=rollout.config.max_turns,
+        max_seq_len=rollout.config.max_seq_len,
+    )
 
 
 @router.post("/v1/rollouts/{rollout_id}/chat/completions")
@@ -568,7 +587,7 @@ async def chat_completions(
     return JSONResponse(content=response.model_dump())
 
 
-@router.get("/v1/rollouts/{rollout_id}/trajectory")
+@router.get("/v1/rollouts/{rollout_id}/trajectory", response_model=TrajectoryResponse)
 async def get_trajectory(rollout_id: str, request: Request):
     registry = _get_rollout_registry(request)
     rollout = await registry.get(rollout_id)
@@ -576,41 +595,37 @@ async def get_trajectory(rollout_id: str, request: Request):
 
     async with rollout.lock:
         vf_state = rollout.vf_state
-        trajectory_payload = [_serialize_trajectory_step(step) for step in vf_state["trajectory"]]
         completion = vf_state.get("completion") or _render_completion(vf_state)
+        trajectory = [
+            TrajectoryStepResponse.model_validate(step, from_attributes=True) for step in vf_state["trajectory"]
+        ]
         logger.info(
-            f"rollout={rollout_id} trajectory_fetch status={rollout.status} turns={rollout.turn_count} steps={len(trajectory_payload)} truncated={rollout.is_truncated}"
+            f"rollout={rollout_id} trajectory_fetch status={rollout.status} turns={rollout.turn_count} steps={len(trajectory)} truncated={rollout.is_truncated}"
         )
 
-        return {
-            "rollout_id": rollout_id,
-            "status": rollout.status,
-            "num_turns": rollout.turn_count,
-            "model": rollout.config.model,
-            "prompt": vf_state.get("prompt", []),
-            "completion": completion,
-            "is_truncated": rollout.is_truncated,
-            "trajectory": trajectory_payload,
-        }
+        return TrajectoryResponse(
+            rollout_id=rollout_id,
+            status=rollout.status,
+            num_turns=rollout.turn_count,
+            model=rollout.config.model,
+            prompt=vf_state.get("prompt", []),
+            completion=completion,
+            is_truncated=rollout.is_truncated,
+            trajectory=trajectory,
+        )
 
 
-@router.post("/v1/rollouts/{rollout_id}/cancel")
+@router.post("/v1/rollouts/{rollout_id}/cancel", response_model=RolloutStatusResponse)
 async def cancel_rollout(rollout_id: str, request: Request):
     registry = _get_rollout_registry(request)
     rollout = await registry.cancel(rollout_id)
     _assert_rollout(rollout, rollout_id)
-    return {
-        "rollout_id": rollout_id,
-        "status": rollout.status,
-    }
+    return RolloutStatusResponse(rollout_id=rollout_id, status=rollout.status)
 
 
-@router.post("/v1/rollouts/{rollout_id}/unregister")
+@router.post("/v1/rollouts/{rollout_id}/unregister", response_model=RolloutStatusResponse)
 async def unregister_rollout(rollout_id: str, request: Request):
     registry = _get_rollout_registry(request)
     rollout = await registry.unregister(rollout_id)
     _assert_rollout(rollout, rollout_id)
-    return {
-        "rollout_id": rollout_id,
-        "status": rollout.status,
-    }
+    return RolloutStatusResponse(rollout_id=rollout_id, status=rollout.status)
