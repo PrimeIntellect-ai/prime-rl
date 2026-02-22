@@ -23,6 +23,7 @@ from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.inference.patches import (
+    monkey_patch_hermes_tool_parser_thread_safety,
     monkey_patch_load_lora_adapter,
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
     monkey_patch_tokenize_params_validation,
@@ -38,6 +39,8 @@ monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
 monkey_patch_load_lora_adapter()
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
 monkey_patch_tokenize_params_validation()
+# NOTE: Monkeypatch Hermes tool parser to fix "Already borrowed" RuntimeError under concurrent load
+monkey_patch_hermes_tool_parser_thread_safety()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
@@ -71,14 +74,6 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
 async def update_weights(request: Request):
     data = await request.json()
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    # Reset prefix cache to invalidate KV states computed with old weights
-    await engine_client(request).reset_prefix_cache()
-    return {"status": "ok"}
-
-
-@router.post("/reload_weights")
-async def reload_weights(request: Request):
-    await engine_client(request).collective_rpc("reload_weights")
     # Reset prefix cache to invalidate KV states computed with old weights
     await engine_client(request).reset_prefix_cache()
     return {"status": "ok"}

@@ -25,6 +25,7 @@ dependencies = [
     "prime>=0.5.37",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
+    "math-env",
     "tenacity>=8.2.0",
     "openai>=1.106.1",
     "rich>=14.0.0",
@@ -38,11 +39,16 @@ dependencies = [
 
 [project.scripts]
 rl = "prime_rl.rl:main"
+rl_slurm = "prime_rl.slurm.rl:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
 inference = "prime_rl.inference.server:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
 sft = "prime_rl.trainer.sft.train:main"
+sft_slurm = "prime_rl.slurm.sft:main"
+
+[project.entry-points."vllm.general_plugins"]
+prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
 
 [project.optional-dependencies]
 flash-attn = [
@@ -78,7 +84,8 @@ override-dependencies = [
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "ad77074" }
+math-env = { index = "primeintellect" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "9052ecf" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "609e3d5" }

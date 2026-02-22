@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, Discriminator, Field, Tag, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
@@ -579,6 +579,62 @@ AdvantageConfigType: TypeAlias = Annotated[
 ]
 
 
+class GibberishFilterConfig(BaseModel):
+    """Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["gibberish"] = "gibberish"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+        ),
+    ] = False
+    token_id_threshold: Annotated[
+        int,
+        Field(description="Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."),
+    ] = 100_000
+    logprob_offset: Annotated[
+        float,
+        Field(description="Offset from uniform distribution logprob. Threshold = -log(vocab_size) - logprob_offset."),
+    ] = 2.0
+
+
+class RepetitionFilterConfig(BaseModel):
+    """Flags rollouts where the model gets stuck in a repetition loop, emitting high-confidence tokens
+    for an extended stretch. A rollout is flagged when `window` consecutive tokens are each sampled
+    with probability above `prob_threshold`. (Section 3.2, https://arxiv.org/abs/2506.13585)"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["repetition"] = "repetition"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+        ),
+    ] = False
+    window: Annotated[
+        int,
+        Field(ge=1, description="Number of consecutive high-probability steps before flagging."),
+    ] = 3_000
+    prob_threshold: Annotated[
+        float,
+        Field(
+            gt=0,
+            le=1,
+            description="Tokens sampled with probability above this are considered repetitive. Consecutive such tokens count toward the window.",
+        ),
+    ] = 0.99
+
+
+FilterConfigType: TypeAlias = Annotated[
+    GibberishFilterConfig | RepetitionFilterConfig,
+    Field(discriminator="type"),
+]
+
+
 class FileSystemWeightBroadcastConfig(BaseModel):
     """Configures the filesystem weight broadcast."""
 
@@ -649,6 +705,9 @@ class OrchestratorConfig(BaseSettings):
     # The advantage configuration
     advantage: AdvantageConfigType | None = AdvantageConfig()
 
+    # Rollout filters (monitor by default, enforce optionally)
+    filters: list[FilterConfigType] = [GibberishFilterConfig(), RepetitionFilterConfig()]
+
     # The logging configuration
     log: LogConfig = LogConfig()
 
@@ -660,12 +719,6 @@ class OrchestratorConfig(BaseSettings):
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
-
-    # Whether to reset inference weights to base model when starting from scratch
-    reload_weights_on_start: Annotated[
-        bool,
-        Field(description="Whether to reset inference weights to the base model when starting from scratch."),
-    ] = True
 
     # The validation configuration
     val: ValConfig | None = None
@@ -771,6 +824,20 @@ class OrchestratorConfig(BaseSettings):
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
+
+    use_token_client: Annotated[
+        bool,
+        Field(
+            description="Whether to use the token-in-token-out (TITO) client for training across all environments. WARNING: Only use this if your environment has a linear history and the chat template has the extension property (i.e. no tokens are ever removed or inserted by the chat template)"
+        ),
+    ] = False
+
+    @model_validator(mode="after")
+    def validate_unique_filter_types(self):
+        types = [f.type for f in self.filters]
+        if len(types) != len(set(types)):
+            raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
+        return self
 
     @model_validator(mode="after")
     def validate_max_concurrent(self):
