@@ -89,7 +89,7 @@ def interleave_rollout(
         completion_ids = list(tokens["completion_ids"])
         pixel_values, image_grid_thw = get_images(step_idx)
         routed_experts = _align_routed_experts(
-            tokens["routed_experts"],
+            tokens.get("routed_experts"),
             len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
         )
 
@@ -136,7 +136,7 @@ def interleave_rollout(
 
         # Extend with new routed experts (skip prefix, same as prompt_ids).
         # Then align to account for VLLM's per-request num_tokens-1 deficit.
-        if tokens["routed_experts"] is not None and sample.routed_experts is not None:
+        if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
             sample.routed_experts.extend(tokens["routed_experts"][prefix_len:])
             expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
             sample.routed_experts = _align_routed_experts(sample.routed_experts, expected_len)
