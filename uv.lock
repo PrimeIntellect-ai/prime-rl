@@ -2354,7 +2354,7 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "math-env", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
+    { name = "math-env" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "prime", specifier = ">=0.5.37" },
@@ -2373,7 +2373,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=609e3d5" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=9052ecf" },
+    { name = "verifiers", editable = "../verifiers" },
     { name = "vllm", url = "https://github.com/vllm-project/vllm/releases/download/v0.16.0/vllm-0.16.0-cp38-abi3-manylinux_2_31_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
 ]
@@ -3701,8 +3701,7 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.11.dev0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=9052ecf#9052ecf0c794cd539b5555ae620c3d8935b347cd" }
+source = { editable = "../verifiers" }
 dependencies = [
     { name = "anthropic" },
     { name = "datasets" },
@@ -3724,6 +3723,70 @@ dependencies = [
     { name = "tenacity" },
     { name = "textual" },
     { name = "wget" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "accelerate", marker = "extra == 'rl'", specifier = ">=1.4.0" },
+    { name = "aiohttp", marker = "extra == 'browser'", specifier = ">=3.9.0" },
+    { name = "anthropic", specifier = ">=0.78.0" },
+    { name = "datasets", specifier = ">=3.0.0" },
+    { name = "deepspeed", marker = "extra == 'rl'", specifier = ">=0.17.6" },
+    { name = "flash-attn", marker = "extra == 'rl'", specifier = ">=2.8.3" },
+    { name = "gepa" },
+    { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "liger-kernel", marker = "extra == 'rl'", specifier = ">=0.5.10" },
+    { name = "math-verify", specifier = ">=0.8.0" },
+    { name = "mcp", specifier = ">=1.14.1" },
+    { name = "msgpack", specifier = ">=1.1.2" },
+    { name = "nest-asyncio", specifier = ">=1.6.0" },
+    { name = "nltk", marker = "extra == 'ta'" },
+    { name = "numpy" },
+    { name = "openai", specifier = ">=1.108.1" },
+    { name = "openai-agents", specifier = ">=0.0.7" },
+    { name = "openenv-core", extras = ["core"], marker = "extra == 'openenv'", specifier = "==0.2.1" },
+    { name = "peft", marker = "extra == 'rl'" },
+    { name = "prime-sandboxes", specifier = ">=0.2.14" },
+    { name = "prime-tunnel", specifier = ">=0.1.1" },
+    { name = "pydantic", specifier = ">=2.11.9" },
+    { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
+    { name = "pyzmq", specifier = ">=27.1.0" },
+    { name = "reasoning-gym", marker = "extra == 'rg'" },
+    { name = "requests" },
+    { name = "requests", marker = "extra == 'rl'" },
+    { name = "rich" },
+    { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.0.0" },
+    { name = "tenacity", specifier = ">=8.5.0" },
+    { name = "textarena", marker = "extra == 'ta'" },
+    { name = "textual" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
+    { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0" },
+    { name = "transformers", marker = "extra == 'rl'", specifier = ">=4.56.2" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+    { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
+    { name = "wandb", marker = "extra == 'rl'" },
+    { name = "wget", specifier = ">=3.2" },
+]
+provides-extras = ["browser", "openenv", "rg", "rl", "ta"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "aiohttp", specifier = ">=3.9.0" },
+    { name = "ipykernel" },
+    { name = "ipywidgets" },
+    { name = "nltk" },
+    { name = "openenv-core", extras = ["core"], specifier = "==0.2.1" },
+    { name = "pre-commit" },
+    { name = "pytest", specifier = ">=7.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.21.0" },
+    { name = "pytest-cov", specifier = ">=4.0.0" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "reasoning-gym" },
+    { name = "ruff" },
+    { name = "stagehand", specifier = ">=3.0.0" },
+    { name = "textarena" },
+    { name = "ty", specifier = ">=0.0.1a29" },
 ]
 
 [[package]]
