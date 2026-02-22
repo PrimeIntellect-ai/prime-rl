@@ -118,7 +118,7 @@ class LogConfig(BaseConfig):
     vf_level: Annotated[
         str,
         Field(description="Logging level for the verifiers package. Will determine the logging verbosity and format."),
-    ] = "warn"
+    ] = "info"
 
     file: Annotated[
         bool,

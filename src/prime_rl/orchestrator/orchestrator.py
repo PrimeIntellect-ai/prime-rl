@@ -1,4 +1,5 @@
 import asyncio
+import multiprocessing as mp
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +31,7 @@ from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.eval_utils import evaluate_env
+from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -42,13 +44,13 @@ from prime_rl.orchestrator.vf_utils import (
     generate,
     get_completion_len,
     get_seq_len,
+    intercept_vf_logging,
     setup_env_client,
     spawn_env_server,
     wait_for_env_servers,
 )
 from prime_rl.utils.client import (
     init_nccl_broadcast,
-    reload_weights,
     setup_inference_pool,
 )
 from prime_rl.utils.heartbeat import Heartbeat
@@ -58,7 +60,6 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
-    count_chinese_chars,
     get_env_ids_to_install,
     install_env,
     resolve_latest_ckpt_step,
@@ -76,7 +77,7 @@ async def orchestrate(config: OrchestratorConfig):
         log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
-    vf.setup_logging(level="CRITICAL")
+    intercept_vf_logging(logger="verifiers.workers", level=config.log.vf_level)  # show logs from env clients
     logger.info("Starting orchestrator")
 
     event_loop_lag_monitor = EventLoopLagMonitor()
@@ -102,7 +103,13 @@ async def orchestrate(config: OrchestratorConfig):
         install_env(env_id)
 
     # Setup inference pool (handles both static and elastic modes)
-    inference_pool = await setup_inference_pool(config.client, model_name=config.model.name)
+    client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
+    if config.use_token_client:
+        logger.warning(
+            "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a linear "
+            "history and the chat template has the extension property."
+        )
+    inference_pool = await setup_inference_pool(config.client, model_name=config.model.name, client_type=client_type)
 
     # Setup teacher inference pool if configured
     if config.teacher_model:
@@ -130,6 +137,11 @@ async def orchestrate(config: OrchestratorConfig):
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
         )
 
+    # Build rollout filters
+    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
+    if rollout_filters:
+        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
+
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
     monitor = setup_monitor(
@@ -151,28 +163,34 @@ async def orchestrate(config: OrchestratorConfig):
         f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
     )
     env_ids = [strip_env_version(env.id) for env in config.env]
+    train_env_names = [env.name or env_id for env_id, env in zip(env_ids, config.env)]
     train_env_group = vf.EnvGroup(
         envs=[vf.load_environment(env_id, **env.args) for env_id, env in zip(env_ids, config.env)],
-        env_names=[env.name or env_id for env_id, env in zip(env_ids, config.env)],
+        env_names=train_env_names,
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
 
     train_env_addresses = []
-    for env_id, env, env_name in zip(env_ids, config.env, train_env_group.env_names):
+    env_processes: list[mp.Process] = []
+    for env_id, env, env_name in zip(env_ids, config.env, train_env_names):
         if env.address is None:
-            address = spawn_env_server(
+            address, process = spawn_env_server(
                 env_id=env_id,
                 env_args=env.args,
                 extra_env_kwargs=env.extra_env_kwargs,
                 log_level="CRITICAL",
                 log_file=(get_log_dir(config.output_dir) / "train" / f"{env_name}.log").as_posix(),
                 log_file_level=config.log.vf_level,
+                json_logging=config.log.json_logging,
             )
+            env_processes.append(process)
         else:
             address = env.address
         logger.info(f"Connecting train environment {env_name} to server at {address}")
         train_env_addresses.append(address)
-    train_env_clients = [setup_env_client(address) for address in train_env_addresses]
+    train_env_clients = [
+        setup_env_client(address=address, name=name) for name, address in zip(train_env_names, train_env_addresses)
+    ]
 
     logger.info("Waiting for train environment servers to be ready")
     await wait_for_env_servers(train_env_clients)
@@ -192,20 +210,24 @@ async def orchestrate(config: OrchestratorConfig):
 
         for env_id, env, eval_env_name in zip(env_ids, config.eval.env, eval_env_names):
             if env.address is None:
-                address = spawn_env_server(
+                address, process = spawn_env_server(
                     env_id=env_id,
                     env_args=env.args,
                     extra_env_kwargs=env.extra_env_kwargs,
                     log_level="CRITICAL",
                     log_file=(get_log_dir(config.output_dir) / "eval" / f"{eval_env_name}.log").as_posix(),
                     log_file_level=config.log.vf_level,
+                    json_logging=config.log.json_logging,
                 )
+                env_processes.append(process)
             else:
                 address = env.address
             logger.info(f"Connecting eval environment {eval_env_name} to server at {address}")
             eval_env_addresses.append(address)
 
-        eval_env_clients = [setup_env_client(address) for address in eval_env_addresses]
+        eval_env_clients = [
+            setup_env_client(address=address, name=name) for name, address in zip(eval_env_names, eval_env_addresses)
+        ]
 
         logger.info("Waiting for eval environment servers to be ready")
         await wait_for_env_servers(eval_env_clients)
@@ -308,14 +330,7 @@ async def orchestrate(config: OrchestratorConfig):
         lora_name = config.model.lora.name if config.model.lora else None
         await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
-        if config.reload_weights_on_start:
-            if config.model.lora is None:
-                logger.info("Training from scratch. Resetting weights to base model")
-                await reload_weights(inference_pool.admin_clients)
-            else:
-                logger.info("Training from scratch. Skipping base weight reload because LoRA is enabled")
-        else:
-            logger.info("Training from scratch. Skipping base weight reload")
+        logger.info("Training from scratch")
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
@@ -381,10 +396,15 @@ async def orchestrate(config: OrchestratorConfig):
             last_eval_step = ckpt_step
             logger.info(f"Running evals for checkpoint step {ckpt_step}")
 
-            # Pause weight updates during eval and cancel inflight rollouts
-            # this avoid doing eval across different checkpoints and avoid congestion
+            # Pause weight updates and re-scheduling of training rollouts during eval
+            # to avoid evaluating across different checkpoints and avoid congestion
             scheduler.checkpoint_ready.clear()
-            scheduler.cancel_all_inflight_rollouts()
+
+            # For heavy eval workloads, it might be necessary additionally cancel in-flight training rollouts
+            if config.eval.cancel_inflight_rollouts_on_eval:
+                logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
+                scheduler.cancel_inflight_rollouts()
+
             results = await asyncio.gather(
                 *[
                     evaluate_env(
@@ -434,6 +454,9 @@ async def orchestrate(config: OrchestratorConfig):
         await train_task
         generate_completions_time = scheduler.last_batch_generation_time
         train_rollouts = train_task.result()
+
+        # Apply rollout filters (zeros reward/mask for degenerate generations)
+        filter_metrics = apply_filters(rollout_filters, train_rollouts)
 
         # Compute advantages
         example_ids = [r["example_id"] for r in train_rollouts]
@@ -564,21 +587,6 @@ async def orchestrate(config: OrchestratorConfig):
         # Gather individual reward function metrics
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
 
-        # Count Chinese characters in completions
-        chinese_stats = []
-        for rollout in train_rollouts:
-            trajectory = rollout["trajectory"]
-            if not trajectory:
-                continue
-            last_step = trajectory[-1]
-            tokens = last_step["tokens"]
-            completion_text = tokenizer.decode(tokens["completion_ids"])
-            chinese_count, total_count = count_chinese_chars(completion_text)
-            chinese_stats.append(
-                {"chinese_chars": chinese_count, "total_chars": total_count, "has_chinese": chinese_count > 0}
-            )
-        chinese_df = pd.DataFrame(chinese_stats)
-
         val_results_df = (
             pd.DataFrame(
                 {
@@ -663,14 +671,6 @@ async def orchestrate(config: OrchestratorConfig):
             },
             # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
-            # Chinese character metrics (cast to native Python types for JSON serialization)
-            "chinese/char_count": int(chinese_df.chinese_chars.sum()),
-            "chinese/char_ratio": (
-                float(chinese_df.chinese_chars.sum() / chinese_df.total_chars.sum())
-                if chinese_df.total_chars.sum() > 0
-                else 0.0
-            ),
-            "chinese/rollout_ratio": float(chinese_df.has_chinese.mean()),
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
@@ -683,6 +683,8 @@ async def orchestrate(config: OrchestratorConfig):
             **buffer.get_metrics(),
             # Event loop lag metrics
             **event_loop_lag_monitor.get_metrics(),
+            # Rollout filter metrics
+            **filter_metrics,
             # W&B axis
             "step": progress.step,
         }
@@ -747,6 +749,7 @@ async def orchestrate(config: OrchestratorConfig):
                     sampling_args=eval_sampling_args,
                     num_examples=eval_env_config.num_examples or config.eval.num_examples,
                     rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
+                    max_retries=eval_env_config.max_retries,
                     ckpt_step=ckpt_step,
                     step=progress.step,
                 )
@@ -770,7 +773,7 @@ async def orchestrate(config: OrchestratorConfig):
     rollout_executor.shutdown(wait=False)
 
     # Stop scheduler
-    scheduler.cancel_all_inflight_rollouts()
+    scheduler.cancel_inflight_rollouts()
     update_policy_task.cancel()
 
     # Stop inference pool
@@ -781,6 +784,14 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
+
+    # Shutdown env processes
+    for process in env_processes:
+        process.terminate()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
 
     logger.success("Orchestrator finished.")
 

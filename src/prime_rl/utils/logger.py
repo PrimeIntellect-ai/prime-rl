@@ -14,7 +14,7 @@ NO_BOLD = "\033[22m"
 RESET = "\033[0m"
 
 
-def _build_log_entry(record) -> dict:
+def build_log_entry(record) -> dict:
     """Build a flat JSON log entry from a loguru record."""
     extra = record["extra"]
 
@@ -54,14 +54,14 @@ def _build_log_entry(record) -> dict:
     return log_entry
 
 
-def _json_sink(message) -> None:
+def json_sink(message) -> None:
     """Sink that outputs flat JSON to stdout for log aggregation (Loki, Grafana, etc.)."""
-    log_entry = _build_log_entry(message.record)
+    log_entry = build_log_entry(message.record)
     sys.stdout.write(json_module.dumps(log_entry) + "\n")
     sys.stdout.flush()
 
 
-class _JsonFileSink:
+class JsonFileSink:
     """File sink that keeps the handle open and writes flat JSON lines."""
 
     def __init__(self, log_file: Path):
@@ -74,7 +74,7 @@ class _JsonFileSink:
             self._file.close()
 
     def write(self, message) -> None:
-        log_entry = _build_log_entry(message.record)
+        log_entry = build_log_entry(message.record)
         self._file.write(json_module.dumps(log_entry) + "\n")
         self._file.flush()
 
@@ -82,7 +82,7 @@ class _JsonFileSink:
 class InterceptHandler(logging.Handler):
     """Intercept standard logging library and routes to our prime-rl logger with specified prefix."""
 
-    def __init__(self, prefix: str):
+    def __init__(self, prefix: str | None):
         super().__init__()
         self.prefix = prefix
 
@@ -98,20 +98,25 @@ class InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(level, f"[{self.prefix}] {record.getMessage()}")
+        message = record.getMessage()
+        if self.prefix is not None:
+            message = f"[{self.prefix}] {message}"
+        logger.opt(depth=depth, exception=record.exc_info).log(level, message)
 
 
 def setup_logger(
-    log_level: str,
+    log_level: str = "info",
     log_file: Path | None = None,
     append: bool = False,
     tag: str | None = None,
     json_logging: bool = False,
 ):
     global _LOGGER, _JSON_LOGGING
-    if _LOGGER is not None:
-        raise RuntimeError("Logger already set. Please call `setup_logger` only once.")
     _JSON_LOGGING = json_logging
+
+    # Clean up old logger instance to prevent resource leaks
+    if _LOGGER is not None:
+        _LOGGER.remove()
 
     # Format message with optional tag prefix
     tag_prefix = f"[{tag}] " if tag else ""
@@ -154,7 +159,7 @@ def setup_logger(
 
     # Install console handler (enqueue=True only for JSON mode to avoid blocking in async contexts)
     if json_logging:
-        logger.add(_json_sink, level=log_level.upper(), enqueue=True)
+        logger.add(json_sink, level=log_level.upper(), enqueue=True)
     else:
         logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
 
@@ -163,7 +168,7 @@ def setup_logger(
         if not append and log_file.exists():
             log_file.unlink()
         if json_logging:
-            file_sink = _JsonFileSink(log_file)
+            file_sink = JsonFileSink(log_file)
             logger.add(file_sink.write, level=log_level.upper(), enqueue=True)
         else:
             logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
@@ -178,23 +183,17 @@ def setup_logger(
 
 
 def get_logger():
-    """
-    Get the global logger. This function is shared across submodules such as
-    training and inference to access the global logger instance. Raises if the
-    logger has not been set.
-
-    Returns:
-        The global logger.
-    """
     global _LOGGER
     if _LOGGER is None:
-        raise RuntimeError("Logger not set. Please call `set_logger` first.")
+        _LOGGER = setup_logger()
     return _LOGGER
 
 
 def reset_logger():
-    """Reset the global logger. Useful mainly in test to clear loggers between tests."""
+    """Reset the logger. Useful mainly in tests."""
     global _LOGGER, _JSON_LOGGING
+    if _LOGGER is not None:
+        _LOGGER.remove()
     _LOGGER = None
     _JSON_LOGGING = False
 

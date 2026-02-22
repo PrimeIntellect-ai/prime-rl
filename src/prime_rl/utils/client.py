@@ -96,31 +96,33 @@ class StaticInferencePool:
         pass
 
 
-async def setup_inference_pool(client_config: ClientConfig, model_name: str) -> InferencePool:
+async def setup_inference_pool(
+    client_config: ClientConfig, model_name: str, client_type: str = "openai_chat_completions"
+) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
 
     if client_config.is_elastic:
         from prime_rl.utils.elastic import ElasticInferencePool
 
-        return await ElasticInferencePool.from_config(client_config, model_name=model_name)
+        return await ElasticInferencePool.from_config(client_config, model_name=model_name, client_type=client_type)
 
     logger.info(
         f"Initializing static inference pool (base_url={', '.join(client_config.base_url)}, "
         f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
     )
     return StaticInferencePool(
-        clients=setup_clients(client_config),
+        clients=setup_clients(client_config, client_type=client_type),
         admin_clients=setup_admin_clients(client_config),
         skip_model_check=client_config.skip_model_check,
     )
 
 
-def setup_clients(client_config: ClientConfig) -> list[vf.ClientConfig]:
+def setup_clients(client_config: ClientConfig, client_type: str = "openai_chat_completions") -> list[vf.ClientConfig]:
     def setup_client(client_idx: int, base_url: str) -> vf.ClientConfig:
         return vf.ClientConfig(
             client_idx=client_idx,
-            client_type="openai_chat_completions_token",
+            client_type=client_type,
             api_base_url=base_url,
             api_key_var=client_config.api_key_var,
             timeout=client_config.timeout,
@@ -247,24 +249,6 @@ async def update_weights(
             logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
         await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
-
-
-async def reload_weights(admin_clients: list[AsyncClient]) -> None:
-    """Make a HTTP post request to the vLLM server to reload weights (reset to base model)."""
-    logger = get_logger()
-
-    async def _reload_weights(admin_client: AsyncClient) -> None:
-        logger.debug("Sending request to reload weights (reset to base model)")
-        try:
-            response = await admin_client.post("/reload_weights", json={})
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /reload_weights does not exist. Skipping weight reload.")
-                return
-            raise
-
-    await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
