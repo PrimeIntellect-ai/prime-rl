@@ -378,7 +378,8 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        warnings.warn("GlmMoeDsaForCausalLM is experimental — accuracy and performance may vary.")
+        warnings.warn("GlmMoeDsaForCausalLM is experimental, higher trainer<->inference KL mismatch may be observed.")
+        warnings.warn("`model.attn` is ignored, GlmMoeDsa uses only sparse attention.")
 
         self.post_init()
 
