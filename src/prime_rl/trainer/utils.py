@@ -20,7 +20,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
-from prime_rl.utils.utils import format_num, format_time, get_step_path
+from prime_rl.utils.utils import format_num, format_time
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
 
@@ -324,17 +324,29 @@ class MemoryProfiler:
 def maybe_clean(path: Path, step: int, async_level: int, interval_to_keep: int | None) -> None:
     logger = get_logger()
     candidate_step = max(step - (async_level + 1), 0)
-    candidate_path_to_delete = get_step_path(path, candidate_step)
-    keep = bool(interval_to_keep and candidate_step % interval_to_keep == 0)
-    logger.debug(f"Considering deleting path {candidate_path_to_delete}")
-    if not keep:
-        # Only clean steps the orchestrator has confirmed loading.
-        # The orchestrator writes LOADED_STEP after each successful weight update.
-        loaded_step_file = path / "LOADED_STEP"
-        if not loaded_step_file.exists():
-            return
-        loaded_step = int(loaded_step_file.read_text().strip())
-        if candidate_step >= loaded_step:
-            return
-        logger.debug(f"Removing path {candidate_path_to_delete}")
-        shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
+    logger.debug(f"Considering cleaning paths up to step {candidate_step} under {path}")
+
+    # Only clean steps the orchestrator has confirmed loading.
+    # The orchestrator writes LOADED_STEP after each successful weight update.
+    loaded_step_file = path / "LOADED_STEP"
+    if not loaded_step_file.exists():
+        return
+
+    loaded_step = int(loaded_step_file.read_text().strip())
+    max_step_to_delete = min(candidate_step, loaded_step - 1)
+    if max_step_to_delete < 0:
+        return
+
+    # Sweep all eligible historical steps so skipped candidates are eventually cleaned.
+    for step_dir in path.glob("step_*"):
+        if not step_dir.is_dir():
+            continue
+        try:
+            step_num = int(step_dir.name.split("_")[-1])
+        except ValueError:
+            continue
+        if step_num > max_step_to_delete:
+            continue
+        if interval_to_keep and step_num % interval_to_keep == 0:
+            continue
+        shutil.rmtree(step_dir, ignore_errors=True)

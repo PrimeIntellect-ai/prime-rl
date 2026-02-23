@@ -165,18 +165,9 @@ class Scheduler:
             )
 
             # Update weights on inference servers.
-            # If the checkpoint was cleaned by the trainer before the inference server could read it,
-            # skip this update and retry on the next poll with a fresher checkpoint.
             update_weights_start_time = time.perf_counter()
             weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-            try:
-                await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
-            except Exception:
-                self.logger.warning(
-                    f"Failed to load checkpoint {next_ckpt_step} (likely cleaned by trainer). "
-                    f"Will retry with a newer checkpoint on next poll."
-                )
-                return
+            await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
