@@ -24,7 +24,6 @@ Supported `all2all_backend` values:
 - `deepep_high_throughput`
 - `deepep_low_latency`
 - `flashinfer_all2allv`
-- `mori`
 - `naive`
 - `pplx`
 
@@ -37,7 +36,6 @@ Supported `all2all_backend` values:
 | `deepep_high_throughput` | prefill-heavy, throughput-oriented paths |
 | `deepep_low_latency` | decode-heavy, low-latency paths |
 | `flashinfer_all2allv` | specialized NVLink/MNNVL-focused environments |
-| `mori` | ROCm-oriented deployments |
 | `naive` | debugging only |
 
 Use vLLM's backend selection guide for prerequisites and tuning:
