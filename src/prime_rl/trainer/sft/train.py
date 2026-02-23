@@ -1,6 +1,8 @@
+import sys
 import time
 from contextlib import nullcontext
 from datetime import timedelta
+from pathlib import Path
 
 from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
@@ -444,8 +446,80 @@ def train(config: SFTTrainerConfig):
             logger.info(f"Benchmark results written to {config.bench.output_json}")
 
 
+SLURM_TEMPLATE_DIR = Path(__file__).parents[2] / "slurm"
+SLURM_TEMPLATE_NAME = "sft_slurm.sh.j2"
+
+
+def write_trainer_config(config: SFTTrainerConfig, output_dir: Path) -> None:
+    """Write resolved trainer config to disk, excluding SLURM-only fields."""
+    import tomli_w
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    trainer_data = config.model_dump(exclude_none=True, mode="json")
+    with open(output_dir / "trainer.toml", "wb") as f:
+        tomli_w.dump(trainer_data, f)
+
+
+def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> str:
+    """Render the SLURM script template with config values."""
+    from jinja2 import Environment, FileSystemLoader
+
+    slurm = config.slurm
+    if slurm.slurm_template is not None:
+        template_dir = slurm.slurm_template.parent
+        template_name = slurm.slurm_template.name
+    else:
+        template_dir = SLURM_TEMPLATE_DIR
+        template_name = SLURM_TEMPLATE_NAME
+    env = Environment(loader=FileSystemLoader(template_dir), keep_trailing_newline=True)
+    template = env.get_template(template_name)
+    return template.render(
+        job_name=slurm.job_name,
+        output_dir=config.output_dir,
+        config_dir=config_dir,
+        num_nodes=slurm.num_nodes,
+        project_dir=slurm.project_dir,
+        gpus_per_node=slurm.gpus_per_node,
+        hf_hub_offline=slurm.hf_hub_offline,
+    )
+
+
+def sft_slurm(config: SFTTrainerConfig):
+    logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
+
+    config_dir = config.output_dir / "configs"
+    write_trainer_config(config, config_dir)
+    logger.info(f"Wrote trainer config to {config_dir}")
+
+    script = render_slurm_script(config, config_dir)
+    script_path = config.output_dir / "sft.sh"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script)
+    logger.info(f"Wrote SLURM script to {script_path}")
+
+    log_message = f"Logs:\n  Trainer:  tail -f {config.output_dir}/slurm/latest_train_node_rank_0.log"
+
+    if config.slurm.dry_run:
+        logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
+        return
+
+    import subprocess
+
+    logger.info(f"Submitting: sbatch {script_path}")
+    result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"sbatch failed: {result.stderr.strip()}")
+        sys.exit(1)
+
+    logger.success(f"{result.stdout.strip()}\n\n{log_message}")
+
+
 def main():
-    train(parse_argv(SFTTrainerConfig))
+    config = parse_argv(SFTTrainerConfig)
+    if config.slurm is not None:
+        sft_slurm(config)
+    else:
+        train(config)
 
 
 if __name__ == "__main__":

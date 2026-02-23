@@ -104,8 +104,45 @@ class SFTDataConfig(BaseDataConfig):
 DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
 
 
+class SFTSlurmConfig(BaseSettings):
+    """SLURM-specific configuration for SFT training."""
+
+    job_name: Annotated[str, Field(description="The SLURM job name.")]
+    num_nodes: Annotated[int, Field(description="Number of training nodes.")] = 1
+    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+    nodes_per_fsdp_group: Annotated[
+        int | None,
+        Field(
+            description="Number of nodes per FSDP island. Auto-sets model.dp_replicate = num_nodes / nodes_per_fsdp_group."
+        ),
+    ] = None
+
+    project_dir: Annotated[
+        Path,
+        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
+    ] = Path(".")
+    hf_hub_offline: Annotated[
+        bool, Field(description="Set HF_HUB_OFFLINE=1 on training nodes to prevent downloading models at runtime.")
+    ] = False
+
+    slurm_template: Annotated[
+        Path | None, Field(description="The path to the SLURM template file. If None, will use the default template.")
+    ] = None
+    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
+        False
+    )
+
+
 class SFTTrainerConfig(BaseSettings):
     """Configures the SFT trainer"""
+
+    slurm: Annotated[
+        SFTSlurmConfig | None,
+        Field(
+            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
+            exclude=True,
+        ),
+    ] = None
 
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -253,4 +290,30 @@ class SFTTrainerConfig(BaseSettings):
         if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")
 
+        return self
+
+    ### SLURM validators
+
+    @model_validator(mode="after")
+    def validate_slurm_output_dir(self):
+        if self.slurm is None:
+            return self
+        if self.output_dir == Path("outputs"):
+            raise ValueError(
+                "output_dir must be explicitly set when using SLURM (not the default 'outputs'). "
+                "Set output_dir to a unique experiment path, e.g. '/shared/experiments/my-sft-run'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_slurm_dp_replicate(self):
+        if self.slurm is None:
+            return self
+        if self.slurm.nodes_per_fsdp_group is not None:
+            if self.slurm.num_nodes % self.slurm.nodes_per_fsdp_group != 0:
+                raise ValueError(
+                    f"slurm.num_nodes ({self.slurm.num_nodes}) must be divisible by "
+                    f"slurm.nodes_per_fsdp_group ({self.slurm.nodes_per_fsdp_group})"
+                )
+            self.model.dp_replicate = self.slurm.num_nodes // self.slurm.nodes_per_fsdp_group
         return self
