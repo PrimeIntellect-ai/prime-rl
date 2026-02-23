@@ -10,7 +10,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncOpenAI, BadRequestError
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     ChoiceDelta,
@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from verifiers.clients.openai_chat_completions_token_client import OpenAIChatCompletionsTokenClient
 from verifiers.types import Messages, TrajectoryStep
 from verifiers.types import State as VfState
-from verifiers.utils.message_utils import concat_messages
+from verifiers.utils.message_utils import concat_messages, from_raw_message
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from vllm.logger import init_logger
 
@@ -53,8 +53,8 @@ class TokensResponse(BaseModel):
 
 
 class TrajectoryStepResponse(BaseModel):
-    prompt: list[dict[str, Any]]
-    completion: list[dict[str, Any]]
+    prompt: Messages
+    completion: Messages
     tokens: TokensResponse | None = None
     reward: float | None = None
     advantage: float | None = None
@@ -68,8 +68,8 @@ class TrajectoryResponse(BaseModel):
     status: RolloutStatus
     num_turns: int
     model: str
-    prompt: list[dict[str, Any]]
-    completion: list[dict[str, Any]]
+    prompt: Messages
+    completion: Messages
     is_truncated: bool
     trajectory: list[TrajectoryStepResponse]
 
@@ -278,14 +278,14 @@ def _should_log_full_turn(rollout_id: str, turn_index: int) -> bool:
 
 async def _call_chat_with_messages(
     rollout: RolloutState,
-    messages: Messages,
+    raw_messages: list[ChatCompletionMessageParam],
     tools: list[dict[str, Any]] | None,
     sampling_args: dict[str, Any],
 ) -> ChatCompletion:
     extra_body = sampling_args.pop("extra_body", {})
     request_body: dict[str, Any] = {
         "model": rollout.config.model,
-        "messages": messages,
+        "messages": raw_messages,
         **sampling_args,
         **extra_body,
     }
@@ -301,7 +301,7 @@ async def _call_chat_with_messages(
 
 async def _call_chat_with_tokens(
     rollout: RolloutState,
-    messages: Messages,
+    raw_messages: list[ChatCompletionMessageParam],
     tools: list[dict[str, Any]] | None,
     prompt_ids: list[int],
     sampling_args: dict[str, Any],
@@ -309,7 +309,7 @@ async def _call_chat_with_tokens(
     extra_body = sampling_args.pop("extra_body", {})
     request_body: dict[str, Any] = {
         "model": rollout.config.model,
-        "messages": messages,
+        "messages": raw_messages,
         "tokens": prompt_ids,
         **sampling_args,
         **extra_body,
@@ -420,9 +420,10 @@ async def chat_completions(
     _assert_rollout(rollout, rollout_id)
 
     stream = body.get("stream", False)
-    messages = body.get("messages")
-    if not isinstance(messages, list):
+    raw_messages = body.get("messages")
+    if not isinstance(raw_messages, list):
         raise HTTPException(status_code=400, detail="Chat request must include a `messages` array.")
+    messages: Messages = [from_raw_message(m) for m in raw_messages]
     tools = body.get("tools")
 
     async with rollout.lock:
@@ -447,7 +448,7 @@ async def chat_completions(
                 rollout.vf_state["prompt"] = messages
                 response = await _call_chat_with_messages(
                     rollout=rollout,
-                    messages=messages,
+                    raw_messages=raw_messages,
                     tools=tools,
                     sampling_args=sampling_args,
                 )
@@ -470,7 +471,7 @@ async def chat_completions(
                     )
                     response = await _call_chat_with_tokens(
                         rollout=rollout,
-                        messages=messages,
+                        raw_messages=raw_messages,
                         tools=tools,
                         prompt_ids=prompt_ids,
                         sampling_args=sampling_args,
@@ -479,7 +480,7 @@ async def chat_completions(
                     request_mode = "chat_completions"
                     response = await _call_chat_with_messages(
                         rollout=rollout,
-                        messages=messages,
+                        raw_messages=raw_messages,
                         tools=tools,
                         sampling_args=sampling_args,
                     )
