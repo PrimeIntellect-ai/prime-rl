@@ -211,12 +211,12 @@ After submission, logs are available at:
 
 ```bash
 # Single-node
-tail -f {output_dir}/logs/trainer/rank_0.log
+tail -F {output_dir}/logs/trainer/rank_0.log
 
 # Multi-node RL
-tail -f {output_dir}/slurm/latest_train_node_rank_0.log
-tail -f {output_dir}/slurm/latest_infer_node_rank_0.log
-tail -f {output_dir}/slurm/latest_orchestrator.log
+tail -F {output_dir}/slurm/latest_train_node_rank_0.log
+tail -F {output_dir}/slurm/latest_infer_node_rank_0.log
+tail -F {output_dir}/slurm/latest_orchestrator.log
 ```
 
 For convenience, a tmux launcher sets up a session with all log streams:

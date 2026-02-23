@@ -448,9 +448,9 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
         )
         log_message = (
             f"Logs:\n"
-            f"  Trainer:       tail -f {log_dir}/trainer.stdout\n"
-            f"  Inference:     tail -f {log_dir}/inference.stdout\n"
-            f"  Orchestrator:  tail -f {log_dir}/orchestrator.stdout"
+            f"  Trainer:       tail -F {log_dir}/trainer.stdout\n"
+            f"  Orchestrator:  tail -F {log_dir}/orchestrator.stdout\n"
+            f"  Inference:     tail -F {log_dir}/inference.stdout"
         )
     else:
         script = template.render(
@@ -464,16 +464,16 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
             num_infer_nodes=config.deployment.num_infer_nodes,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
-            infer_env_vars=config.inference.env_vars,
+            infer_env_vars=config.inference.env_vars if config.inference is not None else {},
             orch_env_vars=config.orchestrator.env_vars,
             trainer_env_vars=config.trainer.env_vars,
         )
         slurm_log_dir = config.output_dir / "slurm"
         log_message = (
             f"Logs:\n"
-            f"  Trainer:       tail -f {slurm_log_dir}/latest_train_node_rank_0.log\n"
-            f"  Inference:     tail -f {slurm_log_dir}/latest_infer_node_rank_0.log\n"
-            f"  Orchestrator:  tail -f {slurm_log_dir}/latest_orchestrator.log"
+            f"  Trainer:       tail -F {slurm_log_dir}/latest_train_node_rank_0.log\n"
+            f"  Orchestrator:  tail -F {slurm_log_dir}/latest_orchestrator.log\n"
+            f"  Inference:     tail -F {slurm_log_dir}/latest_infer_node_rank_0.log"
         )
 
     return script, log_message

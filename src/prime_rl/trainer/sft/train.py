@@ -484,7 +484,7 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
             partition=slurm.partition,
         )
         log_dir = config.output_dir / "logs"
-        log_message = f"Logs:\n  Trainer:  tail -f {log_dir}/trainer/rank_0.log"
+        log_message = f"Logs:\n  Trainer:  tail -F {log_dir}/trainer/rank_0.log"
     else:
         script = template.render(
             job_name=slurm.job_name,
@@ -496,7 +496,7 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
             partition=slurm.partition,
             env_vars=config.env_vars,
         )
-        log_message = f"Logs:\n  Trainer:  tail -f {config.output_dir}/slurm/latest_train_node_rank_0.log"
+        log_message = f"Logs:\n  Trainer:  tail -F {config.output_dir}/slurm/latest_train_node_rank_0.log"
 
     return script, log_message
 
