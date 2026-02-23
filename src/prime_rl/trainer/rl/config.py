@@ -309,6 +309,15 @@ class RLTrainerConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_env_vars(self):
+        self.env_vars = {
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+            "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+            **self.env_vars,
+        }
+        return self
+
+    @model_validator(mode="after")
     def ep_only_with_custom_impl(self):
         if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")

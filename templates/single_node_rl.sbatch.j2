@@ -5,11 +5,13 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --exclusive
-#SBATCH --output=/shared/logs/job_%j.log
-#SBATCH --error=/shared/logs/job_%j.log
+#SBATCH --partition={{ partition }}
+#SBATCH --output={{ output_dir }}/job_%j.log
+#SBATCH --error={{ output_dir }}/job_%j.log
 
 export PROJECT_DIR={{ project_dir }}
 
+# Setup environment
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate

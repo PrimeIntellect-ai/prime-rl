@@ -327,6 +327,14 @@ class InferenceConfig(BaseSettings):
             self.api_server_count = 1  # LoRA requires only one API server
         return self
 
+    @model_validator(mode="after")
+    def auto_setup_env_vars(self):
+        self.env_vars = {
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
+            **self.env_vars,
+        }
+        return self
+
     def to_vllm(self) -> Namespace:
         """Convert InferenceConfig to vLLM-compatible Namespace."""
         namespace = Namespace()

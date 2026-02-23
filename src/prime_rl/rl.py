@@ -440,6 +440,7 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
             config_path=config_path,
             job_name=config.slurm.job_name,
             project_dir=config.slurm.project_dir,
+            partition=config.slurm.partition,
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
@@ -454,6 +455,7 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
             config_dir=config_dir,
             job_name=config.slurm.job_name,
             project_dir=config.slurm.project_dir,
+            partition=config.slurm.partition,
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,

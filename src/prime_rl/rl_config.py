@@ -157,6 +157,10 @@ class SlurmConfig(BaseSettings):
         ),
     ] = None
 
+    partition: Annotated[
+        str | None, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
+    ] = "cluster"
+
     dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
         False
     )
@@ -254,7 +258,11 @@ class RLConfig(BaseSettings):
         Field(
             description="Extra environment variables applied to all components. Per-component env_vars override these."
         ),
-    ] = {}
+    ] = {
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+        "PYTHONUNBUFFERED": "1",
+        "OMP_NUM_THREADS": "1",
+    }
 
     ### Local-only fields
 
