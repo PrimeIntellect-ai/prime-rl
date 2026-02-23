@@ -75,7 +75,6 @@ Both `rl` and `sft` commands support SLURM execution via an optional `[slurm]` s
 
 ```toml
 output_dir = "/shared/experiments/my-run"
-# hf_hub_offline = false
 
 [deployment]
 type = "multi_node"
@@ -105,7 +104,6 @@ type = "multi_node"
 num_nodes = 2
 gpus_per_node = 8
 # nodes_per_fsdp_group = 1
-# hf_hub_offline = false
 
 [slurm]
 job_name = "my-sft-job"
