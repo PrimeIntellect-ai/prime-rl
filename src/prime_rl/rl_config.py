@@ -292,7 +292,7 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_deployment(self):
-        if self.deployment.type == "multi_node" and self.slurm is None:
+        if self.deployment.type == "multi_node":
             if self.slurm is None:
                 raise ValueError("Must use SLURM for multi-node deployment.")
             if not self.inference:
