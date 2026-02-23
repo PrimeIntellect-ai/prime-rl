@@ -70,10 +70,6 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`[deployment]` (SFT)**: Added deployment configuration. `type = "single_node"` with `num_gpus` (default: 1). `type = "multi_node"` with `num_nodes`, `nodes_per_fsdp_group`, `hf_hub_offline` (2026-02-23)
 - **`[slurm]` (RL)**: Added SLURM configuration with `job_name`, `project_dir`, `template_path`, `partition`, `dry_run`. When present, `uv run rl` generates and submits an sbatch script instead of running locally. Template is auto-selected based on deployment type (2026-02-23)
 - **`[slurm]` (SFT)**: Added SLURM configuration with `job_name`, `project_dir`, `template_path`, `partition`, `dry_run`. When present, `uv run sft` generates and submits an sbatch script instead of running locally (2026-02-23)
-- **`env_vars` (RL)**: Added top-level `env_vars` dict on `RLConfig` (defaults: `CUDA_DEVICE_ORDER=PCI_BUS_ID`, `PYTHONUNBUFFERED=1`, `OMP_NUM_THREADS=1`). Merged into all components; per-component `env_vars` take precedence (2026-02-23)
-- **`trainer.env_vars`**: Added per-component env vars for RL trainer (auto-sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`) (2026-02-23)
-- **`orchestrator.env_vars`**: Added per-component env vars for orchestrator (2026-02-23)
-- **`inference.env_vars`**: Added per-component env vars for inference server (auto-sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False`) (2026-02-23)
-- **`hf_hub_offline` (RL SLURM)**: Removed. Use `env_vars = { HF_HUB_OFFLINE = "1" }` or `trainer.env_vars = { HF_HUB_OFFLINE = "1" }` instead (2026-02-23)
+- **`hf_hub_offline` (RL/SFT SLURM)**: Removed. `HF_HUB_OFFLINE=1` is now hardcoded in the multi-node SLURM templates (2026-02-23)
 - **SLURM templates**: Moved from `src/prime_rl/slurm/` to `src/prime_rl/templates/` and renamed to `single_node_rl.sbatch.j2`, `multi_node_rl.sbatch.j2`, `single_node_sft.sbatch.j2`, `multi_node_sft.sbatch.j2` (2026-02-23)
 
