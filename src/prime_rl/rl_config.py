@@ -12,7 +12,7 @@ from prime_rl.orchestrator.config import CheckpointConfig as OrchestratorCheckpo
 from prime_rl.orchestrator.config import FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig
 from prime_rl.orchestrator.config import NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.trainer.config import BenchConfig
+from prime_rl.trainer.config import BenchConfig, SlurmConfig
 from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
@@ -144,32 +144,6 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 DeploymentConfigType: TypeAlias = Annotated[
     SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
-
-
-class SlurmConfig(BaseSettings):
-    """SLURM-specific configuration for RL training."""
-
-    job_name: Annotated[str, Field(description="The SLURM job name.")] = "prime-rl"
-
-    project_dir: Annotated[
-        Path,
-        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
-    ] = Path(".")
-
-    template: Annotated[
-        Path | None,
-        Field(
-            description="The path to the SLURM template file. If None, will use the default single-node/multi-node template."
-        ),
-    ] = None
-
-    partition: Annotated[
-        str | None, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
-    ] = "cluster"
-
-    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
-        False
-    )
 
 
 class RLConfig(BaseSettings):

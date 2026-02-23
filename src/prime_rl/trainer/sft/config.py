@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from prime_rl.trainer.config import (
     AdamWConfig,
@@ -11,6 +11,7 @@ from prime_rl.trainer.config import (
     ModelConfig,
     OptimizerConfigType,
     SchedulerConfigType,
+    SlurmConfig,
     TokenizerConfig,
 )
 from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
@@ -104,11 +105,25 @@ class SFTDataConfig(BaseDataConfig):
 DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
 
 
-class SFTSlurmConfig(BaseSettings):
-    """SLURM-specific configuration for SFT training."""
+class BaseDeploymentConfig(BaseModel):
+    """Base deployment config for SFT."""
 
-    job_name: Annotated[str, Field(description="The SLURM job name.")]
-    num_nodes: Annotated[int, Field(description="Number of training nodes.")] = 1
+    model_config = ConfigDict(extra="forbid")
+
+    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+
+
+class SingleNodeDeploymentConfig(BaseDeploymentConfig):
+    """Configures a single-node SFT deployment."""
+
+    type: Literal["single_node"] = "single_node"
+
+
+class MultiNodeDeploymentConfig(BaseDeploymentConfig):
+    """Configures a multi-node SFT deployment."""
+
+    type: Literal["multi_node"] = "multi_node"
+    num_nodes: Annotated[int, Field(description="Number of training nodes.")]
     gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
     nodes_per_fsdp_group: Annotated[
         int | None,
@@ -116,28 +131,23 @@ class SFTSlurmConfig(BaseSettings):
             description="Number of nodes per FSDP island. Auto-sets model.dp_replicate = num_nodes / nodes_per_fsdp_group."
         ),
     ] = None
-
-    project_dir: Annotated[
-        Path,
-        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
-    ] = Path(".")
     hf_hub_offline: Annotated[
         bool, Field(description="Set HF_HUB_OFFLINE=1 on training nodes to prevent downloading models at runtime.")
     ] = False
 
-    slurm_template: Annotated[
-        Path | None, Field(description="The path to the SLURM template file. If None, will use the default template.")
-    ] = None
-    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
-        False
-    )
+
+SFTDeploymentConfigType: TypeAlias = Annotated[
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
+]
 
 
 class SFTTrainerConfig(BaseSettings):
     """Configures the SFT trainer"""
 
+    deployment: SFTDeploymentConfigType = SingleNodeDeploymentConfig()
+
     slurm: Annotated[
-        SFTSlurmConfig | None,
+        SlurmConfig | None,
         Field(
             description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
             exclude=True,
@@ -292,7 +302,47 @@ class SFTTrainerConfig(BaseSettings):
 
         return self
 
+    ### Deployment validators
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_deployment(cls, data):
+        if not isinstance(data, dict):
+            return data
+        deployment = data.get("deployment")
+        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
+            deployment.pop("num_train_gpus", None)
+        return data
+
+    @model_validator(mode="after")
+    def validate_deployment(self):
+        if self.deployment.type == "multi_node" and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_deployment_dp_replicate(self):
+        if self.deployment.type != "multi_node":
+            return self
+        if self.deployment.nodes_per_fsdp_group is not None:
+            if self.deployment.num_nodes % self.deployment.nodes_per_fsdp_group != 0:
+                raise ValueError(
+                    f"deployment.num_nodes ({self.deployment.num_nodes}) must be divisible by "
+                    f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
+                )
+            self.model.dp_replicate = self.deployment.num_nodes // self.deployment.nodes_per_fsdp_group
+        return self
+
     ### SLURM validators
+
+    @model_validator(mode="after")
+    def auto_setup_slurm_template(self):
+        if self.slurm is not None and self.slurm.template is None:
+            if self.deployment.type == "single_node":
+                self.slurm.template = Path("templates/single_node_sft.sbatch.j2")
+            else:
+                self.slurm.template = Path("templates/multi_node_sft.sbatch.j2")
+        return self
 
     @model_validator(mode="after")
     def validate_slurm_output_dir(self):
@@ -303,17 +353,4 @@ class SFTTrainerConfig(BaseSettings):
                 "output_dir must be explicitly set when using SLURM (not the default 'outputs'). "
                 "Set output_dir to a unique experiment path, e.g. '/shared/experiments/my-sft-run'."
             )
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_slurm_dp_replicate(self):
-        if self.slurm is None:
-            return self
-        if self.slurm.nodes_per_fsdp_group is not None:
-            if self.slurm.num_nodes % self.slurm.nodes_per_fsdp_group != 0:
-                raise ValueError(
-                    f"slurm.num_nodes ({self.slurm.num_nodes}) must be divisible by "
-                    f"slurm.nodes_per_fsdp_group ({self.slurm.nodes_per_fsdp_group})"
-                )
-            self.model.dp_replicate = self.slurm.num_nodes // self.slurm.nodes_per_fsdp_group
         return self

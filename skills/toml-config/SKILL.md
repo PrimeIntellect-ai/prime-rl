@@ -100,19 +100,25 @@ When `[slurm]` is set for RL:
 ```toml
 output_dir = "/shared/experiments/my-sft-run"
 
-[slurm]
-job_name = "my-sft-job"
+[deployment]
+type = "multi_node"
 num_nodes = 2
 gpus_per_node = 8
-# dry_run = true
-# slurm_template = "path/to/custom.sh.j2"
 # nodes_per_fsdp_group = 1
-# project_dir = "/path/to/project"
 # hf_hub_offline = false
+
+[slurm]
+job_name = "my-sft-job"
+# dry_run = true
+# template = "path/to/custom.sh.j2"
+# project_dir = "/path/to/project"
 ```
 
-When `[slurm]` is set for SFT:
-- `output_dir` must be explicitly set (the default `outputs` is rejected)
+SFT deployment follows the same pattern as RL:
+- `[deployment]` configures node/GPU allocation (`single_node` default or `multi_node`)
+- `[slurm]` configures SLURM submission (job name, partition, template)
+- `output_dir` must be explicitly set when using SLURM
+- Multi-node deployment requires `[slurm]` to be set
 
 ## Available commands
 

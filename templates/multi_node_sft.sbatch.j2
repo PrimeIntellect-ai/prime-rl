@@ -4,7 +4,7 @@
 #SBATCH --nodes={{ num_nodes }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
-#SBATCH --partition=cluster
+#SBATCH --partition={{ partition }}
 #SBATCH --exclusive                 # Get the ENTIRE node exclusively
 #SBATCH --output=/shared/logs/job_%j.log
 #SBATCH --error=/shared/logs/job_%j.log

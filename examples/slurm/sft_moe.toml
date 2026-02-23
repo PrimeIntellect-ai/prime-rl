@@ -3,8 +3,6 @@ max_steps = 500
 
 [slurm]
 job_name = "sft-moe-math"
-num_nodes = 1
-gpus_per_node = 8
 
 [wandb]
 project = "sft-moe-intellect"
