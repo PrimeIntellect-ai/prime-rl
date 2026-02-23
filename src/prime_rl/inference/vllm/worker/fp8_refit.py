@@ -77,6 +77,7 @@ def _get_triton_blockwise_cast_to_fp8() -> Callable[[torch.Tensor, tuple[int, in
     fp8_max = torch.finfo(fp8_dtype).max
     fp8_min = -fp8_max
 
+    # Adapted from https://github.com/THUDM/slime/blob/main/slime/backends/megatron_utils/kernels/fp8_kernel.py
     @triton.jit
     def _blockwise_cast_to_fp8_triton(  # noqa: N802
         x_ptr,
