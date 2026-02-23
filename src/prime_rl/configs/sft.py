@@ -109,6 +109,7 @@ class SFTDataConfig(BaseDataConfig):
 class SFTEvalConfig(BaseConfig):
     interval: Annotated[int, Field(ge=1, description="Run validation every N training steps.")] = 50
     num_batches: Annotated[int, Field(ge=1, description="Number of validation batches per evaluation.")] = 8
+    eval_on_start: Annotated[bool, Field(description="Run a validation pass before the training loop starts.")] = False
 
 
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]

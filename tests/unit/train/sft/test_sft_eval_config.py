@@ -16,11 +16,12 @@ def test_sft_val_data_requires_eval():
 
 def test_sft_eval_with_val_data_is_valid():
     config = SFTTrainerConfig(
-        eval=SFTEvalConfig(interval=10, num_batches=2),
+        eval=SFTEvalConfig(interval=10, num_batches=2, eval_on_start=True),
         val_data=SFTDataConfig(name="willcb/R1-reverse-wikipedia-paragraphs-v1-1000", splits=["train[:5%]"]),
     )
     assert config.eval is not None
     assert config.val_data is not None
+    assert config.eval.eval_on_start is True
 
 
 def test_sft_val_data_requires_cp_compatible_pack_function():
