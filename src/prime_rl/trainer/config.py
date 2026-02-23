@@ -483,7 +483,7 @@ class SlurmConfig(BaseConfig):
     ] = None
 
     partition: Annotated[
-        str | None, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
+        str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
     ] = "cluster"
 
     dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
