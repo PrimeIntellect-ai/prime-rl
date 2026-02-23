@@ -1,0 +1,18 @@
+#!/bin/bash
+
+#SBATCH --job-name={{ job_name }}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:{{ num_gpus }}
+#SBATCH --exclusive
+#SBATCH --output=/shared/logs/job_%j.log
+#SBATCH --error=/shared/logs/job_%j.log
+
+export PROJECT_DIR={{ project_dir }}
+export HF_HUB_OFFLINE={{ 1 if hf_hub_offline else 0 }}
+
+[ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
+source $PROJECT_DIR/.venv/bin/activate
+cd $PROJECT_DIR && uv sync --all-extras
+
+uv run rl @ {{ rl_config_path }}

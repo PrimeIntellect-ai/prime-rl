@@ -403,52 +403,77 @@ def rl_local(config: RLConfig):
 
 
 SLURM_TEMPLATE_DIR = Path(__file__).parents[2] / "templates"
-SLURM_TEMPLATE_NAME = "multi_node_rl.sh.j2"
 
 
-def render_slurm_script(config: RLConfig, config_dir: Path) -> str:
-    """Render the SLURM script template with config values."""
+def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
+    """Render the SLURM script template. Returns (script, log_message)."""
     from jinja2 import Environment, FileSystemLoader
 
     assert config.slurm is not None
-    if config.slurm.template is not None:
-        template_dir = config.slurm.template.parent
-        template_name = config.slurm.template.name
+    slurm = config.slurm
+    deployment = config.deployment
+
+    if slurm.template is not None:
+        template_dir = slurm.template.parent
+        template_name = slurm.template.name
+    elif deployment.type == "single_node":
+        template_dir = SLURM_TEMPLATE_DIR
+        template_name = "single_node_rl.sh.j2"
     else:
         template_dir = SLURM_TEMPLATE_DIR
-        template_name = SLURM_TEMPLATE_NAME
+        template_name = "multi_node_rl.sh.j2"
+
     env = Environment(loader=FileSystemLoader(template_dir), keep_trailing_newline=True)
     template = env.get_template(template_name)
 
-    if config.deployment.type == "single_node":
-        raise NotImplementedError("Single node deployment for SLURM is not supported yet.")
-        # return template.render(
-        #     job_name=config.slurm.job_name,
-        #     config_dir=config_dir,
-        #     project_dir=config.slurm.project_dir,
-        #     output_dir=config.output_dir,
-        #     orchestrator_output_dir=config.orchestrator.output_dir,
-        #     num_train_nodes=config.deployment.num_train_gpus,
-        #     num_infer_nodes=config.deployment.num_infer_gpus,
-        #     num_teacher_nodes=config.deployment.num_teacher_gpus,
-        #     gpus_per_node=config.deployment.gpus_per_node,
-        #     hf_hub_offline=config.hf_hub_offline,
-        # )
-    elif config.deployment.type == "multi_node":
-        return template.render(
-            job_name=config.slurm.job_name,
-            config_dir=config_dir,
-            project_dir=config.slurm.project_dir,
+    log_dir = config.output_dir / "logs"
+
+    if deployment.type == "single_node":
+        import tomli_w
+
+        rl_config_path = config_dir / "rl.toml"
+        config_dict = config.model_dump(exclude={"slurm"}, exclude_none=True, mode="json")
+        config_dir.mkdir(parents=True, exist_ok=True)
+        with open(rl_config_path, "wb") as f:
+            tomli_w.dump(config_dict, f)
+
+        num_gpus = deployment.num_infer_gpus + deployment.num_train_gpus + (deployment.num_teacher_gpus or 0)
+        script = template.render(
+            job_name=slurm.job_name,
+            project_dir=slurm.project_dir,
             output_dir=config.output_dir,
-            orchestrator_output_dir=config.orchestrator.output_dir,
-            num_train_nodes=config.deployment.num_train_nodes,
-            num_infer_nodes=config.deployment.num_infer_nodes,
-            num_teacher_nodes=config.deployment.num_teacher_nodes,
-            gpus_per_node=config.deployment.gpus_per_node,
+            rl_config_path=rl_config_path,
+            num_gpus=num_gpus,
             hf_hub_offline=config.hf_hub_offline,
         )
+        log_message = (
+            f"Logs:\n"
+            f"  Trainer:       tail -f {log_dir}/trainer.stdout\n"
+            f"  Inference:     tail -f {log_dir}/inference.stdout\n"
+            f"  Orchestrator:  tail -f {log_dir}/orchestrator.stdout"
+        )
     else:
-        raise ValueError(f"Invalid deployment type: {config.deployment.type}")
+        script = template.render(
+            job_name=slurm.job_name,
+            config_dir=config_dir,
+            project_dir=slurm.project_dir,
+            output_dir=config.output_dir,
+            orchestrator_output_dir=config.orchestrator.output_dir,
+            num_train_nodes=deployment.num_train_nodes,
+            num_infer_nodes=deployment.num_infer_nodes,
+            num_teacher_nodes=deployment.num_teacher_nodes,
+            gpus_per_node=deployment.gpus_per_node,
+            hf_hub_offline=config.hf_hub_offline,
+        )
+        slurm_log_dir = config.output_dir / "slurm"
+        log_message = (
+            f"Logs:\n"
+            f"  Trainer:       tail -f {slurm_log_dir}/latest_train_node_rank_0.log\n"
+            f"  Inference:     tail -f {slurm_log_dir}/latest_infer_node_rank_0.log\n"
+            f"  Orchestrator:  tail -f {slurm_log_dir}/latest_orchestrator.log"
+        )
+
+    return script, log_message
 
 
 def rl_slurm(config: RLConfig):
@@ -456,22 +481,16 @@ def rl_slurm(config: RLConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = config.output_dir / "configs"
-    write_subconfigs(config, config_dir)
-    logger.info(f"Wrote subconfigs to {config_dir}")
 
-    script = render_slurm_script(config, config_dir)
+    if config.deployment.type == "multi_node":
+        write_subconfigs(config, config_dir)
+        logger.info(f"Wrote subconfigs to {config_dir}")
+
+    script, log_message = render_slurm_script(config, config_dir)
     script_path = config.output_dir / "rl.sh"
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
     logger.info(f"Wrote SLURM script to {script_path}")
-
-    slurm_log_dir = config.output_dir / "slurm"
-    log_message = (
-        f"Logs:\n"
-        f"  Trainer:       tail -f {slurm_log_dir}/latest_train_node_rank_0.log\n"
-        f"  Inference:     tail -f {slurm_log_dir}/latest_infer_node_rank_0.log\n"
-        f"  Orchestrator:  tail -f {slurm_log_dir}/latest_orchestrator.log"
-    )
 
     if config.slurm.dry_run:
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
