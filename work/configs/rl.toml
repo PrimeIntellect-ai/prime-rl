@@ -1,0 +1,59 @@
+###############
+# stuff stuff #
+###############
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
+max_steps = 50
+
+[wandb]
+project = "bb-cua-env"
+
+[model]
+name = "Qwen/Qwen3-VL-4B-Instruct"
+
+
+######################
+# orchestrator stuff #
+######################
+[orchestrator]
+batch_size = 16
+rollouts_per_example = 4
+seq_len = 8000
+oversampling_factor = 2.0
+
+[orchestrator.sampling]
+max_tokens = 2048
+
+[[orchestrator.env]]
+id = "webvoyager-no-anti-bot"
+args = { keep_recent_screenshot = 999 }
+
+#[orchestrator.val]
+#interval = 5
+#num_examples = 16
+
+#################
+# trainer stuff #
+#################
+[trainer.optim]
+lr = 5e-6
+weight_decay = 0.0
+
+[trainer.model]
+seq_len = 8000
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+#[trainer.model.ac]
+#freq = 0
+
+###################
+# inference stuff #
+###################
+[inference]
+gpu_memory_utilization = 0.7
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+max_model_len = 8000
