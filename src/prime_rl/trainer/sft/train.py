@@ -477,7 +477,12 @@ def train(config: SFTConfig):
             }
             monitor.log(max_vio_log_metrics, step=progress.step)
 
-        if config.eval is not None and val_dataiter is not None and (progress.step + 1) % config.eval.interval == 0:
+        if (
+            config.eval is not None
+            and val_dataiter is not None
+            and not is_first_step
+            and progress.step % config.eval.interval == 0
+        ):
             run_validation(progress.step)
 
         is_first_step = False
