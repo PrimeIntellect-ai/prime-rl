@@ -3,7 +3,7 @@
 #SBATCH --job-name={{ job_name }}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:{{ num_gpus }}
+#SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --exclusive
 #SBATCH --output=/shared/logs/job_%j.log
 #SBATCH --error=/shared/logs/job_%j.log

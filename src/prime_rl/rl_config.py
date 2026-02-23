@@ -143,7 +143,7 @@ DeploymentConfig: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentCo
 class SlurmConfig(BaseSettings):
     """SLURM-specific configuration for RL training."""
 
-    job_name: Annotated[str, Field(description="The SLURM job name.")]
+    job_name: Annotated[str, Field(description="The SLURM job name.")] = "prime-rl"
 
     project_dir: Annotated[
         Path,
@@ -151,7 +151,10 @@ class SlurmConfig(BaseSettings):
     ] = Path(".")
 
     template: Annotated[
-        Path | None, Field(description="The path to the SLURM template file. If None, will use the default template.")
+        Path | None,
+        Field(
+            description="The path to the SLURM template file. If None, will use the default single-node/multi-node template."
+        ),
     ] = None
 
     dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
@@ -618,6 +621,16 @@ class RLConfig(BaseSettings):
         self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
         self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_slurm_template(self):
+        """Auto-setup the default single-node/multi-node SLURM template if no custom template is provided."""
+        if self.slurm is not None and self.slurm.template is None:
+            if self.deployment.type == "single_node":
+                self.slurm.template = Path("templates/single_node_rl.sh.j2")
+            else:
+                self.slurm.template = Path("templates/multi_node_rl.sh.j2")
         return self
 
     @model_validator(mode="after")

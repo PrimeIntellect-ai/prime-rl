@@ -124,6 +124,8 @@ def maybe_clean(config: RLConfig, log_dir: Path, orch_log_dir: Path, broadcast_d
 
 
 def rl_local(config: RLConfig):
+    assert config.output_dir is not None
+
     # Setup logger
     logger = setup_logger(
         config.log.level or "info",
@@ -412,48 +414,34 @@ def rl_local(config: RLConfig):
         raise
 
 
-SLURM_TEMPLATE_DIR = Path(__file__).parents[2] / "templates"
-
-
 def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
     """Render the SLURM script template. Returns (script, log_message)."""
     from jinja2 import Environment, FileSystemLoader
 
+    assert config.output_dir is not None
     assert config.slurm is not None
-    slurm = config.slurm
-    deployment = config.deployment
+    assert config.slurm.template is not None
 
-    if slurm.template is not None:
-        template_dir = slurm.template.parent
-        template_name = slurm.template.name
-    elif deployment.type == "single_node":
-        template_dir = SLURM_TEMPLATE_DIR
-        template_name = "single_node_rl.sh.j2"
-    else:
-        template_dir = SLURM_TEMPLATE_DIR
-        template_name = "multi_node_rl.sh.j2"
-
-    env = Environment(loader=FileSystemLoader(template_dir), keep_trailing_newline=True)
-    template = env.get_template(template_name)
+    env = Environment(loader=FileSystemLoader(config.slurm.template.parent), keep_trailing_newline=True)
+    template = env.get_template(config.slurm.template.name)
 
     log_dir = config.output_dir / "logs"
 
-    if deployment.type == "single_node":
+    if config.deployment.type == "single_node":
         import tomli_w
 
-        rl_config_path = config_dir / "rl.toml"
+        config_path = config_dir / "rl.toml"
         config_dict = config.model_dump(exclude={"slurm"}, exclude_none=True, mode="json")
         config_dir.mkdir(parents=True, exist_ok=True)
-        with open(rl_config_path, "wb") as f:
+        with open(config_path, "wb") as f:
             tomli_w.dump(config_dict, f)
 
-        num_gpus = deployment.num_infer_gpus + deployment.num_train_gpus + (deployment.num_teacher_gpus or 0)
         script = template.render(
-            job_name=slurm.job_name,
-            project_dir=slurm.project_dir,
+            config_path=config_path,
+            job_name=config.slurm.job_name,
+            project_dir=config.slurm.project_dir,
             output_dir=config.output_dir,
-            rl_config_path=rl_config_path,
-            num_gpus=num_gpus,
+            gpus_per_node=config.deployment.gpus_per_node,
         )
         log_message = (
             f"Logs:\n"
@@ -463,15 +451,15 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
         )
     else:
         script = template.render(
-            job_name=slurm.job_name,
             config_dir=config_dir,
-            project_dir=slurm.project_dir,
+            job_name=config.slurm.job_name,
+            project_dir=config.slurm.project_dir,
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
-            num_train_nodes=deployment.num_train_nodes,
-            num_infer_nodes=deployment.num_infer_nodes,
-            num_teacher_nodes=deployment.num_teacher_nodes,
-            gpus_per_node=deployment.gpus_per_node,
+            num_train_nodes=config.deployment.num_train_nodes,
+            num_infer_nodes=config.deployment.num_infer_nodes,
+            num_teacher_nodes=config.deployment.num_teacher_nodes,
+            gpus_per_node=config.deployment.gpus_per_node,
             infer_env_vars=config.inference.env_vars,
             orch_env_vars=config.orchestrator.env_vars,
             trainer_env_vars=config.trainer.env_vars,
@@ -489,6 +477,8 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
 
 def rl_slurm(config: RLConfig):
     assert config.slurm is not None
+    assert config.output_dir is not None
+
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = config.output_dir / "configs"
