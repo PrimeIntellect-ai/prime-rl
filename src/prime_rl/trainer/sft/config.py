@@ -118,22 +118,22 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
 
     type: Literal["single_node"] = "single_node"
 
+    num_gpus: Annotated[int, Field(description="Number of GPUs.")] = 1
+
 
 class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     """Configures a multi-node SFT deployment."""
 
     type: Literal["multi_node"] = "multi_node"
+
     num_nodes: Annotated[int, Field(description="Number of training nodes.")]
-    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+
     nodes_per_fsdp_group: Annotated[
         int | None,
         Field(
             description="Number of nodes per FSDP island. Auto-sets model.dp_replicate = num_nodes / nodes_per_fsdp_group."
         ),
     ] = None
-    hf_hub_offline: Annotated[
-        bool, Field(description="Set HF_HUB_OFFLINE=1 on training nodes to prevent downloading models at runtime.")
-    ] = False
 
 
 SFTDeploymentConfigType: TypeAlias = Annotated[
@@ -144,8 +144,6 @@ SFTDeploymentConfigType: TypeAlias = Annotated[
 class SFTTrainerConfig(BaseSettings):
     """Configures the SFT trainer"""
 
-    deployment: SFTDeploymentConfigType = SingleNodeDeploymentConfig()
-
     slurm: Annotated[
         SlurmConfig | None,
         Field(
@@ -153,6 +151,8 @@ class SFTTrainerConfig(BaseSettings):
             exclude=True,
         ),
     ] = None
+
+    deployment: SFTDeploymentConfigType = SingleNodeDeploymentConfig()
 
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -216,12 +216,27 @@ class SFTTrainerConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    env_vars: Annotated[
+        dict[str, str], Field(description="Environment variables to set when running the trainer.")
+    ] = {}
+
+    ### Validate configs (e.g. raise for unsupported (combinations of) configs)
+
     @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench is not None:
-            self.max_steps = 4  # 1 Warmup + 3 Benchmark
-            if self.ckpt:  # Do not checkpoint
-                self.ckpt = None
+    def validate_deployment(self):
+        if self.deployment.type == "multi_node" and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_slurm_output_dir(self):
+        if self.slurm is None:
+            return self
+        if self.output_dir == Path("outputs"):
+            raise ValueError(
+                "output_dir must be explicitly set when using SLURM (not the default 'outputs'). "
+                "Set output_dir to a unique experiment path, e.g. '/shared/experiments/my-sft-run'."
+            )
         return self
 
     @model_validator(mode="after")
@@ -278,14 +293,6 @@ class SFTTrainerConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_tokenizer(self):
-        if self.tokenizer.name is None:
-            self.tokenizer.name = self.model.name
-        if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.model.trust_remote_code
-        return self
-
-    @model_validator(mode="after")
     def validate_and_disable_chunked_loss(self):
         if isinstance(self.model.fused_lm_head_chunk_size, int):
             raise ValueError(
@@ -302,38 +309,35 @@ class SFTTrainerConfig(BaseSettings):
 
         return self
 
-    ### Deployment validators
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_deployment(cls, data):
-        if not isinstance(data, dict):
-            return data
-        deployment = data.get("deployment")
-        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
-            deployment.pop("num_train_gpus", None)
-        return data
+    ### Auto-setup and validate shared configs
 
     @model_validator(mode="after")
-    def validate_deployment(self):
-        if self.deployment.type == "multi_node" and self.slurm is None:
-            raise ValueError("Must use SLURM for multi-node deployment.")
+    def auto_setup_bench(self):
+        if self.bench is not None:
+            self.max_steps = 4  # 1 Warmup + 3 Benchmark
+            if self.ckpt:  # Do not checkpoint
+                self.ckpt = None
         return self
 
     @model_validator(mode="after")
-    def auto_setup_deployment_dp_replicate(self):
-        if self.deployment.type != "multi_node":
-            return self
-        if self.deployment.nodes_per_fsdp_group is not None:
-            if self.deployment.num_nodes % self.deployment.nodes_per_fsdp_group != 0:
-                raise ValueError(
-                    f"deployment.num_nodes ({self.deployment.num_nodes}) must be divisible by "
-                    f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
-                )
-            self.model.dp_replicate = self.deployment.num_nodes // self.deployment.nodes_per_fsdp_group
+    def auto_setup_tokenizer(self):
+        if self.tokenizer.name is None:
+            self.tokenizer.name = self.model.name
+        if self.tokenizer.trust_remote_code is None:
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
 
-    ### SLURM validators
+    @model_validator(mode="after")
+    def auto_setup_deployment(self):
+        if self.deployment.type == "multi_node":
+            if self.deployment.nodes_per_fsdp_group is not None:
+                if self.deployment.num_nodes % self.deployment.nodes_per_fsdp_group != 0:
+                    raise ValueError(
+                        f"deployment.num_nodes ({self.deployment.num_nodes}) must be divisible by "
+                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
+                    )
+                self.model.dp_replicate = self.deployment.num_nodes // self.deployment.nodes_per_fsdp_group
+        return self
 
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
@@ -342,15 +346,4 @@ class SFTTrainerConfig(BaseSettings):
                 self.slurm.template_path = Path("templates/single_node_sft.sbatch.j2")
             else:
                 self.slurm.template_path = Path("templates/multi_node_sft.sbatch.j2")
-        return self
-
-    @model_validator(mode="after")
-    def validate_slurm_output_dir(self):
-        if self.slurm is None:
-            return self
-        if self.output_dir == Path("outputs"):
-            raise ValueError(
-                "output_dir must be explicitly set when using SLURM (not the default 'outputs'). "
-                "Set output_dir to a unique experiment path, e.g. '/shared/experiments/my-sft-run'."
-            )
         return self
