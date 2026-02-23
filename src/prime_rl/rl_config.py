@@ -334,16 +334,15 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_output_dir(self):
+        """Auto-setup shared output directory for trainer and orchestrator. With SLURM, no default is set to avoid overwriting experiment outputs."""
         if self.slurm is None:
             if self.output_dir is None:
                 self.output_dir = Path("outputs")
-            self.trainer.output_dir = self.output_dir
-            self.orchestrator.output_dir = self.output_dir / "run_default"
         else:
             if self.output_dir is None:
                 raise ValueError("output_dir must be set explicitly when using SLURM.")
-            self.trainer.output_dir = self.slurm.project_dir / "outputs"
-            self.orchestrator.output_dir = self.slurm.project_dir / "outputs" / "run_default"
+        self.trainer.output_dir = self.output_dir
+        self.orchestrator.output_dir = self.output_dir / "run_default"
 
         validate_shared_output_dir(self.trainer, self.orchestrator)
 
