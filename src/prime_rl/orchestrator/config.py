@@ -751,15 +751,32 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
-    batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
-
-    oversampling_factor: Annotated[
-        float,
+    batch_size: Annotated[
+        int | None,
         Field(
             ge=1,
-            description="Factor by which to oversample the batch. Will lead to more in-flight group rollout requests at the same time.",
+            description="Number of samples to train on per step (rollout-based batching). Set this OR token_batch_size.",
         ),
-    ] = 1.0
+    ] = None
+
+    token_batch_size: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of tokens to train on per step (token-based batching). Set this OR batch_size.",
+        ),
+    ] = None
+
+    max_inflight_rollouts: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description=(
+                "Maximum number of rollouts to keep in-flight. Required for token-based batching. "
+                "If batch_size is set and this is unset, defaults to batch_size."
+            ),
+        ),
+    ] = None
 
     rollouts_per_example: Annotated[
         int,
@@ -853,9 +870,28 @@ class OrchestratorConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_batch_size(self):
-        if self.batch_size % self.rollouts_per_example != 0:
-            raise ValueError("Batch size must be divisible by the number of samples per problem")
+    def resolve_batching(self):
+        has_rollout_batch = self.batch_size is not None
+        has_token_batch = self.token_batch_size is not None
+
+        if has_rollout_batch and has_token_batch:
+            raise ValueError("Set exactly one of batch_size or token_batch_size")
+
+        if not has_rollout_batch and not has_token_batch:
+            self.batch_size = 128
+
+        if has_token_batch:
+            if self.max_inflight_rollouts is None:
+                raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
+        else:
+            assert self.batch_size is not None
+            if self.batch_size % self.rollouts_per_example != 0:
+                raise ValueError("Batch size must be divisible by the number of samples per problem")
+            if self.max_inflight_rollouts is None:
+                self.max_inflight_rollouts = self.batch_size
+
+        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
+            raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
         return self
 
     @model_validator(mode="after")
