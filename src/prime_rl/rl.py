@@ -654,8 +654,8 @@ def rl_local(config: RLConfig):
         raise
 
 
-SLURM_TEMPLATE_DIR = Path(__file__).parent / "slurm"
-SLURM_TEMPLATE_NAME = "rl_slurm.sh.j2"
+SLURM_TEMPLATE_DIR = Path(__file__).parents[2] / "templates"
+SLURM_TEMPLATE_NAME = "multi_node_rl.sh.j2"
 
 
 def render_slurm_script(config: RLConfig, config_dir: Path) -> str:

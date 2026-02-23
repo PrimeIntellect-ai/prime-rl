@@ -446,8 +446,8 @@ def train(config: SFTTrainerConfig):
             logger.info(f"Benchmark results written to {config.bench.output_json}")
 
 
-SLURM_TEMPLATE_DIR = Path(__file__).parents[2] / "slurm"
-SLURM_TEMPLATE_NAME = "sft_slurm.sh.j2"
+SLURM_TEMPLATE_DIR = Path(__file__).parents[4] / "templates"
+SLURM_TEMPLATE_NAME = "multi_node_sft.sh.j2"
 
 
 def write_trainer_config(config: SFTTrainerConfig, output_dir: Path) -> None:
