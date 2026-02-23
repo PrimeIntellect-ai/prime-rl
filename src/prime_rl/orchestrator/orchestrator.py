@@ -497,12 +497,15 @@ async def orchestrate(config: OrchestratorConfig):
         train_examples: list[TrainingSample] = []
         rollout_prefill_lens: list[int] = []
         rollout_decode_lens: list[int] = []
+        rollout_samples: list[int] = []
         num_prefill_tokens = 0
         num_decode_tokens = 0
         for rollout, advantage, samples in zip(train_rollouts, advantages, results):
             rollout_prefill_tokens = 0
             rollout_decode_tokens = 0
+            num_samples = 0
             if samples is not None:
+                num_samples = len(samples)
                 for sample in samples:
                     sample.advantage = advantage
                     sample.reward = rollout["reward"]
@@ -513,6 +516,7 @@ async def orchestrate(config: OrchestratorConfig):
                     train_examples.append(sample)
             rollout_prefill_lens.append(rollout_prefill_tokens)
             rollout_decode_lens.append(rollout_decode_tokens)
+            rollout_samples.append(num_samples)
             num_prefill_tokens += rollout_prefill_tokens
             num_decode_tokens += rollout_decode_tokens
 
@@ -579,6 +583,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "prefill_len": rollout_prefill_lens,
                 "decode_len": rollout_decode_lens,
                 "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
+                "samples_per_rollout": rollout_samples,
                 "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
                 "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
             }
@@ -644,6 +649,11 @@ async def orchestrate(config: OrchestratorConfig):
             "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
             "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
             "num_turns/min": results_df.groupby("example_id").num_turns.mean().min(),
+            # Trajectory branch vs interleave (1 sample = interleaved, >1 = branched)
+            "trajectory/interleaved_ratio": (results_df.samples_per_rollout == 1).mean(),
+            "trajectory/branched_ratio": (results_df.samples_per_rollout > 1).mean(),
+            "trajectory/samples_per_rollout_mean": results_df.samples_per_rollout.mean(),
+            "trajectory/samples_per_rollout_max": results_df.samples_per_rollout.max(),
             # Verifier timing metrics
             "generation_ms/mean": results_df.groupby("example_id").generation_ms.mean().mean(),
             "generation_ms/max": results_df.groupby("example_id").generation_ms.mean().max(),
