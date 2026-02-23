@@ -9,17 +9,16 @@ import warnings
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
-from typing import Annotated, Literal
+from typing import Annotated
 
 import pynvml
-import tomli_w
 from pydantic import Field, model_validator
 
 from prime_rl.inference.config import InferenceConfig
-from prime_rl.rl_config import BaseRLConfig
+from prime_rl.rl_config import BaseRLConfig, SlurmConfig, write_subconfigs
 from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pydantic_config import BaseSettings, parse_argv
+from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_free_port,
@@ -28,74 +27,17 @@ from prime_rl.utils.utils import (
 )
 
 
-class SharedLogConfig(BaseSettings):
-    """Configures shared logging."""
-
-    level: Annotated[str | None, Field(description="The log level to use.")] = "info"
-
-    file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
-
-    json_logging: Annotated[
-        bool,
-        Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
-    ] = False
-
-
-class SharedWandbConfig(BaseSettings):
-    """Configures shared W&B configs."""
-
-    project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
-
-    name: Annotated[str | None, Field(description="The W&B run name to use.")] = None
-
-    offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
-
-
-class SharedCheckpointConfig(BaseSettings):
-    """Configures shared checkpoint configs."""
-
-    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
-
-    resume_step: Annotated[
-        int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
-    ] = None
-
-    keep_last: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
-        ),
-    ] = None
-
-    keep_interval: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
-        ),
-    ] = None
-
-
-class SharedModelConfig(BaseSettings):
-    """Configures shared model settings."""
-
-    name: Annotated[
-        str,
-        Field(description="The name of the model to use."),
-    ] = "Qwen/Qwen3-0.6B"
-
-
-class SharedWeightBroadcastConfig(BaseSettings):
-    """Configures shared weight broadcast settings."""
-
-    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
-        "filesystem"
-    )
-
-
 class RLConfig(BaseRLConfig):
     """Configures an RL training run."""
+
+    slurm: Annotated[
+        SlurmConfig | None,
+        Field(
+            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally."
+        ),
+    ] = None
+
+    ### Local-only fields (ignored when slurm is set)
 
     clean: Annotated[
         bool,
@@ -141,8 +83,71 @@ class RLConfig(BaseRLConfig):
         ),
     ] = None
 
+    ### SLURM validators
+
+    @model_validator(mode="after")
+    def validate_slurm_output_dir(self):
+        if self.slurm is None:
+            return self
+        if self.output_dir == Path("outputs"):
+            raise ValueError(
+                "output_dir must be explicitly set when using SLURM (not the default 'outputs'). "
+                "Set output_dir to a unique experiment path, e.g. '/shared/experiments/my-run'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_no_teacher_in_slurm(self):
+        if self.slurm is None:
+            return self
+        if self.teacher_gpu_ids or self.teacher_inference:
+            raise ValueError(
+                "Teacher inference is not supported in SLURM mode. "
+                "The SLURM template only handles inference and training nodes."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_slurm_dp_replicate(self):
+        if self.slurm is None:
+            return self
+        if self.slurm.nodes_per_fsdp_group is not None:
+            if self.slurm.num_train_nodes % self.slurm.nodes_per_fsdp_group != 0:
+                raise ValueError(
+                    f"slurm.num_train_nodes ({self.slurm.num_train_nodes}) must be divisible by "
+                    f"slurm.nodes_per_fsdp_group ({self.slurm.nodes_per_fsdp_group})"
+                )
+            self.trainer.dp_replicate = self.slurm.num_train_nodes // self.slurm.nodes_per_fsdp_group
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_slurm_nccl(self):
+        if self.slurm is None:
+            return self
+        self.orchestrator.num_train_workers = self.slurm.num_train_nodes * self.slurm.gpus_per_node
+
+        if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+            self.trainer.weight_broadcast.host = "0.0.0.0"
+            self.trainer.weight_broadcast.inference_world_size = self.slurm.gpus_per_node * self.slurm.num_infer_nodes
+        return self
+
+    @model_validator(mode="after")
+    def validate_slurm_inference_config(self):
+        if self.slurm is None:
+            return self
+        if self.slurm.num_infer_nodes > 0 and self.inference is None:
+            raise ValueError(
+                f"inference config is required when slurm.num_infer_nodes > 0 (got {self.slurm.num_infer_nodes}). "
+                "The SLURM template will launch inference servers on these nodes."
+            )
+        return self
+
+    ### Local-only validators
+
     @model_validator(mode="after")
     def auto_setup_dp(self):
+        if self.slurm is not None:
+            return self
         if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
             assert len(self.inference_gpu_ids) % self.inference.parallel.tp == 0, (
                 "Number of inference GPUs must be divisible by the tensor parallel size"
@@ -152,6 +157,8 @@ class RLConfig(BaseRLConfig):
 
     @model_validator(mode="after")
     def auto_setup_num_train_workers(self):
+        if self.slurm is not None:
+            return self
         non_data_parallel_size = self.trainer.model.cp * self.trainer.model.tp
 
         if len(self.trainer_gpu_ids) > 1:
@@ -161,6 +168,8 @@ class RLConfig(BaseRLConfig):
 
     @model_validator(mode="after")
     def auto_setup_bench(self):
+        if self.slurm is not None:
+            return self
         if self.bench:
             # Set trainer and orchestrator to benchmark mode
             self.trainer.bench = True
@@ -237,6 +246,8 @@ class RLConfig(BaseRLConfig):
 
     @model_validator(mode="after")
     def validate_enough_devices_for_nccl(self):
+        if self.slurm is not None:
+            return self
         if self.trainer.weight_broadcast.type == "nccl":
             num_gpus = len(set(self.trainer_gpu_ids + self.inference_gpu_ids))
             if num_gpus < 2:
@@ -246,6 +257,8 @@ class RLConfig(BaseRLConfig):
     @model_validator(mode="after")
     def auto_setup_teacher_inference(self):
         """Auto-configure teacher inference server and orchestrator teacher_model client."""
+        if self.slurm is not None:
+            return self
         if self.teacher_gpu_ids is None or len(self.teacher_gpu_ids) == 0:
             return self
 
@@ -287,6 +300,8 @@ class RLConfig(BaseRLConfig):
 
     @model_validator(mode="after")
     def validate_teacher_model(self):
+        if self.slurm is not None:
+            return self
         if self.trainer.loss.teacher_tau > 0 and not self.orchestrator.teacher_model:
             raise ValueError(
                 "teacher_model must be configured when teacher_tau > 0. "
@@ -347,26 +362,7 @@ def check_gpus_available(gpu_ids: list[int]) -> None:
         raise RuntimeError(msg)
 
 
-def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
-    """Write resolved subconfigs to disk as TOML files."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    with open(output_dir / "trainer.toml", "wb") as f:
-        tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
-
-    with open(output_dir / "orchestrator.toml", "wb") as f:
-        tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
-
-    if config.inference is not None:
-        with open(output_dir / "inference.toml", "wb") as f:
-            tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
-
-    if config.teacher_inference is not None:
-        with open(output_dir / "teacher_inference.toml", "wb") as f:
-            tomli_w.dump(config.teacher_inference.model_dump(exclude_none=True, mode="json"), f)
-
-
-def rl(config: RLConfig):
+def rl_local(config: RLConfig):
     # Setup logger
     logger = setup_logger(
         config.log.level or "info",
@@ -656,6 +652,77 @@ def rl(config: RLConfig):
         cleanup_threads(monitor_threads)
         cleanup_processes(processes)
         raise
+
+
+SLURM_TEMPLATE_DIR = Path(__file__).parent / "slurm"
+SLURM_TEMPLATE_NAME = "rl_slurm.sh.j2"
+
+
+def render_slurm_script(config: RLConfig, config_dir: Path) -> str:
+    """Render the SLURM script template with config values."""
+    from jinja2 import Environment, FileSystemLoader
+
+    slurm = config.slurm
+    if slurm.slurm_template is not None:
+        template_dir = slurm.slurm_template.parent
+        template_name = slurm.slurm_template.name
+    else:
+        template_dir = SLURM_TEMPLATE_DIR
+        template_name = SLURM_TEMPLATE_NAME
+    env = Environment(loader=FileSystemLoader(template_dir), keep_trailing_newline=True)
+    template = env.get_template(template_name)
+    return template.render(
+        job_name=slurm.job_name,
+        output_dir=config.output_dir,
+        orchestrator_output_dir=config.orchestrator.output_dir,
+        config_dir=config_dir,
+        num_train_nodes=slurm.num_train_nodes,
+        num_infer_nodes=slurm.num_infer_nodes,
+        project_dir=slurm.project_dir,
+        gpus_per_node=slurm.gpus_per_node,
+        hf_hub_offline=slurm.hf_hub_offline,
+    )
+
+
+def rl_slurm(config: RLConfig):
+    logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
+
+    config_dir = config.output_dir / "configs"
+    write_subconfigs(config, config_dir)
+    logger.info(f"Wrote subconfigs to {config_dir}")
+
+    script = render_slurm_script(config, config_dir)
+    script_path = config.output_dir / "rl.sh"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script)
+    logger.info(f"Wrote SLURM script to {script_path}")
+
+    slurm_log_dir = config.output_dir / "slurm"
+    log_message = (
+        f"Logs:\n"
+        f"  Trainer:       tail -f {slurm_log_dir}/latest_train_node_rank_0.log\n"
+        f"  Inference:     tail -f {slurm_log_dir}/latest_infer_node_rank_0.log\n"
+        f"  Orchestrator:  tail -f {slurm_log_dir}/latest_orchestrator.log"
+    )
+
+    if config.slurm.dry_run:
+        logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
+        return
+
+    logger.info(f"Submitting: sbatch {script_path}")
+    result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"sbatch failed: {result.stderr.strip()}")
+        sys.exit(1)
+
+    logger.success(f"{result.stdout.strip()}\n\n{log_message}")
+
+
+def rl(config: RLConfig):
+    if config.slurm is not None:
+        rl_slurm(config)
+    else:
+        rl_local(config)
 
 
 def main():

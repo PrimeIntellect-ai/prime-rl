@@ -2,6 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Literal
 
+import tomli_w
 from pydantic import Field, model_validator
 
 from prime_rl.inference.config import InferenceConfig
@@ -352,3 +353,53 @@ class BaseRLConfig(BaseSettings):
         validate_shared_output_dir(self.trainer, self.orchestrator)
 
         return self
+
+
+class SlurmConfig(BaseSettings):
+    """SLURM-specific configuration for RL training."""
+
+    job_name: Annotated[str, Field(description="The SLURM job name.")]
+    num_train_nodes: Annotated[int, Field(description="Number of training nodes.")]
+    num_infer_nodes: Annotated[int, Field(description="Number of inference nodes.")]
+    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+    nodes_per_fsdp_group: Annotated[
+        int | None,
+        Field(
+            description="Number of train nodes per FSDP island. Auto-sets trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group."
+        ),
+    ] = None
+
+    project_dir: Annotated[
+        Path,
+        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
+    ] = Path(".")
+    hf_hub_offline: Annotated[
+        bool, Field(description="Set HF_HUB_OFFLINE=1 on training nodes to prevent downloading models at runtime.")
+    ] = False
+
+    slurm_template: Annotated[
+        Path | None, Field(description="The path to the SLURM template file. If None, will use the default template.")
+    ] = None
+    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
+        False
+    )
+
+
+def write_subconfigs(config: BaseRLConfig, output_dir: Path) -> None:
+    """Write resolved subconfigs to disk as TOML files."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(output_dir / "trainer.toml", "wb") as f:
+        tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
+
+    with open(output_dir / "orchestrator.toml", "wb") as f:
+        tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
+
+    if config.inference is not None:
+        with open(output_dir / "inference.toml", "wb") as f:
+            tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
+
+    teacher_inference = getattr(config, "teacher_inference", None)
+    if teacher_inference is not None:
+        with open(output_dir / "teacher_inference.toml", "wb") as f:
+            tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)

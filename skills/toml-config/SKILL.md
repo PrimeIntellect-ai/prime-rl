@@ -67,13 +67,37 @@ Use the string `"None"` in TOML to set a field to None:
 max_model_len = "None"
 ```
 
+## SLURM mode
+
+The `rl` command supports SLURM execution via an optional `[slurm]` section. When present, the run is submitted as a SLURM job instead of running locally.
+
+```toml
+output_dir = "/shared/experiments/my-run"
+
+[slurm]
+job_name = "my-rl-job"
+num_train_nodes = 2
+num_infer_nodes = 1
+gpus_per_node = 8
+# dry_run = true          # generate script without submitting
+# slurm_template = "path/to/custom.sh.j2"
+# nodes_per_fsdp_group = 1
+# project_dir = "/path/to/project"
+# hf_hub_offline = false
+```
+
+When `[slurm]` is set:
+- `output_dir` must be explicitly set (the default `outputs` is rejected)
+- Teacher inference (`teacher_gpu_ids`, `teacher_inference`) is not supported
+- Local-only fields (`inference_gpu_ids`, `trainer_gpu_ids`, `clean`, `bench`) are ignored
+
 ## Available commands
 
 All accept `@ config.toml` and CLI overrides:
 
 | Command | Config class | Description |
 |---------|-------------|-------------|
-| `uv run rl` | full RL pipeline | Orchestrator + inference + trainer |
+| `uv run rl` | full RL pipeline | Orchestrator + inference + trainer (local or SLURM) |
 | `uv run inference` | `InferenceConfig` | vLLM inference server |
 | `uv run trainer` | trainer config | RL trainer |
 | `uv run orchestrator` | orchestrator config | Rollout orchestrator |
@@ -83,4 +107,6 @@ All accept `@ config.toml` and CLI overrides:
 ## Key files
 
 - `src/prime_rl/utils/pydantic_config.py` — `parse_argv`, `BaseSettings`, `@` syntax parsing
+- `src/prime_rl/rl.py` — unified RL entrypoint (local + SLURM)
+- `src/prime_rl/rl_config.py` — `BaseRLConfig`, `SlurmConfig`, `write_subconfigs`
 - `configs/` — all config files, organized by task
