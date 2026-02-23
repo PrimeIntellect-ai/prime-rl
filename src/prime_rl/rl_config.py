@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
+from pydantic.config import ConfigDict
+from pydantic.main import BaseModel
 
 from prime_rl.inference.config import InferenceConfig
 from prime_rl.inference.config import WeightBroadcastConfig as InferenceWeightBroadcastConfig
@@ -98,8 +100,10 @@ class SharedWeightBroadcastConfig(BaseSettings):
     timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
 
 
-class BaseDeploymentConfig(BaseSettings):
+class BaseDeploymentConfig(BaseModel):
     """Configures a base deployment."""
+
+    model_config = ConfigDict(extra="forbid")
 
     gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
 
@@ -137,7 +141,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
-DeploymentConfig: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentConfig
+DeploymentConfigType: TypeAlias = Annotated[
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
+]
 
 
 class SlurmConfig(BaseSettings):
@@ -187,7 +193,7 @@ class RLConfig(BaseSettings):
         ),
     ] = None
 
-    deployment: Annotated[DeploymentConfig, Field(discriminator="type")] = SingleNodeDeploymentConfig()
+    deployment: Annotated[DeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
 
     slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 
@@ -286,6 +292,22 @@ class RLConfig(BaseSettings):
             description="If set, dump resolved subconfigs (trainer, orchestrator, inference) to this directory and exit without starting any processes."
         ),
     ] = None
+
+    ### Pre-validation normalization
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_deployment(cls, data):
+        # nested_model_default_partial_update=True merges the SingleNodeDeploymentConfig()
+        # default into loaded data before validation. When the user switches to multi_node,
+        # single-node-only fields (num_train_gpus etc.) get carried over and cause errors.
+        if not isinstance(data, dict):
+            return data
+        deployment = data.get("deployment")
+        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
+            for key in ("num_train_gpus", "num_infer_gpus", "num_teacher_gpus"):
+                deployment.pop(key, None)
+        return data
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 

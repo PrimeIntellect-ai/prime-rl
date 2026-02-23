@@ -1,9 +1,10 @@
-job_name = "sft-moe-math"
 output_dir = "/shared/outputs/sft-moe-math"
+max_steps = 500
+
+[slurm]
+job_name = "sft-moe-math"
 num_nodes = 1
 gpus_per_node = 8
-
-max_steps = 500
 
 [wandb]
 project = "sft-moe-intellect"

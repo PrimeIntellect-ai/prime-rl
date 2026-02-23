@@ -1,12 +1,14 @@
-job_name = "hendrycks-math"
 output_dir = "outputs/hendrycks-math"
-
-num_train_nodes = 1
-num_infer_nodes = 1
-
 max_steps = 500
 seq_len = 2048
 
+[slurm]
+job_name = "hendrycks-math"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
 
 [log]
 level = "debug"
@@ -37,5 +39,4 @@ hard_threshold = 0.0
 [trainer]
 
 [inference.parallel]
-tp = 1
 dp = 8
