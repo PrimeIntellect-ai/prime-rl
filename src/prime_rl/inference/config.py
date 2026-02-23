@@ -290,6 +290,11 @@ class InferenceConfig(BaseSettings):
         WeightBroadcastConfig()
     )
 
+    env_vars: Annotated[
+        dict[str, str],
+        Field(description="Extra environment variables to set when running the inference server."),
+    ] = {}
+
     @model_validator(mode="after")
     def round_up_max_lora_rank(self):
         """Round up max_lora_rank to the nearest valid vLLM value.

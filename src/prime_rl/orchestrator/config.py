@@ -729,6 +729,11 @@ class OrchestratorConfig(BaseSettings):
 
     rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
 
+    env_vars: Annotated[
+        dict[str, str],
+        Field(description="Extra environment variables to set when running the orchestrator."),
+    ] = {}
+
     output_dir: Annotated[
         Path,
         Field(

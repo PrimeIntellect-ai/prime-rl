@@ -88,6 +88,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     INFER_NODE_RANK=$SLURM_PROCID
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
+{% for key, value in infer_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
 
     uv run inference \
         @ $CONFIG_DIR/inference.toml \
@@ -96,14 +99,20 @@ else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
 
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
-        uv run orchestrator \
-            @ $CONFIG_DIR/orchestrator.toml \
-            --weight_broadcast.host $MASTER_ADDR \
-            --client.base-url $INFER_URLS \
-            2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
+        (
+{%- for key, value in orch_env_vars.items() %}
+            export {{ key }}="{{ value }}"
+{%- endfor %}
+            uv run orchestrator \
+                @ $CONFIG_DIR/orchestrator.toml \
+                --weight_broadcast.host $MASTER_ADDR \
+                --client.base-url $INFER_URLS \
+                2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log
+        ) & disown
     fi
-
-    export HF_HUB_OFFLINE={{ 1 if hf_hub_offline else 0 }}
+{% for key, value in trainer_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
 
 
     # This is required for compilation to work correctly

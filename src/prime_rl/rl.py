@@ -209,7 +209,11 @@ def rl_local(config: RLConfig):
             with open(log_dir / "inference.stdout", "w") as log_file:
                 inference_process = Popen(
                     inference_cmd,
-                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids))},
+                    env={
+                        **os.environ,
+                        **config.inference.env_vars,
+                        "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
+                    },
                     stdout=log_file,
                     stderr=log_file,
                 )
@@ -245,7 +249,11 @@ def rl_local(config: RLConfig):
             with open(log_dir / "teacher_inference.stdout", "w") as log_file:
                 teacher_inference_process = Popen(
                     teacher_inference_cmd,
-                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, teacher_gpu_ids))},
+                    env={
+                        **os.environ,
+                        **config.teacher_inference.env_vars,
+                        "CUDA_VISIBLE_DEVICES": ",".join(map(str, teacher_gpu_ids)),
+                    },
                     stdout=log_file,
                     stderr=log_file,
                 )
@@ -286,6 +294,7 @@ def rl_local(config: RLConfig):
                 stderr=log_file,
                 env={
                     **os.environ,
+                    **config.orchestrator.env_vars,
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
                     "WANDB_ARGS": json.dumps(start_command),
@@ -332,6 +341,7 @@ def rl_local(config: RLConfig):
                 trainer_cmd,
                 env={
                     **os.environ,
+                    **config.trainer.env_vars,
                     "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
                     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
                     "LOGURU_FORCE_COLORS": "1",
@@ -444,7 +454,6 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
             output_dir=config.output_dir,
             rl_config_path=rl_config_path,
             num_gpus=num_gpus,
-            hf_hub_offline=config.hf_hub_offline,
         )
         log_message = (
             f"Logs:\n"
@@ -463,7 +472,9 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
             num_infer_nodes=deployment.num_infer_nodes,
             num_teacher_nodes=deployment.num_teacher_nodes,
             gpus_per_node=deployment.gpus_per_node,
-            hf_hub_offline=config.hf_hub_offline,
+            infer_env_vars=config.inference.env_vars,
+            orch_env_vars=config.orchestrator.env_vars,
+            trainer_env_vars=config.trainer.env_vars,
         )
         slurm_log_dir = config.output_dir / "slurm"
         log_message = (

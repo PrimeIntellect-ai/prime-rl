@@ -231,6 +231,11 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = 1
 
+    env_vars: Annotated[
+        dict[str, str],
+        Field(description="Extra environment variables to set when running the trainer."),
+    ] = {}
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench is not None:

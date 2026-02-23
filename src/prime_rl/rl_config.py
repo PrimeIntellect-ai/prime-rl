@@ -246,9 +246,12 @@ class RLConfig(BaseSettings):
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
 
-    hf_hub_offline: Annotated[
-        bool, Field(description="Set HF_HUB_OFFLINE=1 on training nodes to prevent downloading models at runtime.")
-    ] = False
+    env_vars: Annotated[
+        dict[str, str],
+        Field(
+            description="Extra environment variables applied to all components. Per-component env_vars override these."
+        ),
+    ] = {}
 
     ### Local-only fields
 
@@ -615,6 +618,14 @@ class RLConfig(BaseSettings):
         self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
         self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_env_vars(self):
+        """Merge top-level env_vars into each component. Component-level env_vars take precedence."""
+        for component in [self.trainer, self.orchestrator, self.inference, self.teacher_inference]:
+            if component is not None:
+                component.env_vars = {**self.env_vars, **component.env_vars}
         return self
 
     ### Warnings
