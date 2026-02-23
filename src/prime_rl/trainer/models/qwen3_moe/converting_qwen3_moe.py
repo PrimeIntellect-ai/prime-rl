@@ -74,19 +74,16 @@ def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
     state_dict[f"model.layers.{i}.mlp.gate.weight"] = state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
     del state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
 
-    # Routed experts - convert to new fused format (transformers 5.0+)
-    w1 = state_dict[f"model.layers.{i}.mlp.experts.w1"]  # (num_experts, moe_dim, dim)
-    w2 = state_dict[f"model.layers.{i}.mlp.experts.w2"]  # (num_experts, dim, moe_dim)
-    w3 = state_dict[f"model.layers.{i}.mlp.experts.w3"]  # (num_experts, moe_dim, dim)
+    # Routed experts - convert to per-expert format (compatible with vLLM and transformers)
+    w1 = state_dict.pop(f"model.layers.{i}.mlp.experts.w1")  # (num_experts, moe_dim, dim)
+    w2 = state_dict.pop(f"model.layers.{i}.mlp.experts.w2")  # (num_experts, dim, moe_dim)
+    w3 = state_dict.pop(f"model.layers.{i}.mlp.experts.w3")  # (num_experts, moe_dim, dim)
 
-    # Fuse w1 (gate) and w3 (up) into gate_up_proj
-    gate_up_proj = torch.cat([w1, w3], dim=1)  # (num_experts, 2*moe_dim, dim)
-    state_dict[f"model.layers.{i}.mlp.experts.gate_up_proj"] = gate_up_proj
-    state_dict[f"model.layers.{i}.mlp.experts.down_proj"] = w2
-
-    del state_dict[f"model.layers.{i}.mlp.experts.w1"]
-    del state_dict[f"model.layers.{i}.mlp.experts.w2"]
-    del state_dict[f"model.layers.{i}.mlp.experts.w3"]
+    num_experts = w1.shape[0]
+    for j in range(num_experts):
+        state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"] = w1[j]
+        state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"] = w2[j]
+        state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"] = w3[j]
 
 
 def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):

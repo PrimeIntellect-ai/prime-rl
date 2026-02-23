@@ -1,5 +1,6 @@
 import functools
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 import torch.nn.functional as F
@@ -36,6 +37,7 @@ class AttentionConfig:
     attention_bias: bool
     use_qk_norm: bool
     rms_norm_eps: float
+    qk_norm_type: Literal["per_head", "per_layer"] = "per_head"
 
 
 # TODO: Does torch compile support config._attn_implementation forking?
@@ -70,9 +72,18 @@ class FlashAttention(nn.Module):
         )
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
         self.use_qk_norm = config.use_qk_norm
+        self.qk_norm_type = config.qk_norm_type
         if self.use_qk_norm:
-            self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
-            self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+            if self.qk_norm_type == "per_layer":
+                self.q_norm = RMSNorm(
+                    RMSNormConfig(hidden_size=config.num_attention_heads * self.head_dim, eps=config.rms_norm_eps)
+                )
+                self.k_norm = RMSNorm(
+                    RMSNormConfig(hidden_size=config.num_key_value_heads * self.head_dim, eps=config.rms_norm_eps)
+                )
+            else:
+                self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+                self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
 
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
@@ -90,11 +101,19 @@ class FlashAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states).view(hidden_shape)
-        key_states = self.k_proj(hidden_states).view(hidden_shape)
-        value_states = self.v_proj(hidden_states).view(hidden_shape)
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
 
-        if self.use_qk_norm:  # main diff from Llama
+        if self.use_qk_norm and self.qk_norm_type == "per_layer":
+            query_states = self.q_norm(query_states)
+            key_states = self.k_norm(key_states)
+
+        query_states = query_states.view(hidden_shape)
+        key_states = key_states.view(hidden_shape)
+        value_states = value_states.view(hidden_shape)
+
+        if self.use_qk_norm and self.qk_norm_type == "per_head":
             query_states = self.q_norm(query_states)
             key_states = self.k_norm(key_states)
 
@@ -156,9 +175,18 @@ class SDPAAttention(nn.Module):
         )
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
         self.use_qk_norm = config.use_qk_norm
+        self.qk_norm_type = config.qk_norm_type
         if self.use_qk_norm:
-            self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
-            self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+            if self.qk_norm_type == "per_layer":
+                self.q_norm = RMSNorm(
+                    RMSNormConfig(hidden_size=config.num_attention_heads * self.head_dim, eps=config.rms_norm_eps)
+                )
+                self.k_norm = RMSNorm(
+                    RMSNormConfig(hidden_size=config.num_key_value_heads * self.head_dim, eps=config.rms_norm_eps)
+                )
+            else:
+                self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+                self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
 
     def forward(
         self,
@@ -170,11 +198,19 @@ class SDPAAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states: torch.Tensor = self.q_proj(hidden_states).view(hidden_shape)
-        key_states: torch.Tensor = self.k_proj(hidden_states).view(hidden_shape)
-        value_states: torch.Tensor = self.v_proj(hidden_states).view(hidden_shape)
+        query_states: torch.Tensor = self.q_proj(hidden_states)
+        key_states: torch.Tensor = self.k_proj(hidden_states)
+        value_states: torch.Tensor = self.v_proj(hidden_states)
 
-        if self.use_qk_norm:  # main diff from Llama
+        if self.use_qk_norm and self.qk_norm_type == "per_layer":
+            query_states = self.q_norm(query_states)
+            key_states = self.k_norm(key_states)
+
+        query_states = query_states.view(hidden_shape)
+        key_states = key_states.view(hidden_shape)
+        value_states = value_states.view(hidden_shape)
+
+        if self.use_qk_norm and self.qk_norm_type == "per_head":
             query_states = self.q_norm(query_states)
             key_states = self.k_norm(key_states)
 
@@ -229,11 +265,19 @@ def substitute_prime_rl_flash_attn(
             input_shape = hidden_states.shape[:-1]
             hidden_shape = (*input_shape, -1, self.head_dim)
 
-            query_states = self.q_proj(hidden_states).view(hidden_shape)
-            key_states = self.k_proj(hidden_states).view(hidden_shape)
-            value_states = self.v_proj(hidden_states).view(hidden_shape)
+            query_states = self.q_proj(hidden_states)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
 
-            if self.use_qk_norm:  # main diff from Llama
+            if self.use_qk_norm and self.qk_norm_type == "per_layer":
+                query_states = self.q_norm(query_states)
+                key_states = self.k_norm(key_states)
+
+            query_states = query_states.view(hidden_shape)
+            key_states = key_states.view(hidden_shape)
+            value_states = value_states.view(hidden_shape)
+
+            if self.use_qk_norm and self.qk_norm_type == "per_head":
                 query_states = self.q_norm(query_states)
                 key_states = self.k_norm(key_states)
 

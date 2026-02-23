@@ -114,6 +114,7 @@ class MetricsServer(HealthServer):
         self._mismatch_kl = Gauge(
             "trainer_mismatch_kl", "KL divergence between trainer and inference model", registry=self._registry
         )
+        self._kl_ent_ratio = Gauge("trainer_kl_ent_ratio", "Ratio of mismatch KL to entropy", registry=self._registry)
         # Aggregate run metrics
         self._runs_discovered = Gauge(
             "trainer_runs_discovered", "Number of run folders discovered", registry=self._registry
@@ -206,6 +207,8 @@ class MetricsServer(HealthServer):
         self._mfu.set(mfu)
         self._entropy.set(entropy)
         self._mismatch_kl.set(mismatch_kl)
+        if entropy > 0:
+            self._kl_ent_ratio.set(mismatch_kl / entropy)
         self._last_step_ts.set(time.time())
 
     def update_runs(

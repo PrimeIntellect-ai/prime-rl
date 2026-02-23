@@ -1,0 +1,53 @@
+job_name = "hendrycks-math-moe"
+output_dir = "outputs/hendrycks-math-moe"
+
+num_train_nodes = 1
+num_infer_nodes = 1
+
+max_steps = 500
+seq_len = 2048
+
+[log]
+level = "debug"
+
+[wandb]
+project = "hendrycks-math-debug"
+name = "hendrycks-math"
+
+[weight_broadcast]
+type = "nccl"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+optim_cpu_offload = true
+
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.ac]
+freq = 1
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 2048
+
+[[orchestrator.env]]
+id = "math-env"
+name = "hendrycks-math"
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 128, math_verify_timeout = 60 }
+
+[orchestrator.buffer]
+easy_threshold = 1.0
+hard_threshold = 0.0
+
+[inference.parallel]
+tp = 4
+dp = 2
