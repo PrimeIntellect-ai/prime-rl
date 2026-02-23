@@ -33,7 +33,7 @@ The SLURM config extends the standard RL config with the following fields:
 | `num_infer_nodes` | Number of nodes for inference |
 | `gpus_per_node` | Number of GPUs per node (default: 8) |
 | `nodes_per_fsdp_group` | Number of train nodes per FSDP island (optional, auto-sets `trainer.dp_replicate`) |
-| `template` | Path to a custom Jinja2 template (optional) |
+| `template_path` | Path to a custom Jinja2 template (optional) |
 | `dry_run` | Only generate the script without submitting (default: false) |
 
 All standard RL config fields (model, trainer, orchestrator, inference, wandb, ckpt, etc.) are available and will be resolved into the sub-configs.
@@ -127,7 +127,7 @@ The default RL template handles a standard multi-node setup with NCCL weight bro
 ```bash
 uv run rl_slurm \
     @ my_config.toml \
-    --slurm.template path/to/my_template.sh.j2
+    --slurm.template-path path/to/my_template.sh.j2
 ```
 
 The template receives the following variables: `job_name`, `project_dir`, `output_dir`, `config_dir`, `num_train_nodes`, `num_infer_nodes`, `gpus_per_node`, `hf_hub_offline`. See `src/prime_rl/slurm/rl_slurm.sh.j2` for the default template as a starting point.

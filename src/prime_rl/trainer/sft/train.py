@@ -462,10 +462,10 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
     from jinja2 import Environment, FileSystemLoader
 
     slurm = config.slurm
-    assert slurm.template is not None
+    assert slurm.template_path is not None
 
-    env = Environment(loader=FileSystemLoader(slurm.template.parent), keep_trailing_newline=True)
-    template = env.get_template(slurm.template.name)
+    env = Environment(loader=FileSystemLoader(slurm.template_path.parent), keep_trailing_newline=True)
+    template = env.get_template(slurm.template_path.name)
 
     if config.deployment.type == "single_node":
         import tomli_w

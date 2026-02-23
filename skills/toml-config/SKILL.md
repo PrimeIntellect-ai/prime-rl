@@ -87,7 +87,7 @@ gpus_per_node = 8
 [slurm]
 job_name = "my-rl-job"
 # dry_run = true          # generate script without submitting
-# template = "path/to/custom.sh.j2"
+# template_path = "path/to/custom.sh.j2"
 # project_dir = "/path/to/project"
 ```
 
@@ -110,7 +110,7 @@ gpus_per_node = 8
 [slurm]
 job_name = "my-sft-job"
 # dry_run = true
-# template = "path/to/custom.sh.j2"
+# template_path = "path/to/custom.sh.j2"
 # project_dir = "/path/to/project"
 ```
 

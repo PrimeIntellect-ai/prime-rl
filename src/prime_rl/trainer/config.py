@@ -475,7 +475,7 @@ class SlurmConfig(BaseConfig):
         Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
     ] = Path(".")
 
-    template: Annotated[
+    template_path: Annotated[
         Path | None,
         Field(
             description="The path to the SLURM template file. If None, will use the default single-node/multi-node template."

@@ -420,10 +420,10 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
 
     assert config.output_dir is not None
     assert config.slurm is not None
-    assert config.slurm.template is not None
+    assert config.slurm.template_path is not None
 
-    env = Environment(loader=FileSystemLoader(config.slurm.template.parent), keep_trailing_newline=True)
-    template = env.get_template(config.slurm.template.name)
+    env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
+    template = env.get_template(config.slurm.template_path.name)
 
     log_dir = config.output_dir / "logs"
 

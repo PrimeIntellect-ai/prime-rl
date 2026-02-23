@@ -630,11 +630,11 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         """Auto-setup the default single-node/multi-node SLURM template if no custom template is provided."""
-        if self.slurm is not None and self.slurm.template is None:
+        if self.slurm is not None and self.slurm.template_path is None:
             if self.deployment.type == "single_node":
-                self.slurm.template = Path("templates/single_node_rl.sbatch.j2")
+                self.slurm.template_path = Path("templates/single_node_rl.sbatch.j2")
             else:
-                self.slurm.template = Path("templates/multi_node_rl.sbatch.j2")
+                self.slurm.template_path = Path("templates/multi_node_rl.sbatch.j2")
         return self
 
     @model_validator(mode="after")
