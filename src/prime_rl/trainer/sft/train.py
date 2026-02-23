@@ -452,7 +452,7 @@ def write_trainer_config(config: SFTTrainerConfig, output_dir: Path) -> None:
     import tomli_w
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    trainer_data = config.model_dump(exclude_none=True, mode="json")
+    trainer_data = config.model_dump(exclude={"deployment"}, exclude_none=True, mode="json")
     with open(output_dir / "trainer.toml", "wb") as f:
         tomli_w.dump(trainer_data, f)
 
