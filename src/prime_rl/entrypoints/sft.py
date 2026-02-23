@@ -61,6 +61,7 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
 
 
 def sft_slurm(config: SFTTrainerConfig):
+    """Run SFT training via SLURM."""
     assert config.slurm is not None
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
@@ -91,7 +92,7 @@ def sft_slurm(config: SFTTrainerConfig):
 
 
 def sft_local(config: SFTTrainerConfig):
-    """Run SFT training locally via torchrun."""
+    """Run SFT training locally."""
     assert config.deployment.type == "single_node"
 
     config_dir = Path(".pydantic_config") / uuid.uuid4().hex

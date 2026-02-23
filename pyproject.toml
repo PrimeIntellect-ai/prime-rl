@@ -38,8 +38,8 @@ dependencies = [
 ]
 
 [project.scripts]
-rl = "prime_rl.rl:main"
-sft = "prime_rl.sft:main"
+rl = "prime_rl.entrypoints.rl:main"
+sft = "prime_rl.entrypoints.sft:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
 inference = "prime_rl.inference.server:main"
