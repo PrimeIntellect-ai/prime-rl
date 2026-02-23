@@ -190,6 +190,35 @@ def test_setup_packer_reads_single_run_root_batch_target(
     assert receiver.start_steps == [(0, 0)]
 
 
+def test_setup_packer_single_run_falls_back_to_discovered_run_batch_target(single_run_env, tmp_path: Path) -> None:
+    manager, receiver, _sender = single_run_env
+    create_run_with_config(
+        tmp_path,
+        "run_default",
+        config={
+            "model": {"name": "test-model"},
+            "batch_size": 6,
+            "rollouts_per_example": 2,
+            "env": [{"id": "test-env"}],
+            "sampling": {"temperature": 1.0},
+        },
+    )
+    manager.discover_runs()
+
+    packer = setup_packer(
+        dp_world_size=1,
+        seq_len=32,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        transport_config=FileSystemTransportConfig(),
+        start_step=0,
+    )
+
+    assert packer.batch_target == 6
+    assert packer.batch_unit == "rollouts"
+    assert receiver.start_steps == [(0, 0)]
+
+
 def test_multi_packer_sets_receiver_start_step_to_zero_for_existing_and_new_runs(
     multi_packer_env, tmp_path: Path
 ) -> None:

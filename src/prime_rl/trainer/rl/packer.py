@@ -428,7 +428,13 @@ def setup_packer(
                 multi_run_manager.output_dir
             )
             if token_batch_size is None and rollout_batch_size is None:
-                token_batch_size = seq_len * dp_world_size
+                batch_target, batch_unit, _ = _resolve_batch_target_from_discovered_runs(
+                    default_token_batch_size=seq_len * dp_world_size
+                )
+                if batch_unit == "tokens":
+                    token_batch_size = batch_target
+                else:
+                    rollout_batch_size = batch_target
         else:
             batch_target, batch_unit, batch_config_provisional = _resolve_batch_target_from_discovered_runs(
                 default_token_batch_size=seq_len * dp_world_size
