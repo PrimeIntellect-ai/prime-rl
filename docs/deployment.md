@@ -197,6 +197,18 @@ uv run rl \
   --inference.parallel.dp 6
 ```
 
+### Expert Parallel Inference Deployment
+
+Expert-parallel setup now lives in a dedicated page:
+
+- [Expert Parallel Deployment](deployment_ep.md)
+
+Quick smoke-test command:
+
+```bash
+uv run rl @ configs/debug/rl_ep.toml
+```
+
 ### Parallel Experiments
 
 For quick ablations, it can be more efficient to parallelize experiments within a node (e.g. split your GPUs to run two experiments in parallel). For example, if you have access to 4 GPUs and your experiment fits on 2 GPUs, you can parallelize two experiments as follows:

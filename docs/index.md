@@ -11,5 +11,6 @@ This directory maintains the documentation for PRIME-RL. It is organized into th
 - [**Checkpointing**](checkpointing.md) - Saving and resuming training from checkpoints
 - [**Benchmarking**](benchmarking.md) - Performance benchmarking and throughput measurement
 - [**Deployment**](deployment.md) - Training deployment on single-GPU, multi-GPU, and multi-node clusters
+- [**Expert Parallel Deployment**](deployment_ep.md) - Expert-parallel setup, backend selection, and EPLB toggles
 - [**Kubernetes**](kubernetes.md) - Deploying PRIME-RL on Kubernetes with Helm
 - [**Troubleshooting**](troubleshooting.md) - Common issues and their solutions

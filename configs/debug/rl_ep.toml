@@ -1,0 +1,34 @@
+inference_gpu_ids = [0, 1]
+trainer_gpu_ids = [2]
+
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen3-30B-A3B"
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 64
+rollouts_per_example = 8
+
+[orchestrator.sampling]
+max_tokens = 128
+
+[[orchestrator.env]]
+id = "reverse-text"
+
+[inference]
+enable_expert_parallel = true
+all2all_backend = "allgather_reducescatter"
+enable_eplb = false
+# all2all choices: "allgather_reducescatter" | "deepep_high_throughput" | "deepep_low_latency" | "flashinfer_all2allv" | "mori" | "naive" | "pplx"
+# PRIME-RL currently exposes enable_eplb toggle; advanced eplb_config knobs use vLLM defaults.
+
+[inference.parallel]
+tp = 2
+
+[inference.model]
+enforce_eager = true
