@@ -1,6 +1,6 @@
 toml_files = ["rl.toml"]
 
-output_dir = "/data/outputs/wiki-search" # Shared directory on your cluster
+output_dir = "outputs/wiki-search"
 
 [slurm]
 job_name = "wiki-search"
