@@ -36,10 +36,8 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
     if config.deployment.type == "single_node":
         config_path = config_dir / "sft.toml"
         config_dir.mkdir(parents=True, exist_ok=True)
-        config_dict = config.model_dump(exclude={"slurm"}, exclude_none=True, mode="json")
-        config_dict["deployment"] = {"type": "single_node", "num_gpus": config.deployment.gpus_per_node}
         with open(config_path, "wb") as f:
-            tomli_w.dump(config_dict, f)
+            tomli_w.dump(config.model_dump(exclude={"slurm"}, exclude_none=True, mode="json"), f)
 
         script = template.render(
             config_path=config_path,
