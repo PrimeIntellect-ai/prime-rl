@@ -1,0 +1,48 @@
+#!/bin/bash
+
+#SBATCH --job-name={{ job_name }}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+#SBATCH --partition=cluster
+#SBATCH --exclusive
+#SBATCH --signal=B:SIGTERM@60
+#SBATCH --requeue
+#SBATCH --output=/shared/logs/job_%j.log
+#SBATCH --error=/shared/logs/job_%j.log
+
+# Paths
+export PROJECT_DIR={{ project_dir }}
+export CONFIG_DIR={{ config_dir }}
+export OUTPUT_DIR={{ output_dir }}
+mkdir -p $OUTPUT_DIR/slurm
+
+# General
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS=1
+
+# vLLM needs this for graph compile
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+
+# Setup environment
+[ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
+source $PROJECT_DIR/.venv/bin/activate
+
+# Graceful shutdown on preemption
+cleanup() {
+    echo "Received SIGTERM, shutting down inference server..."
+    kill $INFER_PID 2>/dev/null
+    wait $INFER_PID 2>/dev/null
+    echo "Inference server stopped."
+    exit 0
+}
+trap cleanup SIGTERM
+
+# Run inference server
+uv run inference \
+    @ $CONFIG_DIR/inference.toml \
+    2>&1 | tee $OUTPUT_DIR/slurm/latest_infer.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer.log &
+INFER_PID=$!
+wait $INFER_PID

@@ -46,6 +46,7 @@ inference = "prime_rl.inference.server:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
 sft = "prime_rl.trainer.sft.train:main"
 sft_slurm = "prime_rl.slurm.sft:main"
+infer_slurm = "prime_rl.slurm.infer:main"
 
 [project.entry-points."vllm.general_plugins"]
 prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
