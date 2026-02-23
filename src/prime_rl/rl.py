@@ -167,8 +167,12 @@ class RLConfig(BaseRLConfig):
             self.orchestrator.bench = True
 
             # Configure the trainer fake data to match the orchestrator config
+            trainer_fake_batch_size = self.orchestrator.batch_size
+            if trainer_fake_batch_size is None:
+                trainer_fake_batch_size = self.orchestrator.max_inflight_rollouts
+            assert trainer_fake_batch_size is not None
             self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size,
+                batch_size=trainer_fake_batch_size,
             )
 
         trainer_bench_enabled = self.trainer.bench is not None
