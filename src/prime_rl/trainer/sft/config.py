@@ -126,7 +126,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
     type: Literal["multi_node"] = "multi_node"
 
-    num_nodes: Annotated[int, Field(description="Number of training nodes.")]
+    num_nodes: Annotated[int, Field(description="Number of training nodes.")] = 2
 
     nodes_per_fsdp_group: Annotated[
         int | None,
@@ -136,9 +136,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     ] = None
 
 
-SFTDeploymentConfigType: TypeAlias = Annotated[
-    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
-]
+SFTDeploymentConfigType: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentConfig
 
 
 class SFTTrainerConfig(BaseSettings):
@@ -152,7 +150,7 @@ class SFTTrainerConfig(BaseSettings):
         ),
     ] = None
 
-    deployment: SFTDeploymentConfigType = SingleNodeDeploymentConfig()
+    deployment: Annotated[SFTDeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
 
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -219,6 +217,19 @@ class SFTTrainerConfig(BaseSettings):
     env_vars: Annotated[
         dict[str, str], Field(description="Environment variables to set when running the trainer.")
     ] = {}
+
+    ### Pre-validation normalization
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_deployment(cls, data):
+        if not isinstance(data, dict):
+            return data
+        deployment = data.get("deployment")
+        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
+            for key in ("num_gpus",):
+                deployment.pop(key, None)
+        return data
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 

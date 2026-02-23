@@ -1,4 +1,4 @@
-output_dir = "outputs/hendrycks-math-moe"
+output_dir = "outputs/rl-math-moe"
 max_steps = 500
 seq_len = 2048
 
