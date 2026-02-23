@@ -151,7 +151,12 @@ class RLConfig(BaseSettings):
 
     trainer: TrainerConfig
     orchestrator: OrchestratorConfig
-    inference: InferenceConfig
+    inference: Annotated[
+        InferenceConfig | None,
+        Field(
+            description="The inference config. If None, the rl entrypoint will not start an inference server (useful for elastic inference pools or manually started servers)."
+        ),
+    ] = None
 
     teacher_inference: Annotated[
         InferenceConfig | None,
@@ -288,10 +293,13 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
-            raise ValueError("Must use SLURM for multi-node deployment.")
+            if self.slurm is None:
+                raise ValueError("Must use SLURM for multi-node deployment.")
+            if not self.inference:
+                raise ValueError("Must configure inference when using multi-node deployment.")
         return self
 
-    # TODO: move this
+    # TODO: fix this
     @model_validator(mode="after")
     def validate_no_teacher_in_multinode(self):
         if self.deployment.type == "multi_node" and self.teacher_inference is not None:
@@ -418,7 +426,7 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_model(self):
-        """Auto-setup shared W&B config for trainer, orchestrator, and inference."""
+        """Auto-setup shared model config for trainer, orchestrator, and inference."""
         if self.model is not None:
             self.trainer.model.name = self.model.name
             self.orchestrator.model.name = self.model.name
@@ -502,6 +510,13 @@ class RLConfig(BaseSettings):
                 batch_size=self.orchestrator.batch_size,
             )
 
+        trainer_bench_enabled = self.trainer.bench is not None
+        if trainer_bench_enabled != self.orchestrator.bench:
+            raise ValueError(
+                f"Trainer benchmark mode ({self.trainer.bench}) and orchestrator benchmark mode "
+                f"({self.orchestrator.bench}) must match. Use the top-level bench = true to set both."
+            )
+
         return self
 
     @model_validator(mode="after")
@@ -546,8 +561,14 @@ class RLConfig(BaseSettings):
                     f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
                 )
 
-            self.inference.enable_lora = True
-            self.inference.max_lora_rank = self.trainer.model.lora.rank
+            if self.inference is not None:
+                self.inference.enable_lora = True
+                self.inference.max_lora_rank = self.trainer.model.lora.rank
+            else:
+                warnings.warn(
+                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
+                    "make sure to set --enable_lora and --max-lora-rank."
+                )
 
         return self
 
@@ -560,12 +581,13 @@ class RLConfig(BaseSettings):
                 self.orchestrator.num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
 
             # fill up inference capacity with dp ranks
-            num_infer_gpus = self.deployment.num_infer_gpus
-            if num_infer_gpus != self.inference.parallel.dp * self.inference.parallel.tp:
-                assert num_infer_gpus % self.inference.parallel.tp == 0, (
-                    "Number of inference GPUs must be divisible by the tensor parallel size"
-                )
-                self.inference.parallel.dp = num_infer_gpus // self.inference.parallel.tp
+            if self.inference is not None:
+                num_infer_gpus = self.deployment.num_infer_gpus
+                if num_infer_gpus != self.inference.parallel.dp * self.inference.parallel.tp:
+                    assert num_infer_gpus % self.inference.parallel.tp == 0, (
+                        "Number of inference GPUs must be divisible by the tensor parallel size"
+                    )
+                    self.inference.parallel.dp = num_infer_gpus // self.inference.parallel.tp
 
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node
@@ -602,9 +624,12 @@ class RLConfig(BaseSettings):
         from prime_rl.orchestrator.config import TeacherModelConfig
 
         if self.teacher_inference is None:
-            self.teacher_inference = copy.deepcopy(self.inference)
-            self.teacher_inference.server.port = self.inference.server.port + 1
-        elif self.teacher_inference.server.port == self.inference.server.port:
+            if self.inference is None:
+                self.teacher_inference = InferenceConfig()
+            else:
+                self.teacher_inference = copy.deepcopy(self.inference)
+            self.teacher_inference.server.port = (self.inference.server.port if self.inference else 8000) + 1
+        elif self.inference is not None and self.teacher_inference.server.port == self.inference.server.port:
             raise ValueError(
                 f"teacher_inference.server.port ({self.teacher_inference.server.port}) conflicts with "
                 f"inference.server.port ({self.inference.server.port}). "

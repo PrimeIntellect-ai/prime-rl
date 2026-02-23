@@ -142,7 +142,8 @@ def rl_local(config: RLConfig):
         logger.info(f"Dumping resolved subconfigs to {config.dump_config}")
         logger.info(f"  Wrote trainer config to {config.dump_config / 'trainer.toml'}")
         logger.info(f"  Wrote orchestrator config to {config.dump_config / 'orchestrator.toml'}")
-        logger.info(f"  Wrote inference config to {config.dump_config / 'inference.toml'}")
+        if config.inference is not None:
+            logger.info(f"  Wrote inference config to {config.dump_config / 'inference.toml'}")
         if config.teacher_inference is not None:
             logger.info(f"  Wrote teacher inference config to {config.dump_config / 'teacher_inference.toml'}")
         logger.success(f"Config dump complete. Files written to {config.dump_config}")
@@ -152,8 +153,9 @@ def rl_local(config: RLConfig):
     # Derive GPU IDs from deployment config
     assert config.deployment.type == "single_node"
     gpu_offset = 0
-    infer_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_infer_gpus))
-    gpu_offset += config.deployment.num_infer_gpus
+    num_infer_gpus = config.deployment.num_infer_gpus if config.inference is not None else 0
+    infer_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
+    gpu_offset += num_infer_gpus
     trainer_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
     gpu_offset += config.deployment.num_train_gpus
     num_teacher_gpus = config.deployment.num_teacher_gpus or 0

@@ -312,7 +312,6 @@ class RLTrainerConfig(BaseSettings):
     def auto_setup_env_vars(self):
         self.env_vars = {
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
-            "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
             **self.env_vars,
         }
         return self

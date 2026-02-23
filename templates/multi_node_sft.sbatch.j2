@@ -6,8 +6,8 @@
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition={{ partition }}
 #SBATCH --exclusive                 # Get the ENTIRE node exclusively
-#SBATCH --output=/shared/logs/job_%j.log
-#SBATCH --error=/shared/logs/job_%j.log
+#SBATCH --output={{ output_dir }}/job_%j.log
+#SBATCH --error={{ output_dir }}/job_%j.log
 
 # Configs
 export NUM_NODES={{ num_nodes }}

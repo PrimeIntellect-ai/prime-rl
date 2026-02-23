@@ -44,5 +44,3 @@ sync_interval = 5.0
 id = "primeintellect/alphabet-sort"
 name = "alphabet-sort"
 args = { min_turns = 3, max_turns = 5, power_per_turn = false }
-
-[inference]
