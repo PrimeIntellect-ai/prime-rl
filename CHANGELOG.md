@@ -59,4 +59,6 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`dump_config`**: Added `--dump-config <path>` flag to the `rl` command. When set, writes the resolved subconfigs (trainer, orchestrator, inference, teacher_inference) to the given directory and exits without starting any processes (2026-02-12)
 - **`client.api_key_var`**: Changed default from "OPENAI_API_KEY" to "VLLM_API_KEY" (2026-02-12)
 - **`orchestrator.eval.cancel_inflight_rollouts_on_eval`**: Added flag to optionally cancel in-flight training rollouts before starting online evals. When enabled, avoids congestion by preventing training and eval rollouts from running simultaneously, but slows training as the rollout pipeline must refill after each eval (default: False) (2026-02-16)
+- **`inference.model.quantization`** and **`inference.model.kv_cache_dtype`**: Added vLLM passthrough configuration for `--quantization` and `--kv-cache-dtype` to control model quantization and KV cache data type (default: None) (2026-02-23)
+- **`inference.calculate_kv_scales`**: Added flag to dynamically calculate KV scales for FP8 KV cache via `--calculate-kv-scales`. When enabled, `inference.model.kv_cache_dtype` must be an FP8 variant (default: False) (2026-02-23)
 
