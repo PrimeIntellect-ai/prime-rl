@@ -488,7 +488,7 @@ def rl_slurm(config: RLConfig):
         logger.info(f"Wrote subconfigs to {config_dir}")
 
     script, log_message = render_slurm_script(config, config_dir)
-    script_path = config.output_dir / "rl.sh"
+    script_path = config.output_dir / "rl.sbatch"
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
     logger.info(f"Wrote SLURM script to {script_path}")
