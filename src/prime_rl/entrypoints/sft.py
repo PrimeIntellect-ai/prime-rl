@@ -3,12 +3,16 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from subprocess import Popen
+from threading import Event, Thread
 
 import tomli_w
 
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.pydantic_config import parse_argv
+from prime_rl.utils.utils import get_free_port
 
 
 def write_trainer_config(config: SFTTrainerConfig, output_dir: Path) -> None:
@@ -92,14 +96,19 @@ def sft_slurm(config: SFTTrainerConfig):
 
 
 def sft_local(config: SFTTrainerConfig):
-    """Run SFT training locally."""
+    """Run SFT training locally with process monitoring and cleanup."""
     assert config.deployment.type == "single_node"
+
+    logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = Path(".pydantic_config") / uuid.uuid4().hex
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "trainer.toml"
     with open(config_path, "wb") as f:
         tomli_w.dump(config.model_dump(exclude={"deployment"}, exclude_none=True, mode="json"), f)
+
+    log_dir = config.output_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     trainer_cmd = [
         "uv",
@@ -108,7 +117,12 @@ def sft_local(config: SFTTrainerConfig):
         "PYTHONUNBUFFERED=1",
         "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
         "torchrun",
-        "--standalone",
+        f"--rdzv-endpoint=localhost:{get_free_port()}",
+        f"--rdzv-id={uuid.uuid4().hex}",
+        f"--log-dir={config.output_dir / 'torchrun'}",
+        "--local-ranks-filter=0",
+        "--redirect=3",
+        "--tee=3",
         f"--nproc-per-node={config.deployment.num_gpus}",
         "-m",
         "prime_rl.trainer.sft.train",
@@ -116,14 +130,61 @@ def sft_local(config: SFTTrainerConfig):
         config_path.as_posix(),
     ]
 
-    result = subprocess.run(
-        trainer_cmd,
-        env={
-            **os.environ,
-            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
-        },
-    )
-    sys.exit(result.returncode)
+    logger.info(f"Starting SFT trainer with {config.deployment.num_gpus} GPU(s)")
+    logger.debug(f"Trainer command: {' '.join(trainer_cmd)}")
+
+    processes: list[Popen] = []
+    monitor_threads: list[Thread] = []
+    error_queue: list[Exception] = []
+
+    try:
+        with open(log_dir / "trainer.stdout", "w") as log_file:
+            trainer_process = Popen(
+                trainer_cmd,
+                env={
+                    **os.environ,
+                    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+                },
+                stdout=log_file,
+                stderr=log_file,
+            )
+        processes.append(trainer_process)
+
+        stop_event = Event()
+        monitor_thread = Thread(
+            target=monitor_process,
+            args=(trainer_process, stop_event, error_queue, "trainer"),
+            daemon=True,
+        )
+        monitor_thread.start()
+        monitor_threads.append(monitor_thread)
+
+        logger.success("Startup complete. Showing trainer logs...")
+        tail_process = Popen(["tail", "-F", str(log_dir / "trainer.stdout")])
+        processes.append(tail_process)
+
+        stop_event.wait()
+
+        if trainer_process.returncode != 0:
+            logger.error(f"Trainer failed with exit code {trainer_process.returncode}")
+            cleanup_threads(monitor_threads)
+            cleanup_processes(processes)
+            sys.exit(1)
+
+        logger.success("SFT training finished!")
+        cleanup_threads(monitor_threads)
+        cleanup_processes(processes)
+
+    except KeyboardInterrupt:
+        logger.warning("Received interrupt signal, terminating all processes...")
+        cleanup_threads(monitor_threads)
+        cleanup_processes(processes)
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error occurred: {e}")
+        cleanup_threads(monitor_threads)
+        cleanup_processes(processes)
+        raise
 
 
 def sft(config: SFTTrainerConfig):

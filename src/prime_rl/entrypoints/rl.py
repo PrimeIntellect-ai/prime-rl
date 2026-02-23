@@ -14,6 +14,7 @@ import tomli_w
 
 from prime_rl.rl_config import RLConfig
 from prime_rl.utils.logger import get_logger, setup_logger
+from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     get_broadcast_dir,
@@ -41,38 +42,6 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     if teacher_inference is not None:
         with open(output_dir / "teacher_inference.toml", "wb") as f:
             tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)
-
-
-def cleanup_threads(threads: list[Thread]):
-    for thread in threads:
-        thread.join(timeout=5)
-
-
-def cleanup_processes(processes: list[Popen]):
-    for process in processes:
-        if process.poll() is None:  # Process is still running
-            process.terminate()
-            try:
-                process.wait(timeout=60)  # 60 seconds to terminate gracefully
-            except subprocess.TimeoutExpired:
-                process.kill()
-
-
-def monitor_process(process: Popen, stop_event: Event, error_queue: list, process_name: str):
-    """Monitor a subprocess and signal errors via shared queue"""
-    try:
-        # Wait for process to complete
-        process.wait()
-
-        if process.returncode != 0:
-            err_msg = f"{process_name.capitalize()} failed with exit code {process.returncode}"
-            if process.stderr:
-                err_msg += f"\n{process.stderr.read().decode('utf-8')}"
-            error_queue.append(RuntimeError(err_msg))
-        stop_event.set()
-    except Exception as e:
-        error_queue.append(RuntimeError(f"Error monitoring {process_name}: {e}"))
-        stop_event.set()
 
 
 def check_gpus_available(gpu_ids: list[int]) -> None:
