@@ -429,7 +429,7 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
         import tomli_w
 
         config_path = config_dir / "rl.toml"
-        config_dict = config.model_dump(exclude={"slurm", "deployment"}, exclude_none=True, mode="json")
+        config_dict = config.model_dump(exclude={"slurm"}, exclude_none=True, mode="json")
         config_dir.mkdir(parents=True, exist_ok=True)
         with open(config_path, "wb") as f:
             tomli_w.dump(config_dict, f)

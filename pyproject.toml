@@ -39,11 +39,11 @@ dependencies = [
 
 [project.scripts]
 rl = "prime_rl.rl:main"
+sft = "prime_rl.sft:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
 inference = "prime_rl.inference.server:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
-sft = "prime_rl.trainer.sft.train:main"
 
 [project.entry-points."vllm.general_plugins"]
 prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
