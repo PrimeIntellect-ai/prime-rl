@@ -461,11 +461,11 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
     """Render the SLURM script template. Returns (script, log_message)."""
     from jinja2 import Environment, FileSystemLoader
 
-    slurm = config.slurm
-    assert slurm.template_path is not None
+    assert config.slurm is not None
+    assert config.slurm.template_path is not None
 
-    env = Environment(loader=FileSystemLoader(slurm.template_path.parent), keep_trailing_newline=True)
-    template = env.get_template(slurm.template_path.name)
+    env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
+    template = env.get_template(config.slurm.template_path.name)
 
     if config.deployment.type == "single_node":
         import tomli_w
@@ -476,24 +476,24 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
             tomli_w.dump(config.model_dump(exclude={"slurm"}, exclude_none=True, mode="json"), f)
 
         script = template.render(
-            job_name=slurm.job_name,
-            output_dir=config.output_dir,
             config_path=config_path,
-            project_dir=slurm.project_dir,
+            output_dir=config.output_dir,
+            job_name=config.slurm.job_name,
+            project_dir=config.slurm.project_dir,
             gpus_per_node=config.deployment.gpus_per_node,
-            partition=slurm.partition,
+            partition=config.slurm.partition,
         )
         log_dir = config.output_dir / "logs"
         log_message = f"Logs:\n  Trainer:  tail -F {log_dir}/trainer/rank_0.log"
     else:
         script = template.render(
-            job_name=slurm.job_name,
-            output_dir=config.output_dir,
             config_dir=config_dir,
+            output_dir=config.output_dir,
+            job_name=config.slurm.job_name,
+            project_dir=config.slurm.project_dir,
             num_nodes=config.deployment.num_nodes,
-            project_dir=slurm.project_dir,
             gpus_per_node=config.deployment.gpus_per_node,
-            partition=slurm.partition,
+            partition=config.slurm.partition,
             env_vars=config.env_vars,
         )
         log_message = f"Logs:\n  Trainer:  tail -F {config.output_dir}/slurm/latest_train_node_rank_0.log"
@@ -502,6 +502,8 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
 
 
 def sft_slurm(config: SFTTrainerConfig):
+    assert config.slurm is not None
+
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = config.output_dir / "configs"
