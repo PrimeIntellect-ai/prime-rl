@@ -3,11 +3,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
-from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
-
-logger = get_logger()
 
 MODEL_TOOL_CALL_PARSER: dict[str, str] = {
     # GLM-4.5
@@ -192,7 +189,6 @@ class ModelConfig(BaseConfig):
         if self.tool_call_parser is None:
             parser = MODEL_TOOL_CALL_PARSER.get(self.name)
             if parser is not None:
-                logger.info(f"Auto-detected tool_call_parser='{parser}' for model '{self.name}'")
                 self.tool_call_parser = parser
 
         if self.tool_call_parser is not None:
@@ -221,7 +217,7 @@ class InferenceConfig(BaseSettings):
     server: ServerConfig = ServerConfig()
 
     # The model configuration
-    model: ModelConfig = ModelConfig()
+    model: ModelConfig = Field(default_factory=ModelConfig)
 
     # The parallel configuration
     parallel: ParallelConfig = ParallelConfig()
