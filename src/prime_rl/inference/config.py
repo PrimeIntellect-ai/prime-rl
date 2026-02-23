@@ -279,6 +279,14 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 1
 
+    auto_scale_api_servers: Annotated[
+        bool,
+        Field(
+            description="Automatically set api_server_count to match data_parallel_size. "
+            "Disable to keep api_server_count=1 with dp>1 (required for rollout gateway with DP).",
+        ),
+    ] = True
+
     seed: Annotated[
         int,
         Field(
@@ -315,7 +323,7 @@ class InferenceConfig(BaseSettings):
         size. Unless LoRA is enabled, in which case only one API server is
         supported (vLLM limitation).
         """
-        if self.api_server_count < self.parallel.dp:
+        if self.auto_scale_api_servers and self.api_server_count < self.parallel.dp:
             self.api_server_count = self.parallel.dp
 
         if self.enable_lora:

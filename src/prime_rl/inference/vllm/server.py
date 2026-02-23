@@ -190,14 +190,15 @@ async def custom_init_app_state(
         else None
     )
 
+    dp_size = getattr(args, "data_parallel_size", 1) or 1
     if args.api_server_count > 1:
         logger.warning(
             f"Rollout gateway disabled because api_server_count={args.api_server_count}. "
-            "Set api_server_count=1 to enable /v1/rollouts endpoints."
+            "Set auto_scale_api_servers=false to keep api_server_count=1 with dp>1."
         )
         state.rollout_registry = None
     else:
-        state.rollout_registry = RolloutRegistry(port=args.port)
+        state.rollout_registry = RolloutRegistry(port=args.port, dp_size=dp_size)
 
 
 def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:

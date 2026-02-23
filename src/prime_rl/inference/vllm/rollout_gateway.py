@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal
@@ -100,6 +101,7 @@ class RolloutState:
     localhost_client: AsyncOpenAI
     vf_client: OpenAIChatCompletionsTokenClient
     vf_state: VfState
+    dp_rank: int = 0
     turn_count: int = 0
     status: RolloutStatus = "active"
     is_truncated: bool = False
@@ -107,20 +109,28 @@ class RolloutState:
 
 
 class RolloutRegistry:
-    def __init__(self, port: int):
+    def __init__(self, port: int, dp_size: int = 1):
         self._port = port
+        self._dp_size = dp_size
         self._rollouts: dict[str, RolloutState] = {}
         self._lock = asyncio.Lock()
+
+    def _least_loaded_dp_rank(self) -> int:
+        rank_counts = Counter(r.dp_rank for r in self._rollouts.values())
+        return min(range(self._dp_size), key=lambda r: rank_counts.get(r, 0))
 
     async def register(self, rollout_id: str, config: RolloutConfig) -> RolloutState:
         async with self._lock:
             if rollout_id in self._rollouts:
                 raise ValueError(f"Rollout already registered: {rollout_id}")
 
+            dp_rank = self._least_loaded_dp_rank()
+            headers = {"X-data-parallel-rank": str(dp_rank)} if self._dp_size > 1 else {}
             localhost_client = AsyncOpenAI(
                 base_url=f"http://localhost:{self._port}/v1",
                 api_key="EMPTY",
                 max_retries=0,
+                default_headers=headers,
             )
             vf_client = OpenAIChatCompletionsTokenClient(localhost_client)
             vf_state = VfState(
@@ -138,8 +148,10 @@ class RolloutRegistry:
                 localhost_client=localhost_client,
                 vf_client=vf_client,
                 vf_state=vf_state,
+                dp_rank=dp_rank,
             )
             self._rollouts[rollout_id] = rollout_state
+            logger.info(f"rollout={rollout_id} registered dp_rank={dp_rank}/{self._dp_size}")
             return rollout_state
 
     async def get(self, rollout_id: str) -> RolloutState | None:
