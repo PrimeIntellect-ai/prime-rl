@@ -117,6 +117,16 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
     num_infer_gpus: Annotated[int, Field(description="Number of inference GPUs")] = 1
     num_teacher_gpus: Annotated[int | None, Field(description="Number of teacher inference GPUs")] = None
 
+    @model_validator(mode="after")
+    def validate_gpu_count(self):
+        total = self.num_train_gpus + self.num_infer_gpus + (self.num_teacher_gpus or 0)
+        if total > self.gpus_per_node:
+            raise ValueError(
+                f"Total GPU count ({total} = {self.num_train_gpus} train + {self.num_infer_gpus} infer"
+                f" + {self.num_teacher_gpus or 0} teacher) exceeds gpus_per_node ({self.gpus_per_node})."
+            )
+        return self
+
 
 class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     """Configures a multi node deployment."""

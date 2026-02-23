@@ -120,6 +120,12 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
 
     num_gpus: Annotated[int, Field(description="Number of GPUs.")] = 1
 
+    @model_validator(mode="after")
+    def validate_gpu_count(self):
+        if self.num_gpus > self.gpus_per_node:
+            raise ValueError(f"num_gpus ({self.num_gpus}) exceeds gpus_per_node ({self.gpus_per_node}).")
+        return self
+
 
 class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     """Configures a multi-node SFT deployment."""
