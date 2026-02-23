@@ -75,5 +75,5 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`orchestrator.env_vars`**: Added per-component env vars for orchestrator (2026-02-23)
 - **`inference.env_vars`**: Added per-component env vars for inference server (auto-sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False`) (2026-02-23)
 - **`hf_hub_offline` (RL SLURM)**: Removed. Use `env_vars = { HF_HUB_OFFLINE = "1" }` or `trainer.env_vars = { HF_HUB_OFFLINE = "1" }` instead (2026-02-23)
-- **SLURM templates**: Moved from `src/prime_rl/slurm/` to `templates/` and renamed to `single_node_rl.sbatch.j2`, `multi_node_rl.sbatch.j2`, `single_node_sft.sbatch.j2`, `multi_node_sft.sbatch.j2` (2026-02-23)
+- **SLURM templates**: Moved from `src/prime_rl/slurm/` to `src/prime_rl/templates/` and renamed to `single_node_rl.sbatch.j2`, `multi_node_rl.sbatch.j2`, `single_node_sft.sbatch.j2`, `multi_node_sft.sbatch.j2` (2026-02-23)
 

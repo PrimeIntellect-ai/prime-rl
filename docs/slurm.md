@@ -203,7 +203,7 @@ The default templates handle standard setups with InfiniBand detection, environm
 uv run rl @ my_config.toml --slurm.template-path path/to/my_template.sbatch.j2
 ```
 
-See [`templates/`](../templates/) for the default templates as a starting point.
+See [`src/prime_rl/templates/`](../src/prime_rl/templates/) for the default templates as a starting point.
 
 ## Monitoring
 
