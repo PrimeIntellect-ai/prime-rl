@@ -214,10 +214,6 @@ class SFTTrainerConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
-    env_vars: Annotated[
-        dict[str, str], Field(description="Environment variables to set when running the trainer.")
-    ] = {}
-
     ### Pre-validation normalization
 
     @model_validator(mode="before")
@@ -357,10 +353,4 @@ class SFTTrainerConfig(BaseSettings):
                 self.slurm.template_path = Path("src/prime_rl/templates/single_node_sft.sbatch.j2")
             else:
                 self.slurm.template_path = Path("src/prime_rl/templates/multi_node_sft.sbatch.j2")
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_hf_hub_offline(self):
-        if self.deployment.type == "multi_node":
-            self.env_vars.setdefault("HF_HUB_OFFLINE", "1")
         return self

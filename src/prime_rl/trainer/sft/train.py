@@ -494,7 +494,6 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
             num_nodes=config.deployment.num_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
             partition=config.slurm.partition,
-            env_vars=config.env_vars,
         )
         log_message = f"Logs:\n  Trainer:  tail -F {config.output_dir}/slurm/latest_train_node_rank_0.log"
 

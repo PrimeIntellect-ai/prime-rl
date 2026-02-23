@@ -215,7 +215,6 @@ def rl_local(config: RLConfig):
                     inference_cmd,
                     env={
                         **os.environ,
-                        **config.inference.env_vars,
                         "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
                     },
                     stdout=log_file,
@@ -255,7 +254,6 @@ def rl_local(config: RLConfig):
                     teacher_inference_cmd,
                     env={
                         **os.environ,
-                        **config.teacher_inference.env_vars,
                         "CUDA_VISIBLE_DEVICES": ",".join(map(str, teacher_gpu_ids)),
                     },
                     stdout=log_file,
@@ -298,7 +296,6 @@ def rl_local(config: RLConfig):
                 stderr=log_file,
                 env={
                     **os.environ,
-                    **config.orchestrator.env_vars,
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
                     "WANDB_ARGS": json.dumps(start_command),
@@ -345,7 +342,6 @@ def rl_local(config: RLConfig):
                 trainer_cmd,
                 env={
                     **os.environ,
-                    **config.trainer.env_vars,
                     "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
                     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
                     "LOGURU_FORCE_COLORS": "1",
@@ -464,9 +460,6 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
             num_infer_nodes=config.deployment.num_infer_nodes,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
-            infer_env_vars=config.inference.env_vars if config.inference is not None else {},
-            orch_env_vars=config.orchestrator.env_vars,
-            trainer_env_vars=config.trainer.env_vars,
         )
         slurm_log_dir = config.output_dir / "slurm"
         log_message = (

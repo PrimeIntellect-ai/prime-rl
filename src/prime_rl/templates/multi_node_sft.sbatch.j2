@@ -57,10 +57,7 @@ srun bash -c '
 
     TRAIN_NODE_RANK=$SLURM_PROCID
 
-    # Set env vars
-    {% for key, value in env_vars.items() %}
-        export {{ key }}="{{ value }}"
-    {%- endfor %}
+    export HF_HUB_OFFLINE=1
 
     # This is required for compilation to work correctly
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"

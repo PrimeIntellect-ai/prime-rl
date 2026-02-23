@@ -238,17 +238,6 @@ class RLConfig(BaseSettings):
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
 
-    env_vars: Annotated[
-        dict[str, str],
-        Field(
-            description="Extra environment variables applied to all components. Per-component env_vars override these."
-        ),
-    ] = {
-        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
-        "PYTHONUNBUFFERED": "1",
-        "OMP_NUM_THREADS": "1",
-    }
-
     ### Local-only fields
 
     clean: Annotated[
@@ -659,20 +648,6 @@ class RLConfig(BaseSettings):
                 self.slurm.template_path = Path("src/prime_rl/templates/single_node_rl.sbatch.j2")
             else:
                 self.slurm.template_path = Path("src/prime_rl/templates/multi_node_rl.sbatch.j2")
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_hf_hub_offline(self):
-        if self.deployment.type == "multi_node":
-            self.env_vars.setdefault("HF_HUB_OFFLINE", "1")
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_env_vars(self):
-        """Merge top-level env_vars into each component. Component-level env_vars take precedence."""
-        for component in [self.trainer, self.orchestrator, self.inference, self.teacher_inference]:
-            if component is not None:
-                component.env_vars = {**self.env_vars, **component.env_vars}
         return self
 
     ### Warnings

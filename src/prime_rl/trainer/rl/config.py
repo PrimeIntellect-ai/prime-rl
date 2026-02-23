@@ -231,11 +231,6 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = 1
 
-    env_vars: Annotated[
-        dict[str, str],
-        Field(description="Extra environment variables to set when running the trainer."),
-    ] = {}
-
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench is not None:
@@ -306,14 +301,6 @@ class RLTrainerConfig(BaseSettings):
         if self.model.fused_lm_head_chunk_size == "auto":
             self.model.fused_lm_head_chunk_size = 2048
 
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_env_vars(self):
-        self.env_vars = {
-            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
-            **self.env_vars,
-        }
         return self
 
     @model_validator(mode="after")
