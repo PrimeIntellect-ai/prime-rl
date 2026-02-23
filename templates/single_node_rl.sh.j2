@@ -10,8 +10,9 @@
 
 export PROJECT_DIR={{ project_dir }}
 
-[ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
-source $PROJECT_DIR/.venv/bin/activate
-cd $PROJECT_DIR && uv sync --all-extras
+cd $PROJECT_DIR
+[ -f .env ] && source .env
+source .venv/bin/activate
+uv sync --all-extras
 
-uv run rl @ {{ rl_config_path }}
+uv run rl @ {{ config_path }}
