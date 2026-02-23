@@ -1,0 +1,6 @@
+toml_files = ["rl.toml"]
+
+output_dir = "outputs/alphabet-sort"
+
+[slurm]
+job_name = "alphabet-sort"

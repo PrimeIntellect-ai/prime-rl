@@ -3,7 +3,7 @@ max_steps = 500
 seq_len = 2048
 
 [slurm]
-job_name = "hendrycks-math-moe"
+job_name = "hendrycks-math-rl-moe"
 
 [deployment]
 type = "multi_node"
