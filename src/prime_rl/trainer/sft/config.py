@@ -358,3 +358,9 @@ class SFTTrainerConfig(BaseSettings):
             else:
                 self.slurm.template_path = Path("templates/multi_node_sft.sbatch.j2")
         return self
+
+    @model_validator(mode="after")
+    def auto_setup_hf_hub_offline(self):
+        if self.deployment.type == "multi_node":
+            self.env_vars.setdefault("HF_HUB_OFFLINE", "1")
+        return self

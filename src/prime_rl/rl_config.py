@@ -663,6 +663,12 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_hf_hub_offline(self):
+        if self.deployment.type == "multi_node":
+            self.env_vars.setdefault("HF_HUB_OFFLINE", "1")
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_env_vars(self):
         """Merge top-level env_vars into each component. Component-level env_vars take precedence."""
         for component in [self.trainer, self.orchestrator, self.inference, self.teacher_inference]:
