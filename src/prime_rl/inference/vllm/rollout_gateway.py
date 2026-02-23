@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from collections import Counter
 from dataclasses import dataclass, field
-from functools import lru_cache
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -240,40 +238,6 @@ def _validate_rollout_accepting_requests(rollout: RolloutState, rollout_id: str)
             ),
         )
 
-
-@lru_cache(maxsize=1)
-def _get_full_turn_log_config() -> tuple[str | None, set[int] | None]:
-    rollout_filter = os.getenv("PRIME_ROLLOUT_LOG_ROLLOUT_ID")
-    rollout_filter = rollout_filter.strip() if rollout_filter else None
-    if rollout_filter == "":
-        rollout_filter = None
-
-    turns_raw = os.getenv("PRIME_ROLLOUT_LOG_FULL_TURNS", "").strip()
-    if not turns_raw:
-        return rollout_filter, None
-    if turns_raw.lower() in {"all", "*"}:
-        return rollout_filter, set()
-
-    turns: set[int] = set()
-    for part in turns_raw.split(","):
-        token = part.strip()
-        if not token:
-            continue
-        try:
-            turns.add(int(token))
-        except ValueError:
-            logger.warning(f"Ignoring invalid PRIME_ROLLOUT_LOG_FULL_TURNS token: {token!r}")
-    return rollout_filter, turns if turns else None
-
-
-def _should_log_full_turn(rollout_id: str, turn_index: int) -> bool:
-    rollout_filter, turns = _get_full_turn_log_config()
-    if turns is None:
-        return False
-    if rollout_filter is not None and rollout_filter != rollout_id:
-        return False
-    # empty set is sentinel for "all turns"
-    return not turns or turn_index in turns
 
 
 async def _call_chat_with_messages(
@@ -542,7 +506,7 @@ async def chat_completions(
             f"steps={len(rollout.vf_state['trajectory'])} preview={preview!r}"
         )
 
-        if _should_log_full_turn(rollout_id, turn_index):
+        if request.app.state.log_rollout_gateway_turns:
             raw_tool_calls = response.choices[0].message.tool_calls if response.choices else []
             tool_calls = [tc.model_dump(mode="json") for tc in (raw_tool_calls or [])]
             prompt_tool_responses = [

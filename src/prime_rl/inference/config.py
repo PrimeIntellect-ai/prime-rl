@@ -294,6 +294,13 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 0
 
+    log_rollout_gateway_turns: Annotated[
+        bool,
+        Field(
+            description="Log full rollout gateway turn content (completions, tool calls, tool responses).",
+        ),
+    ] = False
+
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )

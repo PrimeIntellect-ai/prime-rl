@@ -200,6 +200,8 @@ async def custom_init_app_state(
     else:
         state.rollout_registry = RolloutRegistry(port=args.port, dp_size=dp_size)
 
+    state.log_rollout_gateway_turns = args.log_rollout_gateway_turns
+
 
 def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
     """
