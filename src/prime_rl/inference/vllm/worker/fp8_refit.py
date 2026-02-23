@@ -261,6 +261,15 @@ def _finalize_layerwise_reload(model: Module, model_config: object) -> None:
     finalize_layerwise_reload(model, model_config)
 
 
+def _resolve_layerwise_load_device(load_config: object | None, device_config: object | None) -> torch.device:
+    load_device = getattr(load_config, "device", None) or getattr(device_config, "device", None)
+    if load_device is None or load_device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if isinstance(load_device, torch.device):
+        return load_device
+    return torch.device(load_device)
+
+
 def load_checkpoint_weights_layerwise(
     model_runner: object,
     model: Module,
@@ -278,7 +287,7 @@ def load_checkpoint_weights_layerwise(
 
     load_config = getattr(vllm_config, "load_config", None)
     device_config = getattr(vllm_config, "device_config", None)
-    load_device = getattr(load_config, "device", None) or getattr(device_config, "device", None) or torch.device("cuda")
+    load_device = _resolve_layerwise_load_device(load_config, device_config)
     with torch.device(load_device):
         _initialize_layerwise_reload(model)
         try:
