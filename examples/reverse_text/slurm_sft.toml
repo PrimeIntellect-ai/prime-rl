@@ -1,4 +1,4 @@
-toml_files = ["rl.toml"]
+toml_files = ["sft.toml"]
 
 output_dir = "outputs/reverse-text-sft"
 
