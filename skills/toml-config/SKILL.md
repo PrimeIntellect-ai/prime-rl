@@ -75,23 +75,25 @@ Both `rl` and `sft` commands support SLURM execution via an optional `[slurm]` s
 
 ```toml
 output_dir = "/shared/experiments/my-run"
+# hf_hub_offline = false
 
-[slurm]
-job_name = "my-rl-job"
+[deployment]
+type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 1
 gpus_per_node = 8
-# dry_run = true          # generate script without submitting
-# slurm_template = "path/to/custom.sh.j2"
 # nodes_per_fsdp_group = 1
+
+[slurm]
+job_name = "my-rl-job"
+# dry_run = true          # generate script without submitting
+# template = "path/to/custom.sh.j2"
 # project_dir = "/path/to/project"
-# hf_hub_offline = false
 ```
 
 When `[slurm]` is set for RL:
 - `output_dir` must be explicitly set (the default `outputs` is rejected)
-- Teacher inference (`teacher_gpu_ids`, `teacher_inference`) is not supported
-- Local-only fields (`inference_gpu_ids`, `trainer_gpu_ids`, `clean`, `bench`) are ignored
+- Teacher inference is not supported in multi-node deployment
 
 ### SFT SLURM
 
@@ -129,7 +131,7 @@ All accept `@ config.toml` and CLI overrides:
 
 - `src/prime_rl/utils/pydantic_config.py` — `parse_argv`, `BaseSettings`, `@` syntax parsing
 - `src/prime_rl/rl.py` — unified RL entrypoint (local + SLURM)
-- `src/prime_rl/rl_config.py` — `BaseRLConfig`, `SlurmConfig`, `write_subconfigs`
+- `src/prime_rl/rl_config.py` — `RLConfig`, `SlurmConfig, DeploymentConfig`, `write_subconfigs`
 - `src/prime_rl/trainer/sft/train.py` — unified SFT entrypoint (local + SLURM)
 - `src/prime_rl/trainer/sft/config.py` — `SFTTrainerConfig`, `SFTSlurmConfig`
 - `configs/` — all config files, organized by task

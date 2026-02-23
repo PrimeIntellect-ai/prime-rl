@@ -1,8 +1,7 @@
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeAlias
 
-import tomli_w
 from pydantic import Field, model_validator
 
 from prime_rl.inference.config import InferenceConfig
@@ -11,7 +10,9 @@ from prime_rl.orchestrator.config import CheckpointConfig as OrchestratorCheckpo
 from prime_rl.orchestrator.config import FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig
 from prime_rl.orchestrator.config import NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig
 from prime_rl.orchestrator.config import OrchestratorConfig
+from prime_rl.trainer.config import BenchConfig
 from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
+from prime_rl.trainer.rl.config import FakeDataLoaderConfig
 from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
 from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
 from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
@@ -97,26 +98,93 @@ class SharedWeightBroadcastConfig(BaseSettings):
     timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
 
 
-class BaseRLConfig(BaseSettings):
-    """Configures an RL training run."""
+class BaseDeploymentConfig(BaseSettings):
+    """Configures a base deployment."""
 
-    ### Submodule configurations
+    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
 
-    trainer: TrainerConfig
-    orchestrator: OrchestratorConfig
 
-    output_dir: Annotated[
-        Path | None,
-        Field(description="The directory to store the outputs. Should typically be set to an experiment identifier."),
-    ] = None
-    inference: Annotated[
-        InferenceConfig | None,
+class SingleNodeDeploymentConfig(BaseDeploymentConfig):
+    """Configures a single node deployment."""
+
+    type: Literal["single_node"] = "single_node"
+
+    num_train_gpus: Annotated[int, Field(description="Number of training GPUs")] = 1
+    num_infer_gpus: Annotated[int, Field(description="Number of inference GPUs")] = 1
+    num_teacher_gpus: Annotated[int | None, Field(description="Number of teacher inference GPUs")] = None
+
+
+class MultiNodeDeploymentConfig(BaseDeploymentConfig):
+    """Configures a multi node deployment."""
+
+    type: Literal["multi_node"] = "multi_node"
+
+    num_train_nodes: Annotated[int, Field(description="Number of training nodes.")]
+    num_infer_nodes: Annotated[int, Field(description="Number of inference nodes.")]
+    num_teacher_nodes: Annotated[int | None, Field(description="Number of teacher inference nodes.")] = None
+
+    nodes_per_fsdp_group: Annotated[
+        int | None,
         Field(
-            description="The inference config. If None, will not start an inference process. Only viable, if an inference server was started manually."
+            description="Number of training nodes per FSDP island. Auto-sets trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group."
         ),
     ] = None
 
-    ### Top-level configurations
+    @model_validator(mode="after")
+    def teacher_inference_not_supported(self):
+        if self.num_teacher_nodes is not None:
+            raise ValueError("Teacher inference is not yet supported in multi node deployment.")
+        return self
+
+
+DeploymentConfig: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentConfig
+
+
+class SlurmConfig(BaseSettings):
+    """SLURM-specific configuration for RL training."""
+
+    job_name: Annotated[str, Field(description="The SLURM job name.")]
+
+    project_dir: Annotated[
+        Path,
+        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
+    ] = Path(".")
+
+    template: Annotated[
+        Path | None, Field(description="The path to the SLURM template file. If None, will use the default template.")
+    ] = None
+
+    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
+        False
+    )
+
+
+class RLConfig(BaseSettings):
+    """Configures an RL training run."""
+
+    trainer: TrainerConfig
+    orchestrator: OrchestratorConfig
+    inference: InferenceConfig
+
+    teacher_inference: Annotated[
+        InferenceConfig | None,
+        Field(
+            description="Teacher inference config. If None, will use the same config as inference or a default config. Only used when teacher GPUs or nodes are set."
+        ),
+    ] = None
+
+    output_dir: Annotated[
+        Path | None,
+        Field(
+            description="The directory to store the outputs. Should be set to a unique directory identifying the experiment."
+        ),
+    ] = None
+
+    deployment: Annotated[DeploymentConfig, Field(discriminator="type")] = SingleNodeDeploymentConfig()
+
+    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
+
+    ### Shared configurations
 
     log: Annotated[
         SharedLogConfig,
@@ -178,10 +246,98 @@ class BaseRLConfig(BaseSettings):
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
 
-    ### Setup and validate shared configs
+    hf_hub_offline: Annotated[
+        bool, Field(description="Set HF_HUB_OFFLINE=1 on training nodes to prevent downloading models at runtime.")
+    ] = False
+
+    ### Local-only fields
+
+    clean: Annotated[
+        bool,
+        Field(
+            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run.",
+        ),
+    ] = True
+
+    bench: Annotated[
+        bool,
+        Field(
+            description="Whether to run in benchmark mode. Automatically sets the trainer and orchestrator to benchmark mode and, if present, suffixes the W&B project with `-bench`.",
+        ),
+    ] = False
+
+    dump_config: Annotated[
+        Path | None,
+        Field(
+            description="If set, dump resolved subconfigs (trainer, orchestrator, inference) to this directory and exit without starting any processes."
+        ),
+    ] = None
+
+    ### Validate configs (e.g. raise for unsupported (combinations of) configs)
+
+    @model_validator(mode="after")
+    def validate_deployment(self):
+        if self.deployment.type == "multi_node":
+            if self.slurm is None:
+                raise ValueError("Must use SLURM for multi-node deployment.")
+        if self.deployment.type == "single_node":
+            if self.slurm is not None:
+                raise ValueError("SLURM is not supported for single-node deployment.")
+        return self
+
+    # TODO: move this
+    @model_validator(mode="after")
+    def validate_no_teacher_in_multinode(self):
+        if self.deployment.type == "multi_node" and self.teacher_inference is not None:
+            raise ValueError(
+                "Teacher inference is not supported in multi-node deployment. "
+                "The SLURM template only handles inference and training nodes."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_enough_devices_for_nccl(self):
+        if self.deployment.type == "single_node":
+            if self.trainer.weight_broadcast.type == "nccl":
+                if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
+                    raise ValueError(
+                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def validate_teacher_model(self):
+        if (
+            self.trainer.loss.type == "default" and self.trainer.loss.teacher_tau > 0
+        ) and not self.orchestrator.teacher_model:
+            raise ValueError(
+                "teacher_model must be configured when teacher_tau > 0. "
+                "Either set teacher_tau = 0, set deployment.num_teacher_gpus, or configure teacher_model manually."
+            )
+        return self
+
+    ### Auto-setup and validate shared configs
+
+    @model_validator(mode="after")
+    def auto_setup_output_dir(self):
+        if self.slurm is None:
+            if self.output_dir is None:
+                self.output_dir = Path("outputs")
+            self.trainer.output_dir = self.output_dir
+            self.orchestrator.output_dir = self.output_dir / "run_default"
+        else:
+            if self.output_dir is None:
+                raise ValueError("output_dir must be set explicitly when using SLURM.")
+            self.trainer.output_dir = self.slurm.project_dir / "outputs"
+            self.orchestrator.output_dir = self.slurm.project_dir / "outputs" / "run_default"
+
+        validate_shared_output_dir(self.trainer, self.orchestrator)
+
+        return self
 
     @model_validator(mode="after")
     def auto_setup_logs(self):
+        """Auto-setup shared log config for trainer and orchestrator."""
         if self.log is not None:
             if self.log.level is not None:
                 self.trainer.log.level = self.log.level
@@ -196,7 +352,7 @@ class BaseRLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_ckpt(self):
-        # If specified, automatically setup checkpoint configs for trainer and orchestrator
+        """Auto-setup shared checkpoint config for trainer and orchestrator."""
         if self.ckpt is not None:
             # Create checkpoint configs if not specified
             if self.trainer.ckpt is None:
@@ -229,7 +385,7 @@ class BaseRLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_wandb(self):
-        # If specified, automatically use shared W&B project for orchestrator and trainer
+        """Auto-setup shared W&B config for trainer and orchestrator."""
         if self.wandb is not None:
             if not self.trainer.wandb:
                 self.trainer.wandb = WandbConfig()
@@ -256,7 +412,7 @@ class BaseRLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_model(self):
-        # Use the same model for trainer, orchestrator and inference
+        """Auto-setup shared W&B config for trainer, orchestrator, and inference."""
         if self.model is not None:
             self.trainer.model.name = self.model.name
             self.orchestrator.model.name = self.model.name
@@ -269,7 +425,7 @@ class BaseRLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_max_steps(self):
-        # If specified, use the same max steps for trainer and orchestrator
+        """Auto-setup shared max steps for trainer and orchestrator."""
         if self.max_steps is not None:
             self.trainer.max_steps = self.max_steps
             self.orchestrator.max_steps = self.max_steps
@@ -280,7 +436,7 @@ class BaseRLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_async_level(self):
-        # If specified, use the same async level for trainer and orchestrator
+        """Auto-setup shared async level for trainer and orchestrator."""
         if self.max_async_level is not None:
             self.trainer.max_async_level = self.max_async_level
             self.orchestrator.max_async_level = self.max_async_level
@@ -291,7 +447,7 @@ class BaseRLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_seq_len(self):
-        # If specified, use the same seq_len for trainer and orchestrator
+        """Auto-setup shared seq_len for trainer and orchestrator."""
         if self.seq_len is not None:
             self.trainer.model.seq_len = self.seq_len
             self.orchestrator.seq_len = self.seq_len
@@ -306,6 +462,7 @@ class BaseRLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
+        """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
         if self.weight_broadcast is not None:
             if self.weight_broadcast.type == "nccl":
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
@@ -331,6 +488,142 @@ class BaseRLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_bench(self):
+        if self.bench:
+            self.trainer.bench = BenchConfig()
+            self.orchestrator.bench = True
+            self.trainer.data.fake = FakeDataLoaderConfig(
+                batch_size=self.orchestrator.batch_size,
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_lora(self):
+        if self.trainer.model.lora is not None:
+            if self.trainer.weight_broadcast.type == "nccl":
+                raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+
+            if self.orchestrator.model.lora is None:
+                from prime_rl.orchestrator.config import LoRAConfig
+
+                self.orchestrator.model.lora = LoRAConfig()
+
+            if (
+                self.orchestrator.model.lora.rank is not None
+                and self.orchestrator.model.lora.rank != self.trainer.model.lora.rank
+            ):
+                raise ValueError(
+                    f"orchestrator.model.lora.rank ({self.orchestrator.model.lora.rank}) conflicts with "
+                    f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
+                    f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
+                )
+
+            if (
+                self.orchestrator.model.lora.alpha is not None
+                and self.orchestrator.model.lora.alpha != self.trainer.model.lora.alpha
+            ):
+                raise ValueError(
+                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.lora.alpha}) conflicts with "
+                    f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
+                    f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
+                )
+
+            if self.orchestrator.model.lora.rank is None:
+                self.orchestrator.model.lora.rank = self.trainer.model.lora.rank
+
+            if self.orchestrator.model.lora.alpha is None:
+                self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
+
+            if self.orchestrator.model.lora.name is None:
+                self.orchestrator.model.lora.name = (
+                    f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
+                )
+
+            self.inference.enable_lora = True
+            self.inference.max_lora_rank = self.trainer.model.lora.rank
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_deployment(self):
+        if self.deployment.type == "single_node":  # single-node
+            # set num_train_workers to the number of data replicas
+            non_data_parallel_size = self.trainer.model.cp * self.trainer.model.tp
+            if self.deployment.num_train_gpus > 1:
+                self.orchestrator.num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
+
+            # fill up inference capacity with dp ranks
+            num_infer_gpus = self.deployment.num_infer_gpus
+            if num_infer_gpus != self.inference.parallel.dp * self.inference.parallel.tp:
+                assert num_infer_gpus % self.inference.parallel.tp == 0, (
+                    "Number of inference GPUs must be divisible by the tensor parallel size"
+                )
+                self.inference.parallel.dp = num_infer_gpus // self.inference.parallel.tp
+
+        elif self.deployment.type == "multi_node":  # multi-node
+            self.orchestrator.num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node
+
+            if self.deployment.nodes_per_fsdp_group is not None:
+                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
+                    raise ValueError(
+                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
+                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
+                    )
+                self.trainer.model.dp_replicate = (
+                    self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
+                )
+
+            if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+                assert self.trainer.weight_broadcast.type == "nccl"
+                self.trainer.weight_broadcast.host = "0.0.0.0"
+                self.trainer.weight_broadcast.inference_world_size = (
+                    self.deployment.gpus_per_node * self.deployment.num_infer_nodes
+                )
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_teacher_inference(self):
+        """Auto-configure teacher inference server and orchestrator teacher_model client."""
+        if self.deployment.type != "single_node":
+            return self
+        if self.deployment.num_teacher_gpus is None or self.deployment.num_teacher_gpus == 0:
+            return self
+
+        import copy
+
+        from prime_rl.orchestrator.config import TeacherModelConfig
+
+        if self.teacher_inference is None:
+            self.teacher_inference = copy.deepcopy(self.inference)
+            self.teacher_inference.server.port = self.inference.server.port + 1
+        elif self.teacher_inference.server.port == self.inference.server.port:
+            raise ValueError(
+                f"teacher_inference.server.port ({self.teacher_inference.server.port}) conflicts with "
+                f"inference.server.port ({self.inference.server.port}). "
+                "Either use different ports or let teacher_inference be auto-configured."
+            )
+
+        tp = self.teacher_inference.parallel.tp
+        num_teacher_gpus = self.deployment.num_teacher_gpus
+        if num_teacher_gpus != self.teacher_inference.parallel.dp * tp:
+            assert num_teacher_gpus % tp == 0, "Number of teacher GPUs must be divisible by tensor parallel size"
+            assert num_teacher_gpus > 0, "num_teacher_gpus cannot be zero"
+            self.teacher_inference.parallel.dp = num_teacher_gpus // tp
+
+        if self.orchestrator.teacher_model is None:
+            self.orchestrator.teacher_model = TeacherModelConfig()
+        host = self.teacher_inference.server.host or "localhost"
+        port = self.teacher_inference.server.port
+        self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
+        self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
+
+        return self
+
+    ### Warnings
+
+    @model_validator(mode="after")
     def warn_wandb_resume_id_missing(self):
         if self.trainer.ckpt is not None and self.trainer.ckpt.resume_step is not None:
             if self.trainer.wandb and not self.trainer.wandb.id:
@@ -343,63 +636,3 @@ class BaseRLConfig(BaseSettings):
                     "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
                 )
         return self
-
-    @model_validator(mode="after")
-    def auto_setup_output_dir(self):
-        if self.output_dir is not None:
-            self.trainer.output_dir = self.output_dir
-            self.orchestrator.output_dir = self.output_dir / "run_default"
-
-        validate_shared_output_dir(self.trainer, self.orchestrator)
-
-        return self
-
-
-class SlurmConfig(BaseSettings):
-    """SLURM-specific configuration for RL training."""
-
-    job_name: Annotated[str, Field(description="The SLURM job name.")]
-    num_train_nodes: Annotated[int, Field(description="Number of training nodes.")]
-    num_infer_nodes: Annotated[int, Field(description="Number of inference nodes.")]
-    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
-    nodes_per_fsdp_group: Annotated[
-        int | None,
-        Field(
-            description="Number of train nodes per FSDP island. Auto-sets trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group."
-        ),
-    ] = None
-
-    project_dir: Annotated[
-        Path,
-        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
-    ] = Path(".")
-    hf_hub_offline: Annotated[
-        bool, Field(description="Set HF_HUB_OFFLINE=1 on training nodes to prevent downloading models at runtime.")
-    ] = False
-
-    slurm_template: Annotated[
-        Path | None, Field(description="The path to the SLURM template file. If None, will use the default template.")
-    ] = None
-    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
-        False
-    )
-
-
-def write_subconfigs(config: BaseRLConfig, output_dir: Path) -> None:
-    """Write resolved subconfigs to disk as TOML files."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    with open(output_dir / "trainer.toml", "wb") as f:
-        tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
-
-    with open(output_dir / "orchestrator.toml", "wb") as f:
-        tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
-
-    if config.inference is not None:
-        with open(output_dir / "inference.toml", "wb") as f:
-            tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
-
-    teacher_inference = getattr(config, "teacher_inference", None)
-    if teacher_inference is not None:
-        with open(output_dir / "teacher_inference.toml", "wb") as f:
-            tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)

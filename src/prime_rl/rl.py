@@ -5,19 +5,15 @@ import subprocess
 import sys
 import time
 import uuid
-import warnings
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
-from typing import Annotated
 
 import pynvml
-from pydantic import Field, model_validator
+import tomli_w
 
-from prime_rl.inference.config import InferenceConfig
-from prime_rl.rl_config import BaseRLConfig, SlurmConfig, write_subconfigs
-from prime_rl.trainer.rl.config import FakeDataLoaderConfig
-from prime_rl.utils.logger import setup_logger
+from prime_rl.rl_config import RLConfig
+from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     get_broadcast_dir,
@@ -27,287 +23,24 @@ from prime_rl.utils.utils import (
 )
 
 
-class RLConfig(BaseRLConfig):
-    """Configures an RL training run."""
+def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
+    """Write resolved subconfigs to disk as TOML files."""
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    slurm: Annotated[
-        SlurmConfig | None,
-        Field(
-            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally."
-        ),
-    ] = None
+    with open(output_dir / "trainer.toml", "wb") as f:
+        tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
 
-    ### Local-only fields (ignored when slurm is set)
+    with open(output_dir / "orchestrator.toml", "wb") as f:
+        tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
 
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run. If True, will forceably, and irreversibly, delete all directories.",
-        ),
-    ] = True
+    if config.inference is not None:
+        with open(output_dir / "inference.toml", "wb") as f:
+            tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
 
-    inference_gpu_ids: Annotated[list[int], Field(description="The GPU IDs to use for inference.")] = [0]
-    trainer_gpu_ids: Annotated[list[int], Field(description="The GPU IDs to use for trainer.")] = [1]
-    teacher_gpu_ids: Annotated[
-        list[int] | None,
-        Field(
-            description="The GPU IDs to use for teacher inference. If None, teacher inference server will not be started."
-        ),
-    ] = None
-
-    teacher_inference: Annotated[
-        InferenceConfig | None,
-        Field(
-            description="The teacher inference config. If None, will use the same config as inference (if available) or a default config. Only used when teacher_gpu_ids is set."
-        ),
-    ] = None
-
-    ### Shared configurations
-
-    output_dir: Annotated[
-        Path,
-        Field(description="The directory to store the outputs. Should typically be set to an experiment identifier."),
-    ] = Path("outputs")  # NOTE: Must match `OUTPUT_DIR` in `tmux.sh` to see logs
-
-    bench: Annotated[
-        bool,
-        Field(
-            description="Whether to run in benchmark mode. It will automatically set the trainer and orchestrator to benchmark mode and, if present, configure the W&B project by suffixing the project with `-bench`.",
-        ),
-    ] = False
-
-    dump_config: Annotated[
-        Path | None,
-        Field(
-            description="If set, dump resolved subconfigs (trainer, orchestrator, inference) to this directory and exit without starting any processes."
-        ),
-    ] = None
-
-    ### SLURM validators
-
-    @model_validator(mode="after")
-    def validate_slurm_output_dir(self):
-        if self.slurm is None:
-            return self
-        if self.output_dir == Path("outputs"):
-            raise ValueError(
-                "output_dir must be explicitly set when using SLURM (not the default 'outputs'). "
-                "Set output_dir to a unique experiment path, e.g. '/shared/experiments/my-run'."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_no_teacher_in_slurm(self):
-        if self.slurm is None:
-            return self
-        if self.teacher_gpu_ids or self.teacher_inference:
-            raise ValueError(
-                "Teacher inference is not supported in SLURM mode. "
-                "The SLURM template only handles inference and training nodes."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_slurm_dp_replicate(self):
-        if self.slurm is None:
-            return self
-        if self.slurm.nodes_per_fsdp_group is not None:
-            if self.slurm.num_train_nodes % self.slurm.nodes_per_fsdp_group != 0:
-                raise ValueError(
-                    f"slurm.num_train_nodes ({self.slurm.num_train_nodes}) must be divisible by "
-                    f"slurm.nodes_per_fsdp_group ({self.slurm.nodes_per_fsdp_group})"
-                )
-            self.trainer.dp_replicate = self.slurm.num_train_nodes // self.slurm.nodes_per_fsdp_group
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_slurm_nccl(self):
-        if self.slurm is None:
-            return self
-        self.orchestrator.num_train_workers = self.slurm.num_train_nodes * self.slurm.gpus_per_node
-
-        if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
-            self.trainer.weight_broadcast.host = "0.0.0.0"
-            self.trainer.weight_broadcast.inference_world_size = self.slurm.gpus_per_node * self.slurm.num_infer_nodes
-        return self
-
-    @model_validator(mode="after")
-    def validate_slurm_inference_config(self):
-        if self.slurm is None:
-            return self
-        if self.slurm.num_infer_nodes > 0 and self.inference is None:
-            raise ValueError(
-                f"inference config is required when slurm.num_infer_nodes > 0 (got {self.slurm.num_infer_nodes}). "
-                "The SLURM template will launch inference servers on these nodes."
-            )
-        return self
-
-    ### Local-only validators
-
-    @model_validator(mode="after")
-    def auto_setup_dp(self):
-        if self.slurm is not None:
-            return self
-        if self.inference and len(self.inference_gpu_ids) != self.inference.parallel.dp * self.inference.parallel.tp:
-            assert len(self.inference_gpu_ids) % self.inference.parallel.tp == 0, (
-                "Number of inference GPUs must be divisible by the tensor parallel size"
-            )
-            self.inference.parallel.dp = len(self.inference_gpu_ids) // self.inference.parallel.tp
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_num_train_workers(self):
-        if self.slurm is not None:
-            return self
-        non_data_parallel_size = self.trainer.model.cp * self.trainer.model.tp
-
-        if len(self.trainer_gpu_ids) > 1:
-            self.orchestrator.num_train_workers = len(self.trainer_gpu_ids) // non_data_parallel_size
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.slurm is not None:
-            return self
-        if self.bench:
-            # Set trainer and orchestrator to benchmark mode
-            self.trainer.bench = True
-            self.orchestrator.bench = True
-
-            # Configure the trainer fake data to match the orchestrator config
-            self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size,
-            )
-
-        trainer_bench_enabled = self.trainer.bench is not None
-        if trainer_bench_enabled != self.orchestrator.bench:
-            raise ValueError(
-                f"Trainer benchmark mode ({self.trainer.bench}) and orchestrator benchmark mode ({self.orchestrator.bench}) are not the same. Please specify the same benchmark mode for both."
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_lora(self):
-        if self.trainer.model.lora is not None:
-            if self.trainer.weight_broadcast.type == "nccl":
-                raise ValueError("NCCL weight broadcast does not support LoRA yet.")
-
-            # Ensure orchestrator has LoRA config
-            if self.orchestrator.model.lora is None:
-                from prime_rl.orchestrator.config import LoRAConfig
-
-                self.orchestrator.model.lora = LoRAConfig()
-
-            # Validate orchestrator LoRA rank/alpha don't conflict with trainer
-            if (
-                self.orchestrator.model.lora.rank is not None
-                and self.orchestrator.model.lora.rank != self.trainer.model.lora.rank
-            ):
-                raise ValueError(
-                    f"orchestrator.model.lora.rank ({self.orchestrator.model.lora.rank}) conflicts with "
-                    f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
-                    f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
-                )
-
-            if (
-                self.orchestrator.model.lora.alpha is not None
-                and self.orchestrator.model.lora.alpha != self.trainer.model.lora.alpha
-            ):
-                raise ValueError(
-                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.lora.alpha}) conflicts with "
-                    f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
-                    f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
-                )
-
-            # Propagate rank/alpha from trainer when not explicitly set
-            if self.orchestrator.model.lora.rank is None:
-                self.orchestrator.model.lora.rank = self.trainer.model.lora.rank
-
-            if self.orchestrator.model.lora.alpha is None:
-                self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
-
-            # Auto-generate name if not provided
-            if self.orchestrator.model.lora.name is None:
-                self.orchestrator.model.lora.name = (
-                    f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
-                )
-
-            if self.inference is not None:
-                self.inference.enable_lora = True
-                self.inference.max_lora_rank = self.trainer.model.lora.rank
-            else:
-                warnings.warn(
-                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, make sure to set `--enable_lora` and `--max-lora-rank`."
-                )
-
-        return self
-
-    @model_validator(mode="after")
-    def validate_enough_devices_for_nccl(self):
-        if self.slurm is not None:
-            return self
-        if self.trainer.weight_broadcast.type == "nccl":
-            num_gpus = len(set(self.trainer_gpu_ids + self.inference_gpu_ids))
-            if num_gpus < 2:
-                raise ValueError("NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group.")
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_teacher_inference(self):
-        """Auto-configure teacher inference server and orchestrator teacher_model client."""
-        if self.slurm is not None:
-            return self
-        if self.teacher_gpu_ids is None or len(self.teacher_gpu_ids) == 0:
-            return self
-
-        import copy
-
-        from prime_rl.orchestrator.config import TeacherModelConfig
-
-        # Create or complete teacher_inference config
-        if self.teacher_inference is None:
-            self.teacher_inference = copy.deepcopy(self.inference) if self.inference else InferenceConfig()
-            # Avoid port conflict with main inference by using next port
-            if self.inference is not None:
-                self.teacher_inference.server.port = self.inference.server.port + 1
-        elif self.inference is not None and self.teacher_inference.server.port == self.inference.server.port:
-            raise ValueError(
-                f"teacher_inference.server.port ({self.teacher_inference.server.port}) conflicts with "
-                f"inference.server.port ({self.inference.server.port}). "
-                "Either use different ports or let teacher_inference be auto-configured."
-            )
-
-        # Auto-configure DP based on GPU count
-        tp = self.teacher_inference.parallel.tp
-        if len(self.teacher_gpu_ids) != self.teacher_inference.parallel.dp * tp:
-            assert len(self.teacher_gpu_ids) % tp == 0, (
-                "Number of teacher GPUs must be divisible by tensor parallel size"
-            )
-            assert len(self.teacher_gpu_ids) > 0, "teacher_gpu_ids cannot be empty"
-            self.teacher_inference.parallel.dp = len(self.teacher_gpu_ids) // tp
-
-        # Auto-configure orchestrator's teacher_model client
-        if self.orchestrator.teacher_model is None:
-            self.orchestrator.teacher_model = TeacherModelConfig()
-        host = self.teacher_inference.server.host or "localhost"
-        port = self.teacher_inference.server.port
-        self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
-        self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
-
-        return self
-
-    @model_validator(mode="after")
-    def validate_teacher_model(self):
-        if self.slurm is not None:
-            return self
-        if self.trainer.loss.teacher_tau > 0 and not self.orchestrator.teacher_model:
-            raise ValueError(
-                "teacher_model must be configured when teacher_tau > 0. "
-                "Either set teacher_tau = 0, set teacher_gpu_ids, or configure teacher_model manually."
-            )
-        return self
+    teacher_inference = getattr(config, "teacher_inference", None)
+    if teacher_inference is not None:
+        with open(output_dir / "teacher_inference.toml", "wb") as f:
+            tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)
 
 
 def cleanup_threads(threads: list[Thread]):
@@ -362,6 +95,34 @@ def check_gpus_available(gpu_ids: list[int]) -> None:
         raise RuntimeError(msg)
 
 
+def maybe_clean(config: RLConfig, log_dir: Path, orch_log_dir: Path, broadcast_dir: Path, rollout_dir: Path):
+    logger = get_logger()
+    logger.info("Cleaning checkpoint, logs, weights, broadcast and rollout directories")
+
+    # Cleaning logs (so that streaming logs to terminal works)
+    logger.info(f"Cleaning log dir ({log_dir})")
+    shutil.rmtree(log_dir, ignore_errors=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Cleaning orchestrator log dir ({orch_log_dir})")
+    shutil.rmtree(orch_log_dir, ignore_errors=True)
+    orch_log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Cleaning broadcast dir (so that orchestrator does not pre-maturely update weights)
+    if not (
+        config.ckpt
+        and config.ckpt.resume_step
+        and config.trainer.weight_broadcast
+        and config.trainer.weight_broadcast.type == "filesystem"
+    ):
+        logger.info(f"Cleaning broadcast directory ({broadcast_dir})")
+        shutil.rmtree(broadcast_dir, ignore_errors=True)
+
+    # Cleaning rollouts (so that trainer does not train on old rollouts)
+    logger.info(f"Cleaning rollout dir ({rollout_dir})")
+    shutil.rmtree(rollout_dir, ignore_errors=True)
+
+
 def rl_local(config: RLConfig):
     # Setup logger
     logger = setup_logger(
@@ -379,20 +140,29 @@ def rl_local(config: RLConfig):
         logger.info(f"Dumping resolved subconfigs to {config.dump_config}")
         logger.info(f"  Wrote trainer config to {config.dump_config / 'trainer.toml'}")
         logger.info(f"  Wrote orchestrator config to {config.dump_config / 'orchestrator.toml'}")
-        if config.inference is not None:
-            logger.info(f"  Wrote inference config to {config.dump_config / 'inference.toml'}")
+        logger.info(f"  Wrote inference config to {config.dump_config / 'inference.toml'}")
         if config.teacher_inference is not None:
             logger.info(f"  Wrote teacher inference config to {config.dump_config / 'teacher_inference.toml'}")
         logger.success(f"Config dump complete. Files written to {config.dump_config}")
         logger.warning("To start an RL run, remove --dump-config from your command.")
         return
 
+    # Derive GPU IDs from deployment config
+    assert config.deployment.type == "single_node"
+    gpu_offset = 0
+    infer_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_infer_gpus))
+    gpu_offset += config.deployment.num_infer_gpus
+    trainer_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
+    gpu_offset += config.deployment.num_train_gpus
+    num_teacher_gpus = config.deployment.num_teacher_gpus or 0
+    teacher_gpu_ids = list(range(gpu_offset, gpu_offset + num_teacher_gpus)) if num_teacher_gpus > 0 else []
+
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
     # Check for existing processes on GPUs
-    all_gpu_ids = list(set(config.inference_gpu_ids + config.trainer_gpu_ids + (config.teacher_gpu_ids or [])))
+    all_gpu_ids = list(set(infer_gpu_ids + trainer_gpu_ids + teacher_gpu_ids))
     check_gpus_available(all_gpu_ids)
 
     # Validate client port matches inference server port
@@ -416,32 +186,8 @@ def rl_local(config: RLConfig):
     rollout_dir = get_rollout_dir(config.orchestrator.output_dir)
     broadcast_dir = get_broadcast_dir(config.orchestrator.output_dir)
 
-    # Clean up directories if specified
     if config.clean:
-        logger.info("Cleaning checkpoint, logs, weights, broadcast and rollout directories")
-
-        # Cleaning logs (so that streaming logs to terminal works)
-        logger.info(f"Cleaning log dir ({log_dir})")
-        shutil.rmtree(log_dir, ignore_errors=True)
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"Cleaning orchestrator log dir ({orch_log_dir})")
-        shutil.rmtree(orch_log_dir, ignore_errors=True)
-        orch_log_dir.mkdir(parents=True, exist_ok=True)
-
-        # Cleaning broadcast dir (so that orchestrator does not pre-maturely update weights)
-        if not (
-            config.ckpt
-            and config.ckpt.resume_step
-            and config.trainer.weight_broadcast
-            and config.trainer.weight_broadcast.type == "filesystem"
-        ):
-            logger.info(f"Cleaning broadcast directory ({broadcast_dir})")
-            shutil.rmtree(broadcast_dir, ignore_errors=True)
-
-        # Cleaning rollouts (so that trainer does not train on old rollouts)
-        logger.info(f"Cleaning rollout dir ({rollout_dir})")
-        shutil.rmtree(rollout_dir, ignore_errors=True)
+        maybe_clean(config, log_dir, orch_log_dir, broadcast_dir, rollout_dir)
 
     # Write all resolved subconfigs to disk
     config_dir = Path(".pydantic_config") / uuid.uuid4().hex
@@ -457,13 +203,13 @@ def rl_local(config: RLConfig):
         # Optionally, start inference process
         if config.inference:
             inference_cmd = ["uv", "run", "inference", "@", (config_dir / "inference.toml").as_posix()]
-            logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, config.inference_gpu_ids))}")
+            logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
             # If we don't log stdout, the server hangs
             with open(log_dir / "inference.stdout", "w") as log_file:
                 inference_process = Popen(
                     inference_cmd,
-                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.inference_gpu_ids))},
+                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids))},
                     stdout=log_file,
                     stderr=log_file,
                 )
@@ -481,25 +227,25 @@ def rl_local(config: RLConfig):
             monitor_threads.append(monitor_thread)
         else:
             logger.warning(
-                "No inference config specified, skipping starting inference server. Is your inference server running?"
+                "No inference config specified, skipping starting inference server. Make sure your inference server is running."
             )
 
         # Optionally, start teacher inference process
         if config.teacher_inference:
-            if config.teacher_gpu_ids is None or len(config.teacher_gpu_ids) == 0:
+            if not teacher_gpu_ids:
                 raise ValueError(
-                    "teacher_inference is configured but teacher_gpu_ids is not set or is empty. "
-                    "Either set teacher_gpu_ids to start a teacher inference server, "
+                    "teacher_inference is configured but deployment.num_teacher_gpus is not set. "
+                    "Either set deployment.num_teacher_gpus to start a teacher inference server, "
                     "or omit teacher_inference and configure orchestrator.teacher_model to use an existing server."
                 )
 
             teacher_inference_cmd = ["uv", "run", "inference", "@", (config_dir / "teacher_inference.toml").as_posix()]
-            logger.info(f"Starting teacher inference process on GPU(s) {' '.join(map(str, config.teacher_gpu_ids))}")
+            logger.info(f"Starting teacher inference process on GPU(s) {' '.join(map(str, teacher_gpu_ids))}")
             logger.debug(f"Teacher inference start command: {' '.join(teacher_inference_cmd)}")
             with open(log_dir / "teacher_inference.stdout", "w") as log_file:
                 teacher_inference_process = Popen(
                     teacher_inference_cmd,
-                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.teacher_gpu_ids))},
+                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(map(str, teacher_gpu_ids))},
                     stdout=log_file,
                     stderr=log_file,
                 )
@@ -515,7 +261,9 @@ def rl_local(config: RLConfig):
             )
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
-        elif config.trainer.loss.teacher_tau > 0 or config.orchestrator.teacher_model:
+        elif (
+            config.trainer.loss.type == "default" and config.trainer.loss.teacher_tau > 0
+        ) or config.orchestrator.teacher_model:
             logger.warning(
                 "No teacher_inference config specified, skipping starting teacher inference server. "
                 "Is your teacher inference server running? Make sure orchestrator.teacher_model is configured."
@@ -571,20 +319,20 @@ def rl_local(config: RLConfig):
             "--local-ranks-filter=0",
             "--redirect=3",
             "--tee=3",
-            f"--nproc-per-node={len(config.trainer_gpu_ids)}",
+            f"--nproc-per-node={len(trainer_gpu_ids)}",
             "-m",
             "prime_rl.trainer.rl.train",
             "@",
             (config_dir / "trainer.toml").as_posix(),
         ]
-        logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, config.trainer_gpu_ids))}")
+        logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, trainer_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(trainer_cmd)}")
         with open(log_dir / "trainer.stdout", "w") as log_file:
             trainer_process = Popen(
                 trainer_cmd,
                 env={
                     **os.environ,
-                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, config.trainer_gpu_ids)),
+                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
                     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
@@ -662,29 +410,49 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> str:
     """Render the SLURM script template with config values."""
     from jinja2 import Environment, FileSystemLoader
 
-    slurm = config.slurm
-    if slurm.slurm_template is not None:
-        template_dir = slurm.slurm_template.parent
-        template_name = slurm.slurm_template.name
+    assert config.slurm is not None
+    if config.slurm.template is not None:
+        template_dir = config.slurm.template.parent
+        template_name = config.slurm.template.name
     else:
         template_dir = SLURM_TEMPLATE_DIR
         template_name = SLURM_TEMPLATE_NAME
     env = Environment(loader=FileSystemLoader(template_dir), keep_trailing_newline=True)
     template = env.get_template(template_name)
-    return template.render(
-        job_name=slurm.job_name,
-        output_dir=config.output_dir,
-        orchestrator_output_dir=config.orchestrator.output_dir,
-        config_dir=config_dir,
-        num_train_nodes=slurm.num_train_nodes,
-        num_infer_nodes=slurm.num_infer_nodes,
-        project_dir=slurm.project_dir,
-        gpus_per_node=slurm.gpus_per_node,
-        hf_hub_offline=slurm.hf_hub_offline,
-    )
+
+    if config.deployment.type == "single_node":
+        raise NotImplementedError("Single node deployment for SLURM is not supported yet.")
+        # return template.render(
+        #     job_name=config.slurm.job_name,
+        #     config_dir=config_dir,
+        #     project_dir=config.slurm.project_dir,
+        #     output_dir=config.output_dir,
+        #     orchestrator_output_dir=config.orchestrator.output_dir,
+        #     num_train_nodes=config.deployment.num_train_gpus,
+        #     num_infer_nodes=config.deployment.num_infer_gpus,
+        #     num_teacher_nodes=config.deployment.num_teacher_gpus,
+        #     gpus_per_node=config.deployment.gpus_per_node,
+        #     hf_hub_offline=config.hf_hub_offline,
+        # )
+    elif config.deployment.type == "multi_node":
+        return template.render(
+            job_name=config.slurm.job_name,
+            config_dir=config_dir,
+            project_dir=config.slurm.project_dir,
+            output_dir=config.output_dir,
+            orchestrator_output_dir=config.orchestrator.output_dir,
+            num_train_nodes=config.deployment.num_train_nodes,
+            num_infer_nodes=config.deployment.num_infer_nodes,
+            num_teacher_nodes=config.deployment.num_teacher_nodes,
+            gpus_per_node=config.deployment.gpus_per_node,
+            hf_hub_offline=config.hf_hub_offline,
+        )
+    else:
+        raise ValueError(f"Invalid deployment type: {config.deployment.type}")
 
 
 def rl_slurm(config: RLConfig):
+    assert config.slurm is not None
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = config.output_dir / "configs"
