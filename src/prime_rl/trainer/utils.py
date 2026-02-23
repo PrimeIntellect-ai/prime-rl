@@ -323,10 +323,18 @@ class MemoryProfiler:
 
 def maybe_clean(path: Path, step: int, async_level: int, interval_to_keep: int | None) -> None:
     logger = get_logger()
-    step = max(step - (async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
-    candidate_path_to_delete = get_step_path(path, step)
-    keep = bool(interval_to_keep and step % interval_to_keep == 0)
+    candidate_step = max(step - (async_level + 1), 0)
+    candidate_path_to_delete = get_step_path(path, candidate_step)
+    keep = bool(interval_to_keep and candidate_step % interval_to_keep == 0)
     logger.debug(f"Considering deleting path {candidate_path_to_delete}")
     if not keep:
+        # Only clean steps the orchestrator has confirmed loading.
+        # The orchestrator writes LOADED_STEP after each successful weight update.
+        loaded_step_file = path / "LOADED_STEP"
+        if not loaded_step_file.exists():
+            return
+        loaded_step = int(loaded_step_file.read_text().strip())
+        if candidate_step >= loaded_step:
+            return
         logger.debug(f"Removing path {candidate_path_to_delete}")
         shutil.rmtree(candidate_path_to_delete, ignore_errors=True)

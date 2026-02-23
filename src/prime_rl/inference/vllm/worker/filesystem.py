@@ -1,7 +1,8 @@
 from typing import TYPE_CHECKING
 
 from torch.nn import Module
-from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
+from vllm.model_executor.model_loader import get_model_loader
+from vllm.model_executor.model_loader.default_loader import DefaultModelLoader
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
