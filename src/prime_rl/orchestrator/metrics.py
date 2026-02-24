@@ -15,6 +15,10 @@ class OrchestratorPrometheusMetrics:
         self.total_samples = Gauge("orchestrator_total_samples", "Total samples processed", registry=registry)
         self.throughput = Gauge("orchestrator_throughput_tokens_per_sec", "Tokens per second", registry=registry)
         self.reward_mean = Gauge("orchestrator_reward_mean", "Mean reward", registry=registry)
+        self.reward_std = Gauge("orchestrator_reward_std", "Reward standard deviation", registry=registry)
+        self.reward_min = Gauge("orchestrator_reward_min", "Minimum reward", registry=registry)
+        self.reward_max = Gauge("orchestrator_reward_max", "Maximum reward", registry=registry)
+        self.reward_median = Gauge("orchestrator_reward_median", "Median reward", registry=registry)
         self.effective_batch_size = Gauge(
             "orchestrator_effective_batch_size", "Effective batch size ratio", registry=registry
         )
@@ -71,6 +75,10 @@ class OrchestratorPrometheusMetrics:
         self.total_samples.set(to_log.get("progress/total_samples", 0))
         self.throughput.set(to_log.get("perf/throughput", 0))
         self.reward_mean.set(to_log.get("reward/mean", 0))
+        self.reward_std.set(to_log.get("reward/std", 0))
+        self.reward_min.set(to_log.get("reward/min", 0))
+        self.reward_max.set(to_log.get("reward/max", 0))
+        self.reward_median.set(to_log.get("reward/median", 0))
         self.effective_batch_size.set(to_log.get("batch/effective_batch_size", 0))
         self.solve_none.set(to_log.get("batch/solve_none", 0))
         self.solve_all.set(to_log.get("batch/solve_all", 0))
@@ -94,9 +102,12 @@ class OrchestratorPrometheusMetrics:
 
         current_reward_envs = set()
         current_batch_envs = set()
+        reward_summary_stats = {"mean", "std", "min", "max", "median"}
         for key, value in to_log.items():
-            if key.startswith("reward/") and key != "reward/mean":
+            if key.startswith("reward/"):
                 env = key.replace("reward/", "", 1)
+                if env in reward_summary_stats:
+                    continue
                 current_reward_envs.add(env)
                 self.env_reward.labels(env=env).set(value)
 

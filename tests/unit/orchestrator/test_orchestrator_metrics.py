@@ -19,6 +19,10 @@ def test_orchestrator_metrics_update_and_cleanup():
             "progress/total_samples": 12,
             "perf/throughput": 55.0,
             "reward/mean": 0.4,
+            "reward/std": 0.2,
+            "reward/min": 0.1,
+            "reward/max": 0.8,
+            "reward/median": 0.35,
             "batch/effective_batch_size": 0.6,
             "batch/solve_none": 0.2,
             "batch/solve_all": 0.1,
@@ -56,6 +60,10 @@ def test_orchestrator_metrics_update_and_cleanup():
     assert prom_sample_value(samples, "orchestrator_total_samples") == pytest.approx(12.0)
     assert prom_sample_value(samples, "orchestrator_throughput_tokens_per_sec") == pytest.approx(55.0)
     assert prom_sample_value(samples, "orchestrator_reward_mean") == pytest.approx(0.4)
+    assert prom_sample_value(samples, "orchestrator_reward_std") == pytest.approx(0.2)
+    assert prom_sample_value(samples, "orchestrator_reward_min") == pytest.approx(0.1)
+    assert prom_sample_value(samples, "orchestrator_reward_max") == pytest.approx(0.8)
+    assert prom_sample_value(samples, "orchestrator_reward_median") == pytest.approx(0.35)
     assert prom_sample_value(samples, "orchestrator_effective_batch_size") == pytest.approx(0.6)
     assert prom_sample_value(samples, "orchestrator_solve_none") == pytest.approx(0.2)
     assert prom_sample_value(samples, "orchestrator_solve_all") == pytest.approx(0.1)
@@ -72,6 +80,10 @@ def test_orchestrator_metrics_update_and_cleanup():
     assert prom_sample_value(samples, "orchestrator_event_loop_lag_seconds", stat="mean") == pytest.approx(0.02)
     assert prom_sample_value(samples, "orchestrator_env_reward_mean", env="env_a") == pytest.approx(0.5)
     assert prom_sample_value(samples, "orchestrator_env_reward_mean", env="env_b") == pytest.approx(0.3)
+    assert prom_sample_key("orchestrator_env_reward_mean", env="std") not in samples
+    assert prom_sample_key("orchestrator_env_reward_mean", env="min") not in samples
+    assert prom_sample_key("orchestrator_env_reward_mean", env="max") not in samples
+    assert prom_sample_key("orchestrator_env_reward_mean", env="median") not in samples
     assert prom_sample_value(samples, "orchestrator_env_batch_ratio", env="env_a") == pytest.approx(0.55)
     assert prom_sample_value(samples, "orchestrator_env_batch_ratio", env="env_b") == pytest.approx(0.45)
     assert prom_sample_value(samples, "orchestrator_worker_pending_count", worker="worker_a") == pytest.approx(3.0)
