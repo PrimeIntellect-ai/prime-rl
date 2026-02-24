@@ -134,9 +134,23 @@ def interleave_rollout(
             active_samples[matched_idx][0] = tokens["prompt_ids"] + tokens["completion_ids"]
         else:
             # No prefix matches - start a new sample
+            # Find the closest prefix and show where divergence starts
+            best_match_len = 0
+            best_prefix_len = 0
+            for prefix_tokens_candidate, _ in active_samples:
+                match_len = 0
+                for a, b in zip(step_prompt_ids, prefix_tokens_candidate):
+                    if a == b:
+                        match_len += 1
+                    else:
+                        break
+                if match_len > best_match_len:
+                    best_match_len = match_len
+                    best_prefix_len = len(prefix_tokens_candidate)
             logger.debug(
                 f"Extension property broke at step {step_idx + 1} for example {output['example_id']}. "
-                f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
+                f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)}, "
+                f"best_prefix_len={best_prefix_len}, tokens_matched={best_match_len})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples.append([new_prefix, make_sample(step, step_idx=step_idx)])

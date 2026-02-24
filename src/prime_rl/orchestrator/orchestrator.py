@@ -653,6 +653,10 @@ async def orchestrate(config: OrchestratorConfig):
             "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
             "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
             "num_turns/min": results_df.groupby("example_id").num_turns.mean().min(),
+            # Branching ratio: samples_per_rollout / num_turns (1.0 = every turn breaks extension)
+            "branching_ratio/mean": (results_df.samples_per_rollout / results_df.num_turns.clip(lower=1)).mean(),
+            "branching_ratio/max": (results_df.samples_per_rollout / results_df.num_turns.clip(lower=1)).max(),
+            "branching_ratio/min": (results_df.samples_per_rollout / results_df.num_turns.clip(lower=1)).min(),
             # Verifier timing metrics
             "generation_ms/mean": results_df.groupby("example_id").generation_ms.mean().mean(),
             "generation_ms/max": results_df.groupby("example_id").generation_ms.mean().max(),
