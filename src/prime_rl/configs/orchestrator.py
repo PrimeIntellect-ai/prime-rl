@@ -12,9 +12,7 @@ from prime_rl.configs.shared import (
     TransportConfigType,
     WandbWithExtrasConfig,
 )
-from prime_rl.configs.shared import (
-    ModelConfig as BaseModelConfig,
-)
+from prime_rl.configs.shared import ModelConfig as BaseModelConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
