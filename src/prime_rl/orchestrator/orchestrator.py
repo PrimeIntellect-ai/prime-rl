@@ -662,6 +662,10 @@ async def orchestrate(config: OrchestratorConfig):
             "perf/throughput": throughput,
             # Train reward
             "reward/mean": results_df.reward.mean(),
+            "reward/std": results_df.reward.std(),
+            "reward/min": results_df.reward.min(),
+            "reward/max": results_df.reward.max(),
+            "reward/median": results_df.reward.median(),
             "sampling/temperature": temperature,
             # Batch metrics
             "batch/solve_none": solve_none,
@@ -706,7 +710,13 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Optionally, add val metrics
         if val_results_df is not None:
-            to_log.update({"val_reward/mean": val_results_df.reward.mean()})
+            to_log.update({
+                "val_reward/mean": val_results_df.reward.mean(),
+                "val_reward/std": val_results_df.reward.std(),
+                "val_reward/min": val_results_df.reward.min(),
+                "val_reward/max": val_results_df.reward.max(),
+                "val_reward/median": val_results_df.reward.median(),
+            })
 
             if val_results_df.task.nunique() > 1:
                 per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
