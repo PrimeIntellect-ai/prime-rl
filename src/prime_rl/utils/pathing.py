@@ -59,15 +59,20 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     return latest_step
 
 
+def has_checkpoints(output_dir: Path) -> bool:
+    """Check if the output directory contains any checkpoints."""
+    ckpt_dir = get_ckpt_dir(output_dir)
+    return ckpt_dir.exists() and any(ckpt_dir.iterdir())
+
+
 def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool) -> None:
     """Validate the output directory before training starts.
 
-    Raises if the directory already exists and contains files, unless the run
-    is explicitly resuming or the caller opted into cleaning.
+    Raises if the directory contains checkpoints from a previous run, unless
+    explicitly resuming or opting into cleaning. Other artifacts (logs,
+    rollouts, configs) are fine and don't trigger the error.
     """
     if not output_dir.exists():
-        return
-    if not any(output_dir.iterdir()):
         return
     if resuming:
         return
@@ -76,13 +81,13 @@ def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool) -> Non
         logger.warning(f"Cleaning existing output directory: {output_dir}")
         shutil.rmtree(output_dir)
         return
-    raise FileExistsError(
-        f"Output directory '{output_dir}' already exists and is not empty. "
-        f"This usually means a previous run wrote to this directory. "
-        f"To resume the latest step of the previous run, set ckpt.resume_step=-1 or --ckpt.resume-step -1 via CLI. "
-        f"To delete the existing directory and start fresh, set clean_output_dir=true or --clean-output-dir via CLI. "
-        f"Otherwise use a unique output_dir for this experiment."
-    )
+    if has_checkpoints(output_dir):
+        raise FileExistsError(
+            f"Output directory '{output_dir}' already contains checkpoints from a previous run. "
+            f"To resume the latest step of the previous run, set ckpt.resume_step=-1 or --ckpt.resume-step -1 via CLI. "
+            f"To delete the existing directory and start fresh, set clean_output_dir=true or --clean-output-dir via CLI. "
+            f"Otherwise use a unique output_dir for this experiment."
+        )
 
 
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:

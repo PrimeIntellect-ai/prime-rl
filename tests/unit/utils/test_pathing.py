@@ -14,27 +14,38 @@ def test_empty_dir_passes(tmp_path):
     validate_output_dir(output_dir, resuming=False, clean=False)
 
 
-def test_nonempty_dir_raises(tmp_path):
-    output_dir = tmp_path / "nonempty"
+def test_dir_with_only_logs_passes(tmp_path):
+    output_dir = tmp_path / "has_logs"
     output_dir.mkdir()
-    (output_dir / "checkpoint").touch()
-    with pytest.raises(FileExistsError, match="already exists and is not empty"):
+    (output_dir / "logs").mkdir()
+    (output_dir / "logs" / "trainer").mkdir(parents=True)
+    (output_dir / "logs" / "trainer" / "rank_0.log").touch()
+    validate_output_dir(output_dir, resuming=False, clean=False)
+
+
+def test_dir_with_checkpoints_raises(tmp_path):
+    output_dir = tmp_path / "has_ckpt"
+    output_dir.mkdir()
+    (output_dir / "checkpoints").mkdir()
+    (output_dir / "checkpoints" / "step_0").mkdir()
+    with pytest.raises(FileExistsError, match="already contains checkpoints"):
         validate_output_dir(output_dir, resuming=False, clean=False)
 
 
-def test_nonempty_dir_passes_when_resuming(tmp_path):
-    output_dir = tmp_path / "nonempty"
+def test_dir_with_checkpoints_passes_when_resuming(tmp_path):
+    output_dir = tmp_path / "has_ckpt"
     output_dir.mkdir()
-    (output_dir / "checkpoint").touch()
+    (output_dir / "checkpoints").mkdir()
+    (output_dir / "checkpoints" / "step_0").mkdir()
     validate_output_dir(output_dir, resuming=True, clean=False)
 
 
-def test_nonempty_dir_cleaned_when_flag_set(tmp_path):
-    output_dir = tmp_path / "nonempty"
+def test_dir_with_checkpoints_cleaned_when_flag_set(tmp_path):
+    output_dir = tmp_path / "has_ckpt"
     output_dir.mkdir()
-    (output_dir / "checkpoint").touch()
-    (output_dir / "subdir").mkdir()
-    (output_dir / "subdir" / "file").touch()
+    (output_dir / "checkpoints").mkdir()
+    (output_dir / "checkpoints" / "step_0").mkdir()
+    (output_dir / "logs").mkdir()
 
     validate_output_dir(output_dir, resuming=False, clean=True)
 
