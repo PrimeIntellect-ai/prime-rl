@@ -355,8 +355,11 @@ class SFTTrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         if self.slurm is not None and self.slurm.template_path is None:
+            import prime_rl
+
+            templates_dir = Path(prime_rl.__file__).parent / "templates"
             if self.deployment.type == "single_node":
-                self.slurm.template_path = Path("src/prime_rl/templates/single_node_sft.sbatch.j2")
+                self.slurm.template_path = templates_dir / "single_node_sft.sbatch.j2"
             else:
-                self.slurm.template_path = Path("src/prime_rl/templates/multi_node_sft.sbatch.j2")
+                self.slurm.template_path = templates_dir / "multi_node_sft.sbatch.j2"
         return self
