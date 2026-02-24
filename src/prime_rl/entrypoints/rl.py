@@ -14,6 +14,7 @@ import tomli_w
 
 from prime_rl.rl_config import RLConfig
 from prime_rl.utils.logger import get_logger, setup_logger
+from prime_rl.utils.pathing import validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
@@ -473,6 +474,9 @@ def rl_slurm(config: RLConfig):
 
 
 def rl(config: RLConfig):
+    resuming = config.trainer.ckpt is not None and config.trainer.ckpt.resume_step is not None
+    validate_output_dir(config.output_dir, resuming=resuming, clean=config.trainer.clean_output_dir)
+
     if config.slurm is not None:
         rl_slurm(config)
     else:

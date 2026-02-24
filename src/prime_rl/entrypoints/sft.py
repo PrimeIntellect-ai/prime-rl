@@ -10,6 +10,7 @@ import tomli_w
 
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.pathing import validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import get_free_port
@@ -188,6 +189,9 @@ def sft_local(config: SFTTrainerConfig):
 
 
 def sft(config: SFTTrainerConfig):
+    resuming = config.ckpt is not None and config.ckpt.resume_step is not None
+    validate_output_dir(config.output_dir, resuming=resuming, clean=config.clean_output_dir)
+
     if config.slurm is not None:
         sft_slurm(config)
     else:
