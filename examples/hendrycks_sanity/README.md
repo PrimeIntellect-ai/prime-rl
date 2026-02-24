@@ -6,23 +6,9 @@ Because our trainer is asynchronous, we perform only one gradient step per batch
 
 > This example runs on 8 GPUs (4 for inference, 4 for training).
 
-## Setup
-
-Install the math environment:
-
-```bash
-prime env install primeintellect/math-env
-```
-
-Verify installation:
-
-```bash
-uv run python -c "import math_env"
-```
-
 ## Training
 
-### Local (8 GPUs)
+Schedule training locally on a node with 8 GPUs
 
 ```bash
 uv run rl @ examples/hendrycks_sanity/rl.toml \
@@ -30,7 +16,7 @@ uv run rl @ examples/hendrycks_sanity/rl.toml \
   --wandb.name your-run
 ```
 
-### SLURM
+Or schedule the same training via SLURM
 
 ```bash
 uv run rl @ examples/hendrycks_sanity/slurm_rl.toml \
