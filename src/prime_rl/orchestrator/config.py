@@ -647,7 +647,9 @@ class NCCLWeightBroadcastConfig(BaseModel):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
 
 
-WeightBroadcastConfig: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+WeightBroadcastConfig: TypeAlias = Annotated[
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+]
 
 
 class TeacherModelConfig(BaseConfig):
@@ -719,9 +721,9 @@ class OrchestratorConfig(BaseSettings):
     # The validation configuration
     val: ValConfig | None = None
 
-    weight_broadcast: Annotated[WeightBroadcastConfig, Field(discriminator="type")] = FileSystemWeightBroadcastConfig()
+    weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
 
-    rollout_transport: Annotated[TransportConfig, Field(discriminator="type")] = FileSystemTransportConfig()
+    rollout_transport: TransportConfig = FileSystemTransportConfig()
 
     output_dir: Annotated[
         Path,

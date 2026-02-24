@@ -102,7 +102,7 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
-DataConfig: TypeAlias = FakeDataConfig | SFTDataConfig
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
 class BaseDeploymentConfig(BaseModel):
@@ -142,7 +142,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     ] = None
 
 
-SFTDeploymentConfig: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentConfig
+SFTDeploymentConfig: TypeAlias = Annotated[
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
+]
 
 
 class SFTTrainerConfig(BaseSettings):
@@ -156,7 +158,7 @@ class SFTTrainerConfig(BaseSettings):
         ),
     ] = None
 
-    deployment: Annotated[SFTDeploymentConfig, Field(discriminator="type")] = SingleNodeDeploymentConfig()
+    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
 
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -165,13 +167,13 @@ class SFTTrainerConfig(BaseSettings):
     tokenizer: TokenizerConfig = TokenizerConfig()
 
     # The data configuration
-    data: Annotated[DataConfig, Field(discriminator="type")] = SFTDataConfig()
+    data: DataConfig = SFTDataConfig()
 
     # The optimizer configuration
-    optim: Annotated[OptimizerConfig, Field(discriminator="type")] = AdamWConfig()
+    optim: OptimizerConfig = AdamWConfig()
 
     # The learning rate scheduler configuration
-    scheduler: Annotated[SchedulerConfig, Field(discriminator="type")] = ConstantSchedulerConfig()
+    scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

@@ -131,7 +131,9 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
 
 
-WeightBroadcastConfig: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+WeightBroadcastConfig: TypeAlias = Annotated[
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+]
 
 
 class RLTrainerConfig(BaseSettings):
@@ -150,17 +152,17 @@ class RLTrainerConfig(BaseSettings):
     loss: LossConfig = DefaultLossConfig()
 
     # The optimizer configuration
-    optim: Annotated[OptimizerConfig, Field(discriminator="type")] = AdamWConfig()
+    optim: OptimizerConfig = AdamWConfig()
 
     # The learning rate scheduler configuration
-    scheduler: Annotated[SchedulerConfig, Field(discriminator="type")] = ConstantSchedulerConfig()
+    scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    weight_broadcast: Annotated[WeightBroadcastConfig, Field(discriminator="type")] = FileSystemWeightBroadcastConfig()
+    weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
 
-    rollout_transport: Annotated[TransportConfig, Field(discriminator="type")] = FileSystemTransportConfig()
+    rollout_transport: TransportConfig = FileSystemTransportConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()

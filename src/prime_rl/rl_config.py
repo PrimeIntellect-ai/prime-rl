@@ -189,7 +189,7 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    deployment: Annotated[DeploymentConfig, Field(discriminator="type")] = SingleNodeDeploymentConfig()
+    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
     slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 
