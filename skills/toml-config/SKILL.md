@@ -137,5 +137,5 @@ All accept `@ config.toml` and CLI overrides:
 - `src/prime_rl/rl.py` — unified RL entrypoint (local + SLURM)
 - `src/prime_rl/configs/rl.py` — `RLConfig`, `SlurmConfig, DeploymentConfig`, `write_subconfigs`
 - `src/prime_rl/trainer/sft/train.py` — unified SFT entrypoint (local + SLURM)
-- `src/prime_rl/configs/sft_trainer.py` — `SFTTrainerConfig`, `SFTSlurmConfig`
+- `src/prime_rl/configs/sft.py` — `SFTConfig`, `SFTSlurmConfig`
 - `configs/` — all config files, organized by task

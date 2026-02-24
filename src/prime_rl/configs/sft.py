@@ -145,7 +145,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 SFTDeploymentConfigType: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentConfig
 
 
-class SFTTrainerConfig(BaseSettings):
+class SFTConfig(BaseSettings):
     """Configures the SFT trainer"""
 
     slurm: Annotated[

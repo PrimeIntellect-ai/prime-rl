@@ -8,14 +8,14 @@ from threading import Event, Thread
 
 import tomli_w
 
-from prime_rl.configs.sft_trainer import SFTTrainerConfig
+from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import get_free_port
 
 
-def write_trainer_config(config: SFTTrainerConfig, output_dir: Path) -> None:
+def write_trainer_config(config: SFTConfig, output_dir: Path) -> None:
     """Write resolved trainer config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
     trainer_data = config.model_dump(exclude={"deployment"}, exclude_none=True, mode="json")
@@ -23,7 +23,7 @@ def write_trainer_config(config: SFTTrainerConfig, output_dir: Path) -> None:
         tomli_w.dump(trainer_data, f)
 
 
-def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str, str]:
+def render_slurm_script(config: SFTConfig, config_dir: Path) -> tuple[str, str]:
     """Render the SLURM script template. Returns (script, log_message)."""
     from jinja2 import Environment, FileSystemLoader
 
@@ -64,7 +64,7 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
     return script, log_message
 
 
-def sft_slurm(config: SFTTrainerConfig):
+def sft_slurm(config: SFTConfig):
     """Run SFT training via SLURM."""
     assert config.slurm is not None
 
@@ -95,7 +95,7 @@ def sft_slurm(config: SFTTrainerConfig):
     logger.success(f"{result.stdout.strip()}\n\n{log_message}")
 
 
-def sft_local(config: SFTTrainerConfig):
+def sft_local(config: SFTConfig):
     """Run SFT training locally with process monitoring and cleanup."""
     assert config.deployment.type == "single_node"
 
@@ -187,7 +187,7 @@ def sft_local(config: SFTTrainerConfig):
         raise
 
 
-def sft(config: SFTTrainerConfig):
+def sft(config: SFTConfig):
     if config.slurm is not None:
         sft_slurm(config)
     else:
@@ -195,7 +195,7 @@ def sft(config: SFTTrainerConfig):
 
 
 def main():
-    sft(parse_argv(SFTTrainerConfig))
+    sft(parse_argv(SFTConfig))
 
 
 if __name__ == "__main__":
