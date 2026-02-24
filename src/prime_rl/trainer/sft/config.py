@@ -9,8 +9,8 @@ from prime_rl.trainer.config import (
     CheckpointConfig,
     ConstantSchedulerConfig,
     ModelConfig,
-    OptimizerConfigType,
-    SchedulerConfigType,
+    OptimizerConfig,
+    SchedulerConfig,
     SlurmConfig,
     TokenizerConfig,
 )
@@ -102,7 +102,7 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
-DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
 class BaseDeploymentConfig(BaseModel):
@@ -142,7 +142,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     ] = None
 
 
-SFTDeploymentConfigType: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentConfig
+SFTDeploymentConfig: TypeAlias = Annotated[
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
+]
 
 
 class SFTTrainerConfig(BaseSettings):
@@ -156,7 +158,7 @@ class SFTTrainerConfig(BaseSettings):
         ),
     ] = None
 
-    deployment: Annotated[SFTDeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
+    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
 
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -165,13 +167,13 @@ class SFTTrainerConfig(BaseSettings):
     tokenizer: TokenizerConfig = TokenizerConfig()
 
     # The data configuration
-    data: Annotated[DataConfigType, Field(discriminator="type")] = SFTDataConfig()
+    data: DataConfig = SFTDataConfig()
 
     # The optimizer configuration
-    optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()
+    optim: OptimizerConfig = AdamWConfig()
 
     # The learning rate scheduler configuration
-    scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
+    scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

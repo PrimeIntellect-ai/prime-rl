@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.trainer.rl.config import CustomLossConfig, LossConfig
+from prime_rl.trainer.rl.config import CustomLossConfig, DefaultLossConfig
 from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_loss_fn
 
 pytestmark = [pytest.mark.gpu]
@@ -14,7 +14,7 @@ def test_grpo_loss():
     advantages = [torch.randn(50).cuda(), torch.randn(30).cuda()]
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
-    loss_fn = setup_loss_fn(LossConfig(ratio_type="token", token_mask_high=10.0))
+    loss_fn = setup_loss_fn(DefaultLossConfig(ratio_type="token", token_mask_high=10.0))
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
@@ -34,7 +34,7 @@ def test_gspo_loss():
     advantages = [torch.randn(40).cuda(), torch.randn(60).cuda()]
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
-    loss_fn = setup_loss_fn(LossConfig(ratio_type="sequence", token_mask_high=10.0))
+    loss_fn = setup_loss_fn(DefaultLossConfig(ratio_type="sequence", token_mask_high=10.0))
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,

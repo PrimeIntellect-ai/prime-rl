@@ -7,7 +7,7 @@ from prime_rl.orchestrator.advantage import (
     default_advantage_fn,
     setup_advantage_fn,
 )
-from prime_rl.orchestrator.config import AdvantageConfig, CustomAdvantageConfig
+from prime_rl.orchestrator.config import CustomAdvantageConfig, DefaultAdvantageConfig
 
 
 def test_default_advantage_fn_simple_mean():
@@ -39,7 +39,7 @@ def test_compute_advantages_with_config():
     rewards = [1.0, 0.5, 0.8, 0.2, 0.9, 0.1]
     lengths = [10, 12, 8, 15, 11, 9]
 
-    result = compute_advantages(rewards, lengths, samples_per_problem=3, advantage_config=AdvantageConfig())
+    result = compute_advantages(rewards, lengths, samples_per_problem=3, advantage_config=DefaultAdvantageConfig())
 
     assert len(result) == 6
     # First 3 should sum to ~0 (mean subtracted)
