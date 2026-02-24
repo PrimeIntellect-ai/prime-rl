@@ -77,6 +77,32 @@ async def wait_for_env_servers(env_clients: list[EnvClient]) -> None:
     await asyncio.gather(*[env_client.wait_for_server_startup() for env_client in env_clients])
 
 
+async def run_rollout(
+    env: vf.Environment,
+    client: vf.ClientConfig,
+    model_name: str,
+    example: dict,
+    sampling_args: dict,
+    max_retries: int = DEFAULT_RETRIES,
+    state_columns: list[str] = DEFAULT_STATE_COLUMNS,
+) -> vf.RolloutOutput:
+    """
+    Wrapper for vf.Environment.run_rollout().
+
+    Asynchronously generates and scores one rollout.
+    """
+    state_columns = state_columns + REQUIRED_STATE_COLUMNS
+    rollout_input = vf.RolloutInput(**example)
+    return await env.run_rollout(
+        rollout_input,
+        client=client,
+        model=model_name,
+        sampling_args=sampling_args,
+        max_retries=max_retries,
+        state_columns=state_columns,
+    )
+
+
 async def run_group(
     env: vf.Environment,
     client: vf.ClientConfig,
