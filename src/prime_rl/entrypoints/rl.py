@@ -332,10 +332,7 @@ def rl_local(config: RLConfig):
         monitor_threads.append(monitor_thread)
 
         # Monitor all processes for failures
-        logger.success("Startup complete. Showing trainer logs...")
-
-        tail_process = Popen(["tail", "-F", log_dir / "trainer.stdout"])
-        processes.append(tail_process)
+        logger.success("Startup complete. Following trainer logs...")
 
         # Check for errors from monitor threads
         while not (stop_events["orchestrator"].is_set() and stop_events["trainer"].is_set()):

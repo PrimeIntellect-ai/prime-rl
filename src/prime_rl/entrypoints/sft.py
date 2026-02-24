@@ -159,9 +159,7 @@ def sft_local(config: SFTTrainerConfig):
         monitor_thread.start()
         monitor_threads.append(monitor_thread)
 
-        logger.success("Startup complete. Showing trainer logs...")
-        tail_process = Popen(["tail", "-F", str(log_dir / "trainer.stdout")])
-        processes.append(tail_process)
+        logger.success("Startup complete. Following logs...")
 
         stop_event.wait()
 
