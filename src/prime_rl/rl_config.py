@@ -182,6 +182,13 @@ class RLConfig(BaseSettings):
         ),
     ] = None
 
+    clean_output_dir: Annotated[
+        bool,
+        Field(
+            description="If true, delete the output directory before starting training. Required to overwrite an existing non-empty output directory when not resuming a run.",
+        ),
+    ] = False
+
     deployment: Annotated[DeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
 
     slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None

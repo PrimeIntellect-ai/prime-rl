@@ -437,8 +437,8 @@ def rl_slurm(config: RLConfig):
 
 
 def rl(config: RLConfig):
-    resuming = config.trainer.ckpt is not None and config.trainer.ckpt.resume_step is not None
-    validate_output_dir(config.output_dir, resuming=resuming, clean=config.trainer.clean_output_dir)
+    resuming = config.ckpt is not None and config.ckpt.resume_step is not None
+    validate_output_dir(config.output_dir, resuming=resuming, clean=config.clean_output_dir)
 
     if config.slurm is not None:
         rl_slurm(config)
