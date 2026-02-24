@@ -612,12 +612,10 @@ async def orchestrate(config: OrchestratorConfig):
         throughput = num_tokens / generate_completions_time
 
         # Compute solve all and none tensors
-        solve_all = (
-            results_df.groupby("example_id")
-            .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
-            .mean()
-        )
-        solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
+        problem_indices = results_df.index // config.rollouts_per_example
+        reward_sum_per_problem = results_df.groupby(problem_indices).reward.sum()
+        solve_all = (reward_sum_per_problem == config.rollouts_per_example).mean()
+        solve_none = (reward_sum_per_problem == 0).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
         step_time = time.perf_counter() - step_start_time
