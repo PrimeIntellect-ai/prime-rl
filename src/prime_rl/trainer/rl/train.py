@@ -56,6 +56,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
+from prime_rl.utils.pathing import validate_output_dir
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
@@ -71,6 +72,10 @@ def train(config: RLTrainerConfig):
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
+
+    # Validate output directory
+    resuming = config.ckpt is not None and config.ckpt.resume_step is not None
+    validate_output_dir(config.output_dir, resuming=resuming, clean=config.clean_output_dir)
 
     # Print warning if running in benchmark mode
     if config.bench is not None:

@@ -13,7 +13,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import setup_ckpt_managers
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import resolve_latest_ckpt_step, validate_output_dir
 from prime_rl.trainer.sft.config import SFTTrainerConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.runs import Progress
@@ -59,6 +59,10 @@ def train(config: SFTTrainerConfig):
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting SFT trainer in {world}")
+
+    # Validate output directory
+    resuming = config.ckpt is not None and config.ckpt.resume_step is not None
+    validate_output_dir(config.output_dir, resuming=resuming, clean=config.clean_output_dir)
 
     # Print warning if running in benchmark mode
     if config.bench is not None:

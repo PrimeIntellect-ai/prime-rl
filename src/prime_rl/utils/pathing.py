@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 import time
 from pathlib import Path
 
@@ -56,6 +57,32 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     logger = get_logger()
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
+
+
+def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool) -> None:
+    """Validate the output directory before training starts.
+
+    Raises if the directory already exists and contains files, unless the run
+    is explicitly resuming or the caller opted into cleaning.
+    """
+    if not output_dir.exists():
+        return
+    if not any(output_dir.iterdir()):
+        return
+    if resuming:
+        return
+    if clean:
+        logger = get_logger()
+        logger.warning(f"Cleaning existing output directory: {output_dir}")
+        shutil.rmtree(output_dir)
+        return
+    raise FileExistsError(
+        f"Output directory '{output_dir}' already exists and is not empty. "
+        f"This usually means a previous run wrote to this directory. "
+        f"To resume a previous run, set ckpt.resume_step (e.g. -1 for latest). "
+        f"To delete the existing directory and start fresh, set clean_output_dir=true. "
+        f"To avoid this error, use a unique output_dir per experiment."
+    )
 
 
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
