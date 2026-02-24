@@ -1,0 +1,35 @@
+inference_gpu_ids = [0, 1, 2]
+trainer_gpu_ids = [3]
+
+max_steps = 3
+seq_len = 8192
+
+[wandb]
+project = "per-message-tokenization-benchmark"
+name = "baseline"
+
+[ckpt]
+enabled = false
+
+[model]
+name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
+
+[orchestrator]
+batch_size = 64
+rollouts_per_example = 4
+use_token_client = false
+
+[[orchestrator.env]]
+id = "primeintellect/wordle"
+name = "wordle"
+
+[orchestrator.sampling]
+max_tokens = 1024
+
+[trainer]
+
+[inference]
+per_message_tokenization = false
+
+[inference.parallel]
+dp = 3
