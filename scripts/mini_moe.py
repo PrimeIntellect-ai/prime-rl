@@ -117,7 +117,7 @@ ARCH_PRESETS = {
         "hf_model_class": HFQwen3MoeForCausalLM,
         "prime_model_class": PrimeRLQwen3MoeForCausalLM,
         "tokenizer_source": "Qwen/Qwen2.5-0.5B",
-    },    # glm_moe_dsa: HF implementation is incorrect, not supported here
+    },  # glm_moe_dsa: HF implementation is incorrect, not supported here
 }
 
 
