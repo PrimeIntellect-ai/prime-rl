@@ -275,6 +275,15 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 1
 
+    per_message_tokenization: Annotated[
+        bool,
+        Field(
+            description="Tokenize each chat message independently to prevent BPE merges across message boundaries. "
+            "Improves prefix cache hit rates in multi-turn conversations by ensuring re-tokenization of "
+            "previous turns always produces the same token IDs.",
+        ),
+    ] = False
+
     seed: Annotated[
         int,
         Field(

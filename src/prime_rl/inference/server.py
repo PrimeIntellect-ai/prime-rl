@@ -18,6 +18,11 @@ def main():
     config = parse_argv(InferenceConfig, allow_extras=True)
     setup_vllm_env(config)
 
+    if config.per_message_tokenization:
+        from prime_rl.inference.patches import monkey_patch_per_message_tokenization
+
+        monkey_patch_per_message_tokenization()
+
     # We import here to be able to set environment variables before importing vLLM
     from prime_rl.inference.vllm.server import server  # pyright: ignore
 

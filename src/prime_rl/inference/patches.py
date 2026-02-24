@@ -272,6 +272,165 @@ def monkey_patch_hermes_tool_parser_thread_safety():
     Hermes2ProToolParser.__init__ = _patched_init
 
 
+def monkey_patch_per_message_tokenization():
+    """Patch vLLM to cache AR-generated token IDs and reuse them in subsequent turns.
+
+    Problem: in multi-turn conversations via the OpenAI chat API, assistant
+    responses are sent back as text.  vLLM re-tokenizes the whole conversation
+    from scratch, but BPE encoding of that text can produce different token IDs
+    than what the model originally generated during AR decoding (non-canonical
+    tokenization).  Different token IDs → prefix-cache miss → full re-prefill
+    of the entire conversation history every turn.
+
+    Fix — two patches working together:
+
+    1. **Cache population** (``chat_completion_full_generator`` wrapper):
+       after every non-streaming generation, store ``text → token_ids`` for
+       each completion output.
+
+    2. **Cache lookup** (``HfRenderer.render_messages`` override):
+       when building the prompt for a new request, split the rendered text at
+       message-content boundaries.  For assistant messages whose content is
+       found in the cache, splice in the original AR token IDs instead of
+       re-encoding.  All other segments (template markup, user/system content)
+       are tokenized normally.
+    """
+    import hashlib
+    from collections import OrderedDict
+
+    from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+    from vllm.renderers.hf import (
+        HfRenderer,
+        parse_chat_messages,
+        resolve_chat_template_content_format,
+        safe_apply_chat_template,
+    )
+    from vllm.renderers.inputs import DictPrompt
+    from vllm.renderers.params import ChatParams
+
+    # ── Bounded LRU cache: response text → AR token IDs ──────────────
+
+    _AR_TOKEN_CACHE: OrderedDict[str, list[int]] = OrderedDict()
+    _AR_CACHE_MAX = 4096
+
+    def _cache_key(text: str) -> str:
+        return hashlib.sha256(text.encode()).hexdigest()
+
+    def _cache_put(text: str, token_ids: list[int]) -> None:
+        key = _cache_key(text)
+        _AR_TOKEN_CACHE[key] = token_ids
+        _AR_TOKEN_CACHE.move_to_end(key)
+        while len(_AR_TOKEN_CACHE) > _AR_CACHE_MAX:
+            _AR_TOKEN_CACHE.popitem(last=False)
+
+    def _cache_get(text: str) -> list[int] | None:
+        key = _cache_key(text)
+        ids = _AR_TOKEN_CACHE.get(key)
+        if ids is not None:
+            _AR_TOKEN_CACHE.move_to_end(key)
+        return ids
+
+    # ── Patch 1: populate cache after generation ─────────────────────
+
+    _original_full_generator = OpenAIServingChat.chat_completion_full_generator
+
+    async def _caching_full_generator(self, request, result_generator, *args, **kwargs):
+        last_res = None
+
+        async def _capturing_generator():
+            nonlocal last_res
+            async for res in result_generator:
+                last_res = res
+                yield res
+
+        response = await _original_full_generator(self, request, _capturing_generator(), *args, **kwargs)
+
+        if last_res is not None:
+            for output in last_res.outputs:
+                if output.text and output.token_ids:
+                    _cache_put(output.text, list(output.token_ids))
+
+        return response
+
+    OpenAIServingChat.chat_completion_full_generator = _caching_full_generator
+
+    # ── Patch 2: use cached AR tokens during tokenization ────────────
+
+    _original_render_messages = HfRenderer.render_messages
+
+    def _per_message_render(
+        self: HfRenderer,
+        messages: list,
+        params: ChatParams,
+    ) -> tuple[list, DictPrompt]:
+        model_config = self.config
+        tokenizer = self.get_tokenizer()
+
+        conversation, mm_data, mm_uuids = parse_chat_messages(
+            messages,
+            model_config,
+            content_format=resolve_chat_template_content_format(
+                chat_template=params.chat_template,
+                tools=params.chat_template_kwargs.get("tools"),
+                given_format=params.chat_template_content_format,
+                tokenizer=tokenizer,
+                model_config=model_config,
+            ),
+        )
+
+        if mm_data is not None:
+            return _original_render_messages(self, messages, params)
+
+        template_kwargs = params.get_apply_chat_template_kwargs()
+
+        full_text = safe_apply_chat_template(model_config, tokenizer, conversation, tokenize=False, **template_kwargs)
+
+        # Build a set of assistant content strings for cache-eligible lookup.
+        assistant_contents: set[str] = set()
+        for msg in conversation:
+            if msg.get("role") == "assistant" and msg.get("content"):
+                assistant_contents.add(msg["content"])
+
+        # Split rendered text at message-content boundaries, tokenize each
+        # segment independently, and splice in cached AR tokens for assistant
+        # messages when available.
+        all_token_ids: list[int] = []
+        last_end = 0
+
+        for msg in conversation:
+            content = msg.get("content", "")
+            if not content:
+                continue
+            pos = full_text.find(content, last_end)
+            if pos == -1:
+                continue
+
+            # Template markup before this content
+            if pos > last_end:
+                all_token_ids.extend(tokenizer.encode(full_text[last_end:pos], add_special_tokens=False))
+
+            # Message content: use cached AR tokens for assistant messages
+            cached = _cache_get(content) if content in assistant_contents else None
+            if cached is not None:
+                all_token_ids.extend(cached)
+            else:
+                all_token_ids.extend(tokenizer.encode(content, add_special_tokens=False))
+
+            last_end = pos + len(content)
+
+        # Remaining template text (im_end, generation prompt, etc.)
+        if last_end < len(full_text):
+            all_token_ids.extend(tokenizer.encode(full_text[last_end:], add_special_tokens=False))
+
+        prompt: DictPrompt = {"prompt_token_ids": all_token_ids, "prompt": full_text}  # type: ignore[assignment]
+        if mm_uuids is not None:
+            prompt["multi_modal_uuids"] = mm_uuids  # type: ignore[typeddict-unknown-key]
+
+        return conversation, prompt
+
+    HfRenderer.render_messages = _per_message_render
+
+
 def monkey_patch_minimax_m2_for_lora():
     """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
 
