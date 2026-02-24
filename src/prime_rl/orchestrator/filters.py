@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import verifiers as vf
-from loguru import logger
 
 from prime_rl.configs.orchestrator import FilterConfig
+from prime_rl.utils.logger import get_logger
 
 
 @dataclass
@@ -173,7 +173,7 @@ def apply_filters(
 
     if total_detected > 0:
         enforced_msg = f", enforced {total_enforced}" if total_enforced > 0 else ""
-        logger.info(
+        get_logger().info(
             f"Detected {total_detected}/{n} rollouts "
             f"({', '.join(f'{name}={c}' for name, c in counts.items() if c > 0)})" + enforced_msg
         )
