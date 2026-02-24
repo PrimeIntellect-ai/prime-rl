@@ -125,6 +125,7 @@ def rl_local(config: RLConfig):
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Write all resolved subconfigs to disk
     config_dir = Path(".pydantic_config") / uuid.uuid4().hex
@@ -439,6 +440,7 @@ def rl_slurm(config: RLConfig):
 def rl(config: RLConfig):
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     validate_output_dir(config.output_dir, resuming=resuming, clean=config.clean_output_dir)
+    config.output_dir.mkdir(parents=True, exist_ok=True)
 
     if config.slurm is not None:
         rl_slurm(config)
