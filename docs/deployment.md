@@ -197,7 +197,6 @@ uv run rl \
   --inference.parallel.dp 6
 ```
 
-
 ### Parallel Experiments
 
 For quick ablations, it can be more efficient to parallelize experiments within a node (e.g. split your GPUs to run two experiments in parallel). For example, if you have access to 4 GPUs and your experiment fits on 2 GPUs, you can parallelize two experiments as follows:
