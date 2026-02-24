@@ -1,5 +1,4 @@
 from collections.abc import Iterable, Iterator
-from typing import Protocol
 
 import torch
 import triton
