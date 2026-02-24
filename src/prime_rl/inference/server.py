@@ -14,9 +14,19 @@ def setup_vllm_env(config: InferenceConfig):
         os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
 
 
+def register_custom_configs():
+    """Register custom model configs so AutoConfig recognizes them in the inference process."""
+    from transformers import AutoConfig
+
+    from prime_rl.trainer.models.kimi_k25 import KimiK25Config
+
+    AutoConfig.register("kimi_k25", KimiK25Config, exist_ok=True)
+
+
 def main():
     config = parse_argv(InferenceConfig, allow_extras=True)
     setup_vllm_env(config)
+    register_custom_configs()
 
     # We import here to be able to set environment variables before importing vLLM
     from prime_rl.inference.vllm.server import server  # pyright: ignore

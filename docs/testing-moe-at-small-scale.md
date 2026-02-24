@@ -10,6 +10,7 @@ The goal isn't performance. It's catching bugs in modeling code, state dict conv
 |-------|-------------|---------|--------|--------|---------|
 | `PrimeIntellect/glm4-moe-tiny` | GLM-4 MoE | 8 | 4 | ~543M | [link](https://huggingface.co/PrimeIntellect/glm4-moe-tiny) |
 | `PrimeIntellect/qwen3-moe-tiny` | Qwen3 MoE | 16 | 4 | ~500M | [link](https://huggingface.co/PrimeIntellect/qwen3-moe-tiny) |
+| `PrimeIntellect/kimi-k25-tiny` | Kimi K2.5 (MLA+MoE) | 8 | 4 | ~500M | [link](https://huggingface.co/PrimeIntellect/kimi-k25-tiny) |
 | `PrimeIntellect/minimax-m2-tiny` | MiniMax M2 | 8 | 4 | ~500M | [link](https://huggingface.co/PrimeIntellect/minimax-m2-tiny) |
 
 All models have been fine-tuned on [PrimeIntellect/Reverse-Text-SFT](https://huggingface.co/datasets/PrimeIntellect/Reverse-Text-SFT) for a non-trivial distribution during RL.

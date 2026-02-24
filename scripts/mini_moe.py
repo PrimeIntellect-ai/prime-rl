@@ -16,12 +16,15 @@ from pathlib import Path
 
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import DeepseekV3ForCausalLM as HFDeepseekV3ForCausalLM
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
 from transformers import MiniMaxM2ForCausalLM as HFMiniMaxM2ForCausalLM
 from transformers import Qwen3MoeForCausalLM as HFQwen3MoeForCausalLM
 
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
+from prime_rl.trainer.models.kimi_k25 import KimiK25Config
+from prime_rl.trainer.models.kimi_k25 import KimiK25ForCausalLM as PrimeRLKimiK25ForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2ForCausalLM as PrimeRLMiniMaxM2ForCausalLM
@@ -63,6 +66,41 @@ ARCH_PRESETS = {
         "hf_model_class": HFGlm4MoeForCausalLM,
         "prime_model_class": PrimeRLGlm4MoeForCausalLM,
         "tokenizer_source": "THUDM/GLM-4-9B-0414",
+    },
+    "kimi_k25": {
+        "config_class": KimiK25Config,
+        "config_kwargs": dict(
+            vocab_size=129280,
+            hidden_size=1024,
+            intermediate_size=2048,
+            num_hidden_layers=24,
+            num_attention_heads=16,
+            num_key_value_heads=16,
+            q_lora_rank=256,
+            kv_lora_rank=128,
+            qk_nope_head_dim=64,
+            qk_rope_head_dim=32,
+            v_head_dim=64,
+            hidden_act="silu",
+            max_position_embeddings=4096,
+            rms_norm_eps=1e-6,
+            rope_theta=50000,
+            rope_interleave=True,
+            attention_bias=False,
+            moe_intermediate_size=256,
+            n_routed_experts=8,
+            num_experts_per_tok=4,
+            n_shared_experts=1,
+            first_k_dense_replace=1,
+            norm_topk_prob=True,
+            routed_scaling_factor=2.827,
+            n_group=1,
+            topk_group=1,
+            use_grouped_mm=False,
+        ),
+        "hf_model_class": HFDeepseekV3ForCausalLM,
+        "prime_model_class": PrimeRLKimiK25ForCausalLM,
+        "tokenizer_source": "deepseek-ai/DeepSeek-V3",
     },
     "minimax_m2": {
         "config_class": MiniMaxM2Config,
@@ -117,7 +155,7 @@ ARCH_PRESETS = {
         "hf_model_class": HFQwen3MoeForCausalLM,
         "prime_model_class": PrimeRLQwen3MoeForCausalLM,
         "tokenizer_source": "Qwen/Qwen2.5-0.5B",
-    },  # glm_moe_dsa: HF implementation is incorrect, not supported here
+    },
 }
 
 
