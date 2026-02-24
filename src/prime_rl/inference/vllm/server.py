@@ -22,6 +22,9 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.inference.config import InferenceConfig
+from prime_rl.utils.logger import get_logger
+
+logger = get_logger()
 from prime_rl.inference.patches import (
     monkey_patch_hermes_tool_parser_thread_safety,
     monkey_patch_load_lora_adapter,
@@ -244,6 +247,9 @@ vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_wo
 def server(config: InferenceConfig, vllm_args: list[str]):
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.openai.api_server import run_server
+
+    if config.model.tool_call_parser is not None:
+        logger.info(f"Using tool_call_parser='{config.model.tool_call_parser}' for model '{config.model.name}'")
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)

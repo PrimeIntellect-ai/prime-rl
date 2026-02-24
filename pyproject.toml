@@ -34,6 +34,7 @@ dependencies = [
     "verifiers",
     "dion",
     "reverse-text",
+    "tilelang>=0.1.8",
 ]
 
 [project.scripts]
@@ -83,8 +84,8 @@ override-dependencies = [
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
-reverse-text = { index = "primeintellect" }
-verifiers = { path = "/home/daniel/git/verifiers", editable = true }
+math-env = { index = "primeintellect" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "d1eb28f" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "609e3d5" }

@@ -830,7 +830,7 @@ class OrchestratorConfig(BaseSettings):
         Field(
             description="Whether to use the token-in-token-out (TITO) client for training across all environments. WARNING: Only use this if your environment has a linear history and the chat template has the extension property (i.e. no tokens are ever removed or inserted by the chat template)"
         ),
-    ] = False
+    ] = True
 
     @model_validator(mode="after")
     def validate_unique_filter_types(self):

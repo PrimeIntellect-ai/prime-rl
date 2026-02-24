@@ -497,12 +497,14 @@ async def orchestrate(config: OrchestratorConfig):
         train_examples: list[TrainingSample] = []
         rollout_prefill_lens: list[int] = []
         rollout_decode_lens: list[int] = []
+        rollout_samples_per_rollout: list[int] = []
         num_prefill_tokens = 0
         num_decode_tokens = 0
         for rollout, advantage, samples in zip(train_rollouts, advantages, results):
             rollout_prefill_tokens = 0
             rollout_decode_tokens = 0
             if samples is not None:
+                rollout_samples_per_rollout.append(len(samples))
                 for sample in samples:
                     sample.advantage = advantage
                     sample.reward = rollout["reward"]
@@ -511,6 +513,8 @@ async def orchestrate(config: OrchestratorConfig):
                     rollout_decode_tokens += sample_decode_tokens
                     rollout_prefill_tokens += sample_prefill_tokens
                     train_examples.append(sample)
+            else:
+                rollout_samples_per_rollout.append(0)
             rollout_prefill_lens.append(rollout_prefill_tokens)
             rollout_decode_lens.append(rollout_decode_tokens)
             num_prefill_tokens += rollout_prefill_tokens
@@ -578,6 +582,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
                 "prefill_len": rollout_prefill_lens,
                 "decode_len": rollout_decode_lens,
+                "samples_per_rollout": rollout_samples_per_rollout,
                 "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
                 "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
                 "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
@@ -640,6 +645,10 @@ async def orchestrate(config: OrchestratorConfig):
             "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
             "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
             "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
+            # Seqs per rollout metrics
+            "samples_per_rollout/mean": results_df.groupby("example_id").samples_per_rollout.mean().mean(),
+            "samples_per_rollout/max": results_df.groupby("example_id").samples_per_rollout.mean().max(),
+            "samples_per_rollout/min": results_df.groupby("example_id").samples_per_rollout.mean().min(),
             # Turn metrics
             "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
             "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),

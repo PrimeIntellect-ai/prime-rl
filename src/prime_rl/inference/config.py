@@ -3,11 +3,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
-from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
-
-logger = get_logger()
 
 MODEL_TOOL_CALL_PARSER: dict[str, str] = {
     # GLM-4.5
@@ -192,7 +189,6 @@ class ModelConfig(BaseConfig):
         if self.tool_call_parser is None:
             parser = MODEL_TOOL_CALL_PARSER.get(self.name)
             if parser is not None:
-                logger.info(f"Auto-detected tool_call_parser='{parser}' for model '{self.name}'")
                 self.tool_call_parser = parser
 
         if self.tool_call_parser is not None:
@@ -213,6 +209,16 @@ class WeightBroadcastConfig(BaseSettings):
 # TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
+# vLLM all2all backend options for expert-parallel deployments.
+All2AllBackend = Literal[
+    "allgather_reducescatter",
+    "deepep_high_throughput",
+    "deepep_low_latency",
+    "flashinfer_all2allv",
+    "naive",
+    "pplx",
+]
+
 
 class InferenceConfig(BaseSettings):
     """Configures inference."""
@@ -221,7 +227,7 @@ class InferenceConfig(BaseSettings):
     server: ServerConfig = ServerConfig()
 
     # The model configuration
-    model: ModelConfig = ModelConfig()
+    model: ModelConfig = Field(default_factory=ModelConfig)
 
     # The parallel configuration
     parallel: ParallelConfig = ParallelConfig()
@@ -294,16 +300,37 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 0
 
-    log_rollout_gateway_turns: Annotated[
+    enable_expert_parallel: Annotated[
         bool,
         Field(
-            description="Log full rollout gateway turn content (completions, tool calls, tool responses).",
+            description="Enable expert parallelism for MoE models. Passed to vLLM as `--enable-expert-parallel`.",
+        ),
+    ] = False
+
+    all2all_backend: Annotated[
+        All2AllBackend,
+        Field(
+            description="All-to-all backend for expert parallel communication. Passed to vLLM as `--all2all-backend`.",
+        ),
+    ] = "allgather_reducescatter"
+
+    enable_eplb: Annotated[
+        bool,
+        Field(
+            description="Enable expert parallel load balancer (EPLB). Passed to vLLM as `--enable-eplb`.",
         ),
     ] = False
 
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
+
+    log_rollout_gateway_turns: Annotated[
+        bool,
+        Field(
+            description="Log full rollout gateway turn content (completions, tool calls, tool responses).",
+        ),
+    ] = False
 
     @model_validator(mode="after")
     def round_up_max_lora_rank(self):
@@ -361,6 +388,9 @@ class InferenceConfig(BaseSettings):
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
+            "enable_expert_parallel": "enable_expert_parallel",
+            "all2all_backend": "all2all_backend",
+            "enable_eplb": "enable_eplb",
         }
 
         for key in get_all_fields(self):
