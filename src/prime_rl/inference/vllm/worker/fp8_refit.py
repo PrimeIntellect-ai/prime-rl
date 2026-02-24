@@ -154,13 +154,21 @@ def _get_remapped_scale_name(weight_name: str, packed_reverse_mapping: dict[str,
     return f"{remapped_weight_name}_scale_inv"
 
 
+def _get_model_runner_config_attr(model_runner: object, attr_name: str) -> object | None:
+    vllm_config = getattr(model_runner, "vllm_config", None)
+    config_attr = getattr(vllm_config, attr_name, None)
+    if config_attr is not None:
+        return config_attr
+    return getattr(model_runner, attr_name, None)
+
+
 def maybe_convert_weights_for_fp8_refit(
     model_runner: object,
     model: Module,
     weights: Iterable[tuple[str, torch.Tensor]],
 ) -> Iterable[tuple[str, torch.Tensor]]:
     """Convert incoming BF16 weights to blockwise FP8 for FP8-quantized vLLM models."""
-    quant_config = model_runner.vllm_config.quant_config
+    quant_config = _get_model_runner_config_attr(model_runner, "quant_config")
     if quant_config is None or quant_config.get_name() != "fp8":
         return weights
 
@@ -200,8 +208,10 @@ def _iter_converted_fp8_refit_weights(
             yield name, tensor
 
 
-def _resolve_layerwise_load_device(load_config: object | None, device_config: object | None) -> torch.device:
-    load_device = load_config.device or device_config.device
+def _resolve_layerwise_load_device(load_config: object, device_config: object) -> torch.device:
+    load_device = getattr(load_config, "device", None) or getattr(device_config, "device", None)
+    if load_device is None:
+        raise AttributeError("model_runner load_config/device_config must define a load device")
     if load_device == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(load_device)
@@ -217,9 +227,12 @@ def load_checkpoint_weights_layerwise(
 
     weights_iter = maybe_convert_weights_for_fp8_refit(model_runner, model, weights)
 
-    vllm_config = model_runner.vllm_config
-    load_config = vllm_config.load_config
-    device_config = vllm_config.device_config
+    load_config = _get_model_runner_config_attr(model_runner, "load_config")
+    if load_config is None:
+        raise AttributeError("model_runner load_config is required for layerwise weight loading")
+    device_config = _get_model_runner_config_attr(model_runner, "device_config")
+    if device_config is None:
+        raise AttributeError("model_runner device_config is required for layerwise weight loading")
     load_device = _resolve_layerwise_load_device(load_config, device_config)
     with torch.device(load_device):
         initialize_layerwise_reload(model)
