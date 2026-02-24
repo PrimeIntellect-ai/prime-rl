@@ -144,4 +144,4 @@ async def evaluate_env(
     eval_metrics = {**{f"eval/{env_name}/{k}": v for k, v in eval_metrics.items()}}
     eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step or ckpt_step})
     monitor = get_monitor()
-    monitor.log(eval_metrics, step=None)
+    monitor.log(eval_metrics, step=step or ckpt_step)
