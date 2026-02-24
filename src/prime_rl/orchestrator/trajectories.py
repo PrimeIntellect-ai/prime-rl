@@ -137,6 +137,7 @@ def interleave_rollout(
             # Find the closest prefix and show where divergence starts
             best_match_len = 0
             best_prefix_len = 0
+            best_prefix_tokens = None
             for prefix_tokens_candidate, _ in active_samples:
                 match_len = 0
                 for a, b in zip(step_prompt_ids, prefix_tokens_candidate):
@@ -147,10 +148,26 @@ def interleave_rollout(
                 if match_len > best_match_len:
                     best_match_len = match_len
                     best_prefix_len = len(prefix_tokens_candidate)
+                    best_prefix_tokens = prefix_tokens_candidate
+
+            # Show the divergent token IDs around the mismatch point
+            divergence_context = ""
+            if (
+                best_prefix_tokens is not None
+                and best_match_len < len(best_prefix_tokens)
+                and best_match_len < len(step_prompt_ids)
+            ):
+                ctx = 3
+                prefix_around = best_prefix_tokens[max(0, best_match_len - ctx) : best_match_len + ctx + 1]
+                prompt_around = step_prompt_ids[max(0, best_match_len - ctx) : best_match_len + ctx + 1]
+                divergence_context = (
+                    f" prefix_ids_around_mismatch={prefix_around}, prompt_ids_around_mismatch={prompt_around}"
+                )
+
             logger.debug(
                 f"Extension property broke at step {step_idx + 1} for example {output['example_id']}. "
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)}, "
-                f"best_prefix_len={best_prefix_len}, tokens_matched={best_match_len})."
+                f"best_prefix_len={best_prefix_len}, tokens_matched={best_match_len}).{divergence_context}"
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples.append([new_prefix, make_sample(step, step_idx=step_idx)])
