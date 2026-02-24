@@ -12,6 +12,7 @@ TIMEOUT = 900  # 15 minutes
 
 MOE_CONFIGS = [
     ("glm4_moe", "configs/ci/integration/rl_moe/glm4_moe.toml"),
+    ("kimi_k25", "configs/ci/integration/rl_moe/kimi_k25.toml"),
     ("qwen3_moe", "configs/ci/integration/rl_moe/qwen3_moe.toml"),
     ("minimax_m2", "configs/ci/integration/rl_moe/minimax_m2.toml"),
 ]
