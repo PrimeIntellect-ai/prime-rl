@@ -66,6 +66,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -79,7 +80,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -162,7 +163,12 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        routed_experts: Optional[torch.LongTensor] = None,
     ) -> BaseModelOutputWithPast:
+        """
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+            Routed experts for each token in the sequence. Only used for router replay.
+        """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -188,12 +194,14 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                routed_experts=routed_experts_layer,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -228,6 +236,7 @@ class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Union[torch.Tensor, None] = None,
+        routed_experts: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -235,6 +244,8 @@ class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
             Labels for computing the masked language modeling loss.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation.
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+            Routed experts for each token in the sequence. Only used for router replay.
         """
         assert use_cache is None, "use_cache is not supported for custom minimax_m2 for now"
         assert past_key_values is None, "past_key_values is not supported for custom minimax_m2 for now"
@@ -249,6 +260,7 @@ class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
+            routed_experts=routed_experts,
         )
 
         hidden_states = outputs.last_hidden_state
