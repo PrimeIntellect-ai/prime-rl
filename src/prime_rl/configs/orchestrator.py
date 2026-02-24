@@ -3,15 +3,16 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
 
-from prime_rl.configs.transport import FileSystemTransportConfig, TransportConfigType
-from prime_rl.configs.utils import (
+from prime_rl.configs.shared import (
     ClientConfig,
+    FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
+    TransportConfigType,
     WandbWithExtrasConfig,
 )
-from prime_rl.configs.utils import (
+from prime_rl.configs.shared import (
     ModelConfig as BaseModelConfig,
 )
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings

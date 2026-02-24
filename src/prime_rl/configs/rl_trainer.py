@@ -3,6 +3,14 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 
+from prime_rl.configs.shared import (
+    FileSystemTransportConfig,
+    HeartbeatConfig,
+    LogConfig,
+    MetricsServerConfig,
+    TransportConfigType,
+    WandbConfig,
+)
 from prime_rl.configs.trainer import (
     AdamWConfig,
     BenchConfig,
@@ -13,8 +21,6 @@ from prime_rl.configs.trainer import (
     SchedulerConfigType,
     TokenizerConfig,
 )
-from prime_rl.configs.transport import FileSystemTransportConfig, TransportConfigType
-from prime_rl.configs.utils import HeartbeatConfig, LogConfig, MetricsServerConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 

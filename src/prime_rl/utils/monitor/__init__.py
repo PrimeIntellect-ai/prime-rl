@@ -2,7 +2,7 @@ from pathlib import Path
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.utils import PrimeMonitorConfig, WandbWithExtrasConfig
+from prime_rl.configs.shared import PrimeMonitorConfig, WandbWithExtrasConfig
 from prime_rl.utils.monitor.base import Monitor, NoOpMonitor
 from prime_rl.utils.monitor.multi import MultiMonitor
 from prime_rl.utils.monitor.prime import PrimeMonitor

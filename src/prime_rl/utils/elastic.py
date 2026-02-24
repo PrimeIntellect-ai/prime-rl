@@ -19,7 +19,7 @@ import httpx
 import verifiers as vf
 from httpx import AsyncClient
 
-from prime_rl.configs.utils import ClientConfig
+from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
 from prime_rl.utils.logger import get_logger
 

@@ -1,10 +1,8 @@
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated
 
 from pydantic import Field, model_validator
-from pydantic.config import ConfigDict
-from pydantic.main import BaseModel
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
@@ -16,9 +14,19 @@ from prime_rl.configs.rl_trainer import FakeDataLoaderConfig
 from prime_rl.configs.rl_trainer import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
 from prime_rl.configs.rl_trainer import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
 from prime_rl.configs.rl_trainer import RLTrainerConfig as TrainerConfig
+from prime_rl.configs.shared import (
+    DeploymentConfigType,
+    SharedCheckpointConfig,
+    SharedLogConfig,
+    SharedModelConfig,
+    SharedWandbConfig,
+    SharedWeightBroadcastConfig,
+    SingleNodeDeploymentConfig,
+    WandbConfig,
+    WandbWithExtrasConfig,
+)
 from prime_rl.configs.trainer import BenchConfig, SlurmConfig
 from prime_rl.configs.trainer import CheckpointConfig as TrainerCheckpointConfig
-from prime_rl.configs.utils import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.pydantic_config import BaseSettings
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -29,131 +37,6 @@ from prime_rl.utils.validation import (
     validate_shared_wandb_config,
     validate_shared_weight_broadcast,
 )
-
-
-class SharedLogConfig(BaseSettings):
-    """Configures shared logging."""
-
-    level: Annotated[str | None, Field(description="The log level to use.")] = "info"
-
-    file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
-
-    json_logging: Annotated[
-        bool,
-        Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
-    ] = False
-
-
-class SharedWandbConfig(BaseSettings):
-    """Configures shared W&B configs."""
-
-    project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
-
-    name: Annotated[str | None, Field(description="The W&B run name to use.")] = None
-
-    offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
-
-
-class SharedCheckpointConfig(BaseSettings):
-    """Configures shared checkpoint configs."""
-
-    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
-
-    resume_step: Annotated[
-        int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
-    ] = None
-
-    keep_last: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
-        ),
-    ] = None
-
-    keep_interval: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
-        ),
-    ] = None
-
-
-class SharedModelConfig(BaseSettings):
-    """Configures shared model settings."""
-
-    name: Annotated[
-        str,
-        Field(description="The name of the model to use."),
-    ] = "Qwen/Qwen3-0.6B"
-
-
-class SharedWeightBroadcastConfig(BaseSettings):
-    """Configures shared weight broadcast settings."""
-
-    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
-        "filesystem"
-    )
-
-    port: Annotated[int, Field(description="The port to use for NCCL weight broadcast.")] = 29501
-    timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
-
-
-class BaseDeploymentConfig(BaseModel):
-    """Configures a base deployment."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
-
-
-class SingleNodeDeploymentConfig(BaseDeploymentConfig):
-    """Configures a single node deployment."""
-
-    type: Literal["single_node"] = "single_node"
-
-    num_train_gpus: Annotated[int, Field(description="Number of training GPUs")] = 1
-    num_infer_gpus: Annotated[int, Field(description="Number of inference GPUs")] = 1
-    num_teacher_gpus: Annotated[int | None, Field(description="Number of teacher inference GPUs")] = None
-
-    @model_validator(mode="after")
-    def validate_gpu_count(self):
-        total = self.num_train_gpus + self.num_infer_gpus + (self.num_teacher_gpus or 0)
-        if total > self.gpus_per_node:
-            raise ValueError(
-                f"Total GPU count ({total} = {self.num_train_gpus} train + {self.num_infer_gpus} infer"
-                f" + {self.num_teacher_gpus or 0} teacher) exceeds gpus_per_node ({self.gpus_per_node})."
-            )
-        return self
-
-
-class MultiNodeDeploymentConfig(BaseDeploymentConfig):
-    """Configures a multi node deployment."""
-
-    type: Literal["multi_node"] = "multi_node"
-
-    num_train_nodes: Annotated[int, Field(description="Number of training nodes.")]
-    num_infer_nodes: Annotated[int, Field(description="Number of inference nodes.")]
-    num_teacher_nodes: Annotated[int | None, Field(description="Number of teacher inference nodes.")] = None
-
-    nodes_per_fsdp_group: Annotated[
-        int | None,
-        Field(
-            description="Number of training nodes per FSDP island. Auto-sets trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group."
-        ),
-    ] = None
-
-    @model_validator(mode="after")
-    def teacher_inference_not_supported(self):
-        if self.num_teacher_nodes is not None:
-            raise ValueError("Teacher inference is not yet supported in multi node deployment.")
-        return self
-
-
-DeploymentConfigType: TypeAlias = Annotated[
-    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
-]
 
 
 class RLConfig(BaseSettings):

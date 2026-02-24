@@ -3,6 +3,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from prime_rl.configs.shared import HeartbeatConfig, LogConfig, WandbConfig
 from prime_rl.configs.trainer import (
     AdamWConfig,
     BenchConfig,
@@ -14,7 +15,6 @@ from prime_rl.configs.trainer import (
     SlurmConfig,
     TokenizerConfig,
 )
-from prime_rl.configs.utils import HeartbeatConfig, LogConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
