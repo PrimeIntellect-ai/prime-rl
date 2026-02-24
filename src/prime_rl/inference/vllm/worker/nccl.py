@@ -7,7 +7,7 @@ from vllm.distributed.parallel_state import get_dp_group, get_tp_group
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
-from .fp8_refit import load_checkpoint_weights_layerwise, unwrap_worker_model
+from prime_rl.inference.vllm.worker.fp8_refit import load_checkpoint_weights_layerwise
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -111,5 +111,7 @@ class NCCLWeightUpdateWorker(Worker):
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator."""
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        model = unwrap_worker_model(self.model_runner.get_model())
+        model = self.model_runner.get_model()
+        if hasattr(model, "runnable"):
+            model = model.runnable
         load_checkpoint_weights_layerwise(self.model_runner, model, state_iter)
