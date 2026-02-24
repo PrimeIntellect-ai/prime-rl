@@ -439,6 +439,10 @@ class AfmoeModel(AfmoePreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> MoeModelOutputWithPast:
+        """
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+            Routed experts for each token in the sequence. Only used for router replay.
+        """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -560,6 +564,8 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
             If not provided, the wrapped LM head returns logits only.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+            Routed experts for each token in the sequence. Only used for router replay.
         """
         assert use_cache is None, "use_cache is not supported for custom afmoe for now"
         assert past_key_values is None, "past_key_values is not supported for custom afmoe for now"
