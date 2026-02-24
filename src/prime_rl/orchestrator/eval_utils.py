@@ -142,6 +142,7 @@ async def evaluate_env(
         assert pass_at_k is not None
         eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
     eval_metrics = {**{f"eval/{env_name}/{k}": v for k, v in eval_metrics.items()}}
-    eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step or ckpt_step})
+    effective_step = step if step is not None else ckpt_step
+    eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": effective_step})
     monitor = get_monitor()
-    monitor.log(eval_metrics, step=step or ckpt_step)
+    monitor.log(eval_metrics, step=effective_step)
