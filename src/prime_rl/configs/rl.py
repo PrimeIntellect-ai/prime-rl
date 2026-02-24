@@ -4,18 +4,26 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.configs.orchestrator import CheckpointConfig as OrchestratorCheckpointConfig
-from prime_rl.configs.orchestrator import FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig
-from prime_rl.configs.orchestrator import NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.configs.rl_trainer import FakeDataLoaderConfig
-from prime_rl.configs.rl_trainer import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
-from prime_rl.configs.rl_trainer import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
+from prime_rl.configs.inference import InferenceConfig, InferenceWeightBroadcastConfig
+from prime_rl.configs.orchestrator import (
+    OrchestratorCheckpointConfig,
+    OrchestratorConfig,
+    OrchestratorFileSystemWeightBroadcastConfig,
+    OrchestratorNCCLWeightBroadcastConfig,
+)
+from prime_rl.configs.rl_trainer import (
+    FakeDataLoaderConfig,
+    RLTrainerFileSystemWeightBroadcastConfig,
+    RLTrainerNCCLWeightBroadcastConfig,
+)
 from prime_rl.configs.rl_trainer import RLTrainerConfig as TrainerConfig
-from prime_rl.configs.shared import BenchConfig, SlurmConfig, WandbConfig, WandbWithExtrasConfig
-from prime_rl.configs.shared import CheckpointConfig as TrainerCheckpointConfig
+from prime_rl.configs.shared import (
+    BenchConfig,
+    SlurmConfig,
+    TrainerCheckpointConfig,
+    WandbConfig,
+    WandbWithExtrasConfig,
+)
 from prime_rl.utils.pydantic_config import BaseSettings
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -481,7 +489,7 @@ class RLConfig(BaseSettings):
         if self.weight_broadcast is not None:
             if self.weight_broadcast.type == "nccl":
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
-                self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
+                self.trainer.weight_broadcast = RLTrainerNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     inference_world_size=inference_world_size,
                     port=self.weight_broadcast.port,
@@ -493,7 +501,7 @@ class RLConfig(BaseSettings):
                     timeout=self.weight_broadcast.timeout,
                 )
             elif self.weight_broadcast.type == "filesystem":
-                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
+                self.trainer.weight_broadcast = RLTrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
             if self.inference is not None:
                 self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)

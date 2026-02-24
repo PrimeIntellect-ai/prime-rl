@@ -6,7 +6,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from prime_rl.configs.shared import (
     AdamWConfig,
     BenchConfig,
-    CheckpointConfig,
     ConstantSchedulerConfig,
     HeartbeatConfig,
     LogConfig,
@@ -14,6 +13,7 @@ from prime_rl.configs.shared import (
     SchedulerConfigType,
     SlurmConfig,
     TokenizerConfig,
+    TrainerCheckpointConfig,
     TrainerModelConfig,
     WandbConfig,
 )
@@ -176,7 +176,7 @@ class SFTConfig(BaseSettings):
     scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
 
     # The checkpoint configuration
-    ckpt: CheckpointConfig | None = None
+    ckpt: TrainerCheckpointConfig | None = None
 
     # The logging configuration
     log: LogConfig = LogConfig()

@@ -8,11 +8,11 @@ from prime_rl.configs.shared import (
     FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
+    ModelConfig,
     PrimeMonitorConfig,
     TransportConfigType,
     WandbWithExtrasConfig,
 )
-from prime_rl.configs.shared import ModelConfig as BaseModelConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -55,7 +55,7 @@ class LoRAConfig(BaseConfig):
     ] = None
 
 
-class ModelConfig(BaseModelConfig):
+class OrchestratorModelConfig(ModelConfig):
     """Extended model configuration with per-run LoRA settings."""
 
     lora: Annotated[
@@ -383,7 +383,7 @@ class EvalConfig(BaseConfig):
     ] = False
 
 
-class CheckpointConfig(BaseConfig):
+class OrchestratorCheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
 
     interval: Annotated[int | None, Field(ge=1, description="Interval at which to save the checkpoint.")] = None
@@ -634,13 +634,13 @@ FilterConfigType: TypeAlias = Annotated[
 ]
 
 
-class FileSystemWeightBroadcastConfig(BaseModel):
+class OrchestratorFileSystemWeightBroadcastConfig(BaseModel):
     """Configures the filesystem weight broadcast."""
 
     type: Literal["filesystem"] = "filesystem"
 
 
-class NCCLWeightBroadcastConfig(BaseModel):
+class OrchestratorNCCLWeightBroadcastConfig(BaseModel):
     """Configures the NCCL weight broadcast."""
 
     type: Literal["nccl"] = "nccl"
@@ -650,7 +650,9 @@ class NCCLWeightBroadcastConfig(BaseModel):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
 
 
-WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+OrchestratorWeightBroadcastConfigType: TypeAlias = (
+    OrchestratorFileSystemWeightBroadcastConfig | OrchestratorNCCLWeightBroadcastConfig
+)
 
 
 class TeacherModelConfig(BaseConfig):
@@ -662,9 +664,9 @@ class TeacherModelConfig(BaseConfig):
     ] = ClientConfig()
 
     model: Annotated[
-        ModelConfig,
+        OrchestratorModelConfig,
         Field(description="The model configuration for the teacher model."),
-    ] = ModelConfig()
+    ] = OrchestratorModelConfig()
 
 
 class OrchestratorConfig(BaseSettings):
@@ -674,7 +676,7 @@ class OrchestratorConfig(BaseSettings):
     client: ClientConfig = ClientConfig()
 
     # The model configuration
-    model: ModelConfig = ModelConfig()
+    model: OrchestratorModelConfig = OrchestratorModelConfig()
 
     # The optimizer configuration (per-run LR for multi-run training)
     optim: OptimizerConfig = OptimizerConfig()
@@ -717,13 +719,13 @@ class OrchestratorConfig(BaseSettings):
     prime_monitor: PrimeMonitorConfig | None = None
 
     # The checkpoint configuration
-    ckpt: CheckpointConfig | None = None
+    ckpt: OrchestratorCheckpointConfig | None = None
 
     # The validation configuration
     val: ValConfig | None = None
 
-    weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
-        FileSystemWeightBroadcastConfig()
+    weight_broadcast: Annotated[OrchestratorWeightBroadcastConfigType, Field(discriminator="type")] = (
+        OrchestratorFileSystemWeightBroadcastConfig()
     )
 
     rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()

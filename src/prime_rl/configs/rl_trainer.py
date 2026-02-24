@@ -6,7 +6,6 @@ from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 from prime_rl.configs.shared import (
     AdamWConfig,
     BenchConfig,
-    CheckpointConfig,
     ConstantSchedulerConfig,
     FileSystemTransportConfig,
     HeartbeatConfig,
@@ -15,6 +14,7 @@ from prime_rl.configs.shared import (
     OptimizerConfigType,
     SchedulerConfigType,
     TokenizerConfig,
+    TrainerCheckpointConfig,
     TrainerModelConfig,
     TransportConfigType,
     WandbConfig,
@@ -118,7 +118,7 @@ class BaseWeightBroadcastConfig(BaseModel):
     pass
 
 
-class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
+class RLTrainerFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Configures the weight broadcast."""
 
     type: Literal["filesystem"] = "filesystem"
@@ -128,7 +128,7 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     ] = "safetensors"
 
 
-class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
+class RLTrainerNCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Configures the NCCL broadcast."""
 
     type: Literal["nccl"] = "nccl"
@@ -139,7 +139,9 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
 
 
-WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+RLTrainerWeightBroadcastConfigType: TypeAlias = (
+    RLTrainerFileSystemWeightBroadcastConfig | RLTrainerNCCLWeightBroadcastConfig
+)
 
 
 class RLTrainerConfig(BaseSettings):
@@ -164,10 +166,10 @@ class RLTrainerConfig(BaseSettings):
     scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
 
     # The checkpoint configuration
-    ckpt: CheckpointConfig | None = None
+    ckpt: TrainerCheckpointConfig | None = None
 
-    weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
-        FileSystemWeightBroadcastConfig()
+    weight_broadcast: Annotated[RLTrainerWeightBroadcastConfigType, Field(discriminator="type")] = (
+        RLTrainerFileSystemWeightBroadcastConfig()
     )
 
     rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
