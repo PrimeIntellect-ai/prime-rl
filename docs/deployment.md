@@ -197,17 +197,6 @@ uv run rl \
   --inference.parallel.dp 6
 ```
 
-### Expert Parallel Inference Deployment
-
-Expert-parallel setup now lives in a dedicated page:
-
-- [Expert Parallel Deployment](deployment_ep.md)
-
-Quick smoke-test command:
-
-```bash
-uv run rl @ configs/debug/rl_ep.toml
-```
 
 ### Parallel Experiments
 
