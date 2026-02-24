@@ -65,4 +65,5 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`orchestrator.token_batch_size`** and **`orchestrator.max_inflight_rollouts`**: Added token-based batching via `token_batch_size` and explicit in-flight rollout control via `max_inflight_rollouts` (2026-02-23)
 - **`orchestrator.batch_size`**: Now optional and mutually exclusive with `token_batch_size`. If neither is set, defaults to rollout mode with `batch_size=128` (2026-02-23)
 - **BREAKING: `orchestrator.oversampling_factor` removed**: This field no longer exists on `OrchestratorConfig`; configs that still set it now fail validation and must migrate to the new batching controls (`token_batch_size` / `max_inflight_rollouts`) (2026-02-23)
+- **`inference.enable_expert_parallel`**, **`inference.all2all_backend`**, and **`inference.enable_eplb`**: Added expert-parallel inference controls passed to vLLM as `--enable-expert-parallel`, `--all2all-backend`, and `--enable-eplb` (defaults: `False`, `"allgather_reducescatter"`, `False`) (2026-02-23)
 
