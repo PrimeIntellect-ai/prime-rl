@@ -136,7 +136,12 @@ class ModelConfig(BaseConfig):
         ),
     ] = "Qwen/Qwen3-0.6B"
 
-    seq_len: Annotated[int, Field(description="The sequence length to use for the model.")] = 2048
+    seq_len: Annotated[
+        int | None,
+        Field(
+            description="The sequence length to use for the model. When used via RLConfig, defaults to the shared seq_len.",
+        ),
+    ] = None
 
     attn: Annotated[
         AttnImplementation,

@@ -46,3 +46,39 @@ def test_load_configs(config_file: Path, monkeypatch: pytest.MonkeyPatch):
         except ValidationError:
             could_parse.append(False)
     assert any(could_parse), f"No config class could be parsed from {config_file}"
+
+
+BASE_RL_CONFIG = "examples/reverse_text/rl.toml"
+
+
+class TestSeqLenOverride:
+    """Tests that explicit trainer.model.seq_len takes precedence over the shared top-level seq_len."""
+
+    def test_shared_seq_len_propagates(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "argv", ["dummy.py", "@", BASE_RL_CONFIG, "--seq-len", "4096"])
+        config = parse_argv(RLConfig)
+        assert config.trainer.model.seq_len == 4096
+        assert config.orchestrator.seq_len == 4096
+
+    def test_trainer_seq_len_overrides_shared_larger(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            sys, "argv", ["dummy.py", "@", BASE_RL_CONFIG, "--seq-len", "4096", "--trainer.model.seq-len", "8192"]
+        )
+        config = parse_argv(RLConfig)
+        assert config.trainer.model.seq_len == 8192
+        assert config.orchestrator.seq_len == 4096
+
+    def test_trainer_seq_len_below_orchestrator_raises(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            sys, "argv", ["dummy.py", "@", BASE_RL_CONFIG, "--seq-len", "4096", "--trainer.model.seq-len", "1024"]
+        )
+        with pytest.raises(ValidationError, match="must be >="):
+            parse_argv(RLConfig)
+
+    def test_shared_seq_len_overrides_orchestrator(self, monkeypatch: pytest.MonkeyPatch):
+        """Shared seq_len always controls the orchestrator, even if orchestrator.seq_len is set independently."""
+        monkeypatch.setattr(
+            sys, "argv", ["dummy.py", "@", BASE_RL_CONFIG, "--seq-len", "4096", "--orchestrator.seq-len", "1024"]
+        )
+        config = parse_argv(RLConfig)
+        assert config.orchestrator.seq_len == 4096

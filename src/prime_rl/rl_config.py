@@ -462,10 +462,20 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_seq_len(self):
-        """Auto-setup shared seq_len for trainer and orchestrator."""
+        """Auto-setup shared seq_len for trainer and orchestrator.
+
+        Orchestrator seq_len is always overwritten when the shared seq_len is
+        set. Trainer model seq_len uses ``int | None`` (default None) so an
+        explicit value survives propagation — allowing training at a different
+        context length than inference.
+        """
         if self.seq_len is not None:
-            self.trainer.model.seq_len = self.seq_len
             self.orchestrator.seq_len = self.seq_len
+            if self.trainer.model.seq_len is None:
+                self.trainer.model.seq_len = self.seq_len
+
+        if self.trainer.model.seq_len is None:
+            self.trainer.model.seq_len = self.orchestrator.seq_len
 
         if self.trainer.model.seq_len < self.orchestrator.seq_len:
             raise ValueError(
