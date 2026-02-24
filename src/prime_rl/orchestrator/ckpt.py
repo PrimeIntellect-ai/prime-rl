@@ -18,7 +18,7 @@ class Progress:
     total_problems: int = 0
 
 
-class OrchestratorCheckpointManager:
+class CheckpointManager:
     """Utility class to save and load orchestrator checkpoints to resume orchestrator."""
 
     def __init__(self, output_dir: Path, config: CheckpointConfig):
@@ -90,7 +90,7 @@ class OrchestratorCheckpointManager:
         self.save_to_path(ckpt_path, progress, buffer)
 
 
-def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> OrchestratorCheckpointManager | None:
+def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
     if config is None:
         return None
-    return OrchestratorCheckpointManager(output_dir, config)
+    return CheckpointManager(output_dir, config)

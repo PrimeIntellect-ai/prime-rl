@@ -5,8 +5,6 @@ from pydantic import BaseModel, Field
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
-# -- Common configs (model, client, logging, monitoring) --
-
 
 class SlurmConfig(BaseConfig):
     """Configures SLURM scheduling."""
@@ -35,6 +33,19 @@ class SlurmConfig(BaseConfig):
 
 
 ServerType = Literal["vllm", "openai"]
+
+
+class BaseModelConfig(BaseConfig):
+    """Configures the model."""
+
+    name: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
+
+    trust_remote_code: Annotated[
+        bool,
+        Field(
+            description="Whether to trust remote code for tokenizer initialization.",
+        ),
+    ] = False
 
 
 class ElasticConfig(BaseConfig):
@@ -277,9 +288,6 @@ class MetricsServerConfig(BaseConfig):
     ] = "0.0.0.0"
 
 
-# -- Transport configs --
-
-
 class BaseTransportConfig(BaseModel):
     """Base configuration for transport."""
 
@@ -302,19 +310,3 @@ class ZMQTransportConfig(BaseTransportConfig):
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
-
-
-# -- Base model config --
-
-
-class BaseModelConfig(BaseConfig):
-    """Configures the model."""
-
-    name: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
-
-    trust_remote_code: Annotated[
-        bool,
-        Field(
-            description="Whether to trust remote code for tokenizer initialization.",
-        ),
-    ] = False

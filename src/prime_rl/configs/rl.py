@@ -118,9 +118,6 @@ class SharedWeightBroadcastConfig(BaseSettings):
     timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
 
 
-# -- Deployment configs --
-
-
 class BaseDeploymentConfig(BaseModel):
     """Configures a base deployment."""
 
