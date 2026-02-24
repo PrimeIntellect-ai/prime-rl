@@ -219,12 +219,10 @@ async def _call_chat_with_messages(
     tools: list[dict[str, Any]] | None,
     sampling_args: dict[str, Any],
 ) -> ChatCompletion:
-    extra_body = sampling_args.pop("extra_body", {})
     request_body: dict[str, Any] = {
         "model": rollout.config.model,
         "messages": raw_messages,
         **sampling_args,
-        **extra_body,
     }
     if tools:
         request_body["tools"] = tools
@@ -243,13 +241,11 @@ async def _call_chat_with_tokens(
     prompt_ids: list[int],
     sampling_args: dict[str, Any],
 ) -> ChatCompletion:
-    extra_body = sampling_args.pop("extra_body", {})
     request_body: dict[str, Any] = {
         "model": rollout.config.model,
         "messages": raw_messages,
         "tokens": prompt_ids,
         **sampling_args,
-        **extra_body,
     }
     if tools:
         request_body["tools"] = tools
@@ -326,9 +322,12 @@ async def register_rollout(
     request: Request,
 ):
     registry = _get_rollout_registry(request)
+    sampling_params = dict(body.sampling_params)
+    extra_body = sampling_params.pop("extra_body", {})
+    sampling_params = {**sampling_params, **extra_body, "logprobs": True, "return_token_ids": True}
     rollout_config = RolloutConfig(
         model=body.model,
-        sampling_params=dict(body.sampling_params),
+        sampling_params=sampling_params,
         max_turns=body.max_turns,
         max_seq_len=body.max_seq_len,
     )
@@ -374,9 +373,6 @@ async def chat_completions(
             rollout.vf_state["oai_tools"] = tools
 
         sampling_args = rollout.config.sampling_params
-        sampling_args["logprobs"] = True
-        extra_body = sampling_args.setdefault("extra_body", {})
-        extra_body["return_token_ids"] = True
 
         try:
             if rollout.turn_count == 0:
