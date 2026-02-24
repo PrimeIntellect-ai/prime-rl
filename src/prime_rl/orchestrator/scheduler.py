@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
 import verifiers as vf
 from aiolimiter import AsyncLimiter
 
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
-from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.orchestrator.vf_utils import run_group
 from prime_rl.utils.client import InferencePool
@@ -94,11 +95,8 @@ class Scheduler:
         """Update sampling args for future rollout requests."""
         self.sampling_args = sampling_args
 
-    def cancel_all_inflight_rollouts(self):
-        """Cancel all in-flight rollout requests.
-
-        Used when weights are updated to discard stale rollouts generated with old weights.
-        """
+    def cancel_inflight_rollouts(self):
+        """Cancel all in-flight rollout requests."""
         count = len(self.inflight_group_rollouts)
         for future in list(self.inflight_group_rollouts.keys()):
             if not future.done():
@@ -106,12 +104,21 @@ class Scheduler:
         self.inflight_group_rollouts.clear()
         self.cancelled_rollouts_count += count
 
+    async def _select_least_loaded_client(self) -> vf.ClientConfig:
+        """Select the client with the fewest in-flight tasks."""
+        clients = self.inference_pool.clients
+        while not clients:
+            await asyncio.sleep(1)
+            clients = self.inference_pool.clients
+        inflight_by_url = Counter(info.client_config.api_base_url for info in self.inflight_group_rollouts.values())
+        return min(clients, key=lambda c: inflight_by_url[c.api_base_url])
+
     async def schedule_group_rollout(self):
         """Asynchronously schedules a group rollout request."""
         if self.rate_limiter:
             await self.rate_limiter.acquire()
         example = self.buffer.sample_examples(n=1)[0]
-        client_config = await self.inference_pool.get_next_client()
+        client_config = await self._select_least_loaded_client()
         run_group_task = asyncio.create_task(
             run_group(
                 env=self.env,

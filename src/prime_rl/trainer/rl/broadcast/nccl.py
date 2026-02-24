@@ -10,9 +10,9 @@ from torch.distributed.tensor import DTensor
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
+from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
-from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.weights import get_max_layer_num
@@ -126,9 +126,14 @@ class NCCLWeightBroadcastSender:
                     value = cast(DTensor, value.to(self.dtype)).full_tensor()
                 state_dict[key] = value
 
-            # Convert PrimeRL format to HF format for this layer if needed
+            # Convert to HF hub format for this layer if needed
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_layer_to_hf(state_dict, layer_id)
+            else:
+                # For regular transformers models, revert internal format to original HF hub format
+                from transformers.core_model_loading import revert_weight_conversion
+
+                state_dict = revert_weight_conversion(model, state_dict)
 
             if self.world.is_master:
                 broadcast_state_dict(state_dict, self.communicator)

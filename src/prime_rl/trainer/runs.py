@@ -8,13 +8,13 @@ import torch
 import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
 
-from prime_rl.trainer.config import LoRAConfig
+from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.pathing import get_stable_ckpt_steps
+from prime_rl.utils.pathing import get_all_ckpt_steps, get_stable_ckpt_steps
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.config import OrchestratorConfig
+    from prime_rl.configs.orchestrator import OrchestratorConfig
     from prime_rl.trainer.models.layers.lora import MultiLoRALinear
 
 
@@ -223,7 +223,7 @@ class MultiRunManager:
             with open(config_path, "rb") as f:
                 config_dict = tomli.load(f)
 
-            from prime_rl.orchestrator.config import OrchestratorConfig
+            from prime_rl.configs.orchestrator import OrchestratorConfig
 
             config = OrchestratorConfig(**config_dict)
         except Exception as e:
@@ -264,8 +264,11 @@ class MultiRunManager:
         if config.ckpt is None or config.ckpt.resume_step is None:
             self.progress[new_id].step = 0
         elif config.ckpt.resume_step == -1:
-            stable_steps = get_stable_ckpt_steps(self.get_run_dir(new_id) / "checkpoints")
-            self.progress[new_id].step = max(stable_steps) if stable_steps else 0
+            ckpt_dir = self.get_run_dir(new_id) / "checkpoints"
+            # In multi-run, the trainer writes STABLE after saving LoRA weights to the run's checkpoint dir.
+            # In single-run, only the orchestrator writes checkpoints here (trainer has its own dir), so no STABLE exists.
+            steps = get_stable_ckpt_steps(ckpt_dir) if self.max_runs > 1 else get_all_ckpt_steps(ckpt_dir)
+            self.progress[new_id].step = max(steps) if steps else 0
         else:
             self.progress[new_id].step = config.ckpt.resume_step
 

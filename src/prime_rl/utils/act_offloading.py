@@ -6,7 +6,7 @@ import psutil
 import torch
 from torch.autograd.graph import saved_tensors_hooks
 
-from prime_rl.trainer.config import ActivationOffloadingConfig
+from prime_rl.configs.trainer import ActivationOffloadingConfig
 
 from .logger import get_logger
 

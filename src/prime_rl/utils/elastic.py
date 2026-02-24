@@ -19,8 +19,8 @@ import httpx
 import verifiers as vf
 from httpx import AsyncClient
 
+from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
-from prime_rl.utils.config import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 # --- Shared discovery functions ---
@@ -107,6 +107,7 @@ class ElasticInferencePool:
         model_name: str,
         port: int = 8000,
         sync_interval: float = 5.0,
+        client_type: str = "openai_chat_completions",
     ):
         self.logger = get_logger()
         self.hostname = hostname
@@ -115,6 +116,7 @@ class ElasticInferencePool:
         self.base_model_name = model_name  # Keep original for health checks
         self.port = port
         self.sync_interval = sync_interval
+        self.client_type = client_type
 
         self._servers: dict[str, ServerState] = {}
         self._admin_clients: dict[str, AsyncClient] = {}
@@ -129,7 +131,9 @@ class ElasticInferencePool:
         self._started = False
 
     @classmethod
-    async def from_config(cls, config: ClientConfig, model_name: str) -> ElasticInferencePool:
+    async def from_config(
+        cls, config: ClientConfig, model_name: str, client_type: str = "openai_chat_completions"
+    ) -> ElasticInferencePool:
         if config.elastic is None:
             raise ValueError("Elastic inference pool requires elastic config")
         pool = cls(
@@ -138,6 +142,7 @@ class ElasticInferencePool:
             model_name=model_name,
             port=config.elastic.port,
             sync_interval=config.elastic.sync_interval,
+            client_type=client_type,
         )
         await pool.start()
         return pool
@@ -168,7 +173,8 @@ class ElasticInferencePool:
                         base_url=urls,
                         api_key_var=self.client_config.api_key_var,
                         headers=self.client_config.headers,
-                    )
+                    ),
+                    client_type=self.client_type,
                 )
                 if urls
                 else []

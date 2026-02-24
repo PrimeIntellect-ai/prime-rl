@@ -6,11 +6,10 @@ from typing import Literal
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
-from prime_rl.trainer.config import LoRAConfig
+from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
 from prime_rl.trainer.lora import save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
-from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import (
@@ -46,6 +45,11 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
+            else:
+                # For regular transformers models, revert internal format to original HF hub format
+                from transformers.core_model_loading import revert_weight_conversion
+
+                state_dict = revert_weight_conversion(model, state_dict)
 
         for idx in self.multi_run_manager.ready_to_update_idxs:
             self.logger.debug(

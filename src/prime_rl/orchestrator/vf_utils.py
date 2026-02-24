@@ -1,17 +1,18 @@
 import asyncio
 import logging
+import multiprocessing as mp
+from collections.abc import Awaitable, Callable
 from itertools import cycle
-from multiprocessing import Process
 from typing import Any
 
 import verifiers as vf
 from verifiers.envs.environment import EnvClient
-from verifiers.utils.worker_utils import get_free_port
+from verifiers.utils.worker_utils import get_free_port_pair
 from verifiers.workers import ZMQEnvClient, ZMQEnvServer
 
-from prime_rl.utils.logger import InterceptHandler, ProgressTracker, get_logger
+from prime_rl.utils.logger import InterceptHandler, ProgressTracker
 
-DEFAULT_RETRIES = 3
+DEFAULT_RETRIES = 0
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
 DEFAULT_STATE_COLUMNS = []
 
@@ -21,18 +22,22 @@ def spawn_env_server(
     env_args: dict[str, Any],
     extra_env_kwargs: dict[str, Any],
     address: str | None = None,
+    # logging configs
     log_level: str | None = None,
     log_file: str | None = None,
     log_file_level: str | None = None,
-    daemon: bool = True,
-) -> str:
+    json_logging: bool = False,
+) -> tuple[str, mp.Process]:
     """
     Starts a ZMQEnvServer process in a subprocess.
 
     Mirrors vf.Environment.start_server().
     """
-    address = address or f"tcp://127.0.0.1:{get_free_port()}"
-    Process(
+    address = address or f"tcp://127.0.0.1:{get_free_port_pair()}"
+    # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
+    # the parent process, which has caused hangs when multiple env server
+    # subprocesses share the same fds.
+    process = mp.get_context("spawn").Process(
         target=ZMQEnvServer.run_server,
         args=(
             env_id,
@@ -42,69 +47,34 @@ def spawn_env_server(
             log_file,
             log_file_level,
         ),
-        kwargs=dict(address=address),
-        daemon=daemon,
-    ).start()
-
-    return address
-
-
-def setup_env_client(address: str) -> EnvClient:
-    """Sets up a ZMQEnvClient for a given address."""
-    return ZMQEnvClient(address=address)
-
-
-async def wait_for_env_servers(
-    env_clients: list[EnvClient], interval: int = 1, log_interval: int = 10, timeout: int = 1800
-) -> None:
-    logger = get_logger()
-
-    async def wait_for_env_server(env_client: EnvClient) -> None:
-        wait_time = 0
-        logger.debug(f"Starting pinging environment server at {env_client.address}")
-        while wait_time < timeout:
-            try:
-                await env_client.health(timeout=1)  # quick timeout
-                logger.debug(f"Environment server at {env_client.address} is ready after {wait_time} seconds")
-                return
-            except Exception as e:
-                if wait_time % log_interval == 0 and wait_time > 0:
-                    logger.warning(
-                        f"Environment server at {env_client.address} was not reached after {wait_time} seconds (Error: {e})"
-                    )
-                await asyncio.sleep(interval)
-                wait_time += interval
-        msg = f"Environment server at {env_client.address} is not ready after {wait_time} (>{timeout}) seconds. Aborting..."
-        logger.error(msg)
-        raise TimeoutError(msg)
-
-    await asyncio.gather(*[wait_for_env_server(env_client) for env_client in env_clients])
-
-
-async def run_rollout(
-    env: vf.Environment,
-    client: vf.ClientConfig,
-    model_name: str,
-    example: dict,
-    sampling_args: dict,
-    max_retries: int = DEFAULT_RETRIES,
-    state_columns: list[str] = DEFAULT_STATE_COLUMNS,
-) -> vf.RolloutOutput:
-    """
-    Wrapper for vf.Environment.run_rollout().
-
-    Asynchronously generates and scores a rollout.
-    """
-    state_columns = state_columns + REQUIRED_STATE_COLUMNS
-    rollout_input = vf.RolloutInput(**example)
-    return await env.run_rollout(
-        rollout_input,
-        client=client,
-        model=model_name,
-        sampling_args=sampling_args,
-        max_retries=max_retries,
-        state_columns=state_columns,
+        kwargs=dict(address=address, json_logging=json_logging),
+        daemon=False,  # cannot run daemon because env server uses subprocesses
     )
+    process.start()
+
+    return address, process
+
+
+def setup_env_client(
+    address: str,
+    name: str | None = None,
+    # health check configs
+    health_check_interval: float = 5.0,  # 5s (we detect an env server as unhealth after 3 * 5s = 15s of unsuccessful health checks)
+    startup_timeout: float = 600.0,  # 10m
+    recovery_timeout: float = 600.0,  # 10m
+) -> EnvClient:
+    """Sets up a ZMQEnvClient for a given address."""
+    return ZMQEnvClient(
+        address=address,
+        name=name,
+        health_check_interval=health_check_interval,
+        startup_timeout=startup_timeout,
+        recovery_timeout=recovery_timeout,
+    )
+
+
+async def wait_for_env_servers(env_clients: list[EnvClient]) -> None:
+    await asyncio.gather(*[env_client.wait_for_server_startup() for env_client in env_clients])
 
 
 async def run_group(
@@ -137,11 +107,12 @@ async def run_group(
 # TODO: migrate this to vf.Environment.generate() once it supports multiple clients
 async def generate(
     env: vf.Environment,
-    clients: list[vf.ClientConfig],
     model_name: str,
     examples: list,
     rollouts_per_example: int,
     sampling_args: dict,
+    clients: list[vf.ClientConfig] | None = None,
+    get_client: Callable[[], Awaitable[vf.ClientConfig]] | None = None,
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
     pbar_description: str = "Generating rollouts",
@@ -154,10 +125,20 @@ async def generate(
     Asynchronously generates and scores a list of groups.
     """
 
+    if not clients and get_client is None:
+        raise ValueError("generate requires at least one client or a get_client callback")
+
+    if get_client is None:
+        client_cycle = cycle(clients)
+
+        async def get_client() -> vf.ClientConfig:
+            return next(client_cycle)
+
     total_rollouts = len(examples) * rollouts_per_example
     pbar = ProgressTracker(total=total_rollouts, desc=pbar_description)
 
-    async def run_group_with_progress(client, example):
+    async def run_group_with_progress(example):
+        client = await get_client()
         result = await run_group(
             env=env,
             client=client,
@@ -173,7 +154,7 @@ async def generate(
 
     try:
         group_outputs_list: list[list[vf.RolloutOutput]] = await asyncio.gather(
-            *[run_group_with_progress(client, example) for client, example in zip(cycle(clients), examples)]
+            *[run_group_with_progress(example) for example in examples]
         )
     finally:
         pbar.close()
@@ -183,11 +164,12 @@ async def generate(
 
 async def evaluate(
     env: vf.Environment,
-    clients: list[vf.ClientConfig],
     model_name: str,
     sampling_args: dict,
     num_examples: int,
     rollouts_per_example: int,
+    clients: list[vf.ClientConfig] | None = None,
+    get_client: Callable[[], Awaitable[vf.ClientConfig]] | None = None,
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
 ) -> list[vf.RolloutOutput]:
@@ -202,6 +184,7 @@ async def evaluate(
     outputs = await generate(
         env=env,
         clients=clients,
+        get_client=get_client,
         model_name=model_name,
         examples=inputs,
         # _get_eval_inputs() already repeats the examples, this currently means
@@ -258,9 +241,9 @@ def get_completion_len(output: vf.RolloutOutput) -> int:
     return get_seq_len(output) - get_prompt_len(output)
 
 
-def intercept_vf_logging(level: str = "DEBUG", prefix: str = "verifiers"):
-    """Intercepts verifiers logging and routes through prime-rl logger with [verifiers] prefix."""
-    vf_logger = logging.getLogger("verifiers")
+def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
+    """Intercepts verifiers logging and routes through prime-rl logger with optional prefix."""
+    vf_logger = logging.getLogger(logger)
     vf_logger.handlers.clear()
     vf_logger.addHandler(InterceptHandler(prefix=prefix))
     vf_logger.setLevel(level.upper())

@@ -1,18 +1,17 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, Discriminator, Field, Tag, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
-from prime_rl.utils.config import (
+from prime_rl.configs.shared import (
+    BaseModelConfig,
     ClientConfig,
+    FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
+    TransportConfig,
     WandbWithExtrasConfig,
-)
-from prime_rl.utils.config import (
-    ModelConfig as BaseModelConfig,
 )
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -284,7 +283,7 @@ class EnvConfig(BaseConfig):
         dict[str, Any],
         Field(
             description=(
-                "Extra kwargs passed to an env (e.g. seq_len, interleaved_rollouts, score_rollouts). This field is auto-populated with the seq_len, interleaved_rollouts, and score_rollouts for training envs on the orchestrator. It is generally NOT recommended for this field to be overriden by the user. It's main use case is to match the extra_env_kwargs when running an env in an isolated environment server."
+                "Extra kwargs passed to an env (e.g. seq_len, score_rollouts). This field is auto-populated with the seq_len, and score_rollouts for training envs on the orchestrator. It is generally NOT recommended for this field to be overriden by the user. It's main use case is to match the extra_env_kwargs when running an env in an isolated environment server."
             ),
         ),
     ] = {}
@@ -310,6 +309,17 @@ class EvalEnvConfig(EnvConfig):
         int,
         Field(
             description="Number of examples to skip from the beginning of the dataset.",
+        ),
+    ] = 0
+
+    # TODO: should live on the EnvConfig and also apply to training envs but
+    # this is hard right now because we use the vf.EnvGroup which treats all
+    # envs as one. for now training envs hardcode no retries, but we should
+    # probably treat them like environment groups long-term
+    max_retries: Annotated[
+        int,
+        Field(
+            description="Maximum number of times the environment will try to retry running a rollout.",
         ),
     ] = 0
 
@@ -364,6 +374,13 @@ class EvalConfig(BaseConfig):
             ),
         ),
     ] = True
+
+    cancel_inflight_rollouts_on_eval: Annotated[
+        bool,
+        Field(
+            description="Whether to cancel in-flight training rollouts before starting online evals. This is useful to avoid congestion (e.g. do not have training + eval rollouts happening at the same time) but leads to slower training steps as rollouts get cancelled and the pipeline has to fill up after each eval",
+        ),
+    ] = False
 
 
 class CheckpointConfig(BaseConfig):
@@ -530,8 +547,10 @@ class BufferConfig(BaseConfig):
         return self
 
 
-class AdvantageConfig(BaseConfig):
+class DefaultAdvantageConfig(BaseModel):
     """Config for the default advantage."""
+
+    model_config = ConfigDict(extra="forbid")
 
     type: Literal["default"] = "default"
     length_weighted_mean: bool = False
@@ -549,15 +568,65 @@ class CustomAdvantageConfig(BaseModel):
     ]
 
 
-def _advantage_config_discriminator(v: Any) -> str:
-    if isinstance(v, dict):
-        return v.get("type", "default")
-    return getattr(v, "type", "default")
+AdvantageConfig: TypeAlias = Annotated[
+    DefaultAdvantageConfig | CustomAdvantageConfig,
+    Field(discriminator="type"),
+]
 
 
-AdvantageConfigType: TypeAlias = Annotated[
-    Annotated[AdvantageConfig, Tag("default")] | Annotated[CustomAdvantageConfig, Tag("custom")],
-    Discriminator(_advantage_config_discriminator),
+class GibberishFilterConfig(BaseModel):
+    """Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["gibberish"] = "gibberish"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+        ),
+    ] = False
+    token_id_threshold: Annotated[
+        int,
+        Field(description="Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."),
+    ] = 100_000
+    logprob_offset: Annotated[
+        float,
+        Field(description="Offset from uniform distribution logprob. Threshold = -log(vocab_size) - logprob_offset."),
+    ] = 2.0
+
+
+class RepetitionFilterConfig(BaseModel):
+    """Flags rollouts where the model gets stuck in a repetition loop, emitting high-confidence tokens
+    for an extended stretch. A rollout is flagged when `window` consecutive tokens are each sampled
+    with probability above `prob_threshold`. (Section 3.2, https://arxiv.org/abs/2506.13585)"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["repetition"] = "repetition"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+        ),
+    ] = False
+    window: Annotated[
+        int,
+        Field(ge=1, description="Number of consecutive high-probability steps before flagging."),
+    ] = 3_000
+    prob_threshold: Annotated[
+        float,
+        Field(
+            gt=0,
+            le=1,
+            description="Tokens sampled with probability above this are considered repetitive. Consecutive such tokens count toward the window.",
+        ),
+    ] = 0.99
+
+
+FilterConfig: TypeAlias = Annotated[
+    GibberishFilterConfig | RepetitionFilterConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -577,7 +646,9 @@ class NCCLWeightBroadcastConfig(BaseModel):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
 
 
-WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+WeightBroadcastConfig: TypeAlias = Annotated[
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+]
 
 
 class TeacherModelConfig(BaseConfig):
@@ -629,7 +700,10 @@ class OrchestratorConfig(BaseSettings):
     buffer: BufferConfig = BufferConfig()
 
     # The advantage configuration
-    advantage: AdvantageConfigType | None = AdvantageConfig()
+    advantage: AdvantageConfig | None = DefaultAdvantageConfig()
+
+    # Rollout filters (monitor by default, enforce optionally)
+    filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig()]
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -643,20 +717,12 @@ class OrchestratorConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    # Whether to reset inference weights to base model when starting from scratch
-    reload_weights_on_start: Annotated[
-        bool,
-        Field(description="Whether to reset inference weights to the base model when starting from scratch."),
-    ] = True
-
     # The validation configuration
     val: ValConfig | None = None
 
-    weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
-        FileSystemWeightBroadcastConfig()
-    )
+    weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
 
-    rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
+    rollout_transport: TransportConfig = FileSystemTransportConfig()
 
     output_dir: Annotated[
         Path,
@@ -754,6 +820,20 @@ class OrchestratorConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    use_token_client: Annotated[
+        bool,
+        Field(
+            description="Whether to use the token-in-token-out (TITO) client for training across all environments. WARNING: Only use this if your environment has a linear history and the chat template has the extension property (i.e. no tokens are ever removed or inserted by the chat template)"
+        ),
+    ] = True
+
+    @model_validator(mode="after")
+    def validate_unique_filter_types(self):
+        types = [f.type for f in self.filters]
+        if len(types) != len(set(types)):
+            raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
+        return self
+
     @model_validator(mode="after")
     def validate_max_concurrent(self):
         if self.max_concurrent is not None and self.max_concurrent < self.rollouts_per_example:
@@ -798,7 +878,6 @@ class OrchestratorConfig(BaseSettings):
     def resolve_extra_env_kwargs(self):
         train_extra_env_kwargs = dict(
             seq_len=self.seq_len,
-            interleaved_rollouts=True,
             score_rollouts=not self.buffer.skip_verification,
         )
         for env in self.env:

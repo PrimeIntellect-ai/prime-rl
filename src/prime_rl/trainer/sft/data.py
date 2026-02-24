@@ -12,7 +12,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.sft.config import DataConfigType, LossMaskConfig
+from prime_rl.configs.sft import DataConfig, LossMaskConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -244,7 +244,7 @@ class SFTDataset(StatefulIterableDataset):
                         and messages[i + 1]["role"] == "assistant"
                     )
                     else False,
-                    **example.get("chat_template_kwargs", {}),
+                    **{**example.get("chat_template_kwargs", {}), "return_dict": False},
                 )
                 assert prev_ids == cur_ids[:prev_len], (
                     f"Got mismatch in incremental tokenization with chat template at message {i}. Previous ids: {prev_ids} != {cur_ids[:prev_len]=}.\nDecoded prev_ids:\n{tokenizer.decode(prev_ids)}\nDecoded cur_ids:\n{tokenizer.decode(cur_ids[:prev_len])}"
@@ -260,7 +260,7 @@ class SFTDataset(StatefulIterableDataset):
             self.tokenizer.apply_chat_template(
                 prompt + completion,
                 tools=tools,
-                **example.get("chat_template_kwargs", {}),
+                **{**example.get("chat_template_kwargs", {}), "return_dict": False},
             ),
         )
 
@@ -541,9 +541,7 @@ def setup_and_interleave_datasets(
     return dataset
 
 
-def setup_dataset(
-    tokenizer: PreTrainedTokenizer, config: DataConfigType, non_dp_size: int = 1
-) -> StatefulIterableDataset:
+def setup_dataset(tokenizer: PreTrainedTokenizer, config: DataConfig, non_dp_size: int = 1) -> StatefulIterableDataset:
     if config.type == "fake":
         # Shouldnt matter to handle non_dp_size if dataset is random
         return FakeDataset(
@@ -596,7 +594,7 @@ def setup_dataset(
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
-def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfigType) -> StatefulDataLoader:
+def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, config.seq_len * config.micro_batch_size)
         return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)

@@ -65,10 +65,13 @@ jobs:
         include:
           - test: base
             runner: vm
-            pytest_args: "tests/integration -m gpu --ignore=tests/integration/test_rl_lora.py --ignore=tests/integration/test_rl_multi_run_lora.py --ignore=tests/integration/test_benchmark_regression.py"
+            pytest_args: "tests/integration -m gpu --ignore=tests/integration/test_rl_lora.py --ignore=tests/integration/test_rl_multi_run_lora.py --ignore=tests/integration/test_benchmark_regression.py --ignore=tests/integration/test_alphabet_sort.py"
           - test: rl_lora
             runner: vm
             pytest_args: "tests/integration/test_rl_lora.py -m gpu"
+          - test: alphabet_sort
+            runner: vm
+            pytest_args: "tests/integration/test_alphabet_sort.py -m gpu"
           - test: rl_multi_run
             runner: 4xa6000
             pytest_args: "tests/integration/test_rl_multi_run_lora.py -m gpu"
@@ -102,7 +105,10 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+          PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
+          PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_HEAD_REF: ${{ github.head_ref }}
           PYTEST_OUTPUT_DIR: /tmp/outputs
+          VLLM_WORKER_MULTIPROC_METHOD: spawn
         run: uv run pytest ${{ matrix.pytest_args }}
