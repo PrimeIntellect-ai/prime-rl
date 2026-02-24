@@ -189,6 +189,19 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
         if self._flash_attn_version == 4:
             self._flash_attn_call = torch._dynamo.disable(self.func)
 
+    def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
+        """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
+        args = [q, k, v, cu_seqlens, cu_seqlens]
+        if self._flash_attn_version != 4:
+            args.extend([max_seqlen, max_seqlen])
+        kwargs: dict = {"causal": True}
+        if self.sliding_window is not None:
+            kwargs["window_size"] = (self.sliding_window - 1, 0)
+        out = self._flash_attn_call(*args, **kwargs)
+        if isinstance(out, tuple):
+            out = out[0]
+        return out
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -209,7 +222,6 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
         key_states = self.k_norm(key_states)
 
         if self.is_local_attention:
-            # apply_rotary_pos_emb expects [batch, heads, seq, dim]
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
             cos, sin = position_embeddings
@@ -217,18 +229,7 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
 
-        # Flash attention varlen expects [total_tokens, heads, dim]
-        args = [query_states[0], key_states[0], value_states[0], cu_seqlens, cu_seqlens]
-        if self._flash_attn_version != 4:
-            args.extend([max_seqlen, max_seqlen])
-
-        kwargs: dict = {"causal": True}
-        if self.sliding_window is not None:
-            kwargs["window_size"] = (self.sliding_window - 1, 0)
-
-        out = self._flash_attn_call(*args, **kwargs)
-        if isinstance(out, tuple):
-            out = out[0]
+        out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
 
         attn_output = out.contiguous().view(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate_states)
