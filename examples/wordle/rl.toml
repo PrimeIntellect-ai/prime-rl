@@ -1,8 +1,9 @@
-inference_gpu_ids = [0,1,2,3,4,5]
-trainer_gpu_ids = [6,7]
-
 max_steps = 200
 seq_len = 8192
+
+[deployment]
+num_train_gpus = 2
+num_infer_gpus = 6
 
 [wandb]
 project = "wordle"

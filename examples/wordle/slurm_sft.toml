@@ -1,0 +1,6 @@
+toml_files = ["sft.toml"]
+
+output_dir = "outputs/wordle-sft"
+
+[slurm]
+job_name = "wordle-sft"

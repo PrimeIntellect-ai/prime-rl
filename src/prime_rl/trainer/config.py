@@ -465,6 +465,32 @@ class WeightCheckpointConfig(BaseConfig):
     ] = False
 
 
+class SlurmConfig(BaseConfig):
+    """SLURM-specific configuration shared between RL and SFT."""
+
+    job_name: Annotated[str, Field(description="The SLURM job name.")] = "prime-rl"
+
+    project_dir: Annotated[
+        Path,
+        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
+    ] = Path(".")
+
+    template_path: Annotated[
+        Path | None,
+        Field(
+            description="The path to the SLURM template file. If None, will use the default single-node/multi-node template."
+        ),
+    ] = None
+
+    partition: Annotated[
+        str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
+    ] = "cluster"
+
+    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
+        False
+    )
+
+
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
