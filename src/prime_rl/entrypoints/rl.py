@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -13,15 +12,13 @@ import pynvml
 import tomli_w
 
 from prime_rl.rl_config import RLConfig
-from prime_rl.utils.logger import get_logger, setup_logger
+from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
-    get_broadcast_dir,
     get_free_port,
     get_log_dir,
-    get_rollout_dir,
 )
 
 
@@ -63,34 +60,6 @@ def check_gpus_available(gpu_ids: list[int]) -> None:
             msg += f"  GPU {gpu_id}: PIDs {pids}\n"
         msg += "Kill these processes or use different GPUs."
         raise RuntimeError(msg)
-
-
-def maybe_clean(config: RLConfig, log_dir: Path, orch_log_dir: Path, broadcast_dir: Path, rollout_dir: Path):
-    logger = get_logger()
-    logger.info("Cleaning checkpoint, logs, weights, broadcast and rollout directories")
-
-    # Cleaning logs (so that streaming logs to terminal works)
-    logger.info(f"Cleaning log dir ({log_dir})")
-    shutil.rmtree(log_dir, ignore_errors=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info(f"Cleaning orchestrator log dir ({orch_log_dir})")
-    shutil.rmtree(orch_log_dir, ignore_errors=True)
-    orch_log_dir.mkdir(parents=True, exist_ok=True)
-
-    # Cleaning broadcast dir (so that orchestrator does not pre-maturely update weights)
-    if not (
-        config.ckpt
-        and config.ckpt.resume_step
-        and config.trainer.weight_broadcast
-        and config.trainer.weight_broadcast.type == "filesystem"
-    ):
-        logger.info(f"Cleaning broadcast directory ({broadcast_dir})")
-        shutil.rmtree(broadcast_dir, ignore_errors=True)
-
-    # Cleaning rollouts (so that trainer does not train on old rollouts)
-    logger.info(f"Cleaning rollout dir ({rollout_dir})")
-    shutil.rmtree(rollout_dir, ignore_errors=True)
 
 
 def rl_local(config: RLConfig):
@@ -156,12 +125,6 @@ def rl_local(config: RLConfig):
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
-    orch_log_dir = get_log_dir(config.orchestrator.output_dir)
-    rollout_dir = get_rollout_dir(config.orchestrator.output_dir)
-    broadcast_dir = get_broadcast_dir(config.orchestrator.output_dir)
-
-    if config.clean:
-        maybe_clean(config, log_dir, orch_log_dir, broadcast_dir, rollout_dir)
 
     # Write all resolved subconfigs to disk
     config_dir = Path(".pydantic_config") / uuid.uuid4().hex

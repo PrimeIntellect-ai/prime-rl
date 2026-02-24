@@ -250,13 +250,6 @@ class RLConfig(BaseSettings):
 
     ### Local-only fields
 
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run.",
-        ),
-    ] = True
-
     bench: Annotated[
         bool,
         Field(
