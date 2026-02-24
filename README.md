@@ -29,13 +29,14 @@ PRIME-RL: Async RL Training at Scale
 
 ## Overview
 
-PRIME-RL is a framework for large-scale asynchronous reinforcement learning. It is designed to be easy-to-use and hackable, yet capable of scaling to 1000+ GPUs. Beyond that, here is why we think you might like it:
+PRIME-RL is a framework for large-scale reinforcement learning. It is designed to be easy-to-use and hackable, yet capable of training large MoE (400B+) over more than 1000 GPUs. Beyond that, here is why we think you might like it:
 
 1. Integrates natively with [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environments via the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars)
-2. Supports end-to-end post-training, including SFT and RL training and evals
-3. Multi-node deployment with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) training and [vLLM](https://github.com/vllm-project/vllm) inference backend
-4. Designed for asynchronous agentic RL training at scale
-5. Hackable, modular and extensible by nature
+2. Supports end-to-end post-training, including Rl, SFT, On Policy Distilation training and agentic evals
+3. Support all major model including performant MoE out of the box ( GLM 4.7 and GLM 5, Minimax M2.1 - M2.5, gpt-oss, deepseek v3.2, kimi k2.5, ...)
+4. Performant: Async-rl design for performant long running agentic training. rely on vllm inference and implement, [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html), CP, EP on the trainer.
+5. Large scale deployment with [k8s](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/kuber) and slrum support out of the box
+7. Hackable, modular and extensible by nature. Advantages and RL algorithm can be modified via [plug in](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/extending/bring-your-own-algorithms.md)
 
 ## Setup
 
@@ -171,15 +172,36 @@ We provide end-to-end training examples in the [`examples`](examples) directory 
 
 Check out the [docs](docs) directory for in-depth guides on how to use PRIME-RL.
 
-- [**Entrypoints**](docs/entrypoints.md) - Overview of the main components (orchestrator, trainer, inference) and how to run SFT, RL, and evals
-- [**Configs**](docs/configs.md) - Configuration system using TOML files, CLI arguments, and environment variables
-- [**Environments**](docs/environments.md) - Installing and using verifiers environments from the Environments Hub
-- [**Async Training**](docs/async.md) - Understanding asynchronous off-policy training and step semantics
-- [**Logging**](docs/logging.md) - Logging with loguru, torchrun, and Weights & Biases
-- [**Checkpointing**](docs/checkpointing.md) - Saving and resuming training from checkpoints
-- [**Benchmarking**](docs/benchmarking.md) - Performance benchmarking and throughput measurement
-- [**Deployment**](docs/deployment.md) - Training deployment on single-GPU, multi-GPU, and multi-node clusters
-- [**Troubleshooting**](docs/troubleshooting.md) - Common issues and their solutions
+**Getting Started**
+- [**Async Training**](docs/getting-started/async.md) - Understanding asynchronous off-policy training and step semantics
+- [**Entrypoints**](docs/getting-started/entrypoints.md) - Overview of the main components (orchestrator, trainer, inference) and how to run SFT, RL, and evals
+- [**Configs**](docs/getting-started/configs.md) - Configuration system using TOML files, CLI arguments, and environment variables
+- [**Environments**](docs/getting-started/environments.md) - Installing and using verifiers environments from the Environments Hub
+
+**Training**
+- [**Trajectories**](docs/training/trajectories.md) - Multi-turn trajectory interleaving
+- [**Checkpointing**](docs/training/checkpointing.md) - Saving and resuming training from checkpoints
+- [**On-Policy Distillation**](docs/training/on-policy-distillation.md) - Using teacher models for dense token-level feedback
+- [**Multimodal**](docs/training/multimodal.md) - Vision-Language Model support (experimental)
+
+**Deployment**
+- [**Deployment**](docs/deployment/deployment.md) - Training deployment on single-GPU, multi-GPU, and multi-node clusters
+- [**SLURM**](docs/deployment/slurm.md) - SLURM cluster deployment
+- [**Kubernetes**](docs/deployment/kubernetes.md) - Helm chart and K8s deployment
+
+**Extending**
+- [**Bring Your Own Algorithms**](docs/extending/bring-your-own-algorithms.md) - Custom loss and advantage functions
+- [**Testing MoE at Small Scale**](docs/extending/testing-moe-at-small-scale.md) - Local MoE iteration
+
+**Multi-Run Manager**
+- [**Multi-Run Manager**](docs/multi-run-manager/multi-run-manager.md) - Managing concurrent LoRA training runs
+
+**Observability**
+- [**Logging**](docs/observability/logging.md) - Logging with loguru, torchrun, and Weights & Biases
+- [**Metrics**](docs/observability/metrics.md) - W&B experiment tracking
+- [**Benchmarking**](docs/observability/benchmarking.md) - Performance benchmarking and throughput measurement
+
+**[Troubleshooting](docs/troubleshooting.md)** - Common issues and their solutions
 
 ## Contributing
 
