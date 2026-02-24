@@ -20,35 +20,6 @@ uv run inference --model.name Qwen/Qwen3-0.6B --model.max_model_len 2048 --model
 uv run inference @ path/to/config.toml --server.port 8001 --gpu-memory-utilization 0.5
 ```
 
-## FP8 knobs
-
-Use `InferenceConfig` fields for the core FP8 setup:
-
-```toml
-[model]
-quantization = "fp8"
-kv_cache_dtype = "fp8_e4m3"
-
-calculate_kv_scales = true
-```
-
-Common constraints:
-- FP8 quantization is incompatible with `model.dtype = "float32"`.
-- `calculate_kv_scales` requires an FP8 KV cache dtype.
-- During `/update_weights`, workers use a non-delegated layerwise reload path: `model.load_weights(...)` wrapped by vLLM `initialize_layerwise_reload(...)` / `finalize_layerwise_reload(...)`.
-- `/update_weights` always runs the manual FP8-conversion pass before load; this converts eligible 2D linear weights to FP8 + `*_scale_inv` (with packed-module safeguards) and is a no-op for non-FP8 models.
-- The manual FP8 conversion path is Triton-only for FP8 refit and requires Hopper GPUs (SM90+); no non-Triton fallback path is available.
-- This wrapper is required for FP8 refit; calling bare `model.load_weights(...)` can fail after FP8 post-processing changes parameter layouts/metadata.
-
-For advanced vLLM tuning not surfaced in `InferenceConfig`, pass flags directly on CLI (unknown args are forwarded to vLLM). Example:
-
-```bash
-uv run inference @ path/to/config.toml \
-  --max-num-batched-tokens 8192 \
-  --enable-chunked-prefill \
-  --attention-backend FLASHINFER
-```
-
 ## Custom endpoints
 
 The server extends vLLM with:
