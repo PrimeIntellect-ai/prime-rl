@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
@@ -548,8 +548,10 @@ class BufferConfig(BaseConfig):
         return self
 
 
-class AdvantageConfig(BaseConfig):
+class AdvantageConfig(BaseModel):
     """Config for the default advantage."""
+
+    model_config = ConfigDict(extra="forbid")
 
     type: Literal["default"] = "default"
     length_weighted_mean: bool = False
@@ -567,15 +569,9 @@ class CustomAdvantageConfig(BaseModel):
     ]
 
 
-def _advantage_config_discriminator(v: Any) -> str:
-    if isinstance(v, dict):
-        return v.get("type", "default")
-    return getattr(v, "type", "default")
-
-
 AdvantageConfigType: TypeAlias = Annotated[
-    Annotated[AdvantageConfig, Tag("default")] | Annotated[CustomAdvantageConfig, Tag("custom")],
-    Discriminator(_advantage_config_discriminator),
+    AdvantageConfig | CustomAdvantageConfig,
+    Field(discriminator="type"),
 ]
 
 

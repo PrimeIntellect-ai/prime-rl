@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from prime_rl.trainer.config import (
     AdamWConfig,
@@ -18,8 +18,10 @@ from prime_rl.utils.config import HeartbeatConfig, LogConfig, MetricsServerConfi
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
-class LossConfig(BaseConfig):
+class LossConfig(BaseModel):
     """Config for the default loss."""
+
+    model_config = ConfigDict(extra="forbid")
 
     type: Literal["default"] = "default"
     ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
@@ -81,15 +83,9 @@ class CustomLossConfig(BaseModel):
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
 
-def _loss_config_discriminator(v: Any) -> str:
-    if isinstance(v, dict):
-        return v.get("type", "default")
-    return getattr(v, "type", "default")
-
-
 LossConfigType: TypeAlias = Annotated[
-    Annotated[LossConfig, Tag("default")] | Annotated[CustomLossConfig, Tag("custom")],
-    Discriminator(_loss_config_discriminator),
+    LossConfig | CustomLossConfig,
+    Field(discriminator="type"),
 ]
 
 
