@@ -32,6 +32,7 @@ logger = init_logger("vllm.entrypoints.openai.rollout_gateway")
 
 RolloutStatus = Literal["active", "cancelled", "completed"]
 
+
 class RegisterRolloutRequest(BaseModel):
     model: str
     sampling_params: dict[str, Any] = Field(default_factory=dict)
@@ -175,6 +176,7 @@ class RolloutRegistry:
         await rollout.localhost_client.close()
         return rollout
 
+
 def _get_rollout_registry(request: Request) -> RolloutRegistry:
     registry = getattr(request.app.state, "rollout_registry", None)
     if registry is None:
@@ -209,7 +211,6 @@ def _validate_rollout_status(rollout: RolloutState, rollout_id: str) -> None:
         raise HTTPException(status_code=409, detail=f"Rollout cancelled: {rollout_id}")
     if rollout.status == "completed":
         raise HTTPException(status_code=409, detail=f"Rollout completed: {rollout_id}")
-
 
 
 async def _call_chat_with_messages(
