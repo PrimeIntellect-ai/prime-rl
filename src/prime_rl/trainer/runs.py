@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
 
-from prime_rl.configs.trainer import LoRAConfig
+from prime_rl.configs.shared import LoRAConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_stable_ckpt_steps

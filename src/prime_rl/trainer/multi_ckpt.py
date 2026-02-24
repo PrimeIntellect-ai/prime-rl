@@ -13,7 +13,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed.checkpoint.stateful import Stateful
 
-from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.configs.shared import CheckpointConfig
 from prime_rl.trainer.ckpt import CheckpointManager
 from prime_rl.trainer.runs import Progress, get_multi_run_manager
 from prime_rl.trainer.world import get_world

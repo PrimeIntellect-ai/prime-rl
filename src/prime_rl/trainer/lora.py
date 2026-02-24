@@ -4,7 +4,7 @@ from typing import Dict, List
 import torch
 import torch.nn as nn
 
-from prime_rl.configs.trainer import LoRAConfig
+from prime_rl.configs.shared import LoRAConfig
 from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
 from prime_rl.trainer.models.layers.lora.multi_moe import MultiLoRAGroupedExperts
 from prime_rl.trainer.models.layers.moe import GroupedExperts

@@ -21,7 +21,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, Genera
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
-from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
+from prime_rl.configs.shared import ActivationCheckpointConfig, CompileConfig, TokenizerConfig, TrainerModelConfig
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -153,7 +153,7 @@ def get_load_balance_stats(
 
 
 def get_model(
-    config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
+    config: TrainerModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
     logger = get_logger()
     logger.info(
@@ -264,7 +264,7 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     return tokenizer
 
 
-def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
+def setup_fsdp(model: nn.Module, config: TrainerModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
@@ -403,7 +403,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([language_model.embed_tokens])
 
 
-def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
+def load_dcp_from_hf(model: nn.Module, config: TrainerModelConfig, parallel_dims: ParallelDims):
     device = "cpu" if config.fsdp_cpu_offload else "cuda"
     model.to_empty(device=device)
     torch.distributed.barrier()
@@ -585,7 +585,7 @@ def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
             )
 
 
-def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
+def _move_buffers_to_cuda(model: nn.Module, config: TrainerModelConfig) -> None:
     """FSDP CPU offloading only manages parameters, not buffers. Move buffers to CUDA."""
     if not config.fsdp_cpu_offload:
         return
@@ -631,7 +631,7 @@ def _register_fa4_attention_interface() -> None:
 
 
 def setup_model(
-    config: ModelConfig, parallel_dims: ParallelDims, loading_from_checkpoint_later: bool = False
+    config: TrainerModelConfig, parallel_dims: ParallelDims, loading_from_checkpoint_later: bool = False
 ) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(

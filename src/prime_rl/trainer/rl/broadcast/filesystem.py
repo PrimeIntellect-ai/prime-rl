@@ -7,7 +7,7 @@ import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.rl_trainer import FileSystemWeightBroadcastConfig
-from prime_rl.configs.trainer import LoRAConfig
+from prime_rl.configs.shared import LoRAConfig
 from prime_rl.trainer.lora import save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast

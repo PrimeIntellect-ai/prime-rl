@@ -14,9 +14,8 @@ from prime_rl.configs.rl_trainer import FakeDataLoaderConfig
 from prime_rl.configs.rl_trainer import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
 from prime_rl.configs.rl_trainer import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
 from prime_rl.configs.rl_trainer import RLTrainerConfig as TrainerConfig
-from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
-from prime_rl.configs.trainer import BenchConfig, SlurmConfig
-from prime_rl.configs.trainer import CheckpointConfig as TrainerCheckpointConfig
+from prime_rl.configs.shared import BenchConfig, SlurmConfig, WandbConfig, WandbWithExtrasConfig
+from prime_rl.configs.shared import CheckpointConfig as TrainerCheckpointConfig
 from prime_rl.utils.pydantic_config import BaseSettings
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
