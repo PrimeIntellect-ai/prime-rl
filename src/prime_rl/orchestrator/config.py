@@ -3,7 +3,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
+from prime_rl.transport.config import FileSystemTransportConfig, TransportConfig
 from prime_rl.utils.config import (
     ClientConfig,
     HeartbeatConfig,
@@ -548,7 +548,7 @@ class BufferConfig(BaseConfig):
         return self
 
 
-class AdvantageConfig(BaseModel):
+class DefaultAdvantageConfig(BaseModel):
     """Config for the default advantage."""
 
     model_config = ConfigDict(extra="forbid")
@@ -569,8 +569,8 @@ class CustomAdvantageConfig(BaseModel):
     ]
 
 
-AdvantageConfigType: TypeAlias = Annotated[
-    AdvantageConfig | CustomAdvantageConfig,
+AdvantageConfig: TypeAlias = Annotated[
+    DefaultAdvantageConfig | CustomAdvantageConfig,
     Field(discriminator="type"),
 ]
 
@@ -625,7 +625,7 @@ class RepetitionFilterConfig(BaseModel):
     ] = 0.99
 
 
-FilterConfigType: TypeAlias = Annotated[
+FilterConfig: TypeAlias = Annotated[
     GibberishFilterConfig | RepetitionFilterConfig,
     Field(discriminator="type"),
 ]
@@ -647,7 +647,7 @@ class NCCLWeightBroadcastConfig(BaseModel):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
 
 
-WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+WeightBroadcastConfig: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
 class TeacherModelConfig(BaseConfig):
@@ -699,10 +699,10 @@ class OrchestratorConfig(BaseSettings):
     buffer: BufferConfig = BufferConfig()
 
     # The advantage configuration
-    advantage: AdvantageConfigType | None = AdvantageConfig()
+    advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
     # Rollout filters (monitor by default, enforce optionally)
-    filters: list[FilterConfigType] = [GibberishFilterConfig(), RepetitionFilterConfig()]
+    filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig()]
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -719,11 +719,9 @@ class OrchestratorConfig(BaseSettings):
     # The validation configuration
     val: ValConfig | None = None
 
-    weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
-        FileSystemWeightBroadcastConfig()
-    )
+    weight_broadcast: Annotated[WeightBroadcastConfig, Field(discriminator="type")] = FileSystemWeightBroadcastConfig()
 
-    rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
+    rollout_transport: Annotated[TransportConfig, Field(discriminator="type")] = FileSystemTransportConfig()
 
     output_dir: Annotated[
         Path,

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
-from prime_rl.transport.config import TransportConfigType
+from prime_rl.transport.config import TransportConfig
 from prime_rl.transport.filesystem import (
     FileSystemMicroBatchReceiver,
     FileSystemMicroBatchSender,
@@ -17,7 +17,7 @@ from prime_rl.transport.zmq import (
 )
 
 
-def setup_training_batch_sender(output_dir: Path, transport: TransportConfigType) -> TrainingBatchSender:
+def setup_training_batch_sender(output_dir: Path, transport: TransportConfig) -> TrainingBatchSender:
     if transport.type == "filesystem":
         return FileSystemTrainingBatchSender(output_dir)
     elif transport.type == "zmq":
@@ -26,7 +26,7 @@ def setup_training_batch_sender(output_dir: Path, transport: TransportConfigType
         raise ValueError(f"Invalid transport type: {transport.type}")
 
 
-def setup_training_batch_receiver(transport: TransportConfigType) -> TrainingBatchReceiver:
+def setup_training_batch_receiver(transport: TransportConfig) -> TrainingBatchReceiver:
     if transport.type == "filesystem":
         return FileSystemTrainingBatchReceiver()
     elif transport.type == "zmq":
@@ -36,7 +36,7 @@ def setup_training_batch_receiver(transport: TransportConfigType) -> TrainingBat
 
 
 def setup_micro_batch_sender(
-    output_dir: Path, data_world_size: int, current_step: int, transport: TransportConfigType
+    output_dir: Path, data_world_size: int, current_step: int, transport: TransportConfig
 ) -> MicroBatchSender:
     if transport.type == "filesystem":
         return FileSystemMicroBatchSender(output_dir, data_world_size, current_step)
@@ -47,7 +47,7 @@ def setup_micro_batch_sender(
 
 
 def setup_micro_batch_receiver(
-    output_dir: Path, data_rank: int, current_step: int, transport: TransportConfigType
+    output_dir: Path, data_rank: int, current_step: int, transport: TransportConfig
 ) -> MicroBatchReceiver:
     if transport.type == "filesystem":
         return FileSystemMicroBatchReceiver(output_dir, data_rank, current_step)

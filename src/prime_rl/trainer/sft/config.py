@@ -9,8 +9,8 @@ from prime_rl.trainer.config import (
     CheckpointConfig,
     ConstantSchedulerConfig,
     ModelConfig,
-    OptimizerConfigType,
-    SchedulerConfigType,
+    OptimizerConfig,
+    SchedulerConfig,
     SlurmConfig,
     TokenizerConfig,
 )
@@ -102,7 +102,7 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
-DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
+DataConfig: TypeAlias = FakeDataConfig | SFTDataConfig
 
 
 class BaseDeploymentConfig(BaseModel):
@@ -142,7 +142,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     ] = None
 
 
-SFTDeploymentConfigType: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentConfig
+SFTDeploymentConfig: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentConfig
 
 
 class SFTTrainerConfig(BaseSettings):
@@ -156,7 +156,7 @@ class SFTTrainerConfig(BaseSettings):
         ),
     ] = None
 
-    deployment: Annotated[SFTDeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
+    deployment: Annotated[SFTDeploymentConfig, Field(discriminator="type")] = SingleNodeDeploymentConfig()
 
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -165,13 +165,13 @@ class SFTTrainerConfig(BaseSettings):
     tokenizer: TokenizerConfig = TokenizerConfig()
 
     # The data configuration
-    data: Annotated[DataConfigType, Field(discriminator="type")] = SFTDataConfig()
+    data: Annotated[DataConfig, Field(discriminator="type")] = SFTDataConfig()
 
     # The optimizer configuration
-    optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()
+    optim: Annotated[OptimizerConfig, Field(discriminator="type")] = AdamWConfig()
 
     # The learning rate scheduler configuration
-    scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
+    scheduler: Annotated[SchedulerConfig, Field(discriminator="type")] = ConstantSchedulerConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

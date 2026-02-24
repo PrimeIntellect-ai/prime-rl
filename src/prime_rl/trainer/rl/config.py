@@ -9,16 +9,16 @@ from prime_rl.trainer.config import (
     CheckpointConfig,
     ConstantSchedulerConfig,
     ModelConfig,
-    OptimizerConfigType,
-    SchedulerConfigType,
+    OptimizerConfig,
+    SchedulerConfig,
     TokenizerConfig,
 )
-from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
+from prime_rl.transport.config import FileSystemTransportConfig, TransportConfig
 from prime_rl.utils.config import HeartbeatConfig, LogConfig, MetricsServerConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
-class LossConfig(BaseModel):
+class DefaultLossConfig(BaseModel):
     """Config for the default loss."""
 
     model_config = ConfigDict(extra="forbid")
@@ -83,8 +83,8 @@ class CustomLossConfig(BaseModel):
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
 
-LossConfigType: TypeAlias = Annotated[
-    LossConfig | CustomLossConfig,
+LossConfig: TypeAlias = Annotated[
+    DefaultLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 
@@ -131,7 +131,7 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
 
 
-WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+WeightBroadcastConfig: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
 class RLTrainerConfig(BaseSettings):
@@ -147,22 +147,20 @@ class RLTrainerConfig(BaseSettings):
     data: DataLoaderConfig = DataLoaderConfig()
 
     # The loss configuration
-    loss: LossConfigType = LossConfig()
+    loss: LossConfig = DefaultLossConfig()
 
     # The optimizer configuration
-    optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()
+    optim: Annotated[OptimizerConfig, Field(discriminator="type")] = AdamWConfig()
 
     # The learning rate scheduler configuration
-    scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
+    scheduler: Annotated[SchedulerConfig, Field(discriminator="type")] = ConstantSchedulerConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
-        FileSystemWeightBroadcastConfig()
-    )
+    weight_broadcast: Annotated[WeightBroadcastConfig, Field(discriminator="type")] = FileSystemWeightBroadcastConfig()
 
-    rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
+    rollout_transport: Annotated[TransportConfig, Field(discriminator="type")] = FileSystemTransportConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()

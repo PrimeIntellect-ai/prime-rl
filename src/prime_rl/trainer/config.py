@@ -403,7 +403,7 @@ class CosineSchedulerConfig(BaseModel):
     min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
 
 
-SchedulerConfigType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
+SchedulerConfig: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
 
 
 class BaseOptimizerConfig(BaseModel):
@@ -437,7 +437,7 @@ class MuonConfig(BaseOptimizerConfig):
     ] = 0.95
 
 
-OptimizerConfigType: TypeAlias = SGDConfig | AdamWConfig | MuonConfig
+OptimizerConfig: TypeAlias = SGDConfig | AdamWConfig | MuonConfig
 
 
 class WeightCheckpointConfig(BaseConfig):

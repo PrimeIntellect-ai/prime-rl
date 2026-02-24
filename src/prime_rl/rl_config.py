@@ -151,7 +151,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
-DeploymentConfigType: TypeAlias = Annotated[
+DeploymentConfig: TypeAlias = Annotated[
     SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
 
@@ -189,7 +189,7 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    deployment: Annotated[DeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
+    deployment: Annotated[DeploymentConfig, Field(discriminator="type")] = SingleNodeDeploymentConfig()
 
     slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 

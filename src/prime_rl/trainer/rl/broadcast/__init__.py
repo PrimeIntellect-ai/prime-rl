@@ -6,11 +6,11 @@ from prime_rl.trainer.config import LoRAConfig
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.broadcast.filesystem import FileSystemWeightBroadcast
 from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcast
-from prime_rl.trainer.rl.config import WeightBroadcastConfigType
+from prime_rl.trainer.rl.config import WeightBroadcastConfig
 
 
 def setup_weight_broadcast(
-    output_dir: Path, config: WeightBroadcastConfigType, lora_config: LoRAConfig | None = None
+    output_dir: Path, config: WeightBroadcastConfig, lora_config: LoRAConfig | None = None
 ) -> WeightBroadcast:
     if config.type == "nccl":
         return NCCLWeightBroadcast(output_dir, config, torch.cuda.current_device())
