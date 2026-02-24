@@ -1,6 +1,6 @@
 import math
 
-from prime_rl.orchestrator.config import GibberishFilterConfig, RepetitionFilterConfig
+from prime_rl.configs.orchestrator import GibberishFilterConfig, RepetitionFilterConfig
 from prime_rl.orchestrator.filters import (
     GibberishFilter,
     RepetitionFilter,

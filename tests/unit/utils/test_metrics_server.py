@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 
-from prime_rl.utils.config import MetricsServerConfig
+from prime_rl.configs.utils import MetricsServerConfig
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 
 

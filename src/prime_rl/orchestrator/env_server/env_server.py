@@ -2,7 +2,7 @@ import asyncio
 
 from verifiers.workers import ZMQEnvServer
 
-from prime_rl.orchestrator.env_server.config import EnvServerConfig
+from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import get_log_dir
 from prime_rl.utils.pydantic_config import parse_argv

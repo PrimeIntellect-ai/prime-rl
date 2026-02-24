@@ -12,7 +12,7 @@ from httpx import AsyncClient
 from openai import NotFoundError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from prime_rl.utils.config import ClientConfig
+from prime_rl.configs.utils import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 

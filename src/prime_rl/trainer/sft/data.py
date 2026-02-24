@@ -12,7 +12,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.sft.config import DataConfigType, LossMaskConfig
+from prime_rl.configs.sft_trainer import DataConfigType, LossMaskConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 

@@ -15,7 +15,7 @@ from loguru import logger
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, generate_latest
 
 if TYPE_CHECKING:
-    from prime_rl.utils.config import MetricsServerConfig
+    from prime_rl.configs.utils import MetricsServerConfig
 
 
 @dataclass

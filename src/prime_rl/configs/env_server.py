@@ -3,8 +3,8 @@ from typing import Annotated
 
 from pydantic import Field
 
-from prime_rl.orchestrator.config import EnvConfig
-from prime_rl.utils.config import LogConfig
+from prime_rl.configs.orchestrator import EnvConfig
+from prime_rl.configs.utils import LogConfig
 from prime_rl.utils.pydantic_config import BaseSettings
 
 

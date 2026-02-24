@@ -6,19 +6,19 @@ from pydantic import Field, model_validator
 from pydantic.config import ConfigDict
 from pydantic.main import BaseModel
 
-from prime_rl.inference.config import InferenceConfig
-from prime_rl.inference.config import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.orchestrator.config import CheckpointConfig as OrchestratorCheckpointConfig
-from prime_rl.orchestrator.config import FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig
-from prime_rl.orchestrator.config import NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig
-from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.trainer.config import BenchConfig, SlurmConfig
-from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
-from prime_rl.trainer.rl.config import FakeDataLoaderConfig
-from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
-from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
-from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
-from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
+from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
+from prime_rl.configs.orchestrator import CheckpointConfig as OrchestratorCheckpointConfig
+from prime_rl.configs.orchestrator import FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig
+from prime_rl.configs.orchestrator import NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.rl_trainer import FakeDataLoaderConfig
+from prime_rl.configs.rl_trainer import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
+from prime_rl.configs.rl_trainer import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
+from prime_rl.configs.rl_trainer import RLTrainerConfig as TrainerConfig
+from prime_rl.configs.trainer import BenchConfig, SlurmConfig
+from prime_rl.configs.trainer import CheckpointConfig as TrainerCheckpointConfig
+from prime_rl.configs.utils import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.pydantic_config import BaseSettings
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -527,7 +527,7 @@ class RLConfig(BaseSettings):
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
 
             if self.orchestrator.model.lora is None:
-                from prime_rl.orchestrator.config import LoRAConfig
+                from prime_rl.configs.orchestrator import LoRAConfig
 
                 self.orchestrator.model.lora = LoRAConfig()
 
@@ -622,7 +622,7 @@ class RLConfig(BaseSettings):
 
         import copy
 
-        from prime_rl.orchestrator.config import TeacherModelConfig
+        from prime_rl.configs.orchestrator import TeacherModelConfig
 
         if self.teacher_inference is None:
             if self.inference is None:

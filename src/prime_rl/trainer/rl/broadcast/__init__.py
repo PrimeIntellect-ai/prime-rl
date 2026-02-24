@@ -2,11 +2,11 @@ from pathlib import Path
 
 import torch
 
-from prime_rl.trainer.config import LoRAConfig
+from prime_rl.configs.rl_trainer import WeightBroadcastConfigType
+from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.broadcast.filesystem import FileSystemWeightBroadcast
 from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcast
-from prime_rl.trainer.rl.config import WeightBroadcastConfigType
 
 
 def setup_weight_broadcast(

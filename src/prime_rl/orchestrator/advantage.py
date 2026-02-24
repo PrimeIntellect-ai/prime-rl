@@ -5,7 +5,7 @@ import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from prime_rl.orchestrator.config import AdvantageConfigType, CustomAdvantageConfig
+from prime_rl.configs.orchestrator import AdvantageConfigType, CustomAdvantageConfig
 from prime_rl.utils.utils import import_object
 
 

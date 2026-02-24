@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from prime_rl.inference.config import InferenceConfig
-from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.trainer.rl.config import RLTrainerConfig
+from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.rl_trainer import RLTrainerConfig
 
 
 def validate_shared_ckpt_config(

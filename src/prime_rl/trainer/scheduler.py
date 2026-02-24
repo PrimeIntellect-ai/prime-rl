@@ -3,7 +3,7 @@ from __future__ import annotations
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
-from prime_rl.trainer.config import SchedulerConfigType
+from prime_rl.configs.trainer import SchedulerConfigType
 from prime_rl.trainer.optim import CPUOffloadOptimizer, MultiLoRAOptimizer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger

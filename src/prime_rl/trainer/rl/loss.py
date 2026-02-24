@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.trainer.rl.config import CustomLossConfig, LossConfig, LossConfigType
+from prime_rl.configs.rl_trainer import CustomLossConfig, LossConfig, LossConfigType
 from prime_rl.utils.utils import import_object
 
 

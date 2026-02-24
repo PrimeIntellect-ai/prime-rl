@@ -8,7 +8,7 @@ from threading import Event, Thread
 
 import tomli_w
 
-from prime_rl.trainer.sft.config import SFTTrainerConfig
+from prime_rl.configs.sft_trainer import SFTTrainerConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.pydantic_config import parse_argv

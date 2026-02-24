@@ -6,11 +6,11 @@ from typing import Literal
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
-from prime_rl.trainer.config import LoRAConfig
+from prime_rl.configs.rl_trainer import FileSystemWeightBroadcastConfig
+from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.lora import save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
-from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import (

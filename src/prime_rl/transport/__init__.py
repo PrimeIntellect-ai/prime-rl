@@ -1,7 +1,7 @@
 from pathlib import Path
 
+from prime_rl.configs.transport import TransportConfigType
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
-from prime_rl.transport.config import TransportConfigType
 from prime_rl.transport.filesystem import (
     FileSystemMicroBatchReceiver,
     FileSystemMicroBatchSender,
