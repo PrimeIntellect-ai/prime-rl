@@ -8,7 +8,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
-from prime_rl.configs.shared import OptimizerConfigType
+from prime_rl.configs.trainer import OptimizerConfigType
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world

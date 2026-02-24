@@ -4,18 +4,20 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from prime_rl.configs.shared import (
-    AdamWConfig,
-    BenchConfig,
-    ConstantSchedulerConfig,
     HeartbeatConfig,
     LogConfig,
+    SlurmConfig,
+    WandbConfig,
+)
+from prime_rl.configs.trainer import (
+    AdamWConfig,
+    BenchConfig,
+    CheckpointConfig,
+    ConstantSchedulerConfig,
+    ModelConfig,
     OptimizerConfigType,
     SchedulerConfigType,
-    SlurmConfig,
     TokenizerConfig,
-    TrainerCheckpointConfig,
-    TrainerModelConfig,
-    WandbConfig,
 )
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -161,7 +163,7 @@ class SFTConfig(BaseSettings):
     deployment: Annotated[SFTDeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
 
     # The model configuration
-    model: TrainerModelConfig = TrainerModelConfig()
+    model: ModelConfig = ModelConfig()
 
     # The tokenizer configuration
     tokenizer: TokenizerConfig = TokenizerConfig()
@@ -176,7 +178,7 @@ class SFTConfig(BaseSettings):
     scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
 
     # The checkpoint configuration
-    ckpt: TrainerCheckpointConfig | None = None
+    ckpt: CheckpointConfig | None = None
 
     # The logging configuration
     log: LogConfig = LogConfig()

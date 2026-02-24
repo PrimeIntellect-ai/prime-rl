@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.configs.shared import AttnImplementation, TrainerModelConfig
+from prime_rl.configs.trainer import AttnImplementation, ModelConfig
 from prime_rl.trainer.model import get_model
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 
@@ -29,7 +29,7 @@ def attn(request) -> AttnImplementation:
 
 @pytest.fixture
 def model(attn):
-    config = TrainerModelConfig(name="Qwen/Qwen3-0.6B", attn=attn)
+    config = ModelConfig(name="Qwen/Qwen3-0.6B", attn=attn)
     return get_model(config)
 
 
@@ -111,7 +111,7 @@ def test_model_with_sequence_packing(model, correct_position_ids):
 
 
 def test_moe_custom_impl():
-    config = TrainerModelConfig(name="PrimeIntellect/GLM-0.5B", attn="sdpa", impl="custom", moe_use_grouped_mm=False)
+    config = ModelConfig(name="PrimeIntellect/GLM-0.5B", attn="sdpa", impl="custom", moe_use_grouped_mm=False)
     model = get_model(config)
     model = model.to("cuda")
     # we need to wrap the lm head as custom forward only works with it, this is done in setup_model
@@ -127,7 +127,7 @@ def test_moe_custom_impl():
 @pytest.mark.skip(reason="need special token for meta stuff in ci")
 @pytest.mark.parametrize("model_name", ["meta-llama/Llama-3.2-1B-Instruct"])
 def test_model_forward_custom_impl(model_name):
-    config = TrainerModelConfig(name=model_name, impl="custom", attn="sdpa")
+    config = ModelConfig(name=model_name, impl="custom", attn="sdpa")
     model = get_model(config)
     # we need to wrap the lm head as custom forward only works with it, this is done in setup_model
     inject_prime_lm_head(model, chunk_size=None)

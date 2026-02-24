@@ -3,7 +3,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.shared import ModelConfig
+from prime_rl.configs.shared import BaseModelConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
 
@@ -117,7 +117,7 @@ class ParallelConfig(BaseConfig):
         return f"tp={self.tp} dp={self.dp}"
 
 
-class InferenceModelConfig(ModelConfig):
+class ModelConfig(BaseModelConfig):
     """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html)."""
 
     dtype: Annotated[
@@ -191,7 +191,7 @@ class InferenceModelConfig(ModelConfig):
         return self
 
 
-class InferenceWeightBroadcastConfig(BaseSettings):
+class WeightBroadcastConfig(BaseSettings):
     """Configures weight broadcast settings."""
 
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
@@ -221,7 +221,7 @@ class InferenceConfig(BaseSettings):
     server: ServerConfig = ServerConfig()
 
     # The model configuration
-    model: InferenceModelConfig = Field(default_factory=InferenceModelConfig)
+    model: ModelConfig = Field(default_factory=ModelConfig)
 
     # The parallel configuration
     parallel: ParallelConfig = ParallelConfig()
@@ -307,8 +307,8 @@ class InferenceConfig(BaseSettings):
         ),
     ] = False
 
-    weight_broadcast: Annotated[InferenceWeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
-        InferenceWeightBroadcastConfig()
+    weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
+        WeightBroadcastConfig()
     )
 
     @model_validator(mode="after")

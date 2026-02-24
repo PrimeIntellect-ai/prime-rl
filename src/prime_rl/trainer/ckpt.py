@@ -18,7 +18,7 @@ from torch.optim.optimizer import Optimizer
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.shared import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
+from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.optim import CPUOffloadOptimizer

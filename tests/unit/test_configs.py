@@ -7,14 +7,14 @@ from pydantic import ValidationError
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.configs.rl_trainer import RLTrainerConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.pydantic_config import parse_argv
 
 # All config config classes
 CONFIG_CLASSES = [
     RLConfig,
-    RLTrainerConfig,
+    TrainerConfig,
     SFTConfig,
     OrchestratorConfig,
     InferenceConfig,

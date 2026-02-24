@@ -24,7 +24,7 @@ import torch.distributed as dist
 from torch._utils import _get_available_device_type
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
-from prime_rl.configs.shared import TrainerModelConfig
+from prime_rl.configs.trainer import ModelConfig
 from prime_rl.utils.logger import get_logger
 
 device_type = _get_available_device_type() or "cuda"
@@ -252,7 +252,7 @@ class ParallelDims:
         return get_logger()
 
 
-def get_parallel_dims(config: TrainerModelConfig, seq_len: int | None = None) -> ParallelDims:
+def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> ParallelDims:
     # Initialize parallel dimensions
     parallel_dims = ParallelDims(
         dp_replicate=config.dp_replicate,

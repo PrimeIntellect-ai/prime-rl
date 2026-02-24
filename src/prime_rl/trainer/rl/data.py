@@ -6,7 +6,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.rl_trainer import FakeDataLoaderConfig
+from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
