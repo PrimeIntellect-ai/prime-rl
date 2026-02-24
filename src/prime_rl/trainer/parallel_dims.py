@@ -216,9 +216,10 @@ class ParallelDims:
         return self._world_mesh
 
     def get_mesh(self, name: str) -> DeviceMesh:
+        mesh = self.world_mesh  # ensure lazy init has run
         if name in self._submeshes:
             return self._submeshes[name]
-        return self.world_mesh[name]
+        return mesh[name]
 
     @property
     def dp_enabled(self):
