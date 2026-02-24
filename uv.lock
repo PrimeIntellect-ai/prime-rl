@@ -2373,7 +2373,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=609e3d5" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", editable = "../../verifiers" },
+    { name = "verifiers", editable = "../verifiers" },
     { name = "vllm", url = "https://github.com/vllm-project/vllm/releases/download/v0.16.0/vllm-0.16.0-cp38-abi3-manylinux_2_31_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
 ]
@@ -3701,7 +3701,7 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-source = { editable = "../../verifiers" }
+source = { editable = "../verifiers" }
 dependencies = [
     { name = "anthropic" },
     { name = "datasets" },
