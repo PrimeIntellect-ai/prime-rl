@@ -71,7 +71,7 @@ async def evaluate_env(
     rollouts_per_example: int,
     max_retries: int,
     ckpt_step: int,
-    step: int | None,
+    step: int,
     get_client: Callable[[], Awaitable[vf.ClientConfig]],
 ):
     logger = get_logger()
@@ -142,6 +142,6 @@ async def evaluate_env(
         assert pass_at_k is not None
         eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
     eval_metrics = {**{f"eval/{env_name}/{k}": v for k, v in eval_metrics.items()}}
-    eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step or ckpt_step})
+    eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
     monitor = get_monitor()
-    monitor.log(eval_metrics, step=None)
+    monitor.log(eval_metrics, step=step)
