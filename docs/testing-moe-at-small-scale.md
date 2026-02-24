@@ -94,6 +94,23 @@ What to look for:
 
 Don't expect the reward to go up meaningfully in 20 steps on a random model.
 
+## Step 4: RL with LoRA (reverse-text)
+
+Same setup as Step 3, but with LoRA adapters enabled. Each architecture has a dedicated LoRA CI config:
+
+```bash
+# GLM-4 MoE
+uv run rl @ configs/ci/integration/rl_moe_lora/glm4_moe.toml --trainer.model.impl custom
+
+# Qwen3 MoE
+uv run rl @ configs/ci/integration/rl_moe_lora/qwen3_moe.toml --trainer.model.impl custom
+
+# MiniMax M2
+uv run rl @ configs/ci/integration/rl_moe_lora/minimax_m2.toml --trainer.model.impl custom
+```
+
+These configs add LoRA rank-8 adapters on attention and expert layers, enable LoRA in the inference server, and save adapters separately. You can also use `--trainer.model.impl hf`.
+
 ## Adding a new architecture
 
 To test a new MoE architecture:
@@ -102,7 +119,8 @@ To test a new MoE architecture:
 2. Add a preset to `scripts/mini_moe.py` with the config class, small dimensions, HF model class, PrimeRL model class, and tokenizer source
 3. Run steps 1-3 above with `--arch <your_arch>`
 4. Create a CI config in `configs/ci/integration/rl_moe/<arch>.toml` (copy an existing one and change the model name)
-5. Add the new config to `MOE_CONFIGS` in `tests/integration/test_rl_moe.py`
+5. Create a LoRA CI config in `configs/ci/integration/rl_moe_lora/<arch>.toml` (copy an existing one and change the model name)
+6. Add the new config to `MOE_CONFIGS` in `tests/integration/test_rl_moe.py` and `MOE_LORA_CONFIGS` in `tests/integration/test_rl_moe_lora.py`
 
 The preset defines the small config:
 

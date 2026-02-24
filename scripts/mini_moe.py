@@ -46,6 +46,7 @@ ARCH_PRESETS = {
             max_position_embeddings=131072,
             rms_norm_eps=1e-5,
             rope_theta=1000000,
+            head_dim=64,
             attention_bias=True,
             partial_rotary_factor=0.5,
             moe_intermediate_size=256,
