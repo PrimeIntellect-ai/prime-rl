@@ -190,7 +190,8 @@ def sft_local(config: SFTTrainerConfig):
 
 def sft(config: SFTTrainerConfig):
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
-    validate_output_dir(config.output_dir, resuming=resuming, clean=config.clean_output_dir)
+    clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
+    validate_output_dir(config.output_dir, resuming=resuming, clean=clean)
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     if config.slurm is not None:
