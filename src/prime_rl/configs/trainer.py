@@ -523,7 +523,7 @@ class CheckpointConfig(BaseConfig):
     ] = False
 
 
-class DefaultLossConfig(BaseConfig):
+class DefaultLossConfig(BaseModel):
     """Config for the default loss."""
 
     type: Literal["default"] = "default"
@@ -539,6 +539,7 @@ class CustomLossConfig(BaseModel):
     """Config for a custom external loss function."""
 
     type: Literal["custom"] = "custom"
+
     import_path: Annotated[str, Field(description="Import path to the loss function (e.g., 'my_module.my_loss')")]
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
