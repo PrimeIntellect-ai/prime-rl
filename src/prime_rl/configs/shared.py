@@ -8,17 +8,30 @@ from prime_rl.utils.pydantic_config import BaseConfig
 # -- Common configs (model, client, logging, monitoring) --
 
 
-class ModelConfig(BaseConfig):
-    """Configures the model."""
+class SlurmConfig(BaseConfig):
+    """Configures SLURM scheduling."""
 
-    name: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
+    job_name: Annotated[str, Field(description="The SLURM job name.")] = "prime-rl"
 
-    trust_remote_code: Annotated[
-        bool,
+    project_dir: Annotated[
+        Path,
+        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
+    ] = Path(".")
+
+    template_path: Annotated[
+        Path | None,
         Field(
-            description="Whether to trust remote code for tokenizer initialization.",
+            description="The path to the SLURM template file. If None, will use the default single-node/multi-node template."
         ),
-    ] = False
+    ] = None
+
+    partition: Annotated[
+        str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
+    ] = "cluster"
+
+    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
+        False
+    )
 
 
 ServerType = Literal["vllm", "openai"]
@@ -346,22 +359,6 @@ class BenchConfig(BaseConfig):
     ] = None
 
 
-class DebugModelConfig(BaseConfig):
-    """Debugging feature around model and distributed training."""
-
-    num_layers: Annotated[
-        int | None,
-        Field(description="The number of layers in the model."),
-    ] = None
-
-    random_init: Annotated[
-        bool,
-        Field(
-            description="Whether to random initialize the model.",
-        ),
-    ] = False
-
-
 class LoRAConfig(BaseConfig):
     """Configuration for LoRA (Low-Rank Adaptation)."""
 
@@ -414,15 +411,37 @@ class LoRAConfig(BaseConfig):
     ] = []
 
 
-class TrainerModelConfig(BaseConfig):
-    """Configures the model for training."""
+class ModelConfig(BaseConfig):
+    """Configures the model."""
 
-    name: Annotated[
-        str,
+    name: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
+
+    trust_remote_code: Annotated[
+        bool,
         Field(
-            description="Name or path of the HF model to use.",
+            description="Whether to trust remote code for tokenizer initialization.",
         ),
-    ] = "Qwen/Qwen3-0.6B"
+    ] = False
+
+
+class DebugModelConfig(BaseConfig):
+    """Debugging feature around model and distributed training."""
+
+    num_layers: Annotated[
+        int | None,
+        Field(description="The number of layers in the model."),
+    ] = None
+
+    random_init: Annotated[
+        bool,
+        Field(
+            description="Whether to random initialize the model.",
+        ),
+    ] = False
+
+
+class TrainerModelConfig(ModelConfig):
+    """Configures the model for training."""
 
     seq_len: Annotated[int, Field(description="The sequence length to use for the model.")] = 2048
 
@@ -471,13 +490,6 @@ class TrainerModelConfig(BaseConfig):
     reshard_after_forward: Annotated[
         bool, Field(description="Whether to reshard the model after each forward pass.")
     ] = True
-
-    trust_remote_code: Annotated[
-        bool,
-        Field(
-            description="Whether to trust remote code for model and tokenizer initialization.",
-        ),
-    ] = False
 
     dp_replicate: Annotated[
         int,
@@ -753,33 +765,7 @@ class WeightCheckpointConfig(BaseConfig):
     ] = False
 
 
-class SlurmConfig(BaseConfig):
-    """SLURM-specific configuration shared between RL and SFT."""
-
-    job_name: Annotated[str, Field(description="The SLURM job name.")] = "prime-rl"
-
-    project_dir: Annotated[
-        Path,
-        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
-    ] = Path(".")
-
-    template_path: Annotated[
-        Path | None,
-        Field(
-            description="The path to the SLURM template file. If None, will use the default single-node/multi-node template."
-        ),
-    ] = None
-
-    partition: Annotated[
-        str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
-    ] = "cluster"
-
-    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
-        False
-    )
-
-
-class CheckpointConfig(BaseConfig):
+class TrainerCheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
     interval: Annotated[
