@@ -10,6 +10,7 @@ import tomli_w
 
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.pathing import validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import get_free_port
@@ -188,6 +189,11 @@ def sft_local(config: SFTConfig):
 
 
 def sft(config: SFTConfig):
+    resuming = config.ckpt is not None and config.ckpt.resume_step is not None
+    clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
+    validate_output_dir(config.output_dir, resuming=resuming, clean=clean)
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+
     if config.slurm is not None:
         sft_slurm(config)
     else:

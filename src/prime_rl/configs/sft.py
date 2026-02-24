@@ -15,8 +15,8 @@ from prime_rl.configs.trainer import (
     CheckpointConfig,
     ConstantSchedulerConfig,
     ModelConfig,
-    OptimizerConfigType,
-    SchedulerConfigType,
+    OptimizerConfig,
+    SchedulerConfig,
     TokenizerConfig,
 )
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
@@ -106,7 +106,7 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
-DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
 class BaseDeploymentConfig(BaseModel):
@@ -146,7 +146,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     ] = None
 
 
-SFTDeploymentConfigType: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentConfig
+SFTDeploymentConfig: TypeAlias = Annotated[
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
+]
 
 
 class SFTConfig(BaseSettings):
@@ -160,7 +162,7 @@ class SFTConfig(BaseSettings):
         ),
     ] = None
 
-    deployment: Annotated[SFTDeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
+    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
 
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -169,13 +171,13 @@ class SFTConfig(BaseSettings):
     tokenizer: TokenizerConfig = TokenizerConfig()
 
     # The data configuration
-    data: Annotated[DataConfigType, Field(discriminator="type")] = SFTDataConfig()
+    data: DataConfig = SFTDataConfig()
 
     # The optimizer configuration
-    optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()
+    optim: OptimizerConfig = AdamWConfig()
 
     # The learning rate scheduler configuration
-    scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
+    scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
@@ -192,6 +194,13 @@ class SFTConfig(BaseSettings):
             description="Directory to write outputs to. Will be populated with checkpoints and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
         ),
     ] = Path("outputs")
+
+    clean_output_dir: Annotated[
+        bool,
+        Field(
+            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
+        ),
+    ] = False
 
     max_steps: Annotated[
         int | None,

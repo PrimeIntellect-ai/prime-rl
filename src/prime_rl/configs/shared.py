@@ -301,7 +301,7 @@ class ZMQTransportConfig(BaseTransportConfig):
     hwm: Annotated[int, Field(description="High water mark (max messages in queue) for ZMQ sockets.")] = 10
 
 
-TransportConfigType: TypeAlias = FileSystemTransportConfig | ZMQTransportConfig
+TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
 
 
 # -- Base model config --

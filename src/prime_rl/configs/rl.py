@@ -172,7 +172,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
-DeploymentConfigType: TypeAlias = Annotated[
+DeploymentConfig: TypeAlias = Annotated[
     SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
 
@@ -197,13 +197,20 @@ class RLConfig(BaseSettings):
     ] = None
 
     output_dir: Annotated[
-        Path | None,
+        Path,
         Field(
             description="The directory to store the outputs. Should be set to a unique directory identifying the experiment."
         ),
-    ] = None
+    ] = Path("outputs")
 
-    deployment: Annotated[DeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
+    clean_output_dir: Annotated[
+        bool,
+        Field(
+            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
+        ),
+    ] = False
+
+    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
     slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 
@@ -254,7 +261,9 @@ class RLConfig(BaseSettings):
     seq_len: Annotated[
         int | None,
         Field(
-            description="The sequence length to use. If set, will configure both trainer.model.seq_len and orchestrator.seq_len to this value. If None, each can be set independently."
+            description="Shared sequence length. Propagates to trainer.model.seq_len and orchestrator.seq_len, "
+            "but only for those not explicitly set in the config. "
+            "Explicitly set per-component values always take precedence."
         ),
     ] = None
 
@@ -271,13 +280,6 @@ class RLConfig(BaseSettings):
 
     ### Local-only fields
 
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run.",
-        ),
-    ] = True
-
     bench: Annotated[
         bool,
         Field(
@@ -291,22 +293,6 @@ class RLConfig(BaseSettings):
             description="If set, dump resolved subconfigs (trainer, orchestrator, inference) to this directory and exit without starting any processes."
         ),
     ] = None
-
-    ### Pre-validation normalization
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_deployment(cls, data):
-        # nested_model_default_partial_update=True merges the SingleNodeDeploymentConfig()
-        # default into loaded data before validation. When the user switches to multi_node,
-        # single-node-only fields (num_train_gpus etc.) get carried over and cause errors.
-        if not isinstance(data, dict):
-            return data
-        deployment = data.get("deployment")
-        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
-            for key in ("num_train_gpus", "num_infer_gpus", "num_teacher_gpus"):
-                deployment.pop(key, None)
-        return data
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
@@ -354,13 +340,7 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_output_dir(self):
-        """Auto-setup shared output directory for trainer and orchestrator. With SLURM, no default is set to avoid overwriting experiment outputs."""
-        if self.slurm is None:
-            if self.output_dir is None:
-                self.output_dir = Path("outputs")
-        else:
-            if self.output_dir is None:
-                raise ValueError("output_dir must be set explicitly when using SLURM.")
+        """Auto-setup shared output directory for trainer and orchestrator."""
         self.trainer.output_dir = self.output_dir
         self.orchestrator.output_dir = self.output_dir / "run_default"
 
@@ -483,10 +463,16 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_seq_len(self):
-        """Auto-setup shared seq_len for trainer and orchestrator."""
+        """Auto-setup shared seq_len for trainer and orchestrator.
+
+        Only propagates to components that weren't explicitly set in the config.
+        Uses model_fields_set to detect explicit assignment.
+        """
         if self.seq_len is not None:
-            self.trainer.model.seq_len = self.seq_len
-            self.orchestrator.seq_len = self.seq_len
+            if "seq_len" not in self.trainer.model.model_fields_set:
+                self.trainer.model.seq_len = self.seq_len
+            if "seq_len" not in self.orchestrator.model_fields_set:
+                self.orchestrator.seq_len = self.seq_len
 
         if self.trainer.model.seq_len < self.orchestrator.seq_len:
             raise ValueError(

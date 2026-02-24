@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, LossConfig, LossConfigType
+from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -104,7 +104,7 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
-def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
+def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
     """Masked importance sampling with KL against the inference policy, and optional masking strategies."""
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
@@ -173,7 +173,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: LossConfig) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def setup_loss_fn(loss_config: LossConfigType) -> LossFn:
+def setup_loss_fn(loss_config: LossConfig) -> LossFn:
     """Setup the loss function based on config."""
     if isinstance(loss_config, CustomLossConfig):
         custom_fn = import_object(loss_config.import_path)

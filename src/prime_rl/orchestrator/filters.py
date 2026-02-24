@@ -14,7 +14,7 @@ from typing import Protocol
 import verifiers as vf
 from loguru import logger
 
-from prime_rl.configs.orchestrator import FilterConfigType
+from prime_rl.configs.orchestrator import FilterConfig
 
 
 @dataclass
@@ -95,7 +95,7 @@ class RepetitionFilter:
         return FilterResult(detected=False)
 
 
-def setup_filter(config: FilterConfigType, vocab_size: int) -> RolloutFilter:
+def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:
     """Create a RolloutFilter from a filter config."""
     if config.type == "gibberish":
         return GibberishFilter(
@@ -114,7 +114,7 @@ def setup_filter(config: FilterConfigType, vocab_size: int) -> RolloutFilter:
     raise ValueError(f"Unknown filter type: {config.type}")
 
 
-def setup_filters(configs: list[FilterConfigType], vocab_size: int) -> list[RolloutFilter]:
+def setup_filters(configs: list[FilterConfig], vocab_size: int) -> list[RolloutFilter]:
     """Create RolloutFilters from a list of filter configs."""
     return [setup_filter(config, vocab_size) for config in configs]
 
