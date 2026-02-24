@@ -79,9 +79,9 @@ def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool) -> Non
     raise FileExistsError(
         f"Output directory '{output_dir}' already exists and is not empty. "
         f"This usually means a previous run wrote to this directory. "
-        f"To resume a previous run, set ckpt.resume_step (e.g. -1 for latest). "
-        f"To delete the existing directory and start fresh, set clean_output_dir=true. "
-        f"To avoid this error, use a unique output_dir per experiment."
+        f"To resume the latest step of the previous run, set ckpt.resume_step=-1) or --ckpt.resume-step -1 via CLI. "
+        f"To delete the existing directory and start fresh, set clean_output_dir=true or --clean-output-dir via CLI. "
+        f"Otherwise use a unique output_dir for this experiment."
     )
 
 
