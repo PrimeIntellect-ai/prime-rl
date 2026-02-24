@@ -274,10 +274,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         "reshard_after_forward": config.reshard_after_forward,
     }
 
-    if config.dp_replicate > 1:
-        hsdp_mesh = parallel_dims.world_mesh["dp_replicate", "dp_shard_cp"]
-    else:
-        hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
+    hsdp_mesh = parallel_dims.get_mesh("hsdp")
 
     dp_mod_ep_mesh: DeviceMesh | None = None
     if parallel_dims.ep_enabled:
@@ -580,7 +577,7 @@ def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
         if isinstance(transformer_block.mlp, MoE):
             parallelize_module(
                 transformer_block.mlp.experts,
-                device_mesh=parallel_dims.world_mesh["ep"],
+                device_mesh=parallel_dims.get_mesh("ep"),
                 parallelize_plan=ExpertParallel(),
             )
 
