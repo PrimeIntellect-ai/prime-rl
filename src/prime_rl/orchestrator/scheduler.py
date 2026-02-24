@@ -173,7 +173,9 @@ class Scheduler:
 
             # Signal to the trainer that this checkpoint has been consumed and older ones can be cleaned
             loaded_step_file = get_broadcast_dir(self.config.output_dir) / "LOADED_STEP"
-            loaded_step_file.write_text(str(next_ckpt_step))
+            loaded_step_tmp_file = loaded_step_file.with_suffix(".tmp")
+            loaded_step_tmp_file.write_text(str(next_ckpt_step))
+            loaded_step_tmp_file.replace(loaded_step_file)
 
             if self.lora_name is not None:
                 self.model_name = self.lora_name
