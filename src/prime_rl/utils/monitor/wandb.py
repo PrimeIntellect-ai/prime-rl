@@ -147,6 +147,11 @@ class WandbMonitor(Monitor):
         """Log distributions (no-op for W&B)."""
         pass
 
+    def flush(self, step: int) -> None:
+        if not self.is_master or not self.enabled:
+            return
+        wandb.log({}, step=step, commit=True)
+
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to W&B table."""
         if not self.is_master or not self.enabled:
