@@ -63,8 +63,6 @@ def check_gpus_available(gpu_ids: list[int]) -> None:
 
 
 def rl_local(config: RLConfig):
-    assert config.output_dir is not None
-
     # Setup logger
     logger = setup_logger(
         config.log.level or "info",
@@ -350,7 +348,6 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
     """Render the SLURM script template. Returns (script, log_message)."""
     from jinja2 import Environment, FileSystemLoader
 
-    assert config.output_dir is not None
     assert config.slurm is not None
     assert config.slurm.template_path is not None
 
@@ -408,7 +405,6 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
 
 def rl_slurm(config: RLConfig):
     assert config.slurm is not None
-    assert config.output_dir is not None
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 

@@ -192,7 +192,7 @@ class SFTTrainerConfig(BaseSettings):
     clean_output_dir: Annotated[
         bool,
         Field(
-            description="If true, delete the output directory before starting training. Required to overwrite an existing non-empty output directory when not resuming a run.",
+            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
         ),
     ] = False
 
