@@ -28,9 +28,9 @@ from vllm.logger import init_logger
 
 router = APIRouter()
 
-RolloutStatus = Literal["active", "cancelled", "completed"]
 logger = init_logger("vllm.entrypoints.openai.rollout_gateway")
 
+RolloutStatus = Literal["active", "cancelled", "completed"]
 
 class RegisterRolloutRequest(BaseModel):
     model: str
@@ -152,39 +152,28 @@ class RolloutRegistry:
             logger.info(f"rollout={rollout_id} registered dp_rank={dp_rank}/{self._dp_size}")
             return rollout_state
 
-    async def get(self, rollout_id: str) -> RolloutState | None:
-        async with self._lock:
-            return self._rollouts.get(rollout_id)
+    def _get(self, rollout_id: str) -> RolloutState:
+        try:
+            return self._rollouts[rollout_id]
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Rollout not found: {rollout_id}") from None
 
-    async def cancel(self, rollout_id: str) -> RolloutState | None:
+    async def get(self, rollout_id: str) -> RolloutState:
         async with self._lock:
-            rollout = self._rollouts.get(rollout_id)
-            if rollout is None:
-                return None
+            return self._get(rollout_id)
+
+    async def cancel(self, rollout_id: str) -> RolloutState:
+        async with self._lock:
+            rollout = self._get(rollout_id)
             rollout.status = "cancelled"
             return rollout
 
-    async def unregister(self, rollout_id: str) -> RolloutState | None:
+    async def unregister(self, rollout_id: str) -> RolloutState:
         async with self._lock:
-            rollout = self._rollouts.pop(rollout_id, None)
-        if rollout is not None:
-            await rollout.localhost_client.close()
+            rollout = self._get(rollout_id)
+            del self._rollouts[rollout_id]
+        await rollout.localhost_client.close()
         return rollout
-
-
-def _normalize_sampling_args(sampling_params: dict[str, Any]) -> dict[str, Any]:
-    args = dict(sampling_params)
-    if "max_tokens" in args:
-        if args["max_tokens"] is None:
-            args.pop("max_tokens")
-        elif "max_completion_tokens" not in args:
-            args["max_completion_tokens"] = args.pop("max_tokens")
-        else:
-            args.pop("max_tokens")
-    if "max_completion_tokens" in args and args["max_completion_tokens"] is None:
-        args.pop("max_completion_tokens")
-    return {k: v for k, v in args.items() if v is not None}
-
 
 def _get_rollout_registry(request: Request) -> RolloutRegistry:
     registry = getattr(request.app.state, "rollout_registry", None)
@@ -196,14 +185,6 @@ def _get_rollout_registry(request: Request) -> RolloutRegistry:
             ),
         )
     return registry
-
-
-def _assert_rollout(
-    rollout: RolloutState | None,
-    rollout_id: str,
-) -> None:
-    if rollout is None:
-        raise HTTPException(status_code=404, detail=f"Rollout not found: {rollout_id}")
 
 
 def _render_completion(vf_state: VfState) -> Messages:
@@ -223,20 +204,11 @@ def _render_completion(vf_state: VfState) -> Messages:
     return full_conversation[len(rollout_prompt) :]
 
 
-def _validate_rollout_accepting_requests(rollout: RolloutState, rollout_id: str) -> None:
+def _validate_rollout_status(rollout: RolloutState, rollout_id: str) -> None:
     if rollout.status == "cancelled":
         raise HTTPException(status_code=409, detail=f"Rollout cancelled: {rollout_id}")
     if rollout.status == "completed":
         raise HTTPException(status_code=409, detail=f"Rollout completed: {rollout_id}")
-    max_turns = rollout.config.max_turns
-    if max_turns > 0 and rollout.turn_count >= max_turns:
-        rollout.status = "completed"
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Rollout reached max turns ({max_turns}): {rollout_id}. Register a new rollout for additional turns."
-            ),
-        )
 
 
 
@@ -381,7 +353,6 @@ async def chat_completions(
 ):
     registry = _get_rollout_registry(request)
     rollout = await registry.get(rollout_id)
-    _assert_rollout(rollout, rollout_id)
 
     stream = body.get("stream", False)
     raw_messages = body.get("messages")
@@ -391,7 +362,7 @@ async def chat_completions(
     tools = body.get("tools")
 
     async with rollout.lock:
-        _validate_rollout_accepting_requests(rollout, rollout_id)
+        _validate_rollout_status(rollout, rollout_id)
         turn_index = rollout.turn_count
 
         logger.info(
@@ -401,7 +372,7 @@ async def chat_completions(
         if tools is not None:
             rollout.vf_state["oai_tools"] = tools
 
-        sampling_args = _normalize_sampling_args(rollout.config.sampling_params)
+        sampling_args = rollout.config.sampling_params
         sampling_args["logprobs"] = True
         extra_body = sampling_args.setdefault("extra_body", {})
         extra_body["return_token_ids"] = True
@@ -417,7 +388,7 @@ async def chat_completions(
                     sampling_args=sampling_args,
                 )
             else:
-                # Agents like OpenCode may compact (summarize) old messages or prune
+                # Agents like OpenCode may compact old messages or prune
                 # tool outputs mid-conversation, breaking the prefix assumption that
                 # the token path relies on.  Fall back to regular chat completions
                 # when that happens.
@@ -534,7 +505,6 @@ async def chat_completions(
 async def get_trajectory(rollout_id: str, request: Request):
     registry = _get_rollout_registry(request)
     rollout = await registry.get(rollout_id)
-    _assert_rollout(rollout, rollout_id)
 
     async with rollout.lock:
         vf_state = rollout.vf_state
@@ -562,7 +532,6 @@ async def get_trajectory(rollout_id: str, request: Request):
 async def cancel_rollout(rollout_id: str, request: Request):
     registry = _get_rollout_registry(request)
     rollout = await registry.cancel(rollout_id)
-    _assert_rollout(rollout, rollout_id)
     return RolloutStatusResponse(rollout_id=rollout_id, status=rollout.status)
 
 
@@ -570,5 +539,4 @@ async def cancel_rollout(rollout_id: str, request: Request):
 async def unregister_rollout(rollout_id: str, request: Request):
     registry = _get_rollout_registry(request)
     rollout = await registry.unregister(rollout_id)
-    _assert_rollout(rollout, rollout_id)
     return RolloutStatusResponse(rollout_id=rollout_id, status=rollout.status)
