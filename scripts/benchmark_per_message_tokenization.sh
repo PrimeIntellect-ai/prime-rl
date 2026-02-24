@@ -22,7 +22,7 @@ echo "Run 1: BASELINE (no per-message tokenization)"
 echo "============================================"
 uv run rl @ "$CONFIG" \
     --wandb.name baseline \
-    --inference.per_message_tokenization false
+    --no-inference.per-message-tokenization
 
 echo ""
 echo "============================================"
@@ -30,4 +30,4 @@ echo "Run 2: PER-MESSAGE TOKENIZATION"
 echo "============================================"
 uv run rl @ "$CONFIG" \
     --wandb.name per-message-tokenization \
-    --inference.per_message_tokenization true
+    --inference.per-message-tokenization
