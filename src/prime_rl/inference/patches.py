@@ -203,3 +203,145 @@ def monkey_patch_tokenize_params_validation():
 
     TokenizeParams._token_len_check = _patched_token_len_check
     TokenizeParams._text_len_check = _patched_text_len_check
+
+
+def monkey_patch_hermes_tool_parser_thread_safety():
+    """Patch Hermes2ProToolParser to cache tokenizer encode/decode results.
+
+    The original __init__ calls tokenizer.encode() and tokenizer.decode() on
+    every instantiation. Under concurrent load, the shared HuggingFace tokenizer's
+    Rust backend panics with ``RuntimeError: Already borrowed`` because multiple
+    threads mutably borrow the same internal state simultaneously.
+
+    Fix: run the first __init__ (which calls encode/decode) under a lock, cache
+    the results, and reuse them for all subsequent instantiations without ever
+    touching the tokenizer again.
+    """
+    import threading
+
+    import regex as re
+    from vllm.tool_parsers.abstract_tool_parser import ToolParser
+    from vllm.tool_parsers.hermes_tool_parser import Hermes2ProToolParser
+
+    _original_init = Hermes2ProToolParser.__init__
+    _cache: dict[int, dict] = {}
+    _lock = threading.Lock()
+
+    def _patched_init(self, tokenizer):
+        from vllm.tokenizers.mistral import MistralTokenizer
+
+        # Resolve the actual tokenizer that __init__ will use for encode/decode
+        actual_tokenizer = tokenizer.tokenizer if isinstance(tokenizer, MistralTokenizer) else tokenizer
+        key = id(actual_tokenizer)
+
+        if key in _cache:
+            # Fast path: skip encode/decode entirely, set up instance from cache
+            ToolParser.__init__(self, tokenizer)
+            if isinstance(tokenizer, MistralTokenizer):
+                self.model_tokenizer = tokenizer.tokenizer
+            self.current_tool_name_sent = False
+            self.prev_tool_call_arr = []
+            self.current_tool_id = -1
+            self.streamed_args_for_tool = []
+            self.tool_call_start_token = "<tool_call>"
+            self.tool_call_end_token = "</tool_call>"
+            self.tool_call_regex = re.compile(r"<tool_call>(.*?)</tool_call>|<tool_call>(.*)", re.DOTALL)
+            self.scratch_pad_regex = re.compile(r"<scratch_pad>(.*?)</scratch_pad>", re.DOTALL)
+            cached = _cache[key]
+            self.tool_call_start_token_ids = cached["start_ids"]
+            self.tool_call_end_token_ids = cached["end_ids"]
+            self.tool_call_start_token_array = cached["start_array"]
+            self.tool_call_end_token_array = cached["end_array"]
+            self.buffered_delta_text = ""
+            return
+
+        # Slow path: first instantiation for this tokenizer, run under lock
+        with _lock:
+            if key in _cache:
+                # Another thread populated it while we waited
+                _patched_init(self, tokenizer)
+                return
+            _original_init(self, tokenizer)
+            _cache[key] = {
+                "start_ids": self.tool_call_start_token_ids,
+                "end_ids": self.tool_call_end_token_ids,
+                "start_array": self.tool_call_start_token_array,
+                "end_array": self.tool_call_end_token_array,
+            }
+
+    Hermes2ProToolParser.__init__ = _patched_init
+
+
+def monkey_patch_minimax_m2_for_lora():
+    """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
+
+    These patches are only needed when using LoRA with MiniMax M2 but are safe
+    to apply unconditionally (verified with non-LoRA runs). We apply them at
+    import time because the worker __init__ runs before the vLLM config is
+    available, so we can't check if LoRA is enabled.
+
+    Problem 1 — Gate dtype mismatch:
+        vLLM's MiniMaxM2MoE creates the gate (router) with params_dtype=float32
+        and casts inputs to float32. When LoRA is enabled, vLLM wraps ALL
+        ReplicatedLinear layers (including the gate) with LoRA support. Even
+        though our adapter has no gate LoRA weights, the LoRA Triton kernel
+        still runs for all wrapped layers when any adapter is active — and it
+        asserts inputs are float16/bfloat16. Qwen3 MoE doesn't have this
+        problem because its gate uses the model dtype.
+        Fix: recreate the gate in model dtype and remove the float32 cast.
+        FusedMoE already has router_logits_dtype=float32, so routing precision
+        is preserved inside the expert dispatch.
+
+    Problem 2 — Adapter key naming mismatch:
+        PrimeRL saves adapter keys using its internal naming convention
+        (mlp.experts.{j}.gate_proj/down_proj/up_proj), which matches Qwen3 MoE
+        but not MiniMax M2. vLLM's MiniMax M2 model expects HF-style keys
+        (block_sparse_moe.experts.{j}.w1/w2/w3). For full model weights this
+        is handled by vLLM's load_weights(), but LoRA adapters are loaded
+        through a separate path (LoRAModel.from_local_checkpoint) that doesn't
+        have model-specific key translation.
+        Fix: set hf_to_vllm_mapper on the model class so vLLM remaps adapter
+        keys during LoRA loading. This attribute is only read by _load_adapter
+        in the LoRA worker manager — it has no effect without LoRA.
+    """
+    from vllm.model_executor.models.minimax_m2 import MiniMaxM2ForCausalLM, MiniMaxM2MoE
+    from vllm.model_executor.models.utils import WeightsMapper
+
+    # --- Gate dtype fix (only matters with LoRA, safe without) ---
+    _original_init = MiniMaxM2MoE.__init__
+
+    def _patched_init(self, config, quant_config=None, prefix=""):
+        _original_init(self, config, quant_config, prefix)
+        from vllm.model_executor.layers.linear import ReplicatedLinear
+
+        self.gate = ReplicatedLinear(
+            config.hidden_size,
+            config.num_local_experts,
+            bias=False,
+            quant_config=None,
+            prefix=f"{prefix}.gate",
+        )
+
+    def _patched_forward(self, hidden_states):
+        from vllm.distributed import tensor_model_parallel_all_reduce
+
+        num_tokens, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        router_logits, _ = self.gate(hidden_states)
+        final_hidden_states = self.experts(hidden_states=hidden_states, router_logits=router_logits)
+        if self.tp_size > 1:
+            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+        return final_hidden_states.view(num_tokens, hidden_dim)
+
+    MiniMaxM2MoE.__init__ = _patched_init
+    MiniMaxM2MoE.forward = _patched_forward
+
+    # --- Adapter key remapping (only read by vLLM's LoRA adapter loader) ---
+    MiniMaxM2ForCausalLM.hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_substr={
+            ".mlp.experts.": ".block_sparse_moe.experts.",
+            ".gate_proj.": ".w1.",
+            ".down_proj.": ".w2.",
+            ".up_proj.": ".w3.",
+        },
+    )

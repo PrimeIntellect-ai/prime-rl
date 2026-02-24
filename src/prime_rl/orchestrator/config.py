@@ -720,12 +720,6 @@ class OrchestratorConfig(BaseSettings):
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 
-    # Whether to reset inference weights to base model when starting from scratch
-    reload_weights_on_start: Annotated[
-        bool,
-        Field(description="Whether to reset inference weights to the base model when starting from scratch."),
-    ] = True
-
     # The validation configuration
     val: ValConfig | None = None
 
@@ -830,6 +824,13 @@ class OrchestratorConfig(BaseSettings):
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
+
+    use_token_client: Annotated[
+        bool,
+        Field(
+            description="Whether to use the token-in-token-out (TITO) client for training across all environments. WARNING: Only use this if your environment has a linear history and the chat template has the extension property (i.e. no tokens are ever removed or inserted by the chat template)"
+        ),
+    ] = True
 
     @model_validator(mode="after")
     def validate_unique_filter_types(self):

@@ -82,7 +82,7 @@ class JsonFileSink:
 class InterceptHandler(logging.Handler):
     """Intercept standard logging library and routes to our prime-rl logger with specified prefix."""
 
-    def __init__(self, prefix: str):
+    def __init__(self, prefix: str | None):
         super().__init__()
         self.prefix = prefix
 
@@ -98,7 +98,10 @@ class InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(level, f"[{self.prefix}] {record.getMessage()}")
+        message = record.getMessage()
+        if self.prefix is not None:
+            message = f"[{self.prefix}] {message}"
+        logger.opt(depth=depth, exception=record.exc_info).log(level, message)
 
 
 def setup_logger(

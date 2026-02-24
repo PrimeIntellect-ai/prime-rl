@@ -1,4 +1,5 @@
 import asyncio
+import multiprocessing as mp
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -43,13 +44,13 @@ from prime_rl.orchestrator.vf_utils import (
     generate,
     get_completion_len,
     get_seq_len,
+    intercept_vf_logging,
     setup_env_client,
     spawn_env_server,
     wait_for_env_servers,
 )
 from prime_rl.utils.client import (
     init_nccl_broadcast,
-    reload_weights,
     setup_inference_pool,
 )
 from prime_rl.utils.heartbeat import Heartbeat
@@ -76,7 +77,7 @@ async def orchestrate(config: OrchestratorConfig):
         log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
-    vf.setup_logging(level="CRITICAL")
+    intercept_vf_logging(logger="verifiers.workers", level=config.log.vf_level)  # show logs from env clients
     logger.info("Starting orchestrator")
 
     event_loop_lag_monitor = EventLoopLagMonitor()
@@ -102,7 +103,13 @@ async def orchestrate(config: OrchestratorConfig):
         install_env(env_id)
 
     # Setup inference pool (handles both static and elastic modes)
-    inference_pool = await setup_inference_pool(config.client, model_name=config.model.name)
+    client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
+    if config.use_token_client:
+        logger.warning(
+            "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a linear "
+            "history and the chat template has the extension property."
+        )
+    inference_pool = await setup_inference_pool(config.client, model_name=config.model.name, client_type=client_type)
 
     # Setup teacher inference pool if configured
     if config.teacher_model:
@@ -156,28 +163,34 @@ async def orchestrate(config: OrchestratorConfig):
         f"Loading {len(config.env)} training environment(s) ({', '.join(env.name or env.id for env in config.env)})"
     )
     env_ids = [strip_env_version(env.id) for env in config.env]
+    train_env_names = [env.name or env_id for env_id, env in zip(env_ids, config.env)]
     train_env_group = vf.EnvGroup(
         envs=[vf.load_environment(env_id, **env.args) for env_id, env in zip(env_ids, config.env)],
-        env_names=[env.name or env_id for env_id, env in zip(env_ids, config.env)],
+        env_names=train_env_names,
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
 
     train_env_addresses = []
-    for env_id, env, env_name in zip(env_ids, config.env, train_env_group.env_names):
+    env_processes: list[mp.Process] = []
+    for env_id, env, env_name in zip(env_ids, config.env, train_env_names):
         if env.address is None:
-            address = spawn_env_server(
+            address, process = spawn_env_server(
                 env_id=env_id,
                 env_args=env.args,
                 extra_env_kwargs=env.extra_env_kwargs,
                 log_level="CRITICAL",
                 log_file=(get_log_dir(config.output_dir) / "train" / f"{env_name}.log").as_posix(),
                 log_file_level=config.log.vf_level,
+                json_logging=config.log.json_logging,
             )
+            env_processes.append(process)
         else:
             address = env.address
         logger.info(f"Connecting train environment {env_name} to server at {address}")
         train_env_addresses.append(address)
-    train_env_clients = [setup_env_client(address) for address in train_env_addresses]
+    train_env_clients = [
+        setup_env_client(address=address, name=name) for name, address in zip(train_env_names, train_env_addresses)
+    ]
 
     logger.info("Waiting for train environment servers to be ready")
     await wait_for_env_servers(train_env_clients)
@@ -197,20 +210,24 @@ async def orchestrate(config: OrchestratorConfig):
 
         for env_id, env, eval_env_name in zip(env_ids, config.eval.env, eval_env_names):
             if env.address is None:
-                address = spawn_env_server(
+                address, process = spawn_env_server(
                     env_id=env_id,
                     env_args=env.args,
                     extra_env_kwargs=env.extra_env_kwargs,
                     log_level="CRITICAL",
                     log_file=(get_log_dir(config.output_dir) / "eval" / f"{eval_env_name}.log").as_posix(),
                     log_file_level=config.log.vf_level,
+                    json_logging=config.log.json_logging,
                 )
+                env_processes.append(process)
             else:
                 address = env.address
             logger.info(f"Connecting eval environment {eval_env_name} to server at {address}")
             eval_env_addresses.append(address)
 
-        eval_env_clients = [setup_env_client(address) for address in eval_env_addresses]
+        eval_env_clients = [
+            setup_env_client(address=address, name=name) for name, address in zip(eval_env_names, eval_env_addresses)
+        ]
 
         logger.info("Waiting for eval environment servers to be ready")
         await wait_for_env_servers(eval_env_clients)
@@ -313,14 +330,7 @@ async def orchestrate(config: OrchestratorConfig):
         lora_name = config.model.lora.name if config.model.lora else None
         await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
-        if config.reload_weights_on_start:
-            if config.model.lora is None:
-                logger.info("Training from scratch. Resetting weights to base model")
-                await reload_weights(inference_pool.admin_clients)
-            else:
-                logger.info("Training from scratch. Skipping base weight reload because LoRA is enabled")
-        else:
-            logger.info("Training from scratch. Skipping base weight reload")
+        logger.info("Training from scratch")
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
@@ -487,12 +497,14 @@ async def orchestrate(config: OrchestratorConfig):
         train_examples: list[TrainingSample] = []
         rollout_prefill_lens: list[int] = []
         rollout_decode_lens: list[int] = []
+        rollout_samples_per_rollout: list[int] = []
         num_prefill_tokens = 0
         num_decode_tokens = 0
         for rollout, advantage, samples in zip(train_rollouts, advantages, results):
             rollout_prefill_tokens = 0
             rollout_decode_tokens = 0
             if samples is not None:
+                rollout_samples_per_rollout.append(len(samples))
                 for sample in samples:
                     sample.advantage = advantage
                     sample.reward = rollout["reward"]
@@ -501,6 +513,8 @@ async def orchestrate(config: OrchestratorConfig):
                     rollout_decode_tokens += sample_decode_tokens
                     rollout_prefill_tokens += sample_prefill_tokens
                     train_examples.append(sample)
+            else:
+                rollout_samples_per_rollout.append(0)
             rollout_prefill_lens.append(rollout_prefill_tokens)
             rollout_decode_lens.append(rollout_decode_tokens)
             num_prefill_tokens += rollout_prefill_tokens
@@ -568,6 +582,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
                 "prefill_len": rollout_prefill_lens,
                 "decode_len": rollout_decode_lens,
+                "samples_per_rollout": rollout_samples_per_rollout,
                 "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
                 "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
                 "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
@@ -597,12 +612,10 @@ async def orchestrate(config: OrchestratorConfig):
         throughput = num_tokens / generate_completions_time
 
         # Compute solve all and none tensors
-        solve_all = (
-            results_df.groupby("example_id")
-            .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
-            .mean()
-        )
-        solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
+        problem_indices = results_df.index // config.rollouts_per_example
+        reward_sum_per_problem = results_df.groupby(problem_indices).reward.sum()
+        solve_all = (reward_sum_per_problem == config.rollouts_per_example).mean()
+        solve_none = (reward_sum_per_problem == 0).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
         step_time = time.perf_counter() - step_start_time
@@ -630,6 +643,10 @@ async def orchestrate(config: OrchestratorConfig):
             "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
             "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
             "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
+            # Seqs per rollout metrics
+            "samples_per_rollout/mean": results_df.groupby("example_id").samples_per_rollout.mean().mean(),
+            "samples_per_rollout/max": results_df.groupby("example_id").samples_per_rollout.mean().max(),
+            "samples_per_rollout/min": results_df.groupby("example_id").samples_per_rollout.mean().min(),
             # Turn metrics
             "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
             "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
@@ -774,6 +791,14 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
+
+    # Shutdown env processes
+    for process in env_processes:
+        process.terminate()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
 
     logger.success("Orchestrator finished.")
 

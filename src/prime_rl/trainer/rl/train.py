@@ -505,6 +505,12 @@ def train(config: RLTrainerConfig):
         }
         monitor.log(optim_metrics, step=progress.step)
 
+        # Compute derived metrics
+        entropy_mean = tensor_stats.get("entropy/mean", 0.0)
+        mismatch_kl_mean = tensor_stats.get("mismatch_kl/mean")
+        if mismatch_kl_mean is not None and entropy_mean > 0:
+            tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
+
         # Log tensor stats
         tensor_stats["step"] = progress.step
         monitor.log(tensor_stats, step=progress.step)

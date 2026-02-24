@@ -30,7 +30,6 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
 from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
 
 
@@ -214,9 +213,6 @@ class CheckpointManager:
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
-        self.logger.debug(
-            f"Signatures after loading training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
-        )
 
     def save(
         self,
@@ -230,9 +226,6 @@ class CheckpointManager:
         """Save the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        self.logger.debug(
-            f"Signatures before saving training checkpoint: model={get_module_signature(model, compress=True)}, optimizers={', '.join(get_optimizer_signature(optimizer, compress=True) for optimizer in optimizers)}"
-        )
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
         bisect.insort(self.ckpt_steps, step)
@@ -305,6 +298,12 @@ class WeightCheckpointManager:
         """Get the path to write the weight checkpoint for a given step."""
         return get_step_path(self.weights_dir, step)
 
+    def mark_stable(self, step: int) -> None:
+        """Write STABLE file to indicate weight checkpoint is complete."""
+        if self.world.is_master:
+            step_path = self.get_step_path(step)
+            (step_path / "STABLE").touch()
+
     def save_to_path(
         self,
         path: Path,
@@ -314,44 +313,45 @@ class WeightCheckpointManager:
         tokenizer: PreTrainedTokenizer,
     ):
         """Save HF-compatible weight checkpoint to a given path."""
-        path.mkdir(parents=True, exist_ok=True)
-        start_time = time.perf_counter()
+        if self.world.is_master:
+            path.mkdir(parents=True, exist_ok=True)
+            start_time = time.perf_counter()
 
-        self.logger.debug(f"Saving weight checkpoint to {path}")
-        # Suppress torch.distributed warnings during checkpoint saving
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
-            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
+            self.logger.debug(f"Saving weight checkpoint to {path}")
+            # Suppress torch.distributed warnings during checkpoint saving
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+                warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
-            # Save weights
-            save_state_dict(state_dict, path, self.config.save_format, self.config.save_sharded)
+                # Save weights
+                save_state_dict(state_dict, path, self.config.save_format, self.config.save_sharded)
 
-            # Save model config, generation arguments and tokenizer
-            model.config.save_pretrained(path)
-            if model.generation_config:
-                # training sets use_cache=False which can conflict with
-                # cache_implementation — save with use_cache=True without
-                # mutating the model's config
-                from copy import deepcopy
+                # Save model config, generation arguments and tokenizer
+                model.config.save_pretrained(path)
+                if model.generation_config:
+                    # training sets use_cache=False which can conflict with
+                    # cache_implementation — save with use_cache=True without
+                    # mutating the model's config
+                    from copy import deepcopy
 
-                gen_config = deepcopy(model.generation_config)
-                gen_config.use_cache = True
-                gen_config.save_pretrained(path)
-            tokenizer.save_pretrained(path)
+                    gen_config = deepcopy(model.generation_config)
+                    gen_config.use_cache = True
+                    gen_config.save_pretrained(path)
+                tokenizer.save_pretrained(path)
 
-        if self.config.save_adapter_separately and lora_state_dict is not None:
-            adapter_path = path / "lora_adapters"
-            adapter_path.mkdir(parents=True, exist_ok=True)
-            torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
-            if self.lora_config:
-                save_lora_config(
-                    model,
-                    adapter_path,
-                    rank=self.lora_config.rank,
-                    alpha=self.lora_config.alpha,
-                    dropout=self.lora_config.dropout,
-                )
-        self.logger.debug(f"Saved weight checkpoint to {path} in {time.perf_counter() - start_time:.2f} seconds")
+            if self.config.save_adapter_separately and lora_state_dict is not None:
+                adapter_path = path / "lora_adapters"
+                adapter_path.mkdir(parents=True, exist_ok=True)
+                torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
+                if self.lora_config:
+                    save_lora_config(
+                        model,
+                        adapter_path,
+                        rank=self.lora_config.rank,
+                        alpha=self.lora_config.alpha,
+                        dropout=self.lora_config.dropout,
+                    )
+            self.logger.debug(f"Saved weight checkpoint to {path} in {time.perf_counter() - start_time:.2f} seconds")
 
     def save(
         self,
@@ -400,10 +400,8 @@ class WeightCheckpointManager:
             self.logger.debug(f"Reverted to HF hub format in {time.perf_counter() - start_time:.2f} seconds")
 
         # Save weight checkpoint on master rank
-        if self.world.is_master:
-            self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
-            # Write STABLE file to indicate checkpoint is complete (for eval to safely read)
-            (step_path / "STABLE").touch()
+        self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
+        self.mark_stable(step)
         bisect.insort(self.ckpt_steps, step)
 
     def maybe_clean(self) -> None:
