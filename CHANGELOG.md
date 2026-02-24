@@ -74,3 +74,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`[slurm]` (SFT)**: Added SLURM configuration with `job_name`, `project_dir`, `template_path`, `partition`, `dry_run`. When present, `uv run sft` generates and submits an sbatch script instead of running locally (2026-02-23)
 - **`hf_hub_offline` (RL/SFT SLURM)**: Removed. `HF_HUB_OFFLINE=1` is now hardcoded in the multi-node SLURM templates (2026-02-23)
 - **SLURM templates**: Moved from `src/prime_rl/slurm/` to `src/prime_rl/templates/` and renamed to `single_node_rl.sbatch.j2`, `multi_node_rl.sbatch.j2`, `single_node_sft.sbatch.j2`, `multi_node_sft.sbatch.j2` (2026-02-23)
+- **Entrypoints**: Moved `rl` and `sft` entrypoints from `prime_rl.rl` / `prime_rl.sft` to `prime_rl.entrypoints.rl` / `prime_rl.entrypoints.sft`. No change to CLI usage (`uv run rl`, `uv run sft`) (2026-02-24)
