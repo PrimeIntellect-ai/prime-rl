@@ -176,11 +176,18 @@ class RLConfig(BaseSettings):
     ] = None
 
     output_dir: Annotated[
-        Path | None,
+        Path,
         Field(
             description="The directory to store the outputs. Should be set to a unique directory identifying the experiment."
         ),
-    ] = None
+    ] = Path("outputs")
+
+    clean_output_dir: Annotated[
+        bool,
+        Field(
+            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
+        ),
+    ] = False
 
     deployment: Annotated[DeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
 
@@ -252,13 +259,6 @@ class RLConfig(BaseSettings):
 
     ### Local-only fields
 
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run.",
-        ),
-    ] = True
-
     bench: Annotated[
         bool,
         Field(
@@ -319,13 +319,7 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_output_dir(self):
-        """Auto-setup shared output directory for trainer and orchestrator. With SLURM, no default is set to avoid overwriting experiment outputs."""
-        if self.slurm is None:
-            if self.output_dir is None:
-                self.output_dir = Path("outputs")
-        else:
-            if self.output_dir is None:
-                raise ValueError("output_dir must be set explicitly when using SLURM.")
+        """Auto-setup shared output directory for trainer and orchestrator."""
         self.trainer.output_dir = self.output_dir
         self.orchestrator.output_dir = self.output_dir / "run_default"
 
