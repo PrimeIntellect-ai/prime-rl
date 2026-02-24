@@ -403,7 +403,9 @@ class CosineSchedulerConfig(BaseModel):
     min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
 
 
-SchedulerConfigType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig
+SchedulerConfig: TypeAlias = Annotated[
+    ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig, Field(discriminator="type")
+]
 
 
 class BaseOptimizerConfig(BaseModel):
@@ -437,7 +439,7 @@ class MuonConfig(BaseOptimizerConfig):
     ] = 0.95
 
 
-OptimizerConfigType: TypeAlias = SGDConfig | AdamWConfig | MuonConfig
+OptimizerConfig: TypeAlias = Annotated[SGDConfig | AdamWConfig | MuonConfig, Field(discriminator="type")]
 
 
 class WeightCheckpointConfig(BaseConfig):
@@ -463,6 +465,32 @@ class WeightCheckpointConfig(BaseConfig):
             description="Whether to save LoRA adapters separately before merging into full model weights.",
         ),
     ] = False
+
+
+class SlurmConfig(BaseConfig):
+    """SLURM-specific configuration shared between RL and SFT."""
+
+    job_name: Annotated[str, Field(description="The SLURM job name.")] = "prime-rl"
+
+    project_dir: Annotated[
+        Path,
+        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
+    ] = Path(".")
+
+    template_path: Annotated[
+        Path | None,
+        Field(
+            description="The path to the SLURM template file. If None, will use the default single-node/multi-node template."
+        ),
+    ] = None
+
+    partition: Annotated[
+        str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
+    ] = "cluster"
+
+    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
+        False
+    )
 
 
 class CheckpointConfig(BaseConfig):

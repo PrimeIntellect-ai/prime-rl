@@ -8,7 +8,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
-from prime_rl.trainer.config import OptimizerConfigType
+from prime_rl.trainer.config import OptimizerConfig
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
@@ -110,7 +110,7 @@ class CPUOffloadOptimizer:
 
 
 def setup_optimizer(
-    config: OptimizerConfigType,
+    config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     lora: bool = False,
@@ -140,7 +140,7 @@ def setup_optimizer(
 
 
 def _create_optimizer(
-    config: OptimizerConfigType,
+    config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     lr: float | None = None,
@@ -169,7 +169,7 @@ def _create_optimizer(
 
 
 def _create_muon_optimizer(
-    config: OptimizerConfigType,
+    config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     lr: float | None = None,
@@ -252,7 +252,7 @@ def _create_muon_optimizer(
 
 
 class MultiLoRAOptimizer:
-    def __init__(self, config: OptimizerConfigType, parallel_dims: ParallelDims):
+    def __init__(self, config: OptimizerConfig, parallel_dims: ParallelDims):
         self.config = config
         self.parallel_dims = parallel_dims
         self.multi_run_manager = get_multi_run_manager()
@@ -309,5 +309,5 @@ class MultiLoRAOptimizer:
             return self.optimizers[idx].param_groups[0]["lr"]
 
 
-def setup_multi_optimizer(config: OptimizerConfigType, parallel_dims: ParallelDims) -> MultiLoRAOptimizer:
+def setup_multi_optimizer(config: OptimizerConfig, parallel_dims: ParallelDims) -> MultiLoRAOptimizer:
     return MultiLoRAOptimizer(config, parallel_dims)

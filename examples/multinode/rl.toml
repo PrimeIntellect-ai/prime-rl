@@ -1,12 +1,14 @@
-job_name = "hendrycks-math"
-output_dir = "outputs/hendrycks-math"
-
-num_train_nodes = 1
-num_infer_nodes = 1
-
+output_dir = "outputs/rl-math-moe"
 max_steps = 500
 seq_len = 2048
 
+[slurm]
+job_name = "hendrycks-math-rl-moe"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
 
 [log]
 level = "debug"
@@ -15,11 +17,25 @@ level = "debug"
 project = "hendrycks-math-debug"
 name = "hendrycks-math"
 
+[weight_broadcast]
+type = "nccl"
+
 [model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+optim_cpu_offload = true
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.ac]
+freq = 1
 
 [orchestrator]
-batch_size = 128
+batch_size = 512
 rollouts_per_example = 16
 
 [orchestrator.sampling]
@@ -34,8 +50,6 @@ args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "defau
 easy_threshold = 1.0
 hard_threshold = 0.0
 
-[trainer]
-
 [inference.parallel]
-tp = 1
-dp = 8
+tp = 4
+dp = 2

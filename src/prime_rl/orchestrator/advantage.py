@@ -5,7 +5,7 @@ import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from prime_rl.orchestrator.config import AdvantageConfigType, CustomAdvantageConfig
+from prime_rl.orchestrator.config import AdvantageConfig, CustomAdvantageConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -45,7 +45,7 @@ def default_advantage_fn(inputs: AdvantageInputs, length_weighted_mean: bool = F
     return AdvantageOutputs(advantages=inputs.rewards - baseline)
 
 
-def setup_advantage_fn(config: AdvantageConfigType) -> AdvantageFn:
+def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
     """Setup advantage function from config."""
     if isinstance(config, CustomAdvantageConfig):
         custom_fn = import_object(config.import_path)
@@ -66,7 +66,7 @@ def compute_advantages(
     rewards: list[float],
     completion_lengths: list[int],
     samples_per_problem: int,
-    advantage_config: AdvantageConfigType | None,
+    advantage_config: AdvantageConfig | None,
 ) -> list[float]:
     """
     Computes advantages from a flattened list of rewards, grouped by problem.
@@ -75,7 +75,7 @@ def compute_advantages(
         rewards: Flattened list of rewards where first `samples_per_problem` rewards are for the first problem
         completion_lengths: List of completion lengths for each reward
         samples_per_problem: Number of samples (and thus, rewards) per problem
-        advantage_config: Configuration for advantage computation (AdvantageConfig or CustomAdvantageConfig)
+        advantage_config: Configuration for advantage computation (DefaultAdvantageConfig or CustomAdvantageConfig)
     """
     if not advantage_config:
         return rewards

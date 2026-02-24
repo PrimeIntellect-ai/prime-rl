@@ -4,10 +4,10 @@
 #SBATCH --nodes={{ num_nodes }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
-#SBATCH --partition=cluster
+#SBATCH --partition={{ partition }}
 #SBATCH --exclusive                 # Get the ENTIRE node exclusively
-#SBATCH --output=/shared/logs/job_%j.log
-#SBATCH --error=/shared/logs/job_%j.log
+#SBATCH --output={{ output_dir }}/job_%j.log
+#SBATCH --error={{ output_dir }}/job_%j.log
 
 # Configs
 export NUM_NODES={{ num_nodes }}
@@ -57,7 +57,7 @@ srun bash -c '
 
     TRAIN_NODE_RANK=$SLURM_PROCID
 
-    export HF_HUB_OFFLINE={{ 1 if hf_hub_offline else 0 }}
+    export HF_HUB_OFFLINE=1
 
     # This is required for compilation to work correctly
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"

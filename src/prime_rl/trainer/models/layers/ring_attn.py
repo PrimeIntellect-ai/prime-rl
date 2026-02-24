@@ -15,6 +15,7 @@ def _fa3_varlen_forward(
     max_seqlen_k: int,
     softmax_scale: float,
     causal: bool,
+    window_size: tuple[int, int] = (-1, -1),
 ) -> tuple[torch.Tensor, torch.Tensor]:
     from flash_attn_interface import _flash_attn_forward
 
@@ -32,6 +33,8 @@ def _fa3_varlen_forward(
             "causal": causal,
         }
     )
+    if "window_size" in params:
+        params["window_size"] = window_size
     out, lse, _, _ = _flash_attn_forward(**params)
     return out, lse
 
@@ -52,6 +55,7 @@ def _fa3_varlen_backward(
     dv: torch.Tensor,
     softmax_scale: float,
     causal: bool,
+    window_size: tuple[int, int] = (-1, -1),
 ) -> None:
     from flash_attn_interface import _flash_attn_backward
 
@@ -75,6 +79,8 @@ def _fa3_varlen_backward(
             "causal": causal,
         }
     )
+    if "window_size" in params:
+        params["window_size"] = window_size
     _flash_attn_backward(**params)
 
 
@@ -100,6 +106,8 @@ class _RingFA3Varlen(torch.autograd.Function):
         heads_k_stride: int,
         causal: bool,
         group_name: str,
+        window_size_left: int = -1,
+        window_size_right: int = -1,
     ) -> torch.Tensor:
         group = dist.group.WORLD
         for pg in dist.distributed_c10d._world.pg_map:
@@ -108,6 +116,7 @@ class _RingFA3Varlen(torch.autograd.Function):
                 break
 
         local_k_slice = slice(local_k_slice_start, local_k_slice_stop)
+        window_size = (window_size_left, window_size_right)
         softmax_scale = q.shape[-1] ** (-0.5)
         out_list = []
         lse_list = []
@@ -146,6 +155,7 @@ class _RingFA3Varlen(torch.autograd.Function):
                 max_seqlen_k=max_seqlen_k,
                 softmax_scale=softmax_scale,
                 causal=causal,
+                window_size=window_size,
             )
             out_list.append(out_i)
             lse_list.append(lse_i)
@@ -161,6 +171,7 @@ class _RingFA3Varlen(torch.autograd.Function):
         ctx.heads_k_stride = heads_k_stride
         ctx.causal = causal
         ctx.group_name = group_name
+        ctx.window_size = window_size
         return out
 
     @staticmethod
@@ -234,6 +245,7 @@ class _RingFA3Varlen(torch.autograd.Function):
                 dv=dv_i,
                 softmax_scale=ctx.softmax_scale,
                 causal=causal,
+                window_size=ctx.window_size,
             )
 
             if heads_k_stride != nheads_k:
@@ -250,8 +262,9 @@ class _RingFA3Varlen(torch.autograd.Function):
                 dv[:, i : i + heads_k_stride] = dv_i
 
         # Grads for: q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
-        #            local_k_slice_start, local_k_slice_stop, heads_k_stride, causal, group_name
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None
+        #            local_k_slice_start, local_k_slice_stop, heads_k_stride, causal, group_name,
+        #            window_size_left, window_size_right
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None
 
 
 def ring_fa3_varlen_func(
@@ -266,6 +279,7 @@ def ring_fa3_varlen_func(
     causal: bool,
     heads_k_stride: int,
     group: dist.ProcessGroup,
+    window_size: tuple[int, int] = (-1, -1),
 ) -> torch.Tensor:
     return _RingFA3Varlen.apply(
         q,
@@ -280,4 +294,6 @@ def ring_fa3_varlen_func(
         heads_k_stride,
         causal,
         group.group_name,
+        window_size[0],
+        window_size[1],
     )
