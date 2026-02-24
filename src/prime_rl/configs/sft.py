@@ -3,7 +3,13 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from prime_rl.trainer.config import (
+from prime_rl.configs.shared import (
+    HeartbeatConfig,
+    LogConfig,
+    SlurmConfig,
+    WandbConfig,
+)
+from prime_rl.configs.trainer import (
     AdamWConfig,
     BenchConfig,
     CheckpointConfig,
@@ -11,10 +17,8 @@ from prime_rl.trainer.config import (
     ModelConfig,
     OptimizerConfig,
     SchedulerConfig,
-    SlurmConfig,
     TokenizerConfig,
 )
-from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -147,7 +151,7 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class SFTTrainerConfig(BaseSettings):
+class SFTConfig(BaseSettings):
     """Configures the SFT trainer"""
 
     slurm: Annotated[

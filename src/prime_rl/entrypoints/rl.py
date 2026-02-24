@@ -11,7 +11,7 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
-from prime_rl.rl_config import RLConfig
+from prime_rl.configs.rl import RLConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process

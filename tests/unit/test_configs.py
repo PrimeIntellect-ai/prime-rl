@@ -6,18 +6,18 @@ import pytest
 import tomli_w
 from pydantic import BaseModel, Field, ValidationError
 
-from prime_rl.inference.config import InferenceConfig
-from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.rl_config import RLConfig
-from prime_rl.trainer.rl.config import RLTrainerConfig
-from prime_rl.trainer.sft.config import SFTTrainerConfig
+from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.rl import RLConfig
+from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, parse_argv
 
 # All config config classes
 CONFIG_CLASSES = [
     RLConfig,
-    RLTrainerConfig,
-    SFTTrainerConfig,
+    TrainerConfig,
+    SFTConfig,
     OrchestratorConfig,
     InferenceConfig,
 ]

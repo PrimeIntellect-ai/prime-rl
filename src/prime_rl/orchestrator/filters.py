@@ -14,7 +14,7 @@ from typing import Protocol
 import verifiers as vf
 from loguru import logger
 
-from prime_rl.orchestrator.config import FilterConfig
+from prime_rl.configs.orchestrator import FilterConfig
 
 
 @dataclass

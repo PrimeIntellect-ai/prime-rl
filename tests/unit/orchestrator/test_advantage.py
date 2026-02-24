@@ -1,5 +1,6 @@
 import torch
 
+from prime_rl.configs.orchestrator import CustomAdvantageConfig, DefaultAdvantageConfig
 from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
     AdvantageOutputs,
@@ -7,7 +8,6 @@ from prime_rl.orchestrator.advantage import (
     default_advantage_fn,
     setup_advantage_fn,
 )
-from prime_rl.orchestrator.config import CustomAdvantageConfig, DefaultAdvantageConfig
 
 
 def test_default_advantage_fn_simple_mean():

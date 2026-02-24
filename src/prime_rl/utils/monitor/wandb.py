@@ -10,7 +10,7 @@ import verifiers as vf
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
+from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
 from prime_rl.utils.pydantic_config import BaseSettings

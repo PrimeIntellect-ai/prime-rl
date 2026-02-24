@@ -3,6 +3,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
+from prime_rl.configs.shared import BaseModelConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
 
@@ -116,15 +117,8 @@ class ParallelConfig(BaseConfig):
         return f"tp={self.tp} dp={self.dp}"
 
 
-class ModelConfig(BaseConfig):
+class ModelConfig(BaseModelConfig):
     """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html)."""
-
-    name: Annotated[
-        str,
-        Field(
-            description="Name or path of the HF model to use.",
-        ),
-    ] = "Qwen/Qwen3-0.6B"
 
     dtype: Annotated[
         Literal["auto", "float16", "bfloat16", "float32"],

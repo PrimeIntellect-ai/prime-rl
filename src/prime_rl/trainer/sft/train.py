@@ -14,7 +14,7 @@ import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
-from prime_rl.trainer.sft.config import SFTTrainerConfig
+from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.runs import Progress
 from prime_rl.utils.logger import setup_logger
@@ -50,7 +50,7 @@ from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
-def train(config: SFTTrainerConfig):
+def train(config: SFTConfig):
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
@@ -445,7 +445,7 @@ def train(config: SFTTrainerConfig):
 
 
 def main():
-    train(parse_argv(SFTTrainerConfig))
+    train(parse_argv(SFTConfig))
 
 
 if __name__ == "__main__":
