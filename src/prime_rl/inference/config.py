@@ -209,6 +209,16 @@ class WeightBroadcastConfig(BaseSettings):
 # TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
+# vLLM all2all backend options for expert-parallel deployments.
+All2AllBackend = Literal[
+    "allgather_reducescatter",
+    "deepep_high_throughput",
+    "deepep_low_latency",
+    "flashinfer_all2allv",
+    "naive",
+    "pplx",
+]
+
 
 class InferenceConfig(BaseSettings):
     """Configures inference."""
@@ -282,6 +292,27 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 0
 
+    enable_expert_parallel: Annotated[
+        bool,
+        Field(
+            description="Enable expert parallelism for MoE models. Passed to vLLM as `--enable-expert-parallel`.",
+        ),
+    ] = False
+
+    all2all_backend: Annotated[
+        All2AllBackend,
+        Field(
+            description="All-to-all backend for expert parallel communication. Passed to vLLM as `--all2all-backend`.",
+        ),
+    ] = "allgather_reducescatter"
+
+    enable_eplb: Annotated[
+        bool,
+        Field(
+            description="Enable expert parallel load balancer (EPLB). Passed to vLLM as `--enable-eplb`.",
+        ),
+    ] = False
+
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
@@ -342,6 +373,9 @@ class InferenceConfig(BaseSettings):
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
+            "enable_expert_parallel": "enable_expert_parallel",
+            "all2all_backend": "all2all_backend",
+            "enable_eplb": "enable_eplb",
         }
 
         for key in get_all_fields(self):
