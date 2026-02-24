@@ -825,12 +825,20 @@ class OrchestratorConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
-    use_token_client: Annotated[
-        bool,
+    trajectory_strategy: Annotated[
+        Literal["interleaved", "branching"],
         Field(
-            description="Whether to use the token-in-token-out (TITO) client for training across all environments. WARNING: Only use this if your environment has a linear history and the chat template has the extension property (i.e. no tokens are ever removed or inserted by the chat template)"
+            description=(
+                "Controls how multi-turn trajectories are tokenized for training. "
+                "'interleaved' uses the token-level client (openai_chat_completions_token) which requires "
+                "a linear history and a chat template with the extension property (no tokens are ever "
+                "removed or inserted across turns). "
+                "'branching' uses the message-level client (openai_chat_completions) which re-tokenizes "
+                "each turn independently; the interleave algorithm still does best-effort compression of "
+                "branches into a single trajectory when the extension property holds."
+            )
         ),
-    ] = True
+    ] = "interleaved"
 
     @model_validator(mode="after")
     def validate_unique_filter_types(self):
