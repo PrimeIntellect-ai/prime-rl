@@ -899,9 +899,7 @@ class OrchestratorConfig(BaseSettings):
             if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
                 expected_max_inflight_rollouts = int(self.batch_size * self.oversampling_factor)
                 if self.max_inflight_rollouts != expected_max_inflight_rollouts:
-                    raise ValueError(
-                        "max_inflight_rollouts conflicts with oversampling_factor * batch_size"
-                    )
+                    raise ValueError("max_inflight_rollouts conflicts with oversampling_factor * batch_size")
             if self.max_inflight_rollouts is None:
                 oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
                 self.max_inflight_rollouts = int(self.batch_size * oversampling_factor)
