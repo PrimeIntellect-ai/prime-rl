@@ -24,9 +24,9 @@ monkey_patch_chat_completion_logprobs()
 # Import environment before any other imports
 
 import pandas as pd
+import verifiers as vf
 from transformers import AutoProcessor, AutoTokenizer
 
-import verifiers as vf
 from prime_rl.configs.orchestrator import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
