@@ -166,7 +166,7 @@ class Scheduler:
         )
         self.inflight_requests[run_group_task] = InflightRolloutInfo(off_policy_steps=0, client_config=client_config)
 
-    def _drop_group(self, group_id: int) -> int:
+    def drop_group(self, group_id: int) -> int:
         """Drop a group and cancel any remaining in-flight rollouts for it."""
         removed = 0
         for task, info in list(self.inflight_requests.items()):
@@ -184,9 +184,14 @@ class Scheduler:
         """Asynchronously schedules a rollout request."""
         if self.rate_limiter:
             await self.rate_limiter.acquire()
-        self.group_rollouts_to_schedule[group_id] -= 1
-        example = self.group_examples[group_id]
+        remaining = self.group_rollouts_to_schedule.get(group_id)
+        example = self.group_examples.get(group_id)
+        if remaining is None or example is None or remaining <= 0:
+            return
+        self.group_rollouts_to_schedule[group_id] = remaining - 1
         client_config = await self._select_least_loaded_client()
+        if group_id not in self.group_examples or group_id not in self.group_rollouts_to_schedule:
+            return
         run_rollout_task = asyncio.create_task(
             run_rollout(
                 env=self.env,
@@ -299,7 +304,7 @@ class Scheduler:
                 for info in self.inflight_requests.values()
                 if info.off_policy_steps > self.max_off_policy_steps
             }
-            removed = sum(self._drop_group(gid) for gid in stale_group_ids)
+            removed = sum(self.drop_group(gid) for gid in stale_group_ids)
             for task, info in list(self.inflight_requests.items()):
                 self.inflight_requests[task] = info._replace(off_policy_steps=info.off_policy_steps + 1)
 
@@ -363,12 +368,12 @@ class Scheduler:
                         self.group_rollouts_to_schedule.pop(group_id, None)
                 except asyncio.CancelledError:
                     if group_id is not None:
-                        self._drop_group(group_id)
+                        self.drop_group(group_id)
                     continue
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
                     if group_id is not None:
-                        self._drop_group(group_id)
+                        self.drop_group(group_id)
                     continue
 
                 self.buffer.update(completed_rollouts)
