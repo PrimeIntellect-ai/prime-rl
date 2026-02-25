@@ -487,13 +487,6 @@ class BufferConfig(BaseConfig):
         ),
     ] = 0.0
 
-    online_difficulty_filtering: Annotated[
-        bool,
-        Field(
-            description="Whether to filter rollouts based on difficulty. If True, rollouts with average reward 0.0 or 1.0 are not added to the buffer.",
-        ),
-    ] = False
-
     hash_keys: Annotated[
         list[str],
         Field(
@@ -507,8 +500,7 @@ class BufferConfig(BaseConfig):
         Field(
             description=(
                 "Whether to skip verification of rollouts using the environment's rubric. "
-                "If True, rewards are always set to 0, online_difficulty_filtering is disabled, "
-                "and easy/hard thresholds are not used."
+                "If True, rewards are always set to 0 and easy/hard thresholds are not used."
             ),
         ),
     ] = False
@@ -529,11 +521,6 @@ class BufferConfig(BaseConfig):
     def validate_skip_verification(self):
         """Validate that skip_verification is not used with reward-dependent features."""
         if self.skip_verification:
-            if self.online_difficulty_filtering:
-                raise ValueError(
-                    "skip_verification cannot be True when online_difficulty_filtering is True. "
-                    "These features depend on rewards which are disabled when skip_verification=True."
-                )
             if self.easy_threshold is not None:
                 raise ValueError(
                     "skip_verification cannot be True when easy_threshold is set. "
@@ -791,7 +778,7 @@ class OrchestratorConfig(BaseSettings):
             ge=1,
             description="Number of output sequences to return per example during training.",
         ),
-    ] = 1
+    ] = 4
 
     seq_len: Annotated[
         int,
@@ -899,9 +886,7 @@ class OrchestratorConfig(BaseSettings):
             if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
                 expected_max_inflight_rollouts = int(self.batch_size * self.oversampling_factor)
                 if self.max_inflight_rollouts != expected_max_inflight_rollouts:
-                    raise ValueError(
-                        "max_inflight_rollouts conflicts with oversampling_factor * batch_size"
-                    )
+                    raise ValueError("max_inflight_rollouts conflicts with oversampling_factor * batch_size")
             if self.max_inflight_rollouts is None:
                 oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
                 self.max_inflight_rollouts = int(self.batch_size * oversampling_factor)
