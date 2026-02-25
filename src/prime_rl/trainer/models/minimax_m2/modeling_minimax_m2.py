@@ -53,6 +53,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
             use_grouped_mm=config.use_grouped_mm,
+            moe_backend=getattr(config, "moe_backend", "grouped_mm"),
             load_balance_coeff=1e-3 if config.use_routing_bias else None,
         )
         self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.intermediate_size)

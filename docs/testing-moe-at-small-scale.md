@@ -55,6 +55,28 @@ uv run python scripts/mini_moe.py --arch glm4_moe --output-dir outputs/weights/s
 
 A pre-built SFT'd model is available at [samsja/mini-glm-moe](https://huggingface.co/samsja/mini-glm-moe).
 
+## Optional: SonicMoE backend
+
+PrimeRL can optionally run MoE experts with `model.moe_backend = "sonic"` in custom MoE models.
+
+Enable it with the Sonic debug config:
+
+```bash
+uv run sft @ configs/debug/moe/sft/train-sonic.toml \
+    --model.name ./mini-glm-moe
+```
+
+Sonic is only activated when all runtime checks pass. Current v1 constraints:
+- `trainer.model.impl = "custom"`
+- `trainer.model.ep = 1`
+- `score_before_experts = false`
+- MoE experts are plain `GroupedExperts` (no LoRA-wrapped experts)
+- Hopper/Blackwell GPU (SM90/SM100) with CUDA 12.9+
+
+If any check fails (missing deps, unsupported GPU, incompatible model setup), PrimeRL automatically falls back to the existing grouped-mm path and emits a warning with the reason.
+
+Use trainer throughput logs (`tokens/s`) to compare `grouped_mm` vs `sonic` runs on the same config before rollout.
+
 ## Step 3: RL (reverse-text)
 
 Requires 2 GPUs (one for inference, one for training).

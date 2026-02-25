@@ -6,11 +6,19 @@
 
 from dataclasses import dataclass
 from typing import Literal
+import warnings
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torchtitan.distributed.expert_parallel import expert_parallel
+
+from prime_rl.trainer.models.layers.sonic_backend import (
+    SonicBindings,
+    SonicRuntimeInfo,
+    check_sonic_runtime,
+    load_sonic_bindings,
+)
 
 
 @dataclass
@@ -27,6 +35,7 @@ class MoEArgs:
     # token-choice
     top_k: int = 1
     use_grouped_mm: bool = True  # grouped mm or for-loop for the experts computation
+    moe_backend: Literal["grouped_mm", "sonic"] = "grouped_mm"
     load_balance_coeff: float | None = 1e-3
 
 
@@ -344,6 +353,8 @@ class MoE(nn.Module):
             else None
         )
         self.score_before_experts = moe_args.score_before_experts
+        self.moe_backend = moe_args.moe_backend
+        self._sonic_fallback_reason_codes: set[str] = set()
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
@@ -365,6 +376,89 @@ class MoE(nn.Module):
             torch.zeros(num_experts, dtype=torch.float32),
             persistent=False,
         )
+
+    def _warn_sonic_fallback(self, runtime_info: SonicRuntimeInfo) -> None:
+        if runtime_info.code in self._sonic_fallback_reason_codes:
+            return
+
+        warnings.warn(
+            f"SonicMoE backend requested but unavailable ({runtime_info.code}): {runtime_info.message}. "
+            "Falling back to grouped_mm.",
+            stacklevel=3,
+        )
+        self._sonic_fallback_reason_codes.add(runtime_info.code)
+
+    def _compute_experts_sonic(
+        self,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        sonic_bindings: SonicBindings,
+    ) -> torch.Tensor:
+        total_tokens, dim = x.shape
+        top_k = selected_experts_indices.shape[-1]
+
+        token_indices = torch.arange(total_tokens, device=x.device, dtype=torch.int32).repeat_interleave(top_k)
+        expert_indices = selected_experts_indices.reshape(-1).to(torch.int32).contiguous()
+        router_scores = top_scores.reshape(-1).to(torch.float32).contiguous()
+
+        num_experts, hidden_dim, _ = self.experts.w1.shape
+        w13 = torch.stack((self.experts.w1, self.experts.w3), dim=2).reshape(num_experts, 2 * hidden_dim, dim)
+        w1 = w13.permute(1, 2, 0).contiguous()
+        w2 = self.experts.w2.permute(1, 2, 0).contiguous()
+
+        stream_id = torch.cuda.current_stream(x.device).cuda_stream
+        routed_output, _ = sonic_bindings.moe_general_routing_inputs(
+            x,
+            router_scores,
+            token_indices,
+            expert_indices,
+            w1,
+            None,
+            w2,
+            None,
+            num_experts,
+            stream_id,
+            sonic_bindings.swiglu_activation,
+            not self.training,
+        )
+
+        return routed_output.type_as(x)
+
+    def _maybe_forward_sonic(
+        self,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        *,
+        bs: int,
+        slen: int,
+        dim: int,
+    ) -> torch.Tensor | None:
+        runtime_info = check_sonic_runtime(
+            hidden_size=dim,
+            intermediate_size=self.experts.w1.shape[1],
+            top_k=self.router.top_k,
+            input_dtype=x.dtype,
+            score_before_experts=self.score_before_experts,
+            has_grouped_experts=isinstance(self.experts, GroupedExperts),
+            device=x.device,
+        )
+        if not runtime_info.is_supported:
+            self._warn_sonic_fallback(runtime_info)
+            return None
+
+        sonic_bindings, import_info = load_sonic_bindings()
+        if sonic_bindings is None or not import_info.is_supported:
+            self._warn_sonic_fallback(import_info)
+            return None
+
+        routed_output = self._compute_experts_sonic(x, top_scores, selected_experts_indices, sonic_bindings)
+        if self.shared_expert is not None:
+            out = self.shared_expert(x) + routed_output
+        else:
+            out = routed_output
+        return out.reshape(bs, slen, dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -392,6 +486,18 @@ class MoE(nn.Module):
         #       effect on the expert bias update thanks to the torch.sign() operator.
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
+
+        if self.moe_backend == "sonic":
+            sonic_output = self._maybe_forward_sonic(
+                x=x,
+                top_scores=top_scores,
+                selected_experts_indices=selected_experts_indices,
+                bs=bs,
+                slen=slen,
+                dim=dim,
+            )
+            if sonic_output is not None:
+                return sonic_output
 
         # top_scores and token_indices_experts_sorted shape (bs*slen*top_k,)
         # num_tokens_per_expert shape (num_experts,)

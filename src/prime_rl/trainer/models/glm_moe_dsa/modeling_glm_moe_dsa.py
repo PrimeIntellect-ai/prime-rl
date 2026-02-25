@@ -218,6 +218,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             load_balance_coeff=1e-3,
             use_grouped_mm=config.use_grouped_mm,
+            moe_backend=getattr(config, "moe_backend", "grouped_mm"),
         )
         mlp_config = MLPConfig(
             hidden_size=config.hidden_size,
