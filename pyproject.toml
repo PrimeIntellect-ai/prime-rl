@@ -193,7 +193,7 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { workspace = true }
-verifiers = { workspace = true }
+verifiers = { git = "https://github.com/nph4rd/verifiers.git", branch = "multiagent-no-opponent-conditioning" }
 renderers = { workspace = true }
 aime2024 = { workspace = true }
 aime2025 = { workspace = true }
