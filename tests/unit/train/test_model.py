@@ -124,6 +124,25 @@ def test_moe_custom_impl():
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
 
+def test_sonic_backend_falls_back_for_hf_impl():
+    config = ModelConfig(name="Qwen/Qwen3-0.6B", attn="sdpa", impl="hf", moe_backend="sonic")
+    model = get_model(config)
+    assert getattr(model.config, "moe_backend", "grouped_mm") == "grouped_mm"
+
+
+def test_sonic_backend_falls_back_when_ep_enabled():
+    config = ModelConfig(
+        name="PrimeIntellect/GLM-0.5B",
+        attn="sdpa",
+        impl="custom",
+        moe_backend="sonic",
+        ep=2,
+        moe_use_grouped_mm=False,
+    )
+    model = get_model(config)
+    assert getattr(model.config, "moe_backend", "grouped_mm") == "grouped_mm"
+
+
 @pytest.mark.skip(reason="need special token for meta stuff in ci")
 @pytest.mark.parametrize("model_name", ["meta-llama/Llama-3.2-1B-Instruct"])
 def test_model_forward_custom_impl(model_name):

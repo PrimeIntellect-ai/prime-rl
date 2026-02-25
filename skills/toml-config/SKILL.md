@@ -139,3 +139,20 @@ All accept `@ config.toml` and CLI overrides:
 - `src/prime_rl/trainer/sft/train.py` — unified SFT entrypoint (local + SLURM)
 - `src/prime_rl/configs/sft.py` — `SFTConfig`, `SFTSlurmConfig`
 - `configs/` — all config files, organized by task
+
+
+## MoE backend override
+
+For custom MoE models, you can switch the experts backend from the config:
+
+```toml
+[model]
+impl = "custom"
+moe_backend = "grouped_mm"  # or "sonic"
+```
+
+Equivalent CLI override:
+
+```bash
+uv run rl @ config.toml --trainer.model.moe_backend sonic
+```

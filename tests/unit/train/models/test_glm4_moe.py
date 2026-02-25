@@ -4,15 +4,17 @@ from torch import nn
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
 
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
+from prime_rl.trainer.models.layers import moe as moe_layer_module
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.layers.sonic_backend import SonicRuntimeInfo
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
 
 
-def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
-    hf_config = Glm4MoeConfig(
+def _build_glm4_config(moe_backend: str = "grouped_mm") -> Glm4MoeConfig:
+    config = Glm4MoeConfig(
         hidden_size=1024,
         intermediate_size=2048,
         max_position_embeddings=4096,
@@ -29,10 +31,16 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
         partial_rotary_factor=0.5,
         use_grouped_mm=False,
     )
+    config._attn_implementation = "sdpa"
+    config.moe_backend = moe_backend
+    return config
+
+
+def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
+    hf_config = _build_glm4_config()
     # TODO: We should test this path because it's the most performant
     # But the grad seems to be off in attn because of precision
     # hf_config._attn_implementation = "flash_attention_2"
-    hf_config._attn_implementation = "sdpa"
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_model = HFGlm4MoeForCausalLM._from_config(hf_config)
         prime_model = PrimeRLGlm4MoeForCausalLM._from_config(hf_config)
@@ -117,6 +125,43 @@ def test_glm4_moe() -> None:
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
     assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
+
+
+def test_glm4_moe_sonic_fallback_matches_grouped_mm(monkeypatch) -> None:
+    monkeypatch.setattr(
+        moe_layer_module,
+        "check_sonic_runtime",
+        lambda **_: SonicRuntimeInfo(False, "forced_test_fallback", "forced fallback for test"),
+    )
+
+    grouped_config = _build_glm4_config(moe_backend="grouped_mm")
+    sonic_config = _build_glm4_config(moe_backend="sonic")
+    with torch.device("cuda"), default_dtype(torch.float32):
+        grouped_model = PrimeRLGlm4MoeForCausalLM._from_config(grouped_config)
+        sonic_model = PrimeRLGlm4MoeForCausalLM._from_config(sonic_config)
+
+    with torch.no_grad():
+        sonic_model.load_state_dict(grouped_model.state_dict())
+
+    inject_prime_lm_head(grouped_model, chunk_size=None)
+    inject_prime_lm_head(sonic_model, chunk_size=None)
+
+    with torch.device("cuda"), default_dtype(torch.float32):
+        input_ids = torch.randint(0, grouped_model.config.vocab_size, (1, 100))
+        position_ids = torch.arange(1, 101).unsqueeze(0)
+
+    grouped_output = grouped_model(input_ids, position_ids)
+    sonic_output = sonic_model(input_ids, position_ids)
+    grouped_output["logits"].sum().backward()
+    sonic_output["logits"].sum().backward()
+
+    torch.testing.assert_close(sonic_output["logits"], grouped_output["logits"], atol=2e-2, rtol=1e-3)
+    torch.testing.assert_close(
+        sonic_model.model.embed_tokens.weight.grad,
+        grouped_model.model.embed_tokens.weight.grad,
+        atol=2,
+        rtol=1e-3,
+    )
 
 
 if __name__ == "__main__":

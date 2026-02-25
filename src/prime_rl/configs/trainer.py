@@ -247,6 +247,17 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = True
 
+    moe_backend: Annotated[
+        Literal["grouped_mm", "sonic"],
+        Field(
+            description=(
+                "MoE experts backend for the custom implementation. "
+                "'grouped_mm' is the current default path; 'sonic' enables the optional SonicMoE backend "
+                "when runtime/hardware checks pass."
+            ),
+        ),
+    ] = "grouped_mm"
+
     freeze_moe_router: Annotated[
         bool,
         Field(

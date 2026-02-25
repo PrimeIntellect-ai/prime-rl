@@ -58,6 +58,11 @@ flash-attn-3 = [
 flash-attn-cute = [
     "flash-attn-cute",
 ]
+sonic-moe = [
+    "sonicmoe",
+    "quack-kernels",
+    "ninja",
+]
 
 [dependency-groups]
 dev = [
@@ -90,6 +95,7 @@ transformers = { git = "https://github.com/huggingface/transformers.git", rev = 
 vllm = { url = "https://vllm-wheels.s3.us-west-2.amazonaws.com/7a06e5b05b170d7da31845866da0a99fc65253a1/vllm-0.16.0rc3-cp38-abi3-manylinux_2_31_x86_64.whl" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
 reverse-text = { index = "primeintellect" }
+sonicmoe = { git = "https://github.com/Dao-AILab/sonic-moe.git", rev = "afd06890d1504cb3b09951af66e4b30174813d72" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

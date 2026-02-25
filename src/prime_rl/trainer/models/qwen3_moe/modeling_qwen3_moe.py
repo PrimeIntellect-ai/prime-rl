@@ -71,6 +71,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
             use_grouped_mm=config.use_grouped_mm,
+            moe_backend=getattr(config, "moe_backend", "grouped_mm"),
             load_balance_coeff=config.load_balance_coeff,
         )
         mlp_config = MLPConfig(

@@ -217,6 +217,21 @@ def get_model(
             f"Set impl='hf' or impl='auto' in your model config."
         )
 
+    effective_moe_backend = config.moe_backend
+    if effective_moe_backend == "sonic" and impl_to_use != "custom":
+        logger.warning(
+            "SonicMoE backend is only supported with model.impl='custom'. Falling back to 'grouped_mm'."
+        )
+        effective_moe_backend = "grouped_mm"
+
+    if effective_moe_backend == "sonic" and config.ep > 1:
+        logger.warning(
+            "SonicMoE backend currently requires model.ep=1 in PrimeRL. Falling back to 'grouped_mm'."
+        )
+        effective_moe_backend = "grouped_mm"
+
+    model_config.moe_backend = effective_moe_backend
+
     with device:
         if is_vlm:
             from transformers import AutoModelForImageTextToText
