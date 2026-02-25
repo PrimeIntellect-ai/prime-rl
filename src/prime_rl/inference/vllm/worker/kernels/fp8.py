@@ -2,8 +2,8 @@ import torch
 import triton
 import triton.language as tl
 
-_FP8_DTYPE = torch.float8_e4m3fn
-_FP8_MAX = torch.finfo(_FP8_DTYPE).max
+FP8_DTYPE = torch.float8_e4m3fn
+_FP8_MAX = torch.finfo(FP8_DTYPE).max
 _FP8_MIN = -_FP8_MAX
 _FP8_BLOCK_SIZE = (128, 128)
 
@@ -76,7 +76,7 @@ def blockwise_cast_to_fp8_triton(weight: torch.Tensor) -> tuple[torch.Tensor, to
     _require_hopper_cuda_device(weight.device)
     block_m, block_n = _FP8_BLOCK_SIZE
     m_size, n_size = weight.shape
-    qweight = torch.empty(m_size, n_size, device=weight.device, dtype=_FP8_DTYPE)
+    qweight = torch.empty(m_size, n_size, device=weight.device, dtype=FP8_DTYPE)
     scale = torch.empty(
         _ceil_div(m_size, block_m),
         _ceil_div(n_size, block_n),

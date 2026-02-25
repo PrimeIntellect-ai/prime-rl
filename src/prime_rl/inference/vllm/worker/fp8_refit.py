@@ -3,9 +3,7 @@ from collections.abc import Iterable, Iterator
 import torch
 from torch.nn import Module
 
-from prime_rl.inference.vllm.worker.kernels.fp8 import quantize_weight_to_block_fp8
-
-_FP8_DTYPE = torch.float8_e4m3fn
+from prime_rl.inference.vllm.worker.kernels.fp8 import FP8_DTYPE, quantize_weight_to_block_fp8
 
 
 def reset_fp8_process_flags(model: Module) -> None:
@@ -64,7 +62,7 @@ def _iter_converted_fp8_refit_weights(
         has_remapped_scale = remapped_scale_name is not None and remapped_scale_name in parameter_names
         has_target_scale = has_exact_scale or has_remapped_scale
         should_quantize = (
-            name.endswith("weight") and tensor.ndim == 2 and tensor.dtype != _FP8_DTYPE and has_target_scale
+            name.endswith("weight") and tensor.ndim == 2 and tensor.dtype != FP8_DTYPE and has_target_scale
         )
 
         if should_quantize:
