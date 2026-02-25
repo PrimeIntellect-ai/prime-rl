@@ -767,13 +767,25 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
+    oversampling_factor: Annotated[
+        float | None,
+        Field(
+            ge=1,
+            description=(
+                "Rollout-mode batching only. Multiplier used to derive max_inflight_rollouts from batch_size "
+                "when max_inflight_rollouts is unset."
+            ),
+        ),
+    ] = None
+
     max_inflight_rollouts: Annotated[
         int | None,
         Field(
             ge=1,
             description=(
                 "Maximum number of rollouts to keep in-flight. Required for token-based batching. "
-                "If batch_size is set and this is unset, defaults to batch_size."
+                "If batch_size is set and this is unset, defaults to batch_size * over_sampling_factor "
+                "(or batch_size when over_sampling_factor is unset)."
             ),
         ),
     ] = None
@@ -881,14 +893,23 @@ class OrchestratorConfig(BaseSettings):
             self.batch_size = 128
 
         if has_token_batch:
+            if self.over_sampling_factor is not None:
+                raise ValueError("over_sampling_factor can only be set when batch_size is set")
             if self.max_inflight_rollouts is None:
                 raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
         else:
             assert self.batch_size is not None
             if self.batch_size % self.rollouts_per_example != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
+            if self.max_inflight_rollouts is not None and self.over_sampling_factor is not None:
+                expected_max_inflight_rollouts = int(self.batch_size * self.over_sampling_factor)
+                if self.max_inflight_rollouts != expected_max_inflight_rollouts:
+                    raise ValueError(
+                        "max_inflight_rollouts conflicts with over_sampling_factor * batch_size"
+                    )
             if self.max_inflight_rollouts is None:
-                self.max_inflight_rollouts = self.batch_size
+                over_sampling_factor = self.over_sampling_factor if self.over_sampling_factor is not None else 1.0
+                self.max_inflight_rollouts = int(self.batch_size * over_sampling_factor)
 
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
