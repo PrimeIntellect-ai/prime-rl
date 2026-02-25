@@ -233,7 +233,7 @@ def _create_muon_optimizer(
     param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
 
     if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
-        distributed_mesh = parallel_dims.world_mesh["dp_shard_cp"]
+        distributed_mesh = parallel_dims.get_mesh("dp_shard_cp")
     else:
         distributed_mesh = parallel_dims.world_mesh
 

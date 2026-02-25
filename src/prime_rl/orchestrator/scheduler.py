@@ -12,7 +12,7 @@ from aiolimiter import AsyncLimiter
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.utils import get_sampling_args
-from prime_rl.orchestrator.vf_utils import run_group
+from prime_rl.orchestrator.vf_utils import get_seq_len, run_group
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.temp_scheduling import compute_temperature
@@ -48,7 +48,7 @@ class Scheduler:
         inference_pool: InferencePool,
         buffer: Buffer,
         config: OrchestratorConfig,
-        oversampling_factor: float,
+        max_inflight_rollouts: int,
         max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
@@ -65,9 +65,11 @@ class Scheduler:
         self.buffer = buffer
         self.config = config
         self.batch_size = config.batch_size
+        self.token_batch_size = config.token_batch_size
         self.rollouts_per_example = config.rollouts_per_example
         self.seq_len = config.seq_len
-        self.problems_per_batch = int(oversampling_factor * self.batch_size // self.rollouts_per_example)
+        self.max_inflight_rollouts = max_inflight_rollouts
+        self.max_inflight_group_rollouts = max(1, self.max_inflight_rollouts // self.rollouts_per_example)
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
@@ -90,6 +92,28 @@ class Scheduler:
         self.update_policy_task = None
         self.cancelled_rollouts_count = 0
         self.last_batch_generation_time = 0.0
+
+    @property
+    def uses_token_batching(self) -> bool:
+        return self.token_batch_size is not None
+
+    @property
+    def batch_target(self) -> int:
+        if self.uses_token_batching:
+            assert self.token_batch_size is not None
+            return self.token_batch_size
+        assert self.batch_size is not None
+        return self.batch_size
+
+    def get_batch_progress_increment(self, rollouts: list[vf.RolloutOutput]) -> int:
+        if self.uses_token_batching:
+            return sum(get_seq_len(rollout) for rollout in rollouts)
+        return len(rollouts)
+
+    def finalize_batch_rollouts(self, rollouts: list[vf.RolloutOutput]) -> list[vf.RolloutOutput]:
+        if self.batch_size is None:
+            return rollouts
+        return rollouts[: self.batch_size]
 
     def set_sampling_args(self, sampling_args: dict) -> None:
         """Update sampling args for future rollout requests."""
@@ -215,15 +239,16 @@ class Scheduler:
 
         # Schedule initial tasks
         self.logger.debug("Starting to generate batch rollouts")
-        while len(self.inflight_group_rollouts) < self.problems_per_batch:
+        while len(self.inflight_group_rollouts) < self.max_inflight_group_rollouts:
             await self.schedule_group_rollout()
 
         batch_rollouts: list[vf.RolloutOutput] = []
+        batch_progress = 0
         pbar = ProgressTracker(
-            total=self.config.batch_size, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
+            total=self.batch_target, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
         )
 
-        while len(batch_rollouts) < self.config.batch_size:
+        while batch_progress < self.batch_target:
             # Wait for at least one future to complete
             finished_tasks, _ = await asyncio.wait(
                 self.inflight_group_rollouts.keys(),
@@ -233,8 +258,7 @@ class Scheduler:
             await self.checkpoint_ready.wait()
 
             for finished_task in finished_tasks:
-                if len(batch_rollouts) >= self.config.batch_size:
-                    batch_rollouts = batch_rollouts[: self.config.batch_size]
+                if batch_progress >= self.batch_target:
                     break
 
                 # Safely pop the future from tracking
@@ -249,7 +273,9 @@ class Scheduler:
                     accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
 
                     batch_rollouts.extend(accepted_rollouts)
-                    pbar.update(len(accepted_rollouts))
+                    progress_increment = self.get_batch_progress_increment(accepted_rollouts)
+                    batch_progress += progress_increment
+                    pbar.update(progress_increment)
 
                 except asyncio.CancelledError:
                     pass  # Request was cancelled, will be rescheduled
@@ -257,6 +283,8 @@ class Scheduler:
                     self.logger.warning(f"Rollout failed: {e}")
 
                 await self.schedule_group_rollout()
+
+        batch_rollouts = self.finalize_batch_rollouts(batch_rollouts)
 
         pbar.close()
         self.last_batch_generation_time = time.perf_counter() - batch_start_time

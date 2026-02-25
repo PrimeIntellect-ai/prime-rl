@@ -191,12 +191,12 @@ def train(config: TrainerConfig):
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.world_mesh["dp"].size())
+        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
     else:
         dataloader = DataLoader(
             config.output_dir,
             progress.step,
-            parallel_dims.world_mesh["dp"].size(),
+            parallel_dims.get_mesh("dp").size(),
             config.model.seq_len,
             config.model.cp,
             tokenizer,
@@ -481,7 +481,7 @@ def train(config: TrainerConfig):
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
-        num_tokens = parallel_dims.world_mesh["dp"].size() * num_local_tokens
+        num_tokens = parallel_dims.get_mesh("dp").size() * num_local_tokens
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
