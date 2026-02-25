@@ -220,8 +220,9 @@ async def update_weights(
     to the trainer that inference workers are about to enter the receive path.
     This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
 
-    Note: The server-side /update_weights endpoint automatically resets the prefix cache
-    to invalidate any cached KV states computed with the old weights.
+    Note: The server-side /update_weights endpoint resets prefix cache by default
+    to invalidate cached KV states computed with old weights. For step-0 updates,
+    cache reset is skipped because no cache has been populated yet.
     """
     logger = get_logger()
 
@@ -231,9 +232,17 @@ async def update_weights(
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
 
+        skip_prefix_cache_reset = step == 0
+
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
             try:
-                response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
+                response = await admin_client.post(
+                    "/update_weights",
+                    json={
+                        "weight_dir": weight_dir,
+                        "skip_prefix_cache_reset": skip_prefix_cache_reset,
+                    },
+                )
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
