@@ -10,6 +10,7 @@ from tests.utils import prom_collect_samples, prom_sample_key, prom_sample_value
 def test_orchestrator_metrics_update_and_cleanup():
     registry = CollectorRegistry()
     metrics = OrchestratorPrometheusMetrics(registry)
+    env_names = {"env_a", "env_b"}
 
     update_start = time.time()
     metrics.update(
@@ -50,7 +51,8 @@ def test_orchestrator_metrics_update_and_cleanup():
             "pool/easy": 0.2,
             "pool/normal": 0.6,
             "pool/hard": 0.2,
-        }
+        },
+        env_names=env_names,
     )
     update_end = time.time()
 
@@ -110,7 +112,8 @@ def test_orchestrator_metrics_update_and_cleanup():
             "batch/env_a": 0.7,
             "worker/worker_a/pending": 2,
             "worker_lag/worker_a/mean": 0.05,
-        }
+        },
+        env_names=env_names,
     )
 
     samples = prom_collect_samples(registry)

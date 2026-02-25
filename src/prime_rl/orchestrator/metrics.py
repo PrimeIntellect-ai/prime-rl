@@ -1,6 +1,7 @@
 """Prometheus metric definitions for the orchestrator."""
 
 import time
+from collections.abc import Collection
 
 from prometheus_client import CollectorRegistry, Gauge
 
@@ -63,7 +64,7 @@ class OrchestratorPrometheusMetrics:
         self._known_workers: set[str] = set()
         self._known_worker_lag: set[tuple[str, str]] = set()
 
-    def update(self, to_log: dict[str, float]) -> None:
+    def update(self, to_log: dict[str, float], *, env_names: Collection[str]) -> None:
         """
         Update orchestrator metrics from a single monitor log payload.
 
@@ -102,31 +103,16 @@ class OrchestratorPrometheusMetrics:
 
         current_reward_envs = set()
         current_batch_envs = set()
-        reward_summary_stats = {"mean", "std", "min", "max", "median"}
-        for key, value in to_log.items():
-            if key.startswith("reward/"):
-                env = key.replace("reward/", "", 1)
-                if env in reward_summary_stats:
-                    continue
+        for env in env_names:
+            reward_key = f"reward/{env}"
+            if reward_key in to_log:
                 current_reward_envs.add(env)
-                self.env_reward.labels(env=env).set(value)
+                self.env_reward.labels(env=env).set(to_log[reward_key])
 
-            if key.startswith("batch/"):
-                if key in {
-                    "batch/solve_none",
-                    "batch/solve_all",
-                    "batch/effective_batch_size",
-                    "batch/async_level",
-                    "batch/inflight_rollouts",
-                    "batch/inflight_samples",
-                    "batch/cancelled_rollouts",
-                }:
-                    continue
-                if key.startswith("batch/off_policy_level/"):
-                    continue
-                env = key.replace("batch/", "", 1)
+            batch_key = f"batch/{env}"
+            if batch_key in to_log:
                 current_batch_envs.add(env)
-                self.env_batch_ratio.labels(env=env).set(value)
+                self.env_batch_ratio.labels(env=env).set(to_log[batch_key])
 
         removed_reward_envs = self._known_reward_envs - current_reward_envs
         for env in removed_reward_envs:
