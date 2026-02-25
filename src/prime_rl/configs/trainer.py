@@ -677,6 +677,15 @@ class TrainerConfig(BaseSettings):
         Field(description="Prometheus metrics server config. If set, exposes /metrics endpoint for scraping."),
     ] = None
 
+    gradient_steps_per_batch: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of gradient updates per training step. Splits the batch into minibatches. "
+            "If fewer micro-batches are available than requested, automatically reduces to available count.",
+        ),
+    ] = 1
+
     max_concurrent_runs: Annotated[
         int,
         Field(
