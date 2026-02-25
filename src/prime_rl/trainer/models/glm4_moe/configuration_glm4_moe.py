@@ -141,6 +141,14 @@ class Glm4MoeConfig(PretrainedConfig):
         "norm": (["hidden_states"], ["hidden_states"]),
     }
 
+    @property
+    def head_dim(self) -> int:
+        return getattr(self, "_head_dim", self.hidden_size // self.num_attention_heads)
+
+    @head_dim.setter
+    def head_dim(self, value: int) -> None:
+        self._head_dim = value
+
     def __init__(
         self,
         vocab_size=151552,

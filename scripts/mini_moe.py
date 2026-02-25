@@ -140,12 +140,16 @@ def create(arch: str, output_dir: Path) -> None:
 def verify(arch: str, model_dir: Path) -> None:
     preset = ARCH_PRESETS[arch]
     print(f"Verifying HF <-> PrimeRL roundtrip for {model_dir}...")
+    device = torch.device("cuda")
 
     trust_remote_code = preset["hf_model_class"] is None
     config = AutoConfig.from_pretrained(str(model_dir), trust_remote_code=trust_remote_code)
     config._attn_implementation = "sdpa"
 
-    with torch.device("cuda"), default_dtype(torch.float32):
+    # Avoid loading inside a torch.device("cuda") context. Recent transformers
+    # versions treat this like a default-device/device_map workflow and require
+    # accelerate for from_pretrained().
+    with default_dtype(torch.float32):
         hf_model = _load_hf_model(preset, model_dir, config)
         prime_model = preset["prime_model_class"]._from_config(config)
 
@@ -155,10 +159,14 @@ def verify(arch: str, model_dir: Path) -> None:
         prime_model.load_state_dict(state_dict)
 
     inject_prime_lm_head(prime_model, chunk_size=None)
+    hf_model = hf_model.to(device)
+    prime_model = prime_model.to(device)
 
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with default_dtype(torch.float32):
         input_ids = torch.randint(0, config.vocab_size, (1, 64))
         position_ids = torch.arange(1, 65).unsqueeze(0)
+    input_ids = input_ids.to(device)
+    position_ids = position_ids.to(device)
 
     hf_output = hf_model(input_ids=input_ids, position_ids=position_ids)
     prime_output = prime_model(input_ids, position_ids)
@@ -170,9 +178,10 @@ def verify(arch: str, model_dir: Path) -> None:
 
     with torch.no_grad():
         roundtrip_state_dict = prime_model.convert_to_hf(prime_model.state_dict())
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with default_dtype(torch.float32):
         hf_roundtrip = _create_hf_model_from_config(preset, config)
         hf_roundtrip.load_state_dict(roundtrip_state_dict)
+    hf_roundtrip = hf_roundtrip.to(device)
 
     hf_roundtrip_output = hf_roundtrip(input_ids=input_ids, position_ids=position_ids)
     roundtrip_diff = hf_roundtrip_output.logits - hf_output.logits
