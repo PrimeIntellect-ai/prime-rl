@@ -17,6 +17,7 @@ from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
+from prime_rl.trainer.rl.bootstrap import prepare_initial_weight_broadcast
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     setup_cp_params,
@@ -203,6 +204,24 @@ def train(config: TrainerConfig):
             config.rollout_transport,
         )
 
+    if checkpoint_step is None and progress.step == 0:
+        logger.info("Preparing initial step-0 weight broadcast")
+        has_ready_run = prepare_initial_weight_broadcast(
+            multi_run_manager=multi_run_manager,
+            world=world,
+            timeout_seconds=config.dist_timeout_seconds,
+        )
+        if has_ready_run:
+            broadcast_start_time = time.perf_counter()
+            weight_broadcast.broadcast_weights(model, step=progress.step)
+            logger.info(f"Initial step-0 weights broadcasted in {time.perf_counter() - broadcast_start_time:.2f}s")
+        elif config.max_concurrent_runs == 1:
+            raise TimeoutError("Timed out waiting for run initialization before initial step-0 weight broadcast.")
+        else:
+            logger.warning(
+                "No active runs were discovered before timeout; skipping initial step-0 weight broadcast."
+            )
+
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
     maybe_record_function = nullcontext
@@ -215,7 +234,7 @@ def train(config: TrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
+        # Broadcast weights at every step in the loop (step 0 is already handled during startup bootstrap)
         # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
         last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
         if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
