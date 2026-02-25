@@ -548,8 +548,10 @@ async def orchestrate(config: OrchestratorConfig):
                 samples = []
             rollout_samples_per_rollout.append(len(samples))
             for sample in samples:
-                sample.advantage = rollout["advantage"]
-                sample.reward = rollout["reward"]
+                if sample.advantage is None:
+                    sample.advantage = rollout["advantage"]
+                if sample.reward is None:
+                    sample.reward = rollout["reward"]
                 sample.env_name = rollout["env_name"]
                 sample.training_mode = config.training_mode
                 sample_decode_tokens = sum(sample.completion_mask)
