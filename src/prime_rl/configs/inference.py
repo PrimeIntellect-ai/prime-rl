@@ -3,86 +3,9 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
+from prime_rl.configs.shared import BaseModelConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
-
-MODEL_TOOL_CALL_PARSER: dict[str, str] = {
-    # GLM-4.5
-    "zai-org/GLM-4.5": "glm45",
-    "zai-org/GLM-4.5-FP8": "glm45",
-    "zai-org/GLM-4.5-Base": "glm45",
-    "zai-org/GLM-4.5-Air": "glm45",
-    "zai-org/GLM-4.5-Air-FP8": "glm45",
-    "zai-org/GLM-4.5-Air-Base": "glm45",
-    "zai-org/GLM-4.5V": "glm45",
-    "zai-org/GLM-4.5V-FP8": "glm45",
-    # GLM-4.7
-    "zai-org/GLM-4.7": "glm47",
-    "zai-org/GLM-4.7-FP8": "glm47",
-    "zai-org/GLM-4.7-Flash": "glm47",
-    # MiniMax M2
-    "MiniMaxAI/MiniMax-M2": "minimax_m2",
-    "MiniMaxAI/MiniMax-M2.1": "minimax_m2",
-    "MiniMaxAI/MiniMax-M2.5": "minimax_m2",
-    # INTELLECT-3
-    "PrimeIntellect/INTELLECT-3": "hermes",
-    "PrimeIntellect/INTELLECT-3-FP8": "hermes",
-    "PrimeIntellect/INTELLECT-3.1": "hermes",
-    # Qwen3 dense
-    "Qwen/Qwen3-0.6B": "hermes",
-    "Qwen/Qwen3-0.6B-Base": "hermes",
-    "Qwen/Qwen3-0.6B-FP8": "hermes",
-    "Qwen/Qwen3-1.7B": "hermes",
-    "Qwen/Qwen3-1.7B-Base": "hermes",
-    "Qwen/Qwen3-1.7B-FP8": "hermes",
-    "Qwen/Qwen3-4B": "hermes",
-    "Qwen/Qwen3-4B-Base": "hermes",
-    "Qwen/Qwen3-4B-FP8": "hermes",
-    "Qwen/Qwen3-8B": "hermes",
-    "Qwen/Qwen3-8B-Base": "hermes",
-    "Qwen/Qwen3-8B-FP8": "hermes",
-    "Qwen/Qwen3-14B": "hermes",
-    "Qwen/Qwen3-14B-Base": "hermes",
-    "Qwen/Qwen3-14B-FP8": "hermes",
-    "Qwen/Qwen3-32B": "hermes",
-    "Qwen/Qwen3-32B-FP8": "hermes",
-    # Qwen3 MoE
-    "Qwen/Qwen3-30B-A3B": "hermes",
-    "Qwen/Qwen3-30B-A3B-Base": "hermes",
-    "Qwen/Qwen3-30B-A3B-FP8": "hermes",
-    "Qwen/Qwen3-235B-A22B": "hermes",
-    "Qwen/Qwen3-235B-A22B-FP8": "hermes",
-    # Qwen3 2507
-    "Qwen/Qwen3-4B-Instruct-2507": "hermes",
-    "Qwen/Qwen3-4B-Thinking-2507": "hermes",
-    "Qwen/Qwen3-4B-Instruct-2507-FP8": "hermes",
-    "Qwen/Qwen3-4B-Thinking-2507-FP8": "hermes",
-    "Qwen/Qwen3-30B-A3B-Instruct-2507": "hermes",
-    "Qwen/Qwen3-30B-A3B-Thinking-2507": "hermes",
-    "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8": "hermes",
-    "Qwen/Qwen3-30B-A3B-Thinking-2507-FP8": "hermes",
-    "Qwen/Qwen3-235B-A22B-Instruct-2507": "hermes",
-    "Qwen/Qwen3-235B-A22B-Thinking-2507": "hermes",
-    "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8": "hermes",
-    "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8": "hermes",
-    # Qwen3-Next
-    "Qwen/Qwen3-Next-80B-A3B-Instruct": "hermes",
-    "Qwen/Qwen3-Next-80B-A3B-Thinking": "hermes",
-    "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8": "hermes",
-    "Qwen/Qwen3-Next-80B-A3B-Thinking-FP8": "hermes",
-    # Qwen3-Coder
-    "Qwen/Qwen3-Coder-480B-A35B-Instruct": "hermes",
-    "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "hermes",
-    "Qwen/Qwen3-Coder-30B-A3B-Instruct": "hermes",
-    "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8": "hermes",
-    # Qwen3-Coder-Next
-    "Qwen/Qwen3-Coder-Next": "hermes",
-    "Qwen/Qwen3-Coder-Next-Base": "hermes",
-    "Qwen/Qwen3-Coder-Next-FP8": "hermes",
-    # Qwen3.5
-    "Qwen/Qwen3.5-397B-A17B": "hermes",
-    "Qwen/Qwen3.5-397B-A17B-FP8": "hermes",
-}
 
 # TODO: Set thinking/ solution budget
 
@@ -116,15 +39,8 @@ class ParallelConfig(BaseConfig):
         return f"tp={self.tp} dp={self.dp}"
 
 
-class ModelConfig(BaseConfig):
+class ModelConfig(BaseModelConfig):
     """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html)."""
-
-    name: Annotated[
-        str,
-        Field(
-            description="Name or path of the HF model to use.",
-        ),
-    ] = "Qwen/Qwen3-0.6B"
 
     dtype: Annotated[
         Literal["auto", "float16", "bfloat16", "float32"],
@@ -154,19 +70,11 @@ class ModelConfig(BaseConfig):
         ),
     ] = False
 
-    enable_auto_tool_choice: Annotated[
-        bool,
-        Field(
-            description="Whether to enable auto tool choice. Passed to vLLM as `--enable-auto-tool-choice`. "
-            "Automatically set to True when tool_call_parser is configured.",
-        ),
-    ] = False
-
     tool_call_parser: Annotated[
         str | None,
         Field(
             description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`. "
-            "If not set, automatically inferred from the model name.",
+            'Set to "auto" to infer from the model name.',
         ),
     ] = None
 
@@ -183,18 +91,6 @@ class ModelConfig(BaseConfig):
             description='RoPE scaling configuration as a dict. For YaRN, use: {rope_type="yarn", factor=4.0, original_max_position_embeddings=32768} or. Passed to vLLM as `--rope-scaling`.',
         ),
     ] = None
-
-    @model_validator(mode="after")
-    def resolve_tool_call_parser(self):
-        if self.tool_call_parser is None:
-            parser = MODEL_TOOL_CALL_PARSER.get(self.name)
-            if parser is not None:
-                self.tool_call_parser = parser
-
-        if self.tool_call_parser is not None:
-            self.enable_auto_tool_choice = True
-
-        return self
 
 
 class WeightBroadcastConfig(BaseSettings):
@@ -375,7 +271,6 @@ class InferenceConfig(BaseSettings):
             "model.max_model_len": "max_model_len",
             "model.enforce_eager": "enforce_eager",
             "model.trust_remote_code": "trust_remote_code",
-            "model.enable_auto_tool_choice": "enable_auto_tool_choice",
             "model.tool_call_parser": "tool_call_parser",
             "model.reasoning_parser": "reasoning_parser",
             "model.rope_scaling": "rope_scaling",

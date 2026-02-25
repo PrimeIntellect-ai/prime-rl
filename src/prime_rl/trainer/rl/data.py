@@ -6,11 +6,11 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.rl.config import FakeDataLoaderConfig
+from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
-from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
+from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
 
 
 class TensorMicroBatch(TypedDict):
@@ -142,7 +142,7 @@ class DataLoader:
         seq_len: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
-        config: TransportConfigType,
+        config: TransportConfig,
     ):
         self.world = get_world()
 

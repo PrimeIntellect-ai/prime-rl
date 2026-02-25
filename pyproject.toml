@@ -12,7 +12,7 @@ dependencies = [
     "loguru>=0.7.3",
     "pyarrow>=21.0.0",
     "pydantic>=1.10.13",
-    "pydantic-settings>=2.10.1",
+    "pydantic-settings>=2.12.0",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
     "numpy>=2.2.6",
@@ -38,14 +38,12 @@ dependencies = [
 ]
 
 [project.scripts]
-rl = "prime_rl.rl:main"
-rl_slurm = "prime_rl.slurm.rl:main"
+rl = "prime_rl.entrypoints.rl:main"
+sft = "prime_rl.entrypoints.sft:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
 inference = "prime_rl.inference.server:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
-sft = "prime_rl.trainer.sft.train:main"
-sft_slurm = "prime_rl.slurm.sft:main"
 
 [project.entry-points."vllm.general_plugins"]
 prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
@@ -89,7 +87,7 @@ verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = 
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "609e3d5" }
-vllm = { url = "https://github.com/vllm-project/vllm/releases/download/v0.16.0/vllm-0.16.0-cp38-abi3-manylinux_2_31_x86_64.whl" }
+vllm = { url = "https://vllm-wheels.s3.us-west-2.amazonaws.com/7a06e5b05b170d7da31845866da0a99fc65253a1/vllm-0.16.0rc3-cp38-abi3-manylinux_2_31_x86_64.whl" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
 
 [tool.uv.extra-build-dependencies]
