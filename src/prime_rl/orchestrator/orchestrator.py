@@ -268,7 +268,7 @@ async def orchestrate(config: OrchestratorConfig):
         env=train_env_group,
         buffer=buffer,
         inference_pool=inference_pool,
-        oversampling_factor=config.oversampling_factor,
+        max_inflight_rollouts=config.max_inflight_rollouts,
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
@@ -460,6 +460,8 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Compute advantages
         example_ids = [r["example_id"] for r in train_rollouts]
+        num_rollouts = len(train_rollouts)
+        num_unique_examples = len(set(example_ids))
         rewards = [r["reward"] for r in train_rollouts]
         completion_lens = [get_completion_len(r) for r in train_rollouts]
         advantages = compute_advantages(
@@ -471,7 +473,6 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
-        num_unique_examples = len(set(example_ids))
 
         # VLM: build image cache for efficient batched preprocessing
         if is_vlm:
@@ -607,8 +608,8 @@ async def orchestrate(config: OrchestratorConfig):
         # Update progress metrics and throughput
         num_tokens = int(results_df.seq_len.sum())
         progress.total_tokens += num_tokens
-        progress.total_samples += config.batch_size
-        progress.total_problems += config.batch_size // config.rollouts_per_example
+        progress.total_samples += num_rollouts
+        progress.total_problems += num_unique_examples
         throughput = num_tokens / generate_completions_time
 
         # Compute solve all and none tensors
@@ -624,8 +625,8 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/tokens": num_tokens,
             "progress/prefill_tokens": num_prefill_tokens,
             "progress/decode_tokens": num_decode_tokens,
-            "progress/samples": config.batch_size,
-            "progress/problems": config.batch_size // config.rollouts_per_example,
+            "progress/samples": num_rollouts,
+            "progress/problems": num_unique_examples,
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
@@ -728,7 +729,7 @@ async def orchestrate(config: OrchestratorConfig):
                 to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
         # Log metrics to monitor(s)
-        monitor.log(to_log)
+        monitor.log(to_log, step=progress.step)
 
         # Log samples to monitor(s) if enabled
         subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
@@ -742,6 +743,9 @@ async def orchestrate(config: OrchestratorConfig):
             },
             step=progress.step,
         )
+
+        # Flush all accumulated metrics for this step
+        monitor.flush(step=progress.step)
 
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
