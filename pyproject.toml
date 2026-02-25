@@ -85,7 +85,7 @@ override-dependencies = [
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 math-env = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "b35d0c7" }
+verifiers = { git = "https://github.com/nph4rd/verifiers.git", branch = "multiagent-heterogeneous-rewards" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "609e3d5" }
