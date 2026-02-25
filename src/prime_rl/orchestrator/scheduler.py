@@ -3,15 +3,15 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import Counter, defaultdict
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
-import verifiers as vf
 from aiolimiter import AsyncLimiter
 
+import verifiers as vf
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.utils import get_sampling_args
-from prime_rl.orchestrator.vf_utils import get_seq_len, run_group, run_rollout
+from prime_rl.orchestrator.vf_utils import get_seq_len, run_rollout
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.temp_scheduling import compute_temperature
@@ -54,6 +54,7 @@ class Scheduler:
         strict_async_level: bool,
         tasks_per_minute: int | None,
         lora_name: str | None = None,
+        deferred_group_scoring_tasks: set[str] | None = None,
     ):
         self.logger = get_logger()
         if tasks_per_minute is not None:
@@ -79,9 +80,10 @@ class Scheduler:
         # Inference pool - used for admin operations (adapter sync) and metrics
         self.inference_pool = inference_pool
 
-        self.use_group_scheduling = any(
-            len(env.get_env_for_task(name).rubric._get_group_reward_funcs()) > 0 for name in env.env_names
-        )
+        self.deferred_group_scoring_tasks = set(deferred_group_scoring_tasks or ())
+        if self.deferred_group_scoring_tasks:
+            task_list = ", ".join(sorted(self.deferred_group_scoring_tasks))
+            self.logger.info(f"Deferred group scoring active for task(s): {task_list}")
 
         # Track in-flight requests: task -> info
         self.inflight_requests: dict[asyncio.Task, InflightRolloutInfo] = {}
@@ -143,28 +145,9 @@ class Scheduler:
             await asyncio.sleep(1)
             clients = self.inference_pool.clients
         inflight_by_url = Counter()
-        load_per_request = self.rollouts_per_example if self.use_group_scheduling else 1
         for info in self.inflight_requests.values():
-            inflight_by_url[info.client_config.api_base_url] += load_per_request
+            inflight_by_url[info.client_config.api_base_url] += 1
         return min(clients, key=lambda c: inflight_by_url[c.api_base_url])
-
-    async def schedule_group_rollout(self, example: dict):
-        """Asynchronously schedules a group rollout request."""
-        if self.rate_limiter:
-            await self.rate_limiter.acquire()
-        client_config = await self._select_least_loaded_client()
-        run_group_task = asyncio.create_task(
-            run_group(
-                env=self.env,
-                client=client_config,
-                example=example,
-                model_name=self.model_name,
-                rollouts_per_example=self.rollouts_per_example,
-                sampling_args=self.sampling_args,
-                max_retries=0,  # TODO: make configurable
-            )
-        )
-        self.inflight_requests[run_group_task] = InflightRolloutInfo(off_policy_steps=0, client_config=client_config)
 
     def drop_group(self, group_id: int) -> int:
         """Drop a group and cancel any remaining in-flight rollouts for it."""
@@ -207,18 +190,10 @@ class Scheduler:
         )
 
     def _inflight_sample_count(self) -> int:
-        load_per_request = self.rollouts_per_example if self.use_group_scheduling else 1
-        return len(self.inflight_requests) * load_per_request
+        return len(self.inflight_requests)
 
     async def _schedule_next_request(self) -> bool:
         remaining_capacity = self.max_inflight_rollouts - self._inflight_sample_count()
-
-        if self.use_group_scheduling:
-            if remaining_capacity < self.rollouts_per_example:
-                return False
-            example = self.buffer.sample_examples(n=1)[0]
-            await self.schedule_group_rollout(example=example)
-            return True
 
         if remaining_capacity <= 0:
             return False
@@ -289,24 +264,14 @@ class Scheduler:
             self.ckpt_step = next_ckpt_step
 
     def _update_off_policy(self) -> None:
-        if self.use_group_scheduling:
-            removed = 0
-            for task, info in list(self.inflight_requests.items()):
-                if info.off_policy_steps > self.max_off_policy_steps:
-                    task.cancel()
-                    self.inflight_requests.pop(task, None)
-                    removed += 1
-                else:
-                    self.inflight_requests[task] = info._replace(off_policy_steps=info.off_policy_steps + 1)
-        else:
-            stale_group_ids = {
-                info.group_id
-                for info in self.inflight_requests.values()
-                if info.off_policy_steps > self.max_off_policy_steps
-            }
-            removed = sum(self.drop_group(gid) for gid in stale_group_ids)
-            for task, info in list(self.inflight_requests.items()):
-                self.inflight_requests[task] = info._replace(off_policy_steps=info.off_policy_steps + 1)
+        stale_group_ids = {
+            info.group_id
+            for info in self.inflight_requests.values()
+            if info.group_id is not None and info.off_policy_steps > self.max_off_policy_steps
+        }
+        removed = sum(self.drop_group(gid) for gid in stale_group_ids)
+        for task, info in list(self.inflight_requests.items()):
+            self.inflight_requests[task] = info._replace(off_policy_steps=info.off_policy_steps + 1)
 
         self.cancelled_rollouts_count += removed
         if removed:
@@ -314,6 +279,21 @@ class Scheduler:
                 f"Cancelled {removed} old rollout requests (will refill naturally). "
                 f"Consider increasing max_off_policy_steps to avoid this."
             )
+
+    def _should_defer_group_scoring(self, task: str) -> bool:
+        return task in self.deferred_group_scoring_tasks and not self.config.buffer.skip_verification
+
+    async def _score_group_if_deferred(
+        self, completed_rollouts: list[vf.RolloutOutput]
+    ) -> list[vf.RolloutOutput]:
+        if not completed_rollouts:
+            return completed_rollouts
+        task = completed_rollouts[0]["task"]
+        if not self._should_defer_group_scoring(task):
+            return completed_rollouts
+        env_for_task = self.env.get_env_for_task(task)
+        await env_for_task.rubric.score_group(cast(list[vf.State], completed_rollouts))
+        return completed_rollouts
 
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
         """Continuously generates a batch of rollouts."""
@@ -355,17 +335,15 @@ class Scheduler:
                 group_id = rollout_info.group_id
 
                 try:
-                    if self.use_group_scheduling:
-                        completed_rollouts = finished_task.result()
-                    else:
-                        if group_id not in self.group_examples:
-                            continue
-                        self.completed_group_rollouts[group_id].append(finished_task.result())
-                        if len(self.completed_group_rollouts[group_id]) < self.rollouts_per_example:
-                            continue
-                        completed_rollouts = self.completed_group_rollouts.pop(group_id)
-                        self.group_examples.pop(group_id, None)
-                        self.group_rollouts_to_schedule.pop(group_id, None)
+                    if group_id not in self.group_examples:
+                        continue
+                    self.completed_group_rollouts[group_id].append(finished_task.result())
+                    if len(self.completed_group_rollouts[group_id]) < self.rollouts_per_example:
+                        continue
+                    completed_rollouts = self.completed_group_rollouts.pop(group_id)
+                    self.group_examples.pop(group_id, None)
+                    self.group_rollouts_to_schedule.pop(group_id, None)
+                    completed_rollouts = await self._score_group_if_deferred(completed_rollouts)
                 except asyncio.CancelledError:
                     if group_id is not None:
                         self.drop_group(group_id)

@@ -24,9 +24,9 @@ monkey_patch_chat_completion_logprobs()
 # Import environment before any other imports
 
 import pandas as pd
-import verifiers as vf
 from transformers import AutoProcessor, AutoTokenizer
 
+import verifiers as vf
 from prime_rl.configs.orchestrator import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
@@ -169,6 +169,27 @@ async def orchestrate(config: OrchestratorConfig):
         env_names=train_env_names,
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
+    verification_enabled = not config.buffer.skip_verification
+
+    def task_uses_group_scoring(task_name: str) -> bool:
+        rubric = train_env_group.get_env_for_task(task_name).rubric
+        return any(rubric._is_group_func(func) for func in rubric._get_reward_funcs())
+
+    train_env_deferred_group_scoring_tasks = (
+        {env_name for env_name in train_env_names if task_uses_group_scoring(env_name)} if verification_enabled else set()
+    )
+    for train_env_name, env_cfg in zip(train_env_names, config.env):
+        env_cfg.extra_env_kwargs["score_rollouts"] = (
+            verification_enabled and train_env_name not in train_env_deferred_group_scoring_tasks
+        )
+    if not verification_enabled:
+        logger.info("Verification disabled; all training envs will skip scoring.")
+    elif train_env_deferred_group_scoring_tasks:
+        deferred_tasks = ", ".join(sorted(train_env_deferred_group_scoring_tasks))
+        logger.info(
+            f"Deferred group scoring enabled for training tasks: {deferred_tasks}. "
+            "Rollouts run individually and are scored once each group completes."
+        )
 
     train_env_addresses = []
     env_processes: list[mp.Process] = []
@@ -185,6 +206,11 @@ async def orchestrate(config: OrchestratorConfig):
             )
             env_processes.append(process)
         else:
+            if env_name in train_env_deferred_group_scoring_tasks:
+                logger.warning(
+                    f"Training env {env_name} uses external server at {env.address}. "
+                    "Ensure that server was started with score_rollouts=False."
+                )
             address = env.address
         logger.info(f"Connecting train environment {env_name} to server at {address}")
         train_env_addresses.append(address)
@@ -274,6 +300,7 @@ async def orchestrate(config: OrchestratorConfig):
         strict_async_level=config.strict_async_level,
         tasks_per_minute=config.tasks_per_minute,
         lora_name=config.model.lora.name if config.model.lora else None,
+        deferred_group_scoring_tasks=train_env_deferred_group_scoring_tasks,
         config=config,
     )
 
