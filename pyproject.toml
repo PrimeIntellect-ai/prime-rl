@@ -58,6 +58,9 @@ flash-attn-3 = [
 flash-attn-cute = [
     "flash-attn-cute",
 ]
+deep-gemm = [
+    "deep-gemm @ https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl",
+]
 
 [dependency-groups]
 dev = [
