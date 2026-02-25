@@ -283,9 +283,7 @@ class Scheduler:
     def _should_defer_group_scoring(self, task: str) -> bool:
         return task in self.deferred_group_scoring_tasks and not self.config.buffer.skip_verification
 
-    async def _score_group_if_deferred(
-        self, completed_rollouts: list[vf.RolloutOutput]
-    ) -> list[vf.RolloutOutput]:
+    async def _score_group_if_deferred(self, completed_rollouts: list[vf.RolloutOutput]) -> list[vf.RolloutOutput]:
         if not completed_rollouts:
             return completed_rollouts
         task = completed_rollouts[0]["task"]

@@ -176,7 +176,9 @@ async def orchestrate(config: OrchestratorConfig):
         return any(rubric._is_group_func(func) for func in rubric._get_reward_funcs())
 
     train_env_deferred_group_scoring_tasks = (
-        {env_name for env_name in train_env_names if task_uses_group_scoring(env_name)} if verification_enabled else set()
+        {env_name for env_name in train_env_names if task_uses_group_scoring(env_name)}
+        if verification_enabled
+        else set()
     )
     for train_env_name, env_cfg in zip(train_env_names, config.env):
         env_cfg.extra_env_kwargs["score_rollouts"] = (
