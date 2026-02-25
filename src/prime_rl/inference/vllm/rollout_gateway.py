@@ -375,47 +375,15 @@ async def chat_completions(
         sampling_args = rollout.config.sampling_params
 
         try:
+            request_mode = "chat_completions"
             if rollout.turn_count == 0:
-                request_mode = "chat_completions"
                 rollout.vf_state["prompt"] = messages
-                response = await _call_chat_with_messages(
-                    rollout=rollout,
-                    raw_messages=raw_messages,
-                    tools=tools,
-                    sampling_args=sampling_args,
-                )
-            else:
-                # Agents like OpenCode may compact old messages or prune
-                # tool outputs mid-conversation, breaking the prefix assumption that
-                # the token path relies on.  Fall back to regular chat completions
-                # when that happens.
-                prev_step = rollout.vf_state["trajectory"][-1]
-                prev_context = concat_messages([prev_step["prompt"], prev_step["completion"]])
-                is_prefix_extension = (
-                    len(messages) > len(prev_context) and messages[: len(prev_context)] == prev_context
-                )
-                if is_prefix_extension:
-                    request_mode = "chat_completions_tokens"
-                    prompt_ids = await rollout.vf_client.get_prompt_ids(
-                        state=rollout.vf_state,
-                        prompt_messages=messages,
-                        oai_tools=rollout.vf_state.get("oai_tools"),
-                    )
-                    response = await _call_chat_with_tokens(
-                        rollout=rollout,
-                        raw_messages=raw_messages,
-                        tools=tools,
-                        prompt_ids=prompt_ids,
-                        sampling_args=sampling_args,
-                    )
-                else:
-                    request_mode = "chat_completions"
-                    response = await _call_chat_with_messages(
-                        rollout=rollout,
-                        raw_messages=raw_messages,
-                        tools=tools,
-                        sampling_args=sampling_args,
-                    )
+            response = await _call_chat_with_messages(
+                rollout=rollout,
+                raw_messages=raw_messages,
+                tools=tools,
+                sampling_args=sampling_args,
+            )
         except BadRequestError as exc:
             detail = str(exc)
             body = getattr(exc, "body", None)
