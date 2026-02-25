@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import Counter
+from copy import deepcopy
 from pathlib import Path
 from typing import NamedTuple
 
@@ -141,7 +142,8 @@ class Scheduler:
         """Asynchronously schedules a group rollout request."""
         if self.rate_limiter:
             await self.rate_limiter.acquire()
-        example = self.buffer.sample_examples(n=1)[0]
+        example = deepcopy(self.buffer.sample_examples(n=1)[0])
+        example = self._maybe_prepare_dynamic_prompt_example(example)
         client_config = await self._select_least_loaded_client()
         run_group_task = asyncio.create_task(
             run_group(
@@ -155,6 +157,38 @@ class Scheduler:
             )
         )
         self.inflight_group_rollouts[run_group_task] = InflightRolloutInfo(0, client_config)
+
+    def _maybe_prepare_dynamic_prompt_example(self, example: dict) -> dict:
+        existing_info = example.get("info")
+        if not isinstance(existing_info, dict):
+            return example
+        if existing_info.get("dynamic_prompt_mode") != "self_verification":
+            return example
+
+        exclude_tasks_raw = existing_info.get("dynamic_prompt_exclude_tasks")
+        exclude_tasks = {str(task) for task in exclude_tasks_raw} if isinstance(exclude_tasks_raw, list) else set()
+        # Default to excluding the current task to avoid recursive self-verification-on-self-verification.
+        current_task = example.get("task")
+        if current_task is not None:
+            exclude_tasks.add(str(current_task))
+
+        source_rollout = self.buffer.sample_random_history_rollout(exclude_tasks=exclude_tasks)
+        if source_rollout is None:
+            return example
+
+        example["info"] = {
+            **existing_info,
+            "self_verification": {
+                "source": {
+                    "task": source_rollout["task"],
+                    "example_id": source_rollout["example_id"],
+                    "reward": source_rollout["reward"],
+                    "prompt": source_rollout.get("prompt"),
+                    "completion": source_rollout.get("completion"),
+                }
+            },
+        }
+        return example
 
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
