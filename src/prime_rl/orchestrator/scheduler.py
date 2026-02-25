@@ -9,8 +9,8 @@ from typing import NamedTuple
 import verifiers as vf
 from aiolimiter import AsyncLimiter
 
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
-from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.orchestrator.vf_utils import get_seq_len, run_group
 from prime_rl.utils.client import InferencePool

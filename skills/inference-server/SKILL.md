@@ -44,6 +44,6 @@ curl http://localhost:8000/v1/chat/completions \
 ## Key files
 
 - `src/prime_rl/inference/server.py` — entry point, env var setup
-- `src/prime_rl/inference/config.py` — `InferenceConfig` and all sub-configs
+- `src/prime_rl/configs/inference.py` — `InferenceConfig` and all sub-configs
 - `src/prime_rl/inference/vllm/server.py` — FastAPI routes and vLLM monkey-patches
 - `configs/debug/infer.toml` — minimal debug config

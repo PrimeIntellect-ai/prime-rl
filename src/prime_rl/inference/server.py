@@ -1,6 +1,6 @@
 import os
 
-from prime_rl.inference.config import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.pydantic_config import parse_argv
 
 

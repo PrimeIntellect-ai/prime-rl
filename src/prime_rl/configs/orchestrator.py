@@ -1,18 +1,17 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
-from prime_rl.utils.config import (
+from prime_rl.configs.shared import (
+    BaseModelConfig,
     ClientConfig,
+    FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
+    TransportConfig,
     WandbWithExtrasConfig,
-)
-from prime_rl.utils.config import (
-    ModelConfig as BaseModelConfig,
 )
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
@@ -548,8 +547,10 @@ class BufferConfig(BaseConfig):
         return self
 
 
-class AdvantageConfig(BaseConfig):
+class DefaultAdvantageConfig(BaseModel):
     """Config for the default advantage."""
+
+    model_config = ConfigDict(extra="forbid")
 
     type: Literal["default"] = "default"
     length_weighted_mean: bool = False
@@ -567,15 +568,9 @@ class CustomAdvantageConfig(BaseModel):
     ]
 
 
-def _advantage_config_discriminator(v: Any) -> str:
-    if isinstance(v, dict):
-        return v.get("type", "default")
-    return getattr(v, "type", "default")
-
-
-AdvantageConfigType: TypeAlias = Annotated[
-    Annotated[AdvantageConfig, Tag("default")] | Annotated[CustomAdvantageConfig, Tag("custom")],
-    Discriminator(_advantage_config_discriminator),
+AdvantageConfig: TypeAlias = Annotated[
+    DefaultAdvantageConfig | CustomAdvantageConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -629,7 +624,7 @@ class RepetitionFilterConfig(BaseModel):
     ] = 0.99
 
 
-FilterConfigType: TypeAlias = Annotated[
+FilterConfig: TypeAlias = Annotated[
     GibberishFilterConfig | RepetitionFilterConfig,
     Field(discriminator="type"),
 ]
@@ -651,7 +646,9 @@ class NCCLWeightBroadcastConfig(BaseModel):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
 
 
-WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
+WeightBroadcastConfig: TypeAlias = Annotated[
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+]
 
 
 class TeacherModelConfig(BaseConfig):
@@ -703,10 +700,10 @@ class OrchestratorConfig(BaseSettings):
     buffer: BufferConfig = BufferConfig()
 
     # The advantage configuration
-    advantage: AdvantageConfigType | None = AdvantageConfig()
+    advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
     # Rollout filters (monitor by default, enforce optionally)
-    filters: list[FilterConfigType] = [GibberishFilterConfig(), RepetitionFilterConfig()]
+    filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig()]
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -723,11 +720,9 @@ class OrchestratorConfig(BaseSettings):
     # The validation configuration
     val: ValConfig | None = None
 
-    weight_broadcast: Annotated[WeightBroadcastConfigType, Field(discriminator="type")] = (
-        FileSystemWeightBroadcastConfig()
-    )
+    weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
 
-    rollout_transport: Annotated[TransportConfigType, Field(discriminator="type")] = FileSystemTransportConfig()
+    rollout_transport: TransportConfig = FileSystemTransportConfig()
 
     output_dir: Annotated[
         Path,
@@ -784,8 +779,8 @@ class OrchestratorConfig(BaseSettings):
             ge=1,
             description=(
                 "Maximum number of rollouts to keep in-flight. Required for token-based batching. "
-                "If batch_size is set and this is unset, defaults to batch_size * over_sampling_factor "
-                "(or batch_size when over_sampling_factor is unset)."
+                "If batch_size is set and this is unset, defaults to batch_size * oversampling_factor "
+                "(or batch_size when oversampling_factor is unset)."
             ),
         ),
     ] = None
@@ -893,23 +888,23 @@ class OrchestratorConfig(BaseSettings):
             self.batch_size = 128
 
         if has_token_batch:
-            if self.over_sampling_factor is not None:
-                raise ValueError("over_sampling_factor can only be set when batch_size is set")
+            if self.oversampling_factor is not None:
+                raise ValueError("oversampling_factor can only be set when batch_size is set")
             if self.max_inflight_rollouts is None:
                 raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
         else:
             assert self.batch_size is not None
             if self.batch_size % self.rollouts_per_example != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
-            if self.max_inflight_rollouts is not None and self.over_sampling_factor is not None:
-                expected_max_inflight_rollouts = int(self.batch_size * self.over_sampling_factor)
+            if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
+                expected_max_inflight_rollouts = int(self.batch_size * self.oversampling_factor)
                 if self.max_inflight_rollouts != expected_max_inflight_rollouts:
                     raise ValueError(
-                        "max_inflight_rollouts conflicts with over_sampling_factor * batch_size"
+                        "max_inflight_rollouts conflicts with oversampling_factor * batch_size"
                     )
             if self.max_inflight_rollouts is None:
-                over_sampling_factor = self.over_sampling_factor if self.over_sampling_factor is not None else 1.0
-                self.max_inflight_rollouts = int(self.batch_size * over_sampling_factor)
+                oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
+                self.max_inflight_rollouts = int(self.batch_size * oversampling_factor)
 
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")

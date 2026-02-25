@@ -21,7 +21,7 @@ from vllm.entrypoints.utils import load_aware_call, with_cancellation
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
-from prime_rl.inference.config import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.logger import get_logger
 
 logger = get_logger()
