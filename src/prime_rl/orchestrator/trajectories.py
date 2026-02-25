@@ -102,7 +102,8 @@ def interleave_rollout(
             completion_logprobs=list(tokens["completion_logprobs"]),
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
-            advantage=None,
+            advantage=step.get("advantage"),
+            reward=step.get("reward"),
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
             routed_experts=routed_experts,
@@ -129,6 +130,12 @@ def interleave_rollout(
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
+
+        # Update reward/advantage to use the latest merged step's values
+        if step.get("reward") is not None:
+            sample.reward = step["reward"]
+        if step.get("advantage") is not None:
+            sample.advantage = step["advantage"]
 
         # Update cumulative images to include any new images from this step
         pixel_values, image_grid_thw = get_images(step_idx)
