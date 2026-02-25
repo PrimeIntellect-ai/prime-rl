@@ -1,6 +1,6 @@
 import pytest
 
-from prime_rl.inference.config import ModelConfig
+from prime_rl.configs.inference import ModelConfig
 
 
 @pytest.mark.parametrize(

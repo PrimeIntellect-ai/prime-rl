@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch.nn as nn
 
-from prime_rl.trainer.config import LoRAConfig
+from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.utils.logger import get_logger
 
 
