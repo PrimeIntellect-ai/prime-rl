@@ -8,13 +8,13 @@ from torch.nn import CrossEntropyLoss
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.trainer.models.layers.attn import substitute_prime_rl_flash_attn
+from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
-from prime_rl.trainer.sft.config import SFTTrainerConfig
+from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.runs import Progress
 from prime_rl.utils.logger import setup_logger
@@ -50,7 +50,7 @@ from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
-def train(config: SFTTrainerConfig):
+def train(config: SFTConfig):
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
@@ -94,7 +94,7 @@ def train(config: SFTTrainerConfig):
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
-        substitute_prime_rl_flash_attn(
+        substitute_ring_attn(
             parallel_dims.world_mesh["cp"].get_group(),
             heads_k_stride=1,
             attn_impl=config.model.attn,
@@ -445,7 +445,7 @@ def train(config: SFTTrainerConfig):
 
 
 def main():
-    train(parse_argv(SFTTrainerConfig))
+    train(parse_argv(SFTConfig))
 
 
 if __name__ == "__main__":

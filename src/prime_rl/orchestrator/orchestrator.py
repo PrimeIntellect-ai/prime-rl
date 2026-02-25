@@ -1,4 +1,5 @@
 import asyncio
+import multiprocessing as mp
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -26,9 +27,9 @@ import pandas as pd
 import verifiers as vf
 from transformers import AutoProcessor, AutoTokenizer
 
+from prime_rl.configs.orchestrator import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
-from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.eval_utils import evaluate_env
 from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
@@ -102,7 +103,13 @@ async def orchestrate(config: OrchestratorConfig):
         install_env(env_id)
 
     # Setup inference pool (handles both static and elastic modes)
-    inference_pool = await setup_inference_pool(config.client, model_name=config.model.name)
+    client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
+    if config.use_token_client:
+        logger.warning(
+            "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a linear "
+            "history and the chat template has the extension property."
+        )
+    inference_pool = await setup_inference_pool(config.client, model_name=config.model.name, client_type=client_type)
 
     # Setup teacher inference pool if configured
     if config.teacher_model:
@@ -164,9 +171,10 @@ async def orchestrate(config: OrchestratorConfig):
     )
 
     train_env_addresses = []
+    env_processes: list[mp.Process] = []
     for env_id, env, env_name in zip(env_ids, config.env, train_env_names):
         if env.address is None:
-            address = spawn_env_server(
+            address, process = spawn_env_server(
                 env_id=env_id,
                 env_args=env.args,
                 extra_env_kwargs=env.extra_env_kwargs,
@@ -175,6 +183,7 @@ async def orchestrate(config: OrchestratorConfig):
                 log_file_level=config.log.vf_level,
                 json_logging=config.log.json_logging,
             )
+            env_processes.append(process)
         else:
             address = env.address
         logger.info(f"Connecting train environment {env_name} to server at {address}")
@@ -201,7 +210,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         for env_id, env, eval_env_name in zip(env_ids, config.eval.env, eval_env_names):
             if env.address is None:
-                address = spawn_env_server(
+                address, process = spawn_env_server(
                     env_id=env_id,
                     env_args=env.args,
                     extra_env_kwargs=env.extra_env_kwargs,
@@ -210,6 +219,7 @@ async def orchestrate(config: OrchestratorConfig):
                     log_file_level=config.log.vf_level,
                     json_logging=config.log.json_logging,
                 )
+                env_processes.append(process)
             else:
                 address = env.address
             logger.info(f"Connecting eval environment {eval_env_name} to server at {address}")
@@ -495,12 +505,14 @@ async def orchestrate(config: OrchestratorConfig):
         train_examples: list[TrainingSample] = []
         rollout_prefill_lens: list[int] = []
         rollout_decode_lens: list[int] = []
+        rollout_samples_per_rollout: list[int] = []
         num_prefill_tokens = 0
         num_decode_tokens = 0
         for rollout, rollout_advantage, samples in zip(train_rollouts, advantages, results):
             rollout_prefill_tokens = 0
             rollout_decode_tokens = 0
             if samples is not None:
+                rollout_samples_per_rollout.append(len(samples))
                 for sample in samples:
                     if sample.completion_advantages is None:
                         sample.completion_advantages = [rollout_advantage] * len(sample.completion_ids)
@@ -514,6 +526,8 @@ async def orchestrate(config: OrchestratorConfig):
                     rollout_decode_tokens += sample_decode_tokens
                     rollout_prefill_tokens += sample_prefill_tokens
                     train_examples.append(sample)
+            else:
+                rollout_samples_per_rollout.append(0)
             rollout_prefill_lens.append(rollout_prefill_tokens)
             rollout_decode_lens.append(rollout_decode_tokens)
             num_prefill_tokens += rollout_prefill_tokens
@@ -581,6 +595,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
                 "prefill_len": rollout_prefill_lens,
                 "decode_len": rollout_decode_lens,
+                "samples_per_rollout": rollout_samples_per_rollout,
                 "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
                 "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
                 "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
@@ -610,12 +625,10 @@ async def orchestrate(config: OrchestratorConfig):
         throughput = num_tokens / generate_completions_time
 
         # Compute solve all and none tensors
-        solve_all = (
-            results_df.groupby("example_id")
-            .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
-            .mean()
-        )
-        solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
+        problem_indices = results_df.index // config.rollouts_per_example
+        reward_sum_per_problem = results_df.groupby(problem_indices).reward.sum()
+        solve_all = (reward_sum_per_problem == config.rollouts_per_example).mean()
+        solve_none = (reward_sum_per_problem == 0).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
         step_time = time.perf_counter() - step_start_time
@@ -643,6 +656,10 @@ async def orchestrate(config: OrchestratorConfig):
             "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
             "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
             "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
+            # Seqs per rollout metrics
+            "samples_per_rollout/mean": results_df.groupby("example_id").samples_per_rollout.mean().mean(),
+            "samples_per_rollout/max": results_df.groupby("example_id").samples_per_rollout.mean().max(),
+            "samples_per_rollout/min": results_df.groupby("example_id").samples_per_rollout.mean().min(),
             # Turn metrics
             "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
             "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
@@ -658,6 +675,10 @@ async def orchestrate(config: OrchestratorConfig):
             "perf/throughput": throughput,
             # Train reward
             "reward/mean": results_df.reward.mean(),
+            "reward/std": results_df.reward.std(),
+            "reward/min": results_df.reward.min(),
+            "reward/max": results_df.reward.max(),
+            "reward/median": results_df.reward.median(),
             "sampling/temperature": temperature,
             # Batch metrics
             "batch/solve_none": solve_none,
@@ -702,7 +723,15 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Optionally, add val metrics
         if val_results_df is not None:
-            to_log.update({"val_reward/mean": val_results_df.reward.mean()})
+            to_log.update(
+                {
+                    "val_reward/mean": val_results_df.reward.mean(),
+                    "val_reward/std": val_results_df.reward.std(),
+                    "val_reward/min": val_results_df.reward.min(),
+                    "val_reward/max": val_results_df.reward.max(),
+                    "val_reward/median": val_results_df.reward.median(),
+                }
+            )
 
             if val_results_df.task.nunique() > 1:
                 per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
@@ -712,7 +741,7 @@ async def orchestrate(config: OrchestratorConfig):
                 to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
         # Log metrics to monitor(s)
-        monitor.log(to_log)
+        monitor.log(to_log, step=progress.step)
 
         # Log samples to monitor(s) if enabled
         subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
@@ -726,6 +755,9 @@ async def orchestrate(config: OrchestratorConfig):
             },
             step=progress.step,
         )
+
+        # Flush all accumulated metrics for this step
+        monitor.flush(step=progress.step)
 
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
@@ -787,6 +819,14 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
+
+    # Shutdown env processes
+    for process in env_processes:
+        process.terminate()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
 
     logger.success("Orchestrator finished.")
 
