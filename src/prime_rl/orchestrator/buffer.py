@@ -113,7 +113,12 @@ class Buffer:
         saved_rollout_buffer = cast(list[vf.RolloutOutput], read_jsonl(path / "rollout_buffer.jsonl"))
         saved_rollout_history = cast(list[vf.RolloutOutput], read_jsonl(path / "rollout_history.jsonl"))
 
-        if any(saved_easy_examples) or any(saved_hard_examples) or any(saved_rollout_buffer) or any(saved_rollout_history):
+        if (
+            any(saved_easy_examples)
+            or any(saved_hard_examples)
+            or any(saved_rollout_buffer)
+            or any(saved_rollout_history)
+        ):
             # Build hash lookup for example buffer (env -> (example_hash -> example_id))
             example_hash_lookup = defaultdict(dict)
             all_hashes = set()
