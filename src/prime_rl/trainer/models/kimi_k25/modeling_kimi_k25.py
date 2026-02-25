@@ -133,7 +133,7 @@ class KimiK25PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any("mlp.experts.1.up_proj" in module_name for module_name in state_dict.keys())
+        return any("mlp.experts.1.up_proj" in name or "mlp.experts.gate_up_proj" in name for name in state_dict.keys())
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
