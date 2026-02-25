@@ -28,7 +28,7 @@ target_modules = [
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
-max_inflight_rollouts = 1024
+oversampling_factor = 2.0
 
 [orchestrator.sampling]
 max_tokens = 512
