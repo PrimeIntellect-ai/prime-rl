@@ -74,6 +74,8 @@ class Buffer:
 
         # Initialize rollout buffer (flat list of rollouts)
         self.rollout_buffer: list[vf.RolloutOutput] = []
+        # Historical rollout store used for non-destructive random sampling
+        self.rollout_history: list[vf.RolloutOutput] = []
 
         self.reset_step_metrics()
 
@@ -95,19 +97,23 @@ class Buffer:
         write_jsonl(self.easy_examples, path / "easy_examples.jsonl")
         write_jsonl(self.hard_examples, path / "hard_examples.jsonl")
         write_jsonl(self.rollout_buffer, path / "rollout_buffer.jsonl")
+        write_jsonl(self.rollout_history, path / "rollout_history.jsonl")
 
     def load(self, path: Path) -> None:
         """Loads pool assignments and rollouts."""
 
         def read_jsonl(path: Path) -> list[dict]:
+            if not path.exists():
+                return []
             with open(path, "r") as f:
                 return [json.loads(line) for line in f]
 
         saved_easy_examples = read_jsonl(path / "easy_examples.jsonl")
         saved_hard_examples = read_jsonl(path / "hard_examples.jsonl")
         saved_rollout_buffer = cast(list[vf.RolloutOutput], read_jsonl(path / "rollout_buffer.jsonl"))
+        saved_rollout_history = cast(list[vf.RolloutOutput], read_jsonl(path / "rollout_history.jsonl"))
 
-        if any(saved_easy_examples) or any(saved_hard_examples) or any(saved_rollout_buffer):
+        if any(saved_easy_examples) or any(saved_hard_examples) or any(saved_rollout_buffer) or any(saved_rollout_history):
             # Build hash lookup for example buffer (env -> (example_hash -> example_id))
             example_hash_lookup = defaultdict(dict)
             all_hashes = set()
@@ -166,6 +172,13 @@ class Buffer:
                 self.rollout_buffer.extend(valid_saved_rollouts)
                 self.logger.debug(f"Loaded {len(valid_saved_rollouts)} rollout(s) from checkpoint.")
 
+            if any(saved_rollout_history):
+                valid_saved_rollout_history = [
+                    rollout for rollout in saved_rollout_history if rollout["task"] in self.env_names
+                ]
+                self.rollout_history.extend(valid_saved_rollout_history)
+                self.logger.debug(f"Loaded {len(valid_saved_rollout_history)} rollout history item(s) from checkpoint.")
+
             # Load rollouts, filtering out removed environments and problems
             def convert_examples_to_normal(examples: list[dict], fraction: float) -> int:
                 """Moves a fraction of examples from the given pool back to normal."""
@@ -209,6 +222,7 @@ class Buffer:
 
     def update(self, rollouts: list[vf.RolloutOutput]):
         """Updates the buffer state with completed rollouts."""
+        self.rollout_history.extend(rollouts)
 
         rollouts_by_example = defaultdict(list)
         for rollout in rollouts:
@@ -248,6 +262,14 @@ class Buffer:
         sampled_rollouts = self.rollout_buffer[-n:]
         self.rollout_buffer = self.rollout_buffer[:-n]
         return sampled_rollouts
+
+    def sample_random_history_rollout(self, exclude_tasks: set[str] | None = None) -> vf.RolloutOutput | None:
+        """Sample one random historical rollout without removing it."""
+        exclude_tasks = exclude_tasks or set()
+        eligible = [rollout for rollout in self.rollout_history if rollout["task"] not in exclude_tasks]
+        if not eligible:
+            return None
+        return random.choice(eligible)
 
     def reset_step_metrics(self) -> None:
         """Reset per-step metrics (called after get_metrics)."""
