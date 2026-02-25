@@ -163,8 +163,10 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
 async def update_weights(request: Request):
     data = await request.json()
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    # Reset prefix cache to invalidate KV states computed with old weights
-    await engine_client(request).reset_prefix_cache()
+    # Step-0 update is typically the first load after startup, so there is no prefix cache to invalidate.
+    # Skipping the reset avoids exercising an unnecessary early cache-reset path.
+    if not data.get("skip_prefix_cache_reset", False):
+        await engine_client(request).reset_prefix_cache()
     return {"status": "ok"}
 
 
