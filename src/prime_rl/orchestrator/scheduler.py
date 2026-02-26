@@ -241,7 +241,7 @@ class Scheduler:
         await self.maybe_update_policy()
         if self.update_policy_task is not None:
             self.update_policy_task.cancel()
-            self.update_policy_task = asyncio.create_task(self.update_policy_loop())
+        self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 
         batch_start_time = time.perf_counter()
 
