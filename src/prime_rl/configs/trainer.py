@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -275,7 +276,7 @@ class ModelConfig(BaseModelConfig):
                 "The chunk size to use for the fused LM head. "
                 "Three behaviors: "
                 "(1) int >= 512: explicitly set chunk size for fused LM head; "
-                "(2) 'auto': auto-enable (RL training auto-sets to 2048); "
+                "(2) 'auto': auto-enable (RL training auto-sets to 8192); "
                 "(3) 'disabled': explicitly disable fused LM head (use vanilla). "
                 "Explicitly setting an integer value for this feature isn't supported for SFT training."
             ),
@@ -326,10 +327,16 @@ class ModelConfig(BaseModelConfig):
     def fused_lm_head_chunk_size_is_valid(self):
         if isinstance(self.fused_lm_head_chunk_size, int):
             low = 512
+            warn_threshold = 8192
             if self.fused_lm_head_chunk_size < low:
                 raise ValueError(
                     f"Fused LM head chunk size must be at least {low}, got {self.fused_lm_head_chunk_size}"
                 )
+            if self.fused_lm_head_chunk_size < warn_threshold:
+                warnings.warn(
+                    f"Fused LM head chunk size is set to {self.fused_lm_head_chunk_size}, which is less than the recommended threshold of {warn_threshold}. This may cause some runs to diverge due to numerical instability in floating point arithmetic."
+                )
+
         return self
 
     @model_validator(mode="after")
@@ -798,7 +805,7 @@ class TrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_fused_lm_head_chunk_size(self):
         if self.model.fused_lm_head_chunk_size == "auto":
-            self.model.fused_lm_head_chunk_size = 2048
+            self.model.fused_lm_head_chunk_size = 8192
 
         return self
 

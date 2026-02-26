@@ -725,7 +725,7 @@ def test_extract_images_from_messages_single_image():
     messages = [_create_image_message(image_url)]
     images = _extract_images_from_messages(messages)
     assert len(images) == 1
-    assert isinstance(images[0], Image.Image)
+    assert isinstance(images[0][0], Image.Image)
 
 
 def test_extract_images_from_messages_multiple_images():
@@ -762,7 +762,7 @@ def test_extract_images_from_examples_single_turn():
     all_images, images_per_step = _extract_images_from_examples([(1, output)])
 
     assert len(all_images) == 1
-    assert images_per_step == {1: [1]}  # 1 image after step 0
+    assert images_per_step == {1: [[0]]}  # step 0 has image at index 0
 
 
 def test_extract_images_from_examples_multi_turn_new_image_each_turn():
@@ -809,7 +809,7 @@ def test_extract_images_from_examples_multi_turn_new_image_each_turn():
     all_images, images_per_step = _extract_images_from_examples([(1, output)])
 
     assert len(all_images) == 2  # 2 unique images total
-    assert images_per_step == {1: [1, 2]}  # 1 after step 0, 2 after step 1
+    assert images_per_step == {1: [[0], [0, 1]]}  # step 0: [red], step 1: [red, green]
 
 
 def test_extract_images_from_examples_multi_turn_no_new_images():
@@ -853,8 +853,68 @@ def test_extract_images_from_examples_multi_turn_no_new_images():
 
     all_images, images_per_step = _extract_images_from_examples([(1, output)])
 
-    assert len(all_images) == 1  # Only 1 unique image
-    assert images_per_step == {1: [1, 1]}  # 1 after step 0, still 1 after step 1
+    assert len(all_images) == 1  # Only 1 unique image (deduped)
+    assert images_per_step == {1: [[0], [0]]}  # both steps reference the same image
+
+
+def test_extract_images_from_examples_step_with_fewer_images_than_prior_steps():
+    """Test that image counts reflect the prompt's actual images, not a monotonically increasing total.
+
+    When a later step's prompt contains fewer images than the cumulative total from prior steps
+    (i.e. the prompt is not strictly cumulative), the count for that step should match
+    the number of images actually present in that step's prompt.
+    """
+    red_url = _create_test_image("red")
+    green_url = _create_test_image("green")
+
+    output = vf.RolloutOutput(
+        example_id=1,
+        trajectory=[
+            # Step 0: red only
+            vf.TrajectoryStep(
+                prompt=[_create_image_message(red_url)],
+                completion=[],
+                response=MagicMock(),
+                tokens=MagicMock(),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+            # Step 1: cumulative — red + green
+            vf.TrajectoryStep(
+                prompt=[_create_image_message(red_url), _create_image_message(green_url)],
+                completion=[],
+                response=MagicMock(),
+                tokens=MagicMock(),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+            # Step 2: only green — fewer images than cumulative total
+            vf.TrajectoryStep(
+                prompt=[_create_image_message(green_url)],
+                completion=[],
+                response=MagicMock(),
+                tokens=MagicMock(),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    _, images_per_step = _extract_images_from_examples([(1, output)])
+
+    # Step 0: [red] → index 0; Step 1: [red, green] → indices [0, 1]; Step 2: [green] → index [1]
+    assert images_per_step == {1: [[0], [0, 1], [1]]}
 
 
 def test_vlm_image_cache_get_for_step():
