@@ -309,6 +309,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Track last online eval checkpoint step for this process
     last_eval_step = -1
+    # Track previous ckpt_step to detect when ckpt_step jumps over eval interval boundaries
+    prev_ckpt_step = -1
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
@@ -318,8 +320,12 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
         if config.eval and config.eval.skip_eval_on_resume:
+            prev_ckpt_step = scheduler.ckpt_step
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
+        else:
+            # Allow eval at resumed step by setting prev_ckpt_step one behind
+            prev_ckpt_step = scheduler.ckpt_step - 1
 
         # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
         check_exists = config.weight_broadcast.type != "nccl"
@@ -378,14 +384,27 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Run evals BEFORE training (blocking, in subprocess to isolate event loop)
         # This ensures weights don't change during eval and eval doesn't cause event loop lag
-        if (
-            config.eval
-            and ckpt_step % config.eval.interval == 0
-            and ckpt_step > last_eval_step
-            and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
-        ):
+        # Use range check to handle ckpt_step jumping over interval boundaries:
+        # find the highest interval step in (prev_ckpt_step, ckpt_step] that should trigger eval
+        eval_ckpt_step = None
+        if config.eval and ckpt_step > prev_ckpt_step:
+            interval = config.eval.interval
+            highest_interval_step = (ckpt_step // interval) * interval
+            if highest_interval_step > prev_ckpt_step and highest_interval_step > last_eval_step:
+                if highest_interval_step == 0:
+                    if ckpt_step == 0 and config.eval.eval_base_model:
+                        eval_ckpt_step = 0
+                else:
+                    eval_ckpt_step = highest_interval_step
+
+        if eval_ckpt_step is not None:
             last_eval_step = ckpt_step
-            logger.info(f"Running evals for checkpoint step {ckpt_step}")
+            if eval_ckpt_step != ckpt_step:
+                logger.info(
+                    f"Running evals for interval step {eval_ckpt_step} (current ckpt_step={ckpt_step})"
+                )
+            else:
+                logger.info(f"Running evals for checkpoint step {ckpt_step}")
 
             # Pause weight updates and re-scheduling of training rollouts during eval
             # to avoid evaluating across different checkpoints and avoid congestion
@@ -408,7 +427,7 @@ async def orchestrate(config: OrchestratorConfig):
                         rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
                         max_retries=eval_env_config.max_retries,
                         ckpt_step=ckpt_step,
-                        step=progress.step,
+                        step=ckpt_step,
                     )
                     for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
                 ]
@@ -416,6 +435,9 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Resume weight updates
             scheduler.checkpoint_ready.set()
+
+        # Update prev_ckpt_step for next iteration
+        prev_ckpt_step = ckpt_step
 
         # Schedule generating the training batch
         temperature = compute_temperature(progress.step, config.sampling, config.max_steps)
@@ -765,7 +787,7 @@ async def orchestrate(config: OrchestratorConfig):
                     rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
                     max_retries=eval_env_config.max_retries,
                     ckpt_step=ckpt_step,
-                    step=progress.step,
+                    step=ckpt_step,
                 )
                 for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
             ]
