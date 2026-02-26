@@ -338,9 +338,6 @@ async def orchestrate(config: OrchestratorConfig):
     is_first_step = True
     await set_semaphore(config.max_concurrent or -1)
 
-    # Start update policy loop
-    update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
-
     # Track consecutive empty batches for retry logic
     empty_batch_retries = 0
     max_empty_batch_retries = 5
@@ -355,13 +352,7 @@ async def orchestrate(config: OrchestratorConfig):
             reason = evicted_path.read_text().strip()
             raise RuntimeError(f"Run evicted by trainer: {reason}")
 
-        # Check if update_policy_task has failed and propagate the exception
-        if update_policy_task.done():
-            # End all other tasks
-            for task in asyncio.all_tasks():
-                task.cancel()
-            update_policy_task.result()  # Raises if the task failed
-        # Capture ckpt_step once for consistency (it's updated by update_policy_loop concurrently)
+        # Capture ckpt_step once for consistency (it's updated inside the scheduler)
         ckpt_step = scheduler.ckpt_step
 
         # Save checkpoint (if we are at an interval step and not at the first or last step)
@@ -403,7 +394,7 @@ async def orchestrate(config: OrchestratorConfig):
             # For heavy eval workloads, it might be necessary additionally cancel in-flight training rollouts
             if config.eval.cancel_inflight_rollouts_on_eval:
                 logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
-                scheduler.cancel_inflight_rollouts()
+                await scheduler.cancel_inflight_rollouts()
 
             results = await asyncio.gather(
                 *[
@@ -796,8 +787,7 @@ async def orchestrate(config: OrchestratorConfig):
     rollout_executor.shutdown(wait=False)
 
     # Stop scheduler
-    scheduler.cancel_inflight_rollouts()
-    update_policy_task.cancel()
+    await scheduler.stop()
 
     # Stop inference pool
     await inference_pool.stop()
