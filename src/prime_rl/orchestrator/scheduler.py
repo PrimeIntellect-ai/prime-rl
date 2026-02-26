@@ -225,11 +225,12 @@ class Scheduler:
         """Continuously generates a batch of rollouts."""
         self.step = step
 
-        # Cancel the previous policy loop before doing anything else to avoid concurrent updates
+        # Cancel the previous update policy task to avoid concurrent updates
         if self.update_policy_task is not None:
             await safe_cancel(self.update_policy_task)
 
-        # Check the async barrier, then re-create the update policy loop to update incoming policies mid-step
+        # Manually check the async barrier before starting the step, the re-create the update policy loop
+        # This ensures that we respect max_async_level, while still listening for policy updates mid-step
         await self.maybe_update_policy()
         self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 
