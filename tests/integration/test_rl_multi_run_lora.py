@@ -5,14 +5,13 @@ import shutil
 import signal
 import subprocess
 import time
-from functools import partial
 from pathlib import Path
 from typing import Generator
 
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.utils import check_number_goes_up_or_down, check_reward_in_range, strip_escape_codes
+from tests.utils import check_reward_goes_up, check_reward_in_range, strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -362,9 +361,6 @@ def multi_run_result(
                 p.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 p.kill()
-
-
-check_reward_goes_up = partial(check_number_goes_up_or_down, go_up=True, pattern=r"Reward:\s*(\d+\.\d{4})")
 
 
 def test_remaining_orchestrators_complete(
