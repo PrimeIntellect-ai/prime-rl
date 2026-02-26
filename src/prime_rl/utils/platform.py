@@ -120,12 +120,16 @@ def finalize_run(
     status_label = "completed" if success else "failed"
     logger.info(f"Finalizing platform run {run_id} as {status_label}")
 
-    response = httpx.put(
-        f"{config.base_url}/api/v1/rft/external-runs/{run_id}/status",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json=payload,
-        timeout=30,
-    )
+    try:
+        response = httpx.put(
+            f"{config.base_url}/api/v1/rft/external-runs/{run_id}/status",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=payload,
+            timeout=30,
+        )
+    except httpx.HTTPError as e:
+        logger.warning(f"Failed to finalize platform run {run_id}: {e}")
+        return
 
     if response.status_code != 200:
         logger.warning(f"Failed to finalize platform run {run_id} (HTTP {response.status_code}): {response.text}")

@@ -158,10 +158,6 @@ def rl_local(config: RLConfig):
         else:
             config.orchestrator.prime_monitor.base_url = f"{config.platform.base_url}/api/internal/rft"
 
-    # Write all resolved subconfigs to disk
-    config_dir = Path(".pydantic_config") / uuid.uuid4().hex
-    write_subconfigs(config, config_dir)
-
     # Start processes
     processes: list[Popen] = []
     monitor_threads: list[Thread] = []
@@ -169,6 +165,10 @@ def rl_local(config: RLConfig):
     stop_events: dict[str, Event] = {}
 
     try:
+        # Write all resolved subconfigs to disk
+        config_dir = Path(".pydantic_config") / uuid.uuid4().hex
+        write_subconfigs(config, config_dir)
+
         # Optionally, start inference process
         if config.inference:
             inference_cmd = ["uv", "run", "inference", "@", (config_dir / "inference.toml").as_posix()]
