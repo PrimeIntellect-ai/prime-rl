@@ -149,8 +149,8 @@ def interleave_rollout(
 # =============================================================================
 
 
-def _extract_images_from_messages(messages: list) -> list[Image.Image]:
-    """Extract images from OpenAI-style chat messages."""
+def _extract_images_from_messages(messages: list) -> list[tuple[Image.Image, str]]:
+    """Extract (image, b64_key) pairs from OpenAI-style chat messages."""
     images = []
     if not messages or not isinstance(messages, list):
         return images
@@ -165,79 +165,78 @@ def _extract_images_from_messages(messages: list) -> list[Image.Image]:
                         b64_data = url.split(",", 1)[1]
                         img_bytes = base64.b64decode(b64_data)
                         img = Image.open(BytesIO(img_bytes))
-                        images.append(img)
+                        images.append((img, b64_data))
     return images
 
 
 def _extract_images_from_examples(
     examples: list[tuple[int, vf.RolloutOutput]],
-) -> tuple[list[Image.Image], dict[int, list[int]]]:
+) -> tuple[list[Image.Image], dict[int, list[list[int]]]]:
     """
     Extract images from all trajectory steps of each example.
 
-    Parses OpenAI-style message content looking for image_url items with base64 data URLs
-    (e.g., "data:image/png;base64,..."). Each trajectory step's prompt is cumulative (contains
-    full conversation history), so we extract only the NEW images introduced in each step.
+    Parses OpenAI-style message content looking for image_url items with base64 data URLs.
+    Images are deduplicated across the batch by their base64 content. Each step records
+    the indices of its images into the deduplicated all_images list.
 
     Args:
         examples: List of (cache_key, output) tuples where output contains a "trajectory"
             list with steps that have "prompt" messages in OpenAI chat format.
 
     Returns:
-        Tuple of (all_images, images_per_step_per_example)
-        - all_images: flat list of decoded PIL images, ordered by example then by step
-        - images_per_step_per_example: dict mapping cache_key to list of cumulative image
-          counts per step (e.g., [1, 2, 2] means 1 image after step 0, 2 after step 1, 2 after step 2)
+        Tuple of (all_images, step_image_indices_per_example)
+        - all_images: deduplicated flat list of decoded PIL images
+        - step_image_indices_per_example: dict mapping cache_key to per-step lists of
+          indices into all_images (e.g., [[0], [0, 1], [1]] for the decreasing-images case)
     """
-    all_images = []
-    images_per_step_per_example = {}
+    all_images: list[Image.Image] = []
+    image_registry: dict[str, int] = {}  # b64_key -> index in all_images
+    step_image_indices_per_example: dict[int, list[list[int]]] = {}
 
     for eid, output in examples:
         trajectory = output.get("trajectory", [])
         if not trajectory:
-            images_per_step_per_example[eid] = []
+            step_image_indices_per_example[eid] = []
             continue
 
-        example_images = []
-        cumulative_counts = []
-
+        step_image_indices = []
         for step in trajectory:
             prompt = step.get("prompt")
-            # Extract all images from this step's prompt (which is cumulative)
-            step_images = _extract_images_from_messages(prompt)
-            # Only take images beyond what we already have (new images in this step)
-            new_images = step_images[len(example_images) :]
-            example_images.extend(new_images)
-            cumulative_counts.append(len(example_images))
+            step_image_pairs = _extract_images_from_messages(prompt)
+            indices = []
+            for img, key in step_image_pairs:
+                if key not in image_registry:
+                    image_registry[key] = len(all_images)
+                    all_images.append(img)
+                indices.append(image_registry[key])
+            step_image_indices.append(indices)
 
-        images_per_step_per_example[eid] = cumulative_counts
-        all_images.extend(example_images)
+        step_image_indices_per_example[eid] = step_image_indices
 
-    return all_images, images_per_step_per_example
+    return all_images, step_image_indices_per_example
 
 
 def _preprocess_images_batched(
     images: list[Image.Image],
-    images_per_step_per_example: dict[int, list[int]],
+    step_image_indices_per_example: dict[int, list[list[int]]],
     processor,
 ) -> dict[int, list[tuple[list | None, list | None]]]:
     """
     Preprocess all images in a single batched call, then distribute results per step.
 
     Args:
-        images: Flat list of all PIL images
-        images_per_step_per_example: Dict mapping cache_key to list of cumulative image
-            counts per step
+        images: Deduplicated flat list of all PIL images
+        step_image_indices_per_example: Dict mapping cache_key to per-step lists of
+            indices into images
         processor: HuggingFace processor with image_processor attribute
 
     Returns:
         Dict mapping cache_key to list of (pixel_values, image_grid_thw) per step.
-        Each step's entry contains cumulative images up to that step.
     """
     if not images or processor is None:
         return {
-            eid: [(None, None)] * len(counts) if counts else [(None, None)]
-            for eid, counts in images_per_step_per_example.items()
+            eid: [(None, None)] * max(len(step_indices), 1)
+            for eid, step_indices in step_image_indices_per_example.items()
         }
 
     image_sizes = [(img.width, img.height) for img in images]
@@ -251,33 +250,27 @@ def _preprocess_images_batched(
         f"pixel_values={all_pixel_values.shape}, grid_thw={all_grid_thw.tolist()}"
     )
 
-    result = {}
-    img_idx = 0
-    patch_idx = 0
+    # Pre-compute patch start offset for each image
+    patch_starts = [0]
+    for g in all_grid_thw:
+        patch_starts.append(patch_starts[-1] + int(g[0] * g[1] * g[2]))
 
-    for eid, cumulative_counts in images_per_step_per_example.items():
-        if not cumulative_counts or cumulative_counts[-1] == 0:
-            result[eid] = [(None, None)] * max(len(cumulative_counts), 1)
+    result = {}
+    for eid, step_indices_list in step_image_indices_per_example.items():
+        if not step_indices_list:
+            result[eid] = [(None, None)]
             continue
 
-        total_images = cumulative_counts[-1]
-        example_grids = all_grid_thw[img_idx : img_idx + total_images]
-        num_patches = sum(int(g[0] * g[1] * g[2]) for g in example_grids)
-        example_pixels = all_pixel_values[patch_idx : patch_idx + num_patches]
-
-        # Build per-step cumulative entries
         per_step = []
-        for cum_count in cumulative_counts:
-            if cum_count == 0:
+        for indices in step_indices_list:
+            if not indices:
                 per_step.append((None, None))
             else:
-                step_grids = example_grids[:cum_count]
-                step_patches = sum(int(g[0] * g[1] * g[2]) for g in step_grids)
-                per_step.append((example_pixels[:step_patches].tolist(), step_grids.tolist()))
+                grids = all_grid_thw[indices]
+                patches = sum([all_pixel_values[patch_starts[i] : patch_starts[i + 1]].tolist() for i in indices], [])
+                per_step.append((patches, grids.tolist()))
 
         result[eid] = per_step
-        img_idx += total_images
-        patch_idx += num_patches
 
     return result
 
