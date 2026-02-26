@@ -6,5 +6,5 @@ async def safe_cancel(task: asyncio.Task) -> None:
     task.cancel()
     try:
         await task
-    except asyncio.CancelledError:
+    except Exception:
         pass
