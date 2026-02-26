@@ -207,10 +207,6 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
-
-    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
-
     ### Shared configurations
 
     log: Annotated[
@@ -275,8 +271,6 @@ class RLConfig(BaseSettings):
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
 
-    ### Local-only fields
-
     bench: Annotated[
         bool,
         Field(
@@ -284,12 +278,11 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    dump_config: Annotated[
-        Path | None,
-        Field(
-            description="If set, dump resolved subconfigs (trainer, orchestrator, inference) to this directory and exit without starting any processes."
-        ),
-    ] = None
+    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
+
+    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
+
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
@@ -428,9 +421,6 @@ class RLConfig(BaseSettings):
             self.orchestrator.model.name = self.model.name
             if self.inference is not None:
                 self.inference.model.name = self.model.name
-                self.inference.model.tool_call_parser = None
-                self.inference.model.enable_auto_tool_choice = False
-                self.inference.model.resolve_tool_call_parser()
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
@@ -512,7 +502,7 @@ class RLConfig(BaseSettings):
             self.trainer.bench = BenchConfig()
             self.orchestrator.bench = True
             self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size,
+                batch_size=self.orchestrator.batch_size or 32,
             )
 
         trainer_bench_enabled = self.trainer.bench is not None

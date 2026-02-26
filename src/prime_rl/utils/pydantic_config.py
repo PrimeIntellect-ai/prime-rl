@@ -106,7 +106,7 @@ class BaseSettings(PydanticBaseSettings):
 
     # Pydantic settings configuration
     model_config = SettingsConfigDict(
-        env_prefix="PRIME_",
+        env_prefix="PRIME_RL_",
         env_nested_delimiter="__",
         cli_parse_args=False,
         cli_kebab_case=True,

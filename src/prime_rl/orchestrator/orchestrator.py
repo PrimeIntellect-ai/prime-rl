@@ -268,7 +268,7 @@ async def orchestrate(config: OrchestratorConfig):
         env=train_env_group,
         buffer=buffer,
         inference_pool=inference_pool,
-        oversampling_factor=config.oversampling_factor,
+        max_inflight_rollouts=config.max_inflight_rollouts,
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
@@ -338,9 +338,6 @@ async def orchestrate(config: OrchestratorConfig):
     is_first_step = True
     await set_semaphore(config.max_concurrent or -1)
 
-    # Start update policy loop
-    update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
-
     # Track consecutive empty batches for retry logic
     empty_batch_retries = 0
     max_empty_batch_retries = 5
@@ -355,13 +352,7 @@ async def orchestrate(config: OrchestratorConfig):
             reason = evicted_path.read_text().strip()
             raise RuntimeError(f"Run evicted by trainer: {reason}")
 
-        # Check if update_policy_task has failed and propagate the exception
-        if update_policy_task.done():
-            # End all other tasks
-            for task in asyncio.all_tasks():
-                task.cancel()
-            update_policy_task.result()  # Raises if the task failed
-        # Capture ckpt_step once for consistency (it's updated by update_policy_loop concurrently)
+        # Capture ckpt_step once for consistency (it's updated inside the scheduler)
         ckpt_step = scheduler.ckpt_step
 
         # Save checkpoint (if we are at an interval step and not at the first or last step)
@@ -403,7 +394,7 @@ async def orchestrate(config: OrchestratorConfig):
             # For heavy eval workloads, it might be necessary additionally cancel in-flight training rollouts
             if config.eval.cancel_inflight_rollouts_on_eval:
                 logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
-                scheduler.cancel_inflight_rollouts()
+                await scheduler.cancel_inflight_rollouts()
 
             results = await asyncio.gather(
                 *[
@@ -460,6 +451,8 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Compute advantages
         example_ids = [r["example_id"] for r in train_rollouts]
+        num_rollouts = len(train_rollouts)
+        num_unique_examples = len(set(example_ids))
         rewards = [r["reward"] for r in train_rollouts]
         completion_lens = [get_completion_len(r) for r in train_rollouts]
         advantages = compute_advantages(
@@ -471,7 +464,6 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
-        num_unique_examples = len(set(example_ids))
 
         # VLM: build image cache for efficient batched preprocessing
         if is_vlm:
@@ -607,8 +599,8 @@ async def orchestrate(config: OrchestratorConfig):
         # Update progress metrics and throughput
         num_tokens = int(results_df.seq_len.sum())
         progress.total_tokens += num_tokens
-        progress.total_samples += config.batch_size
-        progress.total_problems += config.batch_size // config.rollouts_per_example
+        progress.total_samples += num_rollouts
+        progress.total_problems += num_unique_examples
         throughput = num_tokens / generate_completions_time
 
         # Compute solve all and none tensors
@@ -624,8 +616,8 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/tokens": num_tokens,
             "progress/prefill_tokens": num_prefill_tokens,
             "progress/decode_tokens": num_decode_tokens,
-            "progress/samples": config.batch_size,
-            "progress/problems": config.batch_size // config.rollouts_per_example,
+            "progress/samples": num_rollouts,
+            "progress/problems": num_unique_examples,
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
@@ -795,8 +787,7 @@ async def orchestrate(config: OrchestratorConfig):
     rollout_executor.shutdown(wait=False)
 
     # Stop scheduler
-    scheduler.cancel_inflight_rollouts()
-    update_policy_task.cancel()
+    await scheduler.stop()
 
     # Stop inference pool
     await inference_pool.stop()
