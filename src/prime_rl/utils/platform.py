@@ -19,8 +19,8 @@ def register_run(
     environments: list[dict] | None = None,
     wandb_project: str | None = None,
     wandb_entity: str | None = None,
-) -> str:
-    """Register an external training run with the platform and return the run ID.
+) -> tuple[str, str]:
+    """Register an external training run with the platform.
 
     Args:
         config:        PlatformConfig with base_url and optional run metadata.
@@ -31,7 +31,8 @@ def register_run(
         wandb_entity:  W&B entity to display in the platform run metadata.
 
     Returns:
-        The run ID string. Set as RUN_ID env var for PrimeMonitor.
+        Tuple of (run_id, monitoring_base_url). Pass run_id as RUN_ID env var and
+        monitoring_base_url as PrimeMonitorConfig.base_url.
 
     Raises:
         RuntimeError: If the API call fails or no API key is available.
@@ -76,9 +77,11 @@ def register_run(
     if response.status_code != 201:
         raise RuntimeError(f"Failed to create platform run (HTTP {response.status_code}): {response.text}")
 
-    run_id = response.json()["run_id"]
-    logger.info(f"Platform run registered: {config.base_url}/dashboard/training/{run_id}")
-    return run_id
+    run_id = response.json()["run"]["id"]
+    monitoring_base_url = f"{config.base_url}/api/internal/rft"
+    dashboard_url = f"{config.base_url}/dashboard/training/{run_id}"
+    logger.success(f"Monitor run at:\n  {dashboard_url}")
+    return run_id, monitoring_base_url
 
 
 def finalize_run(

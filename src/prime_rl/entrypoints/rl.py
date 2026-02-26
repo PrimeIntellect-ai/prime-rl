@@ -12,10 +12,8 @@ import pynvml
 import tomli_w
 
 from prime_rl.configs.rl import RLConfig
-from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import validate_output_dir
-from prime_rl.utils.platform import finalize_run, register_run
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
@@ -140,36 +138,7 @@ def rl_local(config: RLConfig):
     error_queue: list[Exception] = []
     stop_events: dict[str, Event] = {}
 
-    platform_run_id: str | None = None
-
     try:
-        # Optionally register run with Prime Intellect platform
-        if config.prime_platform is not None:
-            environments = [{"id": env.id} for env in config.orchestrator.env]
-            model_name = config.model.name if config.model else config.orchestrator.model.name
-
-            if config.prime_platform.run_name is None and config.orchestrator.wandb and config.orchestrator.wandb.name:
-                config.prime_platform.run_name = config.orchestrator.wandb.name
-
-            platform_run_id = register_run(
-                config=config.prime_platform,
-                base_model=model_name,
-                max_steps=config.max_steps or config.orchestrator.max_steps or 0,
-                environments=environments,
-                wandb_project=config.orchestrator.wandb.project if config.orchestrator.wandb else None,
-                wandb_entity=None,
-            )
-
-            os.environ["RUN_ID"] = platform_run_id
-
-            if config.orchestrator.prime_monitor is None:
-                config.orchestrator.prime_monitor = PrimeMonitorConfig(
-                    base_url=f"{config.prime_platform.base_url}/api/internal/rft",
-                    api_key_var="PRIME_API_KEY",
-                )
-            else:
-                config.orchestrator.prime_monitor.base_url = f"{config.prime_platform.base_url}/api/internal/rft"
-
         # Write all resolved subconfigs to disk
         config_dir = Path(".pydantic_config") / uuid.uuid4().hex
         write_subconfigs(config, config_dir)
@@ -346,8 +315,6 @@ def rl_local(config: RLConfig):
                 logger.error("Terminating all processes...")
                 cleanup_threads(monitor_threads)
                 cleanup_processes(processes)
-                if config.prime_platform is not None and platform_run_id is not None:
-                    finalize_run(config.prime_platform, platform_run_id, success=False, error_message=str(error))
                 sys.exit(1)
 
             # Small delay to avoid busy waiting
@@ -358,31 +325,15 @@ def rl_local(config: RLConfig):
             logger.error(f"Orchestrator failed with exit code {orchestrator_process.returncode}")
             cleanup_threads(monitor_threads)
             cleanup_processes(processes)
-            if config.prime_platform is not None and platform_run_id is not None:
-                finalize_run(
-                    config.prime_platform,
-                    platform_run_id,
-                    success=False,
-                    error_message=f"Orchestrator exited with code {orchestrator_process.returncode}",
-                )
             sys.exit(1)
 
         if trainer_process.returncode != 0:
             logger.error(f"Trainer failed with exit code {trainer_process.returncode}")
             cleanup_threads(monitor_threads)
             cleanup_processes(processes)
-            if config.prime_platform is not None and platform_run_id is not None:
-                finalize_run(
-                    config.prime_platform,
-                    platform_run_id,
-                    success=False,
-                    error_message=f"Trainer exited with code {trainer_process.returncode}",
-                )
             sys.exit(1)
 
         logger.success("RL training finished!")
-        if config.prime_platform is not None and platform_run_id is not None:
-            finalize_run(config.prime_platform, platform_run_id, success=True)
 
         # Cleanup threads and processes
         cleanup_threads(monitor_threads)
@@ -392,17 +343,11 @@ def rl_local(config: RLConfig):
         logger.warning("Received interrupt signal, terminating all processes...")
         cleanup_threads(monitor_threads)
         cleanup_processes(processes)
-        if config.prime_platform is not None and platform_run_id is not None:
-            finalize_run(
-                config.prime_platform, platform_run_id, success=False, error_message="Training interrupted by user"
-            )
         sys.exit(1)
     except Exception as e:
         logger.error(f"Error occurred: {e}")
         cleanup_threads(monitor_threads)
         cleanup_processes(processes)
-        if config.prime_platform is not None and platform_run_id is not None:
-            finalize_run(config.prime_platform, platform_run_id, success=False, error_message=str(e))
         raise
 
 

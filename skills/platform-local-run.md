@@ -31,10 +31,10 @@ uv run rl @ config.toml
 
 prime-rl will:
 1. Resolve `PRIME_API_KEY` from env var or `~/.prime/config.json`
-2. Call `POST /api/v1/rft/external-runs` → get `run_id`
-3. Set `RUN_ID` for all subprocesses (`PRIME_API_KEY` is passed through unchanged)
+2. Call `POST /api/v1/rft/external-runs` → get `run` object, extract `run.id`, print dashboard URL
+3. Set `RUN_ID` in the orchestrator process environment
 4. Auto-configure `PrimeMonitor` to stream metrics/samples to the platform
-5. On exit, call `PUT /api/v1/rft/external-runs/{run_id}/status`
+5. On successful completion, call `PUT /api/v1/rft/external-runs/{run_id}/status`
 
 ## Minimal example config
 
@@ -44,11 +44,10 @@ max_steps = 100
 [model]
 name = "Qwen/Qwen3-4B"
 
-[prime_platform]
-run_name = "my-experiment"
+[wandb]
+name = "my-experiment"           # also auto-used as platform run_name
 
-[orchestrator]
-rollouts_per_example = 8
+[prime_platform]                 # run_name inherited from wandb.name above
 
 [[orchestrator.env]]
 id = "reverse-text"
@@ -82,3 +81,7 @@ For local platform dev, create a token with `rft:write` scope in the local DB an
 1. `prime_platform.team_id` in config
 2. `PRIME_TEAM_ID` environment variable
 3. `team_id` in `~/.prime/config.json` (written by `prime login`)
+
+## SLURM / multi-node
+
+`[prime_platform]` in `rl.toml` works for all deployment modes. For SLURM multi-node, `write_subconfigs()` serializes the resolved `prime_platform` config into `orchestrator.toml` automatically — no manual changes needed.

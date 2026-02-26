@@ -288,7 +288,7 @@ class RLConfig(BaseSettings):
     prime_platform: Annotated[
         PlatformConfig | None,
         Field(
-            description="Prime Intellect platform integration. When set, creates a run on the platform and streams metrics/samples to it."
+            description="Prime Intellect platform integration. When set, registers the run and streams metrics/samples to the platform."
         ),
     ] = None
 
@@ -419,6 +419,16 @@ class RLConfig(BaseSettings):
 
         validate_shared_wandb_config(self.trainer, self.orchestrator)
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_prime_platform(self):
+        """Propagate top-level prime_platform config to the orchestrator."""
+        if self.prime_platform is not None:
+            self.orchestrator.prime_platform = self.prime_platform
+        if self.orchestrator.prime_platform is not None:
+            if self.orchestrator.prime_platform.run_name is None and self.wandb and self.wandb.name:
+                self.orchestrator.prime_platform.run_name = self.wandb.name
         return self
 
     @model_validator(mode="after")
