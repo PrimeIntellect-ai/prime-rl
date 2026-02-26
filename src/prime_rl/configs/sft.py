@@ -233,6 +233,8 @@ class SFTConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+
     ### Pre-validation normalization
 
     @model_validator(mode="before")

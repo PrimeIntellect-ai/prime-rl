@@ -27,7 +27,7 @@ INFERENCE_TOML = "inference.toml"
 TEACHER_INFERENCE_TOML = "teacher_inference.toml"
 
 
-def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
+def write_config(config: RLConfig, output_dir: Path) -> None:
     """Write resolved subconfigs to disk as TOML files."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -77,8 +77,8 @@ def rl_local(config: RLConfig):
     )
 
     config_dir = config.output_dir / "configs"
-    write_subconfigs(config, config_dir)
-    logger.info(f"Wrote subconfigs to {config_dir}")
+    write_config(config, config_dir)
+    logger.info(f"Wrote configs to {config_dir}")
 
     if config.dry_run:
         logger.success("Dry run complete. To start an RL run locally, remove --dry-run from your command.")
@@ -401,8 +401,8 @@ def rl_slurm(config: RLConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = config.output_dir / "configs"
-    write_subconfigs(config, config_dir)
-    logger.info(f"Wrote subconfigs to {config_dir}")
+    write_config(config, config_dir)
+    logger.info(f"Wrote configs to {config_dir}")
 
     script, log_message = render_slurm_script(config, config_dir)
     script_path = config.output_dir / "rl.sbatch"

@@ -15,12 +15,14 @@ from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_p
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import get_free_port
 
+SFT_TOML = "sft.toml"
 
-def write_trainer_config(config: SFTConfig, output_dir: Path) -> None:
-    """Write resolved trainer config to disk, excluding launcher-only fields."""
+
+def write_config(config: SFTConfig, output_dir: Path) -> None:
+    """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
     trainer_data = config.model_dump(exclude={"deployment"}, exclude_none=True, mode="json")
-    with open(output_dir / "trainer.toml", "wb") as f:
+    with open(output_dir / SFT_TOML, "wb") as f:
         tomli_w.dump(trainer_data, f)
 
 
@@ -72,10 +74,8 @@ def sft_slurm(config: SFTConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = config.output_dir / "configs"
-
-    if config.deployment.type == "multi_node":
-        write_trainer_config(config, config_dir)
-        logger.info(f"Wrote trainer config to {config_dir}")
+    write_config(config, config_dir)
+    logger.info(f"Wrote config to {config_dir}")
 
     script, log_message = render_slurm_script(config, config_dir)
     script_path = config.output_dir / "sft.sbatch"
@@ -83,7 +83,7 @@ def sft_slurm(config: SFTConfig):
     script_path.write_text(script)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    if config.slurm.dry_run:
+    if config.dry_run:
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
         return
 
@@ -102,11 +102,13 @@ def sft_local(config: SFTConfig):
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
-    config_dir = Path(".pydantic_config") / uuid.uuid4().hex
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "trainer.toml"
-    with open(config_path, "wb") as f:
-        tomli_w.dump(config.model_dump(exclude={"deployment"}, exclude_none=True, mode="json"), f)
+    config_dir = config.output_dir / "configs"
+    write_config(config, config_dir)
+    logger.info(f"Wrote config to {config_dir}")
+
+    if config.dry_run:
+        logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
+        return
 
     log_dir = config.output_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -128,7 +130,7 @@ def sft_local(config: SFTConfig):
         "-m",
         "prime_rl.trainer.sft.train",
         "@",
-        config_path.as_posix(),
+        (config_dir / SFT_TOML).as_posix(),
     ]
 
     logger.info(f"Starting SFT trainer with {config.deployment.num_gpus} GPU(s)")
