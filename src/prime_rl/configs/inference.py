@@ -265,7 +265,15 @@ class InferenceConfig(BaseSettings):
         ),
     ] = False
 
-    # --- Launcher-only fields (excluded from model_dump and to_vllm) ---
+    deployment: Annotated[
+        InferenceDeploymentConfig,
+        Field(
+            description="Deployment configuration for inference.",
+            exclude=True,
+        ),
+    ] = SingleNodeInferenceDeploymentConfig()
+
+    # Launcher-only fields
 
     slurm: Annotated[
         SlurmConfig | None,
@@ -274,14 +282,6 @@ class InferenceConfig(BaseSettings):
             exclude=True,
         ),
     ] = None
-
-    deployment: Annotated[
-        InferenceDeploymentConfig,
-        Field(
-            description="Deployment configuration for inference.",
-            exclude=True,
-        ),
-    ] = SingleNodeInferenceDeploymentConfig()
 
     output_dir: Annotated[
         Path,
