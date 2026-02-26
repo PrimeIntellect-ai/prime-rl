@@ -254,28 +254,26 @@ async def custom_init_app_state(
 
     resolved_chat_template = load_chat_template(args.chat_template)
 
-    state.openai_serving_chat_with_tokens = (
-        OpenAIServingChatWithTokens(
-            engine_client,
-            state.openai_serving_models,
-            args.response_role,
-            request_logger=request_logger,
-            chat_template=resolved_chat_template,
-            chat_template_content_format=args.chat_template_content_format,
-            trust_request_chat_template=args.trust_request_chat_template,
-            return_tokens_as_token_ids=args.return_tokens_as_token_ids,
-            enable_auto_tools=args.enable_auto_tool_choice,
-            exclude_tools_when_tool_choice_none=args.exclude_tools_when_tool_choice_none,
-            tool_parser=args.tool_call_parser,
-            reasoning_parser=args.structured_outputs_config.reasoning_parser,
-            enable_prompt_tokens_details=args.enable_prompt_tokens_details,
-            enable_force_include_usage=args.enable_force_include_usage,
-            enable_log_outputs=args.enable_log_outputs,
-            log_error_stack=args.log_error_stack,
-        )
-        if "generate" in supported_tasks
-        else None
+    serving_chat = OpenAIServingChatWithTokens(
+        engine_client,
+        state.openai_serving_models,
+        args.response_role,
+        request_logger=request_logger,
+        chat_template=resolved_chat_template,
+        chat_template_content_format=args.chat_template_content_format,
+        trust_request_chat_template=args.trust_request_chat_template,
+        return_tokens_as_token_ids=args.return_tokens_as_token_ids,
+        enable_auto_tools=args.enable_auto_tool_choice,
+        exclude_tools_when_tool_choice_none=args.exclude_tools_when_tool_choice_none,
+        tool_parser=args.tool_call_parser,
+        reasoning_parser=args.structured_outputs_config.reasoning_parser,
+        enable_prompt_tokens_details=args.enable_prompt_tokens_details,
+        enable_force_include_usage=args.enable_force_include_usage,
+        enable_log_outputs=args.enable_log_outputs,
+        log_error_stack=args.log_error_stack,
     )
+    state.openai_serving_chat = serving_chat if "generate" in supported_tasks else None
+    state.openai_serving_chat_with_tokens = serving_chat if "generate" in supported_tasks else None
 
 
 def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:

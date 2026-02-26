@@ -568,6 +568,21 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_router_replay(self):
+        if self.trainer.enable_router_replay:
+            if self.inference is not None:
+                if self.inference.enable_return_routed_experts is False:
+                    warnings.warn(
+                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True."
+                    )
+                self.inference.enable_return_routed_experts = True
+            else:
+                warnings.warn(
+                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server."
+                )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_deployment(self):
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas

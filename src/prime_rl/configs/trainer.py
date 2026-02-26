@@ -702,6 +702,13 @@ class TrainerConfig(BaseSettings):
         ),
     ] = 1
 
+    enable_router_replay: Annotated[
+        bool,
+        Field(
+            description="Whether to enable router replay. If True, will return routed experts in the batch. This is only supported if `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server. This is only supported for custom models.",
+        ),
+    ] = False
+
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
     bench: Annotated[
@@ -813,5 +820,12 @@ class TrainerConfig(BaseSettings):
     def ep_only_with_custom_impl(self):
         if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")
+
+        return self
+
+    @model_validator(mode="after")
+    def router_replay_only_with_custom_impl(self):
+        if self.enable_router_replay and self.model.impl not in ("custom", "auto"):
+            raise ValueError("Router replay is only supported with the custom implementation or auto mode")
 
         return self

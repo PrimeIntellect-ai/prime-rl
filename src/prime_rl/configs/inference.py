@@ -213,6 +213,13 @@ class InferenceConfig(BaseSettings):
         WeightBroadcastConfig()
     )
 
+    enable_return_routed_experts: Annotated[
+        bool,
+        Field(
+            description="Whether to enable return routed experts. Passed to vLLM as `--enable-return-routed-experts`",
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def round_up_max_lora_rank(self):
         """Round up max_lora_rank to the nearest valid vLLM value.
@@ -268,6 +275,7 @@ class InferenceConfig(BaseSettings):
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
+            "enable_return_routed_experts": "enable_return_routed_experts",
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",

@@ -1,6 +1,6 @@
 import pytest
 
-from prime_rl.trainer.batch import prepare_batch
+from prime_rl.trainer.batch import prepare_batch, prepare_sample
 from prime_rl.transport.types import TrainingSample
 
 
@@ -77,3 +77,60 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     assert flat_batches[0].temperatures[:4] == [0.7, 0.7, 0.7, 0.7]
     # Second sample (4 tokens): all get temp 1.1
     assert flat_batches[0].temperatures[4:8] == [1.1, 1.1, 1.1, 1.1]
+
+
+def test_prepare_sample_with_routed_experts():
+    """Routed experts are passed through prepare_sample and match input_ids length."""
+    # 2 prompt + 2 completion = 4 tokens, 2 layers, topk=2
+    routed_experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]], [[1, 0], [3, 2]]]
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+        routed_experts=routed_experts,
+    )
+
+    micro_batch = prepare_sample(sample, seq_len=8)
+    assert micro_batch.routed_experts is not None
+    assert len(micro_batch.routed_experts) == 4
+    assert micro_batch.routed_experts == routed_experts
+
+
+def test_prepare_sample_truncates_routed_experts():
+    """Routed experts are truncated to seq_len when input exceeds it."""
+    routed_experts = [[[0, 1]], [[2, 3]], [[4, 5]], [[6, 7]]]
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+        routed_experts=routed_experts,
+    )
+
+    micro_batch = prepare_sample(sample, seq_len=3)
+    assert micro_batch.routed_experts is not None
+    assert len(micro_batch.routed_experts) == 3
+    assert micro_batch.routed_experts == routed_experts[:3]
+
+
+def test_prepare_sample_none_routed_experts():
+    """When routed_experts is None, micro_batch.routed_experts is None."""
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+    )
+
+    micro_batch = prepare_sample(sample, seq_len=8)
+    assert micro_batch.routed_experts is None

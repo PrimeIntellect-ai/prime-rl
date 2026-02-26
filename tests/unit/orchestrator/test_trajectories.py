@@ -8,6 +8,7 @@ from PIL import Image
 
 from prime_rl.orchestrator.trajectories import (
     VLMImageCache,
+    _align_routed_experts,
     _extract_images_from_examples,
     _extract_images_from_messages,
     build_vlm_image_cache,
@@ -1800,3 +1801,188 @@ def test_build_vlm_image_cache_no_images():
     pv, grid = cache.get_for_step(0, 0)
     assert pv is None
     assert grid is None
+
+
+def test_align_routed_experts_none():
+    assert _align_routed_experts(None, 10) is None
+
+
+def test_align_routed_experts_empty():
+    result = _align_routed_experts([], 10)
+    assert result == []
+
+
+def test_align_routed_experts_no_deficit():
+    # 3 tokens, 2 layers, topk=2
+    experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]]]
+    result = _align_routed_experts(experts, expected_len=3)
+    assert result == experts
+
+
+def test_align_routed_experts_with_deficit():
+    # 2 tokens but expected 4 (deficit of 2)
+    experts = [[[1, 2], [3, 4]], [[5, 6], [7, 0]]]
+    result = _align_routed_experts(experts, expected_len=4)
+    assert len(result) == 4
+    assert result[:2] == experts
+    # Padded entries should be zero-filled with same shape [layers=2, topk=2]
+    assert result[2] == [[0, 0], [0, 0]]
+    assert result[3] == [[0, 0], [0, 0]]
+
+
+def test_align_routed_experts_excess_length():
+    experts = [[[1, 2]], [[3, 4]], [[5, 6]]]
+    result = _align_routed_experts(experts, expected_len=2)
+    # No truncation, just returns as-is
+    assert result == experts
+
+
+def test_interleave_rollout_single_step_with_routed_experts():
+    """Routed experts are aligned and passed through for a single-step trajectory."""
+    # prompt_ids=[1,2], completion_ids=[3,4] -> total 4 tokens
+    # vLLM returns num_tokens-1 = 3 routed expert entries
+    routed_experts_from_vllm = [[[0, 1]], [[2, 3]], [[4, 5]]]  # 3 entries, 1 layer, topk=2
+    output = vf.RolloutOutput(
+        example_id=0,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "U1"}],
+                completion=[{"role": "assistant", "content": "A1"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    routed_experts=routed_experts_from_vllm,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            )
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    rollouts = interleave_rollout(output)
+    assert rollouts is not None
+    assert len(rollouts) == 1
+    sample = rollouts[0]
+
+    # Should be aligned to 4 tokens (2 prompt + 2 completion)
+    assert sample.routed_experts is not None
+    assert len(sample.routed_experts) == 4
+    # First 3 are original, last one is zero-padded
+    assert sample.routed_experts[:3] == routed_experts_from_vllm
+    assert sample.routed_experts[3] == [[0, 0]]
+
+
+def test_interleave_rollout_multi_step_with_routed_experts():
+    """Routed experts are extended and aligned across multi-step trajectories."""
+    # Step 1: prompt=[1,2], completion=[3,4] -> 4 tokens, vLLM returns 3
+    step1_experts = [[[1, 2]], [[3, 4]], [[5, 6]]]
+    # Step 2: prompt=[1,2,3,4,5,6], completion=[7,8] -> 8 tokens, vLLM returns 7
+    step2_experts = [[[1, 0]], [[2, 0]], [[3, 0]], [[4, 0]], [[5, 0]], [[6, 0]], [[7, 0]]]
+
+    output = vf.RolloutOutput(
+        example_id=0,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "U1"}],
+                completion=[{"role": "assistant", "content": "A1"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    routed_experts=step1_experts,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+            vf.TrajectoryStep(
+                prompt=[
+                    {"role": "user", "content": "U1"},
+                    {"role": "assistant", "content": "A1"},
+                    {"role": "user", "content": "U2"},
+                ],
+                completion=[{"role": "assistant", "content": "A2"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3, 4, 5, 6],
+                    prompt_mask=[0, 0, 0, 0, 0, 0],
+                    completion_ids=[7, 8],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.3, -0.4],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    routed_experts=step2_experts,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    rollouts = interleave_rollout(output)
+    assert rollouts is not None
+    assert len(rollouts) == 1
+    sample = rollouts[0]
+
+    # Merged sample: prompt=[1,2], completion=[3,4,5,6,7,8] -> 8 tokens total
+    assert len(sample.prompt_ids) + len(sample.completion_ids) == 8
+    assert sample.routed_experts is not None
+    assert len(sample.routed_experts) == 8
+
+
+def test_interleave_rollout_none_routed_experts_stays_none():
+    """When routed_experts is None, sample.routed_experts remains None."""
+    output = vf.RolloutOutput(
+        example_id=0,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "U1"}],
+                completion=[{"role": "assistant", "content": "A1"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    routed_experts=None,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            )
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    rollouts = interleave_rollout(output)
+    assert rollouts is not None
+    assert rollouts[0].routed_experts is None
