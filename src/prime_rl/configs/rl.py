@@ -208,17 +208,6 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
-
-    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
-
-    prime_platform: Annotated[
-        PlatformConfig | None,
-        Field(
-            description="Prime Intellect platform integration. When set, creates a run on the platform and streams metrics/samples to it."
-        ),
-    ] = None
-
     ### Shared configurations
 
     log: Annotated[
@@ -283,8 +272,6 @@ class RLConfig(BaseSettings):
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
 
-    ### Local-only fields
-
     bench: Annotated[
         bool,
         Field(
@@ -292,10 +279,16 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    dump_config: Annotated[
-        Path | None,
+    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
+
+    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
+
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+
+    prime_platform: Annotated[
+        PlatformConfig | None,
         Field(
-            description="If set, dump resolved subconfigs (trainer, orchestrator, inference) to this directory and exit without starting any processes."
+            description="Prime Intellect platform integration. When set, creates a run on the platform and streams metrics/samples to it."
         ),
     ] = None
 
@@ -517,7 +510,7 @@ class RLConfig(BaseSettings):
             self.trainer.bench = BenchConfig()
             self.orchestrator.bench = True
             self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size,
+                batch_size=self.orchestrator.batch_size or 32,
             )
 
         trainer_bench_enabled = self.trainer.bench is not None
@@ -580,6 +573,21 @@ class RLConfig(BaseSettings):
                     "make sure to set --enable_lora and --max-lora-rank."
                 )
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_router_replay(self):
+        if self.trainer.enable_router_replay:
+            if self.inference is not None:
+                if self.inference.enable_return_routed_experts is False:
+                    warnings.warn(
+                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True."
+                    )
+                self.inference.enable_return_routed_experts = True
+            else:
+                warnings.warn(
+                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server."
+                )
         return self
 
     @model_validator(mode="after")
