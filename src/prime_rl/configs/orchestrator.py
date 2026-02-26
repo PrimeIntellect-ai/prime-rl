@@ -500,7 +500,8 @@ class BufferConfig(BaseConfig):
         Field(
             description=(
                 "Whether to skip verification of rollouts using the environment's rubric. "
-                "If True, rewards are always set to 0 and easy/hard thresholds are not used."
+                "If True, rewards are always set to 0, easy/hard thresholds are not used, "
+                "and zero-advantage rollout filtering is bypassed so pure distillation remains trainable."
             ),
         ),
     ] = False

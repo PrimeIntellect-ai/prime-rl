@@ -30,6 +30,7 @@ from transformers import AutoProcessor, AutoTokenizer
 from prime_rl.configs.orchestrator import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
+from prime_rl.orchestrator.difficulty_filter import get_training_rollout_mask
 from prime_rl.orchestrator.eval_utils import evaluate_env
 from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
@@ -244,6 +245,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
+    if config.buffer.skip_verification:
+        logger.info("skip_verification=True: zero-advantage filtering is disabled to keep distillation samples.")
     train_dataset = train_env_group.get_dataset(seed=config.buffer.seed)
     buffer = Buffer(train_dataset, train_env_group.env_names, config.buffer)
     if config.val is not None:
@@ -470,8 +473,12 @@ async def orchestrate(config: OrchestratorConfig):
             config.rollouts_per_example,
             config.advantage,
         )
-        # Always-on online difficulty filtering: drop zero-advantage rollouts from training only.
-        keep_rollout_for_training = [abs(advantage) > 1e-8 for advantage in advantages]
+        # Drop zero-advantage rollouts during standard RL training, but keep them when verification is disabled
+        # so pure distillation runs still produce trainable batches.
+        keep_rollout_for_training = get_training_rollout_mask(
+            advantages=advantages,
+            skip_verification=config.buffer.skip_verification,
+        )
         num_kept_rollouts = sum(keep_rollout_for_training)
         num_filtered_rollouts = num_rollouts - num_kept_rollouts
 
@@ -531,7 +538,7 @@ async def orchestrate(config: OrchestratorConfig):
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
             f"Converted {num_kept_rollouts}/{len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
-            f"to {len(train_examples)} training examples after zero-advantage filtering"
+            f"to {len(train_examples)} training examples after advantage-based filtering"
         )
 
         # Compute teacher logprobs if teacher model is configured
