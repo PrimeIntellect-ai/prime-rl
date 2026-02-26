@@ -382,8 +382,8 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.perf_counter()
 
-        # Run evals BEFORE training (blocking, in subprocess to isolate event loop)
-        # This ensures weights don't change during eval and eval doesn't cause event loop lag
+        # Run evals BEFORE training (blocking). Weight updates are paused via
+        # scheduler.checkpoint_ready during eval to ensure consistent weights.
         # Use range check to handle ckpt_step jumping over interval boundaries:
         # find the highest interval step in (prev_ckpt_step, ckpt_step] that should trigger eval
         eval_ckpt_step = None
