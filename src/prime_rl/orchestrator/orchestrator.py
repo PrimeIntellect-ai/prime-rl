@@ -783,11 +783,11 @@ async def orchestrate(config: OrchestratorConfig):
     # Close training batch sender
     training_batch_sender.close()
 
+    # Stop scheduler
+    await scheduler.stop()
+
     # Shutdown rollout executor
     rollout_executor.shutdown(wait=False)
-
-    # Stop scheduler
-    scheduler.cancel_inflight_rollouts()
 
     # Stop inference pool
     await inference_pool.stop()

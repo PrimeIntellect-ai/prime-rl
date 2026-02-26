@@ -237,11 +237,11 @@ class Scheduler:
         self.step = step
 
         # First, manually check the async barrier
-        # Once cleared, re-create the update policy task to update incoming policies mid-step
+        # Once cleared, re-create the update policy loop to update incoming policies mid-step
         await self.maybe_update_policy()
         if self.update_policy_task is not None:
             self.update_policy_task.cancel()
-            self.update_policy_task = asyncio.create_task(self.maybe_update_policy())
+            self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 
         batch_start_time = time.perf_counter()
 
@@ -297,6 +297,12 @@ class Scheduler:
         pbar.close()
         self.last_batch_generation_time = time.perf_counter() - batch_start_time
         return batch_rollouts
+
+    async def stop(self) -> None:
+        if self.update_policy_task is not None:
+            self.update_policy_task.cancel()
+            self.update_policy_task = None
+        self.cancel_inflight_rollouts()
 
     @property
     def max_off_policy_level(self) -> int:
