@@ -25,10 +25,10 @@ MEMORY_TOLERANCE = 0.01  # 1% tolerance for peak memory
 
 # Baseline files for the Qwen3-0.6B RL benchmark
 BASELINE_FILE_1GPU = Path(
-    "benchmarks/baselines/benchmark-1xa6000-Qwen--Qwen3-0.6B-rl-full-1gpu-Recompute-flash_attention_2-16384-cp1-ep1.json"
+    "benchmarks/baselines/benchmark-1xa6000-Qwen--Qwen3-0.6B-rl-full-1gpu-Recompute-flash_attention_2-65536-cp1-ep1.json"
 )
 BASELINE_FILE_4GPU = Path(
-    "benchmarks/baselines/benchmark-4xa6000-Qwen--Qwen3-0.6B-rl-full-4gpu-Recompute-flash_attention_2-16384-cp1-ep1.json"
+    "benchmarks/baselines/benchmark-4xa6000-Qwen--Qwen3-0.6B-rl-full-4gpu-Recompute-flash_attention_2-65536-cp1-ep1.json"
 )
 
 
@@ -80,7 +80,7 @@ def benchmark_process_1gpu(
         "--model-name",
         "Qwen/Qwen3-0.6B",
         "--seq-len",
-        "16384",
+        "65536",
         "--ac",
         "Recompute",
         "--attention",
@@ -89,6 +89,8 @@ def benchmark_process_1gpu(
         str(benchmark_output_file_1gpu),
         "--timeout",
         str(TIMEOUT - 5 * 60),  # Leave 5 min buffer
+        "--fused-lm-head-chunk-size",
+        "8192",
     ]
     return run_process(cmd, timeout=TIMEOUT, env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
 
@@ -111,7 +113,7 @@ def benchmark_process_4gpu(
         "--model-name",
         "Qwen/Qwen3-0.6B",
         "--seq-len",
-        "16384",
+        "65536",
         "--ac",
         "Recompute",
         "--attention",
@@ -120,6 +122,8 @@ def benchmark_process_4gpu(
         str(benchmark_output_file_4gpu),
         "--timeout",
         str(TIMEOUT - 5 * 60),  # Leave 5 min buffer
+        "--fused-lm-head-chunk-size",
+        "8192",
     ]
     return run_process(cmd, timeout=TIMEOUT, env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
 
