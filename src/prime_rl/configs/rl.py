@@ -170,7 +170,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
 
 DeploymentConfig: TypeAlias = Annotated[
-    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type", exclude=True)
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
 
 
@@ -278,15 +278,17 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    ### Launcher-only fields
+    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
+
+    ### Launcher-only fields (excluded from model_dump)
 
     slurm: Annotated[
         SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.", exclude=True)
     ] = None
 
-    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
-
-    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+    dry_run: Annotated[
+        bool, Field(description="Only validate and dump resolved configs and exit early.", exclude=True)
+    ] = False
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
