@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
+from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 from prime_rl.utils.utils import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
@@ -373,9 +373,9 @@ class InferenceConfig(BaseSettings):
             "enable_eplb": "enable_eplb",
         }
 
-        for key in get_all_fields(self):
-            value = rgetattr(self, key.replace("-", "_"))
-            rsetattr(namespace, to_vllm.get(key, key), value)
+        for config_key, vllm_key in to_vllm.items():
+            value = rgetattr(self, config_key.replace("-", "_"))
+            rsetattr(namespace, vllm_key, value)
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
