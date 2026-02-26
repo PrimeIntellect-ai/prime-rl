@@ -40,10 +40,7 @@ def render_slurm_script(config: InferenceConfig, config_path: Path) -> tuple[str
         num_nodes=config.deployment.num_nodes if config.deployment.type == "multi_node" else 1,
     )
 
-    if config.deployment.type == "multi_node":
-        log_message = f"Logs:\n  Inference:  tail -F {config.output_dir}/slurm/latest_infer_node_rank_0.log"
-    else:
-        log_message = f"Logs:\n  Inference:  tail -F {config.output_dir}/job_*.log"
+    log_message = f"Logs:\n  Inference:  tail -F {config.output_dir}/slurm/latest_infer_node_rank_*.log"
 
     return script, log_message
 
