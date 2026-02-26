@@ -164,3 +164,52 @@ def test_cli_overrides_toml(monkeypatch, tmp_path):
     assert config.nested.lr == 5e-5
     # TOML value not overridden by CLI should still be applied (not reverted to class default)
     assert config.nested.weight_decay == 0.01
+
+
+def test_rl_config_external_rollout_mode_valid():
+    config = RLConfig(
+        trainer={"loss": {"type": "sft"}},
+        orchestrator={
+            "use_token_client": False,
+            "rollout_model": {
+                "client": {"base_url": ["https://example.com/v1"], "skip_model_check": True},
+                "model": {"name": "gpt-4o-mini"},
+            },
+        },
+        inference=None,
+    )
+    assert config.orchestrator.rollout_model is not None
+    assert config.inference is None
+
+
+def test_rl_config_external_rollout_mode_rejects_inference():
+    with pytest.raises(ValidationError, match="inference must be omitted when orchestrator.rollout_model"):
+        RLConfig(
+            trainer={"loss": {"type": "sft"}},
+            orchestrator={
+                "use_token_client": False,
+                "rollout_model": {
+                    "client": {"base_url": ["https://example.com/v1"], "skip_model_check": True},
+                    "model": {"name": "gpt-4o-mini"},
+                },
+            },
+            inference={},
+        )
+
+
+def test_rl_config_external_rollout_mode_requires_text_client():
+    with pytest.raises(
+        ValidationError,
+        match="orchestrator.use_token_client must be false when orchestrator.rollout_model is configured",
+    ):
+        RLConfig(
+            trainer={"loss": {"type": "sft"}},
+            orchestrator={
+                "use_token_client": True,
+                "rollout_model": {
+                    "client": {"base_url": ["https://example.com/v1"], "skip_model_check": True},
+                    "model": {"name": "gpt-4o-mini"},
+                },
+            },
+            inference=None,
+        )

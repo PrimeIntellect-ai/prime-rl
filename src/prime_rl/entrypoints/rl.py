@@ -168,9 +168,14 @@ def rl_local(config: RLConfig):
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
         else:
-            logger.warning(
-                "No inference config specified, skipping starting inference server. Make sure your inference server is running."
-            )
+            if config.orchestrator.rollout_model is None:
+                logger.warning(
+                    "No inference config specified, skipping starting inference server. Make sure your inference server is running."
+                )
+            else:
+                logger.info(
+                    "No inference config specified, using orchestrator.rollout_model for rollout generation."
+                )
 
         # Optionally, start teacher inference process
         if config.teacher_inference:

@@ -326,6 +326,24 @@ class RLConfig(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_external_rollout_mode(self):
+        if self.orchestrator.rollout_model is None:
+            return self
+
+        if self.inference is not None:
+            raise ValueError(
+                "inference must be omitted when orchestrator.rollout_model is configured. "
+                "External rollout mode does not use the local inference server."
+            )
+
+        if self.orchestrator.use_token_client:
+            raise ValueError(
+                "orchestrator.use_token_client must be false when orchestrator.rollout_model is configured."
+            )
+
+        return self
+
     ### Auto-setup and validate shared configs
 
     @model_validator(mode="after")

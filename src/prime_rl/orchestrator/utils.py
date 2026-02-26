@@ -37,22 +37,37 @@ async def get_semaphore() -> AsyncContextManager:
     return SEMAPHORE
 
 
-def get_sampling_args(sampling_config: SamplingConfig, temperature: float) -> dict:
+def get_sampling_args(sampling_config: SamplingConfig, temperature: float, use_token_client: bool = True) -> dict:
     # Convert SamplingConfig to vLLM OAI sampling args
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
     sampling_args = dict(sampling_config)
     sampling_args.pop("temp_scheduler", None)
     sampling_args["temperature"] = temperature
     sampling_args["top_p"] = 1.0
-    sampling_args["logprobs"] = True
-    sampling_args["extra_body"] = {
-        **sampling_config.extra_body,
-        "return_token_ids": True,  # Always return token IDs
-        "top_k": -1,
-        "min_p": 0.0,
-    }
-    sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
-    sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
+    extra_body = dict(sampling_config.extra_body)
+
+    min_tokens = sampling_args.pop("min_tokens")
+    repetition_penalty = sampling_args.pop("repetition_penalty")
+
+    if use_token_client:
+        sampling_args["logprobs"] = True
+        extra_body = {
+            **extra_body,
+            "return_token_ids": True,  # Always return token IDs
+            "top_k": -1,
+            "min_p": 0.0,
+            "min_tokens": min_tokens,
+            "repetition_penalty": repetition_penalty,
+        }
+    else:
+        if min_tokens > 0:
+            extra_body["min_tokens"] = min_tokens
+        if repetition_penalty != 1.0:
+            extra_body["repetition_penalty"] = repetition_penalty
+
+    if extra_body:
+        sampling_args["extra_body"] = extra_body
+
     return sampling_args
 
 

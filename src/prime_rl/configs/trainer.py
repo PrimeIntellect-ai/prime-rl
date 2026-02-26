@@ -588,6 +588,12 @@ class DefaultLossConfig(BaseModel):
         return self
 
 
+class SFTLossConfig(BaseModel):
+    """Config for SFT-style masked negative log-likelihood loss."""
+
+    type: Literal["sft"] = "sft"
+
+
 class CustomLossConfig(BaseModel):
     """Config for a custom external loss function."""
 
@@ -596,7 +602,7 @@ class CustomLossConfig(BaseModel):
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
 
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[DefaultLossConfig | SFTLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):

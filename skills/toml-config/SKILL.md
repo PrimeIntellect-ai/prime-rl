@@ -118,6 +118,31 @@ SFT deployment follows the same pattern as RL:
 - `output_dir` must be explicitly set when using SLURM
 - Multi-node deployment requires `[slurm]` to be set
 
+## Text-Only Teacher Rollout Distillation (RL Orchestrator + RL Trainer)
+
+Use this when the teacher is an external OpenAI-compatible endpoint that does not expose token IDs/logprobs.
+
+```toml
+[trainer.loss]
+type = "sft"
+
+[orchestrator]
+use_token_client = false
+
+[orchestrator.rollout_model.client]
+base_url = ["https://your-openai-compatible-endpoint/v1"]
+skip_model_check = true
+
+[orchestrator.rollout_model.model]
+name = "teacher-model-name"
+```
+
+Notes:
+- `orchestrator.rollout_model` switches rollout generation to the external teacher endpoint.
+- `use_token_client = false` enables text-level rollout reconstruction with the student tokenizer.
+- `trainer.loss.type = "sft"` makes the RL trainer optimize masked NLL like SFT.
+- In this mode, omit `[inference]`.
+
 ## Available commands
 
 All accept `@ config.toml` and CLI overrides:

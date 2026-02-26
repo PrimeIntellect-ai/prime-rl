@@ -665,6 +665,20 @@ class TeacherModelConfig(BaseConfig):
     ] = ModelConfig()
 
 
+class RolloutModelConfig(BaseConfig):
+    """Configures an external model used to generate rollout text."""
+
+    client: Annotated[
+        ClientConfig,
+        Field(description="The OAI client configuration for rollout generation."),
+    ] = ClientConfig()
+
+    model: Annotated[
+        ModelConfig,
+        Field(description="The model configuration for rollout generation."),
+    ] = ModelConfig()
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -684,6 +698,17 @@ class OrchestratorConfig(BaseSettings):
             description="The teacher model configuration for computing teacher logprobs (e.g. for distillation). "
             "If provided, teacher logprobs will be computed using the specified model. "
             "If None, no teacher model will be used."
+        ),
+    ] = None
+
+    # External rollout model configuration (optional)
+    rollout_model: Annotated[
+        RolloutModelConfig | None,
+        Field(
+            description=(
+                "Optional external model used for rollout generation. "
+                "When set, rollouts are generated from this endpoint/model instead of the student inference server."
+            ),
         ),
     ] = None
 
@@ -874,6 +899,12 @@ class OrchestratorConfig(BaseSettings):
         if self.weight_broadcast.type == "nccl":
             if not self.max_async_level == 1:
                 raise ValueError("max_async_level must be 1 for NCCL broadcast")
+        return self
+
+    @model_validator(mode="after")
+    def validate_rollout_model_with_weight_broadcast(self):
+        if self.rollout_model is not None and self.weight_broadcast.type == "nccl":
+            raise ValueError("rollout_model is not compatible with NCCL weight broadcast.")
         return self
 
     @model_validator(mode="after")

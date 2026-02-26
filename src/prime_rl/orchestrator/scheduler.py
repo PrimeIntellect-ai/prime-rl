@@ -54,6 +54,7 @@ class Scheduler:
         max_off_policy_steps: int,
         strict_async_level: bool,
         tasks_per_minute: int | None,
+        enable_policy_updates: bool = True,
         lora_name: str | None = None,
         output_dir: Path | None = None,
     ):
@@ -74,9 +75,12 @@ class Scheduler:
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
+        self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
         initial_temp = compute_temperature(step=0, sampling_config=config.sampling, max_steps=config.max_steps)
-        self.sampling_args = get_sampling_args(config.sampling, temperature=initial_temp)
+        self.sampling_args = get_sampling_args(
+            config.sampling, temperature=initial_temp, use_token_client=config.use_token_client
+        )
         self.model_name = self.config.model.name
         self.json_logging = config.log.json_logging
 
@@ -164,6 +168,11 @@ class Scheduler:
 
     async def maybe_update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
+        if not self.enable_policy_updates:
+            self.ckpt_step = self.step
+            self.checkpoint_ready.set()
+            return
+
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
         next_ckpt_step = (
@@ -225,14 +234,17 @@ class Scheduler:
         """Continuously generates a batch of rollouts."""
         self.step = step
 
-        # Cancel the previous update policy task to avoid concurrent updates
-        if self.update_policy_task is not None:
-            await safe_cancel(self.update_policy_task)
+        if self.enable_policy_updates:
+            # Cancel the previous update policy task to avoid concurrent updates
+            if self.update_policy_task is not None:
+                await safe_cancel(self.update_policy_task)
 
-        # Manually check the async barrier before starting the step, the re-create the update policy loop
-        # This ensures that we respect max_async_level, while still listening for policy updates mid-step
-        await self.maybe_update_policy()
-        self.update_policy_task = asyncio.create_task(self.update_policy_loop())
+            # Manually check the async barrier before starting the step, then re-create the update policy loop
+            # This ensures that we respect max_async_level, while still listening for policy updates mid-step
+            await self.maybe_update_policy()
+            self.update_policy_task = asyncio.create_task(self.update_policy_loop())
+        else:
+            self.ckpt_step = step
 
         batch_start_time = time.perf_counter()
 
