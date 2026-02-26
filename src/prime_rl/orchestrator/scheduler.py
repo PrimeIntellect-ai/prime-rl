@@ -207,8 +207,7 @@ class Scheduler:
 
             for task, info in self.inflight_group_rollouts.items():
                 if info.off_policy_steps > self.max_off_policy_steps:
-                    if not task.done():
-                        task.cancel()
+                    await safe_cancel(task)
                     tasks_to_remove.append((task, info.client_config))
                 else:
                     tasks_to_update.append((task, info.off_policy_steps + 1, info.client_config))
