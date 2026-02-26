@@ -93,7 +93,7 @@ def inference_local(config: InferenceConfig):
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
         return
 
-    host = config.server.host or "localhost"
+    host = config.server.host or "0.0.0.0"
     port = config.server.port
     logger.info(f"Starting inference on http://{host}:{port}/v1\n")
 
