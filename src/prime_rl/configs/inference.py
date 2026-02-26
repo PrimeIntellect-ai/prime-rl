@@ -143,9 +143,6 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
     SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig, Field(discriminator="type")
 ]
 
-# Fields used only by the entrypoint launcher, excluded from model_dump and to_vllm.
-_LAUNCHER_FIELDS = frozenset({"slurm", "deployment", "output_dir"})
-
 
 class InferenceConfig(BaseSettings):
     """Configures inference."""
@@ -294,21 +291,12 @@ class InferenceConfig(BaseSettings):
         ),
     ] = Path("outputs")
 
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
-        return self
-
-    @model_validator(mode="after")
-    def validate_slurm_output_dir(self):
-        if self.slurm is None:
-            return self
-        if self.output_dir == Path("outputs"):
-            raise ValueError(
-                "output_dir must be explicitly set when using SLURM (not the default 'outputs'). "
-                "Set output_dir to a unique path, e.g. '/shared/experiments/my-inference'."
-            )
         return self
 
     @model_validator(mode="after")
@@ -321,8 +309,8 @@ class InferenceConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def round_up_max_lora_rank(self):
-        """Round up max_lora_rank to the nearest valid vLLM value.
+    def auto_setup_max_lora_rank(self):
+        """Auto-setup max_lora_rank by rounding up to the nearest valid vLLM value.
 
         vLLM only accepts specific values for max_lora_rank: (1, 8, 16, 32, 64, 128, 256, 320, 512).
         This validator ensures that any configured rank is rounded up to the minimum valid value
@@ -386,8 +374,6 @@ class InferenceConfig(BaseSettings):
         }
 
         for key in get_all_fields(self):
-            if key.split(".")[0] in _LAUNCHER_FIELDS:
-                continue
             value = rgetattr(self, key.replace("-", "_"))
             rsetattr(namespace, to_vllm.get(key, key), value)
 

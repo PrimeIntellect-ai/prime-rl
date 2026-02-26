@@ -8,11 +8,13 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import parse_argv
 
+INFERENCE_TOML = "inference.toml"
+
 
 def write_inference_config(config: InferenceConfig, output_dir: Path) -> Path:
     """Write resolved inference config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    config_path = output_dir / "inference.toml"
+    config_path = output_dir / INFERENCE_TOML
     with open(config_path, "wb") as f:
         tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
     return config_path
@@ -54,7 +56,7 @@ def inference_slurm(config: InferenceConfig):
 
     config_dir = config.output_dir / "configs"
     config_path = write_inference_config(config, config_dir)
-    logger.info(f"Wrote inference config to {config_path}")
+    logger.info(f"Wrote config to {config_path}")
 
     script, log_message = render_slurm_script(config, config_path)
     script_path = config.output_dir / "inference.sbatch"
@@ -62,7 +64,7 @@ def inference_slurm(config: InferenceConfig):
     script_path.write_text(script)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    if config.slurm.dry_run:
+    if config.dry_run:
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
         return
 
@@ -78,6 +80,18 @@ def inference_slurm(config: InferenceConfig):
 def inference_local(config: InferenceConfig):
     """Run inference locally."""
     from prime_rl.inference.server import setup_vllm_env
+
+    logger = setup_logger("info")
+
+    config_dir = config.output_dir / "configs"
+    config_path = write_inference_config(config, config_dir)
+    logger.info(f"Wrote config to {config_path}")
+
+    if config.dry_run:
+        logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
+        return
+
+    logger.info("Starting inference\n")
 
     setup_vllm_env(config)
 
