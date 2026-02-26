@@ -69,7 +69,11 @@ def sft_slurm(config: SFTConfig):
 
     config_dir = get_config_dir(config.output_dir)
     config_path = config_dir / SFT_TOML
-    exclude = {"deployment", "slurm", "dry_run"} if config.deployment.type == "multi_node" else {"slurm", "dry_run"}
+    exclude = (
+        {"deployment", "slurm", "dry_run", "clean_output_dir"}
+        if config.deployment.type == "multi_node"
+        else {"slurm", "dry_run", "clean_output_dir"}
+    )
     write_config(config, config_path, exclude=exclude)
     logger.info(f"Wrote config to {config_path}")
 
