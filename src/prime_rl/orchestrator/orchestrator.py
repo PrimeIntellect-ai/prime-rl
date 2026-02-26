@@ -425,7 +425,7 @@ async def orchestrate(config: OrchestratorConfig):
                         rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
                         max_retries=eval_env_config.max_retries,
                         ckpt_step=ckpt_step,
-                        step=ckpt_step,
+                        step=progress.step,
                     )
                     for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
                 ]
@@ -785,7 +785,7 @@ async def orchestrate(config: OrchestratorConfig):
                     rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
                     max_retries=eval_env_config.max_retries,
                     ckpt_step=ckpt_step,
-                    step=ckpt_step,
+                    step=progress.step,
                 )
                 for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
             ]
