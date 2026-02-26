@@ -170,7 +170,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
 
 DeploymentConfig: TypeAlias = Annotated[
-    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type", exclude=True)
 ]
 
 
@@ -206,10 +206,6 @@ class RLConfig(BaseSettings):
             description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
         ),
     ] = False
-
-    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
-
-    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 
     ### Shared configurations
 
@@ -281,6 +277,14 @@ class RLConfig(BaseSettings):
             description="Whether to run in benchmark mode. Automatically sets the trainer and orchestrator to benchmark mode and, if present, suffixes the W&B project with `-bench`.",
         ),
     ] = False
+
+    ### Launcher-only fields
+
+    slurm: Annotated[
+        SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.", exclude=True)
+    ] = None
+
+    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 

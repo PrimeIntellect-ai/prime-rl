@@ -21,6 +21,7 @@ from prime_rl.utils.utils import (
     get_log_dir,
 )
 
+RL_TOML = "rl.toml"
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
@@ -28,6 +29,14 @@ TEACHER_INFERENCE_TOML = "teacher_inference.toml"
 
 
 def write_config(config: RLConfig, output_dir: Path) -> None:
+    """Write resolved config to disk, excluding launcher-only fields."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    config_dict = config.model_dump(exclude_none=True, mode="json")
+    with open(output_dir / RL_TOML, "wb") as f:
+        tomli_w.dump(config_dict, f)
+
+
+def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     """Write resolved subconfigs to disk as TOML files."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -77,7 +86,7 @@ def rl_local(config: RLConfig):
     )
 
     config_dir = config.output_dir / "configs"
-    write_config(config, config_dir)
+    write_subconfigs(config, config_dir)
     logger.info(f"Wrote configs to {config_dir}")
 
     if config.dry_run:
@@ -349,16 +358,9 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
     log_dir = config.output_dir / "logs"
 
     if config.deployment.type == "single_node":
-        import tomli_w
-
-        config_path = config_dir / "rl.toml"
-        config_dict = config.model_dump(exclude={"slurm"}, exclude_none=True, mode="json")
-        config_dir.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "wb") as f:
-            tomli_w.dump(config_dict, f)
-
+        write_config(config, config_dir)
         script = template.render(
-            config_path=config_path,
+            config_path=config_dir / RL_TOML,
             job_name=config.slurm.job_name,
             project_dir=config.slurm.project_dir,
             partition=config.slurm.partition,

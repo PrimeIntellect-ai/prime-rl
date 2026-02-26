@@ -21,7 +21,7 @@ SFT_TOML = "sft.toml"
 def write_config(config: SFTConfig, output_dir: Path) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    trainer_data = config.model_dump(exclude={"deployment"}, exclude_none=True, mode="json")
+    trainer_data = config.model_dump(exclude_none=True, mode="json")
     with open(output_dir / SFT_TOML, "wb") as f:
         tomli_w.dump(trainer_data, f)
 
@@ -40,7 +40,7 @@ def render_slurm_script(config: SFTConfig, config_dir: Path) -> tuple[str, str]:
         config_path = config_dir / "sft.toml"
         config_dir.mkdir(parents=True, exist_ok=True)
         with open(config_path, "wb") as f:
-            tomli_w.dump(config.model_dump(exclude={"slurm"}, exclude_none=True, mode="json"), f)
+            tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
         script = template.render(
             config_path=config_path,

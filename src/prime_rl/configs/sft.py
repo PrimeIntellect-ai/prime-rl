@@ -147,22 +147,12 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
 
 SFTDeploymentConfig: TypeAlias = Annotated[
-    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type", exclude=True)
 ]
 
 
 class SFTConfig(BaseSettings):
     """Configures the SFT trainer"""
-
-    slurm: Annotated[
-        SlurmConfig | None,
-        Field(
-            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
-            exclude=True,
-        ),
-    ] = None
-
-    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
 
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -233,7 +223,21 @@ class SFTConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
-    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+    ### Launcher-only fields
+
+    slurm: Annotated[
+        SlurmConfig | None,
+        Field(
+            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
+            exclude=True,
+        ),
+    ] = None
+
+    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
+
+    dry_run: Annotated[
+        bool, Field(description="Only validate and dump resolved configs and exit early.", exclude=True)
+    ] = False
 
     ### Pre-validation normalization
 
