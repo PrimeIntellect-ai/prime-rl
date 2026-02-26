@@ -212,7 +212,7 @@ class RLConfig(BaseSettings):
 
     slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 
-    platform: Annotated[
+    prime_platform: Annotated[
         PlatformConfig | None,
         Field(
             description="Prime Intellect platform integration. When set, creates a run on the platform and streams metrics/samples to it."

@@ -1,4 +1,4 @@
-# Platform Local Run
+# Prime Platform Local Run
 
 Stream live training metrics/samples to the Prime Intellect platform dashboard from any machine, without hosted infrastructure.
 
@@ -16,11 +16,11 @@ export PRIME_API_KEY=pit_...
 
 ## Usage
 
-Add a `[platform]` section to your TOML config:
+Add a `[prime_platform]` section to your TOML config:
 
 ```toml
-[platform]
-run_name = "my-experiment"        # optional
+[prime_platform]
+run_name = "my-experiment"        # optional; defaults to W&B run name if set
 base_url = "https://api.primeintellect.ai"  # default, change for local dev
 ```
 
@@ -44,7 +44,7 @@ max_steps = 100
 [model]
 name = "Qwen/Qwen3-4B"
 
-[platform]
+[prime_platform]
 run_name = "my-experiment"
 
 [orchestrator]
@@ -64,10 +64,8 @@ lr = 1e-5
 ## Optional platform fields
 
 ```toml
-[platform]
+[prime_platform]
 run_name = "qwen3-reverse-text"
-wandb_project = "prime-rl"
-wandb_entity = "my-team"
 team_id = "clxxx..."          # show run under a team
 ```
 
@@ -77,3 +75,10 @@ team_id = "clxxx..."          # show run under a team
 The key must have `rft:write` scope — this is granted by default when you `prime login`.
 
 For local platform dev, create a token with `rft:write` scope in the local DB and set it as `PRIME_API_KEY`.
+
+## Team ID resolution
+
+`team_id` is resolved in this order:
+1. `prime_platform.team_id` in config
+2. `PRIME_TEAM_ID` environment variable
+3. `team_id` in `~/.prime/config.json` (written by `prime login`)

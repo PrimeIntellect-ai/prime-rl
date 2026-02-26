@@ -5,27 +5,11 @@ The run appears live in the platform dashboard and receives streamed metrics,
 samples, and distributions via PrimeMonitor.
 """
 
-import json
-import os
-from pathlib import Path
-
 import httpx
+from prime_cli.core.config import Config as PrimeConfig
 
 from prime_rl.configs.shared import PlatformConfig
 from prime_rl.utils.logger import get_logger
-
-
-def _read_prime_config() -> dict:
-    """Read ~/.prime/config.json written by `prime login`. Returns {} if absent."""
-    config_path = Path.home() / ".prime" / "config.json"
-    if config_path.exists():
-        return json.loads(config_path.read_text())
-    return {}
-
-
-def _resolve_api_key() -> str | None:
-    """Resolve the Prime Intellect API key from PRIME_API_KEY env var or ~/.prime/config.json."""
-    return os.getenv("PRIME_API_KEY") or _read_prime_config().get("api_key")
 
 
 def register_run(
@@ -33,14 +17,18 @@ def register_run(
     base_model: str,
     max_steps: int | None = None,
     environments: list[dict] | None = None,
+    wandb_project: str | None = None,
+    wandb_entity: str | None = None,
 ) -> str:
     """Register an external training run with the platform and return the run ID.
 
     Args:
-        config:       PlatformConfig with base_url and optional run metadata.
-        base_model:   HuggingFace model name (e.g. "Qwen/Qwen3-4B").
-        max_steps:    Total training steps (used for progress display).
-        environments: List of environment configs (e.g. [{"id": "reverse-text"}]).
+        config:        PlatformConfig with base_url and optional run metadata.
+        base_model:    HuggingFace model name (e.g. "Qwen/Qwen3-4B").
+        max_steps:     Total training steps (used for progress display).
+        environments:  List of environment configs (e.g. [{"id": "reverse-text"}]).
+        wandb_project: W&B project to display in the platform run metadata.
+        wandb_entity:  W&B entity to display in the platform run metadata.
 
     Returns:
         The run ID string. Set as RUN_ID env var for PrimeMonitor.
@@ -49,8 +37,9 @@ def register_run(
         RuntimeError: If the API call fails or no API key is available.
     """
     logger = get_logger()
+    prime_config = PrimeConfig()
 
-    api_key = _resolve_api_key()
+    api_key = prime_config.api_key or None
     if not api_key:
         raise RuntimeError(
             "Prime Intellect API key not found. Either:\n"
@@ -58,7 +47,7 @@ def register_run(
             "  • Run `prime login` to store credentials in ~/.prime/config.json"
         )
 
-    team_id = config.team_id or _read_prime_config().get("team_id")
+    team_id = config.team_id or prime_config.team_id
 
     payload: dict = {
         "base_model": base_model,
@@ -68,10 +57,10 @@ def register_run(
         payload["name"] = config.run_name
     if environments:
         payload["environments"] = environments
-    if config.wandb_project:
-        payload["wandb_project"] = config.wandb_project
-    if config.wandb_entity:
-        payload["wandb_entity"] = config.wandb_entity
+    if wandb_project:
+        payload["wandb_project"] = wandb_project
+    if wandb_entity:
+        payload["wandb_entity"] = wandb_entity
     if team_id:
         payload["team_id"] = team_id
 
@@ -108,7 +97,7 @@ def finalize_run(
     """
     logger = get_logger()
 
-    api_key = _resolve_api_key()
+    api_key = PrimeConfig().api_key or None
     if not api_key:
         logger.warning(f"Cannot finalize platform run {run_id}: no API key available.")
         return
