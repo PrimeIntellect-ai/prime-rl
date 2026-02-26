@@ -1,25 +1,7 @@
 """Unit tests for eval scheduling logic - specifically the range check
 that detects when ckpt_step jumps over eval interval boundaries."""
 
-
-def compute_eval_ckpt_step(
-    ckpt_step: int,
-    prev_ckpt_step: int,
-    last_eval_step: int,
-    interval: int,
-    eval_base_model: bool = True,
-) -> int | None:
-    """Extracted eval scheduling logic from orchestrator.py"""
-    eval_ckpt_step = None
-    if ckpt_step > prev_ckpt_step:
-        highest_interval_step = (ckpt_step // interval) * interval
-        if highest_interval_step > prev_ckpt_step and highest_interval_step > last_eval_step:
-            if highest_interval_step == 0:
-                if ckpt_step == 0 and eval_base_model:
-                    eval_ckpt_step = 0
-            else:
-                eval_ckpt_step = highest_interval_step
-    return eval_ckpt_step
+from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step
 
 
 class TestEvalSchedulingRangeCheck:

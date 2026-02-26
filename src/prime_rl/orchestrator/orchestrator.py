@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.eval_utils import get_eval_sampling_args
+from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
@@ -384,18 +384,16 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Run evals BEFORE training (blocking). Weight updates are paused via
         # scheduler.checkpoint_ready during eval to ensure consistent weights.
-        # Use range check to handle ckpt_step jumping over interval boundaries:
-        # find the highest interval step in (prev_ckpt_step, ckpt_step] that should trigger eval
+        # Use range check to handle ckpt_step jumping over interval boundaries.
         eval_ckpt_step = None
-        if config.eval and ckpt_step > prev_ckpt_step:
-            interval = config.eval.interval
-            highest_interval_step = (ckpt_step // interval) * interval
-            if highest_interval_step > prev_ckpt_step and highest_interval_step > last_eval_step:
-                if highest_interval_step == 0:
-                    if ckpt_step == 0 and config.eval.eval_base_model:
-                        eval_ckpt_step = 0
-                else:
-                    eval_ckpt_step = highest_interval_step
+        if config.eval:
+            eval_ckpt_step = compute_eval_ckpt_step(
+                ckpt_step=ckpt_step,
+                prev_ckpt_step=prev_ckpt_step,
+                last_eval_step=last_eval_step,
+                interval=config.eval.interval,
+                eval_base_model=config.eval.eval_base_model,
+            )
 
         if eval_ckpt_step is not None:
             last_eval_step = ckpt_step
