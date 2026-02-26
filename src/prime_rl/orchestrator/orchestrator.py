@@ -394,7 +394,7 @@ async def orchestrate(config: OrchestratorConfig):
             # For heavy eval workloads, it might be necessary additionally cancel in-flight training rollouts
             if config.eval.cancel_inflight_rollouts_on_eval:
                 logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
-                scheduler.cancel_inflight_rollouts()
+                await scheduler.cancel_inflight_rollouts()
 
             results = await asyncio.gather(
                 *[
