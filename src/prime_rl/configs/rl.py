@@ -275,8 +275,6 @@ class RLConfig(BaseSettings):
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
 
-    ### Local-only fields
-
     bench: Annotated[
         bool,
         Field(
@@ -284,12 +282,7 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    dump_config: Annotated[
-        Path | None,
-        Field(
-            description="If set, dump resolved subconfigs (trainer, orchestrator, inference) to this directory and exit without starting any processes."
-        ),
-    ] = None
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 

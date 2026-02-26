@@ -21,24 +21,29 @@ from prime_rl.utils.utils import (
     get_log_dir,
 )
 
+TRAINER_TOML = "trainer.toml"
+ORCHESTRATOR_TOML = "orchestrator.toml"
+INFERENCE_TOML = "inference.toml"
+TEACHER_INFERENCE_TOML = "teacher_inference.toml"
+
 
 def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     """Write resolved subconfigs to disk as TOML files."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(output_dir / "trainer.toml", "wb") as f:
+    with open(output_dir / TRAINER_TOML, "wb") as f:
         tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
 
-    with open(output_dir / "orchestrator.toml", "wb") as f:
+    with open(output_dir / ORCHESTRATOR_TOML, "wb") as f:
         tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
 
     if config.inference is not None:
-        with open(output_dir / "inference.toml", "wb") as f:
+        with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
 
     teacher_inference = getattr(config, "teacher_inference", None)
     if teacher_inference is not None:
-        with open(output_dir / "teacher_inference.toml", "wb") as f:
+        with open(output_dir / TEACHER_INFERENCE_TOML, "wb") as f:
             tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)
 
 
@@ -63,32 +68,23 @@ def check_gpus_available(gpu_ids: list[int]) -> None:
 
 
 def rl_local(config: RLConfig):
-    # Setup logger
+    assert config.deployment.type == "single_node"
+
     logger = setup_logger(
         config.log.level or "info",
         log_file=config.output_dir / "logs" / "rl.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
 
-    # If dump_config is set, write resolved subconfigs and exit early
-    if config.dump_config is not None:
-        logger.warning(
-            "--dump-config is set. No RL training will be started. Only writing resolved subconfigs to disk."
-        )
-        write_subconfigs(config, config.dump_config)
-        logger.info(f"Dumping resolved subconfigs to {config.dump_config}")
-        logger.info(f"  Wrote trainer config to {config.dump_config / 'trainer.toml'}")
-        logger.info(f"  Wrote orchestrator config to {config.dump_config / 'orchestrator.toml'}")
-        if config.inference is not None:
-            logger.info(f"  Wrote inference config to {config.dump_config / 'inference.toml'}")
-        if config.teacher_inference is not None:
-            logger.info(f"  Wrote teacher inference config to {config.dump_config / 'teacher_inference.toml'}")
-        logger.success(f"Config dump complete. Files written to {config.dump_config}")
-        logger.warning("To start an RL run, remove --dump-config from your command.")
+    config_dir = config.output_dir / "configs"
+    write_subconfigs(config, config_dir)
+    logger.info(f"Wrote subconfigs to {config_dir}")
+
+    if config.dry_run:
+        logger.success("Dry run complete. To start an RL run locally, remove --dry-run from your command.")
         return
 
     # Derive GPU IDs from deployment config
-    assert config.deployment.type == "single_node"
     gpu_offset = 0
     num_infer_gpus = config.deployment.num_infer_gpus if config.inference is not None else 0
     infer_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
@@ -125,10 +121,6 @@ def rl_local(config: RLConfig):
     log_dir = get_log_dir(config.output_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write all resolved subconfigs to disk
-    config_dir = Path(".pydantic_config") / uuid.uuid4().hex
-    write_subconfigs(config, config_dir)
-
     # Start processes
     processes: list[Popen] = []
     monitor_threads: list[Thread] = []
@@ -138,8 +130,8 @@ def rl_local(config: RLConfig):
     try:
         # Optionally, start inference process
         if config.inference:
-            inference_cmd = ["uv", "run", "inference", "@", (config_dir / "inference.toml").as_posix()]
-            logger.info(f"Starting inference process on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
+            inference_cmd = ["uv", "run", "inference", "@", (config_dir / INFERENCE_TOML).as_posix()]
+            logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
             # If we don't log stdout, the server hangs
             with open(log_dir / "inference.stdout", "w") as log_file:
@@ -178,7 +170,7 @@ def rl_local(config: RLConfig):
                     "or omit teacher_inference and configure orchestrator.teacher_model to use an existing server."
                 )
 
-            teacher_inference_cmd = ["uv", "run", "inference", "@", (config_dir / "teacher_inference.toml").as_posix()]
+            teacher_inference_cmd = ["uv", "run", "inference", "@", (config_dir / TEACHER_INFERENCE_TOML).as_posix()]
             logger.info(f"Starting teacher inference process on GPU(s) {' '.join(map(str, teacher_gpu_ids))}")
             logger.debug(f"Teacher inference start command: {' '.join(teacher_inference_cmd)}")
             with open(log_dir / "teacher_inference.stdout", "w") as log_file:
@@ -217,7 +209,7 @@ def rl_local(config: RLConfig):
             "run",
             "orchestrator",
             "@",
-            (config_dir / "orchestrator.toml").as_posix(),
+            (config_dir / ORCHESTRATOR_TOML).as_posix(),
         ]
         logger.info("Starting orchestrator process")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
@@ -265,9 +257,9 @@ def rl_local(config: RLConfig):
             "-m",
             "prime_rl.trainer.rl.train",
             "@",
-            (config_dir / "trainer.toml").as_posix(),
+            (config_dir / TRAINER_TOML).as_posix(),
         ]
-        logger.info(f"Starting trainer process on GPU(s) {' '.join(map(str, trainer_gpu_ids))}")
+        logger.info(f"Starting trainer on GPU(s) {' '.join(map(str, trainer_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(trainer_cmd)}")
         with open(log_dir / "trainer.stdout", "w") as log_file:
             trainer_process = Popen(
@@ -409,10 +401,8 @@ def rl_slurm(config: RLConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = config.output_dir / "configs"
-
-    if config.deployment.type == "multi_node":
-        write_subconfigs(config, config_dir)
-        logger.info(f"Wrote subconfigs to {config_dir}")
+    write_subconfigs(config, config_dir)
+    logger.info(f"Wrote subconfigs to {config_dir}")
 
     script, log_message = render_slurm_script(config, config_dir)
     script_path = config.output_dir / "rl.sbatch"
@@ -420,7 +410,7 @@ def rl_slurm(config: RLConfig):
     script_path.write_text(script)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    if config.slurm.dry_run:
+    if config.dry_run:
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
         return
 
