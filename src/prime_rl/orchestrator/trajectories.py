@@ -1,11 +1,14 @@
 import base64
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+from typing import Any
 
 import torch
 import verifiers as vf
 from PIL import Image
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
@@ -35,8 +38,138 @@ def _align_routed_experts(
     return routed_experts + [zero_entry for _ in range(deficit)]
 
 
+def _common_prefix_len(a: list[int], b: list[int]) -> int:
+    max_len = min(len(a), len(b))
+    for idx in range(max_len):
+        if a[idx] != b[idx]:
+            return idx
+    return max_len
+
+
+def _normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]:
+    if messages is None:
+        return []
+    if isinstance(messages, str):
+        return [{"role": default_role, "content": messages}]
+    if isinstance(messages, dict):
+        return [dict(messages)]
+    if isinstance(messages, list):
+        normalized: list[dict[str, Any]] = []
+        for message in messages:
+            if isinstance(message, str):
+                normalized.append({"role": default_role, "content": message})
+            elif isinstance(message, dict):
+                normalized.append(dict(message))
+            else:
+                raise TypeError(f"Unsupported message type: {type(message)}")
+        return normalized
+    raise TypeError(f"Unsupported messages container type: {type(messages)}")
+
+
+def _deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _deserialize_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
+        function = tool_call.get("function", {})
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments)
+        return {
+            **tool_call,
+            "function": {**function, "arguments": arguments},
+        }
+
+    return [
+        {
+            **message,
+            "tool_calls": [_deserialize_tool_call(tc) for tc in (message.get("tool_calls") or [])],
+        }
+        for message in messages
+    ]
+
+
+def _strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _strip(message: dict[str, Any]) -> dict[str, Any]:
+        content = message.get("content")
+        if isinstance(content, str):
+            return {**message, "content": content.strip()}
+        return message
+
+    return [_strip(message) for message in messages]
+
+
+def _should_add_generation_prompt(messages: list[dict[str, Any]], idx: int) -> bool:
+    role = messages[idx].get("role")
+    if role not in ("user", "tool"):
+        return False
+    if idx + 1 >= len(messages):
+        return False
+    return messages[idx + 1].get("role") == "assistant"
+
+
+def _render_messages(
+    tokenizer: PreTrainedTokenizer,
+    messages: list[dict[str, Any]],
+    add_generation_prompt: bool = False,
+) -> list[int]:
+    return list(
+        tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=add_generation_prompt,
+            return_dict=False,
+        )
+    )
+
+
+def _tokenize_step_from_messages(
+    step: vf.TrajectoryStep,
+    tokenizer: PreTrainedTokenizer,
+) -> dict[str, Any]:
+    prompt = _normalize_messages(step.get("prompt"), default_role="user")
+    completion = _normalize_messages(step.get("completion"), default_role="assistant")
+
+    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
+    completion = _strip_message_content(_deserialize_tool_calls(completion))
+
+    all_messages = prompt + completion
+    prompt_has_assistant_completion = len(completion) > 0 and completion[0].get("role") == "assistant"
+    prompt_ids = _render_messages(
+        tokenizer,
+        prompt,
+        add_generation_prompt=prompt_has_assistant_completion,
+    )
+    full_ids = _render_messages(tokenizer, all_messages)
+
+    full_mask: list[bool] = []
+    prev_ids: list[int] = []
+    for idx, message in enumerate(all_messages):
+        cur_ids = _render_messages(
+            tokenizer,
+            all_messages[: idx + 1],
+            add_generation_prompt=_should_add_generation_prompt(all_messages, idx),
+        )
+        lcp = _common_prefix_len(prev_ids, cur_ids)
+        full_mask = full_mask[:lcp] + [message.get("role") == "assistant"] * (len(cur_ids) - lcp)
+        prev_ids = cur_ids
+
+    split_idx = _common_prefix_len(prompt_ids, full_ids)
+
+    completion_ids = full_ids[split_idx:]
+    completion_mask = full_mask[split_idx:]
+    completion_logprobs = [0.0] * len(completion_ids)
+
+    return {
+        "prompt_ids": prompt_ids,
+        "prompt_mask": [False] * len(prompt_ids),
+        "completion_ids": completion_ids,
+        "completion_mask": completion_mask,
+        "completion_logprobs": completion_logprobs,
+        "routed_experts": None,
+        "prompt_prefix_len": split_idx,
+    }
+
+
 def interleave_rollout(
     output: vf.RolloutOutput,
+    tokenizer: PreTrainedTokenizer | None = None,
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
 ) -> list[TrainingSample] | None:
@@ -60,6 +193,7 @@ def interleave_rollout(
 
     Args:
         output: vf.RolloutOutput containing trajectory data
+        tokenizer: Tokenizer used to reconstruct step tokens when rollout tokens are unavailable
         vlm_cache: Pre-computed VLM image cache for multimodal training
         cache_key: Cache key to use when retrieving images from the VLM cache
     """
@@ -74,10 +208,42 @@ def interleave_rollout(
     # this field should be guaranteed because we set temperature in get_sampling_args
     temperature = output["sampling_args"]["temperature"]
 
-    def make_sample(step: vf.TrajectoryStep) -> TrainingSample:
-        """Create a new TrainingSample from a trajectory step."""
+    def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
-        assert tokens is not None
+        if tokens is not None:
+            return {
+                "prompt_ids": list(tokens["prompt_ids"]),
+                "prompt_mask": [bool(i) for i in tokens["prompt_mask"]],
+                "completion_ids": list(tokens["completion_ids"]),
+                "completion_mask": [bool(i) for i in tokens["completion_mask"]],
+                "completion_logprobs": list(tokens["completion_logprobs"]),
+                "routed_experts": tokens.get("routed_experts"),
+            }
+
+        if tokenizer is None:
+            logger.warning(
+                f"Missing rollout tokens for example {output['example_id']} step {step_idx}, but no tokenizer was provided."
+            )
+            return None
+
+        reconstructed = _tokenize_step_from_messages(step, tokenizer)
+        if reconstructed["prompt_prefix_len"] < len(reconstructed["prompt_ids"]):
+            logger.debug(
+                f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "
+                f"Using longest common prefix length {reconstructed['prompt_prefix_len']}."
+            )
+        reconstructed.pop("prompt_prefix_len")
+        return reconstructed
+
+    prepared_steps: list[dict[str, Any]] = []
+    for step_idx, step in enumerate(trajectory):
+        prepared = prepare_step_tokens(step, step_idx)
+        if prepared is None:
+            return None
+        prepared_steps.append(prepared)
+
+    def make_sample(tokens: dict[str, Any]) -> TrainingSample:
+        """Create a new TrainingSample from a trajectory step."""
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
@@ -101,10 +267,9 @@ def interleave_rollout(
             routed_experts=routed_experts,
         )
 
-    def extend_sample(sample: TrainingSample, step: vf.TrajectoryStep, prefix_len: int) -> None:
+    def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
-        tokens = step["tokens"]
-        assert tokens is not None
+        tokens = prepared_steps[step_idx]
 
         # Extend with new prompt tokens (mask=False, no gradient)
         new_prompt_ids = tokens["prompt_ids"][prefix_len:]
@@ -138,12 +303,12 @@ def interleave_rollout(
     # Track [prefix_tokens, sample, last_step_idx] per active sample
     active_samples: list[list] = []
 
-    first_tokens = trajectory[0]["tokens"]
+    first_tokens = prepared_steps[0]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    active_samples.append([first_prefix, make_sample(trajectory[0]), 0])
+    active_samples.append([first_prefix, make_sample(first_tokens), 0])
 
-    for step_idx, step in enumerate(trajectory[1:], start=1):
-        tokens = step["tokens"]
+    for step_idx, _step in enumerate(trajectory[1:], start=1):
+        tokens = prepared_steps[step_idx]
         step_prompt_ids = tokens["prompt_ids"]
 
         # Check if this step extends ANY active prefix
@@ -156,7 +321,7 @@ def interleave_rollout(
         if matched_idx is not None:
             # Extension holds - merge into matched sample
             prefix_tokens, sample, _ = active_samples[matched_idx]
-            extend_sample(sample, step, len(prefix_tokens))
+            extend_sample(sample, len(prefix_tokens), step_idx=step_idx)
             active_samples[matched_idx][0] = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples[matched_idx][2] = step_idx
         else:
@@ -166,7 +331,7 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples.append([new_prefix, make_sample(step), step_idx])
+            active_samples.append([new_prefix, make_sample(tokens), step_idx])
 
     # Attach images once per sample using only the last merged step
     if vlm_cache is not None:

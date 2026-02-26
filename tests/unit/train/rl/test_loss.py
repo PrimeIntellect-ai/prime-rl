@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
+from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, SFTLossConfig
 from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_loss_fn
 
 pytestmark = [pytest.mark.gpu]
@@ -73,6 +73,28 @@ def test_setup_loss_fn_with_custom_config():
     assert isinstance(result, LossOutputs)
     assert result.loss.shape == ()
     assert "custom_metric" in result.metrics
+
+
+def test_sft_loss_matches_masked_nll():
+    trainer_logprobs = [torch.tensor([-0.1, -0.5, -0.2], dtype=torch.float32).cuda()]
+    inference_logprobs = [torch.zeros(3, dtype=torch.float32).cuda()]
+    advantages = [torch.zeros(3, dtype=torch.float32).cuda()]
+    loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
+
+    loss_fn = setup_loss_fn(SFTLossConfig())
+    loss, metrics = compute_loss(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=inference_logprobs,
+        teacher_logprobs=None,
+        advantages=advantages,
+        loss_mask=loss_mask,
+        loss_fn=loss_fn,
+        loss_scale=2,
+    )
+
+    # loss = -sum(masked logprobs) / loss_scale = -(-0.1 - 0.2) / 2 = 0.15
+    assert torch.isclose(loss, torch.tensor(0.15, device=loss.device), atol=1e-6)
+    assert "nll" in metrics
 
 
 def _dummy_custom_loss(inputs: LossInputs, multiplier: float = 1.0) -> LossOutputs:

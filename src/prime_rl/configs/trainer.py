@@ -542,6 +542,12 @@ class DefaultLossConfig(BaseModel):
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
 
 
+class SFTLossConfig(BaseModel):
+    """Config for SFT-style masked negative log-likelihood loss."""
+
+    type: Literal["sft"] = "sft"
+
+
 class CustomLossConfig(BaseModel):
     """Config for a custom external loss function."""
 
@@ -551,7 +557,7 @@ class CustomLossConfig(BaseModel):
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
 
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[DefaultLossConfig | SFTLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):
