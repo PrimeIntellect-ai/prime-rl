@@ -147,7 +147,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
 
 SFTDeploymentConfig: TypeAlias = Annotated[
-    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type", exclude=True)
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
 
 
@@ -223,6 +223,8 @@ class SFTConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
+
     ### Launcher-only fields
 
     slurm: Annotated[
@@ -232,8 +234,6 @@ class SFTConfig(BaseSettings):
             exclude=True,
         ),
     ] = None
-
-    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
 
     dry_run: Annotated[
         bool, Field(description="Only validate and dump resolved configs and exit early.", exclude=True)
