@@ -30,6 +30,19 @@ cd $PROJECT_DIR
 source .venv/bin/activate
 uv sync --all-extras
 
+# Print inference URLs
+export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+INFER_URLS=""
+for host in ${HOSTNAMES[@]}; do
+    if [ -z "$INFER_URLS" ]; then
+        INFER_URLS="http://$host:{{ port }}/v1"
+    else
+        INFER_URLS="$INFER_URLS,http://$host:{{ port }}/v1"
+    fi
+done
+echo "HOSTNAMES=${HOSTNAMES[@]}"
+echo "INFER_URLS=${INFER_URLS}"
+
 # Cleanup any leftover vLLM processes
 srun bash -c "pkill -9 -f vllm || true"
 

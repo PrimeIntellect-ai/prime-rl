@@ -38,9 +38,14 @@ def render_slurm_script(config: InferenceConfig, config_path: Path) -> tuple[str
         gpus_per_node=config.deployment.gpus_per_node,
         partition=config.slurm.partition,
         num_nodes=config.deployment.num_nodes if config.deployment.type == "multi_node" else 1,
+        port=config.server.port,
     )
 
-    log_message = f"Logs:\n  Inference:  tail -F {config.output_dir}/slurm/latest_infer_node_rank_*.log"
+    log_message = (
+        f"Logs:\n"
+        f"  Job:  tail -F {config.output_dir}/job_*.log\n"
+        f"  Inference:  tail -F {config.output_dir}/slurm/latest_infer_node_rank_*.log\n"
+    )
 
     return script, log_message
 
@@ -88,7 +93,9 @@ def inference_local(config: InferenceConfig):
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
         return
 
-    logger.info("Starting inference\n")
+    host = config.server.host or "localhost"
+    port = config.server.port
+    logger.info(f"Starting inference on http://{host}:{port}/v1\n")
 
     setup_vllm_env(config)
 
