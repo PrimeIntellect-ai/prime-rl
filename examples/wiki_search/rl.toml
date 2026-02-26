@@ -40,9 +40,6 @@ name = "qwen3-4b-wiki-search"
 [orchestrator.sampling]
 max_tokens = 512
 
-[orchestrator.buffer]
-online_difficulty_filtering = true
-
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"
 

@@ -231,14 +231,6 @@ class Buffer:
                 target_pool.append(example)
 
             self.num_examples_per_step[env_name][pool] += 1
-            if self.config.online_difficulty_filtering:
-                if avg_reward == 0.0:
-                    self.num_rollouts_per_step[env_name]["hard"] += len(example_rollouts)
-                    continue
-                elif avg_reward == 1.0:
-                    self.num_rollouts_per_step[env_name]["easy"] += len(example_rollouts)
-                    continue
-
             self.num_rollouts_per_step[env_name]["normal"] += len(example_rollouts)
             self.rollout_buffer.extend(example_rollouts)
 

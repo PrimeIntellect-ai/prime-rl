@@ -30,6 +30,7 @@ from transformers import AutoProcessor, AutoTokenizer
 from prime_rl.configs.orchestrator import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
+from prime_rl.orchestrator.difficulty_filter import get_training_rollout_mask
 from prime_rl.orchestrator.eval_utils import evaluate_env
 from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
@@ -244,6 +245,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
+    if config.buffer.skip_verification:
+        logger.info("skip_verification=True: zero-advantage filtering is disabled to keep distillation samples.")
     train_dataset = train_env_group.get_dataset(seed=config.buffer.seed)
     buffer = Buffer(train_dataset, train_env_group.env_names, config.buffer)
     if config.val is not None:
@@ -470,6 +473,14 @@ async def orchestrate(config: OrchestratorConfig):
             config.rollouts_per_example,
             config.advantage,
         )
+        # Drop zero-advantage rollouts during standard RL training, but keep them when verification is disabled
+        # so pure distillation runs still produce trainable batches.
+        keep_rollout_for_training = get_training_rollout_mask(
+            advantages=advantages,
+            skip_verification=config.buffer.skip_verification,
+        )
+        num_kept_rollouts = sum(keep_rollout_for_training)
+        num_filtered_rollouts = num_rollouts - num_kept_rollouts
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
@@ -501,19 +512,22 @@ async def orchestrate(config: OrchestratorConfig):
         rollout_samples_per_rollout: list[int] = []
         num_prefill_tokens = 0
         num_decode_tokens = 0
-        for rollout, advantage, samples in zip(train_rollouts, advantages, results):
+        for rollout, advantage, keep_for_training, samples in zip(
+            train_rollouts, advantages, keep_rollout_for_training, results
+        ):
             rollout_prefill_tokens = 0
             rollout_decode_tokens = 0
             if samples is not None:
                 rollout_samples_per_rollout.append(len(samples))
                 for sample in samples:
-                    sample.advantage = advantage
-                    sample.reward = rollout["reward"]
                     sample_decode_tokens = sum(sample.completion_mask)
                     sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                     rollout_decode_tokens += sample_decode_tokens
                     rollout_prefill_tokens += sample_prefill_tokens
-                    train_examples.append(sample)
+                    if keep_for_training:
+                        sample.advantage = advantage
+                        sample.reward = rollout["reward"]
+                        train_examples.append(sample)
             else:
                 rollout_samples_per_rollout.append(0)
             rollout_prefill_lens.append(rollout_prefill_tokens)
@@ -523,8 +537,8 @@ async def orchestrate(config: OrchestratorConfig):
 
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
-            f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
-            f"to {len(train_examples)} training examples"
+            f"Converted {num_kept_rollouts}/{len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
+            f"to {len(train_examples)} training examples after advantage-based filtering"
         )
 
         # Compute teacher logprobs if teacher model is configured
@@ -672,6 +686,9 @@ async def orchestrate(config: OrchestratorConfig):
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
+            "difficulty_filter/kept_rollouts": num_kept_rollouts,
+            "difficulty_filter/filtered_rollouts": num_filtered_rollouts,
+            "difficulty_filter/filtered_fraction": num_filtered_rollouts / num_rollouts if num_rollouts else 0.0,
             # Error metrics
             "error/mean": (~results_df.error.isna()).mean(),
             **{
