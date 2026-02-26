@@ -280,15 +280,9 @@ class RLConfig(BaseSettings):
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
-    ### Launcher-only fields (excluded from model_dump)
+    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 
-    slurm: Annotated[
-        SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.", exclude=True)
-    ] = None
-
-    dry_run: Annotated[
-        bool, Field(description="Only validate and dump resolved configs and exit early.", exclude=True)
-    ] = False
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
@@ -508,7 +502,7 @@ class RLConfig(BaseSettings):
             self.trainer.bench = BenchConfig()
             self.orchestrator.bench = True
             self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size,
+                batch_size=self.orchestrator.batch_size or 32,
             )
 
         trainer_bench_enabled = self.trainer.bench is not None

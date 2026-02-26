@@ -22,16 +22,18 @@ from prime_rl.utils.utils import (
 )
 
 RL_TOML = "rl.toml"
+RL_SBATCH = "rl.sbatch"
+
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
 TEACHER_INFERENCE_TOML = "teacher_inference.toml"
 
 
-def write_config(config: RLConfig, output_dir: Path) -> None:
+def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    config_dict = config.model_dump(exclude_none=True, mode="json")
+    config_dict = config.model_dump(exclude=exclude, exclude_none=True, mode="json")
     with open(output_dir / RL_TOML, "wb") as f:
         tomli_w.dump(config_dict, f)
 
@@ -345,8 +347,8 @@ def rl_local(config: RLConfig):
         raise
 
 
-def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
-    """Render the SLURM script template. Returns (script, log_message)."""
+def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) -> None:
+    """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
 
     assert config.slurm is not None
@@ -355,10 +357,7 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
     env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
 
-    log_dir = config.output_dir / "logs"
-
     if config.deployment.type == "single_node":
-        write_config(config, config_dir)
         script = template.render(
             config_path=config_dir / RL_TOML,
             job_name=config.slurm.job_name,
@@ -367,15 +366,9 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
-        log_message = (
-            f"Logs:\n"
-            f"  Trainer:       tail -F {log_dir}/trainer.stdout\n"
-            f"  Orchestrator:  tail -F {log_dir}/orchestrator.stdout\n"
-            f"  Inference:     tail -F {log_dir}/inference.stdout"
-        )
     else:
         script = template.render(
-            config_dir=config_dir,
+            config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             job_name=config.slurm.job_name,
             project_dir=config.slurm.project_dir,
             partition=config.slurm.partition,
@@ -386,15 +379,9 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
         )
-        slurm_log_dir = config.output_dir / "slurm"
-        log_message = (
-            f"Logs:\n"
-            f"  Trainer:       tail -F {slurm_log_dir}/latest_train_node_rank_0.log\n"
-            f"  Orchestrator:  tail -F {slurm_log_dir}/latest_orchestrator.log\n"
-            f"  Inference:     tail -F {slurm_log_dir}/latest_infer_node_rank_0.log"
-        )
 
-    return script, log_message
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script)
 
 
 def rl_slurm(config: RLConfig):
@@ -403,13 +390,31 @@ def rl_slurm(config: RLConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = config.output_dir / "configs"
-    write_subconfigs(config, config_dir)
-    logger.info(f"Wrote subconfigs to {config_dir}")
+    if config.deployment.type == "single_node":
+        write_config(config, config_dir, exclude={"slurm", "dry_run", "clean_output_dir"})
+        logger.info(f"Wrote config to {config_dir / RL_TOML}")
 
-    script, log_message = render_slurm_script(config, config_dir)
-    script_path = config.output_dir / "rl.sbatch"
-    script_path.parent.mkdir(parents=True, exist_ok=True)
-    script_path.write_text(script)
+        log_dir = get_log_dir(config.output_dir)
+        log_message = (
+            f"Logs:\n"
+            f"  Trainer:       tail -F {log_dir}/trainer.stdout\n"
+            f"  Orchestrator:  tail -F {log_dir}/orchestrator.stdout\n"
+            f"  Inference:     tail -F {log_dir}/inference.stdout"
+        )
+    else:
+        write_subconfigs(config, config_dir)
+        logger.info(f"Wrote subconfigs to {config_dir}")
+
+        slurm_log_dir = config.output_dir / "slurm"
+        log_message = (
+            f"Logs:\n"
+            f"  Trainer:       tail -F {slurm_log_dir}/latest_train_node_rank_0.log\n"
+            f"  Orchestrator:  tail -F {slurm_log_dir}/latest_orchestrator.log\n"
+            f"  Inference:     tail -F {slurm_log_dir}/latest_infer_node_rank_0.log"
+        )
+
+    script_path = config.output_dir / RL_SBATCH
+    write_slurm_script(config, config_dir, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
     if config.dry_run:
