@@ -1,9 +1,10 @@
 from argparse import Namespace
-from typing import Annotated, Any, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from prime_rl.configs.shared import BaseModelConfig
+from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
 from prime_rl.utils.utils import rgetattr, rsetattr
 
@@ -114,6 +115,36 @@ All2AllBackend = Literal[
     "naive",
     "pplx",
 ]
+
+
+class BaseInferenceDeploymentConfig(BaseModel):
+    """Base deployment config for inference."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+
+
+class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
+    """Configures a single-node inference deployment."""
+
+    type: Literal["single_node"] = "single_node"
+
+
+class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
+    """Configures a multi-node inference deployment. Each node runs an independent vLLM replica."""
+
+    type: Literal["multi_node"] = "multi_node"
+
+    num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 1
+
+
+InferenceDeploymentConfig: TypeAlias = Annotated[
+    SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig, Field(discriminator="type")
+]
+
+# Fields used only by the entrypoint launcher, excluded from model_dump and to_vllm.
+_LAUNCHER_FIELDS = frozenset({"slurm", "deployment", "output_dir"})
 
 
 class InferenceConfig(BaseSettings):
@@ -237,6 +268,61 @@ class InferenceConfig(BaseSettings):
         ),
     ] = False
 
+    # --- Launcher-only fields (excluded from model_dump and to_vllm) ---
+
+    slurm: Annotated[
+        SlurmConfig | None,
+        Field(
+            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
+            exclude=True,
+        ),
+    ] = None
+
+    deployment: Annotated[
+        InferenceDeploymentConfig,
+        Field(
+            description="Deployment configuration for inference.",
+            exclude=True,
+        ),
+    ] = SingleNodeInferenceDeploymentConfig()
+
+    output_dir: Annotated[
+        Path,
+        Field(
+            description="Directory for SLURM logs and generated scripts.",
+            exclude=True,
+        ),
+    ] = Path("outputs")
+
+    @model_validator(mode="after")
+    def validate_multi_node_requires_slurm(self):
+        if self.deployment.type == "multi_node" and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_slurm_output_dir(self):
+        if self.slurm is None:
+            return self
+        if self.output_dir == Path("outputs"):
+            raise ValueError(
+                "output_dir must be explicitly set when using SLURM (not the default 'outputs'). "
+                "Set output_dir to a unique path, e.g. '/shared/experiments/my-inference'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_slurm_template(self):
+        if self.slurm is not None and self.slurm.template_path is None:
+            import prime_rl
+
+            templates_dir = Path(prime_rl.__file__).parent / "templates"
+            if self.deployment.type == "single_node":
+                self.slurm.template_path = templates_dir / "single_node_inference.sbatch.j2"
+            else:
+                self.slurm.template_path = templates_dir / "multi_node_inference.sbatch.j2"
+        return self
+
     @model_validator(mode="after")
     def round_up_max_lora_rank(self):
         """Round up max_lora_rank to the nearest valid vLLM value.
@@ -303,6 +389,8 @@ class InferenceConfig(BaseSettings):
         }
 
         for key in get_all_fields(self):
+            if key.split(".")[0] in _LAUNCHER_FIELDS:
+                continue
             value = rgetattr(self, key.replace("-", "_"))
             rsetattr(namespace, to_vllm.get(key, key), value)
 

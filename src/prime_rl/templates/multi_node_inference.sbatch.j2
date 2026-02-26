@@ -1,0 +1,56 @@
+#!/bin/bash
+
+#SBATCH --job-name={{ job_name }}
+#SBATCH --nodes={{ num_nodes }}
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+#SBATCH --partition={{ partition }}
+#SBATCH --exclusive
+#SBATCH --output={{ output_dir }}/job_%j.log
+#SBATCH --error={{ output_dir }}/job_%j.log
+
+# Configs
+export NUM_NODES={{ num_nodes }}
+export GPUS_PER_NODE={{ gpus_per_node }}
+
+# Paths
+export PROJECT_DIR={{ project_dir }}
+export CONFIG_PATH={{ config_path }}
+export OUTPUT_DIR={{ output_dir }}
+mkdir -p $OUTPUT_DIR/slurm
+
+# General
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS=1
+
+# Setup environment
+cd $PROJECT_DIR
+[ -f .env ] && source .env
+source .venv/bin/activate
+uv sync --all-extras
+
+# Cleanup any leftover vLLM processes
+srun bash -c "pkill -9 -f vllm || true"
+
+# Run inference (each node runs an independent vLLM replica)
+srun bash -c '
+    cd $PROJECT_DIR
+    [ -f .env ] && source .env
+    source .venv/bin/activate
+
+    # Infiniband setup
+    IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
+    export NCCL_IB_HCA=$IB_HCA
+
+    INFER_NODE_RANK=$SLURM_PROCID
+    LOCAL_IP=$(hostname -I | awk "{print \$1}")
+    echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+
+    # Required for graph compilation to work
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+
+    uv run inference \
+        @ $CONFIG_PATH \
+        2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+'

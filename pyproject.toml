@@ -40,9 +40,9 @@ dependencies = [
 [project.scripts]
 rl = "prime_rl.entrypoints.rl:main"
 sft = "prime_rl.entrypoints.sft:main"
+inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
-inference = "prime_rl.inference.server:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
 
 [project.entry-points."vllm.general_plugins"]
