@@ -13,20 +13,15 @@ uv sync
 
 This installs all core dependencies defined in `pyproject.toml`.
 
-## Optional extras
+## All extras at once
 
-Some features require optional extras:
+The recommended way to install for most users:
 
 ```bash
-# Flash Attention 2
-uv sync --extra flash-attn
-
-# Flash Attention 3
-uv sync --extra flash-attn-3
-
-# Flash Attention (cute variant)
-uv sync --extra flash-attn-cute
+uv sync --all-extras
 ```
+
+This installs all optional extras (flash-attn, flash-attn-cute, etc.) in one go.
 
 ## FP8 inference with deep-gemm
 
