@@ -159,10 +159,10 @@ class Scheduler:
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
         while True:
-            await self.update_policy()
+            await self.maybe_update_policy()
             await asyncio.sleep(1)
 
-    async def update_policy(self):
+    async def maybe_update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
@@ -235,6 +235,14 @@ class Scheduler:
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
         """Continuously generates a batch of rollouts."""
         self.step = step
+
+        # First, manually check the async barrier
+        # Once cleared, re-create the update policy task to update incoming policies mid-step
+        await self.maybe_update_policy()
+        if self.update_policy_task is not None:
+            self.update_policy_task.cancel()
+            self.update_policy_task = asyncio.create_task(self.maybe_update_policy())
+
         batch_start_time = time.perf_counter()
 
         # Schedule initial tasks
