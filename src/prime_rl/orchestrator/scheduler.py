@@ -13,6 +13,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.utils import get_sampling_args
 from prime_rl.orchestrator.vf_utils import get_seq_len, run_group
+from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.temp_scheduling import compute_temperature
@@ -236,11 +237,12 @@ class Scheduler:
         """Continuously generates a batch of rollouts."""
         self.step = step
 
-        # First, manually check the async barrier
-        # Once cleared, re-create the update policy loop to update incoming policies mid-step
-        await self.maybe_update_policy()
+        # Cancel the previous policy loop before doing anything else to avoid concurrent updates
         if self.update_policy_task is not None:
-            self.update_policy_task.cancel()
+            await safe_cancel(self.update_policy_task)
+
+        # Check the async barrier, then re-create the update policy loop to update incoming policies mid-step
+        await self.maybe_update_policy()
         self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 
         batch_start_time = time.perf_counter()
@@ -300,7 +302,7 @@ class Scheduler:
 
     async def stop(self) -> None:
         if self.update_policy_task is not None:
-            self.update_policy_task.cancel()
+            await safe_cancel(self.update_policy_task)
             self.update_policy_task = None
         self.cancel_inflight_rollouts()
 
