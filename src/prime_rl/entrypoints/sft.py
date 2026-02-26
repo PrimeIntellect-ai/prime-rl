@@ -8,23 +8,27 @@ from threading import Event, Thread
 
 import tomli_w
 
-from prime_rl.trainer.sft.config import SFTTrainerConfig
+from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.pathing import get_config_dir, get_log_dir, validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import get_free_port
 
-
-def write_trainer_config(config: SFTTrainerConfig, output_dir: Path) -> None:
-    """Write resolved trainer config to disk, excluding launcher-only fields."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    trainer_data = config.model_dump(exclude={"deployment"}, exclude_none=True, mode="json")
-    with open(output_dir / "trainer.toml", "wb") as f:
-        tomli_w.dump(trainer_data, f)
+SFT_TOML = "sft.toml"
+SFT_SBATCH = "sft.sbatch"
 
 
-def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str, str]:
-    """Render the SLURM script template. Returns (script, log_message)."""
+def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None = None) -> None:
+    """Write resolved config to disk, excluding launcher-only fields."""
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_dict = config.model_dump(exclude=exclude, exclude_none=True, mode="json")
+    with open(config_path, "wb") as f:
+        tomli_w.dump(config_dict, f)
+
+
+def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) -> None:
+    """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
 
     assert config.slurm is not None
@@ -34,11 +38,6 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
     template = env.get_template(config.slurm.template_path.name)
 
     if config.deployment.type == "single_node":
-        config_path = config_dir / "sft.toml"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "wb") as f:
-            tomli_w.dump(config.model_dump(exclude={"slurm"}, exclude_none=True, mode="json"), f)
-
         script = template.render(
             config_path=config_path,
             output_dir=config.output_dir,
@@ -47,11 +46,9 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
             gpus_per_node=config.deployment.gpus_per_node,
             partition=config.slurm.partition,
         )
-        log_dir = config.output_dir / "logs"
-        log_message = f"Logs:\n  Trainer:  tail -F {log_dir}/trainer/rank_0.log"
     else:
         script = template.render(
-            config_dir=config_dir,
+            config_path=config_path,
             output_dir=config.output_dir,
             job_name=config.slurm.job_name,
             project_dir=config.slurm.project_dir,
@@ -59,30 +56,37 @@ def render_slurm_script(config: SFTTrainerConfig, config_dir: Path) -> tuple[str
             gpus_per_node=config.deployment.gpus_per_node,
             partition=config.slurm.partition,
         )
-        log_message = f"Logs:\n  Trainer:  tail -F {config.output_dir}/slurm/latest_train_node_rank_0.log"
 
-    return script, log_message
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script)
 
 
-def sft_slurm(config: SFTTrainerConfig):
+def sft_slurm(config: SFTConfig):
     """Run SFT training via SLURM."""
     assert config.slurm is not None
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
-    config_dir = config.output_dir / "configs"
+    config_dir = get_config_dir(config.output_dir)
+    config_path = config_dir / SFT_TOML
+    exclude = (
+        {"deployment", "slurm", "dry_run", "clean_output_dir"}
+        if config.deployment.type == "multi_node"
+        else {"slurm", "dry_run", "clean_output_dir"}
+    )
+    write_config(config, config_path, exclude=exclude)
+    logger.info(f"Wrote config to {config_path}")
 
-    if config.deployment.type == "multi_node":
-        write_trainer_config(config, config_dir)
-        logger.info(f"Wrote trainer config to {config_dir}")
-
-    script, log_message = render_slurm_script(config, config_dir)
-    script_path = config.output_dir / "sft.sbatch"
-    script_path.parent.mkdir(parents=True, exist_ok=True)
-    script_path.write_text(script)
+    script_path = config.output_dir / SFT_SBATCH
+    write_slurm_script(config, config_path, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    if config.slurm.dry_run:
+    if config.deployment.type == "single_node":
+        log_message = f"Logs:\n  Trainer:  tail -F {get_log_dir(config.output_dir)}/trainer/rank_0.log"
+    else:
+        log_message = f"Logs:\n  Trainer:  tail -F {config.output_dir}/slurm/latest_train_node_rank_*.log"
+
+    if config.dry_run:
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
         return
 
@@ -95,17 +99,20 @@ def sft_slurm(config: SFTTrainerConfig):
     logger.success(f"{result.stdout.strip()}\n\n{log_message}")
 
 
-def sft_local(config: SFTTrainerConfig):
+def sft_local(config: SFTConfig):
     """Run SFT training locally with process monitoring and cleanup."""
     assert config.deployment.type == "single_node"
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
-    config_dir = Path(".pydantic_config") / uuid.uuid4().hex
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "trainer.toml"
-    with open(config_path, "wb") as f:
-        tomli_w.dump(config.model_dump(exclude={"deployment"}, exclude_none=True, mode="json"), f)
+    config_dir = get_config_dir(config.output_dir)
+    config_path = config_dir / SFT_TOML
+    write_config(config, config_path)
+    logger.info(f"Wrote config to {config_path}")
+
+    if config.dry_run:
+        logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
+        return
 
     log_dir = config.output_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -127,7 +134,7 @@ def sft_local(config: SFTTrainerConfig):
         "-m",
         "prime_rl.trainer.sft.train",
         "@",
-        config_path.as_posix(),
+        (config_dir / SFT_TOML).as_posix(),
     ]
 
     logger.info(f"Starting SFT trainer with {config.deployment.num_gpus} GPU(s)")
@@ -187,7 +194,12 @@ def sft_local(config: SFTTrainerConfig):
         raise
 
 
-def sft(config: SFTTrainerConfig):
+def sft(config: SFTConfig):
+    resuming = config.ckpt is not None and config.ckpt.resume_step is not None
+    clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
+    validate_output_dir(config.output_dir, resuming=resuming, clean=clean)
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+
     if config.slurm is not None:
         sft_slurm(config)
     else:
@@ -195,7 +207,7 @@ def sft(config: SFTTrainerConfig):
 
 
 def main():
-    sft(parse_argv(SFTTrainerConfig))
+    sft(parse_argv(SFTConfig))
 
 
 if __name__ == "__main__":

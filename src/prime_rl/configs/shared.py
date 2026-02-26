@@ -1,11 +1,37 @@
-from typing import Annotated, Literal
+from pathlib import Path
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
 
-class ModelConfig(BaseConfig):
+class SlurmConfig(BaseConfig):
+    """Configures SLURM scheduling."""
+
+    job_name: Annotated[str, Field(description="The SLURM job name.")] = "prime-rl"
+
+    project_dir: Annotated[
+        Path,
+        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
+    ] = Path(".")
+
+    template_path: Annotated[
+        Path | None,
+        Field(
+            description="The path to the SLURM template file. If None, will use the default single-node/multi-node template."
+        ),
+    ] = None
+
+    partition: Annotated[
+        str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
+    ] = "cluster"
+
+
+ServerType = Literal["vllm", "openai"]
+
+
+class BaseModelConfig(BaseConfig):
     """Configures the model."""
 
     name: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
@@ -16,9 +42,6 @@ class ModelConfig(BaseConfig):
             description="Whether to trust remote code for tokenizer initialization.",
         ),
     ] = False
-
-
-ServerType = Literal["vllm", "openai"]
 
 
 class ElasticConfig(BaseConfig):
@@ -259,3 +282,27 @@ class MetricsServerConfig(BaseConfig):
             description="Host to bind the server to. Defaults to 0.0.0.0.",
         ),
     ] = "0.0.0.0"
+
+
+class BaseTransportConfig(BaseModel):
+    """Base configuration for transport."""
+
+    pass
+
+
+class FileSystemTransportConfig(BaseTransportConfig):
+    """Configures filesystem-based transport for training examples."""
+
+    type: Literal["filesystem"] = "filesystem"
+
+
+class ZMQTransportConfig(BaseTransportConfig):
+    """Configures ZMQ-based transport for training examples."""
+
+    type: Literal["zmq"] = "zmq"
+    host: Annotated[str, Field(description="The host address for ZMQ transport.")] = "localhost"
+    port: Annotated[int, Field(description="The base port for ZMQ transport.")] = 5555
+    hwm: Annotated[int, Field(description="High water mark (max messages in queue) for ZMQ sockets.")] = 10
+
+
+TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]

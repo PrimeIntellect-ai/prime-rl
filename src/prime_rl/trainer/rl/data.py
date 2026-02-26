@@ -6,11 +6,11 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.rl.config import FakeDataLoaderConfig
+from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
-from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfigType, setup_micro_batch_receiver
+from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
 
 
 class TensorMicroBatch(TypedDict):
@@ -27,6 +27,9 @@ class TensorMicroBatch(TypedDict):
 
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
+
+    # MoE router replay
+    routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
     # Multimodal fields (Qwen3-VL)
     # pixel_values: flattened image patches [num_patches, patch_dim] where patch_dim=1176 for Qwen3-VL
@@ -102,6 +105,7 @@ class FakeDataLoader:
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "routed_experts": None,
             "pixel_values": None,
             "image_grid_thw": None,
         }
@@ -126,6 +130,7 @@ class FakeDataLoader:
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "routed_experts": None,
             "pixel_values": None,
             "image_grid_thw": None,
         }
@@ -142,7 +147,7 @@ class DataLoader:
         seq_len: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
-        config: TransportConfigType,
+        config: TransportConfig,
     ):
         self.world = get_world()
 
@@ -194,5 +199,10 @@ class DataLoader:
             else None,
             image_grid_thw=torch.tensor(micro_batch.image_grid_thw, dtype=torch.long)
             if micro_batch.image_grid_thw is not None
+            else None,
+            routed_experts=torch.tensor(micro_batch.routed_experts, dtype=torch.int32).unsqueeze(
+                0
+            )  # [1, seq_len, layers, topk]
+            if micro_batch.routed_experts is not None
             else None,
         )

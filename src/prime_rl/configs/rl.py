@@ -2,23 +2,41 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, model_validator
-from pydantic.config import ConfigDict
-from pydantic.main import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from prime_rl.inference.config import InferenceConfig
-from prime_rl.inference.config import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.orchestrator.config import CheckpointConfig as OrchestratorCheckpointConfig
-from prime_rl.orchestrator.config import FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig
-from prime_rl.orchestrator.config import NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig
-from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.trainer.config import BenchConfig, SlurmConfig
-from prime_rl.trainer.config import CheckpointConfig as TrainerCheckpointConfig
-from prime_rl.trainer.rl.config import FakeDataLoaderConfig
-from prime_rl.trainer.rl.config import FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig
-from prime_rl.trainer.rl.config import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
-from prime_rl.trainer.rl.config import RLTrainerConfig as TrainerConfig
-from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
+from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
+from prime_rl.configs.orchestrator import (
+    CheckpointConfig as OrchestratorCheckpointConfig,
+)
+from prime_rl.configs.orchestrator import (
+    FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
+)
+from prime_rl.configs.orchestrator import (
+    NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig,
+)
+from prime_rl.configs.orchestrator import (
+    OrchestratorConfig,
+)
+from prime_rl.configs.shared import (
+    SlurmConfig,
+    WandbConfig,
+    WandbWithExtrasConfig,
+)
+from prime_rl.configs.trainer import (
+    BenchConfig,
+    FakeDataLoaderConfig,
+    TrainerConfig,
+)
+from prime_rl.configs.trainer import (
+    CheckpointConfig as TrainerCheckpointConfig,
+)
+from prime_rl.configs.trainer import (
+    FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
+    NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
+)
 from prime_rl.utils.pydantic_config import BaseSettings
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -151,7 +169,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
-DeploymentConfigType: TypeAlias = Annotated[
+DeploymentConfig: TypeAlias = Annotated[
     SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
 
@@ -176,15 +194,18 @@ class RLConfig(BaseSettings):
     ] = None
 
     output_dir: Annotated[
-        Path | None,
+        Path,
         Field(
             description="The directory to store the outputs. Should be set to a unique directory identifying the experiment."
         ),
-    ] = None
+    ] = Path("outputs")
 
-    deployment: Annotated[DeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
-
-    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
+    clean_output_dir: Annotated[
+        bool,
+        Field(
+            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
+        ),
+    ] = False
 
     ### Shared configurations
 
@@ -233,7 +254,9 @@ class RLConfig(BaseSettings):
     seq_len: Annotated[
         int | None,
         Field(
-            description="The sequence length to use. If set, will configure both trainer.model.seq_len and orchestrator.seq_len to this value. If None, each can be set independently."
+            description="Shared sequence length. Propagates to trainer.model.seq_len and orchestrator.seq_len, "
+            "but only for those not explicitly set in the config. "
+            "Explicitly set per-component values always take precedence."
         ),
     ] = None
 
@@ -248,15 +271,6 @@ class RLConfig(BaseSettings):
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
 
-    ### Local-only fields
-
-    clean: Annotated[
-        bool,
-        Field(
-            description="Whether to clean the rollouts, checkpoint, checkpoint weights and logs directories at the beginning of the run.",
-        ),
-    ] = True
-
     bench: Annotated[
         bool,
         Field(
@@ -264,28 +278,11 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    dump_config: Annotated[
-        Path | None,
-        Field(
-            description="If set, dump resolved subconfigs (trainer, orchestrator, inference) to this directory and exit without starting any processes."
-        ),
-    ] = None
+    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
-    ### Pre-validation normalization
+    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_deployment(cls, data):
-        # nested_model_default_partial_update=True merges the SingleNodeDeploymentConfig()
-        # default into loaded data before validation. When the user switches to multi_node,
-        # single-node-only fields (num_train_gpus etc.) get carried over and cause errors.
-        if not isinstance(data, dict):
-            return data
-        deployment = data.get("deployment")
-        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
-            for key in ("num_train_gpus", "num_infer_gpus", "num_teacher_gpus"):
-                deployment.pop(key, None)
-        return data
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
@@ -333,13 +330,7 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_output_dir(self):
-        """Auto-setup shared output directory for trainer and orchestrator. With SLURM, no default is set to avoid overwriting experiment outputs."""
-        if self.slurm is None:
-            if self.output_dir is None:
-                self.output_dir = Path("outputs")
-        else:
-            if self.output_dir is None:
-                raise ValueError("output_dir must be set explicitly when using SLURM.")
+        """Auto-setup shared output directory for trainer and orchestrator."""
         self.trainer.output_dir = self.output_dir
         self.orchestrator.output_dir = self.output_dir / "run_default"
 
@@ -430,9 +421,6 @@ class RLConfig(BaseSettings):
             self.orchestrator.model.name = self.model.name
             if self.inference is not None:
                 self.inference.model.name = self.model.name
-                self.inference.model.tool_call_parser = None
-                self.inference.model.enable_auto_tool_choice = False
-                self.inference.model.resolve_tool_call_parser()
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
@@ -462,10 +450,16 @@ class RLConfig(BaseSettings):
 
     @model_validator(mode="after")
     def auto_setup_seq_len(self):
-        """Auto-setup shared seq_len for trainer and orchestrator."""
+        """Auto-setup shared seq_len for trainer and orchestrator.
+
+        Only propagates to components that weren't explicitly set in the config.
+        Uses model_fields_set to detect explicit assignment.
+        """
         if self.seq_len is not None:
-            self.trainer.model.seq_len = self.seq_len
-            self.orchestrator.seq_len = self.seq_len
+            if "seq_len" not in self.trainer.model.model_fields_set:
+                self.trainer.model.seq_len = self.seq_len
+            if "seq_len" not in self.orchestrator.model_fields_set:
+                self.orchestrator.seq_len = self.seq_len
 
         if self.trainer.model.seq_len < self.orchestrator.seq_len:
             raise ValueError(
@@ -508,7 +502,7 @@ class RLConfig(BaseSettings):
             self.trainer.bench = BenchConfig()
             self.orchestrator.bench = True
             self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size,
+                batch_size=self.orchestrator.batch_size or 32,
             )
 
         trainer_bench_enabled = self.trainer.bench is not None
@@ -527,7 +521,7 @@ class RLConfig(BaseSettings):
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
 
             if self.orchestrator.model.lora is None:
-                from prime_rl.orchestrator.config import LoRAConfig
+                from prime_rl.configs.orchestrator import LoRAConfig
 
                 self.orchestrator.model.lora = LoRAConfig()
 
@@ -571,6 +565,21 @@ class RLConfig(BaseSettings):
                     "make sure to set --enable_lora and --max-lora-rank."
                 )
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_router_replay(self):
+        if self.trainer.enable_router_replay:
+            if self.inference is not None:
+                if self.inference.enable_return_routed_experts is False:
+                    warnings.warn(
+                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True."
+                    )
+                self.inference.enable_return_routed_experts = True
+            else:
+                warnings.warn(
+                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server."
+                )
         return self
 
     @model_validator(mode="after")
@@ -622,7 +631,7 @@ class RLConfig(BaseSettings):
 
         import copy
 
-        from prime_rl.orchestrator.config import TeacherModelConfig
+        from prime_rl.configs.orchestrator import TeacherModelConfig
 
         if self.teacher_inference is None:
             if self.inference is None:

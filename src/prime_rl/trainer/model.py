@@ -21,7 +21,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, Genera
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
-from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
+from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -274,10 +274,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         "reshard_after_forward": config.reshard_after_forward,
     }
 
-    if config.dp_replicate > 1:
-        hsdp_mesh = parallel_dims.world_mesh["dp_replicate", "dp_shard_cp"]
-    else:
-        hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
+    hsdp_mesh = parallel_dims.get_mesh("hsdp")
 
     dp_mod_ep_mesh: DeviceMesh | None = None
     if parallel_dims.ep_enabled:
@@ -580,7 +577,7 @@ def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
         if isinstance(transformer_block.mlp, MoE):
             parallelize_module(
                 transformer_block.mlp.experts,
-                device_mesh=parallel_dims.world_mesh["ep"],
+                device_mesh=parallel_dims.get_mesh("ep"),
                 parallelize_plan=ExpertParallel(),
             )
 
@@ -719,6 +716,7 @@ def forward(
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
+    routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     # Multimodal fields (Qwen3-VL)
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
     image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
@@ -738,6 +736,9 @@ def forward(
         kwargs["image_grid_thw"] = image_grid_thw
     else:
         kwargs["position_ids"] = position_ids
+
+    if routed_experts is not None:
+        kwargs["routed_experts"] = routed_experts
 
     out = model(**kwargs)
 

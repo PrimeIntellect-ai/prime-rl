@@ -6,7 +6,7 @@ from typing import Annotated, ClassVar, Type, TypeVar
 
 import tomli
 import tomli_w
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings as PydanticBaseSettings
 from pydantic_settings import (
     PydanticBaseSettingsSource,
@@ -85,15 +85,33 @@ class BaseSettings(PydanticBaseSettings):
             file_secret_settings,
         )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _default_discriminator_types(cls, data: dict) -> dict:
+        """For discriminated-union fields whose default carries a ``type``, inject it when missing.
+
+        Without ``nested_model_default_partial_update`` the ``type`` tag is no
+        longer merged in automatically, so we do it here for every field whose
+        default instance exposes one.
+        """
+        if not isinstance(data, dict):
+            return data
+        for field_name, field_info in cls.model_fields.items():
+            val = data.get(field_name)
+            if isinstance(val, dict) and "type" not in val:
+                default = field_info.default
+                if isinstance(default, BaseModel) and hasattr(default, "type"):
+                    val["type"] = default.type
+        return data
+
     # Pydantic settings configuration
     model_config = SettingsConfigDict(
-        env_prefix="PRIME_",
+        env_prefix="PRIME_RL_",
         env_nested_delimiter="__",
         cli_parse_args=False,
         cli_kebab_case=True,
         cli_implicit_flags=True,
         cli_use_class_docs_for_groups=True,
-        nested_model_default_partial_update=True,  # Allows partial updates to nested model default objects
     )
 
 

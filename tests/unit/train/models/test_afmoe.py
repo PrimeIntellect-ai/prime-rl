@@ -70,12 +70,17 @@ def get_model_pairs():
     return hf_model, prime_model
 
 
+class _IdentityMLP(nn.Identity):
+    def forward(self, x, **kwargs):
+        return super().forward(x)
+
+
 def test_afmoe_attn_only() -> None:
     hf_model, prime_model = get_model_pairs()
     for layer in hf_model.model.layers:
         layer.mlp = nn.Identity()
     for layer in prime_model.model.layers:
-        layer.mlp = nn.Identity()
+        layer.mlp = _IdentityMLP()
 
     with torch.device("cuda"), default_dtype(torch.float32):
         input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))

@@ -1,6 +1,6 @@
 import math
 
-from prime_rl.orchestrator.config import SamplingConfig
+from prime_rl.configs.orchestrator import SamplingConfig
 
 
 def compute_temperature(step: int, sampling_config: SamplingConfig, max_steps: int | None) -> float:

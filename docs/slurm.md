@@ -75,7 +75,7 @@ The SLURM template is auto-selected based on `deployment.type`. You can override
 
 ### Constraints
 
-- `output_dir` must be explicitly set when using SLURM (the default `"outputs"` is rejected)
+- `output_dir` should be explicitly set when using SLURM (defaults to `"outputs"`)
 - Multi-node deployment requires `[slurm]` to be set
 
 ---

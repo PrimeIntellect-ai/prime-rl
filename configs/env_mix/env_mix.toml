@@ -48,6 +48,5 @@ api_server_count = 8
 gpu_memory_utilization = 0.8
 
 [inference.model]
-enable_auto_tool_choice = true
 tool_call_parser = "hermes"
 max_model_len = 8192

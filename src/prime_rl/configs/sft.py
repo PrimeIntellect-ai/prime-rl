@@ -3,18 +3,22 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from prime_rl.trainer.config import (
+from prime_rl.configs.shared import (
+    HeartbeatConfig,
+    LogConfig,
+    SlurmConfig,
+    WandbConfig,
+)
+from prime_rl.configs.trainer import (
     AdamWConfig,
     BenchConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
     ModelConfig,
-    OptimizerConfigType,
-    SchedulerConfigType,
-    SlurmConfig,
+    OptimizerConfig,
+    SchedulerConfig,
     TokenizerConfig,
 )
-from prime_rl.utils.config import HeartbeatConfig, LogConfig, WandbConfig
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
@@ -102,7 +106,7 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
-DataConfigType: TypeAlias = FakeDataConfig | SFTDataConfig
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
 class BaseDeploymentConfig(BaseModel):
@@ -142,21 +146,13 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     ] = None
 
 
-SFTDeploymentConfigType: TypeAlias = SingleNodeDeploymentConfig | MultiNodeDeploymentConfig
+SFTDeploymentConfig: TypeAlias = Annotated[
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
+]
 
 
-class SFTTrainerConfig(BaseSettings):
+class SFTConfig(BaseSettings):
     """Configures the SFT trainer"""
-
-    slurm: Annotated[
-        SlurmConfig | None,
-        Field(
-            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
-            exclude=True,
-        ),
-    ] = None
-
-    deployment: Annotated[SFTDeploymentConfigType, Field(discriminator="type")] = SingleNodeDeploymentConfig()
 
     # The model configuration
     model: ModelConfig = ModelConfig()
@@ -165,13 +161,13 @@ class SFTTrainerConfig(BaseSettings):
     tokenizer: TokenizerConfig = TokenizerConfig()
 
     # The data configuration
-    data: Annotated[DataConfigType, Field(discriminator="type")] = SFTDataConfig()
+    data: DataConfig = SFTDataConfig()
 
     # The optimizer configuration
-    optim: Annotated[OptimizerConfigType, Field(discriminator="type")] = AdamWConfig()
+    optim: OptimizerConfig = AdamWConfig()
 
     # The learning rate scheduler configuration
-    scheduler: Annotated[SchedulerConfigType, Field(discriminator="type")] = ConstantSchedulerConfig()
+    scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
@@ -188,6 +184,13 @@ class SFTTrainerConfig(BaseSettings):
             description="Directory to write outputs to. Will be populated with checkpoints and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
         ),
     ] = Path("outputs")
+
+    clean_output_dir: Annotated[
+        bool,
+        Field(
+            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
+        ),
+    ] = False
 
     max_steps: Annotated[
         int | None,
@@ -220,6 +223,17 @@ class SFTTrainerConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
+
+    slurm: Annotated[
+        SlurmConfig | None,
+        Field(
+            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
+        ),
+    ] = None
+
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+
     ### Pre-validation normalization
 
     @model_validator(mode="before")
@@ -239,17 +253,6 @@ class SFTTrainerConfig(BaseSettings):
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
-        return self
-
-    @model_validator(mode="after")
-    def validate_slurm_output_dir(self):
-        if self.slurm is None:
-            return self
-        if self.output_dir == Path("outputs"):
-            raise ValueError(
-                "output_dir must be explicitly set when using SLURM (not the default 'outputs'). "
-                "Set output_dir to a unique experiment path, e.g. '/shared/experiments/my-sft-run'."
-            )
         return self
 
     @model_validator(mode="after")
