@@ -2351,9 +2351,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-deep-gemm = [
-    { name = "deep-gemm" },
-]
 flash-attn = [
     { name = "flash-attn" },
 ]
@@ -2372,13 +2369,15 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+fp8-inference = [
+    { name = "deep-gemm" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "deep-gemm", marker = "extra == 'deep-gemm'", url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3%2Bcu128torch2.10-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl" },
@@ -2410,7 +2409,7 @@ requires-dist = [
     { name = "vllm", url = "https://vllm-wheels.s3.us-west-2.amazonaws.com/7a06e5b05b170d7da31845866da0a99fc65253a1/vllm-0.16.0rc3-cp38-abi3-manylinux_2_31_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
 ]
-provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "deep-gemm"]
+provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2420,6 +2419,7 @@ dev = [
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "ruff", specifier = ">=0.12.1" },
 ]
+fp8-inference = [{ name = "deep-gemm", url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" }]
 
 [[package]]
 name = "prime-sandboxes"
