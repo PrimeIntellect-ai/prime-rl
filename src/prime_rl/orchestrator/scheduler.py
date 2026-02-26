@@ -120,12 +120,11 @@ class Scheduler:
         """Update sampling args for future rollout requests."""
         self.sampling_args = sampling_args
 
-    def cancel_inflight_rollouts(self):
+    async def cancel_inflight_rollouts(self):
         """Cancel all in-flight rollout requests."""
         count = len(self.inflight_group_rollouts)
         for future in list(self.inflight_group_rollouts.keys()):
-            if not future.done():
-                future.cancel()
+            await safe_cancel(future)
         self.inflight_group_rollouts.clear()
         self.cancelled_rollouts_count += count
 
@@ -301,10 +300,10 @@ class Scheduler:
         return batch_rollouts
 
     async def stop(self) -> None:
+        await self.cancel_inflight_rollouts()
         if self.update_policy_task is not None:
             await safe_cancel(self.update_policy_task)
             self.update_policy_task = None
-        self.cancel_inflight_rollouts()
 
     @property
     def max_off_policy_level(self) -> int:
