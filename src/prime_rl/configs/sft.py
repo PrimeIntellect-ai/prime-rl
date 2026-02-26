@@ -225,19 +225,14 @@ class SFTConfig(BaseSettings):
 
     deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
 
-    ### Launcher-only fields
-
     slurm: Annotated[
         SlurmConfig | None,
         Field(
             description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
-            exclude=True,
         ),
     ] = None
 
-    dry_run: Annotated[
-        bool, Field(description="Only validate and dump resolved configs and exit early.", exclude=True)
-    ] = False
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
     ### Pre-validation normalization
 
@@ -258,17 +253,6 @@ class SFTConfig(BaseSettings):
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
-        return self
-
-    @model_validator(mode="after")
-    def validate_slurm_output_dir(self):
-        if self.slurm is None:
-            return self
-        if self.output_dir == Path("outputs"):
-            raise ValueError(
-                "output_dir must be explicitly set when using SLURM (not the default 'outputs'). "
-                "Set output_dir to a unique experiment path, e.g. '/shared/experiments/my-sft-run'."
-            )
         return self
 
     @model_validator(mode="after")
