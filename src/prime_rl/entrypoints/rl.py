@@ -380,6 +380,8 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
             f"  Inference:     tail -F {log_dir}/inference.stdout"
         )
     else:
+        assert config.inference is not None
+
         script = template.render(
             config_dir=config_dir,
             job_name=config.slurm.job_name,
@@ -391,6 +393,9 @@ def render_slurm_script(config: RLConfig, config_dir: Path) -> tuple[str, str]:
             num_infer_nodes=config.deployment.num_infer_nodes,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
+            inference_tp=config.inference.parallel.tp,
+            inference_enable_expert_parallel=config.inference.enable_expert_parallel,
+            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
         )
         slurm_log_dir = config.output_dir / "slurm"
         log_message = (
