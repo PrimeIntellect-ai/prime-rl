@@ -262,6 +262,45 @@ class PrimeMonitorConfig(BaseConfig):
     ] = LogExtrasConfig()
 
 
+class PlatformConfig(BaseConfig):
+    """Configures Prime Intellect platform integration for external training runs."""
+
+    base_url: Annotated[
+        str,
+        Field(
+            description="Prime Intellect platform API base URL.",
+        ),
+    ] = "https://api.primeintellect.ai"
+
+    run_name: Annotated[
+        str | None,
+        Field(
+            description="Name for the training run shown on the platform. Auto-generated if None.",
+        ),
+    ] = None
+
+    wandb_project: Annotated[
+        str | None,
+        Field(
+            description="W&B project to display in the platform run metadata.",
+        ),
+    ] = None
+
+    wandb_entity: Annotated[
+        str | None,
+        Field(
+            description="W&B entity to display in the platform run metadata.",
+        ),
+    ] = None
+
+    team_id: Annotated[
+        str | None,
+        Field(
+            description="Team ID if the run should be visible to a team instead of the owner.",
+        ),
+    ] = None
+
+
 class HeartbeatConfig(BaseConfig):
     """Configures the heartbeat for BetterStack."""
 

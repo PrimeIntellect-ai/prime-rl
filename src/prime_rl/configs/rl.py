@@ -19,6 +19,7 @@ from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
 from prime_rl.configs.shared import (
+    PlatformConfig,
     SlurmConfig,
     WandbConfig,
     WandbWithExtrasConfig,
@@ -210,6 +211,13 @@ class RLConfig(BaseSettings):
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
     slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
+
+    platform: Annotated[
+        PlatformConfig | None,
+        Field(
+            description="Prime Intellect platform integration. When set, creates a run on the platform and streams metrics/samples to it."
+        ),
+    ] = None
 
     ### Shared configurations
 
