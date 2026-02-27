@@ -345,3 +345,181 @@ def monkey_patch_minimax_m2_for_lora():
             ".up_proj.": ".w3.",
         },
     )
+
+
+def monkey_patch_fused_moe_lora_ep():
+    """Enable expert parallelism (EP) for the fused MoE LoRA kernel.
+
+    vLLM's FusedMoEWithLoRA blocks EP with an assertion. Four things need
+    fixing to make it work:
+
+    1. The assertion ``assert not self.base_layer.use_ep`` must be removed.
+
+    2. ``_inject_lora_into_fused_moe`` hardcodes ``MoEPrepareAndFinalizeNoEP``
+       when ``supports_internal_mk`` is False. For EP+DP this is wrong — the
+       modular kernel needs the EP-aware prepare_finalize (dispatch/combine).
+       Fix: call ``maybe_init_modular_kernel()`` on the base layer first so
+       the EP-aware kernel is created and the LoRA decorators wrap it.
+
+    3. ``set_lora`` receives LoRA weights with ``global_num_experts`` in the
+       expert dimension, but the storage is sized for ``local_num_experts``.
+       Fix: slice incoming weights to local experts using ``expert_map``.
+
+    4. ``moe_lora_align_block_size`` allocates ``expert_ids`` with
+       ``torch.empty`` (uninitialized). The C++ kernel returns early for
+       inactive LoRA slots, leaving those entries as garbage. When EP is
+       active, ``expert_map[expert_ids]`` then indexes out of bounds.
+       Fix: zero-initialize ``expert_ids`` so inactive slots contain 0
+       (a valid index into ``expert_map``).
+    """
+    import torch
+    from vllm.lora.layers.fused_moe import FusedMoE3DWithLoRA, FusedMoEWithLoRA
+
+    # --- 1. Remove EP assertion from __init__ ---
+    _original_init = FusedMoEWithLoRA.__init__
+
+    def _patched_init(self, base_layer):
+        # The original __init__ has:
+        #   assert not self.base_layer.use_ep, "..."
+        # We skip it by calling nn.Module.__init__ and reproducing the rest.
+        from vllm.distributed.parallel_state import (
+            get_tensor_model_parallel_rank,
+            get_tensor_model_parallel_world_size,
+        )
+        from vllm.lora.layers.utils import _get_lora_device
+
+        super(FusedMoEWithLoRA, self).__init__()
+        self.base_layer = base_layer
+        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_rank = get_tensor_model_parallel_rank()
+        self.device = _get_lora_device(base_layer)
+        self._w13_slices = 2 if base_layer.moe_config.is_act_and_mul else 1
+        self._inject_lora_into_fused_moe()
+
+    FusedMoEWithLoRA.__init__ = _patched_init
+
+    # --- 2. Fix _inject_lora_into_fused_moe for EP ---
+    _original_inject = FusedMoEWithLoRA._inject_lora_into_fused_moe
+
+    def _patched_inject_lora_into_fused_moe(self):
+        # For EP+DP: trigger modular kernel init early so the EP-aware
+        # prepare_finalize exists before the LoRA decorators are applied.
+        if (
+            self.base_layer.use_ep
+            and not getattr(
+                self.base_layer.quant_method, "supports_internal_mk", False
+            )
+        ):
+            self.base_layer.maybe_init_modular_kernel()
+        _original_inject(self)
+
+    FusedMoEWithLoRA._inject_lora_into_fused_moe = _patched_inject_lora_into_fused_moe
+
+    # --- 3. Add EP expert-slicing helpers ---
+    def _get_local_expert_indices(self) -> torch.Tensor | None:
+        if not self.base_layer.use_ep:
+            return None
+        expert_map = self.base_layer._expert_map
+        if expert_map is None:
+            return None
+        return (expert_map >= 0).nonzero(as_tuple=True)[0]
+
+    def _slice_experts(
+        self, weight: torch.Tensor, local_expert_indices: torch.Tensor | None
+    ) -> torch.Tensor:
+        if local_expert_indices is None:
+            return weight
+        return weight[local_expert_indices]
+
+    FusedMoEWithLoRA._get_local_expert_indices = _get_local_expert_indices
+    FusedMoEWithLoRA._slice_experts = _slice_experts
+
+    # --- 4. Patch set_lora on FusedMoEWithLoRA ---
+    _original_set_lora = FusedMoEWithLoRA.set_lora
+
+    def _patched_set_lora(self, index, lora_a, lora_b):
+        assert isinstance(lora_a, list)
+        assert isinstance(lora_b, list)
+        local_expert_indices = self._get_local_expert_indices()
+        if local_expert_indices is not None:
+            lora_a = [self._slice_experts(w, local_expert_indices) for w in lora_a]
+            lora_b = [self._slice_experts(w, local_expert_indices) for w in lora_b]
+        _original_set_lora(self, index, lora_a, lora_b)
+
+    FusedMoEWithLoRA.set_lora = _patched_set_lora
+
+    # --- 5. Patch set_lora on FusedMoE3DWithLoRA ---
+    _original_3d_set_lora = FusedMoE3DWithLoRA.set_lora
+
+    def _patched_3d_set_lora(self, index, lora_a, lora_b):
+        assert isinstance(lora_a, list)
+        assert isinstance(lora_b, list)
+        local_expert_indices = self._get_local_expert_indices()
+        if local_expert_indices is not None:
+            lora_a = [self._slice_experts(w, local_expert_indices) for w in lora_a]
+            lora_b = [self._slice_experts(w, local_expert_indices) for w in lora_b]
+        _original_3d_set_lora(self, index, lora_a, lora_b)
+
+    FusedMoE3DWithLoRA.set_lora = _patched_3d_set_lora
+
+    # --- 6. Fix uninitialized expert_ids in moe_lora_align_block_size ---
+    from vllm import _custom_ops as ops
+    from vllm.lora.punica_wrapper.punica_gpu import PunicaWrapperGPU
+    from vllm.triton_utils import triton
+    from vllm.utils.math_utils import round_up
+
+    def _patched_moe_lora_align_block_size(
+        self, topk_ids, num_tokens, block_size, num_experts, max_loras,
+        adapter_enabled, expert_map=None, pad_sorted_ids=False,
+        naive_block_assignment=False,
+    ):
+        (token_lora_mapping, _, _, _, lora_ids, _, _) = (
+            self.token_mapping_meta.meta_args(
+                num_tokens, self.lora_config.specialize_active_lora
+            )
+        )
+        if naive_block_assignment:
+            expert_ids = topk_ids.reshape(-1)
+            sorted_ids = None
+            num_tokens_post_pad = None
+        else:
+            max_num_tokens_padded = topk_ids.numel() + num_experts * (block_size - 1)
+            if pad_sorted_ids:
+                max_num_tokens_padded = round_up(max_num_tokens_padded, block_size)
+            sorted_ids = torch.empty(
+                (max_loras * max_num_tokens_padded,),
+                dtype=torch.int32,
+                device=topk_ids.device,
+            )
+            max_num_m_blocks = triton.cdiv(max_num_tokens_padded, block_size)
+            # Zero-init: the C++ kernel skips inactive LoRA slots entirely,
+            # so uninitialized values would cause OOB in expert_map indexing.
+            expert_ids = torch.zeros(
+                (max_loras * max_num_m_blocks,),
+                dtype=torch.int32,
+                device=topk_ids.device,
+            )
+            num_tokens_post_pad = torch.empty(
+                (max_loras), dtype=torch.int32, device=topk_ids.device
+            )
+
+            ops.moe_lora_align_block_size(
+                topk_ids,
+                token_lora_mapping,
+                num_experts,
+                block_size,
+                max_loras,
+                max_num_tokens_padded,
+                max_num_m_blocks,
+                sorted_ids,
+                expert_ids,
+                num_tokens_post_pad,
+                adapter_enabled,
+                lora_ids,
+            )
+            if expert_map is not None:
+                expert_ids = expert_map[expert_ids]
+
+        return None, sorted_ids, expert_ids, num_tokens_post_pad
+
+    PunicaWrapperGPU.moe_lora_align_block_size = _patched_moe_lora_align_block_size
