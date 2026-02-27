@@ -85,9 +85,8 @@ class Scheduler:
         # Track in-flight requests: task -> info
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
 
-        self.step, self.ckpt_step = 0, 0
+        self.step, self.ckpt_step = 0, -1
         self.checkpoint_ready = asyncio.Event()
-        self.checkpoint_ready.set()
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.update_policy_task = None
         self.cancelled_rollouts_count = 0
@@ -172,10 +171,13 @@ class Scheduler:
 
         if next_ckpt_step > self.ckpt_step:
             if next_ckpt_step == async_away_ckpt_step:
-                self.logger.info(
-                    f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
-                    f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
-                )
+                if self.ckpt_step < 0:
+                    self.logger.info(f"Waiting for initial weight broadcast from trainer (step {next_ckpt_step})")
+                else:
+                    self.logger.info(
+                        f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
+                        f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+                    )
                 self.checkpoint_ready.clear()
                 wait_for_ckpt_start_time = time.perf_counter()
                 await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")

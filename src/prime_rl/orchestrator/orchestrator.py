@@ -1,6 +1,7 @@
 import asyncio
 import multiprocessing as mp
 import random
+import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -62,44 +63,12 @@ from prime_rl.utils.utils import (
     clean_exit,
     get_broadcast_dir,
     get_env_ids_to_install,
-    get_step_path,
     install_env,
     resolve_latest_ckpt_step,
     strip_env_version,
     to_col_format,
-    wait_for_path,
 )
 from prime_rl.utils.vlm import is_vlm_model
-
-
-async def _bootstrap_initial_weight_update(config: OrchestratorConfig, inference_pool, scheduler: Scheduler) -> None:
-    step = scheduler.ckpt_step
-    weight_dir = get_step_path(get_broadcast_dir(config.output_dir), step)
-    stable_path = weight_dir / "STABLE"
-    config_path = config.output_dir / "control" / "orch.toml"
-    min_stable_mtime = config_path.stat().st_mtime if config_path.exists() else None
-
-    wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
-    if wait_timeout is None and config.weight_broadcast.type == "nccl":
-        wait_timeout = config.weight_broadcast.timeout
-
-    async def _wait_for_fresh_stable() -> None:
-        while True:
-            await wait_for_path(stable_path)
-            if min_stable_mtime is None or stable_path.stat().st_mtime >= min_stable_mtime:
-                return
-            await asyncio.sleep(1)
-
-    if wait_timeout is None:
-        await _wait_for_fresh_stable()
-    else:
-        await asyncio.wait_for(_wait_for_fresh_stable(), timeout=wait_timeout)
-
-    lora_name = config.model.lora.name if config.model.lora else None
-    await inference_pool.update_weights(weight_dir, lora_name=lora_name, step=step)
-    if lora_name is not None:
-        scheduler.model_name = lora_name
-        inference_pool.update_model_name(lora_name)
 
 
 @clean_exit
@@ -362,12 +331,13 @@ async def orchestrate(config: OrchestratorConfig):
         )
         lora_name = config.model.lora.name if config.model.lora else None
         await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+        scheduler.checkpoint_ready.set()
     else:
         logger.info("Training from scratch")
-        logger.info("Loading initial step-0 broadcast weights")
-        bootstrap_start_time = time.perf_counter()
-        await _bootstrap_initial_weight_update(config, inference_pool, scheduler)
-        logger.info(f"Loaded initial step-0 broadcast weights in {time.perf_counter() - bootstrap_start_time:.2f}s")
+        broadcast_dir = get_broadcast_dir(config.output_dir)
+        if broadcast_dir.exists():
+            logger.info(f"Cleaning stale broadcast directory: {broadcast_dir}")
+            shutil.rmtree(broadcast_dir)
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
@@ -377,6 +347,11 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Start update policy loop
     update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
+
+    # Wait for initial weights before entering the main loop.
+    # On fresh start: update_policy_loop loads step-0 weights and sets checkpoint_ready.
+    # On resume: checkpoint_ready was already set above after loading resume weights.
+    await scheduler.checkpoint_ready.wait()
 
     # Track consecutive empty batches for retry logic
     empty_batch_retries = 0
