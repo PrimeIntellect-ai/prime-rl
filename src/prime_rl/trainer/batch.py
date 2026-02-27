@@ -165,10 +165,29 @@ def prepare_batch(
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
-    num_padding_batch = -len(micro_batches) % num_train_workers
-
     # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
     # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
+    has_multimodal = any(_is_multimodal_sample(mb) for mb in micro_batches)
+    if num_train_workers > 1 and has_multimodal:
+        # The vision encoder is FSDP-sharded and only called when pixel_values is present, so all ranks must
+        # process the same type (multimodal vs text-only) at each micro-step to avoid allgather deadlocks.
+        multimodal = [mb for mb in micro_batches if _is_multimodal_sample(mb)]
+        text_only = [mb for mb in micro_batches if not _is_multimodal_sample(mb)]
+
+        batches_per_gpu: list[list[MicroBatch]] = [[] for _ in range(num_train_workers)]
+        for group in (multimodal, text_only):
+            num_padding = -len(group) % num_train_workers
+            if num_padding > 0 and group:
+                padded_batch = copy.deepcopy(group[0])
+                padded_batch.advantages = [0.0] * len(padded_batch.input_ids)
+                padded_batch.loss_mask = [False] * len(padded_batch.input_ids)
+                group.extend([padded_batch] * num_padding)
+            per_gpu = len(group) // num_train_workers
+            for rank in range(num_train_workers):
+                batches_per_gpu[rank].extend(group[rank * per_gpu : (rank + 1) * per_gpu])
+        return batches_per_gpu
+
+    num_padding_batch = -len(micro_batches) % num_train_workers
     if num_train_workers > 1 and num_padding_batch > 0:
         padded_batch = copy.deepcopy(micro_batches[0])
         padded_batch.advantages = [0.0] * len(padded_batch.input_ids)
