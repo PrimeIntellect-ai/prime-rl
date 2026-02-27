@@ -139,10 +139,6 @@ def rl_local(config: RLConfig):
     stop_events: dict[str, Event] = {}
 
     try:
-        # Write all resolved subconfigs to disk
-        config_dir = Path(".pydantic_config") / uuid.uuid4().hex
-        write_subconfigs(config, config_dir)
-
         # Optionally, start inference process
         if config.inference:
             inference_cmd = ["uv", "run", "inference", "@", (config_dir / INFERENCE_TOML).as_posix()]

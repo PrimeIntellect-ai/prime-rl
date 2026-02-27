@@ -19,7 +19,6 @@ from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
 from prime_rl.configs.shared import (
-    PlatformConfig,
     SlurmConfig,
     WandbConfig,
     WandbWithExtrasConfig,
@@ -285,13 +284,6 @@ class RLConfig(BaseSettings):
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
-    prime_platform: Annotated[
-        PlatformConfig | None,
-        Field(
-            description="Prime Intellect platform integration. When set, registers the run and streams metrics/samples to the platform."
-        ),
-    ] = None
-
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="after")
@@ -419,16 +411,10 @@ class RLConfig(BaseSettings):
 
         validate_shared_wandb_config(self.trainer, self.orchestrator)
 
-        return self
+        if self.orchestrator.prime_monitor is not None and self.orchestrator.prime_monitor.run_name is None:
+            if self.wandb and self.wandb.name:
+                self.orchestrator.prime_monitor.run_name = self.wandb.name
 
-    @model_validator(mode="after")
-    def auto_setup_prime_platform(self):
-        """Propagate top-level prime_platform config to the orchestrator."""
-        if self.prime_platform is not None:
-            self.orchestrator.prime_platform = self.prime_platform
-        if self.orchestrator.prime_platform is not None:
-            if self.orchestrator.prime_platform.run_name is None and self.wandb and self.wandb.name:
-                self.orchestrator.prime_platform.run_name = self.wandb.name
         return self
 
     @model_validator(mode="after")

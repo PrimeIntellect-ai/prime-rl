@@ -9,7 +9,6 @@ from prime_rl.configs.shared import (
     FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
-    PlatformConfig,
     PrimeMonitorConfig,
     TransportConfig,
     WandbWithExtrasConfig,
@@ -714,9 +713,6 @@ class OrchestratorConfig(BaseSettings):
 
     # The prime monitor configuration
     prime_monitor: PrimeMonitorConfig | None = None
-
-    # Prime Intellect platform integration
-    prime_platform: PlatformConfig | None = None
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

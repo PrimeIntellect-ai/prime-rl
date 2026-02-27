@@ -1,7 +1,5 @@
 import asyncio
-import atexit
 import multiprocessing as mp
-import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -30,7 +28,6 @@ import verifiers as vf
 from transformers import AutoProcessor, AutoTokenizer
 
 from prime_rl.configs.orchestrator import BufferConfig, OrchestratorConfig
-from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.eval_utils import evaluate_env
@@ -59,7 +56,6 @@ from prime_rl.utils.client import (
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.platform import finalize_run, register_run
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
@@ -145,31 +141,6 @@ async def orchestrate(config: OrchestratorConfig):
     rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
     if rollout_filters:
         logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
-
-    # Register run with Prime Intellect platform if configured
-    platform_run_id: str | None = None
-    if config.prime_platform is not None:
-        if config.prime_platform.run_name is None and config.wandb and config.wandb.name:
-            config.prime_platform.run_name = config.wandb.name
-
-        platform_run_id, monitoring_base_url = register_run(
-            config=config.prime_platform,
-            base_model=config.model.name,
-            max_steps=config.max_steps or 0,
-            environments=[{"id": env.id} for env in config.env],
-            wandb_project=config.wandb.project if config.wandb else None,
-        )
-        os.environ["RUN_ID"] = platform_run_id
-
-        def _finalize_failure():
-            finalize_run(config.prime_platform, platform_run_id, success=False)
-
-        atexit.register(_finalize_failure)
-
-        if config.prime_monitor is None:
-            config.prime_monitor = PrimeMonitorConfig(base_url=monitoring_base_url)
-        else:
-            config.prime_monitor.base_url = monitoring_base_url
 
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -803,10 +774,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Log final (immutable) samples and distributions to monitor(s)
     monitor.log_final_samples()
     monitor.save_final_summary()
-
-    if platform_run_id is not None:
-        atexit.unregister(_finalize_failure)
-        finalize_run(config.prime_platform, platform_run_id, success=True)
 
     # Write final checkpoint
     if ckpt_manager is not None:
