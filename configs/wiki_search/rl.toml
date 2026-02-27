@@ -1,6 +1,3 @@
-inference_gpu_ids = [0]
-trainer_gpu_ids = [1]
-
 max_steps = 500
 seq_len = 4096
 
@@ -43,5 +40,4 @@ online_difficulty_filtering = true
 id = "primeintellect/wiki-search"
 
 [inference.model]
-enable_auto_tool_choice = true
 tool_call_parser = "hermes"

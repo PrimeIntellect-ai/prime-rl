@@ -1,11 +1,10 @@
-from functools import partial
 from pathlib import Path
 from typing import Callable
 
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.utils import check_no_error, check_number_goes_up_or_down, check_reward_in_range, strip_escape_codes
+from tests.utils import check_no_error, check_reward_goes_up, check_reward_in_range, strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -68,9 +67,6 @@ def rl_resume_process(
     ]
 
     return run_process(cmd, timeout=TIMEOUT)
-
-
-check_reward_goes_up = partial(check_number_goes_up_or_down, go_up=True, pattern=r"Reward:\s*(\d+\.\d{4})")
 
 
 @pytest.fixture(scope="module")

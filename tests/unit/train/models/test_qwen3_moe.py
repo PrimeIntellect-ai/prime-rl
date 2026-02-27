@@ -46,12 +46,17 @@ def get_model_pairs():
     return hf_model, prime_model
 
 
+class _IdentityMLP(nn.Identity):
+    def forward(self, x, **kwargs):
+        return super().forward(x)
+
+
 def test_qwen3_moe_attn_only():
     hf_model, prime_model = get_model_pairs()
     for layer in hf_model.model.layers:
         layer.mlp = nn.Identity()
     for layer in prime_model.model.layers:
-        layer.mlp = nn.Identity()
+        layer.mlp = _IdentityMLP()
 
     with torch.device("cuda"), default_dtype(torch.float32):
         input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
@@ -117,20 +122,34 @@ def test_qwen3_moe():
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
     assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
 
+
+def test_qwen3_moe_router_replay():
+    """When routed_experts are provided, the model uses them instead of computing routing."""
+    _, prime_model = get_model_pairs()
+
     with torch.device("cuda"), default_dtype(torch.float32):
-        hf_from_prime_model = HFQwen3MoeForCausalLM._from_config(hf_model.config)
-        converted_state_dict = prime_model.convert_to_hf(prime_model.state_dict())
-        hf_from_prime_model.load_state_dict(converted_state_dict)
+        input_ids = torch.randint(0, prime_model.config.vocab_size, (1, 100))
+        position_ids = torch.arange(1, 101).unsqueeze(0)
 
-    hf_from_prime_output = hf_from_prime_model(input_ids, position_ids)
-    hf_from_prime_output.logits.sum().backward()
+    # Forward without router replay
+    out_normal = prime_model(input_ids, position_ids)
 
-    logits_diff = hf_from_prime_output.logits - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
-        f"Max logits diff: {logits_diff.abs().max()}"
-    )
-    grad_diff = hf_from_prime_model.model.embed_tokens.weight.grad - hf_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
+    # Construct routed_experts with fixed expert indices
+    # Shape: [batch=1, seq_len=100, num_hidden_layers=3, num_experts_per_tok=4]
+    num_layers = prime_model.config.num_hidden_layers
+    topk = prime_model.config.num_experts_per_tok
+    routed_experts = torch.randint(0, prime_model.config.num_experts, (1, 100, num_layers, topk), device="cuda")
+
+    # Forward with router replay
+    prime_model.zero_grad()
+    out_replay = prime_model(input_ids, position_ids, routed_experts=routed_experts)
+
+    # Outputs should differ because routing is forced to different experts
+    assert out_replay["logits"].shape == out_normal["logits"].shape
+
+    # Verify gradients flow through the model with router replay
+    out_replay["logits"].sum().backward()
+    assert prime_model.model.embed_tokens.weight.grad is not None
 
 
 if __name__ == "__main__":

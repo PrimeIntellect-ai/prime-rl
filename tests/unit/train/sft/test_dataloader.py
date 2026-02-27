@@ -3,7 +3,7 @@ import os
 import pytest
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.config import FakeDataConfig
+from prime_rl.configs.sft import FakeDataConfig
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.world import reset_world
 

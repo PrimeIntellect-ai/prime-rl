@@ -17,11 +17,11 @@ from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor.parallel import parallelize_module
 from torchtitan.distributed.expert_parallel import ExpertParallel
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
-from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
+from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -40,7 +40,6 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.tensor_hashing import get_module_signature
 from prime_rl.utils.vlm import is_vlm_model
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
@@ -84,6 +83,34 @@ def freeze_vision_encoder(model: nn.Module) -> None:
         param.requires_grad = False
         num_frozen += 1
     logger.info(f"Froze {num_frozen} parameters in vision encoder")
+
+
+def freeze_moe_router(model: nn.Module) -> None:
+    """Freeze MoE router parameters to maintain stable routing during training."""
+    logger = get_logger()
+    language_model = get_language_model(model)
+    num_frozen = 0
+
+    for layer in language_model.layers:
+        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        if mlp is None:
+            continue
+
+        # Custom implementation: MoE class with router attribute
+        if isinstance(mlp, MoE):
+            for param in mlp.router.parameters():
+                param.requires_grad = False
+                num_frozen += 1
+        # HuggingFace implementation: gate attribute (nn.Linear)
+        elif hasattr(mlp, "gate") and isinstance(mlp.gate, nn.Linear):
+            for param in mlp.gate.parameters():
+                param.requires_grad = False
+                num_frozen += 1
+
+    if num_frozen == 0:
+        raise ValueError("No MoE router parameters found to freeze. Is this a MoE model?")
+
+    logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
@@ -147,9 +174,20 @@ def get_model(
     model_config.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
 
-    # Ensure pad_token_id is set (some models like Qwen3MoE don't have it)
+    # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
+    # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
     if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
-        model_config.pad_token_id = model_config.eos_token_id
+        gen_config = GenerationConfig.from_model_config(model_config)
+        # Use `is not None` instead of truthiness: token ID 0 is valid.
+        pad_token_id = next(
+            (
+                v
+                for v in [gen_config.pad_token_id, gen_config.eos_token_id, getattr(model_config, "eos_token_id", None)]
+                if v is not None
+            ),
+            None,
+        )
+        model_config.pad_token_id = pad_token_id
 
     # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
     # The model should load in its default dtype (bf16) to match vLLM inference.
@@ -180,11 +218,10 @@ def get_model(
         )
 
     with device:
-        # For VLM models, use AutoModelForVision2Seq or import specific model class
         if is_vlm:
-            from transformers import AutoModelForVision2Seq
+            from transformers import AutoModelForImageTextToText
 
-            model_cls = AutoModelForVision2Seq
+            model_cls = AutoModelForImageTextToText
         else:
             match impl_to_use:
                 case "hf":
@@ -237,10 +274,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         "reshard_after_forward": config.reshard_after_forward,
     }
 
-    if config.dp_replicate > 1:
-        hsdp_mesh = parallel_dims.world_mesh["dp_replicate", "dp_shard_cp"]
-    else:
-        hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
+    hsdp_mesh = parallel_dims.get_mesh("hsdp")
 
     dp_mod_ep_mesh: DeviceMesh | None = None
     if parallel_dims.ep_enabled:
@@ -543,7 +577,7 @@ def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
         if isinstance(transformer_block.mlp, MoE):
             parallelize_module(
                 transformer_block.mlp.experts,
-                device_mesh=parallel_dims.world_mesh["ep"],
+                device_mesh=parallel_dims.get_mesh("ep"),
                 parallelize_plan=ExpertParallel(),
             )
 
@@ -632,6 +666,9 @@ def setup_model(
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
 
+    if config.freeze_moe_router:
+        freeze_moe_router(model)
+
     if parallel_dims.ep_enabled:
         apply_ep(model, parallel_dims)
 
@@ -669,7 +706,6 @@ def setup_model(
         else:
             load_dcp_from_hf(model, config, parallel_dims)
 
-    logger.debug(f"Model signature: {get_module_signature(model, compress=True)}")
     return model
 
 
@@ -680,6 +716,7 @@ def forward(
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
+    routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     # Multimodal fields (Qwen3-VL)
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
     image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
@@ -699,6 +736,9 @@ def forward(
         kwargs["image_grid_thw"] = image_grid_thw
     else:
         kwargs["position_ids"] = position_ids
+
+    if routed_experts is not None:
+        kwargs["routed_experts"] = routed_experts
 
     out = model(**kwargs)
 

@@ -9,10 +9,11 @@ from typing import NamedTuple
 import verifiers as vf
 from aiolimiter import AsyncLimiter
 
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
-from prime_rl.orchestrator.config import OrchestratorConfig
 from prime_rl.orchestrator.utils import get_sampling_args
-from prime_rl.orchestrator.vf_utils import run_group
+from prime_rl.orchestrator.vf_utils import get_seq_len, run_group
+from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.temp_scheduling import compute_temperature
@@ -48,7 +49,7 @@ class Scheduler:
         inference_pool: InferencePool,
         buffer: Buffer,
         config: OrchestratorConfig,
-        oversampling_factor: float,
+        max_inflight_rollouts: int,
         max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
@@ -65,9 +66,11 @@ class Scheduler:
         self.buffer = buffer
         self.config = config
         self.batch_size = config.batch_size
+        self.token_batch_size = config.token_batch_size
         self.rollouts_per_example = config.rollouts_per_example
         self.seq_len = config.seq_len
-        self.problems_per_batch = int(oversampling_factor * self.batch_size // self.rollouts_per_example)
+        self.max_inflight_rollouts = max_inflight_rollouts
+        self.max_inflight_group_rollouts = max(1, self.max_inflight_rollouts // self.rollouts_per_example)
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
@@ -91,19 +94,37 @@ class Scheduler:
         self.cancelled_rollouts_count = 0
         self.last_batch_generation_time = 0.0
 
+    @property
+    def uses_token_batching(self) -> bool:
+        return self.token_batch_size is not None
+
+    @property
+    def batch_target(self) -> int:
+        if self.uses_token_batching:
+            assert self.token_batch_size is not None
+            return self.token_batch_size
+        assert self.batch_size is not None
+        return self.batch_size
+
+    def get_batch_progress_increment(self, rollouts: list[vf.RolloutOutput]) -> int:
+        if self.uses_token_batching:
+            return sum(get_seq_len(rollout) for rollout in rollouts)
+        return len(rollouts)
+
+    def finalize_batch_rollouts(self, rollouts: list[vf.RolloutOutput]) -> list[vf.RolloutOutput]:
+        if self.batch_size is None:
+            return rollouts
+        return rollouts[: self.batch_size]
+
     def set_sampling_args(self, sampling_args: dict) -> None:
         """Update sampling args for future rollout requests."""
         self.sampling_args = sampling_args
 
-    def cancel_all_inflight_rollouts(self):
-        """Cancel all in-flight rollout requests.
-
-        Used when weights are updated to discard stale rollouts generated with old weights.
-        """
+    async def cancel_inflight_rollouts(self):
+        """Cancel all in-flight rollout requests."""
         count = len(self.inflight_group_rollouts)
         for future in list(self.inflight_group_rollouts.keys()):
-            if not future.done():
-                future.cancel()
+            await safe_cancel(future)
         self.inflight_group_rollouts.clear()
         self.cancelled_rollouts_count += count
 
@@ -138,10 +159,10 @@ class Scheduler:
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
         while True:
-            await self.update_policy()
+            await self.maybe_update_policy()
             await asyncio.sleep(1)
 
-    async def update_policy(self):
+    async def maybe_update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
@@ -180,33 +201,22 @@ class Scheduler:
 
             self.checkpoint_ready.set()
 
-            # Handle off-policy tracking - cancel old requests
-            tasks_to_remove = []
-            tasks_to_update = []
-
-            for task, info in self.inflight_group_rollouts.items():
-                if info.off_policy_steps > self.max_off_policy_steps:
-                    if not task.done():
-                        task.cancel()
-                    tasks_to_remove.append((task, info.client_config))
+            # Cancel stale rollouts and bump off-policy step for the rest
+            cancelled = []
+            updated = {}
+            for task, info in list(self.inflight_group_rollouts.items()):
+                new_off_policy_steps = info.off_policy_steps + 1
+                if new_off_policy_steps > self.max_off_policy_steps:
+                    cancelled.append(task)
                 else:
-                    tasks_to_update.append((task, info.off_policy_steps + 1, info.client_config))
+                    updated[task] = InflightRolloutInfo(new_off_policy_steps, info.client_config)
+            self.inflight_group_rollouts = updated
+            await safe_cancel_all(cancelled)
+            self.cancelled_rollouts_count += len(cancelled)
 
-            # Remove cancelled
-            for task, _ in tasks_to_remove:
-                self.inflight_group_rollouts.pop(task, None)
-            self.cancelled_rollouts_count += len(tasks_to_remove)
-
-            # Update off-policy steps for remaining
-            for task, off_policy_steps, client_config in tasks_to_update:
-                if task in self.inflight_group_rollouts:
-                    self.inflight_group_rollouts[task] = InflightRolloutInfo(
-                        off_policy_steps=off_policy_steps, client_config=client_config
-                    )
-
-            if len(tasks_to_remove) > 0:
+            if len(cancelled) > 0:
                 self.logger.warning(
-                    f"Cancelled {len(tasks_to_remove)} old rollout requests (will refill naturally). Consider increasing max_off_policy_steps to avoid this."
+                    f"Cancelled {len(cancelled)} group rollout requests because they would be generated by >{self.max_off_policy_steps} policy versions. These requests will refill naturally. To avoid cancellation, consider increasing max_off_policy_steps."
                 )
 
             self.ckpt_step = next_ckpt_step
@@ -214,19 +224,29 @@ class Scheduler:
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
         """Continuously generates a batch of rollouts."""
         self.step = step
+
+        # Cancel the previous update policy task to avoid concurrent updates
+        if self.update_policy_task is not None:
+            await safe_cancel(self.update_policy_task)
+
+        # Manually check the async barrier before starting the step, the re-create the update policy loop
+        # This ensures that we respect max_async_level, while still listening for policy updates mid-step
+        await self.maybe_update_policy()
+        self.update_policy_task = asyncio.create_task(self.update_policy_loop())
+
         batch_start_time = time.perf_counter()
 
-        # Schedule initial tasks
-        self.logger.debug("Starting to generate batch rollouts")
-        while len(self.inflight_group_rollouts) < self.problems_per_batch:
-            await self.schedule_group_rollout()
-
         batch_rollouts: list[vf.RolloutOutput] = []
+        batch_progress = 0
         pbar = ProgressTracker(
-            total=self.config.batch_size, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
+            total=self.batch_target, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
         )
 
-        while len(batch_rollouts) < self.config.batch_size:
+        while batch_progress < self.batch_target:
+            # Fill up
+            while len(self.inflight_group_rollouts) < self.max_inflight_group_rollouts:
+                await self.schedule_group_rollout()
+
             # Wait for at least one future to complete
             finished_tasks, _ = await asyncio.wait(
                 self.inflight_group_rollouts.keys(),
@@ -236,8 +256,7 @@ class Scheduler:
             await self.checkpoint_ready.wait()
 
             for finished_task in finished_tasks:
-                if len(batch_rollouts) >= self.config.batch_size:
-                    batch_rollouts = batch_rollouts[: self.config.batch_size]
+                if batch_progress >= self.batch_target:
                     break
 
                 # Safely pop the future from tracking
@@ -252,18 +271,26 @@ class Scheduler:
                     accepted_rollouts = self.buffer.sample_rollouts(n=self.config.rollouts_per_example)
 
                     batch_rollouts.extend(accepted_rollouts)
-                    pbar.update(len(accepted_rollouts))
+                    progress_increment = self.get_batch_progress_increment(accepted_rollouts)
+                    batch_progress += progress_increment
+                    pbar.update(progress_increment)
 
                 except asyncio.CancelledError:
                     pass  # Request was cancelled, will be rescheduled
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
 
-                await self.schedule_group_rollout()
+        batch_rollouts = self.finalize_batch_rollouts(batch_rollouts)
 
         pbar.close()
         self.last_batch_generation_time = time.perf_counter() - batch_start_time
         return batch_rollouts
+
+    async def stop(self) -> None:
+        await self.cancel_inflight_rollouts()
+        if self.update_policy_task is not None:
+            await safe_cancel(self.update_policy_task)
+            self.update_policy_task = None
 
     @property
     def max_off_policy_level(self) -> int:

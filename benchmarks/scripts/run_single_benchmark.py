@@ -83,6 +83,11 @@ class BenchmarkConfig(BaseSettings):
 
     cp: Annotated[int, Field(ge=1, description="Context parallelism size (1 = no CP)")] = 1
 
+    fused_lm_head_chunk_size: Annotated[
+        int | None,
+        Field(description="Fused LM head chunk size (None uses trainer default)"),
+    ] = None
+
     docker_image: Annotated[str | None, Field(description="Docker image used for the benchmark")] = None
 
     # Metadata set by the script
@@ -151,6 +156,10 @@ def build_command(config: BenchmarkConfig) -> list[str]:
     # Add context parallelism if enabled
     if config.cp > 1:
         cmd.extend(["--model.cp", str(config.cp)])
+
+    # Fused LM head chunk size
+    if config.fused_lm_head_chunk_size is not None:
+        cmd.extend(["--model.fused-lm-head-chunk-size", str(config.fused_lm_head_chunk_size)])
 
     # Data configuration differs between RL and SFT
     if config.type.startswith("rl"):

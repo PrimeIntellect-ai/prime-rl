@@ -5,7 +5,7 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.trainer.models.layers.attn import substitute_prime_rl_flash_attn
+from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.trainer.rl.broadcast import setup_weight_broadcast
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
@@ -16,7 +16,7 @@ from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
-from prime_rl.trainer.rl.config import LossConfig, RLTrainerConfig
+from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     setup_cp_params,
@@ -62,7 +62,7 @@ from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
-def train(config: RLTrainerConfig):
+def train(config: TrainerConfig):
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
@@ -172,7 +172,7 @@ def train(config: RLTrainerConfig):
 
     if parallel_dims.cp_enabled:
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
-        substitute_prime_rl_flash_attn(
+        substitute_ring_attn(
             parallel_dims.world_mesh["cp"].get_group(),
             heads_k_stride=1,
             attn_impl=config.model.attn,
@@ -191,12 +191,12 @@ def train(config: RLTrainerConfig):
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     if config.data.fake:
-        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.world_mesh["dp"].size())
+        dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
     else:
         dataloader = DataLoader(
             config.output_dir,
             progress.step,
-            parallel_dims.world_mesh["dp"].size(),
+            parallel_dims.get_mesh("dp").size(),
             config.model.seq_len,
             config.model.cp,
             tokenizer,
@@ -294,7 +294,7 @@ def train(config: RLTrainerConfig):
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        if isinstance(config.loss, LossConfig) and config.loss.ratio_type == "token":
+        if isinstance(config.loss, DefaultLossConfig) and config.loss.ratio_type == "token":
             loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
         else:
             loss_scale = batch_size
@@ -316,6 +316,18 @@ def train(config: RLTrainerConfig):
             teacher_logprobs = (
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
             )
+            routed_experts = (
+                micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
+            )
+
+            if routed_experts is None and config.enable_router_replay:
+                raise ValueError(
+                    "You must set `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server to use router replay."
+                )
+
+            if routed_experts is not None and not config.enable_router_replay:
+                # we could've gotten routed experts from the inference server, but we didn't enable router replay
+                routed_experts = None
 
             # Multimodal fields (Qwen3-VL) - only present for VLM training
             pixel_values = (
@@ -334,6 +346,8 @@ def train(config: RLTrainerConfig):
             if cp_enabled:
                 input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
+                if routed_experts is not None:
+                    routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
 
@@ -366,6 +380,7 @@ def train(config: RLTrainerConfig):
                     temperature=temperatures,
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
+                    routed_experts=routed_experts,
                 )
 
             if out.get("logprobs") is None:
@@ -468,7 +483,7 @@ def train(config: RLTrainerConfig):
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
-        num_tokens = parallel_dims.world_mesh["dp"].size() * num_local_tokens
+        num_tokens = parallel_dims.get_mesh("dp").size() * num_local_tokens
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
@@ -504,6 +519,12 @@ def train(config: RLTrainerConfig):
             "step": progress.step,
         }
         monitor.log(optim_metrics, step=progress.step)
+
+        # Compute derived metrics
+        entropy_mean = tensor_stats.get("entropy/mean", 0.0)
+        mismatch_kl_mean = tensor_stats.get("mismatch_kl/mean")
+        if mismatch_kl_mean is not None and entropy_mean > 0:
+            tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
         # Log tensor stats
         tensor_stats["step"] = progress.step
@@ -612,7 +633,7 @@ def train(config: RLTrainerConfig):
 def main():
     """Main entry-point for RL trainer. Run using `uv run trainer`"""
 
-    train(parse_argv(RLTrainerConfig))
+    train(parse_argv(TrainerConfig))
 
 
 if __name__ == "__main__":
