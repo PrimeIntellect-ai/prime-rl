@@ -281,7 +281,7 @@ class ModelConfig(BaseModelConfig):
                 "Explicitly setting an integer value for this feature isn't supported for SFT training."
             ),
         ),
-    ] = "auto"
+    ] = "disabled"
 
     @model_validator(mode="before")
     @classmethod

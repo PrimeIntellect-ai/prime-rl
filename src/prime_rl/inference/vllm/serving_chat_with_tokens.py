@@ -43,50 +43,6 @@ class _RoutedExpertsCapture:
                 choice.routed_experts = self.routed_experts[choice.index]
 
 
-def _collapse_image_placeholders(
-    original_tokens: list[int],
-    override_tokens: list[int],
-) -> list[int]:
-    """
-    Collapse pre-expanded image placeholder tokens in override_tokens.
-
-    In multi-turn VLM conversations, tokens from previous turns already have
-    expanded image placeholders (e.g., 64 consecutive <|image_pad|> tokens).
-    If left as-is, _process_inputs re-expands each token individually, causing
-    compounding token inflation across turns.
-
-    Detects placeholder token IDs by comparing with the original engine tokens
-    (which have single placeholders from _preprocess_chat), then collapses
-    consecutive runs back to single tokens so _process_inputs can expand
-    them correctly.
-    """
-    if not override_tokens or original_tokens == override_tokens:
-        return override_tokens
-
-    def get_block_tokens(tokens: list[int], min_run: int) -> set[int]:
-        """Return token IDs that appear in consecutive runs >= min_run."""
-        result = set()
-        run_start = 0
-        for i in range(1, len(tokens) + 1):
-            if i == len(tokens) or tokens[i] != tokens[run_start]:
-                if i - run_start >= min_run:
-                    result.add(tokens[run_start])
-                run_start = i
-        return result
-
-    # Placeholder tokens appear in blocks of 2+ in override but only as singles in original
-    placeholder_ids = get_block_tokens(override_tokens, 2) - get_block_tokens(original_tokens, 2)
-    if not placeholder_ids:
-        return override_tokens
-
-    result = []
-    for token in override_tokens:
-        if token in placeholder_ids and result and result[-1] == token:
-            continue
-        result.append(token)
-    return result
-
-
 class ChatCompletionRequestWithTokens(ChatCompletionRequest):
     field_names: ClassVar[Optional[set[str]]] = None
     tokens: list[int] = Field(description=("Prompt tokens to use for the request."))
@@ -167,16 +123,9 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
 
         conversation, engine_prompts = result
 
-        # For VLM models: collapse pre-expanded image placeholders before _process_inputs.
-        # In multi-turn token prompts, previous turns' image placeholders are already expanded
-        # (e.g., 64 consecutive <|image_pad|>). Without collapsing, _process_inputs re-expands
-        # each token, inflating counts (64 → 127 → 253 → ...) across turns.
-        if engine_prompts[0].get("multi_modal_data"):
-            override_tokens = _collapse_image_placeholders(engine_prompts[0]["prompt_token_ids"], request.tokens)  # type: ignore
-        else:
-            override_tokens = request.tokens
-
-        engine_prompts[0]["prompt_token_ids"] = override_tokens  # type: ignore
+        # VLM conversations use MITO (message-based) instead of TITO, so
+        # multi_modal_data is not expected here.  Override prompt tokens directly.
+        engine_prompts[0]["prompt_token_ids"] = request.tokens  # type: ignore
 
         request_id = f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
 

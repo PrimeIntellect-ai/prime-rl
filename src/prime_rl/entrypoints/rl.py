@@ -367,6 +367,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             gpus_per_node=config.deployment.gpus_per_node,
         )
     else:
+        assert config.inference is not None
+
         script = template.render(
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             job_name=config.slurm.job_name,
@@ -378,6 +380,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_infer_nodes=config.deployment.num_infer_nodes,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
+            inference_tp=config.inference.parallel.tp,
+            inference_enable_expert_parallel=config.inference.enable_expert_parallel,
+            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
