@@ -1,0 +1,6 @@
+toml_files = ["sft.toml"]
+
+output_dir = "outputs/reverse-text-sft"
+
+[slurm]
+job_name = "reverse-text-sft"

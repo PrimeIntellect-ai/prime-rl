@@ -1,6 +1,8 @@
+import asyncio
+
 from verifiers.workers import ZMQEnvServer
 
-from prime_rl.orchestrator.env_server.config import EnvServerConfig
+from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import get_log_dir
 from prime_rl.utils.pydantic_config import parse_argv
@@ -19,15 +21,18 @@ def run_server(config: EnvServerConfig):
 
     env_name = config.env.name or config.env.id
     log_file = (get_log_dir(config.output_dir) / "train" / f"{env_name}.log").as_posix()
-    ZMQEnvServer.run_server(
+
+    server = ZMQEnvServer(
         env_id=strip_env_version(config.env.id),
         env_args=config.env.args,
         extra_env_kwargs=config.env.extra_env_kwargs,
         log_level=config.log.level,
         log_file_level=config.log.vf_level,
         log_file=log_file,
+        json_logging=config.log.json_logging,
         **{"address": config.env.address} if config.env.address is not None else {},
     )
+    asyncio.run(server.run())
 
 
 def main():

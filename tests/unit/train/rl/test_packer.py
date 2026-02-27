@@ -7,10 +7,10 @@ import torch
 import torch.distributed as dist
 
 import prime_rl.trainer.runs as runs
+from prime_rl.configs.shared import FileSystemTransportConfig
 from prime_rl.trainer.rl.packer import MultiPacker
 from prime_rl.trainer.runs import setup_multi_run_manager
 from prime_rl.trainer.world import reset_world
-from prime_rl.transport.config import FileSystemTransportConfig
 from prime_rl.transport.types import TrainingSample
 
 

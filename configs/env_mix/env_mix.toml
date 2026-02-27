@@ -1,8 +1,9 @@
-trainer_gpu_ids = [0,1,2,3]
-inference_gpu_ids = [4,5,6,7]
-
 max_steps = 300
 seq_len = 8192
+
+[deployment]
+num_train_gpus = 4
+num_infer_gpus = 4
 
 [wandb]
 project = "env-mix-debug"
@@ -47,6 +48,5 @@ api_server_count = 8
 gpu_memory_utilization = 0.8
 
 [inference.model]
-enable_auto_tool_choice = true
 tool_call_parser = "hermes"
 max_model_len = 8192

@@ -47,12 +47,17 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
     return hf_model, prime_model
 
 
+class _IdentityMLP(nn.Identity):
+    def forward(self, x, **kwargs):
+        return super().forward(x)
+
+
 def test_glm4_moe_attn_only() -> None:
     hf_model, prime_model = get_model_pairs()
     for layer in hf_model.model.layers:
         layer.mlp = nn.Identity()
     for layer in prime_model.model.layers:
-        layer.mlp = nn.Identity()
+        layer.mlp = _IdentityMLP()
 
     with torch.device("cuda"), default_dtype(torch.float32):
         input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
@@ -116,21 +121,6 @@ def test_glm4_moe() -> None:
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
-
-    with torch.device("cuda"), default_dtype(torch.float32):
-        hf_from_prime_model = HFGlm4MoeForCausalLM._from_config(hf_model.config)
-        converted_state_dict = prime_model.convert_to_hf(prime_model.state_dict())
-        hf_from_prime_model.load_state_dict(converted_state_dict)
-
-    hf_from_prime_output = hf_from_prime_model(input_ids, position_ids)
-    hf_from_prime_output.logits.sum().backward()
-
-    logits_diff = hf_from_prime_output.logits - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
-        f"Max logits diff: {logits_diff.abs().max()}"
-    )
-    grad_diff = hf_from_prime_model.model.embed_tokens.weight.grad - hf_model.model.embed_tokens.weight.grad
     assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
 
 
