@@ -1,0 +1,28 @@
+max_steps = 50
+seq_len = 512
+
+[wandb]
+project = "multiagent-debug"
+name = "rps"
+
+[wandb.log_extras]
+samples = true
+interval = 10
+
+[model]
+name = "Qwen/Qwen3-1.7B"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 10
+temperature = 1.5
+
+[[orchestrator.env]]
+id = "rock-paper-scissors"
+
+[trainer]
+
+[inference]

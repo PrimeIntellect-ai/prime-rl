@@ -1,0 +1,27 @@
+max_steps = 50
+seq_len = 2048
+
+[wandb]
+project = "multiagent-debug"
+name = "proposer-solver-v2"
+
+[wandb.log_extras]
+samples = true
+interval = 10
+
+[model]
+name = "Qwen/Qwen3-1.7B"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 200
+
+[[orchestrator.env]]
+id = "proposer-solver-v2"
+
+[trainer]
+
+[inference]
