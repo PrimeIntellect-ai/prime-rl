@@ -231,7 +231,6 @@ async def update_weights(
     if lora_name is not None and weight_dir is not None:
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
-
         skip_prefix_cache_reset = step == 0
 
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:

@@ -56,13 +56,6 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = None
 
-    kv_cache_dtype: Annotated[
-        Literal["auto", "bfloat16", "fp8", "fp8_ds_mla", "fp8_e4m3", "fp8_e5m2", "fp8_inc"] | None,
-        Field(
-            description="KV cache data type passed to vLLM as `--kv-cache-dtype`.",
-        ),
-    ] = None
-
     max_model_len: Annotated[
         int | None,
         Field(
@@ -271,13 +264,6 @@ class InferenceConfig(BaseSettings):
         fp8_quantization = self.model.quantization is not None and "fp8" in self.model.quantization
         if fp8_quantization and self.model.dtype == "float32":
             raise ValueError("FP8 quantization requires model.dtype to be auto, float16, or bfloat16.")
-
-        fp8_kv_cache = self.model.kv_cache_dtype is not None and self.model.kv_cache_dtype.startswith("fp8")
-        if self.calculate_kv_scales and not fp8_kv_cache:
-            raise ValueError(
-                "calculate_kv_scales requires model.kv_cache_dtype to be an FP8 variant (fp8, fp8_e4m3, fp8_e5m2, etc.)."
-            )
-
         return self
 
     def to_vllm(self) -> Namespace:
@@ -289,7 +275,6 @@ class InferenceConfig(BaseSettings):
             "model.name": "model",
             "model.dtype": "dtype",
             "model.quantization": "quantization",
-            "model.kv_cache_dtype": "kv_cache_dtype",
             "model.max_model_len": "max_model_len",
             "model.enforce_eager": "enforce_eager",
             "model.trust_remote_code": "trust_remote_code",
@@ -304,7 +289,6 @@ class InferenceConfig(BaseSettings):
             "max_cpu_loras": "max_cpu_loras",
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
-            "calculate_kv_scales": "calculate_kv_scales",
             "api_server_count": "api_server_count",
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
@@ -322,7 +306,6 @@ class InferenceConfig(BaseSettings):
             "reasoning_parser",
             "rope_scaling",
             "quantization",
-            "kv_cache_dtype",
         ]
         for field_name in optional_fields:
             if hasattr(namespace, field_name) and getattr(namespace, field_name) is None:

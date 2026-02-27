@@ -367,9 +367,7 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info("Loading initial step-0 broadcast weights")
         bootstrap_start_time = time.perf_counter()
         await _bootstrap_initial_weight_update(config, inference_pool, scheduler)
-        logger.info(
-            f"Loaded initial step-0 broadcast weights in {time.perf_counter() - bootstrap_start_time:.2f}s"
-        )
+        logger.info(f"Loaded initial step-0 broadcast weights in {time.perf_counter() - bootstrap_start_time:.2f}s")
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
