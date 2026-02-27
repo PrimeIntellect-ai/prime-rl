@@ -218,9 +218,7 @@ def train(config: TrainerConfig):
         elif config.max_concurrent_runs == 1:
             raise TimeoutError("Timed out waiting for run initialization before initial step-0 weight broadcast.")
         else:
-            logger.warning(
-                "No active runs were discovered before timeout; skipping initial step-0 weight broadcast."
-            )
+            logger.warning("No active runs were discovered before timeout; skipping initial step-0 weight broadcast.")
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
