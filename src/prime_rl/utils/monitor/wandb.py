@@ -56,7 +56,7 @@ class WandbMonitor(Monitor):
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.samples_cols = ["step", "task", "example_id", "messages", "input_ids", "reward"]
+                self.samples_cols = ["step", "task", "example_id", "messages", "turns", "reward", "error", "stop_condition"]
                 self.samples_table = wandb.Table(
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
@@ -115,16 +115,17 @@ class WandbMonitor(Monitor):
                 turn_texts.append(f"[{actor_id}] {completion_text}")
             messages_text = "\n---\n".join(turn_texts)
 
-            last_step = trajectory[-1]
-            tokens = last_step["tokens"]
-            full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
+            error = rollout.get("error")
+            error_str = str(error) if error else ""
             sample = {
                 "step": step,
                 "task": rollout.get("task"),
                 "example_id": rollout["example_id"],
                 "messages": messages_text,
-                "input_ids": str(full_ids),
+                "turns": len(trajectory),
                 "reward": rollout["reward"],
+                "error": error_str,
+                "stop_condition": rollout.get("stop_condition", ""),
             }
             assert list(sample.keys()) == self.samples_cols, (
                 "Order of columns in the table must be the same as order of the keys here"
