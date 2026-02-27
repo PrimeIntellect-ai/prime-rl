@@ -104,28 +104,32 @@ class WandbMonitor(Monitor):
             trajectory = rollout["trajectory"]
             if not trajectory:
                 continue
-            # Decode full multi-turn trajectory (all steps, not just last)
-            turn_texts = []
-            for t_step in trajectory:
-                t_tokens = t_step.get("tokens")
-                if t_tokens is None:
-                    continue
-                actor_id = t_step.get("extras", {}).get("actor_id", "?")
-                completion_text = self.tokenizer.decode(t_tokens["completion_ids"])
-                turn_texts.append(f"[{actor_id}] {completion_text}")
-            messages_text = "\n---\n".join(turn_texts)
 
-            error = rollout.get("error")
-            error_str = str(error) if error else ""
+            extras = trajectory[0].get("extras", {}) if trajectory else {}
+            full_conversation = extras.get("full_conversation", "")
+            if not full_conversation:
+                # Fallback: decode from actor trajectory tokens
+                turn_texts = []
+                for t_step in trajectory:
+                    t_tokens = t_step.get("tokens")
+                    if t_tokens is None:
+                        continue
+                    actor_id = t_step.get("extras", {}).get("actor_id", "?")
+                    completion_text = self.tokenizer.decode(t_tokens["completion_ids"])
+                    turn_texts.append(f"[{actor_id}] {completion_text}")
+                full_conversation = "\n---\n".join(turn_texts)
+
+            game_error = extras.get("game_error", "")
+            game_stop = extras.get("game_stop_condition", "")
             sample = {
                 "step": step,
                 "task": rollout.get("task"),
                 "example_id": rollout["example_id"],
-                "messages": messages_text,
+                "messages": full_conversation,
                 "turns": len(trajectory),
                 "reward": rollout["reward"],
-                "error": error_str,
-                "stop_condition": rollout.get("stop_condition", ""),
+                "error": game_error,
+                "stop_condition": game_stop or "",
             }
             assert list(sample.keys()) == self.samples_cols, (
                 "Order of columns in the table must be the same as order of the keys here"
