@@ -105,27 +105,28 @@ class WandbMonitor(Monitor):
             if not trajectory:
                 continue
 
-            extras = trajectory[0].get("extras", {}) if trajectory else {}
-            full_conversation = extras.get("full_conversation", "")
-            if not full_conversation:
-                # Fallback: decode from actor trajectory tokens
-                turn_texts = []
-                for t_step in trajectory:
-                    t_tokens = t_step.get("tokens")
-                    if t_tokens is None:
-                        continue
-                    actor_id = t_step.get("extras", {}).get("actor_id", "?")
-                    completion_text = self.tokenizer.decode(t_tokens["completion_ids"])
-                    turn_texts.append(f"[{actor_id}] {completion_text}")
-                full_conversation = "\n---\n".join(turn_texts)
+            # Decode prompt+completion from trajectory tokens
+            turn_texts = []
+            for t_step in trajectory:
+                t_tokens = t_step.get("tokens")
+                if t_tokens is None:
+                    continue
+                full_ids = t_tokens["prompt_ids"] + t_tokens["completion_ids"]
+                actor_id = t_step.get("extras", {}).get("actor_id", "")
+                text = self.tokenizer.decode(full_ids)
+                if actor_id:
+                    text = f"[{actor_id}]\n{text}"
+                turn_texts.append(text)
+            messages = "\n---\n".join(turn_texts) if len(turn_texts) > 1 else (turn_texts[0] if turn_texts else "")
 
+            extras = trajectory[0].get("extras", {}) if trajectory else {}
             game_error = extras.get("game_error", "")
             game_stop = extras.get("game_stop_condition", "")
             sample = {
                 "step": step,
                 "task": rollout.get("task"),
                 "example_id": rollout["example_id"],
-                "messages": full_conversation,
+                "messages": messages,
                 "turns": len(trajectory),
                 "reward": rollout["reward"],
                 "error": game_error,
