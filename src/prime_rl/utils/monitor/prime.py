@@ -154,8 +154,6 @@ class PrimeMonitor(Monitor):
         if wandb and getattr(wandb, "project", None):
             payload["wandb_project"] = wandb.project
 
-        self.logger.info(f"Registering external training run with platform at {config.base_url}")
-
         response = httpx.post(
             f"{config.base_url}/external-runs",
             headers={"Authorization": f"Bearer {registration_api_key}"},
