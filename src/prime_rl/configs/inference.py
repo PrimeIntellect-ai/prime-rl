@@ -181,6 +181,23 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 1
 
+    data_parallel_size_local: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of data parallel replicas to run on this node. Passed to vLLM as `--data-parallel-size-local`.",
+        ),
+    ] = None
+
+    data_parallel_rpc_port: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=65535,
+            description="RPC port for data parallel communication. Passed to vLLM as `--data-parallel-rpc-port`.",
+        ),
+    ] = 13345
+
     seed: Annotated[
         int,
         Field(
@@ -245,8 +262,10 @@ class InferenceConfig(BaseSettings):
         size. Unless LoRA is enabled, in which case only one API server is
         supported (vLLM limitation).
         """
-        if self.api_server_count < self.parallel.dp:
-            self.api_server_count = self.parallel.dp
+        if "api_server_count" not in self.model_fields_set:
+            min_api_server_count = self.data_parallel_size_local or self.parallel.dp
+            if self.api_server_count < min_api_server_count:
+                self.api_server_count = min_api_server_count
 
         if self.enable_lora:
             self.api_server_count = 1  # LoRA requires only one API server
@@ -268,6 +287,8 @@ class InferenceConfig(BaseSettings):
             "model.rope_scaling": "rope_scaling",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
+            "data_parallel_size_local": "data_parallel_size_local",
+            "data_parallel_rpc_port": "data_parallel_rpc_port",
             "enable_lora": "enable_lora",
             "enable_prefix_caching": "enable_prefix_caching",
             "max_loras": "max_loras",

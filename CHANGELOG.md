@@ -85,6 +85,7 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`inference.enable_return_routed_experts`**: Added flag to enable return routed experts. Passed to vLLM as `--enable-return-routed-experts` (2026-02-22)
 - **`orchestrator.oversampling_factor`**: Added rollout-only over-sampling config that resolves `max_inflight_rollouts = int(batch_size * oversampling_factor)` when `max_inflight_rollouts` is unset. Cannot be used with `token_batch_size` or together with explicit `max_inflight_rollouts` (2026-02-25)
 - **`model.fused_lm_head_chunk_size`**: Changed default value from 2048 to 8192 for RL training (2026-02-26)
+- **`inference.data_parallel_size_local`** and **`inference.data_parallel_rpc_port`**: Added data-parallel node-local controls for vLLM, passed as `--data-parallel-size-local` and `--data-parallel-rpc-port` (defaults: `None`, `13345`) (2026-02-26)
 - **`dump_config`**: Removed from `RLConfig`. Replaced by `dry_run` (see below) (2026-02-26)
 - **`slurm.dry_run`**: Removed from `SlurmConfig`. Replaced by top-level `dry_run` (see below) (2026-02-26)
 - **`dry_run`**: Added to `RLConfig` and `SFTConfig` (default: `False`). When set, validates the config, writes resolved subconfigs to `output_dir/configs/`, and exits without starting any processes. Works the same for both local and SLURM runs (2026-02-26)
