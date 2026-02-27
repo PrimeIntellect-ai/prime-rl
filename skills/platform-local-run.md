@@ -16,17 +16,18 @@ export PRIME_API_KEY=pit_...
 
 ## Usage
 
-Add a `[prime_platform]` section to your TOML config:
+Enable platform streaming for a single run with a CLI override — no TOML editing needed:
+
+```bash
+uv run rl @ config.toml --prime_platform.base_url "https://api.primeintellect.ai"
+```
+
+For a persistent configuration, add `[prime_platform]` to your TOML config instead:
 
 ```toml
 [prime_platform]
 run_name = "my-experiment"        # optional; defaults to W&B run name if set
 base_url = "https://api.primeintellect.ai"  # default, change for local dev
-```
-
-Then run as normal:
-```bash
-uv run rl @ config.toml
 ```
 
 prime-rl will:
@@ -35,30 +36,6 @@ prime-rl will:
 3. Set `RUN_ID` in the orchestrator process environment
 4. Auto-configure `PrimeMonitor` to stream metrics/samples to the platform
 5. On successful completion, call `PUT /api/v1/rft/external-runs/{run_id}/status`
-
-## Minimal example config
-
-```toml
-max_steps = 100
-
-[model]
-name = "Qwen/Qwen3-4B"
-
-[wandb]
-name = "my-experiment"           # also auto-used as platform run_name
-
-[prime_platform]                 # run_name inherited from wandb.name above
-
-[[orchestrator.env]]
-id = "reverse-text"
-
-[trainer.optim]
-lr = 1e-5
-
-[ckpt]
-
-[inference]
-```
 
 ## Optional platform fields
 

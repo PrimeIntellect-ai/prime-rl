@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import multiprocessing as mp
 import os
 import random
@@ -159,6 +160,11 @@ async def orchestrate(config: OrchestratorConfig):
             wandb_project=config.wandb.project if config.wandb else None,
         )
         os.environ["RUN_ID"] = platform_run_id
+
+        def _finalize_failure():
+            finalize_run(config.prime_platform, platform_run_id, success=False)
+
+        atexit.register(_finalize_failure)
 
         if config.prime_monitor is None:
             config.prime_monitor = PrimeMonitorConfig(base_url=monitoring_base_url)
@@ -799,6 +805,7 @@ async def orchestrate(config: OrchestratorConfig):
     monitor.save_final_summary()
 
     if platform_run_id is not None:
+        atexit.unregister(_finalize_failure)
         finalize_run(config.prime_platform, platform_run_id, success=True)
 
     # Write final checkpoint
