@@ -18,7 +18,7 @@ rollouts_per_example = 16
 
 [orchestrator.sampling]
 max_tokens = 10
-temperature = 1.0
+temperature = 1.5
 
 [orchestrator.sampling.extra_body.chat_template_kwargs]
 enable_thinking = false
