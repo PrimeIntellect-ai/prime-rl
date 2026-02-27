@@ -93,7 +93,9 @@ async def run_group(
     Asynchronously generates and scores a group.
     """
     state_columns = state_columns + REQUIRED_STATE_COLUMNS
-    group_inputs = [vf.RolloutInput(**example) for _ in range(rollouts_per_example)]
+    outputs_per_input = getattr(env, "outputs_per_input", 1)
+    inputs_needed = max(1, rollouts_per_example // outputs_per_input)
+    group_inputs = [vf.RolloutInput(**example) for _ in range(inputs_needed)]
     return await env.run_group(
         group_inputs,
         client=client,
