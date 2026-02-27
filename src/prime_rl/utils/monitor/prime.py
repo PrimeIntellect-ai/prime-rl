@@ -154,12 +154,19 @@ class PrimeMonitor(Monitor):
         if wandb and getattr(wandb, "project", None):
             payload["wandb_project"] = wandb.project
 
-        response = httpx.post(
-            f"{config.base_url}/external-runs",
-            headers={"Authorization": f"Bearer {registration_api_key}"},
-            json=payload,
-            timeout=30,
-        )
+        parsed = urlparse(config.base_url)
+        api_base = f"{parsed.scheme}://{parsed.netloc}/api/v1/rft"
+
+        try:
+            response = httpx.post(
+                f"{api_base}/external-runs",
+                headers={"Authorization": f"Bearer {registration_api_key}"},
+                json=payload,
+                timeout=30,
+            )
+        except httpx.HTTPError as e:
+            self.logger.warning(f"Failed to register platform run: {e}. PrimeMonitor will not be able to upload data.")
+            return None
 
         if response.status_code != 201:
             self.logger.warning(
@@ -169,7 +176,6 @@ class PrimeMonitor(Monitor):
             return None
 
         run_id = response.json()["run"]["id"]
-        parsed = urlparse(config.base_url)
         dashboard_url = f"{parsed.scheme}://{parsed.netloc}/dashboard/training/{run_id}"
         self.logger.success(f"Monitor run at:\n  {dashboard_url}")
         self._registered = True
@@ -188,12 +194,20 @@ class PrimeMonitor(Monitor):
         status_label = "completed" if success else "failed"
         self.logger.info(f"Finalizing platform run {self.run_id} as {status_label}")
 
-        response = httpx.put(
-            f"{self.base_url}/external-runs/{self.run_id}/status",
-            headers={"Authorization": f"Bearer {registration_api_key}"},
-            json=payload,
-            timeout=30,
-        )
+        parsed = urlparse(self.base_url)
+        finalize_url = f"{parsed.scheme}://{parsed.netloc}/api/v1/rft/external-runs/{self.run_id}/status"
+
+        try:
+            response = httpx.put(
+                finalize_url,
+                headers={"Authorization": f"Bearer {registration_api_key}"},
+                json=payload,
+                timeout=30,
+            )
+        except httpx.HTTPError as e:
+            self.logger.warning(f"Failed to finalize platform run {self.run_id}: {e}")
+            return
+
         if response.status_code != 200:
             self.logger.warning(
                 f"Failed to finalize platform run {self.run_id} (HTTP {response.status_code}): {response.text}"
