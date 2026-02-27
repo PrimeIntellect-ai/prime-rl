@@ -189,11 +189,14 @@ class Scheduler:
             off_policy_steps=0, client_config=client_config, group_id=group_id
         )
 
-    def _inflight_sample_count(self) -> int:
+    def _inflight_rollout_count(self) -> int:
         return len(self.inflight_requests)
 
+    def _inflight_sample_count(self) -> int:
+        return self._inflight_rollout_count() + sum(self.group_rollouts_to_schedule.values())
+
     async def _schedule_next_request(self) -> bool:
-        remaining_capacity = self.max_inflight_rollouts - self._inflight_sample_count()
+        remaining_capacity = self.max_inflight_rollouts - self._inflight_rollout_count()
 
         if remaining_capacity <= 0:
             return False
@@ -396,7 +399,7 @@ class Scheduler:
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,
             "batch/async_level": self.async_level,
-            "batch/inflight_rollouts": len(self.inflight_requests),
+            "batch/inflight_rollouts": self._inflight_rollout_count(),
             "batch/inflight_samples": self._inflight_sample_count(),
             "batch/off_policy_level/max": self.max_off_policy_level,
             "batch/off_policy_level/mean": self.mean_off_policy_level,
