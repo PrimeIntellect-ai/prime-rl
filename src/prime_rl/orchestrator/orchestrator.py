@@ -526,8 +526,6 @@ async def orchestrate(config: OrchestratorConfig):
                     rollout_decode_tokens += sample_decode_tokens
                     rollout_prefill_tokens += sample_prefill_tokens
                     train_examples.append(sample)
-                # TODO: remove this debug logging
-                logger.info(f"[multi-agent debug] rollout sample rewards: {[s.reward for s in samples]}")
             else:
                 rollout_samples_per_rollout.append(0)
             rollout_prefill_lens.append(rollout_prefill_tokens)
