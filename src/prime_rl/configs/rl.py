@@ -207,10 +207,6 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
-
-    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
-
     ### Shared configurations
 
     log: Annotated[
@@ -275,8 +271,6 @@ class RLConfig(BaseSettings):
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
 
-    ### Local-only fields
-
     bench: Annotated[
         bool,
         Field(
@@ -284,12 +278,11 @@ class RLConfig(BaseSettings):
         ),
     ] = False
 
-    dump_config: Annotated[
-        Path | None,
-        Field(
-            description="If set, dump resolved subconfigs (trainer, orchestrator, inference) to this directory and exit without starting any processes."
-        ),
-    ] = None
+    deployment: DeploymentConfig = SingleNodeDeploymentConfig()
+
+    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
+
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
@@ -509,7 +502,7 @@ class RLConfig(BaseSettings):
             self.trainer.bench = BenchConfig()
             self.orchestrator.bench = True
             self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size,
+                batch_size=self.orchestrator.batch_size or 32,
             )
 
         trainer_bench_enabled = self.trainer.bench is not None
@@ -575,6 +568,21 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_router_replay(self):
+        if self.trainer.enable_router_replay:
+            if self.inference is not None:
+                if self.inference.enable_return_routed_experts is False:
+                    warnings.warn(
+                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True."
+                    )
+                self.inference.enable_return_routed_experts = True
+            else:
+                warnings.warn(
+                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server."
+                )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_deployment(self):
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
@@ -603,6 +611,34 @@ class RLConfig(BaseSettings):
                 self.trainer.model.dp_replicate = (
                     self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
                 )
+
+            if self.inference is not None and self.inference.enable_expert_parallel:
+                inference_tp = self.inference.parallel.tp
+                if self.deployment.gpus_per_node % inference_tp != 0:
+                    raise ValueError(
+                        "deployment.gpus_per_node must be divisible by inference.parallel.tp "
+                        "when inference.enable_expert_parallel is enabled in multi-node deployment."
+                    )
+
+                inferred_dp_local = self.deployment.gpus_per_node // inference_tp
+                total_infer_gpus = self.deployment.num_infer_nodes * self.deployment.gpus_per_node
+                expected_global_world_size = self.inference.parallel.dp * inference_tp
+                if expected_global_world_size != total_infer_gpus:
+                    raise ValueError(
+                        "For multi-node expert parallel inference, inference.parallel.dp * inference.parallel.tp "
+                        f"must match total inference GPUs ({total_infer_gpus}), got {expected_global_world_size}."
+                    )
+
+                if self.inference.data_parallel_size_local is None:
+                    self.inference.data_parallel_size_local = inferred_dp_local
+                elif self.inference.data_parallel_size_local != inferred_dp_local:
+                    raise ValueError(
+                        "inference.data_parallel_size_local must equal deployment.gpus_per_node / inference.parallel.tp "
+                        f"({inferred_dp_local}) when inference.enable_expert_parallel is enabled in multi-node deployment."
+                    )
+
+                if not self.inference.enable_lora and self.inference.api_server_count == self.inference.parallel.dp:
+                    self.inference.api_server_count = inferred_dp_local
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
                 assert self.trainer.weight_broadcast.type == "nccl"

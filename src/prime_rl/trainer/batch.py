@@ -22,6 +22,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # Teacher logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when a teacher model is configured
     teacher_logprobs = training_example.teacher_logprobs
+    routed_experts = training_example.routed_experts
 
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]
@@ -32,6 +33,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures = temperatures[:seq_len]
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
+        if routed_experts is not None:
+            routed_experts = routed_experts[:seq_len]
 
     assert (
         len(input_ids)
@@ -45,6 +48,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
     if teacher_logprobs is not None:
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
+
+    if routed_experts is not None:
+        assert len(routed_experts) == len(input_ids), (
+            f"routed_experts: {len(routed_experts)}, input_ids: {len(input_ids)}"
+        )
+
     return MicroBatch(
         input_ids=input_ids,
         advantages=advantages,
@@ -53,6 +62,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         inference_logprobs=inference_logprobs,
         teacher_logprobs=teacher_logprobs,
         temperatures=temperatures,
+        routed_experts=routed_experts,
         # Multimodal fields (Qwen3-VL) - passed through without modification
         pixel_values=training_example.pixel_values,
         image_grid_thw=training_example.image_grid_thw,
@@ -105,6 +115,10 @@ def packed_samples_into_micro_bs(
                     if bin_content.teacher_logprobs is None:
                         bin_content.teacher_logprobs = []
                     bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
+                if sample.routed_experts is not None:
+                    if bin_content.routed_experts is None:
+                        bin_content.routed_experts = []
+                    bin_content.routed_experts.extend(sample.routed_experts)
                 bin_content.position_ids.extend(sample.position_ids)
                 bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break

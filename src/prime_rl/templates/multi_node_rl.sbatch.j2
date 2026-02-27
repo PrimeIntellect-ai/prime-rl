@@ -13,6 +13,16 @@
 export NUM_TRAIN_NODES={{ num_train_nodes }}
 export NUM_INFER_NODES={{ num_infer_nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
+export INFERENCE_TP={{ inference_tp }}
+export INFERENCE_ENABLE_EXPERT_PARALLEL={{ "1" if inference_enable_expert_parallel else "0" }}
+export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
+export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
+
+# Enable distributed EP mode only when expert parallelism spans multiple inference nodes.
+export USE_DISTRIBUTED_EP=0
+if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$NUM_INFER_NODES" -gt 1 ]; then
+    USE_DISTRIBUTED_EP=1
+fi
 
 # Paths
 export PROJECT_DIR={{ project_dir }}
@@ -34,23 +44,30 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 
 # Networking
-export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
-export INFER_HOSTS=${HOSTNAMES[@]:0:$NUM_INFER_NODES}
-export TRAIN_HOSTS=${HOSTNAMES[@]:$NUM_INFER_NODES:$SLURM_JOB_NUM_NODES}
+HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
+TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$SLURM_JOB_NUM_NODES} )
+export INFER_HEAD_HOST="${INFER_HOSTS[0]}"
+export HOSTNAMES_STR="${HOSTNAMES[*]}"
 
 INFER_URLS=""
-for host in ${INFER_HOSTS[@]}; do
-    if [ -z "$INFER_URLS" ]; then
-        INFER_URLS="http://$host:8000/v1"
-    else
-        INFER_URLS="$INFER_URLS,http://$host:8000/v1"
-    fi
-done
+if [ "$USE_DISTRIBUTED_EP" -eq 1 ]; then
+    INFER_URLS="http://${INFER_HEAD_HOST}:8000/v1"
+else
+    for host in "${INFER_HOSTS[@]}"; do
+        if [ -z "$INFER_URLS" ]; then
+            INFER_URLS="http://$host:8000/v1"
+        else
+            INFER_URLS="$INFER_URLS,http://$host:8000/v1"
+        fi
+    done
+fi
 export INFER_URLS
-echo "HOSTNAMES=${HOSTNAMES[@]}"
-echo "TRAIN_HOSTS=${TRAIN_HOSTS[@]}"
-echo "INFER_HOSTS=${INFER_HOSTS[@]}"
+echo "HOSTNAMES=${HOSTNAMES[*]}"
+echo "TRAIN_HOSTS=${TRAIN_HOSTS[*]}"
+echo "INFER_HOSTS=${INFER_HOSTS[*]}"
 echo "INFER_URLS=${INFER_URLS}"
+echo "USE_DISTRIBUTED_EP=${USE_DISTRIBUTED_EP}"
 
 export MASTER_ADDR="${HOSTNAMES[$NUM_INFER_NODES]}"
 export MASTER_PORT=29500
@@ -84,9 +101,28 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     INFER_NODE_RANK=$SLURM_PROCID
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
-    uv run inference \
-        @ $CONFIG_DIR/inference.toml \
-        2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+    if [ "$USE_DISTRIBUTED_EP" -eq 1 ]; then
+        INFER_DP_START_RANK=$((INFER_NODE_RANK * INFERENCE_DP_LOCAL))
+        if [ "$INFER_NODE_RANK" -eq 0 ]; then
+            uv run inference \
+                @ $CONFIG_DIR/inference.toml \
+                --data-parallel-address $INFER_HEAD_HOST \
+                --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
+                2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+        else
+            uv run inference \
+                @ $CONFIG_DIR/inference.toml \
+                --data-parallel-start-rank $INFER_DP_START_RANK \
+                --data-parallel-address $INFER_HEAD_HOST \
+                --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
+                --headless \
+                2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+        fi
+    else
+        uv run inference \
+            @ $CONFIG_DIR/inference.toml \
+            2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+    fi
 
 else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
@@ -96,7 +132,7 @@ else
             @ $CONFIG_DIR/orchestrator.toml \
             --weight_broadcast.host $MASTER_ADDR \
             --client.base-url $INFER_URLS \
-            2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log & disown
+            2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log &
     fi
 
     export HF_HUB_OFFLINE=1
@@ -104,7 +140,7 @@ else
     # This is required for compilation to work correctly
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
-    echo $HOSTNAMES | tee $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log
+    echo $HOSTNAMES_STR | tee $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log
 
     uv run torchrun \
         --nnodes=$NUM_TRAIN_NODES \

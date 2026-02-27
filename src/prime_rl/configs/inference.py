@@ -189,6 +189,23 @@ class InferenceConfig(BaseSettings):
         ),
     ] = True
 
+    data_parallel_size_local: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of data parallel replicas to run on this node. Passed to vLLM as `--data-parallel-size-local`.",
+        ),
+    ] = None
+
+    data_parallel_rpc_port: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=65535,
+            description="RPC port for data parallel communication. Passed to vLLM as `--data-parallel-rpc-port`.",
+        ),
+    ] = 13345
+
     seed: Annotated[
         int,
         Field(
@@ -228,6 +245,13 @@ class InferenceConfig(BaseSettings):
         ),
     ] = False
 
+    enable_return_routed_experts: Annotated[
+        bool,
+        Field(
+            description="Whether to enable return routed experts. Passed to vLLM as `--enable-return-routed-experts`",
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def round_up_max_lora_rank(self):
         """Round up max_lora_rank to the nearest valid vLLM value.
@@ -253,8 +277,10 @@ class InferenceConfig(BaseSettings):
         size. Unless LoRA is enabled, in which case only one API server is
         supported (vLLM limitation).
         """
-        if self.auto_scale_api_servers and self.api_server_count < self.parallel.dp:
-            self.api_server_count = self.parallel.dp
+        if "api_server_count" not in self.model_fields_set and self.auto_scale_api_servers:
+            min_api_server_count = self.data_parallel_size_local or self.parallel.dp
+            if self.api_server_count < min_api_server_count:
+                self.api_server_count = min_api_server_count
 
         if self.enable_lora:
             self.api_server_count = 1  # LoRA requires only one API server
@@ -276,6 +302,8 @@ class InferenceConfig(BaseSettings):
             "model.rope_scaling": "rope_scaling",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
+            "data_parallel_size_local": "data_parallel_size_local",
+            "data_parallel_rpc_port": "data_parallel_rpc_port",
             "enable_lora": "enable_lora",
             "enable_prefix_caching": "enable_prefix_caching",
             "max_loras": "max_loras",
@@ -283,6 +311,7 @@ class InferenceConfig(BaseSettings):
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
+            "enable_return_routed_experts": "enable_return_routed_experts",
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",

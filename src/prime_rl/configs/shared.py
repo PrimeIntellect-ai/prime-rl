@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
@@ -27,9 +27,10 @@ class SlurmConfig(BaseConfig):
         str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
     ] = "cluster"
 
-    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
-        False
-    )
+    @model_validator(mode="after")
+    def resolve_project_dir(self):
+        self.project_dir = self.project_dir.resolve()
+        return self
 
 
 ServerType = Literal["vllm", "openai"]
