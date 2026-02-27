@@ -430,9 +430,9 @@ class RLConfig(BaseSettings):
             self.orchestrator.model.name = self.model.name
             if self.inference is not None:
                 self.inference.model.name = self.model.name
-                self.inference.model.tool_call_parser = None
-                self.inference.model.enable_auto_tool_choice = False
-                self.inference.model.resolve_tool_call_parser()
+                if self.inference.model.tool_call_parser is None:
+                    self.inference.model.enable_auto_tool_choice = False
+                    self.inference.model.resolve_tool_call_parser()
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
