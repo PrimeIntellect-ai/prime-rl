@@ -5,7 +5,7 @@ seq_len = 2048
 project = "multiagent-debug"
 name = "proposer-solver-v2"
 
-[wandb.log_extras]
+[orchestrator.wandb.log_extras]
 samples = true
 interval = 10
 
