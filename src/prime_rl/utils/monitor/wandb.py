@@ -104,10 +104,20 @@ class WandbMonitor(Monitor):
             trajectory = rollout["trajectory"]
             if not trajectory:
                 continue
+            # Decode full multi-turn trajectory (all steps, not just last)
+            turn_texts = []
+            for t_step in trajectory:
+                t_tokens = t_step.get("tokens")
+                if t_tokens is None:
+                    continue
+                actor_id = t_step.get("extras", {}).get("actor_id", "?")
+                completion_text = self.tokenizer.decode(t_tokens["completion_ids"])
+                turn_texts.append(f"[{actor_id}] {completion_text}")
+            messages_text = "\n---\n".join(turn_texts)
+
             last_step = trajectory[-1]
             tokens = last_step["tokens"]
             full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
-            messages_text = self.tokenizer.decode(full_ids)
             sample = {
                 "step": step,
                 "task": rollout.get("task"),
