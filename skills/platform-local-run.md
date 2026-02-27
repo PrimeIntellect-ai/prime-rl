@@ -1,6 +1,6 @@
 # Prime Platform Local Run
 
-Stream live training metrics/samples to the Prime Intellect platform dashboard from any machine, without hosted infrastructure.
+Stream live training metrics/samples to the Prime Intellect platform from any machine, without hosted infrastructure.
 
 ## Prerequisites
 
