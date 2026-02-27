@@ -12,6 +12,39 @@ jobs:
   trigger-docs-sync:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate mint.json pages exist
+        run: |
+          missing=()
+          pages=$(python3 -c "
+          import json, sys
+          data = json.load(open('docs/mint.json'))
+          pages = []
+          def collect(obj):
+              if isinstance(obj, list):
+                  for item in obj: collect(item)
+              elif isinstance(obj, dict):
+                  if 'pages' in obj: collect(obj['pages'])
+                  if 'groups' in obj: collect(obj['groups'])
+              elif isinstance(obj, str):
+                  pages.append(obj)
+          collect(data.get('navigation', []))
+          print('\n'.join(pages))
+          ")
+          while IFS= read -r page; do
+            [ -z "$page" ] && continue
+            if [ ! -f "docs/${page}.md" ] && [ ! -f "docs/${page}.mdx" ]; then
+              missing+=("${page}")
+            fi
+          done <<< "$pages"
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "ERROR: The following pages listed in mint.json do not exist in docs/:"
+            printf '  - %s\n' "${missing[@]}"
+            exit 1
+          fi
+          echo "All mint.json pages verified."
+
       - name: Trigger public-docs workflow
         uses: peter-evans/repository-dispatch@v3
         with:
