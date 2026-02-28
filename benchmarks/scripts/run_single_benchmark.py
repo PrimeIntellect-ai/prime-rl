@@ -134,16 +134,15 @@ def build_command(config: BenchmarkConfig) -> list[str]:
         "--bench.output-json",
         str(config.output),
         "--model.compile",
-        "compile:compile-config",
         "--dist-timeout-seconds",
         str(config.timeout),
     ]
 
     # Add activation checkpointing if enabled
     if config.ac == "Recompute":
-        cmd.extend(["--model.ac", "ac:activation-checkpoint-config"])
+        cmd.append("--model.ac")
     elif config.ac == "Offload":
-        cmd.extend(["--model.ac-offloading", "ac-offloading:activation-offloading-config"])
+        cmd.append("--model.ac-offloading")
 
     # Add LoRA configuration if applicable
     if config.lora_rank is not None:
