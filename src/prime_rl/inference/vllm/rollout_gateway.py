@@ -234,29 +234,6 @@ async def _call_chat_with_messages(
     )
 
 
-async def _call_chat_with_tokens(
-    rollout: RolloutState,
-    raw_messages: list[ChatCompletionMessageParam],
-    tools: list[dict[str, Any]] | None,
-    prompt_ids: list[int],
-    sampling_args: dict[str, Any],
-) -> ChatCompletion:
-    request_body: dict[str, Any] = {
-        "model": rollout.config.model,
-        "messages": raw_messages,
-        "tokens": prompt_ids,
-        **sampling_args,
-    }
-    if tools:
-        request_body["tools"] = tools
-
-    return await rollout.localhost_client.post(
-        "/chat/completions/tokens",
-        body=request_body,
-        cast_to=ChatCompletion,
-    )
-
-
 async def _fake_stream(response: ChatCompletion):
     """
     Fake two chunks stream response for the rollout gateway.
