@@ -371,6 +371,7 @@ class InferenceConfig(BaseSettings):
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",
+            "seed": "seed",
         }
 
         for config_key, vllm_key in to_vllm.items():
