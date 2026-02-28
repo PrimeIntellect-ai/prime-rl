@@ -1,10 +1,11 @@
 from argparse import Namespace
-from typing import Annotated, Any, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from prime_rl.configs.shared import BaseModelConfig
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
+from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
+from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 from prime_rl.utils.utils import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
@@ -113,6 +114,33 @@ All2AllBackend = Literal[
     "flashinfer_all2allv",
     "naive",
     "pplx",
+]
+
+
+class BaseInferenceDeploymentConfig(BaseModel):
+    """Base deployment config for inference."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+
+
+class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
+    """Configures a single-node inference deployment."""
+
+    type: Literal["single_node"] = "single_node"
+
+
+class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
+    """Configures a multi-node inference deployment. Each node runs an independent vLLM replica."""
+
+    type: Literal["multi_node"] = "multi_node"
+
+    num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 1
+
+
+InferenceDeploymentConfig: TypeAlias = Annotated[
+    SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig, Field(discriminator="type")
 ]
 
 
@@ -237,9 +265,44 @@ class InferenceConfig(BaseSettings):
         ),
     ] = False
 
+    # Launcher-only fields
+
+    deployment: Annotated[
+        InferenceDeploymentConfig,
+        Field(
+            description="Deployment configuration for inference.",
+        ),
+    ] = SingleNodeInferenceDeploymentConfig()
+
+    slurm: Annotated[
+        SlurmConfig | None,
+        Field(
+            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
+        ),
+    ] = None
+
+    output_dir: Annotated[Path, Field(description="Directory for SLURM logs and generated scripts.")] = Path("outputs")
+
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+
     @model_validator(mode="after")
-    def round_up_max_lora_rank(self):
-        """Round up max_lora_rank to the nearest valid vLLM value.
+    def validate_multi_node_requires_slurm(self):
+        if self.deployment.type == "multi_node" and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_slurm_template(self):
+        if self.slurm is not None and self.slurm.template_path is None:
+            import prime_rl
+
+            templates_dir = Path(prime_rl.__file__).parent / "templates"
+            self.slurm.template_path = templates_dir / "inference.sbatch.j2"
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_max_lora_rank(self):
+        """Auto-setup max_lora_rank by rounding up to the nearest valid vLLM value.
 
         vLLM only accepts specific values for max_lora_rank: (1, 8, 16, 32, 64, 128, 256, 320, 512).
         This validator ensures that any configured rank is rounded up to the minimum valid value
@@ -300,11 +363,12 @@ class InferenceConfig(BaseSettings):
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",
+            "seed": "seed",
         }
 
-        for key in get_all_fields(self):
-            value = rgetattr(self, key.replace("-", "_"))
-            rsetattr(namespace, to_vllm.get(key, key), value)
+        for config_key, vllm_key in to_vllm.items():
+            value = rgetattr(self, config_key.replace("-", "_"))
+            rsetattr(namespace, vllm_key, value)
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")

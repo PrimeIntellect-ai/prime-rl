@@ -207,6 +207,26 @@ def to_kebab_case(args: list[str]) -> list[str]:
     return args
 
 
+def _extract_model_types(annotation: type) -> list[type]:
+    """Extract BaseModel subclasses from Union/Annotated types (e.g. discriminated unions)."""
+    import types
+    import typing
+
+    origin = typing.get_origin(annotation)
+    args = typing.get_args(annotation)
+
+    if not args:
+        return []
+
+    if origin is typing.Annotated:
+        return _extract_model_types(args[0])
+
+    if origin is typing.Union or isinstance(annotation, types.UnionType):
+        return [arg for arg in args if isinstance(arg, type) and issubclass(arg, BaseModel)]
+
+    return []
+
+
 def get_all_fields(model: BaseModel | type) -> list[str]:
     if isinstance(model, BaseModel):
         model_cls = model.__class__
@@ -217,9 +237,19 @@ def get_all_fields(model: BaseModel | type) -> list[str]:
     for name, field in model_cls.model_fields.items():
         field_type = field.annotation
         fields.append(name)
-        if field_type is not None and hasattr(field_type, "model_fields"):
-            sub_fields = get_all_fields(field_type)
-            fields.extend(f"{name}.{sub}" for sub in sub_fields)
+        if field_type is not None:
+            if hasattr(field_type, "model_fields"):
+                sub_fields = get_all_fields(field_type)
+                fields.extend(f"{name}.{sub}" for sub in sub_fields)
+            else:
+                model_types = _extract_model_types(field_type)
+                if model_types:
+                    seen: set[str] = set()
+                    for model_type in model_types:
+                        for sub in get_all_fields(model_type):
+                            if sub not in seen:
+                                seen.add(sub)
+                                fields.append(f"{name}.{sub}")
     return fields
 
 

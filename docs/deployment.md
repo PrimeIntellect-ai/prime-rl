@@ -87,7 +87,9 @@ See the dedicated [SLURM guide](slurm.md).
 
 ## Inference
 
-We rely on vLLMs multi-node deployment primitives and load balancing for multi-node deployments. Currently, vLLM supports multi-node data parallel deployment ([docs](https://docs.vllm.ai/en/v0.10.0/serving/data_parallel_deployment.html)).
+For SLURM-based inference deployment, see the [SLURM guide](slurm.md#inference-examples). Each node runs an independent vLLM replica — no manual coordination needed.
+
+For manual multi-node deployment without SLURM, we rely on vLLM's multi-node data parallel deployment primitives ([docs](https://docs.vllm.ai/en/v0.10.0/serving/data_parallel_deployment.html)).
 
 First, decide which node will be your head node and find a reachable private IP address for it. If your nodes are not colocated, you will likely need to setup VPN (e.g. [Tailscale](https://tailscale.com)) for the nodes to reach each other. 
 

@@ -91,3 +91,8 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`dry_run`**: Added to `RLConfig` and `SFTConfig` (default: `False`). When set, validates the config, writes resolved subconfigs to `output_dir/configs/`, and exits without starting any processes. Works the same for both local and SLURM runs (2026-02-26)
 - **Config output location**: Resolved subconfigs are now always written to `output_dir/configs/` instead of `.pydantic_config/<uuid>/`. This applies to both local and SLURM entrypoints, and for both single-node and multi-node deployments (2026-02-26)
 - **SFT config filename**: The resolved SFT trainer config is now written as `sft.toml` instead of `trainer.toml` (2026-02-26)
+- **Inference entrypoint**: Moved from `prime_rl.inference.server` to `prime_rl.entrypoints.inference`. No change to CLI usage (`uv run inference`) (2026-02-26)
+- **`[slurm]` (inference)**: Added SLURM configuration to `InferenceConfig`. When present, `uv run inference` generates and submits an sbatch script instead of running locally. Each SLURM node runs an independent vLLM replica (no cross-node parallelism) (2026-02-26)
+- **`[deployment]` (inference)**: Added deployment configuration. `type = "single_node"` (default) with `gpus_per_node`. `type = "multi_node"` with `num_nodes` and `gpus_per_node` — requires `[slurm]` (2026-02-26)
+- **`inference.output_dir`**: Added directory for SLURM logs and generated scripts (default: `"outputs"`) (2026-02-26)
+- **`inference.dry_run`**: Added flag (default: `False`). When set, validates config, writes resolved config to `output_dir/configs/`, and exits without starting inference or submitting SLURM jobs (2026-02-26)
