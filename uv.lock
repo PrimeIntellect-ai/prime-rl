@@ -2391,7 +2391,7 @@ requires-dist = [
     { name = "prime", specifier = ">=0.5.37" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?branch=fix-tyro" },
+    { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?branch=main" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reverse-text", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
@@ -2649,7 +2649,7 @@ email = [
 [[package]]
 name = "pydantic-config"
 version = "0.3.0"
-source = { git = "https://github.com/samsja/pydantic_config.git?branch=fix-tyro#c5b9b124b2b569cde57ed326cde63dc279793180" }
+source = { git = "https://github.com/samsja/pydantic_config.git?branch=main#20dbf5a84544e20f88433c09b46da828e7b47e15" }
 dependencies = [
     { name = "pydantic" },
     { name = "tyro" },
