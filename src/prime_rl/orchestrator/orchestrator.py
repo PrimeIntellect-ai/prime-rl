@@ -458,18 +458,22 @@ async def orchestrate(config: OrchestratorConfig):
         # Apply rollout filters (zeros reward/mask for degenerate generations)
         filter_metrics = apply_filters(rollout_filters, train_rollouts)
 
-        # Compute advantages
+        # Compute advantages (use pre-computed if available from env)
         example_ids = [r["example_id"] for r in train_rollouts]
         num_rollouts = len(train_rollouts)
         num_unique_examples = len(set(example_ids))
         rewards = [r["reward"] for r in train_rollouts]
-        completion_lens = [get_completion_len(r) for r in train_rollouts]
-        advantages = compute_advantages(
-            rewards,
-            completion_lens,
-            config.rollouts_per_example,
-            config.advantage,
-        )
+        precomputed = [r.get("advantage") for r in train_rollouts]
+        if all(a is not None for a in precomputed):
+            advantages = precomputed
+        else:
+            completion_lens = [get_completion_len(r) for r in train_rollouts]
+            advantages = compute_advantages(
+                rewards,
+                completion_lens,
+                config.rollouts_per_example,
+                config.advantage,
+            )
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
