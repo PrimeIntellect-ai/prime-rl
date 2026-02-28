@@ -181,6 +181,14 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 1
 
+    auto_scale_api_servers: Annotated[
+        bool,
+        Field(
+            description="Automatically set api_server_count to match data_parallel_size. "
+            "Disable to keep api_server_count=1 with dp>1 (required for rollout gateway with DP).",
+        ),
+    ] = True
+
     data_parallel_size_local: Annotated[
         int | None,
         Field(
@@ -230,6 +238,13 @@ class InferenceConfig(BaseSettings):
         WeightBroadcastConfig()
     )
 
+    log_rollout_gateway_turns: Annotated[
+        bool,
+        Field(
+            description="Log full rollout gateway turn content (completions, tool calls, tool responses).",
+        ),
+    ] = False
+
     enable_return_routed_experts: Annotated[
         bool,
         Field(
@@ -262,7 +277,7 @@ class InferenceConfig(BaseSettings):
         size. Unless LoRA is enabled, in which case only one API server is
         supported (vLLM limitation).
         """
-        if "api_server_count" not in self.model_fields_set:
+        if "api_server_count" not in self.model_fields_set and self.auto_scale_api_servers:
             min_api_server_count = self.data_parallel_size_local or self.parallel.dp
             if self.api_server_count < min_api_server_count:
                 self.api_server_count = min_api_server_count

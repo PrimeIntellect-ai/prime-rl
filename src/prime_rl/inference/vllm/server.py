@@ -117,6 +117,8 @@ from prime_rl.inference.patches import (
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
     monkey_patch_tokenize_params_validation,
 )
+from prime_rl.inference.vllm.rollout_gateway import RolloutRegistry
+from prime_rl.inference.vllm.rollout_gateway import router as rollout_router
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
     OpenAIServingChatWithTokens,
@@ -275,6 +277,18 @@ async def custom_init_app_state(
     state.openai_serving_chat = serving_chat if "generate" in supported_tasks else None
     state.openai_serving_chat_with_tokens = serving_chat if "generate" in supported_tasks else None
 
+    dp_size = getattr(args, "data_parallel_size", 1) or 1
+    if args.api_server_count > 1:
+        logger.warning(
+            f"Rollout gateway disabled because api_server_count={args.api_server_count}. "
+            "Set auto_scale_api_servers=false to keep api_server_count=1 with dp>1."
+        )
+        state.rollout_registry = None
+    else:
+        state.rollout_registry = RolloutRegistry(port=args.port, dp_size=dp_size)
+
+    state.log_rollout_gateway_turns = args.log_rollout_gateway_turns
+
 
 def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
     """
@@ -299,6 +313,7 @@ def custom_build_app(args: Namespace, supported_tasks: tuple):
     """
     app = _original_build_app(args, supported_tasks)
     app.include_router(router)
+    app.include_router(rollout_router)
     return app
 
 
