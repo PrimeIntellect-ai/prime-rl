@@ -87,6 +87,8 @@ def inference_local(config: InferenceConfig):
 
     logger = setup_logger("info")
 
+    # Inference starts in-process so we don't technically need to write to disk,
+    # but still nice for consistency and agents to look through
     config_dir = get_config_dir(config.output_dir)
     config_path = write_config(config, config_dir)
     logger.info(f"Wrote config to {config_path}")
