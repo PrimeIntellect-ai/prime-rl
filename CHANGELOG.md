@@ -96,5 +96,3 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`[deployment]` (inference)**: Added deployment configuration. `type = "single_node"` (default) with `gpus_per_node`. `type = "multi_node"` with `num_nodes` and `gpus_per_node` — requires `[slurm]` (2026-02-26)
 - **`inference.output_dir`**: Added directory for SLURM logs and generated scripts (default: `"outputs"`) (2026-02-26)
 - **`inference.dry_run`**: Added flag (default: `False`). When set, validates config, writes resolved config to `output_dir/configs/`, and exits without starting inference or submitting SLURM jobs (2026-02-26)
-- **`to_vllm()` refactor**: Changed from iterating all config fields to only iterating the explicit vLLM field mapping. Previously, unrecognized fields (e.g. `deployment`, `slurm`) were passed through to vLLM; now only mapped fields are included (2026-02-26)
-- **`get_all_fields()` union support**: Now correctly recurses into `Union` and `Annotated` types (e.g. discriminated unions), so fields like `--deployment.type` and `--slurm.job_name` are recognized as known CLI args instead of being captured as vLLM passthrough args (2026-02-26)
