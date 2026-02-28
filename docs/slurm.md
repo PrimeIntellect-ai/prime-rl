@@ -1,6 +1,6 @@
 # SLURM
 
-Both `rl` and `sft` have built-in SLURM support. Adding a `[slurm]` section to your config switches from local execution to SLURM job submission — no separate entrypoint needed.
+The `rl`, `sft`, and `inference` entrypoints all have built-in SLURM support. Adding a `[slurm]` section to your config switches from local execution to SLURM job submission — no separate entrypoint needed.
 
 ## Quick Start
 
@@ -47,7 +47,6 @@ For **multi-node** jobs, sub-configs are written separately and `srun` dispatche
 | `project_dir` | Path to the project root on the cluster | `"."` |
 | `template_path` | Path to a custom Jinja2 template | auto-selected |
 | `partition` | SLURM partition | `"cluster"` |
-| `dry_run` | Generate script without submitting | `false` |
 
 ### `[deployment]` — Node and GPU allocation
 
@@ -70,6 +69,13 @@ For **multi-node** jobs, sub-configs are written separately and `srun` dispatche
 | `num_gpus` | Number of GPUs (default: 1) | — |
 | `num_nodes` | — | Training nodes (default: 2) |
 | `nodes_per_fsdp_group` | — | Nodes per FSDP island (optional) |
+
+**Inference** runs independent vLLM replicas per node:
+
+| Field | single_node | multi_node |
+|---|---|---|
+| `gpus_per_node` | Number of GPUs per node (default: 8) | Same |
+| `num_nodes` | — | Number of inference nodes (default: 1) |
 
 The SLURM template is auto-selected based on `deployment.type`. You can override it with `slurm.template_path`.
 
@@ -195,6 +201,63 @@ See [`examples/hendrycks_math/sft.toml`](../examples/hendrycks_math/sft.toml) fo
 
 ---
 
+## Inference Examples
+
+### Single-node SLURM
+
+Run a vLLM server on a single allocated node:
+
+```toml
+output_dir = "/shared/outputs/my-inference"
+
+[model]
+name = "Qwen/Qwen3-8B"
+
+[parallel]
+tp = 8
+
+[slurm]
+job_name = "my-inference"
+```
+
+```bash
+uv run inference @ inference_slurm.toml
+```
+
+### Multi-node SLURM
+
+Each node runs an independent vLLM replica. TP and DP must fit within a single node — there is no cross-node parallelism.
+
+```toml
+output_dir = "/shared/outputs/my-inference"
+
+[model]
+name = "PrimeIntellect/INTELLECT-3-RL-600"
+
+[parallel]
+tp = 4
+dp = 2
+
+[deployment]
+type = "multi_node"
+num_nodes = 4
+
+[slurm]
+job_name = "my-inference"
+```
+
+After submission, the SLURM template prints the inference URLs for all nodes (one per node).
+
+### Dry run
+
+Use `dry_run = true` to generate the sbatch script without submitting:
+
+```bash
+uv run inference @ config.toml --dry-run true
+```
+
+---
+
 ## Custom SLURM Templates
 
 The default templates handle standard setups with InfiniBand detection, environment setup, and `srun`-based process dispatch. For advanced use cases (custom partitions, account settings, module loads, etc.), provide your own Jinja2 template:
@@ -217,6 +280,9 @@ tail -F {output_dir}/logs/trainer/rank_0.log
 tail -F {output_dir}/slurm/latest_train_node_rank_0.log
 tail -F {output_dir}/slurm/latest_infer_node_rank_0.log
 tail -F {output_dir}/slurm/latest_orchestrator.log
+
+# Inference (single or multi-node)
+tail -F {output_dir}/slurm/latest_infer_node_rank_0.log
 ```
 
 For convenience, a tmux launcher sets up a session with all log streams:

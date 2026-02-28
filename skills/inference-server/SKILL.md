@@ -72,10 +72,10 @@ partition = "cluster"
 
 ### Dry run
 
-Add `slurm.dry_run = true` to generate the sbatch script without submitting:
+Add `dry_run = true` to generate the sbatch script without submitting:
 
 ```bash
-uv run inference @ config.toml --slurm.dry_run true
+uv run inference @ config.toml --dry-run true
 ```
 
 ## Custom endpoints
@@ -105,6 +105,5 @@ curl http://localhost:8000/v1/chat/completions \
 - `src/prime_rl/inference/server.py` — vLLM env setup
 - `src/prime_rl/configs/inference.py` — `InferenceConfig` and all sub-configs
 - `src/prime_rl/inference/vllm/server.py` — FastAPI routes and vLLM monkey-patches
-- `src/prime_rl/templates/single_node_inference.sbatch.j2` — single-node SLURM template
-- `src/prime_rl/templates/multi_node_inference.sbatch.j2` — multi-node SLURM template
+- `src/prime_rl/templates/inference.sbatch.j2` — SLURM template (handles both single and multi-node)
 - `configs/debug/infer.toml` — minimal debug config
