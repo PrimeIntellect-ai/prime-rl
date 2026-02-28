@@ -6,6 +6,7 @@ import tomli_w
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.pathing import get_config_dir
 from prime_rl.utils.pydantic_config import parse_argv
 
 INFERENCE_TOML = "inference.toml"
@@ -52,7 +53,7 @@ def inference_slurm(config: InferenceConfig):
 
     logger = setup_logger("info")
 
-    config_dir = config.output_dir / "configs"
+    config_dir = get_config_dir(config.output_dir)
     exclude = {"deployment", "slurm", "dry_run"} if config.deployment.type == "multi_node" else {"slurm", "dry_run"}
     config_path = write_config(config, config_dir, exclude=exclude)
     logger.info(f"Wrote config to {config_path}")
