@@ -9,19 +9,20 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pydantic_config import parse_argv
 
 INFERENCE_TOML = "inference.toml"
+INFERENCE_SBATCH = "inference.sbatch"
 
 
-def write_inference_config(config: InferenceConfig, output_dir: Path) -> Path:
-    """Write resolved inference config to disk, excluding launcher-only fields."""
+def write_config(config: InferenceConfig, output_dir: Path, exclude: set[str] | None = None) -> Path:
+    """Write resolved config to disk."""
     output_dir.mkdir(parents=True, exist_ok=True)
     config_path = output_dir / INFERENCE_TOML
     with open(config_path, "wb") as f:
-        tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
+        tomli_w.dump(config.model_dump(exclude=exclude, exclude_none=True, mode="json"), f)
     return config_path
 
 
-def render_slurm_script(config: InferenceConfig, config_path: Path) -> tuple[str, str]:
-    """Render the SLURM script template. Returns (script, log_message)."""
+def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: Path) -> None:
+    """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
 
     assert config.slurm is not None
@@ -41,13 +42,8 @@ def render_slurm_script(config: InferenceConfig, config_path: Path) -> tuple[str
         port=config.server.port,
     )
 
-    log_message = (
-        f"Logs:\n"
-        f"  Job:  tail -F {config.output_dir}/job_*.log\n"
-        f"  Inference:  tail -F {config.output_dir}/slurm/latest_infer_node_rank_*.log\n"
-    )
-
-    return script, log_message
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script)
 
 
 def inference_slurm(config: InferenceConfig):
@@ -57,14 +53,19 @@ def inference_slurm(config: InferenceConfig):
     logger = setup_logger("info")
 
     config_dir = config.output_dir / "configs"
-    config_path = write_inference_config(config, config_dir)
+    exclude = {"deployment", "slurm", "dry_run"} if config.deployment.type == "multi_node" else {"slurm", "dry_run"}
+    config_path = write_config(config, config_dir, exclude=exclude)
     logger.info(f"Wrote config to {config_path}")
 
-    script, log_message = render_slurm_script(config, config_path)
-    script_path = config.output_dir / "inference.sbatch"
-    script_path.parent.mkdir(parents=True, exist_ok=True)
-    script_path.write_text(script)
+    script_path = config.output_dir / INFERENCE_SBATCH
+    write_slurm_script(config, config_path, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
+
+    log_message = (
+        f"Logs:\n"
+        f"  Job:        tail -F {config.output_dir}/job_*.log\n"
+        f"  Inference:  tail -F {config.output_dir}/slurm/latest_infer_node_rank_*.log\n"
+    )
 
     if config.dry_run:
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
@@ -84,10 +85,6 @@ def inference_local(config: InferenceConfig):
     from prime_rl.inference.server import setup_vllm_env
 
     logger = setup_logger("info")
-
-    config_dir = config.output_dir / "configs"
-    config_path = write_inference_config(config, config_dir)
-    logger.info(f"Wrote config to {config_path}")
 
     if config.dry_run:
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")

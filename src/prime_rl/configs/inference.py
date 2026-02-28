@@ -265,31 +265,23 @@ class InferenceConfig(BaseSettings):
         ),
     ] = False
 
+    # Launcher-only fields
+
     deployment: Annotated[
         InferenceDeploymentConfig,
         Field(
             description="Deployment configuration for inference.",
-            exclude=True,
         ),
     ] = SingleNodeInferenceDeploymentConfig()
-
-    # Launcher-only fields
 
     slurm: Annotated[
         SlurmConfig | None,
         Field(
             description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
-            exclude=True,
         ),
     ] = None
 
-    output_dir: Annotated[
-        Path,
-        Field(
-            description="Directory for SLURM logs and generated scripts.",
-            exclude=True,
-        ),
-    ] = Path("outputs")
+    output_dir: Annotated[Path, Field(description="Directory for SLURM logs and generated scripts.")] = Path("outputs")
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
