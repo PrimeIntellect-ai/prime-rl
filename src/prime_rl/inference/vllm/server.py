@@ -319,7 +319,7 @@ def server(config: InferenceConfig, vllm_args: list[str]):
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
-    args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
+    args = parser.parse_args(args=vllm_args, namespace=Namespace(**config.vllm.model_dump(exclude_none=True)))
     assert args is not None
     validate_parsed_serve_args(args)
 
@@ -327,6 +327,9 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     args.enable_auto_tool_choice = args.tool_call_parser is not None
     if args.tool_call_parser is not None:
         logger.info(f"Using tool_call_parser='{args.tool_call_parser}' for model '{args.model}'")
+
+    # Set `logprobs_mode` to `processed_logprobs` by default
+    args.logprobs_mode = "processed_logprobs"
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
