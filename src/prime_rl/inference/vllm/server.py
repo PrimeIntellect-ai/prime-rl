@@ -1,5 +1,6 @@
 from argparse import Namespace
 from http import HTTPStatus
+from typing import Any
 
 import uvloop
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -313,13 +314,18 @@ vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_wo
 # Adapted from vllm/entrypoints/cli/serve.py
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
-def server(config: InferenceConfig, vllm_args: list[str]):
+def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.openai.api_server import run_server
 
+    namespace = config.to_vllm()
+    if vllm_extra:
+        for key, value in vllm_extra.items():
+            setattr(namespace, key, value)
+
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
-    args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
+    args = parser.parse_args(args=[], namespace=namespace)
     assert args is not None
     validate_parsed_serve_args(args)
 

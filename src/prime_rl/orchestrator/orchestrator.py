@@ -53,10 +53,10 @@ from prime_rl.utils.client import (
     init_nccl_broadcast,
     setup_inference_pool,
 )
+from prime_rl.utils.config import cli
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
@@ -834,7 +834,7 @@ async def orchestrate(config: OrchestratorConfig):
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
 
-    asyncio.run(orchestrate(parse_argv(OrchestratorConfig)))
+    asyncio.run(orchestrate(cli(OrchestratorConfig)))
 
 
 if __name__ == "__main__":

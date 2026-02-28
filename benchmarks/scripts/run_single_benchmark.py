@@ -19,7 +19,7 @@ from typing import Annotated, Literal
 import torch
 from pydantic import Field
 
-from prime_rl.utils.pydantic_config import BaseSettings, parse_argv
+from prime_rl.utils.config import BaseConfig, cli
 
 MAX_LORAS = 4
 
@@ -46,7 +46,7 @@ def extract_oom_error_reason(output: str) -> str | None:
     return None
 
 
-class BenchmarkConfig(BaseSettings):
+class BenchmarkConfig(BaseConfig):
     """Configuration for running a single benchmark."""
 
     type: Annotated[
@@ -248,7 +248,7 @@ def run_benchmark(config: BenchmarkConfig) -> None:
 
 
 def main():
-    config = parse_argv(BenchmarkConfig)
+    config = cli(BenchmarkConfig)
     run_benchmark(config)
 
 

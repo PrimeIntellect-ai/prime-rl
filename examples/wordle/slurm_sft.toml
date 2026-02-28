@@ -1,5 +1,4 @@
-toml_files = ["sft.toml"]
-
+# Usage: uv run sft @ examples/wordle/sft.toml @ examples/wordle/slurm_sft.toml
 output_dir = "outputs/wordle-sft"
 
 [slurm]

@@ -1,7 +1,7 @@
 import os
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.utils.pydantic_config import parse_argv
+from prime_rl.utils.config import cli
 
 
 def setup_vllm_env(config: InferenceConfig):
@@ -15,13 +15,13 @@ def setup_vllm_env(config: InferenceConfig):
 
 
 def main():
-    config = parse_argv(InferenceConfig, allow_extras=True)
+    config = cli(InferenceConfig)
     setup_vllm_env(config)
 
     # We import here to be able to set environment variables before importing vLLM
     from prime_rl.inference.vllm.server import server  # pyright: ignore
 
-    server(config, vllm_args=config.get_unknown_args())
+    server(config, vllm_extra=config.vllm_extra)
 
 
 if __name__ == "__main__":

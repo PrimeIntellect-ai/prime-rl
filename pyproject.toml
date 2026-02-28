@@ -12,7 +12,7 @@ dependencies = [
     "loguru>=0.7.3",
     "pyarrow>=21.0.0",
     "pydantic>=1.10.13",
-    "pydantic-settings>=2.12.0",
+    "pydantic-config",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
     "numpy>=2.2.6",
@@ -91,6 +91,7 @@ dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "609e3d5" }
 vllm = { url = "https://vllm-wheels.s3.us-west-2.amazonaws.com/7a06e5b05b170d7da31845866da0a99fc65253a1/vllm-0.16.0rc3-cp38-abi3-manylinux_2_31_x86_64.whl" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
+pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "refactor-tyro" }
 reverse-text = { index = "primeintellect" }
 
 [tool.uv.extra-build-dependencies]

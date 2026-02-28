@@ -1,5 +1,4 @@
-toml_files = ["rl.toml"]
-
+# Usage: uv run rl @ examples/wordle/rl.toml @ examples/wordle/slurm_rl.toml
 output_dir = "outputs/wordle-rl"
 
 [slurm]

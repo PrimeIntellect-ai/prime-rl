@@ -37,7 +37,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
-from prime_rl.utils.pydantic_config import BaseSettings
+from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
     validate_shared_max_async_level,
@@ -49,7 +49,7 @@ from prime_rl.utils.validation import (
 )
 
 
-class SharedLogConfig(BaseSettings):
+class SharedLogConfig(BaseConfig):
     """Configures shared logging."""
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
@@ -62,7 +62,7 @@ class SharedLogConfig(BaseSettings):
     ] = False
 
 
-class SharedWandbConfig(BaseSettings):
+class SharedWandbConfig(BaseConfig):
     """Configures shared W&B configs."""
 
     project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
@@ -72,7 +72,7 @@ class SharedWandbConfig(BaseSettings):
     offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
 
 
-class SharedCheckpointConfig(BaseSettings):
+class SharedCheckpointConfig(BaseConfig):
     """Configures shared checkpoint configs."""
 
     interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
@@ -98,7 +98,7 @@ class SharedCheckpointConfig(BaseSettings):
     ] = None
 
 
-class SharedModelConfig(BaseSettings):
+class SharedModelConfig(BaseConfig):
     """Configures shared model settings."""
 
     name: Annotated[
@@ -107,7 +107,7 @@ class SharedModelConfig(BaseSettings):
     ] = "Qwen/Qwen3-0.6B"
 
 
-class SharedWeightBroadcastConfig(BaseSettings):
+class SharedWeightBroadcastConfig(BaseConfig):
     """Configures shared weight broadcast settings."""
 
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
@@ -174,7 +174,7 @@ DeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class RLConfig(BaseSettings):
+class RLConfig(BaseConfig):
     """Configures an RL training run."""
 
     trainer: TrainerConfig
