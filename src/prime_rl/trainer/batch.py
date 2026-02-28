@@ -63,15 +63,21 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         teacher_logprobs=teacher_logprobs,
         temperatures=temperatures,
         routed_experts=routed_experts,
-        # Multimodal fields (Qwen3-VL) - passed through without modification
         pixel_values=training_example.pixel_values,
         image_grid_thw=training_example.image_grid_thw,
     )
 
 
-def _is_multimodal_sample(sample: MicroBatch) -> bool:
-    """Check if a sample contains multimodal data (images)."""
-    return sample.pixel_values is not None
+def _is_multimodal(micro_batch: MicroBatch) -> bool:
+    return micro_batch.pixel_values is not None
+
+
+def _make_noop(template: MicroBatch) -> MicroBatch:
+    """Create a no-op micro-batch from a template. Preserves modality but contributes nothing to the loss."""
+    noop = copy.deepcopy(template)
+    noop.advantages = [0.0] * len(noop.input_ids)
+    noop.loss_mask = [False] * len(noop.input_ids)
+    return noop
 
 
 def packed_samples_into_micro_bs(
@@ -93,7 +99,7 @@ def packed_samples_into_micro_bs(
 
     for idx, sample in samples:
         # Multimodal samples cannot be packed - each becomes its own micro batch
-        if _is_multimodal_sample(sample):
+        if _is_multimodal(sample):
             sample.lora_num_tokens = [0] * num_loras
             sample.lora_num_tokens[idx] = len(sample.input_ids)
             micro_batches.append(sample)
@@ -102,7 +108,7 @@ def packed_samples_into_micro_bs(
         # Try to find a bin that can fit this sequence (only pack text-only samples)
         for bin_content in micro_batches:
             # Don't pack into multimodal micro batches
-            if _is_multimodal_sample(bin_content):
+            if _is_multimodal(bin_content):
                 continue
             # Check if sequence fits in this bin
             if len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len:
@@ -131,16 +137,7 @@ def packed_samples_into_micro_bs(
 
 
 def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBatch:
-    """
-    Pad a micro batch with the given padding size sample
-    Return the padded micro batch.
-    Args:
-        micro_batch: The micro batch to pad.
-        padding_size: The number of padding tokens to add.
-    Returns:
-        The padded micro batch.
-    """
-
+    """Pad a micro batch to the given multiple."""
     padding_size = (pad_to_multiple_of - (len(micro_batch.input_ids) % pad_to_multiple_of)) % pad_to_multiple_of
 
     if not (pad_to_multiple_of > 1 and padding_size > 0):
@@ -162,6 +159,13 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     return micro_batch
 
 
+def _pad_group(group: list[MicroBatch], num_workers: int) -> None:
+    """Pad a group of micro-batches so its length is divisible by num_workers."""
+    padding_needed = -len(group) % num_workers
+    if padding_needed > 0 and group:
+        group.extend(copy.deepcopy(_make_noop(group[0])) for _ in range(padding_needed))
+
+
 def prepare_batch(
     rollouts: list[TrainingSample],
     seq_len: int,
@@ -173,32 +177,31 @@ def prepare_batch(
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, seq_len], the number of samples is not fixed per micro batch.
+
+    Multimodal and text-only micro-batches are distributed separately so that all ranks
+    process the same modality at each position. This prevents FSDP collective hangs when
+    the vision encoder is only invoked by some ranks.
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
-    num_padding_batch = -len(micro_batches) % num_train_workers
+    if num_train_workers <= 1:
+        return [micro_batches]
 
-    # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
-    # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
-    if num_train_workers > 1 and num_padding_batch > 0:
-        padded_batch = copy.deepcopy(micro_batches[0])
-        padded_batch.advantages = [0.0] * len(padded_batch.input_ids)
-        padded_batch.loss_mask = [False] * len(padded_batch.input_ids)
-        micro_batches.extend([padded_batch for _ in range(num_padding_batch)])
+    # Separate by modality so all ranks hit the vision encoder at the same positions
+    multimodal = [mb for mb in micro_batches if _is_multimodal(mb)]
+    text_only = [mb for mb in micro_batches if not _is_multimodal(mb)]
 
-    assert len(micro_batches) % num_train_workers == 0, (
-        "Number of micro batches is not divisible by number of data ranks"
-    )
+    _pad_group(multimodal, num_train_workers)
+    _pad_group(text_only, num_train_workers)
 
-    per_gpu_micro_batches = len(micro_batches) // num_train_workers
-    batches_per_gpu = []
-    for _ in range(num_train_workers):
-        batches = []
-        for _ in range(per_gpu_micro_batches):
-            batches.append(micro_batches.pop(0))
-        batches_per_gpu.append(batches)
+    # Each rank gets its slice of multimodal first, then text-only
+    mm_per_rank = len(multimodal) // num_train_workers
+    text_per_rank = len(text_only) // num_train_workers
 
-    return batches_per_gpu
+    return [
+        multimodal[i * mm_per_rank : (i + 1) * mm_per_rank] + text_only[i * text_per_rank : (i + 1) * text_per_rank]
+        for i in range(num_train_workers)
+    ]

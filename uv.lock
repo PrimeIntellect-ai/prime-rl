@@ -11,6 +11,10 @@ resolution-markers = [
 prerelease-mode = "allow"
 
 [manifest]
+members = [
+    "prime-rl",
+    "webvoyager-no-anti-bot",
+]
 overrides = [
     { name = "nvidia-cudnn-cu12", specifier = ">=9.15" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=609e3d5" },
@@ -2348,6 +2352,7 @@ dependencies = [
     { name = "verifiers" },
     { name = "vllm" },
     { name = "wandb" },
+    { name = "webvoyager-no-anti-bot" },
 ]
 
 [package.optional-dependencies]
@@ -2408,6 +2413,7 @@ requires-dist = [
     { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=b35d0c7" },
     { name = "vllm", url = "https://vllm-wheels.s3.us-west-2.amazonaws.com/7a06e5b05b170d7da31845866da0a99fc65253a1/vllm-0.16.0rc3-cp38-abi3-manylinux_2_31_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
+    { name = "webvoyager-no-anti-bot", editable = "work/webvoyager_no_anti_bot" },
 ]
 provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute"]
 
@@ -3213,6 +3219,26 @@ wheels = [
 ]
 
 [[package]]
+name = "stagehand"
+version = "3.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/57/d1/40c292a0923c5b9032d03fedc7229acf103a979f3d47f2d8d8e3e586ecdd/stagehand-3.6.0.tar.gz", hash = "sha256:d306de4f168eb5d1fd56fab4a8d01bc8e3fe7c68d5673a9cbd939ed5126dbeda", size = 260927, upload-time = "2026-02-25T20:18:55.4Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8b/4f/5bdebccb945029821eaa82d4623dd2f0d603e86f1e59c55ce66ba164f833/stagehand-3.6.0-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:bbf9f3f67ada735622584d8bed4ff7d911e9b8d645aa592975b4a0c5a5f8e168", size = 34031436, upload-time = "2026-02-25T20:19:03.819Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/a5/c8032ad7894f18e8024803fcd98869b22494ec1a918d89ca229f3c2fddac/stagehand-3.6.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:0752ce8a6a9224fb9979df8150275da7ba5dad20514e5c9ce599929c9a9eaee7", size = 32738841, upload-time = "2026-02-25T20:19:08.143Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/0e/892163c11aa44f0a1facabe73b0909a99e60365ef281172f32613265e30c/stagehand-3.6.0-py3-none-manylinux2014_x86_64.whl", hash = "sha256:136c0c53dc6f73b0e3f1ab06528d52456e4d4cf3ee81562b57b16f98b5b124fb", size = 36827049, upload-time = "2026-02-25T20:18:59.029Z" },
+    { url = "https://files.pythonhosted.org/packages/62/4d/efffa89a8784e45498d98ee62dec85b48b430f8f50a9a0ae38a977f2895b/stagehand-3.6.0-py3-none-win_amd64.whl", hash = "sha256:5ce228596ab1f41faff49814a77767e9c003f45899f78f2c620b0961a238434e", size = 30314762, upload-time = "2026-02-25T20:19:12.543Z" },
+]
+
+[[package]]
 name = "starlette"
 version = "0.50.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3784,6 +3810,13 @@ dependencies = [
     { name = "wget" },
 ]
 
+[package.optional-dependencies]
+browser = [
+    { name = "aiohttp" },
+    { name = "python-dotenv" },
+    { name = "stagehand" },
+]
+
 [[package]]
 name = "virtualenv"
 version = "20.34.0"
@@ -4041,6 +4074,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7d/71/abf2ebc3bbfa40f391ce1428c7168fb20582d0ff57019b69ea20fa698043/websockets-15.0.1-cp312-cp312-win_amd64.whl", hash = "sha256:fcd5cf9e305d7b8338754470cf69cf81f420459dbae8a3b40cee57417f4614a7", size = 176841, upload-time = "2025-03-05T20:02:34.498Z" },
     { url = "https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/websockets-15.0.1-py3-none-any.whl", hash = "sha256:f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f", size = 169743, upload-time = "2025-03-05T20:03:39.41Z" },
 ]
+
+[[package]]
+name = "webvoyager-no-anti-bot"
+version = "0.1.2"
+source = { editable = "work/webvoyager_no_anti_bot" }
+dependencies = [
+    { name = "verifiers", extra = ["browser"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["browser"], git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=b35d0c7" }]
 
 [[package]]
 name = "werkzeug"

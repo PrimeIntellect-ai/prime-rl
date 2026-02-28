@@ -89,13 +89,15 @@ def interleave_rollout(
         completion_ids = list(tokens["completion_ids"])
         pixel_values, image_grid_thw = get_images(step_idx)
 
+        prompt_ids = list(tokens["prompt_ids"])
+
         routed_experts = _align_routed_experts(
             tokens.get("routed_experts"),
             len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
         )
 
         return TrainingSample(
-            prompt_ids=list(tokens["prompt_ids"]),
+            prompt_ids=prompt_ids,
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
             completion_ids=completion_ids,
             completion_mask=completion_mask,

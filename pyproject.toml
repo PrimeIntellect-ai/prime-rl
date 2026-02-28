@@ -35,6 +35,7 @@ dependencies = [
     "dion",
     "reverse-text",
     "tilelang>=0.1.8",
+    "webvoyager-no-anti-bot",
 ]
 
 [project.scripts]
@@ -92,6 +93,7 @@ transformers = { git = "https://github.com/huggingface/transformers.git", rev = 
 vllm = { url = "https://vllm-wheels.s3.us-west-2.amazonaws.com/7a06e5b05b170d7da31845866da0a99fc65253a1/vllm-0.16.0rc3-cp38-abi3-manylinux_2_31_x86_64.whl" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
 reverse-text = { index = "primeintellect" }
+webvoyager-no-anti-bot = { workspace = true }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -108,6 +110,11 @@ url = "https://hub.primeintellect.ai/primeintellect/simple/"
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/test/cu128"
 explicit = true
+
+[tool.uv.workspace]
+members = [
+    "work/webvoyager_no_anti_bot",
+]
 
 [tool.ruff.lint]
 select = ["F", "I"]
