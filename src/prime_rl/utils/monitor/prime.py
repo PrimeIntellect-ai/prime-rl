@@ -83,17 +83,17 @@ class PrimeMonitor(Monitor):
         assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
 
-        # Get API key from environment variable
-        api_key = os.getenv(config.api_key_var)
+        api_key = os.getenv(config.api_key_var) or PrimeConfig().api_key or None
         if not api_key:
             self.logger.warning(
-                f"API key not found. Set {config.api_key_var} environment variable. PrimeMonitor will not be able to upload data."
+                f"API key not found. Set {config.api_key_var} environment variable or run `prime login`. "
+                "PrimeMonitor will not be able to upload data."
             )
             self.enabled = False
             return
 
         self.api_key = api_key
-        self.base_url = config.base_url
+        self.base_url = config.base_url.rstrip("/")
 
         run_id = os.getenv("RUN_ID")
         if not run_id:
