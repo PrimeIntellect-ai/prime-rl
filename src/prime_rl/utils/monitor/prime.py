@@ -7,11 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 import verifiers as vf
+from prime_cli.core.config import Config as PrimeConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.shared import PrimeMonitorConfig
@@ -67,6 +69,8 @@ class PrimeMonitor(Monitor):
         self.logger = get_logger()
         self.history: list[dict[str, Any]] = []
         self.output_dir = output_dir
+        self._registered = False
+        self._finalized = False
 
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
         self.enabled = self.config is not None
@@ -79,24 +83,27 @@ class PrimeMonitor(Monitor):
         assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
 
-        # Get API key from environment variable
-        api_key = os.getenv(config.api_key_var)
+        api_key = os.getenv(config.api_key_var) or PrimeConfig().api_key or None
         if not api_key:
             self.logger.warning(
-                f"API key not found. Set {config.api_key_var} environment variable. PrimeMonitor will not be able to upload data."
+                f"API key not found. Set {config.api_key_var} environment variable or run `prime login`. "
+                "PrimeMonitor will not be able to upload data."
             )
             self.enabled = False
             return
 
         self.api_key = api_key
-        self.base_url = config.base_url
+        self.base_url = config.base_url.rstrip("/")
 
-        # Get run_id from environment variable (check before allocating resources)
         run_id = os.getenv("RUN_ID")
         if not run_id:
-            self.logger.warning("RUN_ID environment variable not set. PrimeMonitor will not be able to upload data.")
-            self.enabled = False
-            return
+            run_id = self._register_run(config, run_config)
+            if run_id:
+                os.environ["RUN_ID"] = run_id
+            else:
+                self.enabled = False
+                return
+
         self.run_id = run_id
 
         # Set up async HTTP client with background event loop.
@@ -116,6 +123,97 @@ class PrimeMonitor(Monitor):
                 self.tokenizer = tokenizer
             if config.log_extras.distributions:
                 self.last_log_distributions_step = -1
+
+    def _register_run(self, config: PrimeMonitorConfig, run_config: BaseSettings | None) -> str | None:
+        """Register an external run with the platform. Returns run_id on success, None on failure."""
+        prime_config = PrimeConfig()
+        registration_api_key = prime_config.api_key or None
+        if not registration_api_key:
+            self.logger.warning(
+                "Prime Intellect API key not found. Either set PRIME_API_KEY or run `prime login`. "
+                "PrimeMonitor will not be able to register or upload data."
+            )
+            return None
+
+        team_id = config.team_id or prime_config.team_id
+
+        model = getattr(run_config, "model", None) if run_config else None
+        environments = getattr(run_config, "env", None) if run_config else None
+        wandb = getattr(run_config, "wandb", None) if run_config else None
+
+        payload: dict = {
+            "base_model": model.name if model else "unknown",
+            "max_steps": getattr(run_config, "max_steps", None) or 0,
+        }
+        if config.run_name:
+            payload["name"] = config.run_name
+        if team_id:
+            payload["team_id"] = team_id
+        if environments:
+            payload["environments"] = [{"id": env.id} for env in environments if hasattr(env, "id")]
+        if wandb and getattr(wandb, "project", None):
+            payload["wandb_project"] = wandb.project
+
+        parsed = urlparse(config.base_url)
+        api_base = f"{parsed.scheme}://{parsed.netloc}/api/v1/rft"
+
+        try:
+            response = httpx.post(
+                f"{api_base}/external-runs",
+                headers={"Authorization": f"Bearer {registration_api_key}"},
+                json=payload,
+                timeout=30,
+            )
+        except httpx.HTTPError as e:
+            self.logger.warning(f"Failed to register platform run: {e}. PrimeMonitor will not be able to upload data.")
+            return None
+
+        if response.status_code != 201:
+            self.logger.warning(
+                f"Failed to create platform run (HTTP {response.status_code}): {response.text}. "
+                "PrimeMonitor will not be able to upload data."
+            )
+            return None
+
+        run_id = response.json()["run"]["id"]
+        dashboard_url = f"{parsed.scheme}://{parsed.netloc}/dashboard/training/{run_id}"
+        self.logger.success(f"Monitor run at:\n  {dashboard_url}")
+        self._registered = True
+        return run_id
+
+    def _finalize_run(self, success: bool) -> None:
+        """Mark the run as completed or failed on the platform."""
+        if not getattr(self, "_registered", False):
+            return
+        prime_config = PrimeConfig()
+        registration_api_key = prime_config.api_key or None
+        if not registration_api_key:
+            return
+
+        payload: dict = {"status": "completed" if success else "failed"}
+        status_label = "completed" if success else "failed"
+        self.logger.info(f"Finalizing platform run {self.run_id} as {status_label}")
+
+        parsed = urlparse(self.base_url)
+        finalize_url = f"{parsed.scheme}://{parsed.netloc}/api/v1/rft/external-runs/{self.run_id}/status"
+
+        try:
+            response = httpx.put(
+                finalize_url,
+                headers={"Authorization": f"Bearer {registration_api_key}"},
+                json=payload,
+                timeout=30,
+            )
+        except httpx.HTTPError as e:
+            self.logger.warning(f"Failed to finalize platform run {self.run_id}: {e}")
+            return
+
+        if response.status_code != 200:
+            self.logger.warning(
+                f"Failed to finalize platform run {self.run_id} (HTTP {response.status_code}): {response.text}"
+            )
+            return
+        self.logger.info(f"Platform run {self.run_id} marked as {status_label}")
 
     def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
         self.history.append(metrics)
@@ -378,11 +476,16 @@ class PrimeMonitor(Monitor):
                 "summary": self.history[-1] if self.history else {},
             },
         )
+        self._finalize_run(success=True)
+        self._finalized = True
 
     def close(self) -> None:
         """Close the HTTP client and stop the background event loop."""
         if not hasattr(self, "_client"):
             return
+
+        if self.is_master and self.enabled and not self._finalized:
+            self._finalize_run(success=False)
 
         self._flush()
 
