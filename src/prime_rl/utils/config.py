@@ -1,34 +1,6 @@
-from pydantic import BaseModel, field_validator, model_validator
-from pydantic_config import BaseConfig as _BaseConfig
+from pydantic import BaseModel
+from pydantic_config import BaseConfig as BaseConfig  # noqa: F401
 from pydantic_config import cli  # noqa: F401
-
-
-class BaseConfig(_BaseConfig):
-    @field_validator("*", mode="before")
-    @classmethod
-    def empty_str_to_none(cls, v):
-        if v == "None":
-            return None
-        return v
-
-    @model_validator(mode="before")
-    @classmethod
-    def _default_discriminator_types(cls, data: dict) -> dict:
-        """For discriminated-union fields whose default carries a ``type``, inject it when missing.
-
-        Without ``nested_model_default_partial_update`` the ``type`` tag is no
-        longer merged in automatically, so we do it here for every field whose
-        default instance exposes one.
-        """
-        if not isinstance(data, dict):
-            return data
-        for field_name, field_info in cls.model_fields.items():
-            val = data.get(field_name)
-            if isinstance(val, dict) and "type" not in val:
-                default = field_info.default
-                if isinstance(default, BaseModel) and hasattr(default, "type"):
-                    val["type"] = default.type
-        return data
 
 
 def get_all_fields(model: BaseModel | type) -> list[str]:
