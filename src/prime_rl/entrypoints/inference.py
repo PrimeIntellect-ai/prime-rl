@@ -87,10 +87,6 @@ def inference_local(config: InferenceConfig):
 
     logger = setup_logger("info")
 
-    config_dir = get_config_dir(config.output_dir)
-    config_path = write_config(config, config_dir)
-    logger.info(f"Wrote config to {config_path}")
-
     if config.dry_run:
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
         return
