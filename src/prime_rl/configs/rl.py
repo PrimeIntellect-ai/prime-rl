@@ -196,14 +196,14 @@ class RLConfig(BaseSettings):
     output_dir: Annotated[
         Path,
         Field(
-            description="The directory to store the outputs. Should be set to a unique directory identifying the experiment."
+            description="The directory to store the outputs. Must be unique per experiment. Will raise if the directory already exists unless resuming or clean_output_dir is set."
         ),
     ] = Path("outputs")
 
     clean_output_dir: Annotated[
         bool,
         Field(
-            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
+            description="If true, delete the output directory before starting training. Required to overwrite an existing output directory when not resuming.",
         ),
     ] = False
 

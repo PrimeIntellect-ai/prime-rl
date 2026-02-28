@@ -181,14 +181,14 @@ class SFTConfig(BaseSettings):
     output_dir: Annotated[
         Path,
         Field(
-            description="Directory to write outputs to. Will be populated with checkpoints and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
+            description="Directory to write outputs to. Must be unique per experiment. Will raise if the directory already exists unless resuming or clean_output_dir is set."
         ),
     ] = Path("outputs")
 
     clean_output_dir: Annotated[
         bool,
         Field(
-            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
+            description="If true, delete the output directory before starting training. Required to overwrite an existing output directory when not resuming.",
         ),
     ] = False
 
