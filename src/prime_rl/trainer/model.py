@@ -716,6 +716,7 @@ def forward(
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
+    routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     # Multimodal fields (Qwen3-VL)
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
     image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
@@ -735,6 +736,9 @@ def forward(
         kwargs["image_grid_thw"] = image_grid_thw
     else:
         kwargs["position_ids"] = position_ids
+
+    if routed_experts is not None:
+        kwargs["routed_experts"] = routed_experts
 
     out = model(**kwargs)
 

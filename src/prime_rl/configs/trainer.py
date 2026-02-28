@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -275,12 +276,12 @@ class ModelConfig(BaseModelConfig):
                 "The chunk size to use for the fused LM head. "
                 "Three behaviors: "
                 "(1) int >= 512: explicitly set chunk size for fused LM head; "
-                "(2) 'auto': auto-enable (RL training auto-sets to 2048); "
+                "(2) 'auto': auto-enable (RL training auto-sets to 8192); "
                 "(3) 'disabled': explicitly disable fused LM head (use vanilla). "
                 "Explicitly setting an integer value for this feature isn't supported for SFT training."
             ),
         ),
-    ] = "auto"
+    ] = "disabled"
 
     @model_validator(mode="before")
     @classmethod
@@ -326,10 +327,16 @@ class ModelConfig(BaseModelConfig):
     def fused_lm_head_chunk_size_is_valid(self):
         if isinstance(self.fused_lm_head_chunk_size, int):
             low = 512
+            warn_threshold = 8192
             if self.fused_lm_head_chunk_size < low:
                 raise ValueError(
                     f"Fused LM head chunk size must be at least {low}, got {self.fused_lm_head_chunk_size}"
                 )
+            if self.fused_lm_head_chunk_size < warn_threshold:
+                warnings.warn(
+                    f"Fused LM head chunk size is set to {self.fused_lm_head_chunk_size}, which is less than the recommended threshold of {warn_threshold}. This may cause some runs to diverge due to numerical instability in floating point arithmetic."
+                )
+
         return self
 
     @model_validator(mode="after")
@@ -650,6 +657,13 @@ class TrainerConfig(BaseSettings):
         ),
     ] = 1
 
+    enable_router_replay: Annotated[
+        bool,
+        Field(
+            description="Whether to enable router replay. If True, will return routed experts in the batch. This is only supported if `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server. This is only supported for custom models.",
+        ),
+    ] = False
+
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
     bench: Annotated[
@@ -753,7 +767,7 @@ class TrainerConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_fused_lm_head_chunk_size(self):
         if self.model.fused_lm_head_chunk_size == "auto":
-            self.model.fused_lm_head_chunk_size = 2048
+            self.model.fused_lm_head_chunk_size = 8192
 
         return self
 
@@ -761,5 +775,12 @@ class TrainerConfig(BaseSettings):
     def ep_only_with_custom_impl(self):
         if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")
+
+        return self
+
+    @model_validator(mode="after")
+    def router_replay_only_with_custom_impl(self):
+        if self.enable_router_replay and self.model.impl not in ("custom", "auto"):
+            raise ValueError("Router replay is only supported with the custom implementation or auto mode")
 
         return self
