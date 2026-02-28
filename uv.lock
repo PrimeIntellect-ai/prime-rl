@@ -2649,7 +2649,7 @@ email = [
 [[package]]
 name = "pydantic-config"
 version = "0.3.0"
-source = { git = "https://github.com/samsja/pydantic_config.git?branch=main#20dbf5a84544e20f88433c09b46da828e7b47e15" }
+source = { git = "https://github.com/samsja/pydantic_config.git?branch=main#21b4cccec6716096fc761019d568ba21601b9a51" }
 dependencies = [
     { name = "pydantic" },
     { name = "tyro" },
