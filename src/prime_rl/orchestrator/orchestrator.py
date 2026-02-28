@@ -1,7 +1,6 @@
 import asyncio
 import multiprocessing as mp
 import random
-import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -61,7 +60,6 @@ from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
-    get_broadcast_dir,
     get_env_ids_to_install,
     install_env,
     resolve_latest_ckpt_step,
@@ -334,10 +332,9 @@ async def orchestrate(config: OrchestratorConfig):
         scheduler.checkpoint_ready.set()
     else:
         logger.info("Training from scratch")
-        broadcast_dir = get_broadcast_dir(config.output_dir)
-        if broadcast_dir.exists():
-            logger.info(f"Cleaning stale broadcast directory: {broadcast_dir}")
-            shutil.rmtree(broadcast_dir)
+        config_path = config.output_dir / "control" / "orch.toml"
+        if config_path.exists():
+            scheduler.min_stable_mtime = config_path.stat().st_mtime
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)

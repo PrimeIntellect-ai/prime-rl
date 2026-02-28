@@ -87,6 +87,7 @@ class Scheduler:
 
         self.step, self.ckpt_step = 0, -1
         self.checkpoint_ready = asyncio.Event()
+        self.min_stable_mtime: float | None = None
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.update_policy_task = None
         self.cancelled_rollouts_count = 0
@@ -155,6 +156,15 @@ class Scheduler:
         )
         self.inflight_group_rollouts[run_group_task] = InflightRolloutInfo(0, client_config)
 
+    async def _wait_for_fresh_stable(self, stable_path: Path) -> None:
+        """Wait for a STABLE marker, skipping stale files from previous runs."""
+        while True:
+            await wait_for_path(stable_path)
+            if self.min_stable_mtime is None or stable_path.stat().st_mtime >= self.min_stable_mtime:
+                self.min_stable_mtime = None
+                return
+            await asyncio.sleep(1)
+
     async def update_policy_loop(self):
         """Continuously checks for new policy checkpoints."""
         while True:
@@ -180,7 +190,8 @@ class Scheduler:
                     )
                 self.checkpoint_ready.clear()
                 wait_for_ckpt_start_time = time.perf_counter()
-                await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+                stable_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE"
+                await self._wait_for_fresh_stable(stable_path)
                 self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
                 self.logger.info(
                     f"Orchestrator resumed: checkpoint {next_ckpt_step} ready (after {self.wait_for_ckpt_time:.2f}s)"
