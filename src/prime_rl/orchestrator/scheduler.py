@@ -188,12 +188,18 @@ class Scheduler:
                 f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
             )
 
-            # Update weights on inference servers
+            # Update weights on inference servers.
             update_weights_start_time = time.perf_counter()
             weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
             await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
+
+            # Signal to the trainer that this checkpoint has been consumed and older ones can be cleaned
+            loaded_step_file = get_broadcast_dir(self.config.output_dir) / "LOADED_STEP"
+            loaded_step_tmp_file = loaded_step_file.with_suffix(".tmp")
+            loaded_step_tmp_file.write_text(str(next_ckpt_step))
+            loaded_step_tmp_file.replace(loaded_step_file)
 
             if self.lora_name is not None:
                 self.model_name = self.lora_name
