@@ -338,9 +338,13 @@ async def orchestrate(config: OrchestratorConfig):
         scheduler.checkpoint_ready.set()
     else:
         logger.info("Training from scratch")
-        config_path = config.output_dir / "control" / "orch.toml"
-        if config_path.exists():
-            scheduler.min_stable_mtime = config_path.stat().st_mtime
+        if config.weight_broadcast.type == "nccl":
+            config_path = config.output_dir / "control" / "orch.toml"
+            if config_path.exists():
+                scheduler.min_stable_mtime = config_path.stat().st_mtime
+        else:
+            scheduler.ckpt_step = 0
+            scheduler.checkpoint_ready.set()
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
