@@ -6,9 +6,10 @@ import urllib.request
 from contextlib import closing
 
 import pytest
+from prometheus_client import CollectorRegistry, Gauge
 
 from prime_rl.configs.shared import MetricsServerConfig
-from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
+from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 
 
 def find_free_port() -> int:
@@ -41,7 +42,9 @@ def test_config_invalid_port_high():
 
 def test_server_start_stop():
     port = find_free_port()
-    server = MetricsServer(MetricsServerConfig(port=port))
+    registry = CollectorRegistry()
+    Gauge("test_metric", "Test metric", registry=registry).set(1)
+    server = MetricsServer(MetricsServerConfig(port=port), registry=registry)
 
     server.start()
     assert server._started
@@ -49,6 +52,8 @@ def test_server_start_stop():
 
     response = urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2)
     assert response.status == 200
+    content = response.read().decode()
+    assert "test_metric" in content
 
     server.stop()
     assert not server._started
@@ -71,59 +76,10 @@ def test_server_returns_404_on_unknown_path():
 
 def test_server_double_start_is_safe():
     port = find_free_port()
-    server = MetricsServer(MetricsServerConfig(port=port))
+    registry = CollectorRegistry()
+    server = MetricsServer(MetricsServerConfig(port=port), registry=registry)
     server.start()
     server.start()  # Should not raise
-    server.stop()
-
-
-def test_server_update_metrics():
-    port = find_free_port()
-    server = MetricsServer(MetricsServerConfig(port=port))
-    server.start()
-    time.sleep(0.1)
-
-    server.update(step=42, loss=0.5, throughput=1000.0, grad_norm=1.5, peak_memory_gib=10.0, learning_rate=1e-4)
-
-    response = urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2)
-    content = response.read().decode()
-
-    assert "trainer_step" in content
-    assert "trainer_loss" in content
-    assert "trainer_last_step_timestamp_seconds" in content
-    assert "trainer_mismatch_kl" in content
-    assert "trainer_kl_ent_ratio" in content
-
-    server.stop()
-
-
-def test_server_metrics_values_are_correct():
-    port = find_free_port()
-    server = MetricsServer(MetricsServerConfig(port=port))
-    server.start()
-    time.sleep(0.1)
-
-    entropy = 1.5
-    mismatch_kl = 0.045
-    server.update(
-        step=100,
-        loss=0.123,
-        throughput=5000.0,
-        grad_norm=2.5,
-        peak_memory_gib=16.0,
-        learning_rate=3e-5,
-        entropy=entropy,
-        mismatch_kl=mismatch_kl,
-    )
-
-    response = urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2)
-    content = response.read().decode()
-
-    assert "trainer_step 100.0" in content
-    assert "trainer_loss 0.123" in content
-    assert "trainer_mismatch_kl 0.045" in content
-    assert f"trainer_kl_ent_ratio {mismatch_kl / entropy}" in content
-
     server.stop()
 
 
@@ -134,17 +90,18 @@ def test_server_isolated_registry():
 
     server1 = MetricsServer(MetricsServerConfig(port=port1))
     server2 = MetricsServer(MetricsServerConfig(port=port2))
+    Gauge("test_metric", "Test metric", registry=server1.registry).set(1)
+    Gauge("test_metric", "Test metric", registry=server2.registry).set(2)
 
     server1.start()
     server2.start()
     time.sleep(0.1)
 
-    server1.update(step=999, loss=0.1, throughput=100, grad_norm=1, peak_memory_gib=1, learning_rate=1e-3)
-
     resp1 = urllib.request.urlopen(f"http://localhost:{port1}/metrics", timeout=2).read().decode()
     resp2 = urllib.request.urlopen(f"http://localhost:{port2}/metrics", timeout=2).read().decode()
-    assert "999.0" in resp1
-    assert "999.0" not in resp2
+    assert "test_metric 1.0" in resp1
+    assert "test_metric 1.0" not in resp2
+    assert "test_metric 2.0" in resp2
 
     server1.stop()
     server2.stop()
@@ -152,78 +109,17 @@ def test_server_isolated_registry():
 
 def test_server_port_conflict_raises():
     port = find_free_port()
-    server1 = MetricsServer(MetricsServerConfig(port=port))
+    registry1 = CollectorRegistry()
+    server1 = MetricsServer(MetricsServerConfig(port=port), registry=registry1)
     server1.start()
     time.sleep(0.1)
 
-    server2 = MetricsServer(MetricsServerConfig(port=port))
+    registry2 = CollectorRegistry()
+    server2 = MetricsServer(MetricsServerConfig(port=port), registry=registry2)
     with pytest.raises(OSError):
         server2.start()
 
     server1.stop()
-
-
-def test_server_update_runs():
-    port = find_free_port()
-    server = MetricsServer(MetricsServerConfig(port=port))
-    server.start()
-    time.sleep(0.1)
-
-    run_stats = [
-        RunStats(run_id="run_001", step=50, total_tokens=100000, learning_rate=1e-4, ready=True),
-        RunStats(run_id="run_002", step=25, total_tokens=50000, learning_rate=1e-5, ready=False),
-    ]
-    server.update_runs(runs_discovered=5, runs_max=8, run_stats=run_stats)
-
-    response = urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2)
-    content = response.read().decode()
-
-    # Check aggregate metrics
-    assert "trainer_runs_discovered 5.0" in content
-    assert "trainer_runs_active 2.0" in content
-    assert "trainer_runs_ready 1.0" in content
-    assert "trainer_runs_max 8.0" in content
-
-    # Check per-run metrics with labels
-    assert 'trainer_run_step{run="run_001"} 50.0' in content
-    assert 'trainer_run_step{run="run_002"} 25.0' in content
-    assert 'trainer_run_tokens{run="run_001"} 100000.0' in content
-    assert 'trainer_run_learning_rate{run="run_001"}' in content
-    assert 'trainer_run_ready{run="run_001"} 1.0' in content
-    assert 'trainer_run_ready{run="run_002"} 0.0' in content
-
-    server.stop()
-
-
-def test_server_update_runs_cleanup():
-    """Test that removed runs are cleaned up from metrics."""
-    port = find_free_port()
-    server = MetricsServer(MetricsServerConfig(port=port))
-    server.start()
-    time.sleep(0.1)
-
-    # First update with two runs
-    run_stats = [
-        RunStats(run_id="run_001", step=50, total_tokens=100000, learning_rate=1e-4, ready=True),
-        RunStats(run_id="run_002", step=25, total_tokens=50000, learning_rate=1e-5, ready=False),
-    ]
-    server.update_runs(runs_discovered=2, runs_max=8, run_stats=run_stats)
-
-    # Second update with only one run (run_002 removed)
-    run_stats = [
-        RunStats(run_id="run_001", step=60, total_tokens=120000, learning_rate=1e-4, ready=True),
-    ]
-    server.update_runs(runs_discovered=1, runs_max=8, run_stats=run_stats)
-
-    response = urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2)
-    content = response.read().decode()
-
-    # run_001 should be updated
-    assert 'trainer_run_step{run="run_001"} 60.0' in content
-    # run_002 should be removed
-    assert "run_002" not in content
-
-    server.stop()
 
 
 def test_health_server_start_stop():
