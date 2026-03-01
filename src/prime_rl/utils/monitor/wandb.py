@@ -56,7 +56,7 @@ class WandbMonitor(Monitor):
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.samples_cols = ["step", "task", "example_id", "messages", "turns", "reward", "advantage"]
+                self.samples_cols = ["step", "task", "example_id", "actor_id", "messages", "turns", "reward", "advantage"]
                 self.samples_table = wandb.Table(
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
@@ -119,10 +119,16 @@ class WandbMonitor(Monitor):
                 turn_texts.append(text)
             messages = "\n---\n".join(turn_texts) if len(turn_texts) > 1 else (turn_texts[0] if turn_texts else "")
 
+            # Get actor_id from first trajectory step (all steps share same actor after split)
+            actor_id = ""
+            if trajectory and trajectory[0].get("extras"):
+                actor_id = trajectory[0]["extras"].get("actor_id", "")
+
             sample = {
                 "step": step,
                 "task": rollout.get("task"),
                 "example_id": rollout["example_id"],
+                "actor_id": actor_id,
                 "messages": messages,
                 "turns": len(trajectory),
                 "reward": rollout["reward"],
