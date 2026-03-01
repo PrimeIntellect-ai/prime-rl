@@ -600,6 +600,15 @@ async def orchestrate(config: OrchestratorConfig):
         # Gather individual reward function metrics
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
 
+        # DEBUG: verify reward vs metrics match
+        for i, r in enumerate(train_rollouts[:4]):
+            actor = r.get("trajectory", [{}])[0].get("extras", {}).get("actor_id", "?")
+            print(f"[REWARD_VS_METRIC] rollout={i} actor={actor} reward={r['reward']:.4f} metrics={r['metrics']} advantage={r.get('advantage')}")
+        p1_col = metrics_df["player1_reward"].mean() if "player1_reward" in metrics_df.columns else float("nan")
+        p2_col = metrics_df["player2_reward"].mean() if "player2_reward" in metrics_df.columns else float("nan")
+        print(f"[REWARD_SUMMARY] reward/mean={sum(r['reward'] for r in train_rollouts)/len(train_rollouts):.4f} "
+              f"metrics/player1_reward={p1_col:.4f} metrics/player2_reward={p2_col:.4f}")
+
         val_results_df = (
             pd.DataFrame(
                 {
