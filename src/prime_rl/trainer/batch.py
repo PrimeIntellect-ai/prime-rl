@@ -162,6 +162,28 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     return micro_batch
 
 
+def _make_padding_batch(source: MicroBatch) -> MicroBatch:
+    """Create a zero-contribution padding batch from a source batch.
+
+    Preserves pixel_values/image_grid_thw so FSDP vision encoder all-gathers
+    stay synchronized when padding multimodal groups.
+    """
+    padded = copy.deepcopy(source)
+    padded.advantages = [0.0] * len(padded.input_ids)
+    padded.loss_mask = [False] * len(padded.input_ids)
+    return padded
+
+
+def _pad_group(group: list[MicroBatch], num_train_workers: int) -> list[MicroBatch]:
+    """Pad a group of micro batches so its length is divisible by num_train_workers."""
+    if not group:
+        return group
+    num_padding = -len(group) % num_train_workers
+    for _ in range(num_padding):
+        group.append(_make_padding_batch(group[0]))
+    return group
+
+
 def prepare_batch(
     rollouts: list[TrainingSample],
     seq_len: int,
@@ -173,32 +195,31 @@ def prepare_batch(
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, seq_len], the number of samples is not fixed per micro batch.
+
+    Multimodal (MM) and text-only micro batches are distributed so that at every
+    micro_step all GPUs process the same type. This prevents FSDP all-gather hangs
+    when the vision encoder is wrapped as its own FSDP unit.
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
-    num_padding_batch = -len(micro_batches) % num_train_workers
+    # Split into multimodal and text-only groups, pad each independently,
+    # then concatenate so round-robin keeps types aligned across GPUs.
+    mm_group = [mb for mb in micro_batches if _is_multimodal_sample(mb)]
+    text_group = [mb for mb in micro_batches if not _is_multimodal_sample(mb)]
 
-    # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
-    # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
-    if num_train_workers > 1 and num_padding_batch > 0:
-        padded_batch = copy.deepcopy(micro_batches[0])
-        padded_batch.advantages = [0.0] * len(padded_batch.input_ids)
-        padded_batch.loss_mask = [False] * len(padded_batch.input_ids)
-        micro_batches.extend([padded_batch for _ in range(num_padding_batch)])
+    mm_group = _pad_group(mm_group, num_train_workers)
+    text_group = _pad_group(text_group, num_train_workers)
+
+    micro_batches = mm_group + text_group
 
     assert len(micro_batches) % num_train_workers == 0, (
         "Number of micro batches is not divisible by number of data ranks"
     )
 
-    per_gpu_micro_batches = len(micro_batches) // num_train_workers
-    batches_per_gpu = []
-    for _ in range(num_train_workers):
-        batches = []
-        for _ in range(per_gpu_micro_batches):
-            batches.append(micro_batches.pop(0))
-        batches_per_gpu.append(batches)
+    # Round-robin distribution: GPU i gets micro_batches[i::W]
+    batches_per_gpu = [micro_batches[i::num_train_workers] for i in range(num_train_workers)]
 
     return batches_per_gpu
