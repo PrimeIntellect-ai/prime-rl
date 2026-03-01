@@ -58,6 +58,10 @@ flash-attn-3 = [
 flash-attn-cute = [
     "flash-attn-cute",
 ]
+quack = [
+    "quack-kernels",
+    "ninja",
+]
 sonic-moe = [
     "sonicmoe",
     "quack-kernels",

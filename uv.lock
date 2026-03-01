@@ -2352,6 +2352,10 @@ flash-attn-3 = [
 flash-attn-cute = [
     { name = "flash-attn-cute" },
 ]
+quack = [
+    { name = "ninja" },
+    { name = "quack-kernels" },
+]
 sonic-moe = [
     { name = "ninja" },
     { name = "quack-kernels" },
@@ -2380,6 +2384,7 @@ requires-dist = [
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "math-env", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
+    { name = "ninja", marker = "extra == 'quack'" },
     { name = "ninja", marker = "extra == 'sonic-moe'" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
@@ -2388,6 +2393,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-settings", specifier = ">=2.12.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
+    { name = "quack-kernels", marker = "extra == 'quack'" },
     { name = "quack-kernels", marker = "extra == 'sonic-moe'" },
     { name = "reverse-text", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
@@ -2406,7 +2412,7 @@ requires-dist = [
     { name = "vllm", url = "https://vllm-wheels.s3.us-west-2.amazonaws.com/7a06e5b05b170d7da31845866da0a99fc65253a1/vllm-0.16.0rc3-cp38-abi3-manylinux_2_31_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
 ]
-provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "sonic-moe"]
+provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "quack", "sonic-moe"]
 
 [package.metadata.requires-dev]
 dev = [
