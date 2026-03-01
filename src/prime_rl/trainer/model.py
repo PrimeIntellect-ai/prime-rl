@@ -553,7 +553,23 @@ def reshard_module(model: nn.Module):
             module.reshard()
 
 
+def _is_hf_native_model(model: nn.Module) -> bool:
+    """Check if the model is a vanilla HF model (not a custom PrimeRL implementation)."""
+    return not isinstance(model, PreTrainedModelPrimeRL) and hasattr(model, "gradient_checkpointing_enable")
+
+
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
+    # Vanilla HF models (VLMs, etc.) have built-in AC via GradientCheckpointingLayer.
+    # Using checkpoint_wrapper on them causes shape mismatches during backward recomputation.
+    if _is_hf_native_model(model):
+        if ac_config.freq != 1:
+            get_logger().warning(
+                f"HF gradient checkpointing does not support freq={ac_config.freq}, checkpointing all layers"
+            )
+        model.gradient_checkpointing_enable({"use_reentrant": False})
+        get_logger().info("Applied HF gradient checkpointing (all layers)")
+        return
+
     language_model = get_language_model(model)
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq == 0:
