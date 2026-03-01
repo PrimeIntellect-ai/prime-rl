@@ -30,6 +30,15 @@ INFERENCE_TOML = "inference.toml"
 TEACHER_INFERENCE_TOML = "teacher_inference.toml"
 
 
+def get_physical_gpu_ids() -> list[int]:
+    """Return physical GPU IDs visible to the launcher."""
+    raw_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw_visible is None:
+        pynvml.nvmlInit()
+        return list(range(pynvml.nvmlDeviceGetCount()))
+    return [int(token.strip()) for token in raw_visible.split(",") if token.strip()]
+
+
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -95,15 +104,29 @@ def rl_local(config: RLConfig):
         logger.success("Dry run complete. To start an RL run locally, remove --dry-run from your command.")
         return
 
-    # Derive GPU IDs from deployment config
+    # Derive launcher-local GPU IDs from deployment config
     gpu_offset = 0
     num_infer_gpus = config.deployment.num_infer_gpus if config.inference is not None else 0
-    infer_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
+    infer_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
     gpu_offset += num_infer_gpus
-    trainer_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
+    trainer_local_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
     gpu_offset += config.deployment.num_train_gpus
     num_teacher_gpus = config.deployment.num_teacher_gpus or 0
-    teacher_gpu_ids = list(range(gpu_offset, gpu_offset + num_teacher_gpus)) if num_teacher_gpus > 0 else []
+    teacher_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_teacher_gpus)) if num_teacher_gpus > 0 else []
+
+    total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus + num_teacher_gpus
+    physical_gpu_ids = get_physical_gpu_ids()
+    if total_requested_gpus > len(physical_gpu_ids):
+        raise ValueError(
+            f"Requested {total_requested_gpus} GPUs via deployment settings, but only "
+            f"{len(physical_gpu_ids)} physical GPU(s) are available: {physical_gpu_ids}"
+        )
+    physical_gpu_mapping = {local_id: physical_gpu_ids[local_id] for local_id in range(total_requested_gpus)}
+    logger.info(f"Using local->physical GPU mapping: {physical_gpu_mapping}")
+
+    infer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in infer_local_gpu_ids]
+    trainer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in trainer_local_gpu_ids]
+    teacher_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in teacher_local_gpu_ids]
 
     start_command = sys.argv
     logger.info("Starting RL run")
