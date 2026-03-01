@@ -1,0 +1,48 @@
+{
+  "config": {
+    "type": "rl",
+    "num_gpus": 1,
+    "model_name": "meta-llama/Llama-3.2-3B-Instruct",
+    "lora_rank": 16,
+    "seq_len": 65536,
+    "ac": "Recompute",
+    "attention": "flash_attention_3",
+    "output": "/home/ubuntu/prime-rl/benchmarks/scripts/../gpu_scaling_results/benchmark-8xh100-meta-llama--Llama-3.2-3B-Instruct-rl-16-1gpu-Recompute-flash_attention_3-65536-cp1-ep1.json",
+    "dry_run": false,
+    "timeout": 1500,
+    "micro_batches": 2,
+    "ep": 1,
+    "cp": 1,
+    "docker_image": null,
+    "device_name": "NVIDIA H100 80GB HBM3",
+    "commit_sha": "8dbd955a",
+    "timestamp": "2026-02-07T08:55:20.735748+00:00",
+    "success": true,
+    "error_reason": null,
+    "time_taken": 138.54826607699943
+  },
+  "metrics": {
+    "mfu": {
+      "mean": 49.86061576454307,
+      "std": 0.015655809241121497,
+      "min": 49.849619995934134,
+      "max": 49.87854040093802
+    },
+    "throughput": {
+      "mean": 6114.952480006242,
+      "std": 1.92004306560522,
+      "min": 6113.603948675575,
+      "max": 6117.150774152751
+    },
+    "step_time": {
+      "mean": 21.43873013999837,
+      "std": 0.011060856419725642,
+      "min": 21.426343369999813,
+      "max": 21.44761953899797
+    },
+    "peak_memory": {
+      "gib": 39.21875,
+      "pct": 49.51312148576351
+    }
+  }
+}

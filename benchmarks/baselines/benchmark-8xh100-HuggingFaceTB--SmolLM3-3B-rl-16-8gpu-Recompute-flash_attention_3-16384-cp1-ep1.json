@@ -1,0 +1,48 @@
+{
+  "config": {
+    "type": "rl",
+    "num_gpus": 8,
+    "model_name": "HuggingFaceTB/SmolLM3-3B",
+    "lora_rank": 16,
+    "seq_len": 16384,
+    "ac": "Recompute",
+    "attention": "flash_attention_3",
+    "output": "/home/ubuntu/prime-rl/benchmarks/scripts/../gpu_scaling_results/benchmark-8xh100-HuggingFaceTB--SmolLM3-3B-rl-16-8gpu-Recompute-flash_attention_3-16384-cp1-ep1.json",
+    "dry_run": false,
+    "timeout": 1500,
+    "micro_batches": 2,
+    "ep": 1,
+    "cp": 1,
+    "docker_image": null,
+    "device_name": "NVIDIA H100 80GB HBM3",
+    "commit_sha": "8dbd955a",
+    "timestamp": "2026-02-07T08:26:36.468455+00:00",
+    "success": true,
+    "error_reason": null,
+    "time_taken": 85.44672989799801
+  },
+  "metrics": {
+    "mfu": {
+      "mean": 22.625777907165144,
+      "std": 0.008454895981571082,
+      "min": 22.617221450446586,
+      "max": 22.634127443959898
+    },
+    "throughput": {
+      "mean": 66359.21901279979,
+      "std": 24.797392446512237,
+      "min": 66334.12375253116,
+      "max": 66383.70739693809
+    },
+    "step_time": {
+      "mean": 3.949352555999212,
+      "std": 0.003696690644302091,
+      "min": 3.945342549999623,
+      "max": 3.9526246069981426
+    },
+    "peak_memory": {
+      "gib": 8.875,
+      "pct": 11.204562949766403
+    }
+  }
+}
