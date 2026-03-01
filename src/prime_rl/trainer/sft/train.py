@@ -1,6 +1,7 @@
 import time
 from contextlib import nullcontext
 from datetime import timedelta
+from typing import Callable
 
 from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
@@ -9,6 +10,10 @@ from torch.nn import CrossEntropyLoss
 # ruff: noqa: I001
 
 from prime_rl.trainer.models.layers.attn import substitute_ring_attn
+from prime_rl.trainer.models.layers.quack_backend import (
+    check_quack_imports,
+    quack_chunked_linear_cross_entropy,
+)
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
@@ -47,6 +52,30 @@ import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 
 from torchtitan.distributed.utils import clip_grad_norm_
+
+
+_QUACK_FUSED_CHUNK_SIZE = 4096
+
+
+def _compute_quack_fused_loss(
+    model: torch.nn.Module,
+    input_ids: torch.Tensor,
+    position_ids: torch.Tensor,
+    target_ids: torch.Tensor,
+    loss_mask: torch.Tensor,
+    chunk_size: int,
+) -> torch.Tensor:
+    hidden_states = model.model(input_ids=input_ids, position_ids=position_ids).last_hidden_state
+    hidden_states_2d = hidden_states.reshape(-1, hidden_states.shape[-1]).contiguous()
+    masked_targets = target_ids.reshape(-1).contiguous().masked_fill(~loss_mask.reshape(-1).bool(), -100)
+    return quack_chunked_linear_cross_entropy(
+        hidden_states_2d,
+        model.lm_head.weight,
+        masked_targets,
+        chunk_size=chunk_size,
+        ignore_index=-100,
+        reduction="mean",
+    )
 
 
 @clean_exit
@@ -166,11 +195,21 @@ def train(config: SFTConfig):
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     cp_size = parallel_dims.cp
 
+    ce_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None
+    use_quack_fused_loss = False
     match config.loss_impl:
         case "liger":
             ce_loss = LigerCrossEntropyLoss(reduction="none")
         case "torch":
             ce_loss = CrossEntropyLoss(reduction="none")
+        case "quack_fused":
+            import_info = check_quack_imports()
+            if not import_info.is_supported:
+                raise ValueError(
+                    f"quack_fused loss_impl requested but bindings are unavailable ({import_info.code}): "
+                    f"{import_info.message}"
+                )
+            use_quack_fused_loss = True
         case _:
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
@@ -245,19 +284,26 @@ def train(config: SFTConfig):
                 logger.debug("Printing samples of the first micro batch")
                 print_sample(input_ids.flatten().tolist(), loss_mask.flatten().tolist(), tokenizer)
 
-                # Forward pass
             logger.debug("Starting forward pass")
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(model, input_ids, position_ids)
-
-            logits = out["logits"]
-            B, L, V = logits.shape
-
-            # Compute loss
-            loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
-
-            # Compute average loss over unmasked tokens
-            loss = loss[loss_mask].mean()
+                if use_quack_fused_loss:
+                    loss = _compute_quack_fused_loss(
+                        model,
+                        input_ids,
+                        position_ids,
+                        target_ids,
+                        loss_mask,
+                        _QUACK_FUSED_CHUNK_SIZE,
+                    )
+                else:
+                    assert ce_loss is not None, "Cross-entropy loss function was not initialized."
+                    out = forward(model, input_ids, position_ids)
+                    logits = out["logits"]
+                    B, L, V = logits.shape
+                    loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+                    loss = loss[loss_mask].mean()
+                    # Delete logits before backward pass to avoid memory spike
+                    del logits
 
             # Accumulate average loss over gradient accumulation steps
 
@@ -269,9 +315,6 @@ def train(config: SFTConfig):
             else:
                 nan_loss_count += 1
                 logger.warning("Loss is nan, not taking into account in the batch loss calculation")
-
-            # Delete logits before backward pass to avoid memory spike
-            del logits
 
             # Backward pass
             logger.debug("Starting backward pass")

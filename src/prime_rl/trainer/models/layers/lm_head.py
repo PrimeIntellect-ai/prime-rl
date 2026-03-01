@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from prime_rl.trainer.models.layers.quack_backend import quack_gemm, quack_kernels_enabled
 from prime_rl.utils.logger import get_logger
 
 
@@ -29,6 +30,14 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
         logprobs=_float_and_contiguous(output.get("logprobs")),
         entropy=_float_and_contiguous(output.get("entropy")),
     )
+
+
+def _matmul_quack_or_torch(a: Tensor, b: Tensor) -> Tensor:
+    if quack_kernels_enabled():
+        a_mat = a.contiguous() if a.stride(-1) != 1 else a
+        b_mat = b.contiguous() if b.stride(-1) != 1 else b
+        return quack_gemm(a_mat, b_mat)
+    return a @ b
 
 
 class FusedOutputLinear(torch.nn.Linear):
@@ -108,7 +117,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         for start in range(0, vocab, chunk_size):
             end = min(start + chunk_size, vocab)
             w_chunk = weight[start:end]  # [C, H]
-            logits = hidden @ w_chunk.t()  # [N, C] (model dtype)
+            logits = _matmul_quack_or_torch(hidden, w_chunk.t())  # [N, C] (model dtype)
             logits_f = logits.to(torch.float32) * inv_t_broadcast  # [N, C] fp32
 
             # Shared intermediates for logZ and entropy stats.
@@ -156,7 +165,7 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
             end = min(start + chunk_size, vocab)
             w_chunk = weight[start:end]  # [C, H]
 
-            logits = hidden @ w_chunk.t()  # [N, C] (model dtype)
+            logits = _matmul_quack_or_torch(hidden, w_chunk.t())  # [N, C] (model dtype)
             logits_f = logits.to(torch.float32) * inv_t_broadcast  # [N, C] fp32
 
             # p = softmax(logits_f) chunk = exp(logits_f - logz)
@@ -172,8 +181,8 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
             # Chain through temperature scaling: logits_f = logits * inv_temperature
             grad_logits = grad_logits * inv_t_broadcast
 
-            grad_hidden.add_(grad_logits.to(hidden.dtype) @ w_chunk)
-            grad_w_chunk = grad_logits.to(weight.dtype).t() @ hidden  # [C, H]
+            grad_hidden.add_(_matmul_quack_or_torch(grad_logits.to(hidden.dtype), w_chunk))
+            grad_w_chunk = _matmul_quack_or_torch(grad_logits.to(weight.dtype).t(), hidden)  # [C, H]
             grad_weight[start:end].add_(grad_w_chunk)
 
         return grad_hidden, grad_weight, None, None, None

@@ -7,6 +7,7 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
+from prime_rl.trainer.models.layers.quack_backend import quack_cross_entropy, quack_kernels_enabled
 from prime_rl.utils.utils import import_object
 
 
@@ -45,6 +46,21 @@ def selective_log_softmax(
 ) -> Float[Tensor, "batch seq"]:
     logprobs = logits.log_softmax(dim=-1)
     return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+
+
+@jaxtyped(typechecker=typechecker)
+def selective_log_softmax_quack(
+    logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
+) -> Float[Tensor, "batch seq"]:
+    if quack_kernels_enabled():
+        batch, seq, vocab = logits.shape
+        token_loss = quack_cross_entropy(
+            logits.reshape(-1, vocab).contiguous(),
+            index.reshape(-1).contiguous(),
+            reduction="none",
+        )
+        return -token_loss.reshape(batch, seq)
+    return selective_log_softmax(logits, index)
 
 
 @jaxtyped(typechecker=typechecker)
