@@ -32,6 +32,11 @@ from prime_rl.trainer.models import (
 )
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.quack_backend import (
+    check_quack_imports,
+    check_quack_runtime,
+    set_quack_kernels_enabled,
+)
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -173,6 +178,7 @@ def get_model(
     )
     model_config.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
+    model_config.use_quack_kernels = config.use_quack_kernels
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -219,15 +225,11 @@ def get_model(
 
     effective_moe_backend = config.moe_backend
     if effective_moe_backend == "sonic" and impl_to_use != "custom":
-        logger.warning(
-            "SonicMoE backend is only supported with model.impl='custom'. Falling back to 'grouped_mm'."
-        )
+        logger.warning("SonicMoE backend is only supported with model.impl='custom'. Falling back to 'grouped_mm'.")
         effective_moe_backend = "grouped_mm"
 
     if effective_moe_backend == "sonic" and config.ep > 1:
-        logger.warning(
-            "SonicMoE backend currently requires model.ep=1 in PrimeRL. Falling back to 'grouped_mm'."
-        )
+        logger.warning("SonicMoE backend currently requires model.ep=1 in PrimeRL. Falling back to 'grouped_mm'.")
         effective_moe_backend = "grouped_mm"
 
     model_config.moe_backend = effective_moe_backend
@@ -655,6 +657,28 @@ def setup_model(
         _register_fa4_attention_interface()
 
     logger = get_logger()
+    effective_use_quack_kernels = config.use_quack_kernels
+    if effective_use_quack_kernels:
+        runtime_info = check_quack_runtime()
+        if not runtime_info.is_supported:
+            logger.warning(
+                f"quack kernels requested but unavailable ({runtime_info.code}): {runtime_info.message}. "
+                "Falling back to torch kernels."
+            )
+            effective_use_quack_kernels = False
+        else:
+            import_info = check_quack_imports()
+            if not import_info.is_supported:
+                logger.warning(
+                    f"quack kernels requested but unavailable ({import_info.code}): {import_info.message}. "
+                    "Falling back to torch kernels."
+                )
+                effective_use_quack_kernels = False
+            else:
+                logger.info("Enabled quack kernels for supported non-MoE operations.")
+
+    set_quack_kernels_enabled(effective_use_quack_kernels)
+    config.use_quack_kernels = effective_use_quack_kernels
 
     # 1. We load to meta device by default
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])

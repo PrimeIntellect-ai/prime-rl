@@ -84,20 +84,14 @@ def check_sonic_runtime(
         return SonicRuntimeInfo(
             is_supported=False,
             code="unsupported_hidden_size",
-            message=(
-                "SonicMoE currently requires hidden_size >= 512 and hidden_size % 64 == 0 "
-                f"(got {hidden_size})."
-            ),
+            message=(f"SonicMoE currently requires hidden_size >= 512 and hidden_size % 64 == 0 (got {hidden_size})."),
         )
 
     if intermediate_size % 64 != 0:
         return SonicRuntimeInfo(
             is_supported=False,
             code="unsupported_intermediate_size",
-            message=(
-                "SonicMoE currently requires intermediate_size % 64 == 0 "
-                f"(got {intermediate_size})."
-            ),
+            message=(f"SonicMoE currently requires intermediate_size % 64 == 0 (got {intermediate_size})."),
         )
 
     if not torch.cuda.is_available():
@@ -114,8 +108,7 @@ def check_sonic_runtime(
             is_supported=False,
             code="unsupported_gpu",
             message=(
-                "SonicMoE currently supports Hopper/Blackwell only "
-                f"(got compute capability {device_capability})."
+                f"SonicMoE currently supports Hopper/Blackwell only (got compute capability {device_capability})."
             ),
         )
 
@@ -123,10 +116,7 @@ def check_sonic_runtime(
         return SonicRuntimeInfo(
             is_supported=False,
             code="unsupported_cuda_version",
-            message=(
-                "SonicMoE requires CUDA 12.9+ "
-                f"(got torch.version.cuda={torch.version.cuda!r})."
-            ),
+            message=(f"SonicMoE requires CUDA 12.9+ (got torch.version.cuda={torch.version.cuda!r})."),
         )
 
     missing_modules = [name for name in _REQUIRED_MODULES if _module_missing(name)]

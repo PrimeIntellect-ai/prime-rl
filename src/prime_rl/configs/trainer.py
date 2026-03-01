@@ -258,6 +258,16 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = "grouped_mm"
 
+    use_quack_kernels: Annotated[
+        bool,
+        Field(
+            description=(
+                "Enable optional quack kernels for supported non-MoE hotspots "
+                "(RMSNorm, MLP, CE, LM head math) when runtime checks pass."
+            ),
+        ),
+    ] = False
+
     freeze_moe_router: Annotated[
         bool,
         Field(

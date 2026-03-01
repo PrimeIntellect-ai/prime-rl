@@ -2,7 +2,8 @@ from dataclasses import dataclass
 
 import torch
 from torch import nn
-from transformers.integrations import use_kernel_forward_from_hub
+
+from prime_rl.trainer.models.layers.quack_backend import quack_kernels_enabled, quack_rmsnorm
 
 
 @dataclass
@@ -11,7 +12,6 @@ class RMSNormConfig:
     eps: float = 1e-6
 
 
-@use_kernel_forward_from_hub("RMSNorm")
 class RMSNorm(nn.Module):
     def __init__(self, config: RMSNormConfig) -> None:
         """
@@ -22,6 +22,15 @@ class RMSNorm(nn.Module):
         self.variance_epsilon = config.eps
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if quack_kernels_enabled():
+            shape = hidden_states.shape
+            hidden_states_2d = hidden_states.reshape(-1, shape[-1])
+            return quack_rmsnorm(
+                hidden_states_2d,
+                self.weight,
+                eps=self.variance_epsilon,
+            ).reshape(shape)
+
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)

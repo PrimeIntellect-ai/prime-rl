@@ -13,6 +13,11 @@ import torch.nn.functional as F
 from torch import nn
 from torchtitan.distributed.expert_parallel import expert_parallel
 
+from prime_rl.trainer.models.layers.quack_backend import (
+    quack_gated_linear_func,
+    quack_kernels_enabled,
+    quack_linear_gated_func,
+)
 from prime_rl.trainer.models.layers.sonic_backend import (
     SonicBindings,
     SonicRuntimeInfo,
@@ -63,6 +68,9 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        quack_out = _run_quack_gated_feedforward(x, self.w1.weight, self.w2.weight, self.w3.weight)
+        if quack_out is not None:
+            return quack_out
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
     def init_weights(self, init_std: float = 0.02):
@@ -83,13 +91,39 @@ class BCFeedForward(nn.Module):
         self.w3 = nn.Parameter(torch.empty(hidden_dim, dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # return torch.matmul(self.w2, F.silu(torch.matmul(self.w1, x.T)) * torch.matmul(self.w3, x.T))
+        quack_out = _run_quack_gated_feedforward(x, self.w1, self.w2, self.w3)
+        if quack_out is not None:
+            return quack_out
         return torch.matmul(F.silu(torch.matmul(x, self.w1.T)) * torch.matmul(x, self.w3.T), self.w2.T)
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
         nn.init.trunc_normal_(self.w3, mean=0.0, std=init_std)
+
+
+def _run_quack_gated_feedforward(
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+) -> torch.Tensor | None:
+    if not quack_kernels_enabled():
+        return None
+
+    gate_up_weight = torch.stack((w1, w3), dim=1).reshape(2 * w1.shape[0], w1.shape[1])
+    preact, postact = quack_linear_gated_func(
+        x,
+        gate_up_weight,
+        activation="swiglu",
+        store_preact=torch.is_grad_enabled(),
+    )
+    return quack_gated_linear_func(
+        preact,
+        w2,
+        postact,
+        activation="swiglu",
+    )
 
 
 # TODO: keeping this for-loop implementation for comparison

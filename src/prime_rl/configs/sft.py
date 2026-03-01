@@ -226,7 +226,13 @@ class SFTConfig(BaseSettings):
     ] = 600
 
     loss_impl: Annotated[
-        Literal["liger", "torch"], Field(description="Implementation of the cross entropy loss function to use.")
+        Literal["liger", "torch", "quack_fused"],
+        Field(
+            description=(
+                "Implementation of the cross entropy loss function to use. "
+                "'quack_fused' uses quack chunked linear+cross-entropy to avoid full logit materialization."
+            )
+        ),
     ] = "torch"
 
     heartbeat: Annotated[
