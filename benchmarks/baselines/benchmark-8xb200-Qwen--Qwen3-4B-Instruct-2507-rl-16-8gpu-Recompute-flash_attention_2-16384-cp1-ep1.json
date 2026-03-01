@@ -7,40 +7,42 @@
     "seq_len": 16384,
     "ac": "Recompute",
     "attention": "flash_attention_2",
-    "output": "/tmp/benchmark_result.json",
+    "output": "benchmarks/fa4_comparison_results/benchmark-8xb200-Qwen--Qwen3-4B-Instruct-2507-rl-16-8gpu-Recompute-flash_attention_2-16384-cp1-ep1/benchmark_result.json",
     "dry_run": false,
     "timeout": 1500,
     "micro_batches": 2,
-    "docker_image": "primeintellect/prime-rl-jackmin@sha256:5a146f7dfdcdf6b0e90fd3f1ed0874d22a3a0641378dc8dad46ce213d02fa2e6",
+    "ep": 1,
+    "cp": 1,
+    "docker_image": null,
     "device_name": "NVIDIA B200",
-    "commit_sha": "unknown",
-    "timestamp": "2026-01-15T22:10:45.595226+00:00",
+    "commit_sha": "bd087277",
+    "timestamp": "2026-02-06T20:17:36.572818+00:00",
     "success": true,
     "error_reason": null,
-    "time_taken": 106.1217524460003
+    "time_taken": 84.25718453799982
   },
   "metrics": {
     "mfu": {
-      "mean": 8.808826116109998,
-      "std": 0.004229053216833396,
-      "min": 8.80401218210114,
-      "max": 8.811943308874014
+      "mean": 9.789609298367118,
+      "std": 0.002130234713217652,
+      "min": 9.787355245158038,
+      "max": 9.79158916319276
     },
     "throughput": {
-      "mean": 46083.769889207404,
-      "std": 22.1244820507199,
-      "min": 46058.58557699578,
-      "max": 46100.0776233077
+      "mean": 51214.781205196625,
+      "std": 11.144418681895658,
+      "min": 51202.98902448649,
+      "max": 51225.13895705073
     },
     "step_time": {
-      "mean": 5.686930948999968,
-      "std": 0.005284924202613482,
-      "min": 5.680966203000025,
-      "max": 5.691029913999955
+      "mean": 5.11819438266654,
+      "std": 0.004382178368867937,
+      "min": 5.115601149000213,
+      "max": 5.123253955999644
     },
     "peak_memory": {
-      "gib": 10.216796875,
-      "pct": 5.728134010521928
+      "gib": 11.068359375,
+      "pct": 6.205935034526468
     }
   }
 }

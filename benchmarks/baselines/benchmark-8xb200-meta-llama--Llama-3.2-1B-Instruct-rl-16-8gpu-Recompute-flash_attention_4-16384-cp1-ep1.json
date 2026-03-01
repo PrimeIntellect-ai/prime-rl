@@ -1,0 +1,49 @@
+{
+  "config": {
+    "type": "rl",
+    "num_gpus": 8,
+    "model_name": "meta-llama/Llama-3.2-1B-Instruct",
+    "lora_rank": 16,
+    "seq_len": 16384,
+    "ac": "Recompute",
+    "attention": "flash_attention_4",
+    "impl": "custom",
+    "output": "benchmarks/fa4_comparison_results/benchmark-8xb200-meta-llama--Llama-3.2-1B-Instruct-rl-16-8gpu-Recompute-flash_attention_4-16384-cp1-ep1.json",
+    "dry_run": false,
+    "timeout": 1500,
+    "micro_batches": 2,
+    "ep": 1,
+    "cp": 1,
+    "docker_image": null,
+    "device_name": "NVIDIA B200",
+    "commit_sha": "30bf494f",
+    "timestamp": "2026-02-07T02:25:54.383341+00:00",
+    "success": true,
+    "error_reason": null,
+    "time_taken": 63.57433102699724
+  },
+  "metrics": {
+    "mfu": {
+      "mean": 9.894281806556904,
+      "std": 0.012614726385869333,
+      "min": 9.883677413452471,
+      "max": 9.908232208527318
+    },
+    "throughput": {
+      "mean": 155501.58286800745,
+      "std": 198.25692847655142,
+      "min": 155334.9209570842,
+      "max": 155720.831685704
+    },
+    "step_time": {
+      "mean": 1.6827887619995938,
+      "std": 0.0052277736941694596,
+      "min": 1.6769270299992058,
+      "max": 1.686968504000106
+    },
+    "peak_memory": {
+      "gib": 5.5859375,
+      "pct": 3.131987682856132
+    }
+  }
+}
