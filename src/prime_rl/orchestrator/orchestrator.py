@@ -466,6 +466,7 @@ async def orchestrate(config: OrchestratorConfig):
         precomputed = [r.get("advantage") for r in train_rollouts]
         if all(a is not None for a in precomputed):
             advantages = precomputed
+            logger.info(f"Using pre-computed per-actor advantages ({num_rollouts} rollouts)")
         else:
             completion_lens = [get_completion_len(r) for r in train_rollouts]
             advantages = compute_advantages(
