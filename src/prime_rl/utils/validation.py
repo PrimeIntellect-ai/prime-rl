@@ -100,16 +100,12 @@ def validate_shared_max_async_level(
         )
 
 
-def _broadcast_type_family(type_name: str) -> str:
-    """Map broadcast types to their compatibility family.
+FILESYSTEM_BROADCAST_TYPES = ("filesystem", "async_filesystem")
 
-    async_filesystem is a trainer-side optimization that uses the same
-    filesystem protocol as the regular filesystem broadcast, so they
-    are compatible from the orchestrator/inference perspective.
-    """
-    if type_name in ("filesystem", "async_filesystem"):
-        return "filesystem"
-    return type_name
+
+def _broadcast_family(wb_type: str) -> str:
+    """async_filesystem uses the same filesystem protocol, so treat as compatible."""
+    return "filesystem" if wb_type in FILESYSTEM_BROADCAST_TYPES else wb_type
 
 
 def validate_shared_weight_broadcast(
@@ -117,11 +113,11 @@ def validate_shared_weight_broadcast(
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
-    trainer_family = _broadcast_type_family(trainer.weight_broadcast.type)
-    orchestrator_family = _broadcast_type_family(orchestrator.weight_broadcast.type)
+    trainer_family = _broadcast_family(trainer.weight_broadcast.type)
+    orchestrator_family = _broadcast_family(orchestrator.weight_broadcast.type)
 
     if inference:
-        inference_family = _broadcast_type_family(inference.weight_broadcast.type)
+        inference_family = _broadcast_family(inference.weight_broadcast.type)
         if not (trainer_family == orchestrator_family == inference_family):
             raise ValueError(
                 f"Inference weight broadcast type ({inference.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."

@@ -63,7 +63,7 @@ class AsyncFileSystemWeightBroadcast(WeightBroadcast):
             pending.result()
             if wait_start is not None:
                 wait_time = time.perf_counter() - wait_start
-                self.logger.info(f"[BENCH] async: waited {wait_time:.3f}s for previous write to finish")
+                self.logger.debug(f"Waited {wait_time:.3f}s for previous write to finish")
             return wait_time
         finally:
             # Always clear pending, even when result() raises, so subsequent
@@ -95,7 +95,7 @@ class AsyncFileSystemWeightBroadcast(WeightBroadcast):
         if cuda_event is not None:
             cuda_event.synchronize()
             event_sync_time = time.perf_counter() - write_start
-            self.logger.info(f"[BENCH] async: CUDA event sync={event_sync_time:.3f}s (DMA drain)")
+            self.logger.debug(f"CUDA event sync={event_sync_time:.3f}s (DMA drain)")
 
         for idx, state_dict in state_dicts.items():
             try:
@@ -103,7 +103,7 @@ class AsyncFileSystemWeightBroadcast(WeightBroadcast):
                 save_dir = get_step_path(get_broadcast_dir(run_dir), progress_step)
                 save_dir.mkdir(parents=True, exist_ok=True)
 
-                self.logger.debug(f"[async] Saving weights for run {idx} to {save_dir}")
+                self.logger.debug(f"Saving weights for run {idx} to {save_dir}")
                 save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
 
                 if adapter_only and lora_configs is not None and model is not None and idx in lora_configs:
@@ -117,12 +117,12 @@ class AsyncFileSystemWeightBroadcast(WeightBroadcast):
                 if self.multi_run_manager.get_orchestrator_config(self.multi_run_manager.idx_2_id[idx]) is None:
                     shutil.rmtree(run_dir)
             except FileNotFoundError:
-                self.logger.warning(f"[async] Run {idx} directory deleted during broadcast, skipping")
+                self.logger.warning(f"Run {idx} directory deleted during broadcast, skipping")
             except Exception as e:
-                self.logger.error(f"[async] Error broadcasting weights for run {idx}: {e}")
+                self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
 
         self._last_broadcast_time = time.perf_counter() - write_start
-        self.logger.info(f"[BENCH] async background write completed in {self._last_broadcast_time:.3f}s")
+        self.logger.debug(f"Background write completed in {self._last_broadcast_time:.3f}s")
 
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights: gather synchronously, write asynchronously."""
@@ -146,6 +146,10 @@ class AsyncFileSystemWeightBroadcast(WeightBroadcast):
             if self.world.is_master and torch.cuda.is_available():
                 cuda_event = torch.cuda.Event()
                 cuda_event.record()
+                # Weight conversion reads tensor data, so we must drain the
+                # non-blocking DMA first. The background thread still handles
+                # the heavier save_state_dict + disk I/O asynchronously.
+                cuda_event.synchronize()
 
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
@@ -215,8 +219,8 @@ class AsyncFileSystemWeightBroadcast(WeightBroadcast):
                 model if adapter_only else None,
                 cuda_event,
             )
-            self.logger.info(
-                f"[BENCH] async broadcast: blocking={blocking_time:.3f}s "
+            self.logger.debug(
+                f"Broadcast: blocking={blocking_time:.3f}s "
                 f"(pending_wait={pending_wait:.3f}s gather={gather_time:.3f}s) "
                 f"write=background prev_write={self._last_broadcast_time:.3f}s"
             )

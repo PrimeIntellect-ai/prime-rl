@@ -218,14 +218,15 @@ def train(config: TrainerConfig):
         # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
         # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
         last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
-        if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
+        is_filesystem_broadcast = config.weight_broadcast.type in ("filesystem", "async_filesystem")
+        if progress.step > 0 and (not last_async_level_steps or is_filesystem_broadcast):
             broadcast_weights_start_time = time.perf_counter()
             weight_broadcast.broadcast_weights(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
             # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
             ckpt_interval = config.ckpt and config.ckpt.interval
-            interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
-            if config.weight_broadcast.type == "filesystem":
+            interval_to_keep = ckpt_interval if is_filesystem_broadcast else None
+            if is_filesystem_broadcast:
                 weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
         else:
             broadcast_weights_time = 0

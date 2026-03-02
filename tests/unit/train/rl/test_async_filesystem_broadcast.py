@@ -11,7 +11,7 @@ from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig,
     NCCLWeightBroadcastConfig,
 )
-from prime_rl.utils.validation import _broadcast_type_family
+from prime_rl.utils.validation import FILESYSTEM_BROADCAST_TYPES
 
 
 def test_async_filesystem_config_defaults():
@@ -45,10 +45,10 @@ def test_config_discriminator_dispatch():
     assert isinstance(nccl, NCCLWeightBroadcastConfig)
 
 
-def test_broadcast_type_family():
-    assert _broadcast_type_family("filesystem") == "filesystem"
-    assert _broadcast_type_family("async_filesystem") == "filesystem"
-    assert _broadcast_type_family("nccl") == "nccl"
+def test_filesystem_broadcast_types():
+    assert "filesystem" in FILESYSTEM_BROADCAST_TYPES
+    assert "async_filesystem" in FILESYSTEM_BROADCAST_TYPES
+    assert "nccl" not in FILESYSTEM_BROADCAST_TYPES
 
 
 def test_setup_weight_broadcast_dispatches_async():
