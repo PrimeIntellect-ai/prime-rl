@@ -41,7 +41,7 @@ from prime_rl.trainer.utils import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pydantic_config import parse_argv
+from prime_rl.utils.config import cli
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
@@ -445,7 +445,7 @@ def train(config: SFTConfig):
 
 
 def main():
-    train(parse_argv(SFTConfig))
+    train(cli(SFTConfig))
 
 
 if __name__ == "__main__":

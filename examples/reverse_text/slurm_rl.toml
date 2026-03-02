@@ -1,5 +1,4 @@
-toml_files = ["rl.toml"]
-
+# Usage: uv run rl @ examples/reverse_text/rl.toml @ examples/reverse_text/slurm_rl.toml
 output_dir = "outputs/reverse-text-rl"
 
 [slurm]

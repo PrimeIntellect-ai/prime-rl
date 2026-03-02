@@ -55,7 +55,7 @@ from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pydantic_config import parse_argv
+from prime_rl.utils.config import cli
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
@@ -633,7 +633,7 @@ def train(config: TrainerConfig):
 def main():
     """Main entry-point for RL trainer. Run using `uv run trainer`"""
 
-    train(parse_argv(TrainerConfig))
+    train(cli(TrainerConfig))
 
 
 if __name__ == "__main__":

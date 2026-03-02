@@ -5,10 +5,10 @@ from pydantic import Field
 
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.utils.pydantic_config import BaseSettings
+from prime_rl.utils.config import BaseConfig
 
 
-class EnvServerConfig(BaseSettings):
+class EnvServerConfig(BaseConfig):
     """Configures an environment server."""
 
     env: EnvConfig = EnvConfig()

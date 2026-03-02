@@ -19,7 +19,7 @@ from prime_rl.configs.trainer import (
     SchedulerConfig,
     TokenizerConfig,
 )
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.utils.config import BaseConfig
 
 
 class BaseDataConfig(BaseModel):
@@ -151,7 +151,7 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class SFTConfig(BaseSettings):
+class SFTConfig(BaseConfig):
     """Configures the SFT trainer"""
 
     # The model configuration
