@@ -157,6 +157,8 @@ def test_wait_for_pending_reraises_exception():
         with pytest.raises(RuntimeError, match="disk full"):
             broadcast._wait_for_pending()
 
+        assert broadcast._pending is None
+
         executor.shutdown(wait=True)
         broadcast.shutdown()
 

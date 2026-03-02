@@ -91,3 +91,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`dry_run`**: Added to `RLConfig` and `SFTConfig` (default: `False`). When set, validates the config, writes resolved subconfigs to `output_dir/configs/`, and exits without starting any processes. Works the same for both local and SLURM runs (2026-02-26)
 - **Config output location**: Resolved subconfigs are now always written to `output_dir/configs/` instead of `.pydantic_config/<uuid>/`. This applies to both local and SLURM entrypoints, and for both single-node and multi-node deployments (2026-02-26)
 - **SFT config filename**: The resolved SFT trainer config is now written as `sft.toml` instead of `trainer.toml` (2026-02-26)
+- **`trainer.weight_broadcast.type` / `weight_broadcast.type`**: Added `async_filesystem` as a supported broadcast type. This enables async trainer-side filesystem broadcast while keeping orchestrator/inference on the filesystem protocol (2026-03-02)

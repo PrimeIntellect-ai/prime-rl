@@ -49,17 +49,26 @@ class AsyncFileSystemWeightBroadcast(WeightBroadcast):
 
     def _wait_for_pending(self) -> float:
         """Block until the previous background write completes. Returns wait time in seconds."""
+        pending = self._pending
+        if pending is None:
+            return 0.0
+
         wait_time = 0.0
-        if self._pending is not None and not self._pending.done():
+        wait_start = None
+        if not pending.done():
             wait_start = time.perf_counter()
-            self._pending.result()
-            wait_time = time.perf_counter() - wait_start
-            self.logger.info(f"[BENCH] async: waited {wait_time:.3f}s for previous write to finish")
-        if self._pending is not None and self._pending.done():
-            # Re-raise any exception from the background thread
-            self._pending.result()
-        self._pending = None
-        return wait_time
+
+        try:
+            # Re-raise any exception from the background thread.
+            pending.result()
+            if wait_start is not None:
+                wait_time = time.perf_counter() - wait_start
+                self.logger.info(f"[BENCH] async: waited {wait_time:.3f}s for previous write to finish")
+            return wait_time
+        finally:
+            # Always clear pending, even when result() raises, so subsequent
+            # broadcasts/shutdown calls don't get stuck replaying one failure.
+            self._pending = None
 
     def _write_and_notify(
         self,
