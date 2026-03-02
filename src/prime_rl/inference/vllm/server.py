@@ -97,18 +97,27 @@ MODEL_TOOL_CALL_PARSER: dict[str, str] = {
     "Qwen/Qwen3-Coder-Next": "hermes",
     "Qwen/Qwen3-Coder-Next-Base": "hermes",
     "Qwen/Qwen3-Coder-Next-FP8": "hermes",
-    # Qwen3-VL
-    "Qwen/Qwen3-VL-4B-Instruct": "hermes",
     # Qwen3.5
     "Qwen/Qwen3.5-397B-A17B": "hermes",
     "Qwen/Qwen3.5-397B-A17B-FP8": "hermes",
+}
+
+# Prefix-based matching for model families where all variants use the same parser.
+MODEL_TOOL_CALL_PARSER_PREFIX: dict[str, str] = {
+    "Qwen/Qwen3-VL": "hermes",
 }
 
 
 def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> str | None:
     """Resolve tool_call_parser from model name if set to "auto"."""
     if tool_call_parser == "auto":
-        return MODEL_TOOL_CALL_PARSER.get(model_name)
+        parser = MODEL_TOOL_CALL_PARSER.get(model_name)
+        if parser:
+            return parser
+        for prefix, p in MODEL_TOOL_CALL_PARSER_PREFIX.items():
+            if model_name.startswith(prefix):
+                return p
+        return None
     return tool_call_parser
 
 
