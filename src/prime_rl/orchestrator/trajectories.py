@@ -2,6 +2,7 @@ import base64
 import time
 from io import BytesIO
 
+import torch
 import verifiers as vf
 from PIL import Image
 
@@ -72,9 +73,9 @@ def interleave_rollout(
     # this field should be guaranteed because we set temperature in get_sampling_args
     temperature = output["sampling_args"]["temperature"]
 
-    def get_images(step_idx: int) -> tuple[list | None, list | None]:
+    def get_images(step_idx: int) -> tuple[bytes | None, list[int] | None, list[list[int]] | None]:
         if vlm_cache is None:
-            return None, None
+            return None, None, None
         key = output["example_id"] if cache_key is None else cache_key
         return vlm_cache.get_for_step(key, step_idx)
 
@@ -87,7 +88,7 @@ def interleave_rollout(
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
         completion_ids = list(tokens["completion_ids"])
-        pixel_values, image_grid_thw = get_images(step_idx)
+        pixel_values, pixel_values_shape, image_grid_thw = get_images(step_idx)
 
         routed_experts = _align_routed_experts(
             tokens.get("routed_experts"),
@@ -104,6 +105,7 @@ def interleave_rollout(
             teacher_logprobs=None,
             advantage=None,
             pixel_values=pixel_values,
+            pixel_values_shape=pixel_values_shape,
             image_grid_thw=image_grid_thw,
             routed_experts=routed_experts,
         )
@@ -131,8 +133,9 @@ def interleave_rollout(
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
         # Update cumulative images to include any new images from this step
-        pixel_values, image_grid_thw = get_images(step_idx)
+        pixel_values, pixel_values_shape, image_grid_thw = get_images(step_idx)
         sample.pixel_values = pixel_values
+        sample.pixel_values_shape = pixel_values_shape
         sample.image_grid_thw = image_grid_thw
 
         if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
@@ -256,35 +259,44 @@ def _extract_images_from_examples(
     return all_images, step_image_indices_per_example
 
 
+_IMAGE_CHUNK_SIZE = 8
+
+
 def _preprocess_images_batched(
     images: list[Image.Image],
     step_image_indices_per_example: dict[int, list[list[int]]],
     processor,
-) -> dict[int, list[tuple[list | None, list | None]]]:
+) -> dict[int, list[tuple[bytes | None, list[int] | None, list[list[int]] | None]]]:
     """
-    Preprocess all images in a single batched call, then distribute results per step.
+    Preprocess all images in chunked batches, then distribute results per step.
 
-    Args:
-        images: Deduplicated flat list of all PIL images
-        step_image_indices_per_example: Dict mapping cache_key to per-step lists of
-            indices into images
-        processor: HuggingFace processor with image_processor attribute
+    Images are processed in chunks to avoid OOM on large batches. Pixel values are
+    stored as raw float32 bytes for efficient serialization via msgspec.
 
     Returns:
-        Dict mapping cache_key to list of (pixel_values, image_grid_thw) per step.
+        Dict mapping cache_key to list of (pixel_values_bytes, pixel_values_shape, image_grid_thw) per step.
     """
     if not images or processor is None:
         return {
-            eid: [(None, None)] * max(len(step_indices), 1)
+            eid: [(None, None, None)] * max(len(step_indices), 1)
             for eid, step_indices in step_image_indices_per_example.items()
         }
 
-    image_sizes = [(img.width, img.height) for img in images]
-    processed = processor.image_processor(images=images, return_tensors="pt")
-    all_pixel_values = processed["pixel_values"]
-    all_grid_thw = processed["image_grid_thw"]
-
     logger = get_logger()
+    image_sizes = [(img.width, img.height) for img in images]
+
+    # Process images in chunks to avoid OOM
+    all_pixel_values_list = []
+    all_grid_thw_list = []
+    for i in range(0, len(images), _IMAGE_CHUNK_SIZE):
+        chunk = images[i : i + _IMAGE_CHUNK_SIZE]
+        processed = processor.image_processor(images=chunk, return_tensors="pt")
+        all_pixel_values_list.append(processed["pixel_values"])
+        all_grid_thw_list.append(processed["image_grid_thw"])
+
+    all_pixel_values = torch.cat(all_pixel_values_list, dim=0)
+    all_grid_thw = torch.cat(all_grid_thw_list, dim=0)
+
     logger.debug(
         f"VLM image processing: {len(images)} images, sizes={image_sizes}, "
         f"pixel_values={all_pixel_values.shape}, grid_thw={all_grid_thw.tolist()}"
@@ -298,17 +310,17 @@ def _preprocess_images_batched(
     result = {}
     for eid, step_indices_list in step_image_indices_per_example.items():
         if not step_indices_list:
-            result[eid] = [(None, None)]
+            result[eid] = [(None, None, None)]
             continue
 
         per_step = []
         for indices in step_indices_list:
             if not indices:
-                per_step.append((None, None))
+                per_step.append((None, None, None))
             else:
                 grids = all_grid_thw[indices]
-                patches = sum([all_pixel_values[patch_starts[i] : patch_starts[i + 1]].tolist() for i in indices], [])
-                per_step.append((patches, grids.tolist()))
+                patches = torch.cat([all_pixel_values[patch_starts[i] : patch_starts[i + 1]] for i in indices], dim=0)
+                per_step.append((patches.numpy().tobytes(), list(patches.shape), grids.tolist()))
 
         result[eid] = per_step
 
@@ -320,7 +332,7 @@ class VLMImageCache:
 
     def __init__(
         self,
-        cache: dict[int, list[tuple[list | None, list | None]]],
+        cache: dict[int, list[tuple[bytes | None, list[int] | None, list[list[int]] | None]]],
         num_unique_examples: int,
         extract_time: float,
         preprocess_time: float,
@@ -330,18 +342,20 @@ class VLMImageCache:
         self.extract_time = extract_time
         self.preprocess_time = preprocess_time
 
-    def get_for_step(self, cache_key: int, step_idx: int) -> tuple[list | None, list | None]:
+    def get_for_step(
+        self, cache_key: int, step_idx: int
+    ) -> tuple[bytes | None, list[int] | None, list[list[int]] | None]:
         """Get cumulative images up to and including the given step."""
         steps = self.cache.get(cache_key, [])
         if not steps or step_idx >= len(steps):
-            return (None, None)
+            return (None, None, None)
         return steps[step_idx]
 
-    def get_all(self, cache_key: int) -> tuple[list | None, list | None]:
+    def get_all(self, cache_key: int) -> tuple[bytes | None, list[int] | None, list[list[int]] | None]:
         """Get all images for the cache key (last step's cumulative images)."""
         steps = self.cache.get(cache_key, [])
         if not steps:
-            return (None, None)
+            return (None, None, None)
         return steps[-1]
 
 
