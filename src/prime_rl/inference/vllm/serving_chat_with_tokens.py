@@ -206,6 +206,28 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                         priority=request.priority,
                         data_parallel_rank=data_parallel_rank,
                     )
+
+                    # Recalculate max_tokens after process_inputs, which may have
+                    # expanded image placeholder tokens (1 → N per image).
+                    expanded_len = len(engine_request.prompt_token_ids)  # type: ignore[arg-type]
+                    if expanded_len != len(request.tokens):
+                        old_max_tokens = sampling_params.max_tokens
+                        sampling_params.max_tokens = get_max_tokens(
+                            self.max_model_len,
+                            request.max_completion_tokens
+                            if request.max_completion_tokens is not None
+                            else request.max_tokens,
+                            expanded_len,
+                            self.default_sampling_params,
+                        )
+                        logger.info(
+                            "VLM image expansion: prompt %d -> %d tokens, max_tokens %d -> %d",
+                            len(request.tokens),
+                            expanded_len,
+                            old_max_tokens,
+                            sampling_params.max_tokens,
+                        )
+
                     reasoning_ended = None
                     if reasoning_parser:
                         reasoning_ended = reasoning_parser.is_reasoning_end(
