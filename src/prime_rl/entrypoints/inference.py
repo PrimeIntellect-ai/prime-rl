@@ -3,11 +3,11 @@ import sys
 from pathlib import Path
 
 import tomli_w
+from prime_rl.utils.pydantic_config import parse_argv
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import get_config_dir
-from prime_rl.utils.pydantic_config import parse_argv
 
 INFERENCE_TOML = "inference.toml"
 INFERENCE_SBATCH = "inference.sbatch"
