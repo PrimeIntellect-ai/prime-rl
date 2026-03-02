@@ -59,6 +59,31 @@ skip_verification = true  # Skip expensive verification
 
 This runs pure on-policy distillation: the student learns to match the teacher without needing any reward signal.
 
+## SFT Distillation From Teacher Rollouts (Text-Only)
+
+When the teacher endpoint only returns text (no token IDs/logprobs), you can still use the RL orchestrator/trainer stack with an SFT objective:
+
+```toml
+[trainer.loss]
+type = "sft"
+
+[orchestrator]
+use_token_client = false
+
+[orchestrator.rollout_model.client]
+base_url = ["https://your-openai-compatible-endpoint/v1"]
+skip_model_check = true
+
+[orchestrator.rollout_model.model]
+name = "teacher-model-name"
+```
+
+In this mode:
+- Rollouts are generated from `orchestrator.rollout_model`
+- The orchestrator uses the student tokenizer to reconstruct per-step token IDs + masks from messages
+- The RL trainer optimizes masked NLL (`trainer.loss.type = "sft"`)
+- Omit `[inference]` (no local inference server required)
+
 ## Parameters
 
 | Parameter | Default | Description |

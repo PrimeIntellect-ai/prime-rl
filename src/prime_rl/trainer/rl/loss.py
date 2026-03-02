@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
+from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig, SFTLossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -173,6 +173,18 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
+    """SFT-style masked negative log-likelihood over trainable tokens."""
+    trainer_logprobs = inputs.trainer_logprobs
+    loss_mask = inputs.loss_mask
+
+    loss = -(trainer_logprobs[loss_mask]).sum()
+    metrics = {
+        "nll": _safe_mean(-trainer_logprobs, loss_mask),
+    }
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def setup_loss_fn(loss_config: LossConfig) -> LossFn:
     """Setup the loss function based on config."""
     if isinstance(loss_config, CustomLossConfig):
@@ -181,6 +193,13 @@ def setup_loss_fn(loss_config: LossConfig) -> LossFn:
 
         def loss_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
+
+        return loss_fn
+
+    if isinstance(loss_config, SFTLossConfig):
+
+        def loss_fn(inputs: LossInputs) -> LossOutputs:
+            return sft_loss_fn(inputs)
 
         return loss_fn
 
