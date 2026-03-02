@@ -207,8 +207,24 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                         data_parallel_rank=data_parallel_rank,
                     )
 
-                    # Recalculate max_tokens after process_inputs, which may have
-                    # expanded image placeholder tokens (1 → N per image).
+                    # Workaround: vLLM ≤0.16's /tokenize doesn't run the
+                    # multimodal processor, so callers receive collapsed
+                    # image token counts (1 <|image_pad|> per image instead
+                    # of N).  process_inputs() above re-expands them, but
+                    # max_tokens was already computed from the collapsed
+                    # length → prompt + max_tokens > max_model_len → crash.
+                    # Recalculate max_tokens from the true expanded length.
+                    #
+                    # The verifiers TITO client guards against this via
+                    # _has_multimodal_content, but that only checks the
+                    # current turn's messages — if the image was in an
+                    # earlier turn, the guard doesn't trigger and collapsed
+                    # image tokens from the trajectory still reach here.
+                    #
+                    # Remove once we upgrade to a vLLM release where
+                    # /tokenize returns expanded counts (the "Move
+                    # InputPreprocessor into Renderer" refactor, PRs #34510
+                    # / #34598 / #34560).
                     expanded_len = len(engine_request.prompt_token_ids)  # type: ignore[arg-type]
                     if expanded_len != len(request.tokens):
                         old_max_tokens = sampling_params.max_tokens
