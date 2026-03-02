@@ -1,0 +1,44 @@
+output_dir = "/data/mika/opencode-math"
+max_steps = 1000
+
+[slurm]
+job_name = "opencode-math"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+
+[log]
+level = "debug"
+
+[wandb]
+project = "opencode-math"
+name = "opencode-math"
+
+[weight_broadcast]
+type = "nccl"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.ac]
+freq = 1
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 8
+
+[[orchestrator.env]]
+id = "opencode-math"
+
+[inference.parallel]
+tp = 4
+dp = 2
