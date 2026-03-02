@@ -13,7 +13,7 @@ from prime_rl.configs.shared import (
     TransportConfig,
     WandbConfig,
 )
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.utils.config import BaseConfig
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
@@ -646,7 +646,7 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-class TrainerConfig(BaseSettings):
+class TrainerConfig(BaseConfig):
     """Configures the RL trainer"""
 
     # The model configuration

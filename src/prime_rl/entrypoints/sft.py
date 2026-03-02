@@ -9,10 +9,10 @@ from threading import Event, Thread
 import tomli_w
 
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import get_config_dir, get_log_dir, validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
-from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import get_free_port
 
 SFT_TOML = "sft.toml"
@@ -207,7 +207,7 @@ def sft(config: SFTConfig):
 
 
 def main():
-    sft(parse_argv(SFTConfig))
+    sft(cli(SFTConfig))
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from prime_rl.configs.shared import (
     TransportConfig,
     WandbWithExtrasConfig,
 )
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.utils.config import BaseConfig
 
 
 class OptimizerConfig(BaseConfig):
@@ -665,7 +665,7 @@ class TeacherModelConfig(BaseConfig):
     ] = ModelConfig()
 
 
-class OrchestratorConfig(BaseSettings):
+class OrchestratorConfig(BaseConfig):
     """Configures the orchestrator for RL training."""
 
     # The OAI client configuration

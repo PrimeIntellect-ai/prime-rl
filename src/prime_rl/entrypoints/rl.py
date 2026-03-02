@@ -12,10 +12,10 @@ import pynvml
 import tomli_w
 
 from prime_rl.configs.rl import RLConfig
+from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
-from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     get_free_port,
     get_log_dir,
@@ -448,7 +448,7 @@ def rl(config: RLConfig):
 
 
 def main():
-    rl(parse_argv(RLConfig))
+    rl(cli(RLConfig))
 
 
 if __name__ == "__main__":

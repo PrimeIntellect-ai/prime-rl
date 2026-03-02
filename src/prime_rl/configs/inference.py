@@ -3,9 +3,9 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 from prime_rl.utils.utils import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
@@ -94,7 +94,7 @@ class ModelConfig(BaseModelConfig):
     ] = None
 
 
-class WeightBroadcastConfig(BaseSettings):
+class WeightBroadcastConfig(BaseConfig):
     """Configures weight broadcast settings."""
 
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
@@ -144,7 +144,7 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class InferenceConfig(BaseSettings):
+class InferenceConfig(BaseConfig):
     """Configures inference."""
 
     # The server configuration
@@ -264,6 +264,13 @@ class InferenceConfig(BaseSettings):
             description="Whether to enable return routed experts. Passed to vLLM as `--enable-return-routed-experts`",
         ),
     ] = False
+
+    vllm_extra: Annotated[
+        dict[str, Any],
+        Field(
+            description="Extra arguments to pass to vLLM. These are applied as attributes on the vLLM namespace after config translation.",
+        ),
+    ] = {}
 
     # Launcher-only fields
 
