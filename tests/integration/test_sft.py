@@ -1,11 +1,10 @@
-from functools import partial
 from pathlib import Path
 from typing import Callable
 
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.utils import check_number_goes_up_or_down, strip_escape_codes
+from tests.utils import check_loss_goes_down, strip_escape_codes
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
@@ -78,9 +77,6 @@ def sft_resume_process(
     ]
 
     return run_process(cmd, timeout=TIMEOUT)
-
-
-check_loss_goes_down = partial(check_number_goes_up_or_down, go_up=False, pattern=r"Loss:\s*(\d+\.\d{4})")
 
 
 def test_no_error(sft_process: ProcessResult):

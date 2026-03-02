@@ -24,6 +24,92 @@ from vllm.utils.argparse_utils import FlexibleArgumentParser
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.logger import get_logger
 
+MODEL_TOOL_CALL_PARSER: dict[str, str] = {
+    # GLM-4.5
+    "zai-org/GLM-4.5": "glm45",
+    "zai-org/GLM-4.5-FP8": "glm45",
+    "zai-org/GLM-4.5-Base": "glm45",
+    "zai-org/GLM-4.5-Air": "glm45",
+    "zai-org/GLM-4.5-Air-FP8": "glm45",
+    "zai-org/GLM-4.5-Air-Base": "glm45",
+    "zai-org/GLM-4.5V": "glm45",
+    "zai-org/GLM-4.5V-FP8": "glm45",
+    # GLM-4.7
+    "zai-org/GLM-4.7": "glm47",
+    "zai-org/GLM-4.7-FP8": "glm47",
+    "zai-org/GLM-4.7-Flash": "glm47",
+    # MiniMax M2
+    "MiniMaxAI/MiniMax-M2": "minimax_m2",
+    "MiniMaxAI/MiniMax-M2.1": "minimax_m2",
+    "MiniMaxAI/MiniMax-M2.5": "minimax_m2",
+    # INTELLECT-3
+    "PrimeIntellect/INTELLECT-3": "hermes",
+    "PrimeIntellect/INTELLECT-3-FP8": "hermes",
+    "PrimeIntellect/INTELLECT-3.1": "hermes",
+    # Qwen3 dense
+    "Qwen/Qwen3-0.6B": "hermes",
+    "Qwen/Qwen3-0.6B-Base": "hermes",
+    "Qwen/Qwen3-0.6B-FP8": "hermes",
+    "Qwen/Qwen3-1.7B": "hermes",
+    "Qwen/Qwen3-1.7B-Base": "hermes",
+    "Qwen/Qwen3-1.7B-FP8": "hermes",
+    "Qwen/Qwen3-4B": "hermes",
+    "Qwen/Qwen3-4B-Base": "hermes",
+    "Qwen/Qwen3-4B-FP8": "hermes",
+    "Qwen/Qwen3-8B": "hermes",
+    "Qwen/Qwen3-8B-Base": "hermes",
+    "Qwen/Qwen3-8B-FP8": "hermes",
+    "Qwen/Qwen3-14B": "hermes",
+    "Qwen/Qwen3-14B-Base": "hermes",
+    "Qwen/Qwen3-14B-FP8": "hermes",
+    "Qwen/Qwen3-32B": "hermes",
+    "Qwen/Qwen3-32B-FP8": "hermes",
+    # Qwen3 MoE
+    "Qwen/Qwen3-30B-A3B": "hermes",
+    "Qwen/Qwen3-30B-A3B-Base": "hermes",
+    "Qwen/Qwen3-30B-A3B-FP8": "hermes",
+    "Qwen/Qwen3-235B-A22B": "hermes",
+    "Qwen/Qwen3-235B-A22B-FP8": "hermes",
+    # Qwen3 2507
+    "Qwen/Qwen3-4B-Instruct-2507": "hermes",
+    "Qwen/Qwen3-4B-Thinking-2507": "hermes",
+    "Qwen/Qwen3-4B-Instruct-2507-FP8": "hermes",
+    "Qwen/Qwen3-4B-Thinking-2507-FP8": "hermes",
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": "hermes",
+    "Qwen/Qwen3-30B-A3B-Thinking-2507": "hermes",
+    "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8": "hermes",
+    "Qwen/Qwen3-30B-A3B-Thinking-2507-FP8": "hermes",
+    "Qwen/Qwen3-235B-A22B-Instruct-2507": "hermes",
+    "Qwen/Qwen3-235B-A22B-Thinking-2507": "hermes",
+    "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8": "hermes",
+    "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8": "hermes",
+    # Qwen3-Next
+    "Qwen/Qwen3-Next-80B-A3B-Instruct": "hermes",
+    "Qwen/Qwen3-Next-80B-A3B-Thinking": "hermes",
+    "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8": "hermes",
+    "Qwen/Qwen3-Next-80B-A3B-Thinking-FP8": "hermes",
+    # Qwen3-Coder
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct": "hermes",
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "hermes",
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct": "hermes",
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8": "hermes",
+    # Qwen3-Coder-Next
+    "Qwen/Qwen3-Coder-Next": "hermes",
+    "Qwen/Qwen3-Coder-Next-Base": "hermes",
+    "Qwen/Qwen3-Coder-Next-FP8": "hermes",
+    # Qwen3.5
+    "Qwen/Qwen3.5-397B-A17B": "hermes",
+    "Qwen/Qwen3.5-397B-A17B-FP8": "hermes",
+}
+
+
+def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> str | None:
+    """Resolve tool_call_parser from model name if set to "auto"."""
+    if tool_call_parser == "auto":
+        return MODEL_TOOL_CALL_PARSER.get(model_name)
+    return tool_call_parser
+
+
 logger = get_logger()
 from prime_rl.inference.patches import (
     monkey_patch_hermes_tool_parser_thread_safety,
@@ -168,28 +254,26 @@ async def custom_init_app_state(
 
     resolved_chat_template = load_chat_template(args.chat_template)
 
-    state.openai_serving_chat_with_tokens = (
-        OpenAIServingChatWithTokens(
-            engine_client,
-            state.openai_serving_models,
-            args.response_role,
-            request_logger=request_logger,
-            chat_template=resolved_chat_template,
-            chat_template_content_format=args.chat_template_content_format,
-            trust_request_chat_template=args.trust_request_chat_template,
-            return_tokens_as_token_ids=args.return_tokens_as_token_ids,
-            enable_auto_tools=args.enable_auto_tool_choice,
-            exclude_tools_when_tool_choice_none=args.exclude_tools_when_tool_choice_none,
-            tool_parser=args.tool_call_parser,
-            reasoning_parser=args.structured_outputs_config.reasoning_parser,
-            enable_prompt_tokens_details=args.enable_prompt_tokens_details,
-            enable_force_include_usage=args.enable_force_include_usage,
-            enable_log_outputs=args.enable_log_outputs,
-            log_error_stack=args.log_error_stack,
-        )
-        if "generate" in supported_tasks
-        else None
+    serving_chat = OpenAIServingChatWithTokens(
+        engine_client,
+        state.openai_serving_models,
+        args.response_role,
+        request_logger=request_logger,
+        chat_template=resolved_chat_template,
+        chat_template_content_format=args.chat_template_content_format,
+        trust_request_chat_template=args.trust_request_chat_template,
+        return_tokens_as_token_ids=args.return_tokens_as_token_ids,
+        enable_auto_tools=args.enable_auto_tool_choice,
+        exclude_tools_when_tool_choice_none=args.exclude_tools_when_tool_choice_none,
+        tool_parser=args.tool_call_parser,
+        reasoning_parser=args.structured_outputs_config.reasoning_parser,
+        enable_prompt_tokens_details=args.enable_prompt_tokens_details,
+        enable_force_include_usage=args.enable_force_include_usage,
+        enable_log_outputs=args.enable_log_outputs,
+        log_error_stack=args.log_error_stack,
     )
+    state.openai_serving_chat = serving_chat if "generate" in supported_tasks else None
+    state.openai_serving_chat_with_tokens = serving_chat if "generate" in supported_tasks else None
 
 
 def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
@@ -233,14 +317,16 @@ def server(config: InferenceConfig, vllm_args: list[str]):
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.openai.api_server import run_server
 
-    if config.model.tool_call_parser is not None:
-        logger.info(f"Using tool_call_parser='{config.model.tool_call_parser}' for model '{config.model.name}'")
-
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
     assert args is not None
     validate_parsed_serve_args(args)
+
+    args.tool_call_parser = resolve_tool_call_parser(args.model, args.tool_call_parser)
+    args.enable_auto_tool_choice = args.tool_call_parser is not None
+    if args.tool_call_parser is not None:
+        logger.info(f"Using tool_call_parser='{args.tool_call_parser}' for model '{args.model}'")
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
