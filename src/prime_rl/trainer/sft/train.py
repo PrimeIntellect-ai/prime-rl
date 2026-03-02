@@ -16,7 +16,7 @@ from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
-from prime_rl.trainer.runs import Progress
+from prime_rl.trainer.runs import Progress, get_multi_run_manager, setup_multi_run_manager
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -27,6 +27,7 @@ from prime_rl.trainer.model import (
     setup_tokenizer,
     setup_model,
 )
+from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
@@ -80,6 +81,9 @@ def train(config: SFTConfig):
     )
     torch.set_float32_matmul_precision("high")
 
+    if config.model.lora is not None:
+        setup_multi_run_manager(config.output_dir, 1, torch.device("cuda", world.local_rank), config.model.lora)
+
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
 
@@ -115,6 +119,11 @@ def train(config: SFTConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+
+    if config.model.lora is not None:
+        multi_run_manager = get_multi_run_manager()
+        multi_run_manager.reset_run_parameters(0)
+        multi_run_manager.scaling_factors[0] = config.model.lora.alpha / config.model.lora.rank
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -240,6 +249,10 @@ def train(config: SFTConfig):
             assert input_ids.shape == position_ids.shape == target_ids.shape == loss_mask.shape, (
                 f"input_ids.shape: {input_ids.shape}, position_ids.shape: {position_ids.shape}, target_ids.shape: {target_ids.shape}, loss_mask.shape: {loss_mask.shape}"
             )
+
+            if config.model.lora is not None:
+                lora_num_tokens = torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda")
+                set_lora_num_tokens(lora_num_tokens)
 
             if config.log.log_data:
                 logger.debug("Printing samples of the first micro batch")
