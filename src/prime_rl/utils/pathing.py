@@ -10,6 +10,10 @@ def get_log_dir(output_dir: Path) -> Path:
     return output_dir / "logs"
 
 
+def get_config_dir(output_dir: Path) -> Path:
+    return output_dir / "configs"
+
+
 def get_ckpt_dir(output_dir: Path) -> Path:
     return output_dir / "checkpoints"
 

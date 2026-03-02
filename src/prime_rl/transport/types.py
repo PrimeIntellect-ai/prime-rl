@@ -21,6 +21,8 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # image_grid_thw: grid dimensions [num_images, 3] where each entry is [temporal, height, width]
     image_grid_thw: list[list[int]] | None = None
 
+    routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -42,6 +44,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     temperatures: list[float]  # Per-token temperatures used during generation
     teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
+    routed_experts: list[list[list[int]]] | None = None
 
     # Multimodal fields (Qwen3-VL)
     # pixel_values: flattened image patches [num_patches, patch_dim] where patch_dim=1176 for Qwen3-VL

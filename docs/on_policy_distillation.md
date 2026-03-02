@@ -6,10 +6,11 @@ For more details, see [On-Policy Distillation](https://thinkingmachines.ai/blog/
 
 ## Quick Start
 
-Add `teacher_gpu_ids` and set `teacher_tau > 0`:
+Add `num_teacher_gpus` to `[deployment]` and set `teacher_tau > 0`:
 
 ```toml
-teacher_gpu_ids = [2, 3]
+[deployment]
+num_teacher_gpus = 2
 
 [trainer.loss]
 teacher_tau = 0.5
@@ -18,7 +19,8 @@ teacher_tau = 0.5
 This automatically starts a teacher inference server using the same model as inference. To use a different teacher model:
 
 ```toml
-teacher_gpu_ids = [2, 3]
+[deployment]
+num_teacher_gpus = 2
 
 [teacher_inference.model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
@@ -47,7 +49,8 @@ name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 For agentic environments where verification is expensive (code execution, tool use, multi-turn interactions), you can skip verification entirely and use only the teacher signal:
 
 ```toml
-teacher_gpu_ids = [2, 3]
+[deployment]
+num_teacher_gpus = 2
 
 [trainer.loss]
 teacher_tau = 1.0
@@ -63,7 +66,7 @@ This runs pure on-policy distillation: the student learns to match the teacher w
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `teacher_gpu_ids` | `None` | GPUs for teacher server. Auto-starts server when set. |
+| `deployment.num_teacher_gpus` | `None` | Number of GPUs for teacher server. Auto-starts server when set. |
 | `trainer.loss.teacher_tau` | `0.0` | Distillation strength. Set `> 0` to enable. |
 | `trainer.loss.adv_tau` | `1.0` | Weight for RL advantage signal. Set `0` for pure distillation. |
 | `orchestrator.buffer.skip_verification` | `false` | Skip verification. Use with `adv_tau = 0`. |

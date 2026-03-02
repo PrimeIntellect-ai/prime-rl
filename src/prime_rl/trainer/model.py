@@ -172,6 +172,10 @@ def get_model(
         ),
     )
     model_config.use_cache = False
+    for subconfig_key in getattr(model_config, "sub_configs", {}):
+        subconfig = getattr(model_config, subconfig_key, None)
+        if subconfig is not None and hasattr(subconfig, "use_cache"):
+            subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
@@ -716,6 +720,7 @@ def forward(
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
+    routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     # Multimodal fields (Qwen3-VL)
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
     image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
@@ -735,6 +740,9 @@ def forward(
         kwargs["image_grid_thw"] = image_grid_thw
     else:
         kwargs["position_ids"] = position_ids
+
+    if routed_experts is not None:
+        kwargs["routed_experts"] = routed_experts
 
     out = model(**kwargs)
 
