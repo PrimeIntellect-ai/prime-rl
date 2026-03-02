@@ -1,21 +1,27 @@
 import pytest
 
-from prime_rl.trainer.batch import prepare_batch, prepare_sample
+from prime_rl.trainer.batch import _is_multimodal_sample, prepare_batch, prepare_sample
 from prime_rl.transport.types import TrainingSample
 
 
 @pytest.fixture
 def make_training_example():
-    def _make_training_example(temperature: float = 1.0) -> TrainingSample:
+    def _make_training_example(
+        temperature: float = 1.0,
+        pixel_values: list[list[float]] | None = None,
+        image_grid_thw: list[list[int]] | None = None,
+    ) -> TrainingSample:
         return TrainingSample(
             prompt_ids=[1, 2],
             prompt_mask=[False, False],
             completion_ids=[3, 4],
             completion_mask=[True, True],
             completion_logprobs=[-0.1, -0.2],
-            completion_temperatures=[temperature, temperature],  # Per-token temperatures
+            completion_temperatures=[temperature, temperature],
             teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
         )
 
     return _make_training_example
@@ -134,3 +140,102 @@ def test_prepare_sample_none_routed_experts():
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is None
+
+
+# --- Multimodal type-alignment tests ---
+
+DUMMY_PIXEL_VALUES = [[0.1, 0.2, 0.3]]
+DUMMY_GRID_THW = [[1, 2, 2]]
+
+
+def _make_mm_example() -> TrainingSample:
+    return TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
+        advantage=1.0,
+        pixel_values=DUMMY_PIXEL_VALUES,
+        image_grid_thw=DUMMY_GRID_THW,
+    )
+
+
+def _make_text_example() -> TrainingSample:
+    return TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
+        advantage=1.0,
+    )
+
+
+def test_mixed_mm_text_type_aligned_across_workers():
+    """At every micro_step, all GPUs must process the same type (MM or text)."""
+    # 2 MM + 2 text with 2 workers — naive chunking would misalign
+    rollouts = [_make_mm_example(), _make_text_example(), _make_text_example(), _make_mm_example()]
+    batches_per_gpu = prepare_batch(rollouts=rollouts, seq_len=4, num_train_workers=2, idxs=[0] * 4, num_loras=1)
+
+    assert len(batches_per_gpu) == 2
+    # Every GPU must have the same number of micro batches
+    assert len(batches_per_gpu[0]) == len(batches_per_gpu[1])
+
+    for step in range(len(batches_per_gpu[0])):
+        types = [_is_multimodal_sample(batches_per_gpu[gpu][step]) for gpu in range(2)]
+        assert types[0] == types[1], f"Type mismatch at micro_step {step}: {types}"
+
+
+def test_mm_padding_batches_preserve_pixel_values():
+    """Padding batches for the MM group must retain pixel_values so the vision encoder runs."""
+    # 3 MM samples with 2 workers -> needs 1 MM padding batch
+    rollouts = [_make_mm_example() for _ in range(3)]
+    batches_per_gpu = prepare_batch(rollouts=rollouts, seq_len=4, num_train_workers=2, idxs=[0] * 3, num_loras=1)
+
+    flat = [b for gpu_batches in batches_per_gpu for b in gpu_batches]
+    mm_batches = [b for b in flat if _is_multimodal_sample(b)]
+
+    # 3 real + 1 padding = 4 MM batches
+    assert len(mm_batches) == 4
+    # All MM batches (including padding) must have pixel_values
+    for b in mm_batches:
+        assert b.pixel_values is not None
+        assert b.image_grid_thw is not None
+
+    # The padding batch should have zero advantages
+    padding_batches = [b for b in mm_batches if all(a == 0.0 for a in b.advantages)]
+    assert len(padding_batches) == 1
+    assert all(not m for m in padding_batches[0].loss_mask)
+
+
+def test_all_multimodal_batches():
+    """All-multimodal edge case: round-robin distribution works correctly."""
+    rollouts = [_make_mm_example() for _ in range(4)]
+    batches_per_gpu = prepare_batch(rollouts=rollouts, seq_len=4, num_train_workers=2, idxs=[0] * 4, num_loras=1)
+
+    assert len(batches_per_gpu) == 2
+    assert len(batches_per_gpu[0]) == len(batches_per_gpu[1]) == 2
+
+    for step in range(2):
+        for gpu in range(2):
+            assert _is_multimodal_sample(batches_per_gpu[gpu][step])
+
+
+def test_pure_text_only_unchanged(make_training_example):
+    """Pure text-only training is a no-op — same behavior as before."""
+    examples = [make_training_example() for _ in range(5)]
+    batches_per_gpu = prepare_batch(rollouts=examples, seq_len=4, num_train_workers=2, idxs=[0] * 5, num_loras=1)
+
+    assert len(batches_per_gpu) == 2
+    # 5 samples -> 5 micro batches (seq_len=4, each sample is 4 tokens) -> pad to 6 -> 3 each
+    assert len(batches_per_gpu[0]) == 3
+    assert len(batches_per_gpu[1]) == 3
+
+    for gpu_batches in batches_per_gpu:
+        for b in gpu_batches:
+            assert not _is_multimodal_sample(b)
