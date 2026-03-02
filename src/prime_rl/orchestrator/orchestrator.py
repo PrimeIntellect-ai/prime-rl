@@ -466,7 +466,6 @@ async def orchestrate(config: OrchestratorConfig):
         precomputed = [r.get("advantage") for r in train_rollouts]
         if all(a is not None for a in precomputed):
             advantages = precomputed
-            logger.info(f"Using pre-computed per-actor advantages ({num_rollouts} rollouts)")
             nonzero = [a for a in precomputed if a != 0.0]
             print(f"[ADVANTAGE PASSTHROUGH] {len(precomputed)} total, {len(nonzero)} non-zero, sample: {precomputed[:8]}")
         else:
