@@ -115,11 +115,17 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     trainer_probs = torch.exp(trainer_logprobs)
     inference_probs = torch.exp(inference_logprobs)
     probs_diff = trainer_probs - inference_probs
-    dppo_pos_invalid_mask = probs_diff > loss_config.dppo_tv_clip_high
-    dppo_neg_invalid_mask = probs_diff < -loss_config.dppo_tv_clip_low
-    dppo_invalid_mask_low = (advantages > 0) & dppo_pos_invalid_mask
-    dppo_invalid_mask_high = (advantages < 0) & dppo_neg_invalid_mask
-    dppo_invalid_mask = torch.where(advantages > 0, dppo_pos_invalid_mask, dppo_neg_invalid_mask)
+    dppo_invalid_mask_high = probs_diff > loss_config.dppo_tv_clip_high
+    dppo_invalid_mask_low = probs_diff < -loss_config.dppo_tv_clip_low
+    dppo_invalid_mask_low = (advantages > 0) & dppo_invalid_mask_high
+    dppo_invalid_mask_high = (advantages < 0) & dppo_invalid_mask_low
+
+    # The original DPPO-Binary TV loss is conditional on the advantage sign (PPO-style):
+    # torch.where(advantages > 0, dppo_invalid_mask_high, dppo_invalid_mask_low)
+    # However, in Async RL, we do not take multiple steps on the same data, and
+    # so policy updates are not well-predicted by the advantage sign, and so we
+    # mask independently of the advantage sign.
+    dppo_invalid_mask = dppo_invalid_mask_high | dppo_invalid_mask_low
 
     is_masked = dppo_invalid_mask
     is_masked_low = dppo_invalid_mask_low
@@ -134,6 +140,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     if teacher_logprobs is not None:
         teacher_kl = teacher_logprobs - trainer_logprobs
         advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
+    else:
+        teacher_kl = None
 
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
@@ -147,8 +155,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         "is_masked_low": _safe_mean(is_masked_low, loss_mask),
         "is_masked_high": _safe_mean(is_masked_high, loss_mask),
     }
-    if teacher_logprobs is not None:
-        metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)  # type: ignore
+    if teacher_kl is not None:
+        metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
 
     return LossOutputs(loss=loss, metrics=metrics)
 
