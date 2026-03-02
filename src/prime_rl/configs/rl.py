@@ -24,6 +24,9 @@ from prime_rl.configs.shared import (
     WandbWithExtrasConfig,
 )
 from prime_rl.configs.trainer import (
+    AsyncFileSystemWeightBroadcastConfig as TrainerAsyncFileSystemWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
     BenchConfig,
     FakeDataLoaderConfig,
     TrainerConfig,
@@ -110,9 +113,10 @@ class SharedModelConfig(BaseSettings):
 class SharedWeightBroadcastConfig(BaseSettings):
     """Configures shared weight broadcast settings."""
 
-    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
-        "filesystem"
-    )
+    type: Annotated[
+        Literal["nccl", "filesystem", "async_filesystem"],
+        Field(description="The type of weight broadcast to use."),
+    ] = "filesystem"
 
     port: Annotated[int, Field(description="The port to use for NCCL weight broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
@@ -486,11 +490,17 @@ class RLConfig(BaseSettings):
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
                 )
+            elif self.weight_broadcast.type == "async_filesystem":
+                self.trainer.weight_broadcast = TrainerAsyncFileSystemWeightBroadcastConfig()
+                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
             if self.inference is not None:
-                self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+                # Async is trainer-side only; inference/orchestrator always use "filesystem"
+                wb_type = self.weight_broadcast.type
+                inference_type = "filesystem" if wb_type == "async_filesystem" else wb_type
+                self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=inference_type)
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
 

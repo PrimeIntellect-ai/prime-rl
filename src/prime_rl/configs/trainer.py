@@ -630,6 +630,21 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     ] = "safetensors"
 
 
+class AsyncFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    """Configures the async filesystem weight broadcast.
+
+    Same as FileSystemWeightBroadcastConfig but offloads serialization and
+    disk I/O to a background thread so the trainer can proceed immediately
+    after the synchronous FSDP gather.
+    """
+
+    type: Literal["async_filesystem"] = "async_filesystem"
+    save_sharded: Annotated[bool, Field(description="Whether to save the weight checkpoint in sharded format.")] = True
+    save_format: Annotated[
+        Literal["safetensors", "torch"], Field(description="The format to save the weight checkpoint in.")
+    ] = "safetensors"
+
+
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Configures the NCCL broadcast."""
 
@@ -642,7 +657,8 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | AsyncFileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 

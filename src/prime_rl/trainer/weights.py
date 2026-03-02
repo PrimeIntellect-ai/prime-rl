@@ -119,9 +119,15 @@ def save_state_dict(
 
 
 def gather_weights_on_master(
-    model: nn.Module, is_master: bool, dtype: torch.dtype = torch.bfloat16
+    model: nn.Module, is_master: bool, dtype: torch.dtype = torch.bfloat16, non_blocking: bool = False
 ) -> dict[str, Tensor]:
-    """Gather distributed weights on CPU on master rank."""
+    """Gather distributed weights on CPU on master rank.
+
+    Args:
+        non_blocking: When True, GPU->CPU transfers use pinned memory with
+            non_blocking copies. The caller must record a CUDA event after this
+            returns and synchronize it before reading the tensors.
+    """
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
         warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
@@ -129,15 +135,18 @@ def gather_weights_on_master(
         cpu_state = {}
         for key, value in model.state_dict().items():
             if isinstance(value, DTensor):
-                # only gather after the downcast to dtype as it will be faster
                 value = cast(DTensor, value.to(dtype)).full_tensor()
 
             if is_master:
                 key = get_fqns(model, key)
                 assert len(key) == 1
                 key = next(iter(key))
-                # TODO(Sami) Blocking to avoid race condition, should make non-blocking long-term tho
-                cpu_state[key] = value.to("cpu", non_blocking=False)
+                if non_blocking:
+                    pinned = torch.empty(value.shape, dtype=value.dtype, device="cpu", pin_memory=True)
+                    pinned.copy_(value, non_blocking=True)
+                    cpu_state[key] = pinned
+                else:
+                    cpu_state[key] = value.to("cpu", non_blocking=False)
         torch.distributed.barrier()
 
     # Always clean up the state dict for HF compatibility

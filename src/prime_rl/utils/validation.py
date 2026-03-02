@@ -100,19 +100,33 @@ def validate_shared_max_async_level(
         )
 
 
+def _broadcast_type_family(type_name: str) -> str:
+    """Map broadcast types to their compatibility family.
+
+    async_filesystem is a trainer-side optimization that uses the same
+    filesystem protocol as the regular filesystem broadcast, so they
+    are compatible from the orchestrator/inference perspective.
+    """
+    if type_name in ("filesystem", "async_filesystem"):
+        return "filesystem"
+    return type_name
+
+
 def validate_shared_weight_broadcast(
     trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
-    if (
-        inference
-        and trainer.weight_broadcast.type != orchestrator.weight_broadcast.type != inference.weight_broadcast.type
-    ):
-        raise ValueError(
-            f"Inference weight broadcast type ({inference.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
-        )
-    elif trainer.weight_broadcast.type != orchestrator.weight_broadcast.type:
+    trainer_family = _broadcast_type_family(trainer.weight_broadcast.type)
+    orchestrator_family = _broadcast_type_family(orchestrator.weight_broadcast.type)
+
+    if inference:
+        inference_family = _broadcast_type_family(inference.weight_broadcast.type)
+        if not (trainer_family == orchestrator_family == inference_family):
+            raise ValueError(
+                f"Inference weight broadcast type ({inference.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
+            )
+    elif trainer_family != orchestrator_family:
         raise ValueError(
             f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
         )

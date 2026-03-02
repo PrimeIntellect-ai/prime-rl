@@ -16,3 +16,7 @@ class WeightBroadcast(ABC):
     @abstractmethod
     def broadcast_weights(self, model: nn.Module, step: int):
         pass
+
+    def shutdown(self):
+        """Clean up resources. Override in subclasses that use background threads."""
+        pass

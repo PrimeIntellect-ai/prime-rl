@@ -601,6 +601,9 @@ def train(config: TrainerConfig):
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
 
+    # Ensure any in-flight async broadcast completes before writing final checkpoint
+    weight_broadcast.shutdown()
+
     # Write final checkpoint (only for single-run mode; multi-run checkpoints are managed by MultiCheckpointManager)
     if config.max_concurrent_runs == 1 and ckpt_manager is not None:
         logger.info("Writing final checkpoint")
