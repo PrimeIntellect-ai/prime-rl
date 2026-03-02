@@ -275,7 +275,7 @@ class Scheduler:
         stale_group_ids = {
             info.group_id
             for info in self.inflight_requests.values()
-            if info.group_id is not None and info.off_policy_steps > self.max_off_policy_steps
+            if info.group_id is not None and info.off_policy_steps >= self.max_off_policy_steps
         }
         removed = 0
         for gid in stale_group_ids:
