@@ -350,7 +350,7 @@ def monkey_patch_minimax_m2_for_lora():
 def monkey_patch_fused_moe_lora_ep():
     """Enable expert parallelism (EP) for the fused MoE LoRA kernel.
 
-    vLLM's FusedMoEWithLoRA blocks EP with an assertion. Four things need
+    vLLM's FusedMoEWithLoRA blocks EP with an assertion. Five things need
     fixing to make it work:
 
     1. The assertion ``assert not self.base_layer.use_ep`` must be removed.
@@ -371,6 +371,12 @@ def monkey_patch_fused_moe_lora_ep():
        active, ``expert_map[expert_ids]`` then indexes out of bounds.
        Fix: zero-initialize ``expert_ids`` so inactive slots contain 0
        (a valid index into ``expert_map``).
+
+    5. ``create_dummy_lora`` iterates over ``packed_modules_mapping["experts"]``
+       which lists all global experts (e.g. 160×3=480 entries), but
+       ``lora_a_stacked`` on FusedMoEWithLoRA only has entries for local
+       experts (e.g. 10×3=30). Fix: cap the iteration to the actual length
+       of ``lora_a_stacked``.
     """
     import torch
     from vllm.lora.layers.fused_moe import FusedMoE3DWithLoRA, FusedMoEWithLoRA
@@ -429,7 +435,11 @@ def monkey_patch_fused_moe_lora_ep():
     ) -> torch.Tensor:
         if local_expert_indices is None:
             return weight
-        return weight[local_expert_indices]
+        # If weight is already local-expert-sized (e.g. from dummy LoRA),
+        # skip slicing — only slice when weight has global expert count.
+        if weight.shape[0] <= len(local_expert_indices):
+            return weight
+        return weight[local_expert_indices.to(weight.device)]
 
     FusedMoEWithLoRA._get_local_expert_indices = _get_local_expert_indices
     FusedMoEWithLoRA._slice_experts = _slice_experts
@@ -523,3 +533,41 @@ def monkey_patch_fused_moe_lora_ep():
         return None, sorted_ids, expert_ids, num_tokens_post_pad
 
     PunicaWrapperGPU.moe_lora_align_block_size = _patched_moe_lora_align_block_size
+
+    # --- 7. Fix create_dummy_lora for EP ---
+    from vllm.lora.model_manager import LoRAModelManager
+
+    _original_create_dummy_lora = LoRAModelManager.create_dummy_lora
+
+    def _patched_create_dummy_lora(self, lora_id, rank, embedding_modules=None):
+        from vllm.lora.layers import BaseLayerWithLoRA
+
+        # packed_modules_mapping["experts"] lists entries for ALL global
+        # experts (e.g. 160×3=480 for GLM-4.7), but with EP each rank's
+        # FusedMoEWithLoRA only has lora_a_stacked sized for local experts
+        # (e.g. 10×3=30). Temporarily truncate the mapping so the original
+        # create_dummy_lora iterates the correct number of entries.
+        orig_experts_mapping = None
+        for module_name, module in self.model.named_modules():
+            if not isinstance(module, BaseLayerWithLoRA):
+                continue
+            if module.__class__.__name__ != "FusedMoEWithLoRA":
+                continue
+            if not getattr(module.base_layer, "use_ep", False):
+                break
+            local_entries = len(module.lora_a_stacked) // max(module.max_loras, 1)
+            experts_key = module_name.split(".")[-1]
+            full_mapping = self.packed_modules_mapping.get(experts_key, [])
+            if local_entries < len(full_mapping):
+                orig_experts_mapping = (experts_key, full_mapping)
+                self.packed_modules_mapping[experts_key] = full_mapping[:local_entries]
+            break
+
+        result = _original_create_dummy_lora(self, lora_id, rank, embedding_modules)
+
+        if orig_experts_mapping is not None:
+            self.packed_modules_mapping[orig_experts_mapping[0]] = orig_experts_mapping[1]
+
+        return result
+
+    LoRAModelManager.create_dummy_lora = _patched_create_dummy_lora
