@@ -1,0 +1,75 @@
+output_dir = "/home/matej/dev/prime-rl/outputs/test_pp_multinode"
+max_steps = 1
+max_async_level = 1
+dist_timeout_seconds = 600
+max_concurrent_runs = 1
+enable_router_replay = true
+
+[model]
+name = "arcee-ai/Trinity-Nano-Base"
+trust_remote_code = false
+seq_len = 2048
+attn = "flash_attention_2"
+fsdp_cpu_offload = false
+optim_cpu_offload = false
+reshard_after_forward = true
+dp_replicate = 1
+ep = 1
+tp = 1
+cp = 1
+impl = "custom"
+optimization_dtype = "float32"
+reduce_dtype = "float32"
+moe_use_grouped_mm = true
+freeze_moe_router = false
+fused_lm_head_chunk_size = "disabled"
+
+[model.debug]
+random_init = false
+
+[tokenizer]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+
+[data]
+
+[loss]
+type = "default"
+ratio_type = "token"
+token_mask_high = 8.0
+token_mask_low = 0.125
+sequence_clip_high = 10.0
+geo_mask_high = 10.0
+geo_mask_low = 0.1
+sequence_mask_low = 0.0
+sequence_mask_high = 100.0
+adv_tau = 1.0
+teacher_tau = 0.0
+kl_tau = 0.0
+
+[optim]
+lr = 3e-06
+weight_decay = 0.01
+max_norm = 1.0
+type = "adamw"
+betas1 = 0.9
+betas2 = 0.999
+
+[scheduler]
+type = "constant"
+
+[weight_broadcast]
+type = "filesystem"
+save_sharded = true
+save_format = "safetensors"
+
+[rollout_transport]
+type = "filesystem"
+
+[log]
+level = "debug"
+vf_level = "info"
+file = true
+env_worker_logs = false
+log_data = false
+json_logging = false

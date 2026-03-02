@@ -1,0 +1,22 @@
+max_steps = 10
+
+[log]
+level = "debug"
+
+[model]
+name = "zai-org/GLM-5"
+impl = "custom"
+ep = 8
+optim_cpu_offload = true
+
+[model.ac]
+
+[model.ac_offloading]
+
+[optim]
+type = "muon"
+
+
+[wandb]
+project = "glm5-reverse-text"
+name = "glm5-reverse-text-trainer"

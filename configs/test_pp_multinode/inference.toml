@@ -1,0 +1,28 @@
+enable_lora = false
+max_loras = 8
+max_cpu_loras = 100
+gpu_memory_utilization = 0.7
+api_server_count = 1
+data_parallel_rpc_port = 13345
+seed = 0
+enable_expert_parallel = false
+all2all_backend = "allgather_reducescatter"
+enable_eplb = false
+enable_return_routed_experts = true
+
+[server]
+port = 8000
+
+[model]
+name = "arcee-ai/Trinity-Nano-Base"
+trust_remote_code = true
+dtype = "auto"
+max_model_len = 2048
+
+[parallel]
+tp = 8
+dp = 1
+pp = 2
+
+[weight_broadcast]
+type = "filesystem"

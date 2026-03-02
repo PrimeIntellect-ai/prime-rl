@@ -50,6 +50,13 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = "auto"
 
+    quantization: Annotated[
+        str | None,
+        Field(
+            description="Quantization method passed to vLLM as `--quantization` (for example: fp8, awq, gptq, compressed-tensors).",
+        ),
+    ] = None
+
     max_model_len: Annotated[
         int | None,
         Field(
@@ -201,6 +208,13 @@ class InferenceConfig(BaseConfig):
         ),
     ] = 0.9
 
+    calculate_kv_scales: Annotated[
+        bool,
+        Field(
+            description="Whether to dynamically calculate KV scales when using FP8 KV cache. Passed to vLLM as `--calculate-kv-scales`.",
+        ),
+    ] = False
+
     api_server_count: Annotated[
         int,
         Field(
@@ -341,6 +355,13 @@ class InferenceConfig(BaseConfig):
             self.api_server_count = 1  # LoRA requires only one API server
         return self
 
+    @model_validator(mode="after")
+    def validate_optimization_config(self):
+        fp8_quantization = self.model.quantization is not None and "fp8" in self.model.quantization
+        if fp8_quantization and self.model.dtype == "float32":
+            raise ValueError("FP8 quantization requires model.dtype to be auto, float16, or bfloat16.")
+        return self
+
     def to_vllm(self) -> Namespace:
         """Convert InferenceConfig to vLLM-compatible Namespace."""
         namespace = Namespace()
@@ -349,6 +370,7 @@ class InferenceConfig(BaseConfig):
             "server.port": "port",
             "model.name": "model",
             "model.dtype": "dtype",
+            "model.quantization": "quantization",
             "model.max_model_len": "max_model_len",
             "model.enforce_eager": "enforce_eager",
             "model.trust_remote_code": "trust_remote_code",
@@ -380,13 +402,13 @@ class InferenceConfig(BaseConfig):
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
 
-        # Remove reasoning_parser if not set (vLLM doesn't accept None)
-        if namespace.reasoning_parser is None:
-            delattr(namespace, "reasoning_parser")
-
-        # Remove rope_scaling if not set (vLLM doesn't accept None)
-        if hasattr(namespace, "rope_scaling"):
-            if namespace.rope_scaling is None:
-                delattr(namespace, "rope_scaling")
+        optional_fields = [
+            "reasoning_parser",
+            "rope_scaling",
+            "quantization",
+        ]
+        for field_name in optional_fields:
+            if hasattr(namespace, field_name) and getattr(namespace, field_name) is None:
+                delattr(namespace, field_name)
 
         return namespace

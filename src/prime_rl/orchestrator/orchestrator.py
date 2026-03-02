@@ -335,8 +335,16 @@ async def orchestrate(config: OrchestratorConfig):
         )
         lora_name = config.model.lora.name if config.model.lora else None
         await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+        scheduler.checkpoint_ready.set()
     else:
         logger.info("Training from scratch")
+        if config.weight_broadcast.type == "nccl":
+            config_path = config.output_dir / "control" / "orch.toml"
+            if config_path.exists():
+                scheduler.min_stable_mtime = config_path.stat().st_mtime
+        else:
+            scheduler.ckpt_step = 0
+            scheduler.checkpoint_ready.set()
 
     # Iterate over dataset in batches
     max_steps = config.max_steps or int(1e9)
