@@ -97,6 +97,8 @@ MODEL_TOOL_CALL_PARSER: dict[str, str] = {
     "Qwen/Qwen3-Coder-Next": "hermes",
     "Qwen/Qwen3-Coder-Next-Base": "hermes",
     "Qwen/Qwen3-Coder-Next-FP8": "hermes",
+    # Qwen3-VL
+    "Qwen/Qwen3-VL-4B-Instruct": "hermes",
     # Qwen3.5
     "Qwen/Qwen3.5-397B-A17B": "hermes",
     "Qwen/Qwen3.5-397B-A17B-FP8": "hermes",
