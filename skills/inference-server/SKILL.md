@@ -20,6 +20,64 @@ uv run inference --model.name Qwen/Qwen3-0.6B --model.max_model_len 2048 --model
 uv run inference @ path/to/config.toml --server.port 8001 --gpu-memory-utilization 0.5
 ```
 
+## SLURM scheduling
+
+The inference entrypoint supports optional SLURM scheduling, following the same patterns as SFT and RL.
+
+### Single-node SLURM
+
+```toml
+# inference_slurm.toml
+output_dir = "/shared/outputs/my-inference"
+
+[model]
+name = "Qwen/Qwen3-8B"
+
+[parallel]
+tp = 8
+
+[slurm]
+job_name = "my-inference"
+partition = "cluster"
+```
+
+```bash
+uv run inference @ inference_slurm.toml
+```
+
+### Multi-node SLURM (independent vLLM replicas)
+
+Each node runs an independent vLLM instance. No cross-node parallelism — TP and DP must fit within a single node's GPUs.
+
+```toml
+# inference_multinode.toml
+output_dir = "/shared/outputs/my-inference"
+
+[model]
+name = "PrimeIntellect/INTELLECT-3-RL-600"
+
+[parallel]
+tp = 8
+dp = 1
+
+[deployment]
+type = "multi_node"
+num_nodes = 4
+gpus_per_node = 8
+
+[slurm]
+job_name = "my-inference"
+partition = "cluster"
+```
+
+### Dry run
+
+Add `dry_run = true` to generate the sbatch script without submitting:
+
+```bash
+uv run inference @ config.toml --dry-run true
+```
+
 ## Custom endpoints
 
 The server extends vLLM with:
@@ -43,7 +101,9 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Key files
 
-- `src/prime_rl/inference/server.py` — entry point, env var setup
+- `src/prime_rl/entrypoints/inference.py` — entrypoint with local/SLURM routing
+- `src/prime_rl/inference/server.py` — vLLM env setup
 - `src/prime_rl/configs/inference.py` — `InferenceConfig` and all sub-configs
 - `src/prime_rl/inference/vllm/server.py` — FastAPI routes and vLLM monkey-patches
+- `src/prime_rl/templates/inference.sbatch.j2` — SLURM template (handles both single and multi-node)
 - `configs/debug/infer.toml` — minimal debug config
