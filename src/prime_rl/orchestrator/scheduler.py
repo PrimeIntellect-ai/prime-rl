@@ -143,7 +143,7 @@ class Scheduler:
         if self.rate_limiter:
             await self.rate_limiter.acquire()
         example = deepcopy(self.buffer.sample_examples(n=1)[0])
-        example = self._maybe_prepare_dynamic_prompt_example(example)
+        example = self._maybe_prepare_history_replay_example(example)
         client_config = await self._select_least_loaded_client()
         run_group_task = asyncio.create_task(
             run_group(
@@ -158,35 +158,42 @@ class Scheduler:
         )
         self.inflight_group_rollouts[run_group_task] = InflightRolloutInfo(0, client_config)
 
-    def _maybe_prepare_dynamic_prompt_example(self, example: dict) -> dict:
+    def _maybe_prepare_history_replay_example(self, example: dict) -> dict:
         existing_info = example.get("info")
         if not isinstance(existing_info, dict):
             return example
-        if existing_info.get("dynamic_prompt_mode") != "self_verification":
+        history_replay = existing_info.get("history_replay")
+        if not isinstance(history_replay, dict) or not history_replay.get("enabled", False):
             return example
 
-        exclude_tasks_raw = existing_info.get("dynamic_prompt_exclude_tasks")
-        exclude_tasks = {str(task) for task in exclude_tasks_raw} if isinstance(exclude_tasks_raw, list) else set()
-        # Default to excluding the current task to avoid recursive self-verification-on-self-verification.
+        exclude_tasks = set(history_replay.get("exclude_tasks") or [])
+        # Default is non-recursive replay; envs can opt in with history_replay.allow_recursive.
         current_task = example.get("task")
-        if current_task is not None:
-            exclude_tasks.add(str(current_task))
+        if current_task and not history_replay.get("allow_recursive", False):
+            exclude_tasks.add(current_task)
 
-        source_rollout = self.buffer.sample_random_history_rollout(exclude_tasks=exclude_tasks)
+        sample_source_rollout = (
+            self.buffer.sample_random_incorrect_history_rollout
+            if history_replay.get("incorrect_only", False)
+            else self.buffer.sample_random_history_rollout
+        )
+        source_rollout = sample_source_rollout(exclude_tasks=exclude_tasks)
         if source_rollout is None:
             return example
 
+        build_replay_info = getattr(self.env, "build_history_replay_info", None)
+        assert callable(build_replay_info), (
+            "history_replay.enabled requires env.build_history_replay_info(history_replay, source_rollout, example)."
+        )
+        replay_info = build_replay_info(
+            history_replay=history_replay,
+            source_rollout=source_rollout,
+            example=example,
+        )
+
         example["info"] = {
             **existing_info,
-            "self_verification": {
-                "source": {
-                    "task": source_rollout["task"],
-                    "example_id": source_rollout["example_id"],
-                    "reward": source_rollout["reward"],
-                    "prompt": source_rollout.get("prompt"),
-                    "completion": source_rollout.get("completion"),
-                }
-            },
+            "history_replay": replay_info,
         }
         return example
 
