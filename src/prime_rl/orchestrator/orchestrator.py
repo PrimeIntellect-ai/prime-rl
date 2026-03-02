@@ -47,6 +47,7 @@ from prime_rl.orchestrator.vf_utils import (
     intercept_vf_logging,
     setup_env_client,
     spawn_env_server,
+    task_uses_group_scoring,
     wait_for_env_servers,
 )
 from prime_rl.utils.client import (
@@ -171,12 +172,8 @@ async def orchestrate(config: OrchestratorConfig):
     )
     verification_enabled = not config.buffer.skip_verification
 
-    def task_uses_group_scoring(task_name: str) -> bool:
-        rubric = train_env_group.get_env_for_task(task_name).rubric
-        return any(rubric._is_group_func(func) for func in rubric._get_reward_funcs())
-
     train_env_deferred_group_scoring_tasks = (
-        {env_name for env_name in train_env_names if task_uses_group_scoring(env_name)}
+        {env_name for env_name in train_env_names if task_uses_group_scoring(train_env_group, env_name)}
         if verification_enabled
         else set()
     )

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import Counter, defaultdict
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import NamedTuple, cast
 
 import verifiers as vf
@@ -29,6 +30,15 @@ class InflightRolloutInfo(NamedTuple):
     off_policy_steps: int
     client_config: vf.ClientConfig
     group_id: int | None = None
+
+
+@dataclass
+class GroupState:
+    """Tracks the state of a rollout group (one example × N rollouts)."""
+
+    example: dict
+    rollouts_to_schedule: int
+    completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
 
 
 class Scheduler:
@@ -90,9 +100,7 @@ class Scheduler:
 
         # Track in-progress groups while rollouts are generated independently.
         self.next_group_id = 0
-        self.group_examples: dict[int, dict] = {}
-        self.group_rollouts_to_schedule: dict[int, int] = {}
-        self.completed_group_rollouts: dict[int, list[vf.RolloutOutput]] = defaultdict(list)
+        self.groups: dict[int, GroupState] = {}
 
         self.step, self.ckpt_step = 0, 0
         self.checkpoint_ready = asyncio.Event()
@@ -133,9 +141,7 @@ class Scheduler:
         for task in list(self.inflight_requests):
             task.cancel()
         self.inflight_requests.clear()
-        self.group_examples.clear()
-        self.group_rollouts_to_schedule.clear()
-        self.completed_group_rollouts.clear()
+        self.groups.clear()
         self.cancelled_rollouts_count += count
 
     async def _select_least_loaded_client(self) -> vf.ClientConfig:
@@ -158,28 +164,25 @@ class Scheduler:
             task.cancel()
             self.inflight_requests.pop(task, None)
             removed += 1
-        self.group_examples.pop(group_id, None)
-        self.group_rollouts_to_schedule.pop(group_id, None)
-        self.completed_group_rollouts.pop(group_id, None)
+        self.groups.pop(group_id, None)
         return removed
 
     async def schedule_rollout(self, group_id: int):
         """Asynchronously schedules a rollout request."""
         if self.rate_limiter:
             await self.rate_limiter.acquire()
-        remaining = self.group_rollouts_to_schedule.get(group_id)
-        example = self.group_examples.get(group_id)
-        if remaining is None or example is None or remaining <= 0:
+        group = self.groups.get(group_id)
+        if group is None or group.rollouts_to_schedule <= 0:
             return
-        self.group_rollouts_to_schedule[group_id] = remaining - 1
+        group.rollouts_to_schedule -= 1
         client_config = await self._select_least_loaded_client()
-        if group_id not in self.group_examples or group_id not in self.group_rollouts_to_schedule:
+        if group_id not in self.groups:
             return
         run_rollout_task = asyncio.create_task(
             run_rollout(
                 env=self.env,
                 client=client_config,
-                example=example,
+                example=group.example,
                 model_name=self.model_name,
                 sampling_args=self.sampling_args,
                 max_retries=0,  # TODO: make configurable
@@ -189,28 +192,29 @@ class Scheduler:
             off_policy_steps=0, client_config=client_config, group_id=group_id
         )
 
-    def _inflight_rollout_count(self) -> int:
+    @property
+    def inflight_rollout_count(self) -> int:
         return len(self.inflight_requests)
 
-    def _inflight_sample_count(self) -> int:
-        return self._inflight_rollout_count() + sum(self.group_rollouts_to_schedule.values())
+    @property
+    def inflight_sample_count(self) -> int:
+        return self.inflight_rollout_count + sum(g.rollouts_to_schedule for g in self.groups.values())
 
     async def _schedule_next_request(self) -> bool:
-        remaining_capacity = self.max_inflight_rollouts - self._inflight_rollout_count()
+        remaining_capacity = self.max_inflight_rollouts - self.inflight_rollout_count
 
         if remaining_capacity <= 0:
             return False
 
-        for group_id, remaining in self.group_rollouts_to_schedule.items():
-            if remaining > 0:
+        for group_id, group in self.groups.items():
+            if group.rollouts_to_schedule > 0:
                 await self.schedule_rollout(group_id=group_id)
                 return True
 
         example = self.buffer.sample_examples(n=1)[0]
         group_id = self.next_group_id
         self.next_group_id += 1
-        self.group_examples[group_id] = example
-        self.group_rollouts_to_schedule[group_id] = self.rollouts_per_example
+        self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.rollouts_per_example)
         await self.schedule_rollout(group_id=group_id)
         return True
 
@@ -336,14 +340,13 @@ class Scheduler:
                 group_id = rollout_info.group_id
 
                 try:
-                    if group_id not in self.group_examples:
+                    group = self.groups.get(group_id)
+                    if group is None:
                         continue
-                    self.completed_group_rollouts[group_id].append(finished_task.result())
-                    if len(self.completed_group_rollouts[group_id]) < self.rollouts_per_example:
+                    group.completed_rollouts.append(finished_task.result())
+                    if len(group.completed_rollouts) < self.rollouts_per_example:
                         continue
-                    completed_rollouts = self.completed_group_rollouts.pop(group_id)
-                    self.group_examples.pop(group_id, None)
-                    self.group_rollouts_to_schedule.pop(group_id, None)
+                    completed_rollouts = self.groups.pop(group_id).completed_rollouts
                     completed_rollouts = await self._score_group_if_deferred(completed_rollouts)
                 except asyncio.CancelledError:
                     if group_id is not None:
@@ -399,8 +402,8 @@ class Scheduler:
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,
             "batch/async_level": self.async_level,
-            "batch/inflight_rollouts": self._inflight_rollout_count(),
-            "batch/inflight_samples": self._inflight_sample_count(),
+            "batch/inflight_rollouts": self.inflight_rollout_count,
+            "batch/inflight_samples": self.inflight_sample_count,
             "batch/off_policy_level/max": self.max_off_policy_level,
             "batch/off_policy_level/mean": self.mean_off_policy_level,
             "batch/off_policy_level/min": self.min_off_policy_level,
