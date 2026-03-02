@@ -136,7 +136,7 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     type: Literal["multi_node"] = "multi_node"
 
-    num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 1
+    num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 2
 
 
 InferenceDeploymentConfig: TypeAlias = Annotated[
