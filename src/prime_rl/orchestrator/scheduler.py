@@ -277,10 +277,18 @@ class Scheduler:
             for info in self.inflight_requests.values()
             if info.group_id is not None and info.off_policy_steps >= self.max_off_policy_steps
         }
+        tasks_to_increment = [
+            task
+            for task, info in list(self.inflight_requests.items())
+            if info.group_id is None or info.group_id not in stale_group_ids
+        ]
         removed = 0
         for gid in stale_group_ids:
             removed += await self.drop_group(gid)
-        for task, info in list(self.inflight_requests.items()):
+        for task in tasks_to_increment:
+            info = self.inflight_requests.get(task)
+            if info is None:
+                continue
             self.inflight_requests[task] = info._replace(off_policy_steps=info.off_policy_steps + 1)
 
         self.cancelled_rollouts_count += removed
