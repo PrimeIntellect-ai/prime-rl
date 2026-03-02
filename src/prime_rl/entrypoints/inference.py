@@ -3,9 +3,9 @@ import sys
 from pathlib import Path
 
 import tomli_w
-from prime_rl.utils.pydantic_config import parse_argv
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import get_config_dir
 
@@ -99,7 +99,7 @@ def inference_local(config: InferenceConfig):
 
     from prime_rl.inference.vllm.server import server  # pyright: ignore
 
-    server(config, vllm_args=config.get_unknown_args())
+    server(config, vllm_extra=config.vllm_extra)
 
 
 def inference(config: InferenceConfig):
@@ -110,8 +110,7 @@ def inference(config: InferenceConfig):
 
 
 def main():
-    config = parse_argv(InferenceConfig, allow_extras=True)
-    inference(config)
+    inference(cli(InferenceConfig))
 
 
 if __name__ == "__main__":
