@@ -172,6 +172,10 @@ def get_model(
         ),
     )
     model_config.use_cache = False
+    for subconfig_key in getattr(model_config, "sub_configs", {}):
+        subconfig = getattr(model_config, subconfig_key, None)
+        if subconfig is not None and hasattr(subconfig, "use_cache"):
+            subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
