@@ -1,0 +1,73 @@
+env = [
+    { id = "wordle", args = {}, extra_env_kwargs = { seq_len = 2048, score_rollouts = true } },
+]
+filters = [
+    { type = "gibberish", enforce = false, token_id_threshold = 100000, logprob_offset = 2.0 },
+    { type = "repetition", enforce = false, window = 3000, prob_threshold = 0.99 },
+]
+output_dir = "/home/matej/dev/prime-rl/outputs/test_pp_multinode/run_default"
+batch_size = 32
+max_inflight_rollouts = 32
+rollouts_per_example = 4
+seq_len = 2048
+num_train_workers = 8
+max_steps = 1
+max_off_policy_steps = 8
+max_async_level = 1
+strict_async_level = false
+bench = false
+seed = 42
+use_token_client = true
+
+[client]
+timeout = 1200
+base_url = [
+    "http://localhost:8000/v1",
+]
+api_key_var = "VLLM_API_KEY"
+skip_model_check = false
+
+[client.headers]
+
+[model]
+name = "arcee-ai/Trinity-Nano-Base"
+trust_remote_code = false
+
+[optim]
+lr = 0.0001
+
+[sampling]
+temperature = 1.0
+repetition_penalty = 1.0
+max_tokens = 256
+min_tokens = 0
+
+[sampling.extra_body]
+
+[buffer]
+easy_fraction = 0.0
+hard_fraction = 0.0
+online_difficulty_filtering = false
+hash_keys = [
+    "task",
+    "prompt",
+]
+skip_verification = false
+
+[advantage]
+type = "default"
+length_weighted_mean = false
+
+[log]
+level = "debug"
+vf_level = "info"
+file = true
+env_worker_logs = false
+log_data = false
+json_logging = false
+
+[weight_broadcast]
+type = "filesystem"
+
+[rollout_transport]
+type = "filesystem"

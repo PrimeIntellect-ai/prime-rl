@@ -1,0 +1,24 @@
+batch_size = 128
+rollouts_per_example = 16
+seq_len = 8192
+max_steps = 10
+
+[log]
+level = "debug"
+
+[model]
+name = "zai-org/GLM-5"
+trust_remote_code = true
+
+[sampling]
+
+[[env]]
+id = "reverse-text"
+
+[buffer]
+easy_threshold = 1.0
+hard_threshold = 0.0
+
+[wandb]
+project = "glm5-reverse-text"
+name = "glm5-reverse-text"

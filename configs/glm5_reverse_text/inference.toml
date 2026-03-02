@@ -1,0 +1,9 @@
+gpu_memory_utilization = 0.9
+
+[model]
+name = "zai-org/GLM-5"
+trust_remote_code = true
+enforce_eager = true
+
+[parallel]
+tp = 8

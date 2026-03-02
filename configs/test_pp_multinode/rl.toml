@@ -1,0 +1,49 @@
+max_steps = 1
+seq_len = 2048
+output_dir = "/home/matej/dev/prime-rl/outputs/test_pp_multinode"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 2
+gpus_per_node = 8
+
+[slurm]
+job_name = "test-pp-multinode-e2e"
+project_dir = "/home/matej/dev/prime-rl"
+
+[model]
+name = "arcee-ai/Trinity-Nano-Base"
+
+[log]
+level = "debug"
+
+[trainer]
+enable_router_replay = true
+
+[trainer.optim]
+lr = 3e-6
+
+[trainer.model]
+impl = "custom"
+
+[orchestrator]
+batch_size = 32
+rollouts_per_example = 4
+
+[orchestrator.sampling]
+max_tokens = 256
+
+[[orchestrator.env]]
+id = "wordle"
+
+[inference]
+gpu_memory_utilization = 0.7
+
+[inference.model]
+max_model_len = 2048
+trust_remote_code = true
+
+[inference.parallel]
+pp = 2
+tp = 8
