@@ -1516,6 +1516,16 @@ wheels = [
 ]
 
 [[package]]
+name = "math-python"
+version = "0.1.10"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?subdirectory=environments%2Fmath_python&rev=b8f4e4e#b8f4e4e7762dc149e611ee7ed988eca81ab7aed8" }
+dependencies = [
+    { name = "math-verify" },
+    { name = "prime-sandboxes" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "math-verify"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2336,6 +2346,7 @@ dependencies = [
     { name = "liger-kernel" },
     { name = "loguru" },
     { name = "math-env" },
+    { name = "math-python" },
     { name = "numpy" },
     { name = "openai" },
     { name = "prime" },
@@ -2396,6 +2407,7 @@ requires-dist = [
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "math-env", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
+    { name = "math-python", git = "https://github.com/PrimeIntellect-ai/verifiers.git?subdirectory=environments%2Fmath_python&rev=b8f4e4e" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "prime", specifier = ">=0.5.37" },
