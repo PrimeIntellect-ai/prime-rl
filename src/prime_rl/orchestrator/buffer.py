@@ -276,16 +276,13 @@ class Buffer:
             return None
         return random.choice(eligible)
 
-    def sample_random_incorrect_history_rollout(
-        self, exclude_tasks: set[str] | None = None
-    ) -> vf.RolloutOutput | None:
+    def sample_random_incorrect_history_rollout(self, exclude_tasks: set[str] | None = None) -> vf.RolloutOutput | None:
         """Sample one random incorrect historical rollout."""
         exclude_tasks = exclude_tasks or set()
         eligible = [
             rollout
             for rollout in self.rollout_history
-            if rollout["task"] not in exclude_tasks
-            and rollout.get("reward") == 0.0
+            if rollout["task"] not in exclude_tasks and rollout.get("reward") == 0.0
         ]
         if not eligible:
             return None
