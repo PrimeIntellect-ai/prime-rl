@@ -1,14 +1,12 @@
-import pickle
+import json
 import time
 from pathlib import Path
-from typing import Generator, cast
+from typing import Iterator, cast
 
 import torch
 import torch.nn as nn
-from torch import Tensor
 from torch.distributed.tensor import DTensor
-from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-from vllm.distributed.utils import StatelessProcessGroup
+from vllm.distributed.weight_transfer.nccl_engine import NCCLWeightTransferEngine
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
@@ -21,58 +19,16 @@ from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 NCCL_READY_MARKER = "NCCL_READY"
+WEIGHT_METADATA_FILE = "weight_metadata.json"
 
 
-def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
-    """Broadcast an integer to a process group using NCCL communicator."""
-    integer_tensor = torch.tensor([integer], dtype=torch.long).cuda()
-    communicator.broadcast(integer_tensor, src=0)
-
-
-def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclCommunicator) -> None:
-    """Broadcast a state dict to NCCL process group using the PyNcclCommunicator."""
-    # Group tensors by dtype
-    dtype_groups: dict[torch.dtype, list[tuple[str, Tensor]]] = {}
-    for key, value in state_dict.items():
-        assert not isinstance(value, DTensor), (
-            "DTensor is not supported for broadcast, should have been converted to tensor already"
-        )
-        dtype = value.dtype
-        if dtype not in dtype_groups:
-            dtype_groups[dtype] = []
-        dtype_groups[dtype].append((key, value))
-
-    # Build metadata: for each dtype group, store keys and shapes
-    metadata = {}
-    for dtype, items in dtype_groups.items():
-        metadata[dtype] = [(key, value.shape, value.numel()) for key, value in items]
-
-    # Send metadata
-    state = pickle.dumps(metadata)
-    size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
-    communicator.broadcast(size_tensor, src=0)
-    state_tensor = torch.ByteTensor(list(state)).cuda()
-    communicator.broadcast(state_tensor, src=0)
-
-    # Concatenate and broadcast tensors grouped by dtype
-    for dtype, items in dtype_groups.items():
-        # Flatten all tensors and concatenate
-        flat_tensors = [value.flatten() for _, value in items]
-        concatenated = torch.cat(flat_tensors)
-        communicator.broadcast(concatenated, src=0)
-        del concatenated
-        # Clean up individual tensors
-        for _, value in items:
-            del value
-
-
-def filter_state_dict_by_layers(
+def _filter_state_dict_by_layers(
     state_dict: dict[str, torch.Tensor], num_layers: int
-) -> Generator[tuple[int, dict[str, torch.Tensor]], None, None]:
-    """Yield a generator of state dicts for each layer as well as the remaining weights."""
+) -> Iterator[tuple[int, dict[str, torch.Tensor]]]:
+    """Yield state dicts for each layer as well as the remaining non-layer weights."""
     yield 0, {key: value for key, value in state_dict.items() if "model.layers" not in key}
 
-    for i in range(1, num_layers + 1):  # +1 because layer indices start from 1
+    for i in range(1, num_layers + 1):
         yield (
             i,
             {
@@ -88,59 +44,81 @@ class NCCLWeightBroadcastSender:
         self,
         host: str,
         port: int,
-        rank: int,
         world_size: int,
         device: int | str | torch.device,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
+        packed: bool = True,
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = dtype
+        self.packed = packed
+        self.communicator = None
+        self._weight_metadata: dict | None = None
 
         if self.world.is_master:
-            # Trainer is on rank 0 in process group with all inference GPUs
-            pg = StatelessProcessGroup.create(
-                host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
-            )
-            self.communicator = PyNcclCommunicator(pg, device=device)
-            self.logger.debug("NCCL broadcast initialized on master rank")
+            self.communicator = NCCLWeightTransferEngine.trainer_init({
+                "master_address": host,
+                "master_port": port,
+                "world_size": world_size,
+            })
+            self.logger.debug("NCCL weight transfer engine initialized on master rank")
         else:
-            self.logger.debug("NCCL broadcast initialized on non-master rank (no communicator)")
+            self.logger.debug("NCCL weight transfer engine initialized on non-master rank (no communicator)")
+
+    def _hf_weight_iterator(self, model: nn.Module) -> Iterator[tuple[str, torch.Tensor]]:
+        """Yield (name, tensor) pairs from the model's state dict in HF checkpoint format, layer by layer."""
+        state_dict = model.state_dict()
+        num_layers = get_max_layer_num(state_dict)
+
+        for layer_id, layer_dict in _filter_state_dict_by_layers(state_dict, num_layers):
+            for key, value in list(layer_dict.items()):
+                if isinstance(value, DTensor):
+                    value = cast(DTensor, value.to(self.dtype)).full_tensor()
+                layer_dict[key] = value
+
+            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_dict):
+                model.convert_layer_to_hf(layer_dict, layer_id)
+            else:
+                from transformers.core_model_loading import revert_weight_conversion
+
+                layer_dict = revert_weight_conversion(model, layer_dict)
+
+            yield from layer_dict.items()
+
+    def get_weight_metadata(self, model: nn.Module) -> dict:
+        """Get weight metadata (names, dtypes, shapes, packed). Computed once and cached."""
+        if self._weight_metadata is not None:
+            return self._weight_metadata
+
+        names, dtype_names, shapes = [], [], []
+        for name, tensor in self._hf_weight_iterator(model):
+            names.append(name)
+            dtype_names.append(str(tensor.dtype).replace("torch.", ""))
+            shapes.append(list(tensor.shape))
+
+        self._weight_metadata = {
+            "names": names,
+            "dtype_names": dtype_names,
+            "shapes": shapes,
+            "packed": self.packed,
+        }
+        return self._weight_metadata
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
-        """Broadcast the state dict of a model into the inference pool using NCCL."""
-        state_dict = model.state_dict()
-        num_layers = get_max_layer_num(state_dict)
-        num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
-
-        if self.world.is_master:
-            broadcast_integer(num_state_dict_to_send, self.communicator)
-
-        self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
-
-        for layer_id, state_dict in filter_state_dict_by_layers(state_dict, num_layers):
-            for key, value in list(state_dict.items()):
-                if isinstance(value, DTensor):
-                    value = cast(DTensor, value.to(self.dtype)).full_tensor()
-                state_dict[key] = value
-
-            # Convert to HF hub format for this layer if needed
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
-                model.convert_layer_to_hf(state_dict, layer_id)
-            else:
-                # For regular transformers models, revert internal format to original HF hub format
-                from transformers.core_model_loading import revert_weight_conversion
-
-                state_dict = revert_weight_conversion(model, state_dict)
-
-            if self.world.is_master:
-                broadcast_state_dict(state_dict, self.communicator)
+        """Broadcast weights using vLLM's native NCCL weight transfer engine."""
+        if self.world.is_master and self.communicator is not None:
+            NCCLWeightTransferEngine.trainer_send_weights(
+                iterator=self._hf_weight_iterator(model),
+                group=self.communicator,
+                packed=self.packed,
+            )
 
 
 class NCCLWeightBroadcast(WeightBroadcast):
-    """Broadcast weights into the inference engine using NCCL."""
+    """Broadcast weights into the inference engine using vLLM's native NCCL weight transfer."""
 
     def __init__(
         self,
@@ -154,7 +132,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
-            config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout, dtype
+            config.host, config.port, config.inference_world_size + 1, device, config.timeout, dtype, config.packed
         )
 
     @torch.no_grad()
@@ -164,13 +142,13 @@ class NCCLWeightBroadcast(WeightBroadcast):
         start_time = time.perf_counter()
         notified_runs: list[tuple[int, Path]] = []
         if self.world.is_master:
-            notified_runs = self._notify_orchestrator()
-            # Wait for inference workers to signal readiness before starting NCCL broadcast
+            metadata = self.nccl_broadcast_sender.get_weight_metadata(model)
+            notified_runs = self._notify_orchestrator(metadata)
             self._wait_for_nccl_ready(notified_runs)
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
-    def _notify_orchestrator(self) -> list[tuple[int, Path]]:
+    def _notify_orchestrator(self, metadata: dict) -> list[tuple[int, Path]]:
         """Notify the orchestrator to initiate weight broadcast.
 
         Returns:
@@ -188,6 +166,10 @@ class NCCLWeightBroadcast(WeightBroadcast):
                         self.multi_run_manager.progress[idx].step,
                     )
                     save_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Write weight metadata for the orchestrator to read
+                    metadata_file = save_dir / WEIGHT_METADATA_FILE
+                    metadata_file.write_text(json.dumps(metadata))
 
                     stable_file = save_dir / "STABLE"
                     stable_file.touch()

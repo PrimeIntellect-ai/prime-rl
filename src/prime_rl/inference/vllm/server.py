@@ -163,7 +163,13 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    update_info = data.get("update_info")
+    if update_info is not None:
+        # NCCL mode: use vLLM's built-in weight transfer engine
+        await engine_client(request).collective_rpc("update_weights", args=(update_info,))
+    else:
+        # Filesystem mode: use worker extension
+        await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
     # Reset prefix cache to invalidate KV states computed with old weights
     await engine_client(request).reset_prefix_cache()
     return {"status": "ok"}
@@ -336,6 +342,10 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+
+    # Enable vLLM's native weight transfer engine for NCCL mode
+    if config.weight_broadcast.type == "nccl":
+        args.weight_transfer_config = {"backend": "nccl"}
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)
