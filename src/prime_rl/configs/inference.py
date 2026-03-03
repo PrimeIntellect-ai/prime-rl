@@ -208,13 +208,6 @@ class InferenceConfig(BaseConfig):
         ),
     ] = 0.9
 
-    calculate_kv_scales: Annotated[
-        bool,
-        Field(
-            description="Whether to dynamically calculate KV scales when using FP8 KV cache. Passed to vLLM as `--calculate-kv-scales`.",
-        ),
-    ] = False
-
     api_server_count: Annotated[
         int,
         Field(
