@@ -226,6 +226,13 @@ class InferenceConfig(BaseConfig):
         ),
     ] = 13345
 
+    max_num_seqs: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of sequences per iteration. Passed to vLLM as `--max-num-seqs`",
+        ),
+    ] = None
+
     seed: Annotated[
         int,
         Field(
@@ -370,6 +377,7 @@ class InferenceConfig(BaseConfig):
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",
+            "max_num_seqs": "max_num_seqs",
             "seed": "seed",
         }
 
