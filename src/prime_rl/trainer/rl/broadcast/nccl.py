@@ -23,7 +23,6 @@ NCCL_READY_MARKER = "NCCL_READY"
 def _filter_state_dict_by_layers(
     state_dict: dict[str, torch.Tensor], num_layers: int
 ) -> Iterator[tuple[int, dict[str, torch.Tensor]]]:
-    """Yield state dicts for each layer as well as the remaining non-layer weights."""
     yield 0, {key: value for key, value in state_dict.items() if "model.layers" not in key}
 
     for i in range(1, num_layers + 1):
@@ -61,13 +60,9 @@ class NCCLWeightBroadcastSender:
                 "master_port": port,
                 "world_size": world_size,
             })
-            self.logger.debug("NCCL weight transfer engine initialized on master rank")
-        else:
-            self.logger.debug("NCCL weight transfer engine initialized on non-master rank (no communicator)")
 
     def _hf_weight_iterator(self, model: nn.Module) -> Iterator[tuple[str, torch.Tensor]]:
-        """Yield (name, tensor) pairs from the model's state dict in HF checkpoint format, layer by layer.
-        """
+        """Yield (name, tensor) pairs in HF checkpoint format, layer by layer."""
         state_dict = model.state_dict()
         num_layers = get_max_layer_num(state_dict)
 
@@ -88,15 +83,8 @@ class NCCLWeightBroadcastSender:
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
-        """Broadcast weights using vLLM's NCCL weight transfer engine.
-
-        All ranks must iterate _hf_weight_iterator because DTensor.full_tensor()
-        is a collective. Only master sends via NCCL. Weights are streamed layer
-        by layer — the full model is never materialized in memory at once.
-
-        Protocol: metadata JSON header → weight tensors (matching receiver in worker/nccl.py).
-        """
-        # Collect metadata on first call (all ranks iterate for DTensor collectives)
+        """Broadcast weights via NCCL. All ranks iterate for DTensor collectives, only master sends."""
+        # Collect metadata on first call (all ranks must iterate for DTensor collectives)
         if self._weight_metadata is None:
             names, dtype_names, shapes = [], [], []
             for name, tensor in self._hf_weight_iterator(model):
@@ -105,7 +93,6 @@ class NCCLWeightBroadcastSender:
                 shapes.append(list(tensor.shape))
             self._weight_metadata = {"names": names, "dtype_names": dtype_names, "shapes": shapes}
 
-        # Stream weights (all ranks iterate for DTensor collectives, master sends)
         if self.world.is_master and self.communicator is not None:
             from prime_rl.inference.vllm.weight_transfer import PrimeNCCLWeightTransferEngine
 
@@ -120,8 +107,6 @@ class NCCLWeightBroadcastSender:
 
 
 class NCCLWeightBroadcast(WeightBroadcast):
-    """Broadcast weights into the inference engine using vLLM's native NCCL weight transfer."""
-
     def __init__(
         self,
         output_dir: Path,
@@ -139,7 +124,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
-        """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
         notified_runs: list[tuple[int, Path]] = []
@@ -150,11 +134,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
     def _notify_orchestrator(self) -> list[tuple[int, Path]]:
-        """Notify the orchestrator to initiate weight broadcast.
-
-        Returns:
-            List of (run_idx, save_dir) tuples for runs that were notified.
-        """
         notified_runs: list[tuple[int, Path]] = []
         if self.world.is_master:
             for idx in self.multi_run_manager.used_idxs:
@@ -180,7 +159,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
         return notified_runs
 
     def _wait_for_nccl_ready(self, notified_runs: list[tuple[int, Path]]):
-        """Wait for inference workers to signal they are ready to receive NCCL broadcast."""
         for idx, save_dir in notified_runs:
             nccl_ready_file = save_dir / NCCL_READY_MARKER
             self.logger.debug(f"Waiting for NCCL_READY marker at {nccl_ready_file}")

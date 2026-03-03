@@ -15,14 +15,9 @@ logger = init_logger("vllm.inference.vllm.worker_nccl")
 
 
 class NCCLWeightUpdateWorker(Worker):
-    """vLLM worker extension for NCCL weight transfer with in-band metadata.
-
-    Uses the PrimeNCCLWeightTransferEngine (registered as 'nccl_prime') which
-    receives weight metadata via NCCL before the weight tensors.
-    """
+    """vLLM worker extension for NCCL weight transfer via PrimeNCCLWeightTransferEngine."""
 
     def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int, packed: bool = True) -> None:
-        """Initialize the weight transfer engine with correct rank offsets."""
         tp_size = get_tp_group().world_size
         dp_size = get_dp_group().world_size
         workers_per_server = tp_size * dp_size
@@ -40,8 +35,7 @@ class NCCLWeightUpdateWorker(Worker):
         self._packed = packed
 
     def update_weights_from_path(self, weight_dir: str) -> None:
-        """Receive metadata + weights via NCCL and load into the model."""
-        # Empty metadata — PrimeNCCLWeightTransferEngine.receive_weights fills it from NCCL
+        # Metadata placeholder — PrimeNCCLWeightTransferEngine fills it from NCCL
         update_info = self.weight_transfer_engine.parse_update_info({
             "names": [], "dtype_names": [], "shapes": [],
             "packed": self._packed,

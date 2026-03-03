@@ -337,7 +337,6 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
-    # Enable the weight transfer engine for NCCL mode (nccl_prime registered via plugin)
     if config.weight_broadcast.type == "nccl":
         from prime_rl.inference.vllm.weight_transfer import PrimeWeightTransferConfig
 
