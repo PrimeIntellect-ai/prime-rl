@@ -57,10 +57,11 @@ RUN --mount=type=cache,target=/app/.cache/uv \
 
 # On arm64, flash-attn wheels don't exist so we build from source.
 # Only target sm_100 (Blackwell) since arm64 clusters are GB200.
-# ninja-build is installed above for parallel compilation (without it: 2h+, with it: ~5min).
+# Python ninja package is required for parallel CUDA kernel compilation (without it: 2h+).
 # flash-attn-3 uses pip instead of uv due to https://github.com/astral-sh/uv/issues/15264
 RUN if [ "$(uname -m)" = "aarch64" ]; then \
-    export TORCH_CUDA_ARCH_LIST="10.0" MAX_JOBS=4 && \
+    export TORCH_CUDA_ARCH_LIST="10.0" && export MAX_JOBS=4 && export NVCC_THREADS=4 && \
+    uv pip install ninja && \
     uv pip install flash-attn --no-build-isolation && \
     uv pip install pip && \
     .venv/bin/pip install "flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper" --no-build-isolation; \
