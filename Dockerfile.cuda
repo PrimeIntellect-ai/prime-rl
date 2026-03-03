@@ -54,6 +54,13 @@ COPY benchmarks/scripts /app/benchmarks/scripts
 RUN --mount=type=cache,target=/app/.cache/uv \
     uv sync --all-extras --locked --no-dev
 
+# On arm64, flash-attn wheels don't exist so we build from source.
+# Only target sm_90 (Hopper) and sm_100 (Blackwell) to keep compile time reasonable.
+RUN if [ "$(uname -m)" = "aarch64" ]; then \
+    TORCH_CUDA_ARCH_LIST="9.0;10.0" MAX_JOBS=4 \
+    uv pip install flash-attn --no-build-isolation; \
+    fi
+
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y \
