@@ -87,7 +87,7 @@ override-dependencies = [
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
-vllm = { path = "third_party/vllm/dist/vllm-0.16.1rc1.dev185+g8e1fd5baf.d20260303.precompiled-cp312-cp312-linux_x86_64.whl" }
+vllm = { path = "third_party/vllm/dist/vllm-0.16.1rc1.dev185+g8e1fd5baf.precompiled-cp312-cp312-linux_x86_64.whl" }
 math-env = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "b35d0c7" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }

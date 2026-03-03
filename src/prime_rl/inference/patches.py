@@ -9,6 +9,10 @@ def transformers_v5_compat():
     if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
+    from prime_rl.inference.vllm.weight_transfer import register
+
+    register()
+
 
 # Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 def monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode():

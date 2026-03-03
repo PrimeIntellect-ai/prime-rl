@@ -1,4 +1,3 @@
-import json
 import time
 from pathlib import Path
 from typing import Iterator, cast
@@ -6,9 +5,10 @@ from typing import Iterator, cast
 import torch
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
-from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerSendWeightsArgs, NCCLWeightTransferEngine
+from vllm.distributed.weight_transfer.nccl_engine import NCCLWeightTransferEngine
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
+from prime_rl.inference.vllm.weight_transfer import PrimeNCCLTrainerSendWeightsArgs
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
@@ -19,15 +19,6 @@ from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 NCCL_READY_MARKER = "NCCL_READY"
-
-
-def _broadcast_metadata(group, metadata: dict, src: int = 0) -> None:
-    """Broadcast weight metadata as a JSON header via NCCL."""
-    metadata_bytes = json.dumps(metadata).encode("utf-8")
-    size_tensor = torch.tensor([len(metadata_bytes)], dtype=torch.int64, device="cuda")
-    group.broadcast(size_tensor, src=src, stream=torch.cuda.current_stream())
-    metadata_tensor = torch.frombuffer(bytearray(metadata_bytes), dtype=torch.uint8).cuda()
-    group.broadcast(metadata_tensor, src=src, stream=torch.cuda.current_stream())
 
 
 def _filter_state_dict_by_layers(
@@ -117,14 +108,14 @@ class NCCLWeightBroadcastSender:
 
         # Stream weights (all ranks iterate for DTensor collectives, master sends)
         if self.world.is_master and self.communicator is not None:
-            # 1. Broadcast metadata header
-            _broadcast_metadata(self.communicator, self._weight_metadata)
-            # 2. Broadcast weight tensors
-            args = NCCLTrainerSendWeightsArgs(
+            from prime_rl.inference.vllm.weight_transfer import PrimeNCCLWeightTransferEngine
+
+            args = PrimeNCCLTrainerSendWeightsArgs(
                 group=self.communicator,
                 packed=self.packed,
+                metadata=self._weight_metadata,
             )
-            NCCLWeightTransferEngine.trainer_send_weights(
+            PrimeNCCLWeightTransferEngine.trainer_send_weights(
                 iterator=self._hf_weight_iterator(model),
                 trainer_args=args,
             )
