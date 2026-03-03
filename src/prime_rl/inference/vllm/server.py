@@ -337,10 +337,6 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
-    # Enable vLLM's native weight transfer engine for NCCL mode
-    if config.weight_broadcast.type == "nccl":
-        args.weight_transfer_config = {"backend": "nccl"}
-
     if args.headless or args.api_server_count < 1:
         run_headless(args)
     else:

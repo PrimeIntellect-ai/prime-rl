@@ -1,3 +1,4 @@
+import json
 import time
 from pathlib import Path
 from typing import Iterator, cast
@@ -18,6 +19,15 @@ from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 NCCL_READY_MARKER = "NCCL_READY"
+
+
+def _broadcast_metadata(group, metadata: dict, src: int = 0) -> None:
+    """Broadcast weight metadata as a JSON header via NCCL."""
+    metadata_bytes = json.dumps(metadata).encode("utf-8")
+    size_tensor = torch.tensor([len(metadata_bytes)], dtype=torch.int64, device="cuda")
+    group.broadcast(size_tensor, src=src, stream=torch.cuda.current_stream())
+    metadata_tensor = torch.frombuffer(bytearray(metadata_bytes), dtype=torch.uint8).cuda()
+    group.broadcast(metadata_tensor, src=src, stream=torch.cuda.current_stream())
 
 
 def _filter_state_dict_by_layers(
@@ -88,11 +98,13 @@ class NCCLWeightBroadcastSender:
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
-        """Broadcast weights using vLLM's native NCCL weight transfer engine.
+        """Broadcast weights using vLLM's NCCL weight transfer engine.
 
         All ranks must iterate _hf_weight_iterator because DTensor.full_tensor()
         is a collective. Only master sends via NCCL. Weights are streamed layer
         by layer — the full model is never materialized in memory at once.
+
+        Protocol: metadata JSON header → weight tensors (matching receiver in worker/nccl.py).
         """
         # Collect metadata on first call (all ranks iterate for DTensor collectives)
         if self._weight_metadata is None:
@@ -105,10 +117,12 @@ class NCCLWeightBroadcastSender:
 
         # Stream weights (all ranks iterate for DTensor collectives, master sends)
         if self.world.is_master and self.communicator is not None:
+            # 1. Broadcast metadata header
+            _broadcast_metadata(self.communicator, self._weight_metadata)
+            # 2. Broadcast weight tensors
             args = NCCLTrainerSendWeightsArgs(
                 group=self.communicator,
                 packed=self.packed,
-                metadata=self._weight_metadata,
             )
             NCCLWeightTransferEngine.trainer_send_weights(
                 iterator=self._hf_weight_iterator(model),
