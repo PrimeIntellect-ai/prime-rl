@@ -170,7 +170,7 @@ async def orchestrate(config: OrchestratorConfig):
         env_names=train_env_names,
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
-    verification_enabled = not config.buffer.skip_verification
+    verification_enabled = config.verification.enabled
 
     train_env_deferred_group_scoring_tasks = (
         {env_name for env_name in train_env_names if task_uses_group_scoring(train_env_group, env_name)}

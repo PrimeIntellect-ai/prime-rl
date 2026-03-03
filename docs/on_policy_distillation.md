@@ -53,8 +53,8 @@ teacher_gpu_ids = [2, 3]
 teacher_tau = 1.0
 adv_tau = 0.0  # Disable reward-based learning
 
-[orchestrator.buffer]
-skip_verification = true  # Skip expensive verification
+[orchestrator.verification]
+enabled = false  # Skip expensive verification
 ```
 
 This runs pure on-policy distillation: the student learns to match the teacher without needing any reward signal.
@@ -66,7 +66,7 @@ This runs pure on-policy distillation: the student learns to match the teacher w
 | `teacher_gpu_ids` | `None` | GPUs for teacher server. Auto-starts server when set. |
 | `trainer.loss.teacher_tau` | `0.0` | Distillation strength. Set `> 0` to enable. |
 | `trainer.loss.adv_tau` | `1.0` | Weight for RL advantage signal. Set `0` for pure distillation. |
-| `orchestrator.buffer.skip_verification` | `false` | Skip verification. Use with `adv_tau = 0`. |
+| `orchestrator.verification.enabled` | `true` | Enable/disable verification. Set to `false` for pure distillation with `adv_tau = 0`. |
 
 ## Monitoring
 
