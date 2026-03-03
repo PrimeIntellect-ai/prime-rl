@@ -652,10 +652,7 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_dp_rank_count(self):
         """Auto-set orchestrator client dp_rank_count from inference DP size."""
-        if (
-            self.inference is not None
-            and "dp_rank_count" not in self.orchestrator.client.model_fields_set
-        ):
+        if self.inference is not None and "dp_rank_count" not in self.orchestrator.client.model_fields_set:
             self.orchestrator.client.dp_rank_count = self.inference.parallel.dp
         return self
 

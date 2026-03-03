@@ -156,9 +156,7 @@ class Scheduler:
         while not clients:
             await asyncio.sleep(1)
             clients = self.inference_pool.clients
-        inflight_by_client = Counter(
-            info.client_config.client_idx for info in self.inflight_requests.values()
-        )
+        inflight_by_client = Counter(info.client_config.client_idx for info in self.inflight_requests.values())
         return min(clients, key=lambda c: inflight_by_client[c.client_idx])
 
     async def drop_group(self, group_id: int) -> int:
