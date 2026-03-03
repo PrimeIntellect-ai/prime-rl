@@ -58,7 +58,7 @@ else
         if [ -z "$INFER_URLS" ]; then
             INFER_URLS="http://$host:8000/v1"
         else
-            INFER_URLS="$INFER_URLS,http://$host:8000/v1"
+            INFER_URLS="$INFER_URLS http://$host:8000/v1"
         fi
     done
 fi
@@ -130,7 +130,7 @@ else
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
         uv run orchestrator \
             @ $CONFIG_DIR/orchestrator.toml \
-            --weight_broadcast.host $MASTER_ADDR \
+            --weight-broadcast.host $MASTER_ADDR \
             --client.base-url $INFER_URLS \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log &
     fi
