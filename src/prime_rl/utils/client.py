@@ -109,6 +109,7 @@ async def setup_inference_pool(
 
     logger.info(
         f"Initializing static inference pool (base_url={', '.join(client_config.base_url)}, "
+        f"dp_rank_count={client_config.dp_rank_count}, "
         f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
     )
     return StaticInferencePool(
@@ -119,20 +120,28 @@ async def setup_inference_pool(
 
 
 def setup_clients(client_config: ClientConfig, client_type: str = "openai_chat_completions") -> list[vf.ClientConfig]:
-    def setup_client(client_idx: int, base_url: str) -> vf.ClientConfig:
-        return vf.ClientConfig(
-            client_idx=client_idx,
-            client_type=client_type,
-            api_base_url=base_url,
-            api_key_var=client_config.api_key_var,
-            timeout=client_config.timeout,
-            max_connections=8192,
-            max_keepalive_connections=8192,
-            max_retries=10,
-            extra_headers=client_config.headers,
-        )
-
-    return [setup_client(client_idx, base_url) for client_idx, base_url in enumerate(client_config.base_url)]
+    clients = []
+    client_idx = 0
+    for base_url in client_config.base_url:
+        for dp_rank in range(client_config.dp_rank_count):
+            headers = client_config.headers.copy()
+            if client_config.dp_rank_count > 1:
+                headers["X-data-parallel-rank"] = str(dp_rank)
+            clients.append(
+                vf.ClientConfig(
+                    client_idx=client_idx,
+                    client_type=client_type,
+                    api_base_url=base_url,
+                    api_key_var=client_config.api_key_var,
+                    timeout=client_config.timeout,
+                    max_connections=8192,
+                    max_keepalive_connections=8192,
+                    max_retries=10,
+                    extra_headers=headers,
+                )
+            )
+            client_idx += 1
+    return clients
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
