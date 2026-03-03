@@ -535,8 +535,8 @@ class DefaultLossConfig(BaseModel):
 
     type: Literal["default"] = "default"
 
-    dppo_tv_clip_low: Annotated[float, Field(ge=0, description="The low threshold for masking tokens.")] = 0.2
-    dppo_tv_clip_high: Annotated[float, Field(ge=0, description="The high threshold for masking tokens.")] = 0.2
+    ipo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for masking tokens.")] = 0.2
+    ipo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for masking tokens.")] = 0.2
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3

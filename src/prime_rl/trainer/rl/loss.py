@@ -105,7 +105,17 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 
 
 def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
-    """DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879) + Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)"""
+    """
+    We implement IPO (INTELLECT Policy Optimization) loss, which combines:
+    - DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879)
+    - Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)
+
+    Unlike the DPPO-Bin TV mask, we mask independently of the advantage sign.
+    This is, because in Async RL, we do not take multiple steps on the same
+    data, and so policy updates are not well-predicted by the advantage sign.
+    This shift is similar to the shift from GRPO -> CISPO, but with the trust
+    region being approximated by the probability difference instead of ratio.
+    """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
     teacher_logprobs = inputs.teacher_logprobs
@@ -115,19 +125,13 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     trainer_probs = torch.exp(trainer_logprobs)
     inference_probs = torch.exp(inference_logprobs)
     probs_diff = trainer_probs - inference_probs
-    dppo_invalid_mask_high = probs_diff > loss_config.dppo_tv_clip_high
-    dppo_invalid_mask_low = probs_diff < -loss_config.dppo_tv_clip_low
+    ipo_invalid_mask_high = probs_diff > loss_config.ipo_mask_high
+    ipo_invalid_mask_low = probs_diff < -loss_config.ipo_mask_low
+    ipo_invalid_mask = ipo_invalid_mask_high | ipo_invalid_mask_low
 
-    # The original DPPO-Binary TV loss is conditional on the advantage sign (PPO-style):
-    # torch.where(advantages > 0, dppo_invalid_mask_high, dppo_invalid_mask_low)
-    # However, in Async RL, we do not take multiple steps on the same data, and
-    # so policy updates are not well-predicted by the advantage sign, and so we
-    # mask independently of the advantage sign.
-    dppo_invalid_mask = dppo_invalid_mask_high | dppo_invalid_mask_low
-
-    is_masked = dppo_invalid_mask
-    is_masked_low = dppo_invalid_mask_low
-    is_masked_high = dppo_invalid_mask_high
+    is_masked = ipo_invalid_mask
+    is_masked_low = ipo_invalid_mask_low
+    is_masked_high = ipo_invalid_mask_high
     keep_mask = loss_mask & ~is_masked
 
     log_importance_ratio = trainer_logprobs - inference_logprobs
