@@ -921,60 +921,66 @@ def test_extract_images_from_examples_step_with_fewer_images_than_prior_steps():
 def test_vlm_image_cache_get_for_step():
     cache_data = {
         1: [
-            ([[1.0, 2.0]], [[1, 2, 3]]),  # Step 0: 1 image
-            ([[1.0, 2.0], [3.0, 4.0]], [[1, 2, 3], [1, 4, 4]]),  # Step 1: 2 images cumulative
+            (b"step0_bytes", [1, 2], [[1, 2, 3]]),  # Step 0: 1 image
+            (b"step1_bytes", [2, 2], [[1, 2, 3], [1, 4, 4]]),  # Step 1: 2 images cumulative
         ],
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
 
     # Step 0 should have 1 image
-    pv, grid = cache.get_for_step(1, 0)
-    assert pv == [[1.0, 2.0]]
+    pv, shape, grid = cache.get_for_step(1, 0)
+    assert pv == b"step0_bytes"
+    assert shape == [1, 2]
     assert grid == [[1, 2, 3]]
 
     # Step 1 should have 2 images
-    pv, grid = cache.get_for_step(1, 1)
-    assert pv == [[1.0, 2.0], [3.0, 4.0]]
+    pv, shape, grid = cache.get_for_step(1, 1)
+    assert pv == b"step1_bytes"
+    assert shape == [2, 2]
     assert grid == [[1, 2, 3], [1, 4, 4]]
 
 
 def test_vlm_image_cache_get_all():
     cache_data = {
         1: [
-            ([[1.0]], [[1, 2, 3]]),
-            ([[1.0], [2.0]], [[1, 2, 3], [1, 4, 4]]),
+            (b"step0", [1, 1], [[1, 2, 3]]),
+            (b"step1", [2, 1], [[1, 2, 3], [1, 4, 4]]),
         ],
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
 
     # get_all should return the last step's data
-    pv, grid = cache.get_all(1)
-    assert pv == [[1.0], [2.0]]
+    pv, shape, grid = cache.get_all(1)
+    assert pv == b"step1"
+    assert shape == [2, 1]
     assert grid == [[1, 2, 3], [1, 4, 4]]
 
 
 def test_vlm_image_cache_step_out_of_range():
     cache_data = {
         1: [
-            ([[1.0]], [[1, 2, 3]]),
+            (b"pixels", [1, 1], [[1, 2, 3]]),
         ],
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
 
-    pv, grid = cache.get_for_step(1, 2)
+    pv, shape, grid = cache.get_for_step(1, 2)
     assert pv is None
+    assert shape is None
     assert grid is None
 
 
 def test_vlm_image_cache_missing_example():
     cache = VLMImageCache({}, num_unique_examples=0, extract_time=0.0, preprocess_time=0.0)
 
-    pv, grid = cache.get_for_step(999, 0)
+    pv, shape, grid = cache.get_for_step(999, 0)
     assert pv is None
+    assert shape is None
     assert grid is None
 
-    pv, grid = cache.get_all(999)
+    pv, shape, grid = cache.get_all(999)
     assert pv is None
+    assert shape is None
     assert grid is None
 
 
@@ -982,8 +988,8 @@ def test_interleave_rollout_with_vlm_cache():
     """Test that interleave_rollout correctly uses per-step images from VLM cache."""
     cache_data = {
         1: [
-            ([[1.0]], [[1, 2, 3]]),  # Step 0
-            ([[1.0], [2.0]], [[1, 2, 3], [1, 4, 4]]),  # Step 1
+            (b"step0", [1, 1], [[1, 2, 3]]),  # Step 0
+            (b"step1", [2, 1], [[1, 2, 3], [1, 4, 4]]),  # Step 1
         ],
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
@@ -1046,14 +1052,15 @@ def test_interleave_rollout_with_vlm_cache():
     assert rollout.completion_mask == [True, True, False, True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2, 0.0, -0.3, -0.4]
     # Images: cumulative from last merged step (step 1 has 2 images)
-    assert rollout.pixel_values == [[1.0], [2.0]]
+    assert rollout.pixel_values == b"step1"
+    assert rollout.pixel_values_shape == [2, 1]
     assert rollout.image_grid_thw == [[1, 2, 3], [1, 4, 4]]
 
 
 def test_interleave_rollout_uses_cache_key_override():
     cache_data = {
         7: [
-            ([[9.0]], [[1, 2, 3]]),
+            (b"key7_step0", [1, 1], [[1, 2, 3]]),
         ],
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
@@ -1089,7 +1096,8 @@ def test_interleave_rollout_uses_cache_key_override():
 
     assert rollouts is not None
     assert len(rollouts) == 1
-    assert rollouts[0].pixel_values == [[9.0]]
+    assert rollouts[0].pixel_values == b"key7_step0"
+    assert rollouts[0].pixel_values_shape == [1, 1]
     assert rollouts[0].image_grid_thw == [[1, 2, 3]]
 
 
@@ -1101,9 +1109,9 @@ def test_interleave_rollout_vlm_image_then_text_turns():
     """
     cache_data = {
         1: [
-            ([[1.0, 2.0]], [[1, 3, 3]]),  # Step 0: 1 image
-            ([[1.0, 2.0]], [[1, 3, 3]]),  # Step 1: same 1 image (no new)
-            ([[1.0, 2.0]], [[1, 3, 3]]),  # Step 2: same 1 image (no new)
+            (b"img1", [1, 2], [[1, 3, 3]]),  # Step 0: 1 image
+            (b"img1", [1, 2], [[1, 3, 3]]),  # Step 1: same 1 image (no new)
+            (b"img1", [1, 2], [[1, 3, 3]]),  # Step 2: same 1 image (no new)
         ],
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
@@ -1188,7 +1196,8 @@ def test_interleave_rollout_vlm_image_then_text_turns():
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     assert rollout.completion_mask == [True, True, False, False, True, True, False, False, True, True]
     # pixel_values from step 2 (cumulative = same 1 image throughout)
-    assert rollout.pixel_values == [[1.0, 2.0]]
+    assert rollout.pixel_values == b"img1"
+    assert rollout.pixel_values_shape == [1, 2]
     assert rollout.image_grid_thw == [[1, 3, 3]]
 
 
@@ -1199,9 +1208,9 @@ def test_interleave_rollout_vlm_new_image_mid_conversation():
     """
     cache_data = {
         1: [
-            ([[1.0]], [[1, 2, 3]]),  # Step 0: 1 image
-            ([[1.0]], [[1, 2, 3]]),  # Step 1: still 1 image
-            ([[1.0], [2.0]], [[1, 2, 3], [1, 4, 4]]),  # Step 2: 2 images
+            (b"img_a", [1, 1], [[1, 2, 3]]),  # Step 0: 1 image
+            (b"img_a", [1, 1], [[1, 2, 3]]),  # Step 1: still 1 image
+            (b"img_ab", [2, 1], [[1, 2, 3], [1, 4, 4]]),  # Step 2: 2 images
         ],
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
@@ -1279,7 +1288,8 @@ def test_interleave_rollout_vlm_new_image_mid_conversation():
     assert rollout.prompt_ids == [1, 2]
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     # Cumulative images from last merged step (step 2): both images
-    assert rollout.pixel_values == [[1.0], [2.0]]
+    assert rollout.pixel_values == b"img_ab"
+    assert rollout.pixel_values_shape == [2, 1]
     assert rollout.image_grid_thw == [[1, 2, 3], [1, 4, 4]]
 
 
@@ -1291,9 +1301,9 @@ def test_interleave_rollout_vlm_extension_break():
     """
     cache_data = {
         1: [
-            ([[1.0]], [[1, 2, 3]]),  # Step 0: 1 image
-            ([[1.0]], [[1, 2, 3]]),  # Step 1: still 1 image
-            ([[1.0], [2.0]], [[1, 2, 3], [1, 4, 4]]),  # Step 2: 2 images (new image added)
+            (b"img_a", [1, 1], [[1, 2, 3]]),  # Step 0: 1 image
+            (b"img_a", [1, 1], [[1, 2, 3]]),  # Step 1: still 1 image
+            (b"img_ab", [2, 1], [[1, 2, 3], [1, 4, 4]]),  # Step 2: 2 images (new image added)
         ],
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
@@ -1373,13 +1383,15 @@ def test_interleave_rollout_vlm_extension_break():
     # Sample 1: steps 0-1 merged, images from step 1 (still 1 image)
     assert rollouts[0].prompt_ids == [1, 2]
     assert rollouts[0].completion_ids == [3, 4, 5, 6, 7, 8]
-    assert rollouts[0].pixel_values == [[1.0]]
+    assert rollouts[0].pixel_values == b"img_a"
+    assert rollouts[0].pixel_values_shape == [1, 1]
     assert rollouts[0].image_grid_thw == [[1, 2, 3]]
 
     # Sample 2: step 2 alone (extension broke), images from step 2 (2 images)
     assert rollouts[1].prompt_ids == [100, 101, 102, 103]
     assert rollouts[1].completion_ids == [104, 105]
-    assert rollouts[1].pixel_values == [[1.0], [2.0]]
+    assert rollouts[1].pixel_values == b"img_ab"
+    assert rollouts[1].pixel_values_shape == [2, 1]
     assert rollouts[1].image_grid_thw == [[1, 2, 3], [1, 4, 4]]
 
 
@@ -1391,9 +1403,9 @@ def test_interleave_rollout_vlm_image_appears_late():
     """
     cache_data = {
         1: [
-            (None, None),  # Step 0: no images
-            (None, None),  # Step 1: no images
-            ([[5.0, 6.0]], [[1, 3, 3]]),  # Step 2: first image appears
+            (None, None, None),  # Step 0: no images
+            (None, None, None),  # Step 1: no images
+            (b"late_img", [1, 2], [[1, 3, 3]]),  # Step 2: first image appears
         ],
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
@@ -1475,7 +1487,8 @@ def test_interleave_rollout_vlm_image_appears_late():
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     assert rollout.completion_mask == [True, True, False, False, True, True, False, False, True, True]
     # pixel_values from step 2 (the first step with an image)
-    assert rollout.pixel_values == [[5.0, 6.0]]
+    assert rollout.pixel_values == b"late_img"
+    assert rollout.pixel_values_shape == [1, 2]
     assert rollout.image_grid_thw == [[1, 3, 3]]
 
 
@@ -1570,10 +1583,10 @@ def test_interleave_rollout_vlm_interleaved_agents():
     """
     cache_data = {
         1: [
-            ([[1.0]], [[1, 2, 2]]),  # Step 0: image A
-            ([[1.0]], [[1, 2, 2]]),  # Step 1: still image A
-            ([[9.0]], [[1, 5, 5]]),  # Step 2: image B (agent2)
-            ([[1.0], [3.0]], [[1, 2, 2], [1, 3, 3]]),  # Step 3: images A+C (agent1)
+            (b"imgA", [1, 1], [[1, 2, 2]]),  # Step 0: image A
+            (b"imgA", [1, 1], [[1, 2, 2]]),  # Step 1: still image A
+            (b"imgB", [1, 1], [[1, 5, 5]]),  # Step 2: image B (agent2)
+            (b"imgAC", [2, 1], [[1, 2, 2], [1, 3, 3]]),  # Step 3: images A+C (agent1)
         ],
     }
     cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
@@ -1676,7 +1689,8 @@ def test_interleave_rollout_vlm_interleaved_agents():
     assert agent1.prompt_ids == [1, 2]
     assert agent1.completion_ids == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     assert agent1.completion_mask == [True, True, False, False, True, True, False, False, True, True]
-    assert agent1.pixel_values == [[1.0], [3.0]]
+    assert agent1.pixel_values == b"imgAC"
+    assert agent1.pixel_values_shape == [2, 1]
     assert agent1.image_grid_thw == [[1, 2, 2], [1, 3, 3]]
 
     # Agent2: step 2 alone → images from step 2 (B)
@@ -1684,12 +1698,14 @@ def test_interleave_rollout_vlm_interleaved_agents():
     assert agent2.prompt_ids == [100, 101]
     assert agent2.completion_ids == [102, 103]
     assert agent2.completion_mask == [True, True]
-    assert agent2.pixel_values == [[9.0]]
+    assert agent2.pixel_values == b"imgB"
+    assert agent2.pixel_values_shape == [1, 1]
     assert agent2.image_grid_thw == [[1, 5, 5]]
 
 
 def test_build_vlm_image_cache_handles_divergent_rollouts():
     """Test that build_vlm_image_cache keys images per rollout when trajectories diverge."""
+    import numpy as np
     import torch
 
     red_url = _create_test_image("red")
@@ -1763,16 +1779,22 @@ def test_build_vlm_image_cache_handles_divergent_rollouts():
 
     assert cache.num_unique_examples == 1
 
-    pv, grid = cache.get_for_step(0, 0)
-    assert pv == [[0.0]]
+    def to_bytes(values):
+        return np.array(values, dtype=np.float32).tobytes()
+
+    pv, shape, grid = cache.get_for_step(0, 0)
+    assert pv == to_bytes([0.0])
+    assert shape == [1, 1]
     assert grid == [[1, 1, 1]]
 
-    pv, grid = cache.get_for_step(1, 0)
-    assert pv == [[1.0]]
+    pv, shape, grid = cache.get_for_step(1, 0)
+    assert pv == to_bytes([1.0])
+    assert shape == [1, 1]
     assert grid == [[1, 1, 1]]
 
-    pv, grid = cache.get_for_step(1, 1)
-    assert pv == [[1.0], [2.0]]
+    pv, shape, grid = cache.get_for_step(1, 1)
+    assert pv == to_bytes([1.0, 2.0])
+    assert shape == [2, 1]
     assert grid == [[1, 1, 1], [1, 1, 1]]
 
 
@@ -1798,8 +1820,9 @@ def test_build_vlm_image_cache_no_images():
 
     cache = build_vlm_image_cache([output], MagicMock())
 
-    pv, grid = cache.get_for_step(0, 0)
+    pv, shape, grid = cache.get_for_step(0, 0)
     assert pv is None
+    assert shape is None
     assert grid is None
 
 
