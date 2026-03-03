@@ -12,7 +12,7 @@ RUN echo "LC_ALL=en_US.UTF-8" >> /etc/environment
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 
-# Install packages (including Python 3.12)
+# Install packages (including Python 3.12 and ninja for fast CUDA kernel compilation)
 ARG DEBIAN_FRONTEND=noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
     curl \
     sudo \
     git \
+    ninja-build \
     software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
@@ -56,9 +57,10 @@ RUN --mount=type=cache,target=/app/.cache/uv \
 
 # On arm64, flash-attn wheels don't exist so we build from source.
 # Only target sm_100 (Blackwell) since arm64 clusters are GB200.
+# ninja-build is installed above for parallel compilation (without it: 2h+, with it: ~5min).
 # flash-attn-3 uses pip instead of uv due to https://github.com/astral-sh/uv/issues/15264
 RUN if [ "$(uname -m)" = "aarch64" ]; then \
-    TORCH_CUDA_ARCH_LIST="10.0" MAX_JOBS=4 && \
+    export TORCH_CUDA_ARCH_LIST="10.0" MAX_JOBS=4 && \
     uv pip install flash-attn --no-build-isolation && \
     uv pip install pip && \
     .venv/bin/pip install "flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper" --no-build-isolation; \
