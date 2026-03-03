@@ -8,7 +8,6 @@ from torch.distributed.tensor import DTensor
 from vllm.distributed.weight_transfer.nccl_engine import NCCLWeightTransferEngine
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
-from prime_rl.inference.vllm.weight_transfer import PrimeNCCLTrainerSendWeightsArgs
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
@@ -110,14 +109,10 @@ class NCCLWeightBroadcastSender:
         if self.world.is_master and self.communicator is not None:
             from prime_rl.inference.vllm.weight_transfer import PrimeNCCLWeightTransferEngine
 
-            args = PrimeNCCLTrainerSendWeightsArgs(
-                group=self.communicator,
-                packed=self.packed,
-                metadata=self._weight_metadata,
-            )
             PrimeNCCLWeightTransferEngine.trainer_send_weights(
                 iterator=self._hf_weight_iterator(model),
-                trainer_args=args,
+                trainer_args={"group": self.communicator, "packed": self.packed},
+                metadata=self._weight_metadata,
             )
         else:
             for _ in self._hf_weight_iterator(model):

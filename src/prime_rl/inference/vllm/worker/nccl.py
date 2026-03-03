@@ -15,21 +15,21 @@ logger = init_logger("vllm.inference.vllm.worker_nccl")
 
 
 class NCCLWeightUpdateWorker(Worker):
-    """vLLM worker extension that computes NCCL rank offsets and delegates
-    to the PrimeNCCLWeightTransferEngine registered as 'nccl_prime' backend."""
+    """vLLM worker extension for NCCL weight transfer with in-band metadata.
+
+    Uses the PrimeNCCLWeightTransferEngine (registered as 'nccl_prime') which
+    receives weight metadata via NCCL before the weight tensors.
+    """
 
     def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int, packed: bool = True) -> None:
-        """Initialize the NCCL weight transfer engine with correct rank offsets."""
+        """Initialize the weight transfer engine with correct rank offsets."""
         tp_size = get_tp_group().world_size
         dp_size = get_dp_group().world_size
         workers_per_server = tp_size * dp_size
         rank_offset = 1 + server_rank * workers_per_server
         world_size = 1 + num_inference_server * workers_per_server
 
-        logger.info(
-            f"Initializing weight transfer engine "
-            f"[server_rank={server_rank} rank_offset={rank_offset} world_size={world_size}]"
-        )
+        logger.info(f"Initializing weight transfer [rank_offset={rank_offset} world_size={world_size}]")
 
         self.init_weight_transfer_engine({
             "master_address": host,
@@ -40,13 +40,10 @@ class NCCLWeightUpdateWorker(Worker):
         self._packed = packed
 
     def update_weights_from_path(self, weight_dir: str) -> None:
-        """Receive metadata + weights via NCCL and load into the model.
-
-        Uses is_checkpoint_format=False to bypass vLLM's layerwise reload,
-        directly calling model.load_weights + process_weights_after_loading
-        like the old custom NCCL implementation.
-        """
+        """Receive metadata + weights via NCCL and load into the model."""
+        # Empty metadata — PrimeNCCLWeightTransferEngine.receive_weights fills it from NCCL
         update_info = self.weight_transfer_engine.parse_update_info({
+            "names": [], "dtype_names": [], "shapes": [],
             "packed": self._packed,
             "is_checkpoint_format": False,
         })
