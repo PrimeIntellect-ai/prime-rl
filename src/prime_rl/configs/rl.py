@@ -116,6 +116,10 @@ class SharedWeightBroadcastConfig(BaseConfig):
 
     port: Annotated[int, Field(description="The port to use for NCCL weight broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
+    packed: Annotated[
+        bool,
+        Field(description="Use packed tensor broadcasting for efficient NCCL transfer."),
+    ] = True
 
 
 class BaseDeploymentConfig(BaseModel):
@@ -480,11 +484,13 @@ class RLConfig(BaseConfig):
                     inference_world_size=inference_world_size,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
+                    packed=self.weight_broadcast.packed,
                 )
                 self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
+                    packed=self.weight_broadcast.packed,
                 )
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()

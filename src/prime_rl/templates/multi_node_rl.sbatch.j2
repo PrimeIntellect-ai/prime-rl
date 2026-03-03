@@ -55,11 +55,7 @@ if [ "$USE_DISTRIBUTED_EP" -eq 1 ]; then
     INFER_URLS="http://${INFER_HEAD_HOST}:8000/v1"
 else
     for host in "${INFER_HOSTS[@]}"; do
-        if [ -z "$INFER_URLS" ]; then
-            INFER_URLS="http://$host:8000/v1"
-        else
-            INFER_URLS="$INFER_URLS,http://$host:8000/v1"
-        fi
+        INFER_URLS="$INFER_URLS http://$host:8000/v1"
     done
 fi
 export INFER_URLS

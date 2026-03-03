@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 
 from vllm.distributed.parallel_state import get_dp_group, get_tp_group
 from vllm.logger import init_logger
+from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
@@ -40,9 +41,22 @@ class NCCLWeightUpdateWorker(Worker):
         self.packed = packed
 
     def update_weights_from_path(self, weight_dir: str) -> None:
-        """Receive weights via NCCL using vLLM's built-in weight transfer engine.
+        """Receive weights via NCCL and load them directly into the model.
 
-        Metadata (names, dtypes, shapes) is received via NCCL from the trainer,
-        so no out-of-band metadata passing is needed.
+        Uses is_checkpoint_format=False to bypass vLLM's layerwise reload machinery,
+        which causes excessive memory usage. Instead, we receive weights and feed them
+        incrementally to model.load_weights(), then run process_weights_after_loading()
+        ourselves — matching the old custom NCCL implementation.
         """
-        self.update_weights({"receive_metadata": True, "packed": self.packed})
+        engine = self.weight_transfer_engine
+        update_info = engine.parse_update_info({
+            "receive_metadata": True,
+            "packed": self.packed,
+            "is_checkpoint_format": False,
+        })
+
+        model = self.model_runner.model
+        engine.receive_weights(update_info, load_weights=model.load_weights)
+
+        device = next(model.parameters()).device
+        process_weights_after_loading(model, self.model_runner.model_config, device)
