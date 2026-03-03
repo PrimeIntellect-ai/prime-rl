@@ -66,7 +66,8 @@ class NCCLWeightBroadcastSender:
             self.logger.debug("NCCL weight transfer engine initialized on non-master rank (no communicator)")
 
     def _hf_weight_iterator(self, model: nn.Module) -> Iterator[tuple[str, torch.Tensor]]:
-        """Yield (name, tensor) pairs from the model's state dict in HF checkpoint format, layer by layer."""
+        """Yield (name, tensor) pairs from the model's state dict in HF checkpoint format, layer by layer.
+        """
         state_dict = model.state_dict()
         num_layers = get_max_layer_num(state_dict)
 
@@ -85,16 +86,31 @@ class NCCLWeightBroadcastSender:
 
             yield from layer_dict.items()
 
-    def get_weight_metadata(self, model: nn.Module) -> dict:
-        """Get weight metadata (names, dtypes, shapes). Computed once and cached."""
+    def _collect_weight_metadata(self, model: nn.Module) -> dict:
+        """Collect weight metadata (names, dtypes, shapes) without materializing DTensors.
+
+        Uses DTensor.shape for global shape, avoiding expensive all-gather collectives.
+        Only runs once — result is cached in self._weight_metadata.
+        """
         if self._weight_metadata is not None:
             return self._weight_metadata
 
+        state_dict = model.state_dict()
+        num_layers = get_max_layer_num(state_dict)
+
         names, dtype_names, shapes = [], [], []
-        for name, tensor in self._hf_weight_iterator(model):
-            names.append(name)
-            dtype_names.append(str(tensor.dtype).replace("torch.", ""))
-            shapes.append(list(tensor.shape))
+        for layer_id, layer_dict in _filter_state_dict_by_layers(state_dict, num_layers):
+            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_dict):
+                model.convert_layer_to_hf(layer_dict, layer_id)
+            else:
+                from transformers.core_model_loading import revert_weight_conversion
+
+                layer_dict = revert_weight_conversion(model, layer_dict)
+
+            for name, tensor in layer_dict.items():
+                names.append(name)
+                dtype_names.append(str(self.dtype if isinstance(tensor, DTensor) else tensor.dtype).replace("torch.", ""))
+                shapes.append(list(tensor.shape))
 
         self._weight_metadata = {"names": names, "dtype_names": dtype_names, "shapes": shapes}
         return self._weight_metadata
@@ -102,14 +118,20 @@ class NCCLWeightBroadcastSender:
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights using vLLM's native NCCL weight transfer engine."""
+        # Collect metadata cheaply (no DTensor materialization, cached after first call)
+        metadata = self._collect_weight_metadata(model)
+
+        # Iterate on all ranks (DTensor full_tensor is collective), only master sends
+        weights = list(self._hf_weight_iterator(model))
+
         if self.world.is_master and self.communicator is not None:
             args = NCCLTrainerSendWeightsArgs(
                 group=self.communicator,
                 packed=self.packed,
-                metadata=self.get_weight_metadata(model),
+                metadata=metadata,
             )
             NCCLWeightTransferEngine.trainer_send_weights(
-                iterator=self._hf_weight_iterator(model),
+                iterator=iter(weights),
                 trainer_args=args,
             )
 
