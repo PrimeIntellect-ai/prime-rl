@@ -326,7 +326,6 @@ async def orchestrate(config: OrchestratorConfig):
             config.weight_broadcast.host,
             config.weight_broadcast.port,
             config.weight_broadcast.timeout,
-            config.weight_broadcast.packed,
         )
 
     # Setup training batch sender for sending training examples to trainer

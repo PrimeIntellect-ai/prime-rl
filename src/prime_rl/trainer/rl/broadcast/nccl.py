@@ -46,12 +46,10 @@ class NCCLWeightBroadcastSender:
         device: int | str | torch.device,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
-        packed: bool = True,
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = dtype
-        self.packed = packed
         self.communicator = None
         self._weight_metadata: dict | None = None
 
@@ -99,7 +97,7 @@ class NCCLWeightBroadcastSender:
 
             PrimeNCCLWeightTransferEngine.trainer_send_weights(
                 iterator=self._hf_weight_iterator(model),
-                trainer_args={"group": self.communicator, "packed": self.packed},
+                trainer_args={"group": self.communicator, "packed": True},
                 metadata=self._weight_metadata,
             )
         else:
@@ -122,7 +120,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
-            config.host, config.port, config.inference_world_size + 1, device, config.timeout, dtype, config.packed
+            config.host, config.port, config.inference_world_size + 1, device, config.timeout, dtype
         )
 
     @torch.no_grad()

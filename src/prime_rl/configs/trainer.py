@@ -594,10 +594,6 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
-    packed: Annotated[
-        bool,
-        Field(description="Use packed tensor broadcasting for efficient NCCL transfer. Batches multiple tensors into buffers to reduce communication overhead."),
-    ] = True
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

@@ -30,13 +30,16 @@ class PrimeNCCLWeightTransferEngine(NCCLWeightTransferEngine):
 
     def receive_weights(
         self,
-        update_info: NCCLWeightTransferUpdateInfo,
+        update_info: NCCLWeightTransferUpdateInfo | None,
         load_weights: Callable[[list[tuple[str, torch.Tensor]]], None],
     ) -> None:
         metadata = _nccl_receive_json(self.model_update_group)
-        update_info.names = metadata["names"]
-        update_info.dtype_names = metadata["dtype_names"]
-        update_info.shapes = metadata["shapes"]
+        update_info = NCCLWeightTransferUpdateInfo(
+            names=metadata["names"],
+            dtype_names=metadata["dtype_names"],
+            shapes=metadata["shapes"],
+            packed=True,
+        )
         super().receive_weights(update_info, load_weights)
 
     @staticmethod

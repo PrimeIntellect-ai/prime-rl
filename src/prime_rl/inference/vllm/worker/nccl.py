@@ -17,7 +17,7 @@ logger = init_logger("vllm.inference.vllm.worker_nccl")
 class NCCLWeightUpdateWorker(Worker):
     """vLLM worker extension for updating weights in-place using NCCL."""
 
-    def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int, packed: bool = True) -> None:
+    def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int) -> None:
         tp_size = get_tp_group().world_size
         tp_rank = get_tp_group().rank_in_group
         dp_size = get_dp_group().world_size
@@ -36,17 +36,10 @@ class NCCLWeightUpdateWorker(Worker):
             "rank_offset": global_rank + 1,  # +1 as the trainer is on rank 0
             "world_size": global_world_size + 1,
         })
-        self._packed = packed
 
     def update_weights_from_path(self, weight_dir: str) -> None:
-        update_info = self.weight_transfer_engine.parse_update_info({
-            "names": [], "dtype_names": [], "shapes": [],
-            "packed": self._packed,
-            "is_checkpoint_format": False,
-        })
-
         model = self.model_runner.model
-        self.weight_transfer_engine.receive_weights(update_info, load_weights=model.load_weights)
+        self.weight_transfer_engine.receive_weights(None, load_weights=model.load_weights)
 
         device = next(model.parameters()).device
         process_weights_after_loading(model, self.model_runner.model_config, device)

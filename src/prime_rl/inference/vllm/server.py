@@ -193,10 +193,9 @@ async def init_broadcaster(request: Request):
     timeout = data.get("timeout")
     server_rank = data.get("server_rank")
     num_inference_server = data.get("num_inference_server")
-    packed = data.get("packed", True)
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, server_rank, num_inference_server, timeout, packed),
+        args=(host, port, server_rank, num_inference_server, timeout),
     )
     return {"status": "ok"}
 
