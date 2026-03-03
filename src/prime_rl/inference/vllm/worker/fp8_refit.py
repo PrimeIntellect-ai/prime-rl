@@ -85,25 +85,41 @@ def _resolve_layerwise_load_device(load_config: object, device_config: object) -
     return torch.device(load_device)
 
 
+def _load_weights_inplace(model: Module, model_config: object, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
+    """Load weights directly into existing parameters (low memory overhead)."""
+    from vllm.model_executor.model_loader.utils import process_weights_after_loading
+
+    model.load_weights(weights)
+    device = next(model.parameters()).device
+    process_weights_after_loading(model, model_config, device)
+
+
+def _load_weights_layerwise(
+    model_runner: object, model: Module, weights: Iterable[tuple[str, torch.Tensor]]
+) -> object:
+    """Load weights via vLLM layerwise reload pipeline (needed for FP8 requantization)."""
+    from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
+
+    vllm_config = model_runner.vllm_config
+    load_device = _resolve_layerwise_load_device(vllm_config.load_config, vllm_config.device_config)
+    with torch.device(load_device):
+        initialize_layerwise_reload(model)
+        load_result = model.load_weights(weights)
+        finalize_layerwise_reload(model, model_runner.model_config)
+    return load_result
+
+
 def load_checkpoint_weights_layerwise(
     model_runner: object,
     model: Module,
     weights: Iterable[tuple[str, torch.Tensor]],
-) -> object:
-    """Load checkpoint-format weights through vLLM's layerwise reload pipeline."""
-    from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
-
-    weights_iter = weights
+) -> None:
+    """Load checkpoint-format weights, using layerwise reload only when quantization requires it."""
     quant_config = model_runner.vllm_config.quant_config
-    if quant_config is not None and quant_config.get_name() == "fp8":
-        weights_iter = convert_weights_for_fp8_refit(model, weights)
+    is_fp8 = quant_config is not None and quant_config.get_name() == "fp8"
 
-    vllm_config = model_runner.vllm_config
-    load_config = vllm_config.load_config
-    device_config = vllm_config.device_config
-    load_device = _resolve_layerwise_load_device(load_config, device_config)
-    with torch.device(load_device):
-        initialize_layerwise_reload(model)
-        load_result = model.load_weights(weights_iter)
-        finalize_layerwise_reload(model, model_runner.model_config)
-    return load_result
+    if is_fp8:
+        weights = convert_weights_for_fp8_refit(model, weights)
+        _load_weights_layerwise(model_runner, model, weights)
+    else:
+        _load_weights_inplace(model, model_runner.model_config, weights)
