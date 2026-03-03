@@ -50,18 +50,18 @@ prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
 
 [project.optional-dependencies]
 flash-attn = [
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
 
 flash-attn-3 = [
-    "flash_attn_3 @ https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl",
+    "flash_attn_3 @ https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
 flash-attn-cute = [
     "flash-attn-cute",
 ]
 [dependency-groups]
 fp8-inference = [
-    "deep-gemm @ https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl",
+    "deep-gemm @ https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
 dev = [
     "ipykernel>=6.29.5",
