@@ -514,6 +514,7 @@ class BufferConfig(BaseConfig):
             assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
         return self
 
+
 class VerificationConfig(BaseConfig):
     """Configures rollout verification and rubric scoring."""
 
