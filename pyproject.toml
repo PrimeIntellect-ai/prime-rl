@@ -19,7 +19,7 @@ dependencies = [
     "torch>=2.9.0",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.16.0,",
+    "vllm>=0.16.0",
     "wandb>=0.24.2",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.37",
