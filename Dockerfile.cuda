@@ -58,7 +58,8 @@ RUN --mount=type=cache,target=/app/.cache/uv \
 # Only target sm_100 (Blackwell) since arm64 clusters are GB200.
 RUN if [ "$(uname -m)" = "aarch64" ]; then \
     TORCH_CUDA_ARCH_LIST="10.0" MAX_JOBS=4 \
-    uv pip install flash-attn --no-build-isolation; \
+    uv pip install flash-attn --no-build-isolation && \
+    uv pip install "flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper" --no-build-isolation; \
     fi
 
 FROM python:3.12-slim
