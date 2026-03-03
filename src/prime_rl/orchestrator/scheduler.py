@@ -282,9 +282,9 @@ class Scheduler:
             for task, info in list(self.inflight_requests.items())
             if info.group_id is None or info.group_id not in stale_group_ids
         ]
-        removed = 0
-        for gid in stale_group_ids:
-            removed += await self.drop_group(gid)
+
+        counts = await asyncio.gather(*(self.drop_group(gid) for gid in stale_group_ids))
+        removed = sum(counts)
         for task in tasks_to_increment:
             info = self.inflight_requests.get(task)
             if info is None:
