@@ -12,6 +12,7 @@ from prime_rl.orchestrator.trajectories import (
     _align_routed_experts,
     _extract_images_from_examples,
     _extract_images_from_messages,
+    _ImageStore,
     build_vlm_image_cache,
     interleave_rollout,
 )
@@ -2002,3 +2003,154 @@ def test_interleave_rollout_none_routed_experts_stays_none():
     rollouts = interleave_rollout(output)
     assert rollouts is not None
     assert rollouts[0].routed_experts is None
+
+
+# =============================================================================
+# _ImageStore and store-backed VLMImageCache tests
+# =============================================================================
+
+
+def test_image_store_assemble():
+    """_ImageStore.assemble joins per-image bytes and computes correct shape/grids."""
+    # 2 images: image 0 has 3 patches, image 1 has 2 patches, patch_dim=4
+    patch_dim = 4
+    img0 = np.arange(3 * patch_dim, dtype=np.float32).tobytes()
+    img1 = np.arange(2 * patch_dim, dtype=np.float32).tobytes()
+
+    store = _ImageStore(
+        image_bytes=[img0, img1],
+        image_num_patches=[3, 2],
+        patch_dim=patch_dim,
+        image_grids=[[1, 1, 3], [1, 1, 2]],
+    )
+
+    # Assemble both images
+    pixel_bytes, shape, grids = store.assemble([0, 1])
+    assert shape == [5, 4]
+    assert grids == [[1, 1, 3], [1, 1, 2]]
+    assert pixel_bytes == img0 + img1
+
+    # Assemble single image
+    pixel_bytes, shape, grids = store.assemble([1])
+    assert shape == [2, 4]
+    assert grids == [[1, 1, 2]]
+    assert pixel_bytes == img1
+
+    # Assemble in reverse order
+    pixel_bytes, shape, grids = store.assemble([1, 0])
+    assert shape == [5, 4]
+    assert grids == [[1, 1, 2], [1, 1, 3]]
+    assert pixel_bytes == img1 + img0
+
+
+def test_vlm_image_cache_from_store():
+    """VLMImageCache.from_store provides correct get_for_step/get_all via lazy assembly."""
+    patch_dim = 2
+    img0_data = np.array([[1.0, 2.0]], dtype=np.float32)
+    img1_data = np.array([[3.0, 4.0]], dtype=np.float32)
+
+    store = _ImageStore(
+        image_bytes=[img0_data.tobytes(), img1_data.tobytes()],
+        image_num_patches=[1, 1],
+        patch_dim=patch_dim,
+        image_grids=[[1, 2, 3], [1, 4, 4]],
+    )
+
+    step_indices = {
+        1: [[0], [0, 1]],  # step 0: image 0; step 1: images 0+1
+    }
+
+    cache = VLMImageCache.from_store(
+        store=store,
+        step_indices=step_indices,
+        num_unique_examples=1,
+        extract_time=0.0,
+        preprocess_time=0.0,
+    )
+
+    # Step 0: just image 0
+    pv, shape, grid = cache.get_for_step(1, 0)
+    assert _decode_pixels(pv, shape) == [[1.0, 2.0]]
+    assert grid == [[1, 2, 3]]
+
+    # Step 1: images 0 + 1
+    pv, shape, grid = cache.get_for_step(1, 1)
+    assert _decode_pixels(pv, shape) == [[1.0, 2.0], [3.0, 4.0]]
+    assert grid == [[1, 2, 3], [1, 4, 4]]
+
+    # get_all returns last step
+    pv, shape, grid = cache.get_all(1)
+    assert _decode_pixels(pv, shape) == [[1.0, 2.0], [3.0, 4.0]]
+    assert grid == [[1, 2, 3], [1, 4, 4]]
+
+    # Missing key
+    pv, shape, grid = cache.get_for_step(999, 0)
+    assert pv is None
+
+    # Out of range step
+    pv, shape, grid = cache.get_for_step(1, 5)
+    assert pv is None
+
+
+def test_vlm_image_cache_from_store_no_images():
+    """from_store with store=None returns (None, None, None) for all queries."""
+    step_indices = {0: [[], []]}  # 2 steps with no images
+
+    cache = VLMImageCache.from_store(
+        store=None,
+        step_indices=step_indices,
+        num_unique_examples=1,
+        extract_time=0.0,
+        preprocess_time=0.0,
+    )
+
+    pv, shape, grid = cache.get_for_step(0, 0)
+    assert pv is None
+    assert shape is None
+    assert grid is None
+
+
+def test_build_vlm_image_cache_uses_store():
+    """build_vlm_image_cache returns a store-backed cache."""
+    import torch
+
+    red_url = _create_test_image("red")
+
+    output = vf.RolloutOutput(
+        example_id=1,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[_create_image_message(red_url, "What color?")],
+                completion=[{"role": "assistant", "content": "Red"}],
+                response=MagicMock(),
+                tokens=MagicMock(),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    mock_processor = MagicMock()
+    mock_processor.image_processor = MagicMock(
+        side_effect=lambda images, return_tensors: {
+            "pixel_values": torch.arange(len(images), dtype=torch.float32).view(-1, 1),
+            "image_grid_thw": torch.tensor([[1, 1, 1]] * len(images)),
+        }
+    )
+
+    cache = build_vlm_image_cache([output], mock_processor)
+
+    # Should be store-backed
+    assert cache._store is not None
+    assert cache._step_indices is not None
+
+    # Should still work correctly
+    pv, shape, grid = cache.get_for_step(0, 0)
+    assert pv is not None
+    assert shape == [1, 1]
+    assert grid == [[1, 1, 1]]
