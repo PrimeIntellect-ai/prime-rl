@@ -194,7 +194,9 @@ class DataLoader:
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
             # Multimodal fields - no batch dimension for these as they are variable-sized
-            pixel_values=torch.tensor(micro_batch.pixel_values, dtype=torch.float)
+            pixel_values=torch.frombuffer(bytearray(micro_batch.pixel_values), dtype=torch.float32).reshape(
+                micro_batch.pixel_values_shape
+            )
             if micro_batch.pixel_values is not None
             else None,
             image_grid_thw=torch.tensor(micro_batch.image_grid_thw, dtype=torch.long)

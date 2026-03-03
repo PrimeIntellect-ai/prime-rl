@@ -10,6 +10,7 @@ from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.openai.engine.serving import GenerationError
 from vllm.entrypoints.utils import get_max_tokens
+from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.reasoning import ReasoningParser
@@ -154,10 +155,21 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 # have unique request ids.
                 sub_request_id = request_id if len(engine_prompts) == 1 else f"{request_id}_{i}"
 
+                prompt_len = self._extract_prompt_len(engine_prompt)
+                if prompt_len >= self.max_model_len:
+                    raise VLLMValidationError(
+                        f"This model's maximum context length is "
+                        f"{self.max_model_len} tokens. However, your request has "
+                        f"{prompt_len} input tokens. Please reduce the length of "
+                        "the input messages.",
+                        parameter="input_tokens",
+                        value=prompt_len,
+                    )
+
                 max_tokens = get_max_tokens(
                     self.max_model_len,
                     request.max_completion_tokens if request.max_completion_tokens is not None else request.max_tokens,
-                    self._extract_prompt_len(engine_prompt),
+                    prompt_len,
                     self.default_sampling_params,
                 )
 
