@@ -299,7 +299,7 @@ class Scheduler:
             )
 
     def _should_defer_group_scoring(self, task: str) -> bool:
-        return task in self.deferred_group_scoring_tasks and not self.config.buffer.skip_verification
+        return task in self.deferred_group_scoring_tasks and self.config.verification.enabled
 
     async def _score_group_if_deferred(self, completed_rollouts: list[vf.RolloutOutput]) -> list[vf.RolloutOutput]:
         if not completed_rollouts:
@@ -327,7 +327,6 @@ class Scheduler:
         batch_start_time = time.perf_counter()
 
         self.logger.debug("Starting to generate batch rollouts")
-        await self._fill_inflight_requests()
 
         batch_rollouts: list[vf.RolloutOutput] = []
         batch_progress = 0
@@ -336,13 +335,8 @@ class Scheduler:
         )
 
         while batch_progress < self.batch_target:
+            await self._fill_inflight_requests()
             inflight_tasks = list(self.inflight_requests.keys())
-            if not inflight_tasks:
-                await self._fill_inflight_requests()
-                inflight_tasks = list(self.inflight_requests.keys())
-                if not inflight_tasks:
-                    raise RuntimeError("No in-flight rollout requests and could not schedule new requests.")
-                continue
 
             finished_tasks, _ = await asyncio.wait(
                 inflight_tasks,
@@ -386,7 +380,7 @@ class Scheduler:
                 batch_progress += progress_increment
                 pbar.update(progress_increment)
 
-            await self._fill_inflight_requests()
+        await self._fill_inflight_requests()
 
         batch_rollouts = self.finalize_batch_rollouts(batch_rollouts)
         pbar.close()
