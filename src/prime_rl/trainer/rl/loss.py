@@ -117,8 +117,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     probs_diff = trainer_probs - inference_probs
     dppo_invalid_mask_high = probs_diff > loss_config.dppo_tv_clip_high
     dppo_invalid_mask_low = probs_diff < -loss_config.dppo_tv_clip_low
-    dppo_invalid_mask_low = (advantages > 0) & dppo_invalid_mask_high
-    dppo_invalid_mask_high = (advantages < 0) & dppo_invalid_mask_low
 
     # The original DPPO-Binary TV loss is conditional on the advantage sign (PPO-style):
     # torch.where(advantages > 0, dppo_invalid_mask_high, dppo_invalid_mask_low)
