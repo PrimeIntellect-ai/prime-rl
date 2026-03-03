@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from typing import Literal
 
+import torch
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
@@ -18,6 +19,29 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
+
+
+def _convert_glm4_moe_fused_experts_to_per_expert(state_dict: dict[str, torch.Tensor]) -> None:
+    """Convert GLM4-MoE fused expert tensors to per-expert weights for vLLM live reload."""
+    layer_prefixes = {
+        key.removesuffix(".gate_up_proj")
+        for key in state_dict
+        if key.startswith("model.layers.") and key.endswith(".mlp.experts.gate_up_proj")
+    }
+
+    for prefix in layer_prefixes:
+        gate_up_proj = state_dict.pop(f"{prefix}.gate_up_proj")
+        down_proj = state_dict.pop(f"{prefix}.down_proj")
+
+        num_experts, fused_dim, _ = gate_up_proj.shape
+        moe_dim = fused_dim // 2
+        gate_proj = gate_up_proj[:, :moe_dim, :]
+        up_proj = gate_up_proj[:, moe_dim:, :]
+
+        for expert_idx in range(num_experts):
+            state_dict[f"{prefix}.{expert_idx}.gate_proj.weight"] = gate_proj[expert_idx].contiguous()
+            state_dict[f"{prefix}.{expert_idx}.down_proj.weight"] = down_proj[expert_idx].contiguous()
+            state_dict[f"{prefix}.{expert_idx}.up_proj.weight"] = up_proj[expert_idx].contiguous()
 
 
 class FileSystemWeightBroadcast(WeightBroadcast):
@@ -50,6 +74,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                 from transformers.core_model_loading import revert_weight_conversion
 
                 state_dict = revert_weight_conversion(model, state_dict)
+
+            if getattr(getattr(model, "config", None), "model_type", None) == "glm4_moe":
+                _convert_glm4_moe_fused_experts_to_per_expert(state_dict)
 
         for idx in self.multi_run_manager.ready_to_update_idxs:
             self.logger.debug(
