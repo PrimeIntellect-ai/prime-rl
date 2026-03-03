@@ -48,10 +48,12 @@ class NCCLWeightBroadcastSender:
         device: int | str | torch.device,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
+        packed: bool = True,
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = dtype
+        self.packed = packed
         self.communicator = None
         self._weight_metadata: dict | None = None
 
@@ -86,7 +88,7 @@ class NCCLWeightBroadcastSender:
             yield from layer_dict.items()
 
     def get_weight_metadata(self, model: nn.Module) -> dict:
-        """Get weight metadata (names, dtypes, shapes). Computed once and cached."""
+        """Get weight metadata (names, dtypes, shapes, packed). Computed once and cached."""
         if self._weight_metadata is not None:
             return self._weight_metadata
 
@@ -96,7 +98,12 @@ class NCCLWeightBroadcastSender:
             dtype_names.append(str(tensor.dtype).replace("torch.", ""))
             shapes.append(list(tensor.shape))
 
-        self._weight_metadata = {"names": names, "dtype_names": dtype_names, "shapes": shapes}
+        self._weight_metadata = {
+            "names": names,
+            "dtype_names": dtype_names,
+            "shapes": shapes,
+            "packed": self.packed,
+        }
         return self._weight_metadata
 
     @torch.no_grad()
@@ -106,6 +113,7 @@ class NCCLWeightBroadcastSender:
             NCCLWeightTransferEngine.trainer_send_weights(
                 iterator=self._hf_weight_iterator(model),
                 group=self.communicator,
+                packed=self.packed,
             )
 
 
@@ -124,7 +132,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
-            config.host, config.port, config.inference_world_size + 1, device, config.timeout, dtype
+            config.host, config.port, config.inference_world_size + 1, device, config.timeout, dtype, config.packed
         )
 
     @torch.no_grad()
