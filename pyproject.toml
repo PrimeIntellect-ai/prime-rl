@@ -35,6 +35,7 @@ dependencies = [
     "dion",
     "reverse-text",
     "tilelang>=0.1.8",
+    "math-python",
 ]
 
 [project.scripts]
@@ -85,13 +86,14 @@ override-dependencies = [
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 math-env = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "b35d0c7" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "b8f4e4e" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "609e3d5" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", rev = "6990941" }
 reverse-text = { index = "primeintellect" }
+math-python = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", subdirectory = "environments/math_python", rev = "b8f4e4e" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
