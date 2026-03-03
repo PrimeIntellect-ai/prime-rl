@@ -15,27 +15,30 @@ logger = init_logger("vllm.inference.vllm.worker_nccl")
 
 
 class NCCLWeightUpdateWorker(Worker):
-    """vLLM worker extension for NCCL weight transfer via PrimeNCCLWeightTransferEngine."""
+    """vLLM worker extension for updating weights in-place using NCCL."""
 
     def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int, packed: bool = True) -> None:
         tp_size = get_tp_group().world_size
+        tp_rank = get_tp_group().rank_in_group
         dp_size = get_dp_group().world_size
-        workers_per_server = tp_size * dp_size
-        rank_offset = 1 + server_rank * workers_per_server
-        world_size = 1 + num_inference_server * workers_per_server
+        dp_rank = get_dp_group().rank_in_group
+        global_rank = (server_rank * tp_size * dp_size) + (dp_rank * tp_size) + tp_rank
+        global_world_size = num_inference_server * tp_size * dp_size
 
-        logger.info(f"Initializing weight transfer [rank_offset={rank_offset} world_size={world_size}]")
+        logger.info(
+            f"Worker [tp={tp_rank} dp={dp_rank} server_rank={server_rank}] -> "
+            f"[global_rank={global_rank} global_world_size={global_world_size}]"
+        )
 
         self.init_weight_transfer_engine({
             "master_address": host,
             "master_port": port,
-            "rank_offset": rank_offset,
-            "world_size": world_size,
+            "rank_offset": global_rank + 1,  # +1 as the trainer is on rank 0
+            "world_size": global_world_size + 1,
         })
         self._packed = packed
 
     def update_weights_from_path(self, weight_dir: str) -> None:
-        # Metadata placeholder — PrimeNCCLWeightTransferEngine fills it from NCCL
         update_info = self.weight_transfer_engine.parse_update_info({
             "names": [], "dtype_names": [], "shapes": [],
             "packed": self._packed,

@@ -1,6 +1,6 @@
 import time
 from pathlib import Path
-from typing import Iterator, cast
+from typing import Generator, cast
 
 import torch
 import torch.nn as nn
@@ -20,9 +20,10 @@ from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 NCCL_READY_MARKER = "NCCL_READY"
 
 
-def _filter_state_dict_by_layers(
+def filter_state_dict_by_layers(
     state_dict: dict[str, torch.Tensor], num_layers: int
-) -> Iterator[tuple[int, dict[str, torch.Tensor]]]:
+) -> Generator[tuple[int, dict[str, torch.Tensor]], None, None]:
+    """Yield a state dict for each layer as well as the remaining non-layer weights."""
     yield 0, {key: value for key, value in state_dict.items() if "model.layers" not in key}
 
     for i in range(1, num_layers + 1):
@@ -61,25 +62,25 @@ class NCCLWeightBroadcastSender:
                 "world_size": world_size,
             })
 
-    def _hf_weight_iterator(self, model: nn.Module) -> Iterator[tuple[str, torch.Tensor]]:
+    def _hf_weight_iterator(self, model: nn.Module) -> Generator[tuple[str, torch.Tensor], None, None]:
         """Yield (name, tensor) pairs in HF checkpoint format, layer by layer."""
         state_dict = model.state_dict()
         num_layers = get_max_layer_num(state_dict)
 
-        for layer_id, layer_dict in _filter_state_dict_by_layers(state_dict, num_layers):
-            for key, value in list(layer_dict.items()):
+        for layer_id, state_dict in filter_state_dict_by_layers(state_dict, num_layers):
+            for key, value in list(state_dict.items()):
                 if isinstance(value, DTensor):
                     value = cast(DTensor, value.to(self.dtype)).full_tensor()
-                layer_dict[key] = value
+                state_dict[key] = value
 
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_dict):
-                model.convert_layer_to_hf(layer_dict, layer_id)
+            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+                model.convert_layer_to_hf(state_dict, layer_id)
             else:
                 from transformers.core_model_loading import revert_weight_conversion
 
-                layer_dict = revert_weight_conversion(model, layer_dict)
+                state_dict = revert_weight_conversion(model, state_dict)
 
-            yield from layer_dict.items()
+            yield from state_dict.items()
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
@@ -107,6 +108,8 @@ class NCCLWeightBroadcastSender:
 
 
 class NCCLWeightBroadcast(WeightBroadcast):
+    """Broadcast weights into the inference engine using NCCL."""
+
     def __init__(
         self,
         output_dir: Path,
