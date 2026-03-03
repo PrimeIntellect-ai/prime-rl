@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from itertools import cycle
 from pathlib import Path
@@ -207,7 +206,6 @@ async def check_health(
 
 
 NCCL_READY_MARKER = "NCCL_READY"
-WEIGHT_METADATA_FILE = "weight_metadata.json"
 
 
 async def update_weights(
@@ -232,19 +230,10 @@ async def update_weights(
     if lora_name is not None and weight_dir is not None:
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
-        # Check for NCCL weight metadata (present when trainer uses NCCL broadcast)
-        update_info = None
-        if weight_dir is not None:
-            metadata_file = weight_dir / WEIGHT_METADATA_FILE
-            if metadata_file.exists():
-                update_info = json.loads(metadata_file.read_text())
 
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
-            payload: dict = {"weight_dir": weight_dir}
-            if update_info is not None:
-                payload["update_info"] = update_info
             try:
-                response = await admin_client.post("/update_weights", json=payload)
+                response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
@@ -312,7 +301,9 @@ async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) 
     await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
 
 
-async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port: int, timeout: int) -> None:
+async def init_nccl_broadcast(
+    admin_clients: list[AsyncClient], host: str, port: int, timeout: int, packed: bool = True
+) -> None:
     """Make a HTTP post request to the vLLM server to initialize the NCCL broadcast."""
     logger = get_logger()
 
@@ -328,6 +319,7 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
                     "server_rank": client_num,
                     "num_inference_server": len(admin_clients),
                     "timeout": timeout,
+                    "packed": packed,
                 },
             )
             response.raise_for_status()

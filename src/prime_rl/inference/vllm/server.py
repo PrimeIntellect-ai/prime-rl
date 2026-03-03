@@ -163,13 +163,7 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    update_info = data.get("update_info")
-    if update_info is not None:
-        # NCCL mode: use vLLM's built-in weight transfer engine
-        await engine_client(request).collective_rpc("update_weights", args=(update_info,))
-    else:
-        # Filesystem mode: use worker extension
-        await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
     # Reset prefix cache to invalidate KV states computed with old weights
     await engine_client(request).reset_prefix_cache()
     return {"status": "ok"}
@@ -197,12 +191,12 @@ async def init_broadcaster(request: Request):
     host = data.get("host")
     port = data.get("port")
     timeout = data.get("timeout")
-    # Support both legacy and new field names
     server_rank = data.get("server_rank")
     num_inference_server = data.get("num_inference_server")
+    packed = data.get("packed", True)
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, server_rank, num_inference_server, timeout),
+        args=(host, port, server_rank, num_inference_server, timeout, packed),
     )
     return {"status": "ok"}
 

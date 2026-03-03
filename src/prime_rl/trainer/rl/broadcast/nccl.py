@@ -1,4 +1,3 @@
-import json
 import time
 from pathlib import Path
 from typing import Iterator, cast
@@ -6,7 +5,7 @@ from typing import Iterator, cast
 import torch
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
-from vllm.distributed.weight_transfer.nccl_engine import NCCLWeightTransferEngine
+from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerSendWeightsArgs, NCCLWeightTransferEngine
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
@@ -19,7 +18,6 @@ from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 NCCL_READY_MARKER = "NCCL_READY"
-WEIGHT_METADATA_FILE = "weight_metadata.json"
 
 
 def _filter_state_dict_by_layers(
@@ -88,7 +86,7 @@ class NCCLWeightBroadcastSender:
             yield from layer_dict.items()
 
     def get_weight_metadata(self, model: nn.Module) -> dict:
-        """Get weight metadata (names, dtypes, shapes, packed). Computed once and cached."""
+        """Get weight metadata (names, dtypes, shapes). Computed once and cached."""
         if self._weight_metadata is not None:
             return self._weight_metadata
 
@@ -98,22 +96,21 @@ class NCCLWeightBroadcastSender:
             dtype_names.append(str(tensor.dtype).replace("torch.", ""))
             shapes.append(list(tensor.shape))
 
-        self._weight_metadata = {
-            "names": names,
-            "dtype_names": dtype_names,
-            "shapes": shapes,
-            "packed": self.packed,
-        }
+        self._weight_metadata = {"names": names, "dtype_names": dtype_names, "shapes": shapes}
         return self._weight_metadata
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights using vLLM's native NCCL weight transfer engine."""
         if self.world.is_master and self.communicator is not None:
-            NCCLWeightTransferEngine.trainer_send_weights(
-                iterator=self._hf_weight_iterator(model),
+            args = NCCLTrainerSendWeightsArgs(
                 group=self.communicator,
                 packed=self.packed,
+                metadata=self.get_weight_metadata(model),
+            )
+            NCCLWeightTransferEngine.trainer_send_weights(
+                iterator=self._hf_weight_iterator(model),
+                trainer_args=args,
             )
 
 
@@ -142,13 +139,12 @@ class NCCLWeightBroadcast(WeightBroadcast):
         start_time = time.perf_counter()
         notified_runs: list[tuple[int, Path]] = []
         if self.world.is_master:
-            metadata = self.nccl_broadcast_sender.get_weight_metadata(model)
-            notified_runs = self._notify_orchestrator(metadata)
+            notified_runs = self._notify_orchestrator()
             self._wait_for_nccl_ready(notified_runs)
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
-    def _notify_orchestrator(self, metadata: dict) -> list[tuple[int, Path]]:
+    def _notify_orchestrator(self) -> list[tuple[int, Path]]:
         """Notify the orchestrator to initiate weight broadcast.
 
         Returns:
@@ -166,10 +162,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
                         self.multi_run_manager.progress[idx].step,
                     )
                     save_dir.mkdir(parents=True, exist_ok=True)
-
-                    # Write weight metadata for the orchestrator to read
-                    metadata_file = save_dir / WEIGHT_METADATA_FILE
-                    metadata_file.write_text(json.dumps(metadata))
 
                     stable_file = save_dir / "STABLE"
                     stable_file.touch()

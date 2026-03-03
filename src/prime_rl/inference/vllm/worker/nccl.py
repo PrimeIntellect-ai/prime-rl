@@ -16,7 +16,9 @@ logger = init_logger("vllm.inference.vllm.worker_nccl")
 class NCCLWeightUpdateWorker(Worker):
     """vLLM worker extension that computes NCCL rank offsets and delegates to vLLM's built-in weight transfer engine."""
 
-    def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int) -> None:
+    packed: bool = True
+
+    def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int, packed: bool = True) -> None:
         """Initialize vLLM's native NCCL weight transfer engine with correct rank offsets."""
         tp_size = get_tp_group().world_size
         dp_size = get_dp_group().world_size
@@ -35,3 +37,12 @@ class NCCLWeightUpdateWorker(Worker):
             "rank_offset": rank_offset,
             "world_size": world_size,
         })
+        self.packed = packed
+
+    def update_weights_from_path(self, weight_dir: str) -> None:
+        """Receive weights via NCCL using vLLM's built-in weight transfer engine.
+
+        Metadata (names, dtypes, shapes) is received via NCCL from the trainer,
+        so no out-of-band metadata passing is needed.
+        """
+        self.update_weights({"receive_metadata": True, "packed": self.packed})
