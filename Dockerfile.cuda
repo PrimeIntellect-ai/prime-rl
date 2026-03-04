@@ -63,6 +63,20 @@ RUN if [ "$(uname -m)" = "aarch64" ]; then \
     uv pip install flash-attn --no-build-isolation; \
     fi
 
+# Workaround: nvidia-cutlass-dsl 4.4.1 dropped ampere_helpers.py from
+# cutlass.utils (only ships hopper_helpers and blackwell_helpers), but
+# flash-attn 2.8.3's flash_attn.cute unconditionally imports it at module
+# level for the Sm80 forward kernel:
+#   flash_attn.cute.flash_fwd -> import cutlass.utils.ampere_helpers
+# This triggers even on GB200 (sm_100) because the import isn't gated by
+# GPU architecture. The file exists in flashinfer's vendored cutlass, so
+# we copy it over. Can be removed once flash-attn gates the import or
+# nvidia-cutlass-dsl re-adds ampere_helpers.
+RUN if [ "$(uname -m)" = "aarch64" ]; then \
+    cp .venv/lib/python3.12/site-packages/flashinfer/data/cutlass/python/CuTeDSL/cutlass/utils/ampere_helpers.py \
+       .venv/lib/python3.12/site-packages/nvidia_cutlass_dsl/python_packages/cutlass/utils/ampere_helpers.py; \
+    fi
+
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y \
