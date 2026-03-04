@@ -81,7 +81,6 @@ override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
-    "nvidia-cutlass-dsl>=4.4.0.dev1",
     "quack-kernels>=0.2.7",
 ]
 
