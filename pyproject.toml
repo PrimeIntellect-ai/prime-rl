@@ -79,6 +79,7 @@ no-build-isolation-package = ["flash-attn"]
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
+    "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
 ]
 
