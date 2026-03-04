@@ -344,6 +344,7 @@ class MultiRunManager:
         if not self.world.is_master:
             raise RuntimeError("discover_runs() must only be called on the master rank")
         run_ids = {run_path.stem for run_path in self.output_dir.glob("run_*")}
+        print(f"[MULTI-AGENT] discover_runs scanning {self.output_dir} -> found: {run_ids}")
 
         # Filter out evicted runs
         evicted_runs = {run_id for run_id in run_ids if (self.output_dir / run_id / "control" / "evicted.txt").exists()}
@@ -351,6 +352,10 @@ class MultiRunManager:
 
         deleted_runs = self.id_2_idx.keys() - run_ids
         new_runs = run_ids - self.id_2_idx.keys()
+        if new_runs:
+            print(f"[MULTI-AGENT] New runs discovered: {new_runs}")
+        if deleted_runs:
+            print(f"[MULTI-AGENT] Deleted runs: {deleted_runs}")
 
         for deleted_run in deleted_runs:
             deleted_idx = self.id_2_idx[deleted_run]
@@ -365,13 +370,16 @@ class MultiRunManager:
 
                 config = self.get_orchestrator_config(new_run)
                 if config is None:
+                    print(f"[MULTI-AGENT] WARNING: No orch.toml found for {new_run}, skipping")
                     continue
 
                 self._create_run_data(new_run, new_id, config)
+                print(f"[MULTI-AGENT] Created run data for '{new_run}' (idx={new_id}, config={config})")
                 # Call discovered hooks (master only) after data setup
                 for hook in self._discovered_hooks:
                     hook(new_id, new_run, config)
             except StopIteration:
+                print(f"[MULTI-AGENT] WARNING: No unused indices left for run '{new_run}'")
                 continue
 
     def synchronize_state(self) -> None:
