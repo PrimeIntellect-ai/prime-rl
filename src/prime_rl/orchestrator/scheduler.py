@@ -250,7 +250,7 @@ class Scheduler:
 
         for actor_id, lora_name in self.actor_lora_mapping.items():
             run_dir_name = self.actor_run_dirs[actor_id]
-            actor_broadcast_dir = get_broadcast_dir(self.config.output_dir / run_dir_name)
+            actor_broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_dir_name)
             latest = get_latest_ckpt_step(actor_broadcast_dir) or 0
 
             if latest > self.actor_ckpt_steps[actor_id]:
