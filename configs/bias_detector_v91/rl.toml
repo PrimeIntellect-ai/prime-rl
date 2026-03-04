@@ -1,0 +1,55 @@
+output_dir = "outputs/bias_detector_v91"
+max_steps = 150
+seq_len = 12288
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "self-play"
+name = "bias-detector-v91-devils-advocate"
+offline = false
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[orchestrator]
+batch_size = 24
+rollouts_per_example = 4
+use_verifier_step_advantages = true
+use_token_client = false
+
+# V91: Devil's Advocate — PRODUCTION VIABLE.
+# After first scoring, model argues AGAINST its own scores, then revises.
+# Self-adversarial reasoning forces deeper analysis without any oracle.
+# At inference: score → self-critique → revise. Fully deployable pipeline.
+# Hypothesis: the counter-argument process exposes shallow reasoning,
+# especially on C1 where topic-frame confusion is the #1 failure mode.
+[orchestrator.sampling]
+max_tokens = 1024
+temperature = 1.2
+
+[[orchestrator.env]]
+id = "bias_detector"
+name = "bias_detector"
+args = { advantage_center = 0.3, gen_advantage_scale = 0.0, disc_advantage_scale = 2.0, disc_per_criterion_scales = [1.5, 2.0, 0.5], disc_num_examples = 5, disc_diverse_examples = true, disc_topic_hint = true, disc_mixed_prompt = true, disc_devils_advocate = true, use_real_articles = true, use_corpus = true, real_oversample = 10, num_seed_rows = 1000 }
+
+[orchestrator.val]
+interval = 10
+num_examples = 24
+
+[orchestrator.model.lora]
+name = "r8-1e-5"
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[ckpt]
+interval = 25

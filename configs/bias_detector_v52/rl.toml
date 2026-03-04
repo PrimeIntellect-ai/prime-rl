@@ -1,0 +1,62 @@
+output_dir = "outputs/bias_detector_v52"
+max_steps = 150
+seq_len = 12288
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "self-play"
+name = "bias-detector-v52-confidence-weighted"
+offline = false
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[orchestrator]
+batch_size = 24
+rollouts_per_example = 4
+use_verifier_step_advantages = true
+use_token_client = false
+
+[orchestrator.sampling]
+max_tokens = 1024
+temperature = 1.2
+
+# V52: Confidence-weighted advantage.
+# Model predicts C1/C2/C3 AND confidence (1-10). Advantage is scaled by confidence/10.
+# High confidence + right = large positive advantage.
+# High confidence + wrong = large negative advantage.
+# Low confidence = small advantage either way (safe but unrewarded).
+# This teaches calibration: know what you know, be uncertain about hard cases.
+# Hypothesis: The model's C1 errors are partially because it's equally confident
+# about easy C3 predictions and hard C1 predictions. Confidence weighting
+# makes C1 errors less punishing IF the model learns to express low confidence.
+[[orchestrator.env]]
+id = "bias_detector"
+name = "bias_detector"
+args = { advantage_center = 0.3, gen_advantage_scale = 0.0, disc_advantage_scale = 2.0, disc_per_criterion_scales = [2.0, 1.5, 0.5], disc_num_examples = 5, disc_diverse_examples = true, disc_topic_hint = true, disc_iterative = true, disc_confidence_weight = true, use_real_articles = true, use_corpus = true, real_oversample = 10, num_seed_rows = 1000 }
+
+[orchestrator.val]
+interval = 10
+num_examples = 24
+
+[orchestrator.model.lora]
+name = "r8-1e-5"
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[ckpt]
+interval = 25
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7

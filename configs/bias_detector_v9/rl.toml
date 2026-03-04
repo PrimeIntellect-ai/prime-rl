@@ -1,0 +1,53 @@
+output_dir = "outputs/bias_detector_v9"
+max_steps = 100
+seq_len = 12288
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "self-play"
+name = "bias-detector-v9-extreme-c1"
+offline = false
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[orchestrator]
+batch_size = 24
+rollouts_per_example = 4
+use_verifier_step_advantages = true
+use_token_client = false
+
+[orchestrator.sampling]
+max_tokens = 1536
+temperature = 1.2
+
+[[orchestrator.env]]
+id = "bias_detector"
+name = "bias_detector"
+args = { advantage_center = 0.3, per_criterion_scales = [4.0, 1.0, 0.5] }
+
+[orchestrator.val]
+interval = 10
+num_examples = 8
+
+[orchestrator.model.lora]
+name = "r8-1e-5"
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[ckpt]
+interval = 25
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7

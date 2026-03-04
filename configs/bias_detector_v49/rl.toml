@@ -1,0 +1,60 @@
+output_dir = "outputs/bias_detector_v49"
+max_steps = 150
+seq_len = 12288
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "self-play"
+name = "bias-detector-v49-causal-logic"
+offline = false
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[orchestrator]
+batch_size = 24
+rollouts_per_example = 4
+use_verifier_step_advantages = true
+use_token_client = false
+
+[orchestrator.sampling]
+max_tokens = 1024
+temperature = 1.2
+
+# V49: Causal Logic Extraction prompt + iterative correction.
+# The prompt forces the model to explicitly extract:
+#   1. CAUSAL LOGIC (for C1): What causes the problem? What's the solution?
+#   2. VOICE DECOMPOSITION (for C2): Identify journalist sentences vs quotes
+#   3. EVIDENCE ENUMERATION (for C3): List and count distinct evidence types
+# This structured analysis addresses all 5 failure modes identified in hard-article analysis.
+# Combined with iterative correction to fix remaining errors.
+[[orchestrator.env]]
+id = "bias_detector"
+name = "bias_detector"
+args = { advantage_center = 0.3, gen_advantage_scale = 0.0, disc_advantage_scale = 2.0, disc_per_criterion_scales = [1.5, 2.0, 0.5], disc_num_examples = 5, disc_diverse_examples = true, disc_topic_hint = true, disc_causal_prompt = true, disc_iterative = true, synthetic_max_mismatch = 2, c1_balance = true, use_real_articles = true, use_corpus = true, real_oversample = 10, num_seed_rows = 1000 }
+
+[orchestrator.val]
+interval = 10
+num_examples = 24
+
+[orchestrator.model.lora]
+name = "r8-1e-5"
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[ckpt]
+interval = 25
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7

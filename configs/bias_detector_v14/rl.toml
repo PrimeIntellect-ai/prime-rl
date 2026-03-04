@@ -1,0 +1,53 @@
+output_dir = "outputs/bias_detector_v14"
+max_steps = 100
+seq_len = 12288
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "self-play"
+name = "bias-detector-v14-llm-judge"
+offline = false
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[orchestrator]
+batch_size = 24
+rollouts_per_example = 4
+use_verifier_step_advantages = true
+use_token_client = false
+
+[orchestrator.sampling]
+max_tokens = 1536
+temperature = 1.2
+
+[[orchestrator.env]]
+id = "bias_detector"
+name = "bias_detector"
+args = { advantage_center = 0.3, per_criterion_scales = [2.5, 1.5, 1.0], disc_advantage_scale = 1.5, disc_per_criterion_scales = [2.0, 1.0, 0.5], disc_num_examples = 5, disc_diverse_examples = true, disc_topic_hint = true, reasoning_quality_bonus = 0.3, use_llm_judge = true, judge_model = "Qwen/Qwen3-4B-Instruct-2507" }
+
+[orchestrator.val]
+interval = 10
+num_examples = 8
+
+[orchestrator.model.lora]
+name = "r8-1e-5"
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[ckpt]
+interval = 25
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7

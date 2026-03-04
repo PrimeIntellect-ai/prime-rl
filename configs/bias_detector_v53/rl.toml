@@ -1,0 +1,66 @@
+output_dir = "outputs/bias_detector_v53"
+max_steps = 150
+seq_len = 12288
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "self-play"
+name = "bias-detector-v53-hindsight-explain"
+offline = false
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[orchestrator]
+batch_size = 24
+rollouts_per_example = 4
+use_verifier_step_advantages = true
+use_token_client = false
+
+[orchestrator.sampling]
+max_tokens = 1024
+temperature = 1.2
+
+# V53: Hindsight explanation — the most novel experiment.
+# After the discriminator predicts scores, it receives the CORRECT scores and must
+# explain WHY those scores are correct, citing specific article evidence.
+# The explanation step gets its own advantage based on reasoning quality.
+#
+# This is "hindsight experience replay" for bias detection:
+# 1. Predict scores (learn from accuracy feedback)
+# 2. See correct answer (supervised signal)
+# 3. Explain why the correct answer is correct (learn reasoning patterns)
+#
+# The explanation skill transfers back to prediction: a model that can articulate
+# WHY C1=+2 is correct for this article is better equipped to predict C1=+2.
+# This bridges the gap between "knowing the criteria" and "applying them."
+[[orchestrator.env]]
+id = "bias_detector"
+name = "bias_detector"
+args = { advantage_center = 0.3, gen_advantage_scale = 0.0, disc_advantage_scale = 2.0, disc_per_criterion_scales = [2.0, 1.5, 0.5], disc_num_examples = 5, disc_diverse_examples = true, disc_topic_hint = true, disc_hindsight_explain = true, use_real_articles = true, use_corpus = true, real_oversample = 10, synthetic_max_mismatch = 2, c1_balance = true, num_seed_rows = 1000 }
+
+[orchestrator.val]
+interval = 10
+num_examples = 24
+
+[orchestrator.model.lora]
+name = "r8-1e-5"
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[ckpt]
+interval = 25
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7

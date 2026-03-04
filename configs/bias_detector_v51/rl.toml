@@ -1,0 +1,59 @@
+output_dir = "outputs/bias_detector_v51"
+max_steps = 150
+seq_len = 12288
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "self-play"
+name = "bias-detector-v51-magnitude-iterative"
+offline = false
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[orchestrator]
+batch_size = 24
+rollouts_per_example = 4
+use_verifier_step_advantages = true
+use_token_client = false
+
+[orchestrator.sampling]
+max_tokens = 1024
+temperature = 1.2
+
+# V51: Magnitude feedback in iterative correction.
+# Instead of just "C1 seems too negative", says "C1 seems too negative (off by ~3 points)".
+# Gives the model a concrete target range, potentially improving correction accuracy.
+# Uses V31 base (iterative) + magnitude feedback as the only change (ablation).
+# Hypothesis: C2's 50% no-change rate in V31 is because direction-only feedback is ambiguous.
+# Magnitude tells the model HOW MUCH to correct, not just which direction.
+[[orchestrator.env]]
+id = "bias_detector"
+name = "bias_detector"
+args = { advantage_center = 0.3, gen_advantage_scale = 0.0, disc_advantage_scale = 2.0, disc_per_criterion_scales = [2.0, 1.5, 0.5], disc_num_examples = 5, disc_diverse_examples = true, disc_topic_hint = true, disc_iterative = true, disc_magnitude_feedback = true, disc_mask_quotes = 0.3, use_real_articles = true, use_corpus = true, real_oversample = 10, num_seed_rows = 1000 }
+
+[orchestrator.val]
+interval = 10
+num_examples = 24
+
+[orchestrator.model.lora]
+name = "r8-1e-5"
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[ckpt]
+interval = 25
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7

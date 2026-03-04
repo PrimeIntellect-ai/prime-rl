@@ -1,0 +1,55 @@
+output_dir = "outputs/bias_detector_v92"
+max_steps = 200
+seq_len = 12288
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "self-play"
+name = "bias-detector-v92-iterative-then-blind"
+offline = false
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[orchestrator]
+batch_size = 24
+rollouts_per_example = 4
+use_verifier_step_advantages = true
+use_token_client = false
+
+# V92: Iterative training + blind self-correction at inference.
+# BOTH oracle iterative AND blind self-correction enabled.
+# Flow: score → blind self-check → oracle correction (if still wrong).
+# The oracle feedback teaches the model WHAT to look for during blind self-check.
+# At inference: just use the blind self-correction (first 2 turns).
+# Extended to 200 steps to let both learning signals compound.
+[orchestrator.sampling]
+max_tokens = 1024
+temperature = 1.2
+
+[[orchestrator.env]]
+id = "bias_detector"
+name = "bias_detector"
+args = { advantage_center = 0.3, gen_advantage_scale = 0.0, disc_advantage_scale = 2.0, disc_per_criterion_scales = [1.5, 2.0, 0.5], disc_num_examples = 5, disc_diverse_examples = true, disc_topic_hint = true, disc_mixed_prompt = true, disc_blind_selfcorrect = true, disc_iterative = true, use_real_articles = true, use_corpus = true, real_oversample = 10, num_seed_rows = 1000 }
+
+[orchestrator.val]
+interval = 10
+num_examples = 24
+
+[orchestrator.model.lora]
+name = "r8-1e-5"
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[ckpt]
+interval = 25

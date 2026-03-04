@@ -1,0 +1,58 @@
+output_dir = "outputs/bias_detector_v76a"
+max_steps = 50
+seq_len = 12288
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "self-play"
+name = "bias-detector-v76a-locked-c1"
+offline = false
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[orchestrator]
+batch_size = 24
+rollouts_per_example = 4
+use_verifier_step_advantages = true
+use_token_client = false
+
+[orchestrator.sampling]
+max_tokens = 1024
+temperature = 1.2
+
+# V76a: Phase 1 — C1-only training (50 steps).
+# C1 peaks earliest (step 15-19 in V31). Train C1 first to establish
+# the hardest criterion before moving to C2 and C3.
+# disc_per_criterion_scales = [3.0, 0.0, 0.0] means ONLY C1 error
+# contributes to the discriminator's advantage.
+[[orchestrator.env]]
+id = "bias_detector"
+name = "bias_detector"
+args = { advantage_center = 0.3, gen_advantage_scale = 0.0, disc_advantage_scale = 2.0, disc_per_criterion_scales = [3.0, 0.0, 0.0], disc_num_examples = 5, disc_diverse_examples = true, disc_topic_hint = true, disc_mixed_prompt = true, disc_iterative = true, use_real_articles = true, use_corpus = true, real_oversample = 10, num_seed_rows = 1000 }
+
+[orchestrator.val]
+interval = 10
+num_examples = 24
+
+[orchestrator.model.lora]
+name = "r8-1e-5"
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[ckpt]
+interval = 10
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7
