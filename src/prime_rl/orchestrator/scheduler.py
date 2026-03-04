@@ -171,6 +171,7 @@ class Scheduler:
     async def update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
         if self.actor_lora_mapping:
+            self.logger.debug(f"[MULTI-AGENT] update_policy delegating to multi-actor (watching {list(self.actor_lora_mapping.keys())})")
             await self._update_policy_multi_actor()
             return
 
@@ -254,16 +255,19 @@ class Scheduler:
 
             if latest > self.actor_ckpt_steps[actor_id]:
                 weights_path = get_step_path(actor_broadcast_dir, latest)
+                self.logger.info(f"[MULTI-AGENT] Loading LoRA '{lora_name}' for actor '{actor_id}': step {self.actor_ckpt_steps[actor_id]} -> {latest} (path: {weights_path})")
                 await self.inference_pool.update_weights(
                     weights_path, lora_name=lora_name, step=latest
                 )
                 self.actor_ckpt_steps[actor_id] = latest
                 any_updated = True
-                self.logger.debug(f"Updated LoRA adapter '{lora_name}' for actor '{actor_id}' to step {latest}")
 
                 # Update agent model name so inference routes to this adapter
                 if hasattr(self.env, "_agents") and actor_id in self.env._agents:
                     self.env._agents[actor_id].model = lora_name
+                    self.logger.info(f"[MULTI-AGENT] Agent '{actor_id}' model set to '{lora_name}'")
+                else:
+                    self.logger.warning(f"[MULTI-AGENT] Could not find agent '{actor_id}' in env._agents (has_attr={hasattr(self.env, '_agents')})")
 
         if any_updated:
             self.update_weights_time = time.perf_counter() - update_weights_start_time
