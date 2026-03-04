@@ -35,7 +35,6 @@ dependencies = [
     "dion",
     "reverse-text",
     "tilelang>=0.1.8",
-    "research-environments",
     "opencode-math"
 ]
 
@@ -96,8 +95,9 @@ flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", su
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", rev = "6990941" }
 reverse-text = { index = "primeintellect" }
 
-research-environments = { git = "https://github.com/PrimeIntellect-ai/research-environments.git", rev = "59e47e3" }
-opencode-math = { git = "https://github.com/PrimeIntellect-ai/research-environments.git", rev = "59e47e3", subdirectory = "environments/opencode_math" }
+# During dev, the verifiers pin in prime-rl has to match each opencode-env
+# Once all shared utils changes are merged, we can release verifiers and remove the git pin
+opencode-math = { git = "https://github.com/PrimeIntellect-ai/research-environments.git", rev = "5575d1a", subdirectory = "environments/opencode_math" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
