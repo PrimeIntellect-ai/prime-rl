@@ -29,7 +29,7 @@ proposer = "run_proposer"
 responder = "run_responder"
 
 [trainer]
-max_concurrent_runs = 2
+max_concurrent_runs = 3
 
 [trainer.model.lora]
 rank = 32
