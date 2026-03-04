@@ -52,6 +52,8 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                 state_dict = revert_weight_conversion(model, state_dict)
 
         for idx in self.multi_run_manager.ready_to_update_idxs:
+            run_id = self.multi_run_manager.idx_2_id.get(idx, "unknown")
+            print(f"[MULTI-AGENT] Broadcasting weights for run '{run_id}' (idx={idx}, step={self.multi_run_manager.progress[idx].step})")
             self.logger.debug(
                 f"Broadcasting weights for run {idx} (ready_to_update={self.multi_run_manager.ready_to_update[idx]})"
             )

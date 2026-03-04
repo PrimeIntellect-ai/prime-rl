@@ -285,7 +285,11 @@ class MultiPacker(BasePacker):
                 per_run_stats[run_idx] = (1, num_tokens)
 
         for run_idx, (num_samples, num_tokens) in per_run_stats.items():
+            run_id = self.multi_run_manager.idx_2_id.get(run_idx, "unknown")
+            print(f"[MULTI-AGENT] Packer: run '{run_id}' (idx={run_idx}) got {num_samples} samples, {num_tokens} tokens")
             self._update_run_progress(run_idx, num_samples, num_tokens)
+            if self.multi_run_manager.ready_to_update[run_idx]:
+                print(f"[MULTI-AGENT] Packer: run '{run_id}' (idx={run_idx}) -> ready_to_update=True")
 
         # Pack each run separately to ensure no mixing of runs in microbatches
         all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]
