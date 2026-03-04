@@ -334,6 +334,12 @@ class RLConfig(BaseConfig):
         if self.trainer.loss.type != "sft":
             raise ValueError('orchestrator.rollout_model is only supported when trainer.loss.type = "sft".')
 
+        if self.inference is not None:
+            raise ValueError(
+                "inference must be omitted when orchestrator.rollout_model is configured. "
+                "External rollout mode does not use the local inference server."
+            )
+
         if self.orchestrator.use_token_client:
             warnings.warn(
                 "orchestrator.rollout_model is configured. Setting orchestrator.use_token_client=false "

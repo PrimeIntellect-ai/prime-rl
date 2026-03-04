@@ -12,7 +12,7 @@ from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
-from prime_rl.utils.pathing import get_broadcast_dir, get_log_dir
+from prime_rl.utils.pathing import get_log_dir
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -62,7 +62,6 @@ from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
     get_env_ids_to_install,
-    get_latest_ckpt_step,
     install_env,
     resolve_latest_ckpt_step,
     strip_env_version,
@@ -108,8 +107,6 @@ async def orchestrate(config: OrchestratorConfig):
     rollout_client_config = config.client
     rollout_model_name = config.model.name
     enable_policy_updates = config.rollout_model is None
-    eval_inference_pool = None
-    eval_model_name = config.model.name
 
     if config.rollout_model is not None:
         rollout_client_config = config.rollout_model.client
@@ -128,23 +125,6 @@ async def orchestrate(config: OrchestratorConfig):
     inference_pool = await setup_inference_pool(
         rollout_client_config, model_name=rollout_model_name, client_type=client_type
     )
-
-    # In external rollout mode we can optionally evaluate on a separate policy model endpoint
-    # (typically the local inference server configured via config.client/config.model).
-    if config.rollout_model is not None and config.eval is not None:
-        if config.client != rollout_client_config or config.model.name != rollout_model_name:
-            eval_inference_pool = await setup_inference_pool(
-                config.client, model_name=config.model.name, client_type=client_type
-            )
-            eval_model_name = config.model.name
-            logger.info(
-                f"Using separate eval model endpoint (base_url={', '.join(config.client.base_url)}, "
-                f"model={eval_model_name})"
-            )
-
-    if eval_inference_pool is None:
-        eval_inference_pool = inference_pool
-        eval_model_name = rollout_model_name
 
     # Setup teacher inference pool if configured
     if config.teacher_model:
@@ -347,10 +327,6 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info("Waiting for inference pool to be ready")
     await inference_pool.wait_for_ready(rollout_model_name)
 
-    if eval_inference_pool is not inference_pool:
-        logger.info("Waiting for eval inference pool to be ready")
-        await eval_inference_pool.wait_for_ready(eval_model_name)
-        logger.success("Eval inference pool ready")
     logger.success("Inference pool ready")
 
     # Check health of teacher inference server if configured
@@ -475,18 +451,6 @@ async def orchestrate(config: OrchestratorConfig):
             else:
                 logger.info(f"Running evals for checkpoint step {ckpt_step}")
 
-            if eval_inference_pool is not inference_pool and eval_ckpt_step > 0:
-                latest_weight_step = get_latest_ckpt_step(get_broadcast_dir(config.output_dir))
-                eval_weight_step = min(eval_ckpt_step, latest_weight_step) if latest_weight_step is not None else 0
-                if eval_weight_step > 0:
-                    check_exists = config.weight_broadcast.type != "nccl"
-                    wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
-                    weights_path = get_weight_dir(
-                        config.output_dir, eval_weight_step, check_exists=check_exists, wait_timeout=wait_timeout
-                    )
-                    lora_name = config.model.lora.name if config.model.lora else None
-                    await eval_inference_pool.update_weights(weights_path, lora_name=lora_name, step=eval_weight_step)
-
             # Pause weight updates and re-scheduling of training rollouts during eval
             # to avoid evaluating across different checkpoints and avoid congestion
             scheduler.checkpoint_ready.clear()
@@ -501,8 +465,8 @@ async def orchestrate(config: OrchestratorConfig):
                     evaluate_env(
                         env=eval_env,
                         env_name=eval_env_name,
-                        get_client=eval_inference_pool.get_next_client,
-                        model_name=eval_model_name,
+                        get_client=inference_pool.get_next_client,
+                        model_name=scheduler.model_name,
                         sampling_args=eval_sampling_args,
                         num_examples=eval_env_config.num_examples or config.eval.num_examples,
                         rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
@@ -858,24 +822,13 @@ async def orchestrate(config: OrchestratorConfig):
 
     if config.eval:
         logger.info("Running final evals")
-        if eval_inference_pool is not inference_pool and ckpt_step > 0:
-            latest_weight_step = get_latest_ckpt_step(get_broadcast_dir(config.output_dir))
-            if latest_weight_step is not None and latest_weight_step > 0:
-                check_exists = config.weight_broadcast.type != "nccl"
-                wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
-                weights_path = get_weight_dir(
-                    config.output_dir, latest_weight_step, check_exists=check_exists, wait_timeout=wait_timeout
-                )
-                lora_name = config.model.lora.name if config.model.lora else None
-                await eval_inference_pool.update_weights(weights_path, lora_name=lora_name, step=latest_weight_step)
-
         results = await asyncio.gather(
             *[
                 evaluate_env(
                     env=eval_env,
                     env_name=eval_env_name,
-                    get_client=eval_inference_pool.get_next_client,
-                    model_name=eval_model_name,
+                    get_client=inference_pool.get_next_client,
+                    model_name=scheduler.model_name,
                     sampling_args=eval_sampling_args,
                     num_examples=eval_env_config.num_examples or config.eval.num_examples,
                     rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
@@ -907,9 +860,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Stop inference pool
     await inference_pool.stop()
-
-    if eval_inference_pool is not inference_pool:
-        await eval_inference_pool.stop()
 
     if teacher_inference_pool is not None:
         await teacher_inference_pool.stop()

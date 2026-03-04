@@ -82,7 +82,7 @@ In this mode:
 - Rollouts are generated from `orchestrator.rollout_model`
 - The orchestrator automatically uses text-level reconstruction with the student tokenizer (`use_token_client=false`)
 - The RL trainer optimizes masked NLL (`trainer.loss.type = "sft"`)
-- `[inference]` is optional: omit it if you only need teacher-generated rollouts; include it if you also want student-side eval/validation during the run.
+- Omit `[inference]` (no local inference server required)
 
 ## Parameters
 

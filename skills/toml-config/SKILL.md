@@ -136,7 +136,7 @@ Notes:
 - `orchestrator.rollout_model` switches rollout generation to the external teacher endpoint.
 - `use_token_client = false` is auto-enabled when `orchestrator.rollout_model` is set.
 - `trainer.loss.type = "sft"` makes the RL trainer optimize masked NLL like SFT.
-- `[inference]` is optional in this mode. Omit it when you only need teacher rollouts; include it if you want eval/validation against the student endpoint during training.
+- In this mode, omit `[inference]`.
 
 ## Available commands
 

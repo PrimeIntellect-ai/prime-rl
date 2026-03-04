@@ -166,20 +166,19 @@ def test_rl_config_external_rollout_mode_valid():
     assert config.inference is None
 
 
-def test_rl_config_external_rollout_mode_allows_inference():
-    config = RLConfig(
-        trainer={"loss": {"type": "sft"}},
-        orchestrator={
-            "use_token_client": False,
-            "rollout_model": {
-                "client": {"base_url": ["https://example.com/v1"], "skip_model_check": True},
-                "model": {"name": "gpt-4o-mini"},
+def test_rl_config_external_rollout_mode_rejects_inference():
+    with pytest.raises(ValidationError, match="inference must be omitted when orchestrator.rollout_model"):
+        RLConfig(
+            trainer={"loss": {"type": "sft"}},
+            orchestrator={
+                "use_token_client": False,
+                "rollout_model": {
+                    "client": {"base_url": ["https://example.com/v1"], "skip_model_check": True},
+                    "model": {"name": "gpt-4o-mini"},
+                },
             },
-        },
-        inference={},
-    )
-    assert config.orchestrator.rollout_model is not None
-    assert config.inference is not None
+            inference={},
+        )
 
 
 def test_rl_config_external_rollout_mode_auto_disables_token_client():
