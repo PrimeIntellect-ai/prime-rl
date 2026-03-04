@@ -87,7 +87,7 @@ override-dependencies = [
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 math-env = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "45fae8d" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "80932c3" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "609e3d5" }
@@ -97,7 +97,7 @@ reverse-text = { index = "primeintellect" }
 
 # During dev, the verifiers pin in prime-rl has to match each opencode-env
 # Once all shared utils changes are merged, we can release verifiers and remove the git pin
-opencode-math = { git = "https://github.com/PrimeIntellect-ai/research-environments.git", rev = "5575d1a", subdirectory = "environments/opencode_math" }
+opencode-math = { git = "https://github.com/PrimeIntellect-ai/research-environments.git", rev = "74594e3", subdirectory = "environments/opencode_math" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
