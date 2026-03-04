@@ -77,13 +77,21 @@ def _deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, An
             "function": {**function, "arguments": arguments},
         }
 
-    return [
-        {
-            **message,
-            "tool_calls": [_deserialize_tool_call(tc) for tc in (message.get("tool_calls") or [])],
-        }
-        for message in messages
-    ]
+    deserialized_messages: list[dict[str, Any]] = []
+    for message in messages:
+        if "tool_calls" not in message:
+            deserialized_messages.append(dict(message))
+            continue
+
+        tool_calls = message.get("tool_calls") or []
+        deserialized_messages.append(
+            {
+                **message,
+                "tool_calls": [_deserialize_tool_call(tc) for tc in tool_calls],
+            }
+        )
+
+    return deserialized_messages
 
 
 def _strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

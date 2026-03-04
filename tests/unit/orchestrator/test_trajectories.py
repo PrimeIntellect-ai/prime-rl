@@ -10,6 +10,7 @@ from PIL import Image
 from prime_rl.orchestrator.trajectories import (
     VLMImageCache,
     _align_routed_experts,
+    _deserialize_tool_calls,
     _extract_images_from_examples,
     _extract_images_from_messages,
     _ImageStore,
@@ -57,6 +58,33 @@ class SimpleChatTokenizer:
         if add_generation_prompt:
             ids.append(self._id("<|assistant|>"))
         return ids
+
+
+def test_deserialize_tool_calls_does_not_inject_missing_key():
+    messages = [{"role": "assistant", "content": "hello"}]
+
+    deserialized = _deserialize_tool_calls(messages)
+
+    assert "tool_calls" not in deserialized[0]
+
+
+def test_deserialize_tool_calls_parses_arguments_when_present():
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"x": 1}'},
+                }
+            ],
+        }
+    ]
+
+    deserialized = _deserialize_tool_calls(messages)
+
+    assert deserialized[0]["tool_calls"][0]["function"]["arguments"] == {"x": 1}
 
 
 @pytest.fixture
