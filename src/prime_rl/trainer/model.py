@@ -42,6 +42,31 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import is_vlm_model
 
+
+def _patch_qwen3_5_text_position_ids():
+    """Fix Qwen3.5 passing 3D MRoPE position_ids to decoder layers instead of 2D text_position_ids.
+
+    Upstream fix: https://github.com/huggingface/transformers/pull/44399
+    Remove once the pinned transformers commit includes this fix.
+    """
+    import inspect
+
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5DecoderLayer, Qwen3_5TextModel
+
+    source = inspect.getsource(Qwen3_5TextModel.forward)
+    if "decoder_layer" in source and "position_ids=text_position_ids" in source.split("decoder_layer")[-1]:
+        return  # already fixed upstream
+
+    _original_decoder_forward = Qwen3_5DecoderLayer.forward
+
+    def _patched_decoder_forward(self, hidden_states, position_ids=None, **kwargs):
+        if position_ids is not None and position_ids.ndim == 3:
+            position_ids = position_ids[0]
+        return _original_decoder_forward(self, hidden_states, position_ids=position_ids, **kwargs)
+
+    Qwen3_5DecoderLayer.forward = _patched_decoder_forward
+
+
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
 transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
@@ -164,6 +189,9 @@ def get_model(
     is_vlm = is_vlm_model(config.name)
     if is_vlm:
         logger.info(f"Detected vision-language model: {config.name}")
+
+    if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
+        _patch_qwen3_5_text_position_ids()
 
     model_config = cast(
         PretrainedConfig,

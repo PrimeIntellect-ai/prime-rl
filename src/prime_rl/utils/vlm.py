@@ -9,6 +9,7 @@ import fnmatch
 # Add new patterns here as they are tested and supported
 SUPPORTED_VLM_PATTERNS = [
     "Qwen/Qwen3-VL*",
+    "Qwen/Qwen3.5*",
 ]
 
 
