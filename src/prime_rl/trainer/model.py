@@ -52,19 +52,27 @@ def _patch_qwen3_5_text_position_ids():
     import inspect
 
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5DecoderLayer, Qwen3_5TextModel
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeDecoderLayer, Qwen3_5MoeTextModel
 
-    source = inspect.getsource(Qwen3_5TextModel.forward)
-    if "decoder_layer" in source and "position_ids=text_position_ids" in source.split("decoder_layer")[-1]:
-        return  # already fixed upstream
+    for text_model_cls, decoder_layer_cls in [
+        (Qwen3_5TextModel, Qwen3_5DecoderLayer),
+        (Qwen3_5MoeTextModel, Qwen3_5MoeDecoderLayer),
+    ]:
+        source = inspect.getsource(text_model_cls.forward)
+        if "decoder_layer" in source and "position_ids=text_position_ids" in source.split("decoder_layer")[-1]:
+            continue  # already fixed upstream
 
-    _original_decoder_forward = Qwen3_5DecoderLayer.forward
+        _original_forward = decoder_layer_cls.forward
 
-    def _patched_decoder_forward(self, hidden_states, position_ids=None, **kwargs):
-        if position_ids is not None and position_ids.ndim == 3:
-            position_ids = position_ids[0]
-        return _original_decoder_forward(self, hidden_states, position_ids=position_ids, **kwargs)
+        def _make_patched_forward(original):
+            def _patched_forward(self, hidden_states, position_ids=None, **kwargs):
+                if position_ids is not None and position_ids.ndim == 3:
+                    position_ids = position_ids[0]
+                return original(self, hidden_states, position_ids=position_ids, **kwargs)
 
-    Qwen3_5DecoderLayer.forward = _patched_decoder_forward
+            return _patched_forward
+
+        decoder_layer_cls.forward = _make_patched_forward(_original_forward)
 
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
