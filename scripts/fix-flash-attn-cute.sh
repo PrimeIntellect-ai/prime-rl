@@ -11,7 +11,7 @@
 set -e
 
 echo "Reinstalling flash-attn-cute to fix namespace conflict with flash-attn..."
-uv pip install --reinstall --no-deps "flash-attn-cute @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=flash_attn/cute"
+uv pip install --reinstall --no-deps "flash-attn-cute @ git+https://github.com/Dao-AILab/flash-attention.git@7ed0898caa50a8f3fbb4f7212a437479bd59dfc1#subdirectory=flash_attn/cute"
 
 # Verify installation
 LINES=$(wc -l < "$(python -c 'import flash_attn.cute.interface as m; print(m.__file__)')")
