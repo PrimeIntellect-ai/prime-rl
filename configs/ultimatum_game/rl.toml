@@ -29,5 +29,10 @@ proposer = "run_proposer"
 responder = "run_responder"
 
 [trainer]
+max_concurrent_runs = 2
+
+[trainer.model.lora]
+rank = 32
 
 [inference]
+enable_lora = true
