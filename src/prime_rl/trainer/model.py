@@ -43,6 +43,27 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import is_vlm_model
 
 
+def _patch_qwen3_5_moe_conversion_mapping():
+    """Fix Qwen3.5 MoE conversion mapping incorrectly applying qwen2_moe expert weight splitting.
+
+    Qwen3.5 MoE stores expert weights as fused 3D tensors natively in the checkpoint
+    (e.g. experts.gate_up_proj [num_experts, 2*intermediate, hidden]). The upstream mapping
+    incorrectly maps qwen3_5_moe → qwen2_moe, which assumes per-expert 2D checkpoint weights,
+    causing revert_weight_conversion to produce wrong shapes during weight broadcasting.
+
+    Remove once the pinned transformers commit fixes this.
+    """
+    from transformers.conversion_mapping import get_checkpoint_conversion_mapping, register_checkpoint_conversion_mapping
+
+    # qwen3_5_moe_text: keep only the qwen3_5_text renaming, remove qwen2_moe expert conversion
+    qwen3_5_text_mapping = get_checkpoint_conversion_mapping("qwen3_5_text")
+    if qwen3_5_text_mapping is not None:
+        register_checkpoint_conversion_mapping("qwen3_5_moe_text", qwen3_5_text_mapping, overwrite=True)
+
+    # qwen3_5_moe: remove the qwen2_moe fallback entirely
+    register_checkpoint_conversion_mapping("qwen3_5_moe", [], overwrite=True)
+
+
 def _patch_qwen3_5_text_position_ids():
     """Fix Qwen3.5 passing 3D MRoPE position_ids to decoder layers instead of 2D text_position_ids.
 
@@ -200,6 +221,7 @@ def get_model(
 
     if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
         _patch_qwen3_5_text_position_ids()
+        _patch_qwen3_5_moe_conversion_mapping()
 
     model_config = cast(
         PretrainedConfig,
