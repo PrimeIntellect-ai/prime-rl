@@ -105,67 +105,57 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 
 
 def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
-    """Masked importance sampling with KL against the inference policy, and optional masking strategies."""
+    """
+    We implement IPO (INTELLECT Policy Optimization) loss, which combines:
+    - DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879)
+    - Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)
+
+    Unlike the DPPO-Bin TV mask, we mask independently of the advantage sign.
+    This is, because in Async RL, we do not take multiple steps on the same
+    data, and so policy updates are not well-predicted by the advantage sign.
+    This shift is similar to the shift from GRPO -> CISPO, but with the trust
+    region being approximated by the probability difference instead of ratio.
+    """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
     teacher_logprobs = inputs.teacher_logprobs
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    log_importance_ratio = trainer_logprobs - inference_logprobs
-    teacher_kl = teacher_logprobs - trainer_logprobs if teacher_logprobs is not None else None
+    trainer_probs = torch.exp(trainer_logprobs)
+    inference_probs = torch.exp(inference_logprobs)
+    probs_diff = trainer_probs - inference_probs
+    ipo_invalid_mask_high = probs_diff > loss_config.ipo_mask_high
+    ipo_invalid_mask_low = probs_diff < -loss_config.ipo_mask_low
+    ipo_invalid_mask = ipo_invalid_mask_high | ipo_invalid_mask_low
 
-    token_importance_ratio = torch.exp(log_importance_ratio)
-    geo_seq_ratio = torch.exp(_safe_mean(log_importance_ratio, loss_mask))
-    token_mismatch_kl = token_importance_ratio - log_importance_ratio - 1
-
-    seq_log_importance_ratio = torch.clamp(log_importance_ratio[loss_mask].sum().detach(), max=10.0)
-    seq_importance_ratio = torch.clamp(torch.exp(seq_log_importance_ratio), max=loss_config.sequence_clip_high)
-
-    seq_min_ratio = torch.where(loss_mask, token_importance_ratio, torch.inf).min()
-    seq_max_ratio = torch.where(loss_mask, token_importance_ratio, -torch.inf).max()
-    seq_mask_low = seq_min_ratio < loss_config.sequence_mask_low
-    seq_mask_high = seq_max_ratio > loss_config.sequence_mask_high
-
-    token_mask_low_mask = token_importance_ratio < loss_config.token_mask_low
-    token_mask_high_mask = token_importance_ratio > loss_config.token_mask_high
-
-    geo_mask_low_mask = geo_seq_ratio < loss_config.geo_mask_low
-    geo_mask_high_mask = geo_seq_ratio > loss_config.geo_mask_high
-
-    is_masked = (
-        token_mask_low_mask
-        | token_mask_high_mask
-        | geo_mask_low_mask
-        | geo_mask_high_mask
-        | seq_mask_low
-        | seq_mask_high
-    )
+    is_masked = ipo_invalid_mask
+    is_masked_low = ipo_invalid_mask_low
+    is_masked_high = ipo_invalid_mask_high
     keep_mask = loss_mask & ~is_masked
 
-    importance_ratio = seq_importance_ratio if loss_config.ratio_type == "sequence" else token_importance_ratio
+    log_importance_ratio = trainer_logprobs - inference_logprobs
+    importance_ratio = torch.exp(log_importance_ratio)
+    mismatch_kl = importance_ratio - log_importance_ratio - 1
 
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:
+        teacher_kl = teacher_logprobs - trainer_logprobs
         advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
-    coeff = importance_ratio * (advantages - loss_config.kl_tau * log_importance_ratio)
-    loss = -(coeff.detach() * trainer_logprobs)[keep_mask].sum()
+    else:
+        teacher_kl = None
 
-    if loss_config.ratio_type == "sequence":
-        loss = loss / torch.clamp_min(loss_mask.sum(), 1)
+    pg_loss = keep_mask * advantages * importance_ratio
+    kl_loss = loss_mask * log_importance_ratio**2
+    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
 
     metrics = {
-        "mismatch_kl": _safe_mean(token_mismatch_kl, loss_mask),
-        "masked_mismatch_kl": _safe_mean(token_mismatch_kl, loss_mask & is_masked),
-        "unmasked_mismatch_kl": _safe_mean(token_mismatch_kl, keep_mask),
-        "is_masked": is_masked[loss_mask].float(),
-        "is_masked_low": token_mask_low_mask[loss_mask].float(),
-        "is_masked_high": token_mask_high_mask[loss_mask].float(),
-        "sequence_masked_low": seq_mask_low.float(),
-        "sequence_masked_high": seq_mask_high.float(),
-        "geo_masked_low": geo_mask_low_mask.float(),
-        "geo_masked_high": geo_mask_high_mask.float(),
-        "geo_seq_ratio": geo_seq_ratio,
+        "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),  # all trainable tokens
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+        "is_masked": _safe_mean(is_masked, loss_mask),
+        "is_masked_low": _safe_mean(is_masked_low, loss_mask),
+        "is_masked_high": _safe_mean(is_masked_high, loss_mask),
     }
     if teacher_kl is not None:
         metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)

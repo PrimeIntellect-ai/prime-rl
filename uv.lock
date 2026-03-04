@@ -11,6 +11,7 @@ resolution-markers = [
 overrides = [
     { name = "nvidia-cudnn-cu12", specifier = ">=9.15" },
     { name = "nvidia-cutlass-dsl", specifier = ">=4.4.0.dev1" },
+    { name = "nvidia-cutlass-dsl", specifier = ">=4.4.1" },
     { name = "quack-kernels", specifier = ">=0.2.7" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=5c1c72b" },
 ]
@@ -390,6 +391,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/fc/65/88dd1c58fb9d0ded51b5c86471b937a1525f91fad2211a6f051dc1ea822d/compressed_tensors-0.13.0.tar.gz", hash = "sha256:23893824d3498ea3f1a829f14a8fa85f9a5e76a34c711a038b8d7c619ca9a67c", size = 200995, upload-time = "2025-12-16T16:03:55.397Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/b5/61ac2563c62490922b603c09113a083fd74af3630ec3931e769484d6dcb5/compressed_tensors-0.13.0-py3-none-any.whl", hash = "sha256:3518799c9baf034eb642efb551db6b0537b8713d45a64fe4def26f7f8d6cabec", size = 192620, upload-time = "2025-12-16T16:03:53.041Z" },
+]
+
+[[package]]
+name = "connect-python"
+version = "0.8.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "protobuf" },
+    { name = "pyqwest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8f/8d/e04954dacc3c32c2f858a115b2b989ed6cccefc3835fb440bb12dcb468c2/connect_python-0.8.1.tar.gz", hash = "sha256:0d36c9cfe050661f8f167afcfff8df622805a4f348961d0d8fab630c96f0bdab", size = 39292, upload-time = "2026-01-27T05:00:02.751Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/e4/e36a6d0450493e2b940086ebe94394381803b2b09c97e8f8e34230bcaa99/connect_python-0.8.1-py3-none-any.whl", hash = "sha256:bfe31fb3d90c2a6715fc2996fa4bd5c98dfdccd81e47ac232c9d03aadd666be1", size = 54902, upload-time = "2026-01-27T05:00:01.18Z" },
 ]
 
 [[package]]
@@ -1352,6 +1366,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b9/7d/160595ca88ee87ac6ba95d82177d29ec60aaa63821d3077babb22ce031a5/jupyterlab_widgets-3.0.15.tar.gz", hash = "sha256:2920888a0c2922351a9202817957a68c07d99673504d6cd37345299e971bb08b", size = 213149, upload-time = "2025-05-05T12:32:31.004Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/43/6a/ca128561b22b60bd5a0c4ea26649e68c8556b82bc70a0c396eebc977fe86/jupyterlab_widgets-3.0.15-py3-none-any.whl", hash = "sha256:d59023d7d7ef71400d51e6fee9a88867f6e65e10a4201605d2d7f3e8f012a31c", size = 216571, upload-time = "2025-05-05T12:32:29.534Z" },
+]
+
+[[package]]
+name = "kaldi-native-fbank"
+version = "1.22.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/2c/84076b352107ce12d56f28c313f1aca1be332d953dd96aec7b84976e6d53/kaldi-native-fbank-1.22.3.tar.gz", hash = "sha256:387bf87225c6b83c93ae652eeaef1b4d531994b6e398e7a77189de340674f9af", size = 71013, upload-time = "2025-10-09T02:31:21.487Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c2/de/fbdbfcc75fad9d9a6f9a250bc986f1002902581eaa47a5948f53a7f11851/kaldi_native_fbank-1.22.3-cp312-cp312-macosx_10_15_x86_64.whl", hash = "sha256:7f636ccdea28bd187f93b06a1e4b9275e42e43af9405b0684fc739e829299c4b", size = 249003, upload-time = "2025-10-09T02:29:48.509Z" },
+    { url = "https://files.pythonhosted.org/packages/77/64/e57ce185dda028b7b9af72cdfb16825bfa52183653945681e7cb8e7c2dfa/kaldi_native_fbank-1.22.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:abd31a8bfe1db62a7ddb0beee84f3a5de9bb559fcdd2b96ca0fb729c551b9412", size = 228933, upload-time = "2025-10-09T02:31:35.8Z" },
+    { url = "https://files.pythonhosted.org/packages/43/28/6f4fd8953c0b3f30de4526fd024095032abcdc25b6736c77a891687c604e/kaldi_native_fbank-1.22.3-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:f5a44b4a83cf9bf13d3f77858928068b06d3ec2238c27ff2e39393fbf7749c9f", size = 298887, upload-time = "2025-10-09T02:30:53.739Z" },
+    { url = "https://files.pythonhosted.org/packages/84/90/01ef7331c52b1eaf9916f3f7a535155aac2e9e2ddad12a141613d92758c7/kaldi_native_fbank-1.22.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:f16e74372fe9e20abb4183f98a8e2288d5ee4c48d04d94b6160311170e007661", size = 322002, upload-time = "2025-10-09T02:30:13.04Z" },
+    { url = "https://files.pythonhosted.org/packages/66/1c/fce142bd3aeadb1292360a90ceb91f923c8e12081c21576fe69917243c5f/kaldi_native_fbank-1.22.3-cp312-cp312-win32.whl", hash = "sha256:a90f51377569575fc0d1a66ef7e89a36102bfb6dcd1d15d6c4afb930ce726672", size = 273308, upload-time = "2025-10-09T02:29:59.931Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/8d/c0b0b6280edabad85d7e15093fad612c027e175fe4e0b960ce2f36485143/kaldi_native_fbank-1.22.3-cp312-cp312-win_amd64.whl", hash = "sha256:cbbeea19fe6d584c54e93fe6615a7185b10e0d78fdb6471f9e44596018437c38", size = 308023, upload-time = "2025-10-09T02:28:43.909Z" },
 ]
 
 [[package]]
@@ -2509,7 +2537,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=5c1c72b" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=b35d0c7" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=45fae8d" },
     { name = "vllm", specifier = ">=0.16.1.dev0", index = "https://wheels.vllm.ai/nightly" },
     { name = "wandb", specifier = ">=0.24.2" },
 ]
@@ -2527,31 +2555,33 @@ fp8-inference = [{ name = "deep-gemm", url = "https://github.com/hallerite/DeepG
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.14"
+version = "0.2.16"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
+    { name = "connect-python" },
     { name = "httpx" },
+    { name = "protobuf" },
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7c/aa/e6f8e67aa0dc712e84f2c0280cb167e385b6527416405c74a67151e08e2e/prime_sandboxes-0.2.14.tar.gz", hash = "sha256:fbdfc80b1b00e16d2c7448d735f2080b42a51672cd8c6e937b44668348b3d640", size = 47506, upload-time = "2026-02-01T08:24:41.288Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/58/fdb9a63f1ea0c793da5e08b283c0eb2a3d986a25953126abd0b9bfa9535a/prime_sandboxes-0.2.16.tar.gz", hash = "sha256:c1a4504d7c094427fee436ad1561e12079c1d607003dd0345d4fead34ae873a8", size = 55606, upload-time = "2026-02-28T00:45:49.118Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/4c/9289d7e06e9307b0476287234576013703e09e12a76d402b1e827f1b3dd4/prime_sandboxes-0.2.14-py3-none-any.whl", hash = "sha256:9ca2067c0d1e970ee71e2be9f0be53fe0ef6c87c54fcb24ba1ef71374a173d08", size = 20820, upload-time = "2026-02-01T08:24:39.822Z" },
+    { url = "https://files.pythonhosted.org/packages/33/7f/b717338c70a785feef5cb1bdaff46a1f942115a40fcd53df3127dea8c2f7/prime_sandboxes-0.2.16-py3-none-any.whl", hash = "sha256:18ef8b2bd073628bdc979b5a17acb640e5c30d19ab7ec356153b51c8fe3b12a2", size = 26639, upload-time = "2026-02-28T00:45:47.891Z" },
 ]
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.2"
+version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/18/0e/19e74e9962479bea2ab4752b327d448bc0b122ef3043203eb45e5935550b/prime_tunnel-0.1.2.tar.gz", hash = "sha256:e15b67ffb6fbb44e13e764629e178dafb2415c7c23cbd56d63638ad8c530e163", size = 11506, upload-time = "2026-02-12T14:50:38.481Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/50/d4/be7356eab434edd623bc000b5c8d457e98b6feb3eed513b88e7865522178/prime_tunnel-0.1.4.tar.gz", hash = "sha256:caf092ae01be921a17824d14aca3b526f8b5b704f9996dbc6cdcefd40619ca8a", size = 11660, upload-time = "2026-02-27T01:32:15.261Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/f8/3561a75acddd7c13bf905e435d870bbf70a109b52534ca253195aa0db353/prime_tunnel-0.1.2-py3-none-any.whl", hash = "sha256:2a0e5631d12a3b615a5ba6817cf9755a762cf22a9b6c3ef9d9125a76c7652793", size = 13511, upload-time = "2026-02-12T14:50:37.148Z" },
+    { url = "https://files.pythonhosted.org/packages/42/c3/8def582c17f0f64f31efe11f7a0299139af3120c19fb2937a21c63de48d0/prime_tunnel-0.1.4-py3-none-any.whl", hash = "sha256:8e49715fdcdeed2e761c9b96fc7a94f07e6733ba9bf8e4022f8c46f496998a54", size = 13675, upload-time = "2026-02-27T01:32:13.816Z" },
 ]
 
 [[package]]
@@ -2850,6 +2880,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e7/82/28175b2414effca1cdac8dc99f76d660e7a4fb0ceefa4b4ab8f5f6742925/pyproject_hooks-1.2.0.tar.gz", hash = "sha256:1e859bd5c40fae9448642dd871adf459e5e2084186e8d2c2a79a824c970da1f8", size = 19228, upload-time = "2024-09-29T09:24:13.293Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bd/24/12818598c362d7f300f18e74db45963dbcb85150324092410c8b49405e42/pyproject_hooks-1.2.0-py3-none-any.whl", hash = "sha256:9e5c6bfa8dcc30091c74b0cf803c81fdd29d94f01992a7707bc97babb1141913", size = 10216, upload-time = "2024-09-29T09:24:11.978Z" },
+]
+
+[[package]]
+name = "pyqwest"
+version = "0.3.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/d5/37c968f2ad6a1e6d443215063a9fcc109999f796aaf697806ea1ccf562af/pyqwest-0.3.3.tar.gz", hash = "sha256:473a9ede8a96d1d993a1628eb62edd056a3c57b74e65cfd30d72eb451be1a23d", size = 423176, upload-time = "2026-01-21T12:54:44.453Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/22/1a124da1eb328bcd38b207afce037b8322c03848d53ad372a44f90bcb7a9/pyqwest-0.3.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:4666516358c2349a3c1f1f00816b27df6cc127b0d75cdd5d07bf4498c407ba4f", size = 4910119, upload-time = "2026-01-21T12:53:45.153Z" },
+    { url = "https://files.pythonhosted.org/packages/90/05/35c546933d6765c9f38841ee703a299cd08d115e8f9df5a882669775b07d/pyqwest-0.3.3-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b802af427c9e4ed33c5a6ed47612887dce1128ba3cf685c7a26a383d9412c811", size = 5267540, upload-time = "2026-01-21T12:53:46.707Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/a6/97990418194cd24640486a14f6cb390d9f7005bc1aa06fe2324ef0aa8050/pyqwest-0.3.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:81118f530429b10eb295ae5b9b1353593e17ad15e0166203d2dfca51b763db85", size = 5309338, upload-time = "2026-01-21T12:53:48.903Z" },
+    { url = "https://files.pythonhosted.org/packages/70/12/1e503ba23b8cfe008178610ee649e4ec6536a4d98bce9786287ae82ebb33/pyqwest-0.3.3-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:420e26aed443f6beb8a10fe5eb06913084be48e549b537b0a8887088358ed354", size = 5455416, upload-time = "2026-01-21T12:53:50.466Z" },
+    { url = "https://files.pythonhosted.org/packages/70/9f/d39e0ba8fa4396f9a68ad60e2544f76d79688e93f5bb6be777f6070435e8/pyqwest-0.3.3-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:f596adcd385d2125c8c715e6c107068139d36b5ebcb14709e1ed2f98423e624e", size = 5613290, upload-time = "2026-01-21T12:53:52.428Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/ea/9fe5998f570978925102f0302107562c285e658a03587f7b7c04e51456b1/pyqwest-0.3.3-cp312-cp312-win_amd64.whl", hash = "sha256:66f1d9b0338592949bb53e76361f15b869a9aeca9503e00d6c46d648d609c0be", size = 4524367, upload-time = "2026-01-21T12:53:54.112Z" },
 ]
 
 [[package]]
@@ -3860,8 +3904,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.11.dev0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=b35d0c7#b35d0c7e464d67ea8cc8fccaaec0903cd5fd7b32" }
+version = "0.1.11.dev1"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=45fae8d#45fae8dd7b44043672cc27ee75c0a2741f2d1b97" }
 dependencies = [
     { name = "anthropic" },
     { name = "datasets" },
@@ -3901,7 +3945,7 @@ wheels = [
 
 [[package]]
 name = "vllm"
-version = "0.16.1rc1.dev195+gf22ff2958"
+version = "0.16.1rc1.dev203+gedba15045"
 source = { registry = "https://wheels.vllm.ai/nightly" }
 dependencies = [
     { name = "aiohttp" },
@@ -3921,6 +3965,7 @@ dependencies = [
     { name = "grpcio" },
     { name = "grpcio-reflection" },
     { name = "ijson" },
+    { name = "kaldi-native-fbank" },
     { name = "lark" },
     { name = "llguidance", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'" },
     { name = "lm-format-enforcer" },
@@ -3972,8 +4017,8 @@ dependencies = [
     { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'" },
 ]
 wheels = [
-    { url = "https://wheels.vllm.ai/f22ff2958c398ae0950598cdbb9c677c027fa5db/vllm-0.16.1rc1.dev195%2Bgf22ff2958-cp38-abi3-manylinux_2_31_aarch64.whl" },
-    { url = "https://wheels.vllm.ai/f22ff2958c398ae0950598cdbb9c677c027fa5db/vllm-0.16.1rc1.dev195%2Bgf22ff2958-cp38-abi3-manylinux_2_31_x86_64.whl" },
+    { url = "https://wheels.vllm.ai/edba15045a7419922e7a2e21e5a684682b5b8e05/vllm-0.16.1rc1.dev203%2Bgedba15045-cp38-abi3-manylinux_2_31_aarch64.whl" },
+    { url = "https://wheels.vllm.ai/edba15045a7419922e7a2e21e5a684682b5b8e05/vllm-0.16.1rc1.dev203%2Bgedba15045-cp38-abi3-manylinux_2_31_x86_64.whl" },
 ]
 
 [[package]]

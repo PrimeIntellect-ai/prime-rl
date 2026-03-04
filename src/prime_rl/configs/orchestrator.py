@@ -502,17 +502,6 @@ class BufferConfig(BaseConfig):
         ),
     ] = ["task", "prompt"]
 
-    skip_verification: Annotated[
-        bool,
-        Field(
-            description=(
-                "Whether to skip verification of rollouts using the environment's rubric. "
-                "If True, rewards are always set to 0, online_difficulty_filtering is disabled, "
-                "and easy/hard thresholds are not used."
-            ),
-        ),
-    ] = False
-
     @model_validator(mode="after")
     def validate_thresholds(self):
         if self.easy_threshold is not None and self.hard_threshold is not None:
@@ -525,26 +514,19 @@ class BufferConfig(BaseConfig):
             assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
         return self
 
-    @model_validator(mode="after")
-    def validate_skip_verification(self):
-        """Validate that skip_verification is not used with reward-dependent features."""
-        if self.skip_verification:
-            if self.online_difficulty_filtering:
-                raise ValueError(
-                    "skip_verification cannot be True when online_difficulty_filtering is True. "
-                    "These features depend on rewards which are disabled when skip_verification=True."
-                )
-            if self.easy_threshold is not None:
-                raise ValueError(
-                    "skip_verification cannot be True when easy_threshold is set. "
-                    "Easy threshold depends on rewards which are disabled when skip_verification=True."
-                )
-            if self.hard_threshold is not None:
-                raise ValueError(
-                    "skip_verification cannot be True when hard_threshold is set. "
-                    "Hard threshold depends on rewards which are disabled when skip_verification=True."
-                )
-        return self
+
+class VerificationConfig(BaseConfig):
+    """Configures rollout verification and rubric scoring."""
+
+    enabled: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to verify training rollouts using the environment rubric. "
+                "If False, rewards are always set to 0."
+            ),
+        ),
+    ] = True
 
 
 class DefaultAdvantageConfig(BaseModel):
@@ -698,6 +680,9 @@ class OrchestratorConfig(BaseConfig):
 
     # Data buffer configuration
     buffer: BufferConfig = BufferConfig()
+
+    # Rollout verification configuration
+    verification: VerificationConfig = VerificationConfig()
 
     # The advantage configuration
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
@@ -915,6 +900,28 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_verification_config(self):
+        if self.verification.enabled:
+            return self
+
+        if self.buffer.online_difficulty_filtering:
+            raise ValueError(
+                "verification.enabled cannot be False when buffer.online_difficulty_filtering is True. "
+                "These features depend on rewards which are disabled when verification.enabled=False."
+            )
+        if self.buffer.easy_threshold is not None:
+            raise ValueError(
+                "verification.enabled cannot be False when buffer.easy_threshold is set. "
+                "Easy threshold depends on rewards which are disabled when verification.enabled=False."
+            )
+        if self.buffer.hard_threshold is not None:
+            raise ValueError(
+                "verification.enabled cannot be False when buffer.hard_threshold is set. "
+                "Hard threshold depends on rewards which are disabled when verification.enabled=False."
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
@@ -933,7 +940,7 @@ class OrchestratorConfig(BaseConfig):
     def resolve_extra_env_kwargs(self):
         train_extra_env_kwargs = dict(
             seq_len=self.seq_len,
-            score_rollouts=not self.buffer.skip_verification,
+            score_rollouts=self.verification.enabled,
         )
         for env in self.env:
             # extra_env_kwargs is not meant to be used by the user, we shamelessly override here

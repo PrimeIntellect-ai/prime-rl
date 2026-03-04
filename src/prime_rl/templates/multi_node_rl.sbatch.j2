@@ -58,7 +58,7 @@ else
         if [ -z "$INFER_URLS" ]; then
             INFER_URLS="http://$host:8000/v1"
         else
-            INFER_URLS="$INFER_URLS,http://$host:8000/v1"
+            INFER_URLS="$INFER_URLS http://$host:8000/v1"
         fi
     done
 fi

@@ -2,6 +2,7 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`orchestrator.verification.enabled`**: Added top-level rollout verification switch. `orchestrator.buffer.skip_verification` has been removed; use `verification.enabled = false` instead. When disabled, rewards are always 0 and reward-dependent buffer features (`online_difficulty_filtering`, `easy_threshold`, `hard_threshold`) must be unset (2026-03-03)
 - **`model.lora`**: Moved from `model.experimental.lora` to `model.lora` (no longer experimental) (#1440, 2025-12-16)
 - Auto-set `api_server_count=1` on inference when LoRA is enabled, because vLLM doesn't support hotloading for multiple API servers (#1422, 2025-12-17)
 - **`inference.model.rope_scaling`**: Added RoPE scaling configuration passthrough to vLLM (#1447 2025-12-17)
@@ -96,3 +97,4 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`[deployment]` (inference)**: Added deployment configuration. `type = "single_node"` (default) with `gpus_per_node`. `type = "multi_node"` with `num_nodes` and `gpus_per_node` — requires `[slurm]` (2026-02-26)
 - **`inference.output_dir`**: Added directory for SLURM logs and generated scripts (default: `"outputs"`) (2026-02-26)
 - **`inference.dry_run`**: Added flag (default: `False`). When set, validates config, writes resolved config to `output_dir/configs/`, and exits without starting inference or submitting SLURM jobs (2026-02-26)
+- **`trainer.loss` (default loss)**: Made IPO (DPPO-Binary TV variant ([arxiv](https://arxiv.org/pdf/2602.04879)) + Kimi-K2.5 KL ([Kimi-K2.5](https://arxiv.org/pdf/2602.02276))) the default loss. Removed `ratio_type`, `token_mask_low`, `token_mask_high`, `sequence_clip_high`, `geo_mask_low`, `geo_mask_high`, `sequence_mask_low`, `sequence_mask_high`. Added `ipo_mask_low` (default: 0.2) and `ipo_mask_high` (default: 0.2) for token-level probability-difference masking. Changed `kl_tau` default from `0.0` to `1e-3`. (2026-03-02)
