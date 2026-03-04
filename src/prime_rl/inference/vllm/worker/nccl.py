@@ -21,9 +21,6 @@ class NCCLWeightUpdateWorker(Worker):
         tp_size = get_tp_group().world_size
         dp_size = get_dp_group().world_size
         workers_per_server = tp_size * dp_size
-
-        # rank_offset is the base rank for this server; init_transfer_engine
-        # adds the per-worker offset (dp_rank * tp_size + tp_rank) internally
         rank_offset = 1 + server_rank * workers_per_server
         world_size = 1 + num_inference_server * workers_per_server
 
@@ -37,6 +34,7 @@ class NCCLWeightUpdateWorker(Worker):
         })
 
     def update_weights_from_path(self, weight_dir: str) -> None:
+        # Same model reference as Worker.update_weights uses
         model = self.model_runner.model
         self.weight_transfer_engine.receive_weights(None, load_weights=model.load_weights)
 

@@ -160,11 +160,22 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
     return request.app.state.openai_serving_chat_with_tokens
 
 
+@router.post("/pause")
+async def pause(request: Request):
+    await engine_client(request).pause_generation(mode="keep")
+    return {"status": "ok"}
+
+
+@router.post("/resume")
+async def resume(request: Request):
+    await engine_client(request).resume_generation()
+    return {"status": "ok"}
+
+
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    # Reset prefix cache to invalidate KV states computed with old weights
     await engine_client(request).reset_prefix_cache()
     return {"status": "ok"}
 

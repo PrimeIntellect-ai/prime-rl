@@ -241,6 +241,9 @@ async def update_weights(
                     return
                 raise
 
+        # Pause generation so in-flight requests complete before weights change
+        await _pause_generation(admin_clients)
+
         # Create ready marker before servers enter receive path (used by NCCL broadcast)
         if weight_dir is not None:
             nccl_ready_file = weight_dir / NCCL_READY_MARKER
@@ -249,6 +252,34 @@ async def update_weights(
             logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
         await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
+
+        await _resume_generation(admin_clients)
+
+
+async def _pause_generation(admin_clients: list[AsyncClient]) -> None:
+    async def _pause(admin_client: AsyncClient) -> None:
+        try:
+            response = await admin_client.post("/pause")
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return
+            raise
+
+    await asyncio.gather(*[_pause(c) for c in admin_clients])
+
+
+async def _resume_generation(admin_clients: list[AsyncClient]) -> None:
+    async def _resume(admin_client: AsyncClient) -> None:
+        try:
+            response = await admin_client.post("/resume")
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return
+            raise
+
+    await asyncio.gather(*[_resume(c) for c in admin_clients])
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:

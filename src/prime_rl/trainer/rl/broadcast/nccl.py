@@ -97,7 +97,7 @@ class NCCLWeightBroadcastSender:
 
             PrimeNCCLWeightTransferEngine.trainer_send_weights(
                 iterator=self._hf_weight_iterator(model),
-                trainer_args={"group": self.communicator, "packed": True},
+                trainer_args={"group": self.communicator, "packed": False},
                 metadata=self._weight_metadata,
             )
         else:
