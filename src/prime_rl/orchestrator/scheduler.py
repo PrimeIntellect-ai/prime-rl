@@ -245,24 +245,6 @@ class Scheduler:
 
     async def _update_policy_multi_actor(self):
         """Check each actor's broadcast directory for new weights and load per-actor LoRA adapters."""
-        # Pause if orchestrator is too far ahead of the slowest actor
-        min_actor_step = min(self.actor_ckpt_steps.values()) if self.actor_ckpt_steps else 0
-        async_away_step = max(self.step - self.max_async_level, 0)
-        if async_away_step > min_actor_step:
-            print(f"[MULTI-AGENT] Orchestrator paused: step {self.step}, slowest actor at {min_actor_step}, waiting...")
-            self.checkpoint_ready.clear()
-            # Wait for the slowest actor to catch up
-            first_actor = next(
-                actor_id for actor_id, step in self.actor_ckpt_steps.items()
-                if step == min_actor_step
-            )
-            run_dir_name = self.actor_run_dirs[first_actor]
-            wait_dir = get_step_path(get_broadcast_dir(self.config.output_dir.parent / run_dir_name), async_away_step) / "STABLE"
-            wait_start = time.perf_counter()
-            await wait_for_path(wait_dir)
-            self.wait_for_ckpt_time = time.perf_counter() - wait_start
-            print(f"[MULTI-AGENT] Orchestrator resumed after {self.wait_for_ckpt_time:.2f}s")
-
         any_updated = False
         update_weights_start_time = time.perf_counter()
 
