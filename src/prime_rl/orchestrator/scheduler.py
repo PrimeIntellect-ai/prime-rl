@@ -262,13 +262,6 @@ class Scheduler:
                 self.actor_ckpt_steps[actor_id] = latest
                 any_updated = True
 
-                # Update agent model name so inference routes to this adapter
-                if hasattr(self.env, "_agents") and actor_id in self.env._agents:
-                    self.env._agents[actor_id].model = lora_name
-                    print(f"[MULTI-AGENT] Agent '{actor_id}' model set to '{lora_name}'")
-                else:
-                    print(f"[MULTI-AGENT] WARNING: Could not find agent '{actor_id}' in env._agents (has_attr={hasattr(self.env, '_agents')})")
-
         if any_updated:
             self.update_weights_time = time.perf_counter() - update_weights_start_time
             self.checkpoint_ready.set()
