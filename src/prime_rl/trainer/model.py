@@ -53,7 +53,10 @@ def _patch_qwen3_5_moe_conversion_mapping():
 
     Remove once the pinned transformers commit fixes this.
     """
-    from transformers.conversion_mapping import get_checkpoint_conversion_mapping, register_checkpoint_conversion_mapping
+    from transformers.conversion_mapping import (
+        get_checkpoint_conversion_mapping,
+        register_checkpoint_conversion_mapping,
+    )
 
     # qwen3_5_moe_text: keep only the qwen3_5_text renaming, remove qwen2_moe expert conversion
     qwen3_5_text_mapping = get_checkpoint_conversion_mapping("qwen3_5_text")
