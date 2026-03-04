@@ -271,7 +271,7 @@ async def orchestrate(config: OrchestratorConfig):
             actor_id: run_name
             for actor_id, run_name in config.multi_agent_lora.actors.items()
         }
-        logger.info(f"[MULTI-AGENT] Per-actor LoRA enabled: {actor_lora_mapping}")
+        print(f"[MULTI-AGENT] Per-actor LoRA enabled: {actor_lora_mapping}")
 
     scheduler = Scheduler(
         env=train_env_group,
@@ -290,8 +290,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     if config.multi_agent_lora:
         scheduler.actor_run_dirs = dict(config.multi_agent_lora.actors)
-        logger.info(f"[MULTI-AGENT] Scheduler actor_run_dirs: {scheduler.actor_run_dirs}")
-        logger.info(f"[MULTI-AGENT] Scheduler actor_ckpt_steps: {scheduler.actor_ckpt_steps}")
+        print(f"[MULTI-AGENT] Scheduler actor_run_dirs: {scheduler.actor_run_dirs}")
+        print(f"[MULTI-AGENT] Scheduler actor_ckpt_steps: {scheduler.actor_ckpt_steps}")
     elif checkpoint_step is not None and config.model.lora is not None:
         assert config.model.lora.name is not None
         scheduler.model_name = config.model.lora.name
@@ -545,7 +545,7 @@ async def orchestrate(config: OrchestratorConfig):
             rollout_decode_tokens = 0
             actor_id = rollout.get("actor_id", "default")
             if actor_id != "default":
-                logger.debug(f"[MULTI-AGENT] Rollout has actor_id='{actor_id}', reward={rollout['reward']:.4f}")
+                print(f"[MULTI-AGENT] Rollout actor_id='{actor_id}', reward={rollout['reward']:.4f}")
             if samples is not None:
                 rollout_samples_per_rollout.append(len(samples))
                 for sample in samples:
@@ -592,16 +592,16 @@ async def orchestrate(config: OrchestratorConfig):
                 actor_examples[actor_id].append(sample)
 
             total_sent = 0
-            logger.info(f"[MULTI-AGENT] Routing batch: actor_ids seen = {dict(Counter(sample_actor_ids))}")
+            print(f"[MULTI-AGENT] Routing batch: actor_ids seen = {dict(Counter(sample_actor_ids))}")
             for actor_id, run_name in config.multi_agent_lora.actors.items():
                 examples = actor_examples.get(actor_id, [])
                 if examples:
                     actor_batch = TrainingBatch(examples=examples, step=progress.step)
                     training_batch_sender.send_to_run(run_name, actor_batch)
                     total_sent += len(examples)
-                    logger.info(f"[MULTI-AGENT] Sent {len(examples)} samples for actor '{actor_id}' -> {run_name}")
+                    print(f"[MULTI-AGENT] Sent {len(examples)} samples -> {run_name} (actor '{actor_id}')")
                 else:
-                    logger.warning(f"[MULTI-AGENT] No samples for actor '{actor_id}' in this batch")
+                    print(f"[MULTI-AGENT] WARNING: No samples for actor '{actor_id}' in this batch")
 
             if total_sent == 0:
                 empty_batch_retries += 1
