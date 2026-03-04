@@ -1,0 +1,63 @@
+max_steps = 11
+seq_len = 2048
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[ckpt]
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.loss]
+type = "sft"
+
+[trainer.model.lora]
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 2
+
+[orchestrator.eval]
+num_examples = 8
+rollouts_per_example = 1
+interval = 10
+eval_base_model = true
+
+[orchestrator.eval.sampling]
+max_tokens = 256
+temperature = 0.0
+
+[orchestrator.sampling]
+max_tokens = 384
+temperature = 0.7
+
+[orchestrator.rollout_model.client]
+base_url = ["https://api.pinference.ai/api/v1"]
+api_key_var = "PRIME_API_KEY"
+
+[orchestrator.rollout_model.model]
+name = "qwen/qwen3-235b-a22b-instruct-2507"
+
+[[orchestrator.env]]
+id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
+args = { min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_turn = 3, similarity_power = 4, power_per_turn = false }
+
+[[orchestrator.eval.env]]
+id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
+args = { min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_turn = 3, similarity_power = 4, power_per_turn = false }
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7

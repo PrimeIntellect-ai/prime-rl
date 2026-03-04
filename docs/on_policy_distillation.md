@@ -70,9 +70,6 @@ When the teacher endpoint only returns text (no token IDs/logprobs), you can sti
 [trainer.loss]
 type = "sft"
 
-[orchestrator]
-use_token_client = false
-
 [orchestrator.rollout_model.client]
 base_url = ["https://your-openai-compatible-endpoint/v1"]
 skip_model_check = true
@@ -83,9 +80,9 @@ name = "teacher-model-name"
 
 In this mode:
 - Rollouts are generated from `orchestrator.rollout_model`
-- The orchestrator uses the student tokenizer to reconstruct per-step token IDs + masks from messages
+- The orchestrator automatically uses text-level reconstruction with the student tokenizer (`use_token_client=false`)
 - The RL trainer optimizes masked NLL (`trainer.loss.type = "sft"`)
-- Omit `[inference]` (no local inference server required)
+- `[inference]` is optional: omit it if you only need teacher-generated rollouts; include it if you also want student-side eval/validation during the run.
 
 ## Parameters
 

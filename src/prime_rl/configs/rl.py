@@ -331,16 +331,15 @@ class RLConfig(BaseConfig):
         if self.orchestrator.rollout_model is None:
             return self
 
-        if self.inference is not None:
-            raise ValueError(
-                "inference must be omitted when orchestrator.rollout_model is configured. "
-                "External rollout mode does not use the local inference server."
-            )
+        if self.trainer.loss.type != "sft":
+            raise ValueError('orchestrator.rollout_model is only supported when trainer.loss.type = "sft".')
 
         if self.orchestrator.use_token_client:
-            raise ValueError(
-                "orchestrator.use_token_client must be false when orchestrator.rollout_model is configured."
+            warnings.warn(
+                "orchestrator.rollout_model is configured. Setting orchestrator.use_token_client=false "
+                "for text-level reconstruction in SFT distillation mode."
             )
+            self.orchestrator.use_token_client = False
 
         return self
 

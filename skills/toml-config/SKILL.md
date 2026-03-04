@@ -124,9 +124,6 @@ Use this when the teacher is an external OpenAI-compatible endpoint that does no
 [trainer.loss]
 type = "sft"
 
-[orchestrator]
-use_token_client = false
-
 [orchestrator.rollout_model.client]
 base_url = ["https://your-openai-compatible-endpoint/v1"]
 skip_model_check = true
@@ -137,9 +134,9 @@ name = "teacher-model-name"
 
 Notes:
 - `orchestrator.rollout_model` switches rollout generation to the external teacher endpoint.
-- `use_token_client = false` enables text-level rollout reconstruction with the student tokenizer.
+- `use_token_client = false` is auto-enabled when `orchestrator.rollout_model` is set.
 - `trainer.loss.type = "sft"` makes the RL trainer optimize masked NLL like SFT.
-- In this mode, omit `[inference]`.
+- `[inference]` is optional in this mode. Omit it when you only need teacher rollouts; include it if you want eval/validation against the student endpoint during training.
 
 ## Available commands
 
