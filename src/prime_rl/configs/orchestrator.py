@@ -16,6 +16,17 @@ from prime_rl.configs.shared import (
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
 
 
+class MultiAgentLoRAConfig(BaseConfig):
+    """Maps actor IDs to run directories for per-actor LoRA training."""
+
+    actors: Annotated[
+        dict[str, str],
+        Field(
+            description="Mapping of actor_id to run directory name, e.g. {'proposer': 'run_proposer', 'responder': 'run_responder'}.",
+        ),
+    ]
+
+
 class OptimizerConfig(BaseConfig):
     """Per-run optimizer configuration for multi-run training."""
 
@@ -721,6 +732,13 @@ class OrchestratorConfig(BaseSettings):
     val: ValConfig | None = None
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
+
+    multi_agent_lora: Annotated[
+        MultiAgentLoRAConfig | None,
+        Field(
+            description="Per-actor LoRA configuration for multi-agent training. When set, the orchestrator splits training samples by actor_id and routes them to separate run directories.",
+        ),
+    ] = None
 
     rollout_transport: TransportConfig = FileSystemTransportConfig()
 

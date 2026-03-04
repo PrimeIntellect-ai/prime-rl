@@ -55,6 +55,7 @@ class Scheduler:
         tasks_per_minute: int | None,
         lora_name: str | None = None,
         output_dir: Path | None = None,
+        actor_lora_mapping: dict[str, str] | None = None,
     ):
         self.logger = get_logger()
         if tasks_per_minute is not None:
@@ -81,6 +82,11 @@ class Scheduler:
 
         # Inference pool - used for admin operations (adapter sync) and metrics
         self.inference_pool = inference_pool
+
+        # Multi-agent LoRA: per-actor adapter names and weight tracking
+        self.actor_lora_mapping = actor_lora_mapping or {}
+        self.actor_run_dirs: dict[str, str] = {}
+        self.actor_ckpt_steps: dict[str, int] = {actor: 0 for actor in self.actor_lora_mapping}
 
         # Track in-flight requests: task -> info
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
@@ -164,6 +170,10 @@ class Scheduler:
 
     async def update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
+        if self.actor_lora_mapping:
+            await self._update_policy_multi_actor()
+            return
+
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
         next_ckpt_step = (
@@ -231,6 +241,53 @@ class Scheduler:
                 )
 
             self.ckpt_step = next_ckpt_step
+
+    async def _update_policy_multi_actor(self):
+        """Check each actor's broadcast directory for new weights and load per-actor LoRA adapters."""
+        any_updated = False
+        update_weights_start_time = time.perf_counter()
+
+        for actor_id, lora_name in self.actor_lora_mapping.items():
+            run_dir_name = self.actor_run_dirs[actor_id]
+            actor_broadcast_dir = get_broadcast_dir(self.config.output_dir / run_dir_name)
+            latest = get_latest_ckpt_step(actor_broadcast_dir) or 0
+
+            if latest > self.actor_ckpt_steps[actor_id]:
+                weights_path = get_step_path(actor_broadcast_dir, latest)
+                await self.inference_pool.update_weights(
+                    weights_path, lora_name=lora_name, step=latest
+                )
+                self.actor_ckpt_steps[actor_id] = latest
+                any_updated = True
+                self.logger.debug(f"Updated LoRA adapter '{lora_name}' for actor '{actor_id}' to step {latest}")
+
+                # Update agent model name so inference routes to this adapter
+                if hasattr(self.env, "_agents") and actor_id in self.env._agents:
+                    self.env._agents[actor_id].model = lora_name
+
+        if any_updated:
+            self.update_weights_time = time.perf_counter() - update_weights_start_time
+            self.checkpoint_ready.set()
+            self.ckpt_step = min(self.actor_ckpt_steps.values())
+
+            # Cancel old off-policy rollouts
+            tasks_to_remove = []
+            tasks_to_update = []
+            for task, info in self.inflight_group_rollouts.items():
+                if info.off_policy_steps > self.max_off_policy_steps:
+                    if not task.done():
+                        task.cancel()
+                    tasks_to_remove.append((task, info.client_config))
+                else:
+                    tasks_to_update.append((task, info.off_policy_steps + 1, info.client_config))
+            for task, _ in tasks_to_remove:
+                self.inflight_group_rollouts.pop(task, None)
+            self.cancelled_rollouts_count += len(tasks_to_remove)
+            for task, off_policy_steps, client_config in tasks_to_update:
+                if task in self.inflight_group_rollouts:
+                    self.inflight_group_rollouts[task] = InflightRolloutInfo(
+                        off_policy_steps=off_policy_steps, client_config=client_config
+                    )
 
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
         """Continuously generates a batch of rollouts."""

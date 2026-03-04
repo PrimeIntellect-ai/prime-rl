@@ -2,6 +2,7 @@ import asyncio
 import multiprocessing as mp
 import random
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 import tomli_w
@@ -11,7 +12,7 @@ from prime_rl.orchestrator.eval_utils import get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
-from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
+from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender, setup_multi_run_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -264,6 +265,13 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             checkpoint_step = config.ckpt.resume_step
 
+    actor_lora_mapping = None
+    if config.multi_agent_lora:
+        actor_lora_mapping = {
+            actor_id: run_name
+            for actor_id, run_name in config.multi_agent_lora.actors.items()
+        }
+
     scheduler = Scheduler(
         env=train_env_group,
         buffer=buffer,
@@ -276,9 +284,12 @@ async def orchestrate(config: OrchestratorConfig):
         lora_name=config.model.lora.name if config.model.lora else None,
         output_dir=config.output_dir,
         config=config,
+        actor_lora_mapping=actor_lora_mapping,
     )
 
-    if checkpoint_step is not None and config.model.lora is not None:
+    if config.multi_agent_lora:
+        scheduler.actor_run_dirs = dict(config.multi_agent_lora.actors)
+    elif checkpoint_step is not None and config.model.lora is not None:
         assert config.model.lora.name is not None
         scheduler.model_name = config.model.lora.name
 
@@ -305,7 +316,25 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
-    training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
+    if config.multi_agent_lora:
+        actor_run_names = list(config.multi_agent_lora.actors.values())
+        for actor_id, run_name in config.multi_agent_lora.actors.items():
+            run_dir = config.output_dir / run_name
+            control_dir = run_dir / "control"
+            control_dir.mkdir(parents=True, exist_ok=True)
+            actor_lora_name = run_name
+            actor_orch_config = {
+                "model": {"lora": {"name": actor_lora_name}},
+                "optim": {"lr": config.optim.lr},
+            }
+            with open(control_dir / "orch.toml", "wb") as f:
+                tomli_w.dump(actor_orch_config, f)
+            logger.info(f"Created run directory for actor '{actor_id}': {run_dir}")
+        training_batch_sender = setup_multi_run_training_batch_sender(
+            config.output_dir, actor_run_names, config.rollout_transport
+        )
+    else:
+        training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
     # Track last online eval checkpoint step for this process
     last_eval_step = -1
@@ -502,6 +531,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Collect results and assign advantages
         train_examples: list[TrainingSample] = []
+        sample_actor_ids: list[str] = []  # parallel list tracking actor_id per sample
         rollout_prefill_lens: list[int] = []
         rollout_decode_lens: list[int] = []
         rollout_samples_per_rollout: list[int] = []
@@ -510,6 +540,7 @@ async def orchestrate(config: OrchestratorConfig):
         for rollout, advantage, samples in zip(train_rollouts, advantages, results):
             rollout_prefill_tokens = 0
             rollout_decode_tokens = 0
+            actor_id = rollout.get("actor_id", "default")
             if samples is not None:
                 rollout_samples_per_rollout.append(len(samples))
                 for sample in samples:
@@ -520,6 +551,7 @@ async def orchestrate(config: OrchestratorConfig):
                     rollout_decode_tokens += sample_decode_tokens
                     rollout_prefill_tokens += sample_prefill_tokens
                     train_examples.append(sample)
+                    sample_actor_ids.append(actor_id)
             else:
                 rollout_samples_per_rollout.append(0)
             rollout_prefill_lens.append(rollout_prefill_tokens)
@@ -548,31 +580,62 @@ async def orchestrate(config: OrchestratorConfig):
             teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
             logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
 
-        training_batch = TrainingBatch(
-            examples=train_examples,
-            step=progress.step,
-        )
+        # Send training batch(es) — split by actor for multi-agent LoRA
+        if config.multi_agent_lora:
+            actor_examples: dict[str, list[TrainingSample]] = defaultdict(list)
+            for sample, actor_id in zip(train_examples, sample_actor_ids):
+                actor_examples[actor_id].append(sample)
 
-        # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
-        if len(training_batch.examples) == 0:
-            empty_batch_retries += 1
-            if empty_batch_retries >= max_empty_batch_retries:
-                raise RuntimeError(
-                    f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
+            total_sent = 0
+            for actor_id, run_name in config.multi_agent_lora.actors.items():
+                examples = actor_examples.get(actor_id, [])
+                if examples:
+                    actor_batch = TrainingBatch(examples=examples, step=progress.step)
+                    training_batch_sender.send_to_run(run_name, actor_batch)
+                    total_sent += len(examples)
+                    logger.debug(f"Sent {len(examples)} samples for actor '{actor_id}' to {run_name}")
+
+            if total_sent == 0:
+                empty_batch_retries += 1
+                if empty_batch_retries >= max_empty_batch_retries:
+                    raise RuntimeError(
+                        f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
+                    )
+                backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)
+                logger.warning(
+                    f"Step {progress.step} produced 0 training samples "
+                    f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
                 )
-            backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
-            logger.warning(
-                f"Step {progress.step} produced 0 training samples "
-                f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
+                val_task.cancel()
+                await asyncio.sleep(backoff)
+                continue
+            empty_batch_retries = 0
+        else:
+            training_batch = TrainingBatch(
+                examples=train_examples,
+                step=progress.step,
             )
-            # Cancel validation task to avoid accumulating background tasks
-            val_task.cancel()
-            await asyncio.sleep(backoff)
-            continue
 
-        # Reset retry counter on successful batch
-        empty_batch_retries = 0
-        training_batch_sender.send(training_batch)
+            # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
+            if len(training_batch.examples) == 0:
+                empty_batch_retries += 1
+                if empty_batch_retries >= max_empty_batch_retries:
+                    raise RuntimeError(
+                        f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
+                    )
+                backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
+                logger.warning(
+                    f"Step {progress.step} produced 0 training samples "
+                    f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
+                )
+                # Cancel validation task to avoid accumulating background tasks
+                val_task.cancel()
+                await asyncio.sleep(backoff)
+                continue
+
+            # Reset retry counter on successful batch
+            empty_batch_retries = 0
+            training_batch_sender.send(training_batch)
 
         # Await and process val results
         await val_task
