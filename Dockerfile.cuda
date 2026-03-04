@@ -58,9 +58,13 @@ RUN --mount=type=cache,target=/app/.cache/uv \
 # On arm64, flash-attn wheels don't exist so we build from source.
 # Only target sm_100 (Blackwell) since arm64 clusters are GB200.
 # flash-attn-cute (FA4) is already installed via uv sync and supports sm_100 natively.
+# IMPORTANT: installing flash-attn overwrites flash_attn/cute/ with a stub,
+# so we must reinstall flash-attn-cute afterwards to restore the real FA4 kernels.
 RUN if [ "$(uname -m)" = "aarch64" ]; then \
     TORCH_CUDA_ARCH_LIST="10.0" MAX_JOBS=4 \
-    uv pip install flash-attn --no-build-isolation; \
+    uv pip install flash-attn --no-build-isolation && \
+    uv pip install --reinstall --no-deps \
+      "flash-attn-cute @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=flash_attn/cute"; \
     fi
 
 # Workaround: nvidia-cutlass-dsl 4.4.1 dropped ampere_helpers.py from
