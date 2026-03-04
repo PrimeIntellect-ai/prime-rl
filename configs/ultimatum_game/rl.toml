@@ -11,6 +11,7 @@ name = "Qwen/Qwen3-1.7B"
 [orchestrator]
 batch_size = 128
 rollouts_per_example = 16
+output_dir = "outputs"
 
 [orchestrator.sampling]
 max_tokens = 32
