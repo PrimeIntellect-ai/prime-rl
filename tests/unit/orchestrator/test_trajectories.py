@@ -2064,6 +2064,7 @@ def test_vlm_image_cache_from_store():
         store=store,
         step_indices=step_indices,
         num_unique_examples=1,
+        num_unique_images=2,
         extract_time=0.0,
         preprocess_time=0.0,
     )
@@ -2100,6 +2101,7 @@ def test_vlm_image_cache_from_store_no_images():
         store=None,
         step_indices=step_indices,
         num_unique_examples=1,
+        num_unique_images=0,
         extract_time=0.0,
         preprocess_time=0.0,
     )

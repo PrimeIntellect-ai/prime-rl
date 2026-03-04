@@ -349,14 +349,22 @@ def _preprocess_images_batched(
     logger = get_logger()
     image_sizes = [(img.width, img.height) for img in images]
 
-    # Process images in chunks to avoid OOM
-    all_pixel_values_list = []
-    all_grid_thw_list = []
-    for i in range(0, len(images), chunk_size):
-        chunk = images[i : i + chunk_size]
+    # Process images in chunks to avoid OOM, parallelized across threads
+    # (PIL/numpy release the GIL so threads give real concurrency here)
+    chunks = [images[i : i + chunk_size] for i in range(0, len(images), chunk_size)]
+
+    def _process_chunk(chunk: list[Image.Image]) -> tuple[torch.Tensor, torch.Tensor]:
         processed = processor.image_processor(images=chunk, return_tensors="pt")
-        all_pixel_values_list.append(processed["pixel_values"])
-        all_grid_thw_list.append(processed["image_grid_thw"])
+        return processed["pixel_values"], processed["image_grid_thw"]
+
+    if len(chunks) > 1:
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 8)) as pool:
+            results = list(pool.map(_process_chunk, chunks))
+    else:
+        results = [_process_chunk(chunks[0])]
+
+    all_pixel_values_list = [r[0] for r in results]
+    all_grid_thw_list = [r[1] for r in results]
 
     all_pixel_values = torch.cat(all_pixel_values_list, dim=0)
     all_grid_thw = torch.cat(all_grid_thw_list, dim=0)
@@ -407,6 +415,7 @@ class VLMImageCache:
         self._step_indices: dict[int, list[list[int]]] | None = None
         self.cache = cache
         self.num_unique_examples = num_unique_examples
+        self.num_unique_images = 0
         self.extract_time = extract_time
         self.preprocess_time = preprocess_time
 
@@ -416,6 +425,7 @@ class VLMImageCache:
         store: _ImageStore | None,
         step_indices: dict[int, list[list[int]]],
         num_unique_examples: int,
+        num_unique_images: int,
         extract_time: float,
         preprocess_time: float,
     ) -> "VLMImageCache":
@@ -425,6 +435,7 @@ class VLMImageCache:
         obj._step_indices = step_indices
         obj.cache = {}
         obj.num_unique_examples = num_unique_examples
+        obj.num_unique_images = num_unique_images
         obj.extract_time = extract_time
         obj.preprocess_time = preprocess_time
         return obj
@@ -486,6 +497,7 @@ def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMIma
         store=store,
         step_indices=step_indices,
         num_unique_examples=len(unique_example_ids),
+        num_unique_images=len(all_images),
         extract_time=extract_time,
         preprocess_time=preprocess_time,
     )

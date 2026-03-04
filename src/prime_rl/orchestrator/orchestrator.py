@@ -512,7 +512,8 @@ async def orchestrate(config: OrchestratorConfig):
         if is_vlm:
             vlm_cache = build_vlm_image_cache(train_rollouts, processor)
             logger.info(
-                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s"
+                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
+                f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
             )
         else:
             vlm_cache = None
