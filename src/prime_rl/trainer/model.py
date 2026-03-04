@@ -165,10 +165,11 @@ def get_model(
     if is_vlm:
         logger.info(f"Detected vision-language model: {config.name}")
 
+    attn_for_hf = "sdpa" if config.attn == "sdpa_fa4" else config.attn
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
-            config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+            config.name, attn_implementation=attn_for_hf, trust_remote_code=config.trust_remote_code
         ),
     )
     model_config.use_cache = False
