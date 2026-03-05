@@ -580,9 +580,9 @@ wheels = [
 [[package]]
 name = "deep-gemm"
 version = "2.3.0+35c4bc8"
-source = { url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" }
+source = { url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" }
 wheels = [
-    { url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl", hash = "sha256:e335e99dffeee5a10e91f375d3e9a8ed348f144ffa56aebff1576b9a2b56b697" },
+    { url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl", hash = "sha256:c8ab813c466c7f4e63e85e39f35386ff8783cea885eadddbc2a7a0baf0240289" },
 ]
 
 [[package]]
@@ -2511,7 +2511,7 @@ requires-dist = [
     { name = "prime", specifier = ">=0.5.37" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?rev=6990941" },
+    { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?branch=main" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reverse-text", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
@@ -2539,7 +2539,7 @@ dev = [
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "ruff", specifier = ">=0.12.1" },
 ]
-fp8-inference = [{ name = "deep-gemm", url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" }]
+fp8-inference = [{ name = "deep-gemm", url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" }]
 
 [[package]]
 name = "prime-sandboxes"
@@ -2771,7 +2771,7 @@ email = [
 [[package]]
 name = "pydantic-config"
 version = "0.3.0"
-source = { git = "https://github.com/samsja/pydantic_config.git?rev=6990941#699094170fb4ef906bd05b2f3dd811c16278775d" }
+source = { git = "https://github.com/samsja/pydantic_config.git?branch=main#204aef7f81719b1ddf7176f844b29dd15c08abea" }
 dependencies = [
     { name = "pydantic" },
     { name = "tyro" },
