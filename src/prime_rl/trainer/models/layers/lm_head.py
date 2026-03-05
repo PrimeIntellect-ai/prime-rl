@@ -29,7 +29,7 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
         logits=_float_and_contiguous(output.get("logits")),
         logprobs=_float_and_contiguous(output.get("logprobs")),
         entropy=_float_and_contiguous(output.get("entropy")),
-        loss=_float_and_contiguous(output.get("loss")),
+        loss=output.get("loss"),
     )
 
 
