@@ -196,9 +196,7 @@ def rl_local(config: RLConfig):
                     "No inference config specified, skipping starting inference server. Make sure your inference server is running."
                 )
             else:
-                logger.info(
-                    "No inference config specified, using orchestrator.rollout_model for rollout generation."
-                )
+                logger.info("No inference config specified, using orchestrator.rollout_model for rollout generation.")
 
         # Optionally, start teacher inference process
         if config.teacher_inference:
