@@ -203,6 +203,21 @@ def train(config: TrainerConfig):
             config.rollout_transport,
         )
 
+    # Multi-agent LoRA: broadcast initial zero-weight adapters so vLLM registers them
+    # before the orchestrator generates rollouts. LoRA B=0 means identity (same as base model).
+    if config.max_concurrent_runs > 1 and config.model.lora is not None:
+        logger.info("Broadcasting initial LoRA adapters for multi-agent cold start")
+        while not multi_run_manager.used_idxs:
+            if world.is_master:
+                multi_run_manager.discover_runs()
+            multi_run_manager.synchronize_state()
+            time.sleep(0.5)
+        for idx in multi_run_manager.used_idxs:
+            multi_run_manager.ready_to_update[idx] = True
+        weight_broadcast.broadcast_weights(model, step=0)
+        for idx in multi_run_manager.used_idxs:
+            multi_run_manager.ready_to_update[idx] = False
+
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
     maybe_record_function = nullcontext
