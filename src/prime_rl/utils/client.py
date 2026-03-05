@@ -136,18 +136,20 @@ def setup_clients(client_config: ClientConfig, client_type: str = "openai_chat_c
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
-    """Create a dedicated admin client for weight update operations.
+    """Create dedicated admin clients for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
+    When admin_base_url is set, uses those URLs instead of base_url (useful for
+    disaggregated inference where weight updates bypass the router).
     """
+    urls = client_config.admin_base_url or client_config.base_url
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
-        headers = client_config.headers.copy()  # avoid mutating config
+        headers = client_config.headers.copy()
         api_key = os.getenv(client_config.api_key_var, "EMPTY")
         if api_key and api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
 
-        # Strip /v1 suffix since admin endpoints are at root level
         base_url = base_url.rstrip("/").removesuffix("/v1")
 
         return AsyncClient(
@@ -157,7 +159,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             timeout=httpx.Timeout(None),
         )
 
-    return [_setup_admin_client(base_url) for base_url in client_config.base_url]
+    return [_setup_admin_client(base_url) for base_url in urls]
 
 
 async def maybe_check_has_model(

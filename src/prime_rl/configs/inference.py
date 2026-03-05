@@ -139,8 +139,31 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 2
 
 
+class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
+    """Configures a disaggregated prefill/decode inference deployment.
+
+    All nodes run with --data-parallel-hybrid-lb (no headless workers).
+    Expert parallelism, KV transfer, and compilation settings are hard-coded
+    in the SLURM template.
+    """
+
+    type: Literal["disaggregated"] = "disaggregated"
+
+    num_prefill_nodes: Annotated[int, Field(ge=1, description="Number of prefill nodes.")] = 1
+    num_decode_nodes: Annotated[int, Field(ge=1, description="Number of decode nodes.")] = 1
+
+    prefill_port: Annotated[int, Field(description="Port for prefill vLLM instances.")] = 8100
+    decode_port: Annotated[int, Field(description="Port for decode vLLM instances.")] = 8200
+    router_port: Annotated[int, Field(description="Port for the vllm-router.")] = 8000
+
+    @property
+    def num_nodes(self) -> int:
+        return self.num_prefill_nodes + self.num_decode_nodes
+
+
+
 InferenceDeploymentConfig: TypeAlias = Annotated[
-    SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig, Field(discriminator="type")
+    SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig | DisaggregatedInferenceDeploymentConfig, Field(discriminator="type")
 ]
 
 
@@ -294,8 +317,8 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
-        if self.deployment.type == "multi_node" and self.slurm is None:
-            raise ValueError("Must use SLURM for multi-node deployment.")
+        if self.deployment.type in ["multi_node", "disaggregated"] and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node or disaggregated deployment.")
         return self
 
     @model_validator(mode="after")
@@ -304,7 +327,10 @@ class InferenceConfig(BaseConfig):
             import prime_rl
 
             templates_dir = Path(prime_rl.__file__).parent / "templates"
-            self.slurm.template_path = templates_dir / "inference.sbatch.j2"
+            if self.deployment.type == "multi_node":
+                self.slurm.template_path = templates_dir / "inference.sbatch.j2"
+            elif self.deployment.type == "disaggregated":
+                self.slurm.template_path = templates_dir / "inference_disaggregated.sbatch.j2"
         return self
 
     @model_validator(mode="after")
@@ -339,6 +365,23 @@ class InferenceConfig(BaseConfig):
 
         if self.enable_lora:
             self.api_server_count = 1  # LoRA requires only one API server
+        return self
+    
+    @model_validator(mode="after")
+    def auto_setup_disaggregated_deployment(self):
+        """Auto-configure inference settings for disaggregated deployment.
+
+        Forces EP mode (TP=1), enables expert parallel + EPLB, and sets
+        DP sizing based on the number of prefill+decode nodes and GPUs.
+        """
+        if self.deployment.type != "disaggregated":
+            return self
+
+        self.parallel.tp = 1
+        self.enable_expert_parallel = True
+        self.enable_eplb = True
+        self.data_parallel_size_local = self.deployment.gpus_per_node
+
         return self
 
     def to_vllm(self) -> Namespace:
