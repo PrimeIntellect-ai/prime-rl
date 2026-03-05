@@ -20,6 +20,7 @@ dependencies = [
     "torchdata>=0.11.0",
     "transformers",
     "vllm>=0.16.1.dev",
+    "vllm-router",
     "wandb>=0.24.2",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.37",
@@ -35,6 +36,7 @@ dependencies = [
     "dion",
     "reverse-text",
     "tilelang>=0.1.8",
+    "nixl>=0.10.1",
 ]
 
 [project.scripts]
@@ -86,7 +88,7 @@ override-dependencies = [
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
-vllm = { index = "vllm-nightly" }
+vllm = { url = "https://wheels.vllm.ai/7eca85911072b9732293c3d4181e20a4c9394b21/vllm-0.16.1rc1.dev246%2Bg7eca85911-cp38-abi3-manylinux_2_31_x86_64.whl" }
 math-env = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "45fae8d" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
