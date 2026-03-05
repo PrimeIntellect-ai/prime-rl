@@ -32,16 +32,32 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
 
-    script = template.render(
-        config_path=config_path,
-        output_dir=config.output_dir,
-        job_name=config.slurm.job_name,
-        project_dir=config.slurm.project_dir,
-        gpus_per_node=config.deployment.gpus_per_node,
-        partition=config.slurm.partition,
-        num_nodes=config.deployment.num_nodes if config.deployment.type == "multi_node" else 1,
-        port=config.server.port,
-    )
+    if config.deployment.type == "disaggregated":
+        script = template.render(
+            config_path=config_path,
+            output_dir=config.output_dir,
+            job_name=config.slurm.job_name,
+            project_dir=config.slurm.project_dir,
+            partition=config.slurm.partition,
+            gpus_per_node=config.deployment.gpus_per_node,
+            num_prefill_nodes=config.deployment.num_prefill_nodes,
+            num_decode_nodes=config.deployment.num_decode_nodes,
+            prefill_port=config.deployment.prefill_port,
+            decode_port=config.deployment.decode_port,
+            router_port=config.deployment.router_port,
+            data_parallel_rpc_port=config.data_parallel_rpc_port,
+        )
+    else:
+        script = template.render(
+            config_path=config_path,
+            output_dir=config.output_dir,
+            job_name=config.slurm.job_name,
+            project_dir=config.slurm.project_dir,
+            gpus_per_node=config.deployment.gpus_per_node,
+            partition=config.slurm.partition,
+            num_nodes=config.deployment.num_nodes if config.deployment.type == "multi_node" else 1,
+            port=config.server.port,
+        )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
@@ -54,7 +70,7 @@ def inference_slurm(config: InferenceConfig):
     logger = setup_logger("info")
 
     config_dir = get_config_dir(config.output_dir)
-    exclude = {"deployment", "slurm", "dry_run"} if config.deployment.type == "multi_node" else {"slurm", "dry_run"}
+    exclude = {"deployment", "slurm", "dry_run"} if config.deployment.type in ("multi_node", "disaggregated") else {"slurm", "dry_run"}
     config_path = write_config(config, config_dir, exclude=exclude)
     logger.info(f"Wrote config to {config_path}")
 
@@ -103,6 +119,9 @@ def inference_local(config: InferenceConfig):
 
 
 def inference(config: InferenceConfig):
+    if config.deployment.type == "disaggregated" and config.slurm is None:
+        raise ValueError("Must use SLURM for disaggregated deployment.")
+
     if config.slurm is not None:
         inference_slurm(config)
     else:

@@ -389,11 +389,28 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
+    elif config.inference is not None and config.inference.deployment.type == "disaggregated":
+        script = template.render(
+            config_dir=config_dir,
+            job_name=config.slurm.job_name,
+            project_dir=config.slurm.project_dir,
+            partition=config.slurm.partition,
+            output_dir=config.output_dir,
+            orchestrator_output_dir=config.orchestrator.output_dir,
+            num_train_nodes=config.deployment.num_train_nodes,
+            num_prefill_nodes=config.inference.deployment.num_prefill_nodes,
+            num_decode_nodes=config.inference.deployment.num_decode_nodes,
+            gpus_per_node=config.deployment.gpus_per_node,
+            prefill_port=config.inference.deployment.prefill_port,
+            decode_port=config.inference.deployment.decode_port,
+            router_port=config.inference.deployment.router_port,
+            data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+        )
     else:
         assert config.inference is not None
 
         script = template.render(
-            config_dir=config_dir,  # TODO: should prob have each subconfig path separately
+            config_dir=config_dir,
             job_name=config.slurm.job_name,
             project_dir=config.slurm.project_dir,
             partition=config.slurm.partition,

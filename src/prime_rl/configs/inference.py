@@ -317,8 +317,11 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
-        if self.deployment.type in ["multi_node", "disaggregated"] and self.slurm is None:
-            raise ValueError("Must use SLURM for multi-node or disaggregated deployment.")
+        # Only validate multi_node here. Disaggregated is excluded because this
+        # config can be nested in RLConfig where SLURM lives on the parent.
+        # For standalone disaggregated inference, the entrypoint validates SLURM.
+        if self.deployment.type == "multi_node" and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node deployment.")
         return self
 
     @model_validator(mode="after")
@@ -327,10 +330,10 @@ class InferenceConfig(BaseConfig):
             import prime_rl
 
             templates_dir = Path(prime_rl.__file__).parent / "templates"
-            if self.deployment.type == "multi_node":
-                self.slurm.template_path = templates_dir / "inference.sbatch.j2"
-            elif self.deployment.type == "disaggregated":
+            if self.deployment.type == "disaggregated":
                 self.slurm.template_path = templates_dir / "inference_disaggregated.sbatch.j2"
+            else:
+                self.slurm.template_path = templates_dir / "inference.sbatch.j2"
         return self
 
     @model_validator(mode="after")
@@ -352,6 +355,24 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_disaggregated_deployment(self):
+        """Auto-configure inference settings for disaggregated deployment.
+
+        Forces EP mode (TP=1), enables expert parallel + EPLB, and sets
+        DP sizing based on the number of prefill+decode nodes and GPUs.
+        Must run before auto_setup_api_server_count.
+        """
+        if self.deployment.type != "disaggregated":
+            return self
+
+        self.parallel.tp = 1
+        self.enable_expert_parallel = True
+        self.enable_eplb = True
+        self.data_parallel_size_local = self.deployment.gpus_per_node
+
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_api_server_count(self):
         """
         Ensures that we have at least as many API servers as data parallel
@@ -365,23 +386,6 @@ class InferenceConfig(BaseConfig):
 
         if self.enable_lora:
             self.api_server_count = 1  # LoRA requires only one API server
-        return self
-    
-    @model_validator(mode="after")
-    def auto_setup_disaggregated_deployment(self):
-        """Auto-configure inference settings for disaggregated deployment.
-
-        Forces EP mode (TP=1), enables expert parallel + EPLB, and sets
-        DP sizing based on the number of prefill+decode nodes and GPUs.
-        """
-        if self.deployment.type != "disaggregated":
-            return self
-
-        self.parallel.tp = 1
-        self.enable_expert_parallel = True
-        self.enable_eplb = True
-        self.data_parallel_size_local = self.deployment.gpus_per_node
-
         return self
 
     def to_vllm(self) -> Namespace:
