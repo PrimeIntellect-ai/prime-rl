@@ -214,9 +214,7 @@ def prepare_batch(
     # divisible by num_train_workers, the modality boundary aligns with distribution rows.
     ordered = mm_batches + text_batches
 
-    assert len(ordered) % num_train_workers == 0, (
-        "Number of micro batches is not divisible by number of data ranks"
-    )
+    assert len(ordered) % num_train_workers == 0, "Number of micro batches is not divisible by number of data ranks"
 
     # Distribute in strided order so each step index has the same modality across ranks
     batches_per_gpu: list[list[MicroBatch]] = [[] for _ in range(num_train_workers)]
