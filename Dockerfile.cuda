@@ -55,31 +55,9 @@ COPY benchmarks/scripts /app/benchmarks/scripts
 RUN --mount=type=cache,target=/app/.cache/uv \
     uv sync --all-extras --locked --no-dev
 
-# On arm64, flash-attn wheels don't exist so we build from source.
-# Only target sm_100 (Blackwell) since arm64 clusters are GB200.
-# flash-attn-cute (FA4) is already installed via uv sync and supports sm_100 natively.
-# IMPORTANT: installing flash-attn overwrites flash_attn/cute/ with a stub,
-# so we must reinstall flash-attn-cute afterwards to restore the real FA4 kernels.
-RUN if [ "$(uname -m)" = "aarch64" ]; then \
-    TORCH_CUDA_ARCH_LIST="10.0" MAX_JOBS=4 \
-    uv pip install flash-attn --no-build-isolation && \
-    uv pip install --reinstall --no-deps \
-      "flash-attn-cute @ git+https://github.com/Dao-AILab/flash-attention.git@2b5db43#subdirectory=flash_attn/cute"; \
-    fi
-
-# Workaround: nvidia-cutlass-dsl 4.4.1 dropped ampere_helpers.py from
-# cutlass.utils (only ships hopper_helpers and blackwell_helpers), but
-# flash-attn 2.8.3's flash_attn.cute unconditionally imports it at module
-# level for the Sm80 forward kernel:
-#   flash_attn.cute.flash_fwd -> import cutlass.utils.ampere_helpers
-# This triggers even on GB200 (sm_100) because the import isn't gated by
-# GPU architecture. The file exists in flashinfer's vendored cutlass, so
-# we copy it over. Can be removed once flash-attn gates the import or
-# nvidia-cutlass-dsl re-adds ampere_helpers.
-RUN if [ "$(uname -m)" = "aarch64" ]; then \
-    cp .venv/lib/python3.12/site-packages/flashinfer/data/cutlass/python/CuTeDSL/cutlass/utils/ampere_helpers.py \
-       .venv/lib/python3.12/site-packages/nvidia_cutlass_dsl/python_packages/cutlass/utils/ampere_helpers.py; \
-    fi
+# arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
+COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
+RUN /app/scripts/docker-arm64-post-install.sh
 
 FROM python:3.12-slim
 
