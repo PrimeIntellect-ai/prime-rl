@@ -154,7 +154,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             base_url=base_url,
             headers=headers,
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
-            timeout=httpx.Timeout(client_config.timeout),
+            timeout=httpx.Timeout(None),
         )
 
     return [_setup_admin_client(base_url) for base_url in client_config.base_url]
@@ -231,6 +231,12 @@ async def update_weights(
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
 
+        @retry(
+            retry=retry_if_exception(lambda e: isinstance(e, httpx.HTTPStatusError) and e.response.status_code >= 500),
+            stop=stop_after_attempt(5),
+            wait=wait_exponential(multiplier=1, min=2, max=30),
+            reraise=True,
+        )
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
             try:
                 response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
