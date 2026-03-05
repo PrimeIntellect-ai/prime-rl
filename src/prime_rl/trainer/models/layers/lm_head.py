@@ -235,9 +235,7 @@ def _online_logsumexp_and_weighted_update(
     return m_new, s_new, t_new
 
 
-def inject_prime_lm_head(
-    model: nn.Module, chunk_size: int | None = None, fused_cross_entropy: bool = False
-) -> None:
+def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None, fused_cross_entropy: bool = False) -> None:
     """
     Inject a PrimeRL LM head (FusedOutputLinear, FusedCrossEntropyOutputLinear, or VanillaOutputLinear) into a model.
 
