@@ -98,9 +98,25 @@ MODEL_TOOL_CALL_PARSER: dict[str, str] = {
     "Qwen/Qwen3-Coder-Next": "hermes",
     "Qwen/Qwen3-Coder-Next-Base": "hermes",
     "Qwen/Qwen3-Coder-Next-FP8": "hermes",
-    # Qwen3.5
-    "Qwen/Qwen3.5-397B-A17B": "hermes",
-    "Qwen/Qwen3.5-397B-A17B-FP8": "hermes",
+    # Qwen3.5 dense (uses qwen3_coder tool format, not hermes)
+    "Qwen/Qwen3.5-0.8B": "qwen3_coder",
+    "Qwen/Qwen3.5-0.8B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-2B": "qwen3_coder",
+    "Qwen/Qwen3.5-2B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-4B": "qwen3_coder",
+    "Qwen/Qwen3.5-4B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-9B": "qwen3_coder",
+    "Qwen/Qwen3.5-9B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-27B": "qwen3_coder",
+    "Qwen/Qwen3.5-27B-FP8": "qwen3_coder",
+    # Qwen3.5 MoE (uses qwen3_coder tool format, not hermes)
+    "Qwen/Qwen3.5-35B-A3B": "qwen3_coder",
+    "Qwen/Qwen3.5-35B-A3B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-35B-A3B-FP8": "qwen3_coder",
+    "Qwen/Qwen3.5-122B-A10B": "qwen3_coder",
+    "Qwen/Qwen3.5-122B-A10B-FP8": "qwen3_coder",
+    "Qwen/Qwen3.5-397B-A17B": "qwen3_coder",
+    "Qwen/Qwen3.5-397B-A17B-FP8": "qwen3_coder",
 }
 
 
