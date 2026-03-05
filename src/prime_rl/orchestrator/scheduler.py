@@ -292,8 +292,10 @@ class Scheduler:
                         off_policy_steps=off_policy_steps, client_config=client_config
                     )
         elif self.step - self.last_weight_update_step > self.max_async_level:
-            print(f"[MULTI-AGENT] Pausing: {self.step - self.last_weight_update_step} steps since last weight update (max={self.max_async_level})")
-            self.checkpoint_ready.clear()
+            last_steps = self.config.max_steps and self.step >= self.config.max_steps - self.max_async_level
+            if not last_steps:
+                print(f"[MULTI-AGENT] Pausing: {self.step - self.last_weight_update_step} steps since last weight update (max={self.max_async_level})")
+                self.checkpoint_ready.clear()
 
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
         """Continuously generates a batch of rollouts."""
