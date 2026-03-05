@@ -165,6 +165,8 @@ def train(config: SFTConfig):
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     cp_size = parallel_dims.cp
+    dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
+    fsdp_world_size = parallel_dims.fsdp_gradient_divide_factor
 
     match config.loss_impl:
         case "liger":
@@ -225,8 +227,21 @@ def train(config: SFTConfig):
         batch_loss = torch.tensor(0.0).to("cuda")
         nan_loss_count = torch.tensor(0).to("cuda")
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
-        for micro_step in range(grad_accum_steps):
-            micro_batch = next(dataiter)
+
+        # Pre-fetch all micro-batches to count total unmasked tokens before backward
+        micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
+        local_token_count = 0
+        for mb in micro_batches:
+            mask = mb["loss_mask"].to("cuda")
+            if cp_enabled:
+                mask = shard_for_cp(mask, cp_rank=cp_rank, cp_world_size=cp_size)
+            local_token_count += mask.sum().item()
+
+        global_token_count = torch.tensor(local_token_count, dtype=torch.float64, device="cuda")
+        dist.all_reduce(global_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        global_token_count = max(global_token_count.item(), 1)
+
+        for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
@@ -256,16 +271,12 @@ def train(config: SFTConfig):
             # Compute loss
             loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
 
-            # Compute average loss over unmasked tokens
-            loss = loss[loss_mask].mean()
+            # Sum loss over unmasked tokens (global mean is computed via global_token_count)
+            local_loss_sum = loss[loss_mask].sum()
+            loss = local_loss_sum * fsdp_world_size / global_token_count
 
-            # Accumulate average loss over gradient accumulation steps
-
-            current_loss = loss.detach() / grad_accum_steps
-
-            # only add if the loss is not nan
-            if not torch.isnan(current_loss):
-                batch_loss += current_loss
+            if not torch.isnan(local_loss_sum.detach()):
+                batch_loss += local_loss_sum.detach()
             else:
                 nan_loss_count += 1
                 logger.warning("Loss is nan, not taking into account in the batch loss calculation")
@@ -276,7 +287,7 @@ def train(config: SFTConfig):
             # Backward pass
             logger.debug("Starting backward pass")
             with maybe_record_function("backward"):
-                (loss / grad_accum_steps).backward()
+                loss.backward()
 
             if is_tt_moe_model(model):
                 max_vio = get_load_balance_stats(model)["max_vio"]
@@ -286,7 +297,8 @@ def train(config: SFTConfig):
                     batch_max_vio += max_vio / grad_accum_steps
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{grad_accum_steps} | Loss: {loss.item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['dataset']['step']}"
+            local_count = max(loss_mask.sum().item(), 1)
+            micro_step_message = f"Micro Step {micro_step}/{grad_accum_steps} | Loss: {local_loss_sum.item() / local_count:.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['dataset']['step']}"
             if is_tt_moe_model(model) and max_vio is not None:
                 micro_step_message += f" | Max Vio: {max_vio.item():.4f}"
             logger.debug(micro_step_message)
@@ -314,8 +326,9 @@ def train(config: SFTConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         logger.debug("Synchronizing tensor metrics across all steps and ranks")
-        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
-        dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(batch_loss, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        batch_loss = batch_loss / global_token_count
+        dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
 
         # Compute step metrics
         # Divide by CP and TP since those ranks process the same data
