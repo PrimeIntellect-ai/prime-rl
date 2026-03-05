@@ -291,24 +291,21 @@ class Scheduler:
                     self.inflight_group_rollouts[task] = InflightRolloutInfo(
                         off_policy_steps=off_policy_steps, client_config=client_config
                     )
+        elif self.step - self.last_weight_update_step > self.max_async_level:
+            print(f"[MULTI-AGENT] Pausing: {self.step - self.last_weight_update_step} steps since last weight update (max={self.max_async_level})")
+            self.checkpoint_ready.clear()
 
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
         """Continuously generates a batch of rollouts."""
         self.step = step
         batch_start_time = time.perf_counter()
 
-        # Pause if orchestrator is too far ahead of the trainer
-        if self.actor_lora_mapping:
-            steps_ahead = self.step - self.last_weight_update_step
-            if steps_ahead > self.max_async_level:
-                self.checkpoint_ready.clear()
-
-        # Wait for adapters: initial load or async level pause
+        # Wait for adapters: initial cold start or async level pause
         if not self.checkpoint_ready.is_set():
             if step == 0:
                 print("[MULTI-AGENT] Waiting for initial LoRA adapters to be loaded into vLLM...")
             else:
-                print(f"[MULTI-AGENT] Step {step}: waiting for checkpoint (paused by async level)")
+                print(f"[MULTI-AGENT] Step {step}: waiting for checkpoint")
             await self.checkpoint_ready.wait()
             if step == 0:
                 print("[MULTI-AGENT] Initial adapters loaded, starting rollouts")
@@ -387,6 +384,8 @@ class Scheduler:
 
     @property
     def async_level(self) -> int:
+        if self.actor_lora_mapping:
+            return self.step - self.last_weight_update_step
         return self.step - self.ckpt_step
 
     def get_metrics(self) -> dict[str, float]:
