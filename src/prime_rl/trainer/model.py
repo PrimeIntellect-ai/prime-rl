@@ -693,7 +693,10 @@ def _register_fa4_attention_interface() -> None:
 
 
 def setup_model(
-    config: ModelConfig, parallel_dims: ParallelDims, loading_from_checkpoint_later: bool = False
+    config: ModelConfig,
+    parallel_dims: ParallelDims,
+    loading_from_checkpoint_later: bool = False,
+    fused_cross_entropy: bool = False,
 ) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
@@ -725,7 +728,7 @@ def setup_model(
     if isinstance(config.fused_lm_head_chunk_size, int):
         lm_head_chunk_size = config.fused_lm_head_chunk_size
 
-    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
+    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:
