@@ -247,25 +247,6 @@ class Scheduler:
 
     async def _update_policy_multi_actor(self):
         """Check each actor's broadcast directory for new weights and load per-actor LoRA adapters."""
-        # Pause if too far ahead of the last weight update
-        steps_ahead = self.step - self.last_weight_update_step
-        if steps_ahead > self.max_async_level:
-            print(f"[MULTI-AGENT] Orchestrator paused: {steps_ahead} steps ahead of last weight update (max_async_level={self.max_async_level})")
-            self.checkpoint_ready.clear()
-            wait_start = time.perf_counter()
-            while True:
-                for actor_id in self.actor_lora_mapping:
-                    run_dir_name = self.actor_run_dirs[actor_id]
-                    actor_broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_dir_name)
-                    latest = get_latest_ckpt_step(actor_broadcast_dir) or 0
-                    if latest > self.actor_ckpt_steps[actor_id]:
-                        break
-                else:
-                    await asyncio.sleep(1)
-                    continue
-                break
-            self.wait_for_ckpt_time = time.perf_counter() - wait_start
-            print(f"[MULTI-AGENT] Orchestrator resumed after {self.wait_for_ckpt_time:.2f}s")
 
         any_updated = False
         update_weights_start_time = time.perf_counter()
@@ -316,11 +297,21 @@ class Scheduler:
         self.step = step
         batch_start_time = time.perf_counter()
 
-        # Wait for initial adapters to be loaded before scheduling rollouts
+        # Pause if orchestrator is too far ahead of the trainer
+        if self.actor_lora_mapping:
+            steps_ahead = self.step - self.last_weight_update_step
+            if steps_ahead > self.max_async_level:
+                self.checkpoint_ready.clear()
+
+        # Wait for adapters: initial load or async level pause
         if not self.checkpoint_ready.is_set():
-            print("[MULTI-AGENT] Waiting for initial LoRA adapters to be loaded into vLLM...")
+            if step == 0:
+                print("[MULTI-AGENT] Waiting for initial LoRA adapters to be loaded into vLLM...")
+            else:
+                print(f"[MULTI-AGENT] Step {step}: waiting for checkpoint (paused by async level)")
             await self.checkpoint_ready.wait()
-            print("[MULTI-AGENT] Initial adapters loaded, starting rollouts")
+            if step == 0:
+                print("[MULTI-AGENT] Initial adapters loaded, starting rollouts")
 
         # Schedule initial tasks
         self.logger.debug("Starting to generate batch rollouts")
