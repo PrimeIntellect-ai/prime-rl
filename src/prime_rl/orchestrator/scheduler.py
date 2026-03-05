@@ -278,9 +278,11 @@ class Scheduler:
             if latest > self.actor_ckpt_steps[actor_id]:
                 weights_path = get_step_path(actor_broadcast_dir, latest)
                 print(f"[MULTI-AGENT] Loading LoRA '{lora_name}' for actor '{actor_id}': step {self.actor_ckpt_steps[actor_id]} -> {latest} (path: {weights_path})")
+                load_start = time.perf_counter()
                 await self.inference_pool.update_weights(
                     weights_path, lora_name=lora_name, step=latest
                 )
+                print(f"[MULTI-AGENT] Loaded LoRA '{lora_name}' in {time.perf_counter() - load_start:.2f}s")
                 self.actor_ckpt_steps[actor_id] = latest
                 any_updated = True
 
