@@ -15,7 +15,6 @@ from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.reasoning import ReasoningParser
 from vllm.sampling_params import BeamSearchParams, SamplingParams
-from vllm.v1.sample.logits_processor import validate_logits_processors_parameters
 
 logger = init_logger(__name__)
 
@@ -97,8 +96,11 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         raw_request: Optional[Request] = None,
     ) -> Union[AsyncGenerator[str, None], ChatCompletionResponse, ErrorResponse]:
         """
-        Copy of OpenAIServingChat.create_chat_completion, adapted to use prompt
-        ids directly via ChatCompletionRequestWithTokens.
+        Chat Completion API similar to OpenAI's API.
+
+        See https://platform.openai.com/docs/api-reference/chat/create
+        for the API specification. This API mimics the OpenAI
+        Chat Completion API.
         """
         # Streaming response
         tokenizer = self.renderer.tokenizer
@@ -124,8 +126,9 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
 
         conversation, engine_prompts = result
 
+        # We override prompt tokens directly.
         # VLM conversations use MITO (message-based) instead of TITO, so
-        # multi_modal_data is not expected here.  Override prompt tokens directly.
+        # multi_modal_data is not expected here.
         engine_prompts[0]["prompt_token_ids"] = request.tokens  # type: ignore
 
         request_id = f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
@@ -146,20 +149,21 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         data_parallel_rank = self._get_data_parallel_rank(raw_request)
 
         # Schedule the request and get the result generator.
+        max_model_len = self.model_config.max_model_len
         generators: list[AsyncGenerator[RequestOutput, None]] = []
         try:
             for i, engine_prompt in enumerate(engine_prompts):
-                prompt_text = self._extract_prompt_text(engine_prompt)
+                prompt_token_ids = self._extract_prompt_components(engine_prompt).token_ids
 
                 # If we are creating sub requests for multiple prompts, ensure that they
                 # have unique request ids.
                 sub_request_id = request_id if len(engine_prompts) == 1 else f"{request_id}_{i}"
 
                 prompt_len = self._extract_prompt_len(engine_prompt)
-                if prompt_len >= self.max_model_len:
+                if prompt_len >= max_model_len:
                     raise VLLMValidationError(
                         f"This model's maximum context length is "
-                        f"{self.max_model_len} tokens. However, your request has "
+                        f"{max_model_len} tokens. However, your request has "
                         f"{prompt_len} input tokens. Please reduce the length of "
                         "the input messages.",
                         parameter="input_tokens",
@@ -167,10 +171,11 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                     )
 
                 max_tokens = get_max_tokens(
-                    self.max_model_len,
+                    max_model_len,
                     request.max_completion_tokens if request.max_completion_tokens is not None else request.max_tokens,
-                    prompt_len,
+                    self._extract_prompt_len(engine_prompt),
                     self.default_sampling_params,
+                    self.override_max_tokens,
                 )
 
                 sampling_params: SamplingParams | BeamSearchParams
@@ -179,12 +184,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 else:
                     sampling_params = request.to_sampling_params(
                         max_tokens,
-                        self.model_config.logits_processor_pattern,
                         self.default_sampling_params,
-                    )
-                    validate_logits_processors_parameters(
-                        self.logits_processors,
-                        sampling_params,
                     )
 
                 self._log_inputs(
@@ -205,35 +205,19 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                         trace_headers=trace_headers,
                     )
                 else:
-                    tok_params = request.build_tok_params(self.model_config)
-                    tokenization_kwargs = tok_params.get_encode_kwargs()
+                    reasoning_ended = (
+                        reasoning_parser.is_reasoning_end(prompt_token_ids or []) if reasoning_parser else None
+                    )
 
-                    engine_request = self.input_processor.process_inputs(
-                        sub_request_id,
+                    generator = self.engine_client.generate(
                         engine_prompt,
                         sampling_params,
-                        lora_request=lora_request,
-                        tokenization_kwargs=tokenization_kwargs,
-                        trace_headers=trace_headers,
-                        priority=request.priority,
-                        data_parallel_rank=data_parallel_rank,
-                    )
-                    reasoning_ended = None
-                    if reasoning_parser:
-                        reasoning_ended = reasoning_parser.is_reasoning_end(
-                            engine_request.prompt_token_ids or []  # type: ignore[attr-defined]
-                        )
-                        engine_request.reasoning_ended = reasoning_ended
-                    generator = self.engine_client.generate(
-                        engine_request,
-                        sampling_params,
                         sub_request_id,
                         lora_request=lora_request,
                         trace_headers=trace_headers,
                         priority=request.priority,
-                        prompt_text=prompt_text,
-                        tokenization_kwargs=tokenization_kwargs,
                         data_parallel_rank=data_parallel_rank,
+                        reasoning_ended=reasoning_ended,
                     )
 
                 generators.append(generator)
