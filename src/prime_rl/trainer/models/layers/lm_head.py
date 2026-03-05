@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import types
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import torch
 import torch.nn as nn
@@ -235,20 +235,20 @@ def _online_logsumexp_and_weighted_update(
     return m_new, s_new, t_new
 
 
-def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None, fused_cross_entropy: bool = False) -> None:
+def inject_prime_lm_head(model: nn.Module, chunk_size: int | Literal["cross_entropy"] | None = None) -> None:
     """
-    Inject a PrimeRL LM head (FusedOutputLinear, FusedCrossEntropyOutputLinear, or VanillaOutputLinear) into a model.
+    Inject a PrimeRL LM head into a model.
 
     This replaces the model's lm_head and overrides the forward method to use labels
     and temperature for chunked loss computation.
 
     Args:
         model: The model to wrap.
-        chunk_size: If int, use FusedOutputLinear with chunked logprob/entropy computation with the given chunk size.
-                    If None, use VanillaOutputLinear which just returns logits.
-        fused_cross_entropy: If True, use FusedCrossEntropyOutputLinear which fuses lm_head projection with
-                             cross-entropy loss (avoids materializing full logits tensor). Mutually exclusive
-                             with chunk_size.
+        chunk_size: Controls which LM head variant to inject:
+            - int: FusedOutputLinear with chunked logprob/entropy (for RL).
+            - "cross_entropy": FusedCrossEntropyOutputLinear, fuses lm_head projection
+              with cross-entropy loss to avoid materializing full logits (for SFT).
+            - None: VanillaOutputLinear, just returns logits.
     """
     # Guards so we have nicer error messages when a non-standard model is used
     assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
@@ -261,13 +261,9 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None, fused_
 
     logger = get_logger()
 
-    assert not (chunk_size is not None and fused_cross_entropy), (
-        "chunk_size and fused_cross_entropy are mutually exclusive"
-    )
-
     # Check for Gemma-style softcapping - dispatch to specialized implementation
     final_logit_softcapping = getattr(model.config, "final_logit_softcapping", None)
-    if final_logit_softcapping and not fused_cross_entropy:
+    if final_logit_softcapping and chunk_size != "cross_entropy":
         from prime_rl.trainer.models.layers.lm_head_gemma import inject_gemma_lm_head
 
         inject_gemma_lm_head(model, chunk_size, final_logit_softcapping)
@@ -275,14 +271,14 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None, fused_
 
     # Replace the lm_head with the appropriate wrapper
     old_lm_head = model.lm_head
-    if fused_cross_entropy:
+    if chunk_size == "cross_entropy":
         logger.info("Injecting fused cross-entropy LM head (Liger kernel)")
         model.lm_head = FusedCrossEntropyOutputLinear(
             in_features=old_lm_head.in_features,
             out_features=old_lm_head.out_features,
             softcap=final_logit_softcapping,
         )
-    elif chunk_size is not None:
+    elif isinstance(chunk_size, int):
         logger.info(f"Injecting chunked LM head with chunk size {chunk_size}")
         model.lm_head = FusedOutputLinear(
             in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
