@@ -56,8 +56,9 @@ RUN --mount=type=cache,target=/app/.cache/uv \
     uv sync --all-extras --locked --no-dev
 
 # arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
+ARG TARGETARCH
 COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
-RUN /app/scripts/docker-arm64-post-install.sh
+RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
 
 FROM python:3.12-slim
 
