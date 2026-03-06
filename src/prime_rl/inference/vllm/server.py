@@ -271,10 +271,7 @@ async def custom_init_app_state(
 
     resolved_chat_template = load_chat_template(args.chat_template)
 
-    serving_chat = OpenAIServingChatWithTokens(
-        engine_client,
-        state.openai_serving_models,
-        args.response_role,
+    chat_kwargs = dict(
         request_logger=request_logger,
         chat_template=resolved_chat_template,
         chat_template_content_format=args.chat_template_content_format,
@@ -287,7 +284,15 @@ async def custom_init_app_state(
         enable_prompt_tokens_details=args.enable_prompt_tokens_details,
         enable_force_include_usage=args.enable_force_include_usage,
         enable_log_outputs=args.enable_log_outputs,
-        log_error_stack=args.log_error_stack,
+    )
+    if hasattr(args, "log_error_stack"):
+        chat_kwargs["log_error_stack"] = args.log_error_stack
+
+    serving_chat = OpenAIServingChatWithTokens(
+        engine_client,
+        state.openai_serving_models,
+        args.response_role,
+        **chat_kwargs,
     )
     state.openai_serving_chat = serving_chat if "generate" in supported_tasks else None
     state.openai_serving_chat_with_tokens = serving_chat if "generate" in supported_tasks else None
