@@ -497,6 +497,23 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_top_k(self):
+        """Propagate orchestrator.sampling.top_k to trainer.top_k so both sides use the same value."""
+        sampling_top_k = self.orchestrator.sampling.top_k
+        trainer_top_k = self.trainer.top_k
+
+        if sampling_top_k is not None and trainer_top_k is not None and sampling_top_k != trainer_top_k:
+            raise ValueError(
+                f"orchestrator.sampling.top_k ({sampling_top_k}) and trainer.top_k ({trainer_top_k}) are both set "
+                f"but differ. Set orchestrator.sampling.top_k only — it will be propagated to the trainer automatically."
+            )
+
+        if sampling_top_k is not None and trainer_top_k is None:
+            self.trainer.top_k = sampling_top_k
+
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             self.trainer.bench = BenchConfig()

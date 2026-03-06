@@ -24,6 +24,7 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
+    apply_top_k_mask,
     compute_entropy,
     compute_loss,
     selective_log_softmax,
@@ -389,6 +390,8 @@ def train(config: TrainerConfig):
                 logits = out["logits"]
                 # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
                 scaled_logits = logits / temperatures.unsqueeze(-1)
+                if config.top_k is not None:
+                    scaled_logits = apply_top_k_mask(scaled_logits, config.top_k, labels)
                 out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures

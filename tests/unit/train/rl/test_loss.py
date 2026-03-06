@@ -2,7 +2,15 @@ import pytest
 import torch
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
-from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_loss_fn
+from prime_rl.trainer.rl.loss import (
+    LossInputs,
+    LossOutputs,
+    apply_top_k_mask,
+    compute_entropy,
+    compute_loss,
+    selective_log_softmax,
+    setup_loss_fn,
+)
 
 pytestmark = [pytest.mark.gpu]
 
@@ -73,6 +81,56 @@ def test_setup_loss_fn_with_custom_config():
     assert isinstance(result, LossOutputs)
     assert result.loss.shape == ()
     assert "custom_metric" in result.metrics
+
+
+def test_apply_top_k_mask():
+    """Test that apply_top_k_mask keeps only top-k logits and the target token."""
+    batch, seq, vocab = 2, 4, 100
+    logits = torch.randn(batch, seq, vocab, dtype=torch.float32).cuda()
+    labels = torch.randint(0, vocab, (batch, seq)).cuda()
+    top_k = 10
+
+    masked = apply_top_k_mask(logits, top_k, labels)
+
+    # Kept values retain their original value, masked values are -1e20
+    kept_mask = masked > -1e20
+    # At least top_k tokens should be kept per position (plus possibly the target)
+    assert (kept_mask.sum(dim=-1) >= top_k).all()
+    # At most top_k + 1 tokens (top_k + target if target wasn't in top_k)
+    assert (kept_mask.sum(dim=-1) <= top_k + 1).all()
+
+    # The target token is always kept (never masked)
+    for b in range(batch):
+        for s in range(seq):
+            assert masked[b, s, labels[b, s]] > -1e20
+
+
+def test_top_k_mask_logprobs_concentrate_probability():
+    """Test that top-k masking concentrates probability on fewer tokens."""
+    batch, seq, vocab = 1, 1, 1000
+    logits = torch.randn(batch, seq, vocab, dtype=torch.float32).cuda()
+    labels = torch.zeros(batch, seq, dtype=torch.long).cuda()
+
+    full_logprobs = selective_log_softmax(logits, labels)
+    masked_logits = apply_top_k_mask(logits, top_k=50, keep_indices=labels)
+    masked_logprobs = selective_log_softmax(masked_logits, labels)
+
+    # With fewer tokens sharing the probability mass, the selected token's logprob
+    # should be >= what it was under the full distribution
+    assert (masked_logprobs >= full_logprobs - 1e-5).all()
+
+
+def test_top_k_mask_entropy_decreases():
+    """Test that top-k masking reduces entropy (fewer possible tokens)."""
+    batch, seq, vocab = 1, 2, 500
+    logits = torch.randn(batch, seq, vocab, dtype=torch.float32).cuda()
+    labels = torch.zeros(batch, seq, dtype=torch.long).cuda()
+
+    full_entropy = compute_entropy(logits)
+    masked_logits = apply_top_k_mask(logits, top_k=20, keep_indices=labels)
+    masked_entropy = compute_entropy(masked_logits)
+
+    assert (masked_entropy <= full_entropy + 1e-5).all()
 
 
 def _dummy_custom_loss(inputs: LossInputs, multiplier: float = 1.0) -> LossOutputs:
