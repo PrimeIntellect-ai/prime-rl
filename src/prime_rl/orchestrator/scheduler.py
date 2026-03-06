@@ -86,7 +86,7 @@ class Scheduler:
         # Multi-agent LoRA: per-actor adapter names and weight tracking
         self.actor_lora_mapping = actor_lora_mapping or {}
         self.actor_run_dirs: dict[str, str] = {}
-        self.actor_ckpt_steps: dict[str, int] = {actor: -1 for actor in self.actor_lora_mapping}
+        self.actor_ckpt_steps: dict[str, int] = {actor: 0 for actor in self.actor_lora_mapping}
         # Starts empty (base model), populated with LoRA names after first weight broadcast
         self.actor_model_names: dict[str, str] = {}
 
@@ -249,10 +249,10 @@ class Scheduler:
     async def _update_policy_multi_actor(self):
         """Check each actor's broadcast directory for new weights and load per-actor LoRA adapters.
 
-        Follows upstream's pattern: compute the minimum acceptable checkpoint step
-        based on async level, and block (await wait_for_path) until the trainer catches up.
+        Mirrors update_policy() but checks each actor's broadcast directory independently.
+        Note: model_name is not updated here — evals will run against base model.
+        Per-actor eval routing is not yet supported.
         """
-        # Compute the minimum step the trainer must have reached
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
 
         # Find the latest broadcast step across all actors (use the slowest)
@@ -263,18 +263,17 @@ class Scheduler:
             latest_actor_steps[actor_id] = get_latest_ckpt_step(actor_broadcast_dir) or 0
 
         latest_ckpt_step = min(latest_actor_steps.values()) if latest_actor_steps else 0
-        next_ckpt_step = max(async_away_ckpt_step, latest_ckpt_step)
+        next_ckpt_step = (
+            async_away_ckpt_step if self.strict_async_level else max(async_away_ckpt_step, latest_ckpt_step)
+        )
 
         if next_ckpt_step <= self.ckpt_step:
             return
 
-        # If the orchestrator is ahead of the trainer, block until the trainer catches up
-        last_steps = self.config.max_steps and self.step >= self.config.max_steps - self.max_async_level
-        if next_ckpt_step == async_away_ckpt_step and not last_steps:
+        if next_ckpt_step == async_away_ckpt_step:
             print(f"[MULTI-AGENT] Pausing: waiting for trainer to reach step {next_ckpt_step} (orch={self.step}, trainer={latest_ckpt_step}, max_async={self.max_async_level})")
             self.checkpoint_ready.clear()
             wait_start = time.perf_counter()
-            # Block until ALL actors have broadcast the required step
             for actor_id in self.actor_lora_mapping:
                 run_dir_name = self.actor_run_dirs[actor_id]
                 actor_broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_dir_name)
@@ -282,6 +281,10 @@ class Scheduler:
                 await wait_for_path(stable_path)
             self.wait_for_ckpt_time = time.perf_counter() - wait_start
             print(f"[MULTI-AGENT] Resumed: trainer reached step {next_ckpt_step} (waited {self.wait_for_ckpt_time:.2f}s)")
+
+        self.logger.debug(
+            f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
+        )
 
         # Load updated weights for each actor
         update_weights_start_time = time.perf_counter()
@@ -323,6 +326,12 @@ class Scheduler:
                 self.inflight_group_rollouts[task] = InflightRolloutInfo(
                     off_policy_steps=off_policy_steps, client_config=client_config
                 )
+
+        if len(tasks_to_remove) > 0:
+            self.logger.warning(
+                f"Cancelled {len(tasks_to_remove)} old rollout requests (will refill naturally). "
+                f"Consider increasing max_off_policy_steps to avoid this."
+            )
 
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
         """Continuously generates a batch of rollouts."""
