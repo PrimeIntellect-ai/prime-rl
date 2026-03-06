@@ -673,6 +673,13 @@ class TrainerConfig(BaseConfig):
         ),
     ] = None
 
+    broadcast_at_step_zero: Annotated[
+        bool,
+        Field(
+            description="Whether to broadcast weights before the first training step. Useful for fast iteration when the inference server needs to load trained weights immediately.",
+        ),
+    ] = False
+
     trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
 
     dist_timeout_seconds: Annotated[
