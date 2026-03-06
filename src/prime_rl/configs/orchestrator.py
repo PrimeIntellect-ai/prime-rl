@@ -146,7 +146,7 @@ class SamplingConfig(BaseConfig):
         int | None,
         Field(
             ge=-1,
-            description="Top-k sampling: restrict sampling to the k most likely tokens. -1 or None means no restriction (sample from full vocabulary). Should match the trainer's top_k setting to avoid distribution mismatch.",
+            description="Top-k sampling: restrict sampling to the k most likely tokens. -1 or None means no restriction (sample from full vocabulary). Automatically propagated to the trainer for consistent masking.",
         ),
     ] = None
 

@@ -499,7 +499,10 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_top_k(self):
         """Propagate orchestrator.sampling.top_k to trainer.top_k so both sides use the same value."""
+        # -1 means "no restriction" in vLLM convention, treat as disabled
         sampling_top_k = self.orchestrator.sampling.top_k
+        if sampling_top_k is not None and sampling_top_k < 1:
+            sampling_top_k = None
         trainer_top_k = self.trainer.top_k
 
         if sampling_top_k is not None and trainer_top_k is not None and sampling_top_k != trainer_top_k:
