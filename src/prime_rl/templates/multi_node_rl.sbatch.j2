@@ -130,7 +130,9 @@ else
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
         uv run orchestrator \
             @ $CONFIG_DIR/orchestrator.toml \
+{%- if weight_broadcast_type == "nccl" %}
             --weight_broadcast.host $MASTER_ADDR \
+{%- endif %}
             --client.base-url $INFER_URLS \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log &
     fi

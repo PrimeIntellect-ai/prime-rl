@@ -405,6 +405,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             decode_port=config.inference.deployment.decode_port,
             router_port=config.inference.deployment.router_port,
             data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            weight_broadcast_type=config.orchestrator.weight_broadcast.type,
         )
     else:
         assert config.inference is not None
@@ -423,6 +424,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_tp=config.inference.parallel.tp,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            weight_broadcast_type=config.orchestrator.weight_broadcast.type,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -457,6 +459,8 @@ def rl_slurm(config: RLConfig):
             f"  Orchestrator:  tail -F {slurm_log_dir}/latest_orchestrator.log\n"
             f"  Inference:     tail -F {slurm_log_dir}/latest_infer_node_rank_0.log"
         )
+        if config.inference and config.inference.deployment.type == "disaggregated":
+            log_message += f"\n  Router:        tail -F {slurm_log_dir}/latest_router.log"
 
     script_path = config.output_dir / RL_SBATCH
     write_slurm_script(config, config_dir, script_path)

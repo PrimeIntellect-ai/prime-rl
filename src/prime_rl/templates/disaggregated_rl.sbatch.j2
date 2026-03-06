@@ -1,5 +1,4 @@
 #!/bin/bash
-
 #SBATCH --job-name={{ job_name }}
 #SBATCH --nodes={{ num_train_nodes + num_prefill_nodes + num_decode_nodes }}
 #SBATCH --ntasks-per-node=1
@@ -8,6 +7,7 @@
 #SBATCH --exclusive
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
+set -euo pipefail
 
 # Configs
 export NUM_PREFILL_NODES={{ num_prefill_nodes }}
@@ -90,7 +90,8 @@ echo "MASTER_PORT=${MASTER_PORT}"
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-uv sync --all-extras
+uv sync --all-extras --inexact
+bash scripts/install_ep_kernels.sh
 
 srun bash -c '
     cd $PROJECT_DIR
@@ -111,6 +112,7 @@ if [ "$NODE_RANK" -lt "$NUM_INFER_NODES" ]; then
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     export NCCL_NET_PLUGIN=none
+    export NCCL_SOCKET_IFNAME=bond0
     export GLOO_SOCKET_IFNAME=bond0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
 
@@ -193,7 +195,9 @@ else
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
         uv run orchestrator \
             @ $CONFIG_DIR/orchestrator.toml \
+{%- if weight_broadcast_type == "nccl" %}
             --weight_broadcast.host $MASTER_ADDR \
+{%- endif %}
             --client.base-url $INFER_URLS \
             --client.admin-base-url $ADMIN_INFER_URLS \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log &

@@ -19,7 +19,7 @@ dependencies = [
     "torch>=2.9.0",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.16.1.dev",
+    "vllm>=0.16.0",
     "vllm-router",
     "wandb>=0.24.2",
     "ring-flash-attn>=0.1.8",
@@ -52,7 +52,7 @@ prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
 
 [project.optional-dependencies]
 flash-attn = [
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
 ]
 
 flash-attn-3 = [
@@ -88,7 +88,6 @@ override-dependencies = [
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
-vllm = { url = "https://wheels.vllm.ai/7eca85911072b9732293c3d4181e20a4c9394b21/vllm-0.16.1rc1.dev246%2Bg7eca85911-cp38-abi3-manylinux_2_31_x86_64.whl" }
 math-env = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "45fae8d" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
@@ -111,12 +110,7 @@ url = "https://hub.primeintellect.ai/primeintellect/simple/"
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[[tool.uv.index]]
-name = "vllm-nightly"
-url = "https://wheels.vllm.ai/nightly"
+url = "https://download.pytorch.org/whl/test/cu128"
 explicit = true
 
 

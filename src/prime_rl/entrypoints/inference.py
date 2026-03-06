@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -119,7 +120,7 @@ def inference_local(config: InferenceConfig):
 
 
 def inference(config: InferenceConfig):
-    if config.deployment.type == "disaggregated" and config.slurm is None:
+    if config.deployment.type == "disaggregated" and config.slurm is None and not os.environ.get("SLURM_JOB_ID"):
         raise ValueError("Must use SLURM for disaggregated deployment.")
 
     if config.slurm is not None:

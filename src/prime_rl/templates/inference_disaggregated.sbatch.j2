@@ -1,5 +1,4 @@
 #!/bin/bash
-
 #SBATCH --job-name={{ job_name }}
 #SBATCH --nodes={{ num_prefill_nodes + num_decode_nodes }}
 #SBATCH --ntasks-per-node=1
@@ -8,6 +7,7 @@
 #SBATCH --exclusive
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
+set -euo pipefail
 
 # Configs
 export NUM_PREFILL_NODES={{ num_prefill_nodes }}
@@ -35,7 +35,8 @@ export OMP_NUM_THREADS=1
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-uv sync --all-extras
+uv sync --all-extras --inexact
+bash scripts/install_ep_kernels.sh
 
 # Node assignment
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
@@ -76,6 +77,7 @@ srun bash -c '
 
     # Disaggregated env vars
     export NCCL_NET_PLUGIN=none
+    export NCCL_SOCKET_IFNAME=bond0
     export GLOO_SOCKET_IFNAME=bond0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
 
