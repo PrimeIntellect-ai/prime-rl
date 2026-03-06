@@ -4,7 +4,7 @@ set -e
 
 echo "=== building flash-attn from source (sm_100 / GB200) ==="
 TORCH_CUDA_ARCH_LIST="10.0" MAX_JOBS=4 \
-    uv pip install "flash-attn==2.8.3" --no-build-isolation
+    uv pip install "flash-attn==2.8.3" --no-build-isolation --no-binary flash-attn
 
 echo "=== reinstalling flash-attn-cute (flash-attn overwrites it with a stub) ==="
 uv pip install --reinstall --no-deps \
