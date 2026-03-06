@@ -11,7 +11,7 @@ from torch.nn import CrossEntropyLoss
 from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
-from torch.profiler import profile, ProfilerActivity, record_function
+from torch.profiler import profile, ProfilerActivity
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
@@ -34,7 +34,6 @@ from prime_rl.trainer.utils import (
     MemoryProfiler,
     export_benchmark_json,
     get_ckpt_disk_metrics,
-    print_sample,
     setup_torch_distributed,
     print_benchmark,
 )
@@ -180,7 +179,6 @@ def train(config: SFTConfig):
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass + CE loss. Returns (per_token_loss, loss_mask), both (B, L)."""
         input_ids = micro_batch["input_ids"].to("cuda")
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
@@ -200,62 +198,73 @@ def train(config: SFTConfig):
         del out, logits
         return per_token_loss, loss_mask
 
+    def run_forward_loop(data_iter, num_steps=None, *, backward=True):
+        total_loss = torch.tensor(0.0, device="cuda")
+        nan_count = torch.tensor(0, device="cuda")
+        valid_steps = torch.tensor(0, device="cuda")
+        max_vio_total = torch.tensor(0.0, device="cuda")
+        divisor = num_steps or 1
+
+        ctx = nullcontext() if backward else torch.no_grad()
+        with ctx:
+            for step, micro_batch in enumerate(data_iter):
+                per_token_loss, loss_mask = compute_loss(micro_batch)
+                loss = per_token_loss[loss_mask].mean()
+
+                if not torch.isnan(loss.detach()):
+                    total_loss += loss.detach()
+                    valid_steps += 1
+                else:
+                    nan_count += 1
+
+                if backward:
+                    (loss / divisor).backward()
+
+                    if is_tt_moe_model(model):
+                        max_vio = get_load_balance_stats(model)["max_vio"]
+                        if max_vio is not None:
+                            max_vio = max_vio.mean()
+                            dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
+                            max_vio_total += max_vio / divisor
+
+                if num_steps is not None and step + 1 >= num_steps:
+                    break
+
+        dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
+        dist.all_reduce(valid_steps, op=dist.ReduceOp.SUM)
+        dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
+
+        mean_loss = (total_loss / valid_steps).item() if valid_steps.item() > 0 else float("nan")
+        return mean_loss, nan_count.item(), max_vio_total
+
     def run_validation(step: int) -> None:
         val_dataset = setup_dataset(
-            tokenizer,
-            config.val.data,
-            config.model.cp * config.model.tp,
-            max_epochs=1,
-            raw_dataset=val_raw_dataset,
+            tokenizer, config.val.data, config.model.cp * config.model.tp, max_epochs=1, raw_dataset=val_raw_dataset
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
         was_training = model.training
         model.eval()
-
-        total_loss = torch.tensor(0.0, device="cuda")
-        total_tokens = torch.tensor(0, dtype=torch.int64, device="cuda")
-        nan_batches = torch.tensor(0, dtype=torch.int64, device="cuda")
-
-        with torch.no_grad():
-            for micro_batch in val_dataloader:
-                per_token_loss, loss_mask = compute_loss(micro_batch)
-                masked_loss = per_token_loss[loss_mask]
-
-                if torch.isnan(masked_loss).any():
-                    nan_batches += 1
-                else:
-                    total_loss += masked_loss.sum()
-                    total_tokens += masked_loss.numel()
-
-        dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
-        dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
-        dist.all_reduce(nan_batches, op=dist.ReduceOp.SUM)
-
-        if nan_batches.item() > 0:
-            logger.warning(f"Validation at step {step}: {nan_batches.item()} batches had NaN loss")
-
-        if total_tokens.item() == 0:
+        mean_loss, nan_count, _ = run_forward_loop(val_dataloader, backward=False)
+        if nan_count > 0:
+            logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
+        if mean_loss != mean_loss:
             logger.warning(f"Validation at step {step} had no valid tokens")
-            val_metrics = {"val/loss": float("nan"), "val/num_tokens": 0, "step": step}
         else:
-            mean_val_loss = (total_loss / total_tokens).item()
-            logger.success(f"Validation | Step {step} | Loss: {mean_val_loss:.4f} | Tokens: {total_tokens.item()}")
-            val_metrics = {"val/loss": mean_val_loss, "val/num_tokens": total_tokens.item(), "step": step}
-
-        monitor.log(val_metrics, step=step)
-
+            logger.success(f"Validation | Step {step} | Loss: {mean_loss:.4f}")
+        monitor.log({"val/loss": mean_loss, "step": step}, step=step)
         if was_training:
             model.train()
+
+    if config.val is not None and config.val.eval_on_start:
+        run_validation(progress.step)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
-    maybe_record_function = nullcontext
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
-        maybe_record_function = record_function
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -296,48 +305,7 @@ def train(config: SFTConfig):
         step_start_time = time.perf_counter()
         forward_backward_start_time = time.perf_counter()
 
-        batch_loss = torch.tensor(0.0).to("cuda")
-        nan_loss_count = torch.tensor(0).to("cuda")
-        batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
-        for micro_step in range(grad_accum_steps):
-            micro_batch = next(dataiter)
-
-            if config.log.log_data:
-                logger.debug("Printing samples of the first micro batch")
-                input_ids_log = micro_batch["input_ids"].flatten().tolist()
-                loss_mask_log = micro_batch["loss_mask"].flatten().tolist()
-                print_sample(input_ids_log, loss_mask_log, tokenizer)
-
-            logger.debug("Starting forward pass")
-            with maybe_record_function("forward"):
-                per_token_loss, loss_mask = compute_loss(micro_batch)
-
-            loss = per_token_loss[loss_mask].mean()
-
-            current_loss = loss.detach() / grad_accum_steps
-
-            if not torch.isnan(current_loss):
-                batch_loss += current_loss
-            else:
-                nan_loss_count += 1
-                logger.warning("Loss is nan, not taking into account in the batch loss calculation")
-
-            logger.debug("Starting backward pass")
-            with maybe_record_function("backward"):
-                (loss / grad_accum_steps).backward()
-
-            if is_tt_moe_model(model):
-                max_vio = get_load_balance_stats(model)["max_vio"]
-                if max_vio is not None:
-                    max_vio = max_vio.mean()
-                    dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
-                    batch_max_vio += max_vio / grad_accum_steps
-
-            # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{grad_accum_steps} | Loss: {loss.item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['dataset']['step']}"
-            if is_tt_moe_model(model) and max_vio is not None:
-                micro_step_message += f" | Max Vio: {max_vio.item():.4f}"
-            logger.debug(micro_step_message)
+        batch_loss, nan_loss_count, batch_max_vio = run_forward_loop(dataiter, grad_accum_steps, backward=True)
 
         logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
         grad_norm = clip_grad_norm_(
@@ -360,11 +328,6 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # Synchronize the tensor metrics across all steps and ranks
-        logger.debug("Synchronizing tensor metrics across all steps and ranks")
-        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
-        dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
-
         # Compute step metrics
         # Divide by CP and TP since those ranks process the same data
         num_tokens = config.data.batch_size * config.data.seq_len // (config.model.cp * config.model.tp)
@@ -378,8 +341,8 @@ def train(config: SFTConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item():.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
-        if is_tt_moe_model(model) and max_vio is not None:
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
+        if is_tt_moe_model(model) and batch_max_vio.item() > 0:
             step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
         logger.success(step_message)
 
@@ -425,8 +388,8 @@ def train(config: SFTConfig):
         monitor.log(optim_metrics, step=progress.step)
 
         loss_log_metrics = {
-            "loss/mean": batch_loss.item(),
-            "loss/nan_count": nan_loss_count.item(),
+            "loss/mean": batch_loss,
+            "loss/nan_count": nan_loss_count,
             "step": progress.step,
         }
         # Log tensor stats
@@ -446,12 +409,8 @@ def train(config: SFTConfig):
         disk_metrics["step"] = progress.step
         monitor.log(disk_metrics, step=progress.step)
 
-        if is_tt_moe_model(model):
-            max_vio_log_metrics = {
-                "max_vio/mean": batch_max_vio.item(),
-                "step": progress.step,
-            }
-            monitor.log(max_vio_log_metrics, step=progress.step)
+        if is_tt_moe_model(model) and batch_max_vio.item() > 0:
+            monitor.log({"max_vio/mean": batch_max_vio.item(), "step": progress.step}, step=progress.step)
 
         if config.val is not None and not is_first_step and progress.step % config.val.interval == 0:
             run_validation(progress.step)
