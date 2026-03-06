@@ -32,6 +32,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
+    count_zero_gradient_elements,
     export_benchmark_json,
     get_ckpt_disk_metrics,
     print_sample,
@@ -297,6 +298,7 @@ def train(config: SFTConfig):
         )
         if grad_norm.device.type == "cpu":
             grad_norm = grad_norm.to(torch.device("cuda"))
+        num_zero_grad, num_grad_elements = count_zero_gradient_elements(model.parameters())
 
         logger.debug("Optimizer step")
         optimizer.step()
@@ -316,6 +318,13 @@ def train(config: SFTConfig):
         logger.debug("Synchronizing tensor metrics across all steps and ranks")
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
         dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(num_zero_grad, op=dist.ReduceOp.SUM)
+        dist.all_reduce(num_grad_elements, op=dist.ReduceOp.SUM)
+        if parallel_dims.dp_replicate > 1:
+            # HSDP replicas share the same post-reduction gradients, so remove the duplicate copies here.
+            num_zero_grad = torch.div(num_zero_grad, parallel_dims.dp_replicate, rounding_mode="floor")
+            num_grad_elements = torch.div(num_grad_elements, parallel_dims.dp_replicate, rounding_mode="floor")
+        zero_grad_ratio = (num_zero_grad.float() / num_grad_elements.clamp_min(1).float()).item()
 
         # Compute step metrics
         # Divide by CP and TP since those ranks process the same data
@@ -330,7 +339,7 @@ def train(config: SFTConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item():.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss.item():.4f} | Grad. Norm: {grad_norm:.4f} | Num Zero Grad: {num_zero_grad.item():,} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         if is_tt_moe_model(model) and max_vio is not None:
             step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
         logger.success(step_message)
@@ -372,6 +381,8 @@ def train(config: SFTConfig):
         optim_metrics = {
             "optim/lr": current_lr,
             "optim/grad_norm": grad_norm.item(),
+            "optim/num_zero_grad": num_zero_grad.item(),
+            "optim/zero_grad_ratio": zero_grad_ratio,
             "step": progress.step,
         }
         monitor.log(optim_metrics, step=progress.step)

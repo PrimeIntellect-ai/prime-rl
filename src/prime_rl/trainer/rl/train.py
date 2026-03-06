@@ -43,6 +43,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
+    count_zero_gradient_elements,
     export_benchmark_json,
     get_ckpt_disk_metrics,
     setup_torch_distributed,
@@ -460,6 +461,7 @@ def train(config: TrainerConfig):
         )
         if grad_norm.device.type == "cpu":
             grad_norm = grad_norm.to(torch.device("cuda"))
+        num_zero_grad, num_grad_elements = count_zero_gradient_elements(model.parameters())
 
         # Update the model parameters
         optimizer.step()
@@ -480,6 +482,13 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
+        dist.all_reduce(num_zero_grad, op=dist.ReduceOp.SUM)
+        dist.all_reduce(num_grad_elements, op=dist.ReduceOp.SUM)
+        if parallel_dims.dp_replicate > 1:
+            # HSDP replicas share the same post-reduction gradients, so remove the duplicate copies here.
+            num_zero_grad = torch.div(num_zero_grad, parallel_dims.dp_replicate, rounding_mode="floor")
+            num_grad_elements = torch.div(num_grad_elements, parallel_dims.dp_replicate, rounding_mode="floor")
+        zero_grad_ratio = (num_zero_grad.float() / num_grad_elements.clamp_min(1).float()).item()
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
@@ -497,7 +506,7 @@ def train(config: TrainerConfig):
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f}"
         if "mismatch_kl/mean" in tensor_stats:
             step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f}"
-        step_message += f" | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
+        step_message += f" | Grad. Norm: {grad_norm:.4f} | Num Zero Grad: {num_zero_grad.item():,} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)
@@ -516,6 +525,8 @@ def train(config: TrainerConfig):
         optim_metrics = {
             "optim/lr": current_lr,
             "optim/grad_norm": grad_norm.item(),
+            "optim/num_zero_grad": num_zero_grad.item(),
+            "optim/zero_grad_ratio": zero_grad_ratio,
             "step": progress.step,
         }
         monitor.log(optim_metrics, step=progress.step)
@@ -559,6 +570,8 @@ def train(config: TrainerConfig):
                 mfu=mfu,
                 entropy=tensor_stats.get("entropy/mean", 0.0),
                 mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
+                num_zero_grad=float(num_zero_grad.item()),
+                zero_grad_ratio=zero_grad_ratio,
             )
             # Update run/LoRA metrics
             multi_run_manager = get_multi_run_manager()
