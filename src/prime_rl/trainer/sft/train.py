@@ -11,7 +11,7 @@ from torch.nn import CrossEntropyLoss
 from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
-from torch.profiler import profile, ProfilerActivity
+from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
@@ -34,6 +34,7 @@ from prime_rl.trainer.utils import (
     MemoryProfiler,
     export_benchmark_json,
     get_ckpt_disk_metrics,
+    print_sample,
     setup_torch_distributed,
     print_benchmark,
 )
@@ -198,6 +199,8 @@ def train(config: SFTConfig):
         del out, logits
         return per_token_loss, loss_mask
 
+    maybe_record_function = nullcontext
+
     def run_forward_loop(data_iter, num_steps=None, *, backward=True):
         total_loss = torch.tensor(0.0, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
@@ -208,7 +211,13 @@ def train(config: SFTConfig):
         ctx = nullcontext() if backward else torch.no_grad()
         with ctx:
             for step, micro_batch in enumerate(data_iter):
-                per_token_loss, loss_mask = compute_loss(micro_batch)
+                if backward and config.log.log_data:
+                    input_ids_log = micro_batch["input_ids"].flatten().tolist()
+                    loss_mask_log = micro_batch["loss_mask"].flatten().tolist()
+                    print_sample(input_ids_log, loss_mask_log, tokenizer)
+
+                with maybe_record_function("forward"):
+                    per_token_loss, loss_mask = compute_loss(micro_batch)
                 loss = per_token_loss[loss_mask].mean()
 
                 if not torch.isnan(loss.detach()):
@@ -218,7 +227,8 @@ def train(config: SFTConfig):
                     nan_count += 1
 
                 if backward:
-                    (loss / divisor).backward()
+                    with maybe_record_function("backward"):
+                        (loss / divisor).backward()
 
                     if is_tt_moe_model(model):
                         max_vio = get_load_balance_stats(model)["max_vio"]
@@ -265,6 +275,7 @@ def train(config: SFTConfig):
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
+        maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
