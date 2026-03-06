@@ -86,14 +86,15 @@ class Scheduler:
         # Multi-agent LoRA: per-actor adapter names and weight tracking
         self.actor_lora_mapping = actor_lora_mapping or {}
         self.actor_run_dirs: dict[str, str] = {}
-        self.actor_ckpt_steps: dict[str, int] = {actor: 0 for actor in self.actor_lora_mapping}
+        self.actor_ckpt_steps: dict[str, int] = {actor: -1 for actor in self.actor_lora_mapping}
 
         # Track in-flight requests: task -> info
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
 
-        self.step, self.ckpt_step = 0, 0
+        self.step, self.ckpt_step = 0, -1 if self.actor_lora_mapping else 0
         self.checkpoint_ready = asyncio.Event()
-        self.checkpoint_ready.set()
+        if not self.actor_lora_mapping:
+            self.checkpoint_ready.set()
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.update_policy_task = None
         self.cancelled_rollouts_count = 0
@@ -297,11 +298,6 @@ class Scheduler:
                 print(f"[MULTI-AGENT] Loaded LoRA '{lora_name}' in {time.perf_counter() - load_start:.2f}s")
                 self.actor_ckpt_steps[actor_id] = latest
 
-                # Update agent model name so future rollouts use the LoRA adapter
-                for env in self.env.envs:
-                    if hasattr(env, '_agents') and actor_id in env._agents:
-                        env._agents[actor_id].model = lora_name
-
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.ckpt_step = min(self.actor_ckpt_steps.values())
         self.checkpoint_ready.set()
@@ -329,6 +325,9 @@ class Scheduler:
         """Continuously generates a batch of rollouts."""
         self.step = step
         batch_start_time = time.perf_counter()
+
+        if not self.checkpoint_ready.is_set():
+            await self.checkpoint_ready.wait()
 
         # Schedule initial tasks
         self.logger.debug("Starting to generate batch rollouts")
