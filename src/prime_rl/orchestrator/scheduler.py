@@ -91,7 +91,7 @@ class Scheduler:
         # Track in-flight requests: task -> info
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
 
-        self.step, self.ckpt_step = 0, 0
+        self.step, self.ckpt_step = 0, -1
         self.checkpoint_ready = asyncio.Event()
         if not self.actor_lora_mapping:
             self.checkpoint_ready.set()
