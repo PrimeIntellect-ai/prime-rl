@@ -29,7 +29,6 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
@@ -180,6 +179,26 @@ def train(config: SFTConfig):
         case _:
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
+    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass + CE loss. Returns (per_token_loss, loss_mask), both (B, L)."""
+        input_ids = micro_batch["input_ids"].to("cuda")
+        position_ids = micro_batch["position_ids"].to("cuda")
+        target_ids = micro_batch["target_ids"].to("cuda")
+        loss_mask = micro_batch["loss_mask"].to("cuda")
+
+        if cp_enabled:
+            input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+            target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
+            loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+
+        out = forward(model, input_ids, position_ids)
+        logits = out["logits"]
+        B, L, V = logits.shape
+        per_token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+
+        del out, logits
+        return per_token_loss, loss_mask
+
     def run_validation(step: int) -> None:
         val_dataset = setup_dataset(
             tokenizer,
@@ -193,56 +212,35 @@ def train(config: SFTConfig):
         was_training = model.training
         model.eval()
 
-        val_loss_sum = torch.tensor(0.0, device="cuda")
-        num_batches = torch.tensor(0, dtype=torch.int64, device="cuda")
+        total_loss = torch.tensor(0.0, device="cuda")
+        total_tokens = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_batches = torch.tensor(0, dtype=torch.int64, device="cuda")
 
         with torch.no_grad():
             for micro_batch in val_dataloader:
-                input_ids = micro_batch["input_ids"].to("cuda")
-                position_ids = micro_batch["position_ids"].to("cuda")
-                target_ids = micro_batch["target_ids"].to("cuda")
-                loss_mask = micro_batch["loss_mask"].to("cuda")
+                per_token_loss, loss_mask = compute_loss(micro_batch)
+                masked_loss = per_token_loss[loss_mask]
 
-                if cp_enabled:
-                    input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
-                    target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
-                    loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
-
-                if config.model.lora is not None:
-                    lora_num_tokens = torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda")
-                    set_lora_num_tokens(lora_num_tokens)
-
-                out = forward(model, input_ids, position_ids)
-                logits = out["logits"]
-                B, L, V = logits.shape
-                loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
-                loss = loss[loss_mask].mean()
-
-                if torch.isnan(loss):
+                if torch.isnan(masked_loss).any():
                     nan_batches += 1
                 else:
-                    val_loss_sum += loss.detach()
-                    num_batches += 1
+                    total_loss += masked_loss.sum()
+                    total_tokens += masked_loss.numel()
 
-                del out, logits
-
-        dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
-        dist.all_reduce(num_batches, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
         dist.all_reduce(nan_batches, op=dist.ReduceOp.SUM)
 
-        total_batches = num_batches.item() + nan_batches.item()
-
         if nan_batches.item() > 0:
-            logger.warning(f"Validation at step {step}: {nan_batches.item()}/{total_batches} batches had NaN loss")
+            logger.warning(f"Validation at step {step}: {nan_batches.item()} batches had NaN loss")
 
-        if num_batches.item() == 0:
-            logger.warning(f"Validation at step {step} had only NaN losses")
-            val_metrics = {"val/loss": float("nan"), "val/num_batches": 0, "step": step}
+        if total_tokens.item() == 0:
+            logger.warning(f"Validation at step {step} had no valid tokens")
+            val_metrics = {"val/loss": float("nan"), "val/num_tokens": 0, "step": step}
         else:
-            mean_val_loss = (val_loss_sum / num_batches).item()
-            logger.success(f"Validation | Step {step} | Loss: {mean_val_loss:.4f} | Batches: {total_batches}")
-            val_metrics = {"val/loss": mean_val_loss, "val/num_batches": total_batches, "step": step}
+            mean_val_loss = (total_loss / total_tokens).item()
+            logger.success(f"Validation | Step {step} | Loss: {mean_val_loss:.4f} | Tokens: {total_tokens.item()}")
+            val_metrics = {"val/loss": mean_val_loss, "val/num_tokens": total_tokens.item(), "step": step}
 
         monitor.log(val_metrics, step=step)
 
@@ -305,53 +303,27 @@ def train(config: SFTConfig):
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
-            input_ids = micro_batch["input_ids"].to("cuda")
-            position_ids = micro_batch["position_ids"].to("cuda")
-            target_ids = micro_batch["target_ids"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
-
-            if cp_enabled:
-                input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
-                target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
-                loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
-
-            assert input_ids.shape == position_ids.shape == target_ids.shape == loss_mask.shape, (
-                f"input_ids.shape: {input_ids.shape}, position_ids.shape: {position_ids.shape}, target_ids.shape: {target_ids.shape}, loss_mask.shape: {loss_mask.shape}"
-            )
 
             if config.log.log_data:
                 logger.debug("Printing samples of the first micro batch")
-                print_sample(input_ids.flatten().tolist(), loss_mask.flatten().tolist(), tokenizer)
+                input_ids_log = micro_batch["input_ids"].flatten().tolist()
+                loss_mask_log = micro_batch["loss_mask"].flatten().tolist()
+                print_sample(input_ids_log, loss_mask_log, tokenizer)
 
-                # Forward pass
             logger.debug("Starting forward pass")
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(model, input_ids, position_ids)
+                per_token_loss, loss_mask = compute_loss(micro_batch)
 
-            logits = out["logits"]
-            B, L, V = logits.shape
-
-            # Compute loss
-            loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
-
-            # Compute average loss over unmasked tokens
-            loss = loss[loss_mask].mean()
-
-            # Accumulate average loss over gradient accumulation steps
+            loss = per_token_loss[loss_mask].mean()
 
             current_loss = loss.detach() / grad_accum_steps
 
-            # only add if the loss is not nan
             if not torch.isnan(current_loss):
                 batch_loss += current_loss
             else:
                 nan_loss_count += 1
                 logger.warning("Loss is nan, not taking into account in the batch loss calculation")
 
-            # Delete logits before backward pass to avoid memory spike
-            del logits
-
-            # Backward pass
             logger.debug("Starting backward pass")
             with maybe_record_function("backward"):
                 (loss / grad_accum_steps).backward()
