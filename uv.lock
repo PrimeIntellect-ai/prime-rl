@@ -2476,7 +2476,7 @@ requires-dist = [
     { name = "tilelang", specifier = ">=0.1.8" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
-    { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/test/cu128" },
+    { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=5c1c72b" },
@@ -3511,7 +3511,7 @@ wheels = [
 [[package]]
 name = "torch"
 version = "2.9.1+cu128"
-source = { registry = "https://download.pytorch.org/whl/test/cu128" }
+source = { registry = "https://download.pytorch.org/whl/cu128" }
 dependencies = [
     { name = "filelock" },
     { name = "fsspec" },
@@ -3538,9 +3538,9 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/test/cu128/torch-2.9.1%2Bcu128-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:1176f250311fa95cc3bca8077af323e0d73ea385ba266e096af82e7e2b91f256" },
-    { url = "https://download.pytorch.org/whl/test/cu128/torch-2.9.1%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:7cb4018f4ce68b61fd3ef87dc1c4ca520731c7b5b200e360ad47b612d7844063" },
-    { url = "https://download.pytorch.org/whl/test/cu128/torch-2.9.1%2Bcu128-cp312-cp312-win_amd64.whl", hash = "sha256:3a01f0b64c10a82d444d9fd06b3e8c567b1158b76b2764b8f51bfd8f535064b0" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.9.1%2Bcu128-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:1176f250311fa95cc3bca8077af323e0d73ea385ba266e096af82e7e2b91f256" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.9.1%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:7cb4018f4ce68b61fd3ef87dc1c4ca520731c7b5b200e360ad47b612d7844063" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.9.1%2Bcu128-cp312-cp312-win_amd64.whl", hash = "sha256:3a01f0b64c10a82d444d9fd06b3e8c567b1158b76b2764b8f51bfd8f535064b0" },
 ]
 
 [[package]]

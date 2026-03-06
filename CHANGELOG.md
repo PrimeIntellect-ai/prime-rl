@@ -2,6 +2,7 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`inference.deployment`**: Added `type = "disaggregated"` deployment option (`num_prefill_nodes`, `num_decode_nodes`, `prefill_port`, `decode_port`, `router_port`). Added `orchestrator.weight_broadcast.inference_world_size` for NCCL broadcasts. Added `client.admin_base_url` for admin operations (weight updates, health checks) (2026-03-06)
 - **`orchestrator.verification.enabled`**: Added top-level rollout verification switch. `orchestrator.buffer.skip_verification` has been removed; use `verification.enabled = false` instead. When disabled, rewards are always 0 and reward-dependent buffer features (`online_difficulty_filtering`, `easy_threshold`, `hard_threshold`) must be unset (2026-03-03)
 - **`model.lora`**: Moved from `model.experimental.lora` to `model.lora` (no longer experimental) (#1440, 2025-12-16)
 - Auto-set `api_server_count=1` on inference when LoRA is enabled, because vLLM doesn't support hotloading for multiple API servers (#1422, 2025-12-17)
