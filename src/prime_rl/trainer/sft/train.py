@@ -191,7 +191,8 @@ def train(config: SFTConfig):
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
-        out = forward(model, input_ids, position_ids)
+        with maybe_activation_offloading(config.model.ac_offloading):
+            out = forward(model, input_ids, position_ids)
         logits = out["logits"]
         B, L, V = logits.shape
         per_token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
@@ -308,7 +309,7 @@ def train(config: SFTConfig):
                 print_sample(input_ids_log, loss_mask_log, tokenizer)
 
             logger.debug("Starting forward pass")
-            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+            with maybe_record_function("forward"):
                 per_token_loss, loss_mask = compute_loss(micro_batch)
 
             loss = per_token_loss[loss_mask].mean()
