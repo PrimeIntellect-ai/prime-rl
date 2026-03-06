@@ -12,7 +12,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig
+from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -541,54 +541,67 @@ def setup_and_interleave_datasets(
     return dataset
 
 
-def setup_dataset(tokenizer: PreTrainedTokenizer, config: DataConfig, non_dp_size: int = 1) -> StatefulIterableDataset:
+def load_sft_dataset(config: SFTDataConfig) -> Dataset:
+    """Load and interleave the raw HF dataset. This is the expensive I/O step."""
+    logger = get_logger()
+    if config.subsets is None and config.splits is None:
+        return setup_and_interleave_datasets(
+            dataset_name=config.name,
+            subsets_and_splits=[(None, "train")],
+            probabilities=config.probabilities,
+            stopping_strategy=config.stopping_strategy,
+        )
+    elif config.subsets is not None and config.splits is None:
+        logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
+        return setup_and_interleave_datasets(
+            dataset_name=config.name,
+            subsets_and_splits=[(subset, "train") for subset in config.subsets],
+            probabilities=config.probabilities,
+            stopping_strategy=config.stopping_strategy,
+        )
+    elif config.subsets is None and config.splits is not None:
+        logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
+        return setup_and_interleave_datasets(
+            dataset_name=config.name,
+            subsets_and_splits=[(None, split) for split in config.splits],
+            probabilities=config.probabilities,
+            stopping_strategy=config.stopping_strategy,
+        )
+    else:
+        assert config.subsets is not None and config.splits is not None
+        logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
+        return setup_and_interleave_datasets(
+            dataset_name=config.name,
+            subsets_and_splits=list(zip(config.subsets, config.splits)),
+            probabilities=config.probabilities,
+            stopping_strategy=config.stopping_strategy,
+        )
+
+
+def setup_dataset(
+    tokenizer: PreTrainedTokenizer,
+    config: DataConfig,
+    non_dp_size: int = 1,
+    *,
+    max_epochs: int | None = None,
+    raw_dataset: Dataset | None = None,
+) -> StatefulIterableDataset:
     if config.type == "fake":
-        # Shouldnt matter to handle non_dp_size if dataset is random
         return FakeDataset(
             vocab_size=tokenizer.vocab_size, seq_len=config.seq_len, length=config.length, input_ids=config.input_ids
         )
     elif config.type == "sft":
-        logger = get_logger()
-        if config.subsets is None and config.splits is None:
-            dataset = setup_and_interleave_datasets(
-                dataset_name=config.name,
-                subsets_and_splits=[(None, "train")],
-                probabilities=config.probabilities,
-                stopping_strategy=config.stopping_strategy,
-            )
-        elif config.subsets is not None and config.splits is None:
-            logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
-            dataset = setup_and_interleave_datasets(
-                dataset_name=config.name,
-                subsets_and_splits=[(subset, "train") for subset in config.subsets],
-                probabilities=config.probabilities,
-                stopping_strategy=config.stopping_strategy,
-            )
-        elif config.subsets is None and config.splits is not None:
-            logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
-            dataset = setup_and_interleave_datasets(
-                dataset_name=config.name,
-                subsets_and_splits=[(None, split) for split in config.splits],
-                probabilities=config.probabilities,
-                stopping_strategy=config.stopping_strategy,
-            )
-        else:
-            assert config.subsets is not None and config.splits is not None
-            logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
-            dataset = setup_and_interleave_datasets(
-                dataset_name=config.name,
-                subsets_and_splits=list(zip(config.subsets, config.splits)),
-                probabilities=config.probabilities,
-                stopping_strategy=config.stopping_strategy,
-            )
+        if raw_dataset is None:
+            raw_dataset = load_sft_dataset(config)
         return SFTDataset(
-            dataset,
+            raw_dataset,
             tokenizer,
             shuffle=config.shuffle,
             seed=config.seed,
             seq_len=config.seq_len,
             loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
+            max_epochs=max_epochs,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

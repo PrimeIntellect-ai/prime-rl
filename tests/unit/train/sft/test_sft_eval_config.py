@@ -1,35 +1,30 @@
 import pytest
 
-from prime_rl.configs.sft import SFTConfig, SFTDataConfig, SFTEvalConfig
+from prime_rl.configs.sft import SFTConfig, SFTDataConfig, SFTValConfig
 from prime_rl.configs.trainer import ModelConfig
 
 
-def test_sft_eval_requires_val_data():
-    with pytest.raises(ValueError, match="both eval and val_data"):
-        SFTConfig(eval=SFTEvalConfig(interval=10, num_batches=2))
-
-
-def test_sft_val_data_requires_eval():
-    with pytest.raises(ValueError, match="both eval and val_data"):
-        SFTConfig(val_data=SFTDataConfig())
-
-
-def test_sft_eval_with_val_data_is_valid():
+def test_sft_val_config_is_valid():
     config = SFTConfig(
-        eval=SFTEvalConfig(interval=10, num_batches=2, eval_on_start=True),
-        val_data=SFTDataConfig(name="willcb/R1-reverse-wikipedia-paragraphs-v1-1000", splits=["train[:5%]"]),
+        val=SFTValConfig(
+            interval=10,
+            eval_on_start=True,
+            data=SFTDataConfig(name="willcb/R1-reverse-wikipedia-paragraphs-v1-1000", splits=["train[:5%]"]),
+        ),
     )
-    assert config.eval is not None
-    assert config.val_data is not None
-    assert config.eval.eval_on_start is True
+    assert config.val is not None
+    assert config.val.eval_on_start is True
+    assert config.val.data.name == "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"
 
 
 def test_sft_val_data_requires_cp_compatible_pack_function():
     with pytest.raises(ValueError, match="Validation packing function must be 'cat' when CP is enabled"):
         SFTConfig(
             model=ModelConfig(cp=2),
-            eval=SFTEvalConfig(interval=10, num_batches=2),
-            val_data=SFTDataConfig(pack_function="stack", seq_len=256),
+            val=SFTValConfig(
+                interval=10,
+                data=SFTDataConfig(pack_function="stack", seq_len=256),
+            ),
         )
 
 
@@ -37,8 +32,10 @@ def test_sft_val_data_requires_cp_compatible_seq_len():
     with pytest.raises(ValueError, match="Validation sequence length must be divisible by CP degree"):
         SFTConfig(
             model=ModelConfig(cp=2),
-            eval=SFTEvalConfig(interval=10, num_batches=2),
-            val_data=SFTDataConfig(seq_len=127),
+            val=SFTValConfig(
+                interval=10,
+                data=SFTDataConfig(seq_len=127),
+            ),
         )
 
 
@@ -46,6 +43,8 @@ def test_sft_val_data_requires_cp_compatible_micro_batch_size():
     with pytest.raises(ValueError, match="Validation micro batch size must be 1 when CP is enabled"):
         SFTConfig(
             model=ModelConfig(cp=2),
-            eval=SFTEvalConfig(interval=10, num_batches=2),
-            val_data=SFTDataConfig(micro_batch_size=2),
+            val=SFTValConfig(
+                interval=10,
+                data=SFTDataConfig(micro_batch_size=2),
+            ),
         )

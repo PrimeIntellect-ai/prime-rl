@@ -30,7 +30,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
-from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
     export_benchmark_json,
@@ -142,12 +142,10 @@ def train(config: SFTConfig):
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
-    val_dataiter = None
-    if config.eval is not None and config.val_data is not None:
-        logger.info(f"Initializing validation data ({config.val_data})")
-        val_dataset = setup_dataset(tokenizer, config.val_data, config.model.cp * config.model.tp)
-        val_dataloader = setup_dataloader(val_dataset, config.val_data)
-        val_dataiter = iter(val_dataloader)
+    val_raw_dataset = None
+    if config.val is not None:
+        logger.info(f"Loading validation dataset ({config.val.data.name})")
+        val_raw_dataset = load_sft_dataset(config.val.data)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -182,19 +180,25 @@ def train(config: SFTConfig):
         case _:
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
-    def run_validation(eval_step: int) -> None:
-        assert config.eval is not None
-        assert val_dataiter is not None
+    def run_validation(step: int) -> None:
+        val_dataset = setup_dataset(
+            tokenizer,
+            config.val.data,
+            config.model.cp * config.model.tp,
+            max_epochs=1,
+            raw_dataset=val_raw_dataset,
+        )
+        val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
         was_training = model.training
         model.eval()
 
         val_loss_sum = torch.tensor(0.0, device="cuda")
-        val_loss_count = torch.tensor(0.0, device="cuda")
+        num_batches = torch.tensor(0, dtype=torch.int64, device="cuda")
+        nan_batches = torch.tensor(0, dtype=torch.int64, device="cuda")
 
         with torch.no_grad():
-            for _ in range(config.eval.num_batches):
-                micro_batch = next(val_dataiter)
+            for micro_batch in val_dataloader:
                 input_ids = micro_batch["input_ids"].to("cuda")
                 position_ids = micro_batch["position_ids"].to("cuda")
                 target_ids = micro_batch["target_ids"].to("cuda")
@@ -215,39 +219,37 @@ def train(config: SFTConfig):
                 loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
                 loss = loss[loss_mask].mean()
 
-                if not torch.isnan(loss):
+                if torch.isnan(loss):
+                    nan_batches += 1
+                else:
                     val_loss_sum += loss.detach()
-                    val_loss_count += 1
+                    num_batches += 1
 
-                del logits
+                del out, logits
 
         dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
-        dist.all_reduce(val_loss_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(num_batches, op=dist.ReduceOp.SUM)
+        dist.all_reduce(nan_batches, op=dist.ReduceOp.SUM)
 
-        if val_loss_count.item() == 0:
-            logger.warning(f"Validation at step {eval_step} had only NaN losses")
-            val_metrics = {
-                "val/loss": float("nan"),
-                "val/num_batches": 0.0,
-                "step": eval_step,
-            }
+        total_batches = num_batches.item() + nan_batches.item()
+
+        if nan_batches.item() > 0:
+            logger.warning(f"Validation at step {step}: {nan_batches.item()}/{total_batches} batches had NaN loss")
+
+        if num_batches.item() == 0:
+            logger.warning(f"Validation at step {step} had only NaN losses")
+            val_metrics = {"val/loss": float("nan"), "val/num_batches": 0, "step": step}
         else:
-            mean_val_loss = (val_loss_sum / val_loss_count).item()
-            logger.success(
-                f"Validation | Step {eval_step} | Loss: {mean_val_loss:.4f} | Batches: {int(val_loss_count.item())}"
-            )
-            val_metrics = {
-                "val/loss": mean_val_loss,
-                "val/num_batches": val_loss_count.item(),
-                "step": eval_step,
-            }
+            mean_val_loss = (val_loss_sum / num_batches).item()
+            logger.success(f"Validation | Step {step} | Loss: {mean_val_loss:.4f} | Batches: {total_batches}")
+            val_metrics = {"val/loss": mean_val_loss, "val/num_batches": total_batches, "step": step}
 
-        monitor.log(val_metrics, step=eval_step)
+        monitor.log(val_metrics, step=step)
 
         if was_training:
             model.train()
 
-    if config.eval is not None and val_dataiter is not None and config.eval.eval_on_start:
+    if config.val is not None and config.val.eval_on_start:
         run_validation(progress.step)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
@@ -481,12 +483,7 @@ def train(config: SFTConfig):
             }
             monitor.log(max_vio_log_metrics, step=progress.step)
 
-        if (
-            config.eval is not None
-            and val_dataiter is not None
-            and not is_first_step
-            and progress.step % config.eval.interval == 0
-        ):
+        if config.val is not None and not is_first_step and progress.step % config.val.interval == 0:
             run_validation(progress.step)
 
         is_first_step = False
