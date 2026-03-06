@@ -339,7 +339,10 @@ class RLConfig(BaseSettings):
     def auto_setup_output_dir(self):
         """Auto-setup shared output directory for trainer and orchestrator."""
         self.trainer.output_dir = self.output_dir
-        self.orchestrator.output_dir = self.output_dir / "run_default"
+        if self.orchestrator.multi_agent_lora is not None:
+            self.orchestrator.output_dir = self.output_dir / "orchestrator"
+        else:
+            self.orchestrator.output_dir = self.output_dir / "run_default"
 
         validate_shared_output_dir(self.trainer, self.orchestrator)
 

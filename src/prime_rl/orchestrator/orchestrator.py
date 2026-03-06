@@ -88,12 +88,11 @@ async def orchestrate(config: OrchestratorConfig):
     if config.bench:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
-    # Save configs to output directory (multi-agent uses per-actor run dirs instead)
-    if not config.multi_agent_lora:
-        config_dir = config.output_dir / "control"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        with open(config_dir / "orch.toml", "wb") as f:
-            tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
+    # Save configs to output directory
+    config_dir = config.output_dir / "control"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    with open(config_dir / "orch.toml", "wb") as f:
+        tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
     # Install environments
     env_ids_to_install = set()
