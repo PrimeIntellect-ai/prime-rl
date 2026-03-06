@@ -781,14 +781,14 @@ wheels = [
 
 [[package]]
 name = "flash-attn"
-version = "2.8.3+cu128torch2.10"
-source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl" }
+version = "2.8.3+cu128torch2.9"
+source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl" }
 dependencies = [
     { name = "einops" },
     { name = "torch" },
 ]
 wheels = [
-    { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl", hash = "sha256:5ef676dfd01d198eed36795d924eb6af4c87674896de6bd102390afa7f522bc0" },
+    { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl", hash = "sha256:cd07c8bd5354421fb25268f3dd4042508f9863d265da39e57d8b1d77f6fd4991" },
 ]
 
 [package.metadata]
@@ -2499,7 +2499,7 @@ requires-dist = [
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
-    { name = "flash-attn", marker = "extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl" },
+    { name = "flash-attn", marker = "extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl" },
     { name = "flash-attn-cute", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=main" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
@@ -3934,7 +3934,7 @@ wheels = [
 
 [[package]]
 name = "vllm"
-version = "0.16.1rc1.dev246+g7eca85911"
+version = "0.17.0rc1.dev92+gc012a8c47"
 source = { registry = "https://wheels.vllm.ai/nightly" }
 dependencies = [
     { name = "aiohttp" },
@@ -4005,8 +4005,8 @@ dependencies = [
     { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'" },
 ]
 wheels = [
-    { url = "https://wheels.vllm.ai/7eca85911072b9732293c3d4181e20a4c9394b21/vllm-0.16.1rc1.dev246%2Bg7eca85911-cp38-abi3-manylinux_2_31_aarch64.whl" },
-    { url = "https://wheels.vllm.ai/7eca85911072b9732293c3d4181e20a4c9394b21/vllm-0.16.1rc1.dev246%2Bg7eca85911-cp38-abi3-manylinux_2_31_x86_64.whl" },
+    { url = "https://wheels.vllm.ai/c012a8c477dd78b4444f22568b2bf1b08f2ad813/vllm-0.17.0rc1.dev92%2Bgc012a8c47-cp38-abi3-manylinux_2_31_aarch64.whl" },
+    { url = "https://wheels.vllm.ai/c012a8c477dd78b4444f22568b2bf1b08f2ad813/vllm-0.17.0rc1.dev92%2Bgc012a8c47-cp38-abi3-manylinux_2_31_x86_64.whl" },
 ]
 
 [[package]]

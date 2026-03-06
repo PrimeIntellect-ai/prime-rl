@@ -15,7 +15,7 @@ jobs:
     name: Unit tests
     runs-on: vm
     container:
-      image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+      image: pytorch/pytorch:2.9.0-cuda12.8-cudnn9-devel
       options: --gpus all
     timeout-minutes: 45
     if: github.event_name == 'push' || github.event.pull_request.draft == false
@@ -55,7 +55,7 @@ jobs:
     name: Integration tests (${{ matrix.test }})
     runs-on: ${{ matrix.runner }}
     container:
-      image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+      image: pytorch/pytorch:2.9.0-cuda12.8-cudnn9-devel
       options: --gpus all
     timeout-minutes: 60
     if: github.event_name == 'push' || github.event.pull_request.draft == false
