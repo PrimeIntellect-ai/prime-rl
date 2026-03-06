@@ -272,6 +272,55 @@ def monkey_patch_hermes_tool_parser_thread_safety():
     Hermes2ProToolParser.__init__ = _patched_init
 
 
+def monkey_patch_fp8_online_blockwise_quant():
+    """Patch vLLM's Fp8OnlineLinearMethod to use block-wise (128x128) FP8 quantization.
+
+    vLLM's built-in Fp8OnlineLinearMethod only supports per-tensor FP8. This patch
+    replaces create_weights and process_weights_after_loading to use our Triton kernel
+    for 128x128 block-wise quantization, which gives better accuracy.
+
+    Requires Hopper GPUs (SM90+).
+    """
+    from vllm.model_executor.layers.quantization.fp8 import Fp8OnlineLinearMethod
+    from vllm.model_executor.layers.quantization.utils.fp8_utils import (
+        GroupShape,
+        W8A8BlockFp8LinearOp,
+        maybe_post_process_fp8_weight_block,
+        process_fp8_weight_block_strategy,
+    )
+    from vllm.model_executor.utils import replace_parameter
+
+    from prime_rl.inference.vllm.worker.kernels.fp8 import blockwise_cast_to_fp8_triton
+
+    _original_create_weights = Fp8OnlineLinearMethod.create_weights
+    _original_process_weights = Fp8OnlineLinearMethod.process_weights_after_loading
+
+    def _patched_create_weights(self, layer, *args, **kwargs):
+        _original_create_weights(self, layer, *args, **kwargs)
+        layer.weight_block_size = [128, 128]
+        self.block_quant = True
+        self.weight_block_size = [128, 128]
+        if not hasattr(self, "w8a8_block_fp8_linear"):
+            self.w8a8_block_fp8_linear = W8A8BlockFp8LinearOp(
+                weight_group_shape=GroupShape(128, 128),
+                act_quant_group_shape=GroupShape(1, 128),
+            )
+
+    def _patched_process_weights(self, layer):
+        if self.block_quant:
+            qweight, scale_inv = blockwise_cast_to_fp8_triton(layer.weight)
+            replace_parameter(layer, "weight", qweight.data)
+            replace_parameter(layer, "weight_scale_inv", scale_inv.data)
+            process_fp8_weight_block_strategy(layer.weight, layer.weight_scale_inv)
+            maybe_post_process_fp8_weight_block(layer)
+            layer._already_called_process_weights_after_loading = True
+        else:
+            _original_process_weights(self, layer)
+
+    Fp8OnlineLinearMethod.create_weights = _patched_create_weights
+    Fp8OnlineLinearMethod.process_weights_after_loading = _patched_process_weights
+
+
 def monkey_patch_minimax_m2_for_lora():
     """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
 
