@@ -208,7 +208,6 @@ def train(config: TrainerConfig):
     # before the orchestrator generates rollouts. LoRA B=0 means identity (same as base model).
     if config.max_concurrent_runs > 1 and config.model.lora is not None:
         logger.info("Broadcasting initial LoRA adapters for multi-agent cold start")
-        # Wait for all expected runs (run_default + per-actor runs) to be discovered
         expected_runs = config.max_concurrent_runs
         while len(multi_run_manager.used_idxs) < expected_runs:
             if world.is_master:
@@ -216,12 +215,10 @@ def train(config: TrainerConfig):
             multi_run_manager.synchronize_state()
             logger.info(f"Waiting for {expected_runs} runs, found {len(multi_run_manager.used_idxs)}: {[multi_run_manager.idx_2_id.get(i, '?') for i in multi_run_manager.used_idxs]}")
             time.sleep(1)
-        # Only broadcast for actor runs, not run_default
-        actor_idxs = [idx for idx in multi_run_manager.used_idxs if multi_run_manager.idx_2_id.get(idx) != "run_default"]
-        for idx in actor_idxs:
+        for idx in multi_run_manager.used_idxs:
             multi_run_manager.ready_to_update[idx] = True
         weight_broadcast.broadcast_weights(model, step=0)
-        for idx in actor_idxs:
+        for idx in multi_run_manager.used_idxs:
             multi_run_manager.ready_to_update[idx] = False
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
