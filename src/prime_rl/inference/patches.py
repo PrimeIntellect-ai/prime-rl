@@ -279,6 +279,9 @@ def monkey_patch_fp8_online_blockwise_quant():
     replaces create_weights and process_weights_after_loading to use our Triton kernel
     for 128x128 block-wise quantization, which gives better accuracy.
 
+    Also supports weight reloads (e.g., during RL training weight broadcast) by wrapping
+    the weight_loader to properly re-quantize incoming BF16 weights.
+
     Requires Hopper GPUs (SM90+).
     """
     from vllm.model_executor.layers.quantization.fp8 import Fp8OnlineLinearMethod
@@ -290,13 +293,34 @@ def monkey_patch_fp8_online_blockwise_quant():
     )
     from vllm.model_executor.utils import replace_parameter
 
-    from prime_rl.inference.vllm.worker.kernels.fp8 import blockwise_cast_to_fp8_triton
+    from prime_rl.inference.vllm.worker.kernels.fp8 import FP8_DTYPE, blockwise_cast_to_fp8_triton
 
     _original_create_weights = Fp8OnlineLinearMethod.create_weights
     _original_process_weights = Fp8OnlineLinearMethod.process_weights_after_loading
 
     def _patched_create_weights(self, layer, *args, **kwargs):
         _original_create_weights(self, layer, *args, **kwargs)
+
+        # Wrap weight_loader to handle FP8 quantization during weight reloads
+        original_loader = layer.weight.weight_loader
+
+        def fp8_block_weight_loader(param, loaded_weight, *largs, **lkwargs):
+            # Check if this is a weight reload (layer already processed once)
+            is_reload = getattr(layer, "_already_called_process_weights_after_loading", False)
+
+            if is_reload and loaded_weight.dtype != FP8_DTYPE:
+                # Weight reload: quantize BF16 -> FP8 with proper block-wise scaling
+                qweight, scale_inv = blockwise_cast_to_fp8_triton(loaded_weight.to(param.device))
+                param.data.copy_(qweight)
+                layer.weight_scale_inv.data.copy_(scale_inv)
+                process_fp8_weight_block_strategy(layer.weight, layer.weight_scale_inv)
+                maybe_post_process_fp8_weight_block(layer)
+            else:
+                # Initial load: use original loader (handles JIT materialization)
+                original_loader(param, loaded_weight, *largs, **lkwargs)
+
+        layer.weight.weight_loader = fp8_block_weight_loader
+
         layer.weight_block_size = [128, 128]
         layer.input_scale = None
         self.block_quant = True
