@@ -477,6 +477,14 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_pack_full_step(self):
+        """Auto-enable pack_full_step for multi-agent LoRA (single orchestrator, multiple actors)."""
+        if self.orchestrator.multi_agent_lora is not None:
+            self.trainer.pack_full_step = True
+
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
         if self.weight_broadcast is not None:

@@ -1,5 +1,4 @@
 max_steps = 400
-seq_len = 4096
 
 [wandb]
 project = "multiagent"

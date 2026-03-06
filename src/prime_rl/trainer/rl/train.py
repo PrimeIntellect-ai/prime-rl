@@ -201,6 +201,7 @@ def train(config: TrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
+            pack_full_step=config.pack_full_step,
         )
 
     # Multi-agent LoRA: broadcast initial zero-weight adapters so vLLM registers them

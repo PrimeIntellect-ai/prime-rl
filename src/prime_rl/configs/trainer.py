@@ -737,6 +737,15 @@ class TrainerConfig(BaseSettings):
         ),
     ] = 1
 
+    pack_full_step: Annotated[
+        bool,
+        Field(
+            description="When True, the packer consumes all samples from one orchestrator step in a single training step "
+            "instead of chunking by seq_len. This gives 1:1 trainer-to-orchestrator step ratio. "
+            "Auto-set when multi_agent_lora is configured.",
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench is not None:
