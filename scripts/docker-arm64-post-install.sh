@@ -3,12 +3,14 @@
 set -e
 
 echo "=== building flash-attn from source (sm_100 / GB200) ==="
-# FLASH_ATTENTION_FORCE_BUILD=TRUE skips the prebuilt wheel download attempt
-# and forces a local CUDA kernel compilation.
-# FLASH_ATTENTION_SKIP_CUDA_BUILD=FALSE ensures the CUDA extension is compiled.
-TORCH_CUDA_ARCH_LIST="10.0" MAX_JOBS=4 \
-    FLASH_ATTENTION_FORCE_BUILD=TRUE FLASH_ATTENTION_SKIP_CUDA_BUILD=FALSE \
-    uv pip install "flash-attn==2.8.3" --no-build-isolation --no-binary flash-attn --no-cache
+# Run from /tmp so uv doesn't read pyproject.toml's [tool.uv.extra-build-variables]
+# which sets FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE and prevents CUDA kernel compilation.
+export TORCH_CUDA_ARCH_LIST="10.0"
+export MAX_JOBS=4
+export FLASH_ATTENTION_FORCE_BUILD=TRUE
+export FLASH_ATTENTION_SKIP_CUDA_BUILD=FALSE
+(cd /tmp && uv pip install --python /app/.venv/bin/python \
+    "flash-attn==2.8.3" --no-build-isolation --no-binary flash-attn --no-cache)
 
 echo "=== reinstalling flash-attn-cute (flash-attn overwrites it with a stub) ==="
 uv pip install --reinstall --no-deps \
