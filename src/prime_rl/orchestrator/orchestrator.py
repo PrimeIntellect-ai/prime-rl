@@ -489,6 +489,22 @@ async def orchestrate(config: OrchestratorConfig):
         generate_completions_time = scheduler.last_batch_generation_time
         train_rollouts = train_task.result()
 
+        # Debug: log a summary of the first few rollouts
+        for i, r in enumerate(train_rollouts[:3]):
+            traj = r.get("trajectory", [])
+            completion = r.get("completion", "")
+            error = r.get("error")
+            reward = r.get("reward")
+            example_id = r.get("example_id")
+            traj_steps = len(traj)
+            traj_tokens = [len(step.get("tokens", {}).get("completion_ids", [])) if step.get("tokens") else 0 for step in traj] if traj else []
+            completion_preview = completion[:200] if completion else "<empty>"
+            logger.debug(
+                f"Rollout {i}: example_id={example_id} reward={reward} error={error} "
+                f"trajectory_steps={traj_steps} traj_token_lens={traj_tokens} "
+                f"completion_preview={completion_preview!r}"
+            )
+
         # Apply rollout filters (zeros reward/mask for degenerate generations)
         filter_metrics = apply_filters(rollout_filters, train_rollouts)
 

@@ -167,7 +167,7 @@ if [ "$NODE_RANK" -lt "$NUM_INFER_NODES" ]; then
         ROUTER_LOG="$OUTPUT_DIR/slurm/latest_router.log"
         echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
 
-        vllm-router \
+        {{ project_dir }}/.venv/bin/vllm-router-rs \
             --policy round_robin \
             --vllm-pd-disaggregation \
             $ROUTER_BACKEND_ARGS \
@@ -193,6 +193,7 @@ else
     TRAIN_NODE_RANK=$((NODE_RANK - NUM_INFER_NODES))
 
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
+        export VF_LOG_LEVEL=DEBUG
         uv run orchestrator \
             @ $CONFIG_DIR/orchestrator.toml \
 {%- if weight_broadcast_type == "nccl" %}
