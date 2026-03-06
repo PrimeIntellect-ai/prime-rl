@@ -320,22 +320,8 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     if config.multi_agent_lora:
-        # Create per-actor run dirs at output_dir.parent so the trainer discovers them
-        # (trainer scans output_dir.parent for run_* directories)
         multi_agent_base_dir = config.output_dir.parent
         actor_run_names = list(config.multi_agent_lora.actors.values())
-        for actor_id, run_name in config.multi_agent_lora.actors.items():
-            run_dir = multi_agent_base_dir / run_name
-            control_dir = run_dir / "control"
-            control_dir.mkdir(parents=True, exist_ok=True)
-            actor_lora_name = run_name
-            actor_orch_config = {
-                "model": {"lora": {"name": actor_lora_name}},
-                "optim": {"lr": config.optim.lr},
-            }
-            with open(control_dir / "orch.toml", "wb") as f:
-                tomli_w.dump(actor_orch_config, f)
-            print(f"[MULTI-AGENT] Created run directory for actor '{actor_id}': {run_dir}")
         training_batch_sender = setup_multi_run_training_batch_sender(
             multi_agent_base_dir, actor_run_names, config.rollout_transport
         )
