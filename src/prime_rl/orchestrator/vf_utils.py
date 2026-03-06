@@ -118,6 +118,7 @@ async def generate(
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
     pbar_description: str = "Generating rollouts",
+    actor_models: dict[str, str] | None = None,
 ) -> list[vf.RolloutOutput]:
     """
     Wrapper for vf.Environment.generate().
@@ -150,6 +151,7 @@ async def generate(
             max_retries=max_retries,
             state_columns=state_columns,
             sampling_args=sampling_args,
+            actor_models=actor_models,
         )
         pbar.update(rollouts_per_example)
         return result
@@ -174,6 +176,7 @@ async def evaluate(
     get_client: Callable[[], Awaitable[vf.ClientConfig]] | None = None,
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
+    actor_models: dict[str, str] | None = None,
 ) -> list[vf.RolloutOutput]:
     """
     Wrapper for vf.Environment.evaluate().
@@ -197,6 +200,7 @@ async def evaluate(
         sampling_args=sampling_args,
         max_retries=max_retries,
         state_columns=state_columns,
+        actor_models=actor_models,
     )
     return outputs
 

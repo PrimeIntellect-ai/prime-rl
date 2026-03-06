@@ -448,6 +448,7 @@ async def orchestrate(config: OrchestratorConfig):
                         max_retries=eval_env_config.max_retries,
                         ckpt_step=ckpt_step,
                         step=progress.step,
+                        actor_models=scheduler.actor_model_names or None,
                     )
                     for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
                 ]
@@ -850,6 +851,7 @@ async def orchestrate(config: OrchestratorConfig):
                     max_retries=eval_env_config.max_retries,
                     ckpt_step=ckpt_step,
                     step=progress.step,
+                    actor_models=scheduler.actor_model_names or None,
                 )
                 for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
             ]

@@ -73,6 +73,7 @@ async def evaluate_env(
     ckpt_step: int,
     step: int,
     get_client: Callable[[], Awaitable[vf.ClientConfig]],
+    actor_models: dict[str, str] | None = None,
 ):
     logger = get_logger()
     logger.info(f"Evaluating {env_name} ({num_examples=}, {rollouts_per_example=})")
@@ -85,6 +86,7 @@ async def evaluate_env(
         rollouts_per_example=rollouts_per_example,
         get_client=get_client,
         max_retries=max_retries,
+        actor_models=actor_models,
     )
     eval_time = time.perf_counter() - eval_start_time
 

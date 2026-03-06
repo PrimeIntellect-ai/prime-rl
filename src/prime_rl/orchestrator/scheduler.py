@@ -250,8 +250,6 @@ class Scheduler:
         """Check each actor's broadcast directory for new weights and load per-actor LoRA adapters.
 
         Mirrors update_policy() but checks each actor's broadcast directory independently.
-        Note: model_name is not updated here — evals will run against base model.
-        Per-actor eval routing is not yet supported.
         """
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
 
