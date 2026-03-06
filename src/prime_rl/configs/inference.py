@@ -367,7 +367,8 @@ class InferenceConfig(BaseConfig):
 
         self.parallel.tp = 1
         self.enable_expert_parallel = True
-        self.enable_eplb = True
+        if "enable_eplb" not in self.model_fields_set:
+            self.enable_eplb = True
         self.data_parallel_size_local = self.deployment.gpus_per_node
 
         return self
