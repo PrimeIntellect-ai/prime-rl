@@ -279,6 +279,24 @@ def _extract_images_from_examples(
             all_images = list(pool.map(_decode_b64_image, unique_keys))
     else:
         all_images = [_decode_b64_image(k) for k in unique_keys]
+    del unique_keys, key_to_index
+
+    # Strip base64 image data from rollout prompts to free memory.
+    # The images have been decoded and indexed; the original data is no longer needed.
+    _IMAGE_STRIPPED_PLACEHOLDER = "[image preprocessed]"
+    for _, output in examples:
+        for step in output.get("trajectory", []):
+            prompt = step.get("prompt")
+            if not prompt or not isinstance(prompt, list):
+                continue
+            for msg in prompt:
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for item in content:
+                        if item.get("type") == "image_url":
+                            url = item.get("image_url", {}).get("url", "")
+                            if url.startswith("data:image"):
+                                item["image_url"]["url"] = _IMAGE_STRIPPED_PLACEHOLDER
 
     return all_images, step_image_indices_per_example
 
@@ -363,14 +381,18 @@ def _preprocess_images_batched(
     else:
         results = [_process_chunk(chunks[0])]
 
+    # Free PIL images now that preprocessing is done
+    images.clear()
+
     all_pixel_values_list = [r[0] for r in results]
     all_grid_thw_list = [r[1] for r in results]
 
     all_pixel_values = torch.cat(all_pixel_values_list, dim=0)
     all_grid_thw = torch.cat(all_grid_thw_list, dim=0)
+    del all_pixel_values_list, all_grid_thw_list, results
 
     logger.debug(
-        f"VLM image processing: {len(images)} images, sizes={image_sizes}, "
+        f"VLM image processing: {len(image_sizes)} images, sizes={image_sizes}, "
         f"pixel_values={all_pixel_values.shape}, grid_thw={all_grid_thw.tolist()}"
     )
 
@@ -381,15 +403,16 @@ def _preprocess_images_batched(
 
     patch_dim = all_pixel_values.shape[1]
 
-    # Store per-image bytes once
+    # Convert to bytes per-image and free the tensor immediately after
     image_bytes_list: list[bytes] = []
     image_num_patches_list: list[int] = []
     image_grids_list: list[list[int]] = []
-    for i in range(len(images)):
+    for i in range(len(image_sizes)):
         img_slice = all_pixel_values[patch_starts[i] : patch_starts[i + 1]]
         image_bytes_list.append(img_slice.numpy().tobytes())
         image_num_patches_list.append(img_slice.shape[0])
         image_grids_list.append(all_grid_thw[i].tolist())
+    del all_pixel_values, all_grid_thw
 
     store = _ImageStore(
         image_bytes=image_bytes_list,
@@ -483,12 +506,13 @@ def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMIma
     examples = [(idx, rollout) for idx, rollout in enumerate(rollouts)]
     unique_example_ids = {rollout["example_id"] for rollout in rollouts}
 
-    # Extract images
+    # Extract images (also strips base64 data from rollout prompts to free memory)
     extract_start = time.perf_counter()
     all_images, images_per_example = _extract_images_from_examples(examples)
+    num_unique_images = len(all_images)
     extract_time = time.perf_counter() - extract_start
 
-    # Preprocess images
+    # Preprocess images (clears PIL image list when done)
     preprocess_start = time.perf_counter()
     store, step_indices = _preprocess_images_batched(all_images, images_per_example, processor)
     preprocess_time = time.perf_counter() - preprocess_start
@@ -497,7 +521,7 @@ def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMIma
         store=store,
         step_indices=step_indices,
         num_unique_examples=len(unique_example_ids),
-        num_unique_images=len(all_images),
+        num_unique_images=num_unique_images,
         extract_time=extract_time,
         preprocess_time=preprocess_time,
     )

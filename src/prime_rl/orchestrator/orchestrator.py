@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import multiprocessing as mp
 import random
 import time
@@ -788,6 +789,11 @@ async def orchestrate(config: OrchestratorConfig):
         # Increment step
         progress.step += 1
         is_first_step = False
+
+        # Free large per-step objects to prevent memory accumulation
+        del train_rollouts, train_examples, training_batch, vlm_cache
+        del results_df, metrics_df, val_results_df
+        gc.collect()
 
         event_loop_lag_monitor.reset()
 
