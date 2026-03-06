@@ -86,6 +86,11 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = None
 
+    quantization: Annotated[
+        str | None,
+        Field(description="Quantization method passed to vLLM as `--quantization` (e.g. fp8)."),
+    ] = None
+
     rope_scaling: Annotated[
         dict[str, Any] | str | None,
         Field(
@@ -402,6 +407,7 @@ class InferenceConfig(BaseConfig):
             "model.trust_remote_code": "trust_remote_code",
             "model.tool_call_parser": "tool_call_parser",
             "model.reasoning_parser": "reasoning_parser",
+            "model.quantization": "quantization",
             "model.rope_scaling": "rope_scaling",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
@@ -428,7 +434,10 @@ class InferenceConfig(BaseConfig):
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
 
-        # Remove reasoning_parser if not set (vLLM doesn't accept None)
+        # Remove optional fields when not set (vLLM doesn't accept None)
+        if namespace.quantization is None:
+            delattr(namespace, "quantization")
+
         if namespace.reasoning_parser is None:
             delattr(namespace, "reasoning_parser")
 
