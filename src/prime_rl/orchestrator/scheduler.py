@@ -87,14 +87,15 @@ class Scheduler:
         self.actor_lora_mapping = actor_lora_mapping or {}
         self.actor_run_dirs: dict[str, str] = {}
         self.actor_ckpt_steps: dict[str, int] = {actor: -1 for actor in self.actor_lora_mapping}
+        # Starts empty (base model), populated with LoRA names after first weight broadcast
+        self.actor_model_names: dict[str, str] = {}
 
         # Track in-flight requests: task -> info
         self.inflight_group_rollouts: dict[asyncio.Task, InflightRolloutInfo] = {}
 
-        self.step, self.ckpt_step = 0, -1 if self.actor_lora_mapping else 0
+        self.step, self.ckpt_step = 0, 0
         self.checkpoint_ready = asyncio.Event()
-        if not self.actor_lora_mapping:
-            self.checkpoint_ready.set()
+        self.checkpoint_ready.set()
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.update_policy_task = None
         self.cancelled_rollouts_count = 0
@@ -159,6 +160,7 @@ class Scheduler:
                 rollouts_per_example=self.config.rollouts_per_example,
                 sampling_args=self.sampling_args,
                 max_retries=0,  # TODO: make configurable
+                actor_models=self.actor_model_names or None,
             )
         )
         self.inflight_group_rollouts[run_group_task] = InflightRolloutInfo(0, client_config)
@@ -297,6 +299,7 @@ class Scheduler:
                 )
                 print(f"[MULTI-AGENT] Loaded LoRA '{lora_name}' in {time.perf_counter() - load_start:.2f}s")
                 self.actor_ckpt_steps[actor_id] = latest
+                self.actor_model_names[actor_id] = lora_name
 
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.ckpt_step = min(self.actor_ckpt_steps.values())
@@ -325,9 +328,6 @@ class Scheduler:
         """Continuously generates a batch of rollouts."""
         self.step = step
         batch_start_time = time.perf_counter()
-
-        if not self.checkpoint_ready.is_set():
-            await self.checkpoint_ready.wait()
 
         # Schedule initial tasks
         self.logger.debug("Starting to generate batch rollouts")

@@ -22,7 +22,7 @@ interval = 10
 [[orchestrator.env]]
 id = "ultimatum-game"
 name = "ultimatum_game"
-args = { actor_models = { proposer = "run_proposer", responder = "run_responder" } }
+args = {}
 
 [orchestrator.multi_agent_lora.actors]
 proposer = "run_proposer"
