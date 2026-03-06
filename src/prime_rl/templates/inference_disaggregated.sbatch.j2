@@ -1,0 +1,158 @@
+#!/bin/bash
+#SBATCH --job-name={{ job_name }}
+#SBATCH --nodes={{ num_prefill_nodes + num_decode_nodes }}
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+#SBATCH --partition={{ partition }}
+#SBATCH --exclusive
+#SBATCH --output={{ output_dir }}/job_%j.log
+#SBATCH --error={{ output_dir }}/job_%j.log
+set -euo pipefail
+
+# Configs
+export NUM_PREFILL_NODES={{ num_prefill_nodes }}
+export NUM_DECODE_NODES={{ num_decode_nodes }}
+export GPUS_PER_NODE={{ gpus_per_node }}
+export PREFILL_PORT={{ prefill_port }}
+export DECODE_PORT={{ decode_port }}
+export ROUTER_PORT={{ router_port }}
+export RPC_PORT={{ data_parallel_rpc_port }}
+export PREFILL_EP=$((NUM_PREFILL_NODES * GPUS_PER_NODE))
+export DECODE_EP=$((NUM_DECODE_NODES * GPUS_PER_NODE))
+
+# Paths
+export PROJECT_DIR={{ project_dir }}
+export CONFIG_PATH={{ config_path }}
+export OUTPUT_DIR={{ output_dir }}
+mkdir -p $OUTPUT_DIR/slurm
+
+# General
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS=1
+
+# Setup environment
+cd $PROJECT_DIR
+[ -f .env ] && source .env
+source .venv/bin/activate
+uv sync --all-extras --inexact
+bash scripts/install_ep_kernels.sh
+
+# Node assignment
+HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+PREFILL_HOSTS=( ${HOSTNAMES[@]:0:$NUM_PREFILL_NODES} )
+DECODE_HOSTS=( ${HOSTNAMES[@]:$NUM_PREFILL_NODES:$NUM_DECODE_NODES} )
+export PREFILL_HEAD="${PREFILL_HOSTS[0]}"
+export DECODE_HEAD="${DECODE_HOSTS[0]}"
+
+# Build vllm-router args: --prefill URL per prefill node, --decode URL per decode node
+ROUTER_BACKEND_ARGS=""
+for host in "${PREFILL_HOSTS[@]}"; do
+    ROUTER_BACKEND_ARGS="$ROUTER_BACKEND_ARGS --prefill http://$host:$PREFILL_PORT"
+done
+for host in "${DECODE_HOSTS[@]}"; do
+    ROUTER_BACKEND_ARGS="$ROUTER_BACKEND_ARGS --decode http://$host:$DECODE_PORT"
+done
+export ROUTER_BACKEND_ARGS
+
+echo "HOSTNAMES=${HOSTNAMES[*]}"
+echo "PREFILL_HOSTS=${PREFILL_HOSTS[*]}"
+echo "DECODE_HOSTS=${DECODE_HOSTS[*]}"
+
+# Cleanup any leftover vLLM / router processes
+srun bash -c "pkill -9 -f vllm || true; pkill -9 -f vllm-router || true"
+
+srun bash -c '
+    cd $PROJECT_DIR
+    [ -f .env ] && source .env
+    source .venv/bin/activate
+
+    ulimit -n 65536
+    export VLLM_WORKER_MULTIPROC_METHOD=spawn
+    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
+
+    # Infiniband setup
+    IB_HCA=$(ibv_devinfo 2>/dev/null | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)
+    [ -n "$IB_HCA" ] && export NCCL_IB_HCA=$IB_HCA
+
+    # Disaggregated env vars
+    export NCCL_NET_PLUGIN=none
+    export NCCL_SOCKET_IFNAME=bond0
+    export GLOO_SOCKET_IFNAME=bond0
+    export VLLM_ENGINE_READY_TIMEOUT_S=4200
+
+    LOCAL_IP=$(hostname -I | awk "{print \$1}")
+    export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
+    export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
+
+    NODE_RANK=$SLURM_PROCID
+    CONFIG_DIR=$(dirname $CONFIG_PATH)
+
+    KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
+    DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
+
+    if [ "$NODE_RANK" -lt "$NUM_PREFILL_NODES" ]; then
+        # ── Prefill node ──
+        ROLE="prefill"
+        ROLE_RANK=$NODE_RANK
+        EP=$PREFILL_EP
+        PORT=$PREFILL_PORT
+        START_RANK=$((ROLE_RANK * GPUS_PER_NODE))
+        HEAD_HOST=$PREFILL_HEAD
+
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
+
+        if [ "$ROLE_RANK" -eq 0 ]; then
+            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
+        else
+            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
+        fi
+    else
+        # ── Decode node ──
+        export UCX_NET_DEVICES=mlx5_0:1
+        ROLE="decode"
+        ROLE_RANK=$((NODE_RANK - NUM_PREFILL_NODES))
+        EP=$DECODE_EP
+        PORT=$DECODE_PORT
+        START_RANK=$((ROLE_RANK * GPUS_PER_NODE))
+        HEAD_HOST=$DECODE_HEAD
+
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
+
+        if [ "$ROLE_RANK" -eq 0 ]; then
+            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
+        else
+            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
+        fi
+    fi
+
+    echo "NODE_RANK=$NODE_RANK ROLE=$ROLE ROLE_RANK=$ROLE_RANK EP=$EP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
+        | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${NODE_RANK}.log \
+              $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${NODE_RANK}.log
+
+    # Start vllm-router on prefill head (background)
+    if [ "$NODE_RANK" -eq 0 ]; then
+        ROUTER_LOG="$OUTPUT_DIR/slurm/latest_router.log"
+        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
+
+        {{ project_dir }}/.venv/bin/vllm-router-rs \
+            --policy round_robin \
+            --vllm-pd-disaggregation \
+            $ROUTER_BACKEND_ARGS \
+            --host 0.0.0.0 \
+            --port $ROUTER_PORT \
+            --intra-node-data-parallel-size 1 \
+            --log-level debug \
+            >> $ROUTER_LOG 2>&1 &
+    fi
+
+    uv run inference \
+        @ $CONFIG_PATH \
+        --server.host 0.0.0.0 \
+        --server.port $PORT \
+        --parallel.dp $EP \
+        --data-parallel-rpc-port $RPC_PORT \
+        --vllm-extra "$VLLM_EXTRA" \
+        2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${NODE_RANK}.log \
+                      $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${NODE_RANK}.log
+'

@@ -115,6 +115,16 @@ class ClientConfig(BaseConfig):
         ),
     ] = {}
 
+    admin_base_url: Annotated[
+        list[str] | None,
+        Field(
+            description="Base URLs for admin operations (weight updates, health checks). "
+            "When set, admin requests use these URLs instead of base_url. "
+            "Useful for disaggregated inference where inference requests go through a router "
+            "but weight updates must reach each node directly.",
+        ),
+    ] = None
+
     skip_model_check: Annotated[
         bool,
         Field(

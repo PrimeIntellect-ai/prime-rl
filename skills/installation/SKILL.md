@@ -41,7 +41,30 @@ uv sync --group dev
 
 Installs pytest, ruff, pre-commit, and other development tools.
 
+## Expert parallel kernels (DeepEP) for disaggregated inference
+
+Disaggregated prefill/decode deployments with expert parallelism require DeepEP + NVSHMEM, which must be built from source:
+
+```bash
+bash scripts/install_ep_kernels.sh
+```
+
+This downloads NVSHMEM, clones and builds DeepEP, and installs it into the project venv. Auto-detects GPU architecture (Hopper/Blackwell).
+
+For multi-node deployments, IBGDA drivers must also be configured (requires sudo + reboot):
+
+```bash
+bash scripts/install_ep_kernels.sh --configure-drivers
+```
+
+Verify installation:
+
+```bash
+uv run python -c "import deep_ep; print(deep_ep.__file__)"
+```
+
 ## Key files
 
 - `pyproject.toml` — all dependencies, extras, and dependency groups
 - `uv.lock` — pinned lockfile (update with `uv sync --all-extras`)
+- `scripts/install_ep_kernels.sh` — DeepEP + NVSHMEM installer for expert parallel

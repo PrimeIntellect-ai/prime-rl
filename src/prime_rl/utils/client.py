@@ -136,18 +136,20 @@ def setup_clients(client_config: ClientConfig, client_type: str = "openai_chat_c
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
-    """Create a dedicated admin client for weight update operations.
+    """Create dedicated admin clients for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
+    When admin_base_url is set, uses those URLs instead of base_url (useful for
+    disaggregated inference where weight updates bypass the router).
     """
+    urls = client_config.admin_base_url or client_config.base_url
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
-        headers = client_config.headers.copy()  # avoid mutating config
+        headers = client_config.headers.copy()
         api_key = os.getenv(client_config.api_key_var, "EMPTY")
         if api_key and api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
 
-        # Strip /v1 suffix since admin endpoints are at root level
         base_url = base_url.rstrip("/").removesuffix("/v1")
 
         return AsyncClient(
@@ -157,7 +159,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             timeout=httpx.Timeout(None),
         )
 
-    return [_setup_admin_client(base_url) for base_url in client_config.base_url]
+    return [_setup_admin_client(base_url) for base_url in urls]
 
 
 async def maybe_check_has_model(
@@ -301,12 +303,15 @@ async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) 
     await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
 
 
-async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port: int, timeout: int) -> None:
+async def init_nccl_broadcast(
+    admin_clients: list[AsyncClient], host: str, port: int, timeout: int, inference_world_size: int
+) -> None:
     """Make a HTTP post request to the vLLM server to initialize the NCCL broadcast."""
     logger = get_logger()
+    gpus_per_server = inference_world_size // len(admin_clients)
 
     async def _init_nccl_broadcast(
-        admin_client: AsyncClient, host: str, port: int, client_num: int, timeout: int
+        admin_client: AsyncClient, host: str, port: int, rank_offset: int, timeout: int
     ) -> None:
         try:
             response = await admin_client.post(
@@ -314,8 +319,9 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
                 json={
                     "host": host,
                     "port": port,
-                    "server_rank": client_num,
-                    "num_inference_server": len(admin_clients),
+                    "rank_offset": rank_offset,
+                    "inference_world_size": inference_world_size,
+                    "gpus_per_server": gpus_per_server,
                     "timeout": timeout,
                 },
             )
@@ -327,7 +333,7 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
 
     await asyncio.gather(
         *[
-            _init_nccl_broadcast(admin_client, host, port, client_num, timeout)
+            _init_nccl_broadcast(admin_client, host, port, client_num * gpus_per_server, timeout)
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )

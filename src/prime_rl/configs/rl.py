@@ -293,6 +293,15 @@ class RLConfig(BaseConfig):
                 raise ValueError("Must use SLURM for multi-node deployment.")
             if not self.inference:
                 raise ValueError("Must configure inference when using multi-node deployment.")
+            if self.inference.deployment.type == "disaggregated":
+                expected = self.inference.deployment.num_prefill_nodes + self.inference.deployment.num_decode_nodes
+                if self.deployment.num_infer_nodes != expected:
+                    raise ValueError(
+                        f"deployment.num_infer_nodes ({self.deployment.num_infer_nodes}) must equal "
+                        f"inference.deployment.num_prefill_nodes ({self.inference.deployment.num_prefill_nodes}) "
+                        f"+ inference.deployment.num_decode_nodes ({self.inference.deployment.num_decode_nodes}) "
+                        f"= {expected} for disaggregated inference."
+                    )
         return self
 
     # TODO: fix this
@@ -486,6 +495,7 @@ class RLConfig(BaseConfig):
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
                 )
+                self.orchestrator.weight_broadcast.inference_world_size = inference_world_size
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
@@ -612,7 +622,12 @@ class RLConfig(BaseConfig):
                     self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
                 )
 
-            if self.inference is not None and self.inference.enable_expert_parallel:
+            if self.inference is not None and self.inference.deployment.type == "disaggregated":
+                # Disaggregated inference handles DP sizing per role (prefill/decode)
+                # in the SLURM template via vllm_extra overrides. Skip the single-DP
+                # validation that applies to regular EP deployments.
+                pass
+            elif self.inference is not None and self.inference.enable_expert_parallel:
                 inference_tp = self.inference.parallel.tp
                 if self.deployment.gpus_per_node % inference_tp != 0:
                     raise ValueError(
@@ -642,10 +657,10 @@ class RLConfig(BaseConfig):
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
                 assert self.trainer.weight_broadcast.type == "nccl"
+                inference_world_size = self.deployment.gpus_per_node * self.deployment.num_infer_nodes
                 self.trainer.weight_broadcast.host = "0.0.0.0"
-                self.trainer.weight_broadcast.inference_world_size = (
-                    self.deployment.gpus_per_node * self.deployment.num_infer_nodes
-                )
+                self.trainer.weight_broadcast.inference_world_size = inference_world_size
+                self.orchestrator.weight_broadcast.inference_world_size = inference_world_size
 
         return self
 
@@ -699,6 +714,8 @@ class RLConfig(BaseConfig):
             templates_dir = Path(prime_rl.__file__).parent / "templates"
             if self.deployment.type == "single_node":
                 self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
+            elif self.inference and self.inference.deployment.type == "disaggregated":
+                self.slurm.template_path = templates_dir / "disaggregated_rl.sbatch.j2"
             else:
                 self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
         return self
