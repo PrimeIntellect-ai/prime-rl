@@ -3,7 +3,10 @@
 set -e
 
 echo "=== building flash-attn from source (sm_100 / GB200) ==="
-TORCH_CUDA_ARCH_LIST="10.0" MAX_JOBS=4 \
+# FLASH_ATTENTION_SKIP_CUDA_BUILD=FALSE overrides the TRUE default set in
+# pyproject.toml [tool.uv.extra-build-variables] (intended for x86_64 prebuilt
+# wheels) so that the CUDA kernels (flash_attn_2_cuda) are actually compiled.
+TORCH_CUDA_ARCH_LIST="10.0" MAX_JOBS=4 FLASH_ATTENTION_SKIP_CUDA_BUILD=FALSE \
     uv pip install "flash-attn==2.8.3" --no-build-isolation --no-binary flash-attn --no-cache
 
 echo "=== reinstalling flash-attn-cute (flash-attn overwrites it with a stub) ==="
