@@ -32,19 +32,6 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     with open(output_dir / "orchestrator.toml", "wb") as f:
         tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
 
-    # Create per-actor run dirs so the trainer discovers them at startup
-    if config.orchestrator.multi_agent_lora:
-        base_dir = config.orchestrator.output_dir.parent
-        for actor_id, run_name in config.orchestrator.multi_agent_lora.actors.items():
-            control_dir = base_dir / run_name / "control"
-            control_dir.mkdir(parents=True, exist_ok=True)
-            actor_orch_config = {
-                "model": {"lora": {"name": run_name}},
-                "optim": {"lr": config.orchestrator.optim.lr},
-            }
-            with open(control_dir / "orch.toml", "wb") as f:
-                tomli_w.dump(actor_orch_config, f)
-
     if config.inference is not None:
         with open(output_dir / "inference.toml", "wb") as f:
             tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)

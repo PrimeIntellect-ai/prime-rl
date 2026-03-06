@@ -10,6 +10,7 @@ name = "Qwen/Qwen3-1.7B"
 [orchestrator]
 batch_size = 128
 rollouts_per_example = 16
+multi_agent_lora = true
 
 [orchestrator.sampling]
 max_tokens = 32
@@ -22,11 +23,6 @@ interval = 10
 [[orchestrator.env]]
 id = "ultimatum-game"
 name = "ultimatum_game"
-args = {}
-
-[orchestrator.multi_agent_lora.actors]
-proposer = "run_proposer"
-responder = "run_responder"
 
 [trainer]
 max_concurrent_runs = 2

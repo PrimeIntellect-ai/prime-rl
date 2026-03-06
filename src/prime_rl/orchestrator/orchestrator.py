@@ -267,11 +267,20 @@ async def orchestrate(config: OrchestratorConfig):
 
     actor_lora_mapping = None
     if config.multi_agent_lora:
-        actor_lora_mapping = {
-            actor_id: run_name
-            for actor_id, run_name in config.multi_agent_lora.actors.items()
-        }
+        actors = train_env_group.envs[0].actors
+        actor_lora_mapping = {actor_id: f"run_{actor_id}" for actor_id in actors}
         print(f"[MULTI-AGENT] Per-actor LoRA enabled: {actor_lora_mapping}")
+
+        # Create per-actor run dirs (same pattern as single-agent run_default)
+        for actor_id, run_name in actor_lora_mapping.items():
+            control_dir = config.output_dir.parent / run_name / "control"
+            control_dir.mkdir(parents=True, exist_ok=True)
+            actor_orch_config = {
+                "model": {"lora": {"name": run_name}},
+                "optim": {"lr": config.optim.lr},
+            }
+            with open(control_dir / "orch.toml", "wb") as f:
+                tomli_w.dump(actor_orch_config, f)
 
     scheduler = Scheduler(
         env=train_env_group,
@@ -289,7 +298,7 @@ async def orchestrate(config: OrchestratorConfig):
     )
 
     if config.multi_agent_lora:
-        scheduler.actor_run_dirs = dict(config.multi_agent_lora.actors)
+        scheduler.actor_run_dirs = dict(actor_lora_mapping)
         print(f"[MULTI-AGENT] Scheduler actor_run_dirs: {scheduler.actor_run_dirs}")
         print(f"[MULTI-AGENT] Scheduler actor_ckpt_steps: {scheduler.actor_ckpt_steps}")
     elif checkpoint_step is not None and config.model.lora is not None:
@@ -321,7 +330,7 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     if config.multi_agent_lora:
         multi_agent_base_dir = config.output_dir.parent
-        actor_run_names = list(config.multi_agent_lora.actors.values())
+        actor_run_names = list(actor_lora_mapping.values())
         training_batch_sender = setup_multi_run_training_batch_sender(
             multi_agent_base_dir, actor_run_names, config.rollout_transport
         )
@@ -582,7 +591,7 @@ async def orchestrate(config: OrchestratorConfig):
 
             total_sent = 0
             print(f"[MULTI-AGENT] Routing batch: actor_ids seen = {dict(Counter(sample_actor_ids))}")
-            for actor_id, run_name in config.multi_agent_lora.actors.items():
+            for actor_id, run_name in actor_lora_mapping.items():
                 examples = actor_examples.get(actor_id, [])
                 if examples:
                     actor_batch = TrainingBatch(examples=examples, step=progress.step)

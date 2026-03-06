@@ -196,6 +196,8 @@ class MultiPacker(BasePacker):
 
     def _all_runs_have_step_data(self) -> bool:
         """Check if all active runs have buffered data for the current step."""
+        if not self.multi_run_manager.used_idxs:
+            return False
         for run_idx in self.multi_run_manager.used_idxs:
             if len(self.buffers[run_idx]) == 0:
                 return False

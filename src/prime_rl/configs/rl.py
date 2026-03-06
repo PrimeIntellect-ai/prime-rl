@@ -339,7 +339,7 @@ class RLConfig(BaseSettings):
     def auto_setup_output_dir(self):
         """Auto-setup shared output directory for trainer and orchestrator."""
         self.trainer.output_dir = self.output_dir
-        if self.orchestrator.multi_agent_lora is not None:
+        if self.orchestrator.multi_agent_lora:
             self.orchestrator.output_dir = self.output_dir / "orchestrator"
         else:
             self.orchestrator.output_dir = self.output_dir / "run_default"
@@ -482,7 +482,7 @@ class RLConfig(BaseSettings):
     @model_validator(mode="after")
     def auto_setup_pack_full_step(self):
         """Auto-enable pack_full_step for multi-agent LoRA (single orchestrator, multiple actors)."""
-        if self.orchestrator.multi_agent_lora is not None:
+        if self.orchestrator.multi_agent_lora:
             self.trainer.pack_full_step = True
 
         return self
