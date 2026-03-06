@@ -75,6 +75,10 @@ dev = [
 [tool.uv]
 preview = true
 no-build-isolation-package = ["flash-attn"]
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
 # Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
@@ -86,7 +90,10 @@ override-dependencies = [
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
-vllm = { url = "https://wheels.vllm.ai/097eb544e9a22810c9b7a59e586b61627b308362/vllm-0.17.0rc0-cp38-abi3-manylinux_2_31_x86_64.whl" }
+vllm = [
+    { url = "https://wheels.vllm.ai/097eb544e9a22810c9b7a59e586b61627b308362/vllm-0.17.0rc0-cp38-abi3-manylinux_2_31_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://wheels.vllm.ai/097eb544e9a22810c9b7a59e586b61627b308362/vllm-0.17.0rc0-cp38-abi3-manylinux_2_31_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+]
 math-env = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "45fae8d" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
