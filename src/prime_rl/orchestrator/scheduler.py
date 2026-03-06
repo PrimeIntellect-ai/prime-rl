@@ -246,11 +246,44 @@ class Scheduler:
             self.ckpt_step = next_ckpt_step
 
     async def _update_policy_multi_actor(self):
-        """Check each actor's broadcast directory for new weights and load per-actor LoRA adapters."""
+        """Check each actor's broadcast directory for new weights and load per-actor LoRA adapters.
 
-        any_updated = False
+        Follows upstream's pattern: compute the minimum acceptable checkpoint step
+        based on async level, and block (await wait_for_path) until the trainer catches up.
+        """
+        # Compute the minimum step the trainer must have reached
+        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
+
+        # Find the latest broadcast step across all actors (use the slowest)
+        latest_actor_steps = {}
+        for actor_id, lora_name in self.actor_lora_mapping.items():
+            run_dir_name = self.actor_run_dirs[actor_id]
+            actor_broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_dir_name)
+            latest_actor_steps[actor_id] = get_latest_ckpt_step(actor_broadcast_dir) or 0
+
+        latest_ckpt_step = min(latest_actor_steps.values()) if latest_actor_steps else 0
+        next_ckpt_step = max(async_away_ckpt_step, latest_ckpt_step)
+
+        if next_ckpt_step <= self.ckpt_step:
+            return
+
+        # If the orchestrator is ahead of the trainer, block until the trainer catches up
+        last_steps = self.config.max_steps and self.step >= self.config.max_steps - self.max_async_level
+        if next_ckpt_step == async_away_ckpt_step and not last_steps:
+            print(f"[MULTI-AGENT] Pausing: waiting for trainer to reach step {next_ckpt_step} (orch={self.step}, trainer={latest_ckpt_step}, max_async={self.max_async_level})")
+            self.checkpoint_ready.clear()
+            wait_start = time.perf_counter()
+            # Block until ALL actors have broadcast the required step
+            for actor_id in self.actor_lora_mapping:
+                run_dir_name = self.actor_run_dirs[actor_id]
+                actor_broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_dir_name)
+                stable_path = get_step_path(actor_broadcast_dir, next_ckpt_step) / "STABLE"
+                await wait_for_path(stable_path)
+            self.wait_for_ckpt_time = time.perf_counter() - wait_start
+            print(f"[MULTI-AGENT] Resumed: trainer reached step {next_ckpt_step} (waited {self.wait_for_ckpt_time:.2f}s)")
+
+        # Load updated weights for each actor
         update_weights_start_time = time.perf_counter()
-
         for actor_id, lora_name in self.actor_lora_mapping.items():
             run_dir_name = self.actor_run_dirs[actor_id]
             actor_broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_dir_name)
@@ -258,44 +291,36 @@ class Scheduler:
 
             if latest > self.actor_ckpt_steps[actor_id]:
                 weights_path = get_step_path(actor_broadcast_dir, latest)
-                print(f"[MULTI-AGENT] Loading LoRA '{lora_name}' for actor '{actor_id}': step {self.actor_ckpt_steps[actor_id]} -> {latest} (path: {weights_path})")
+                print(f"[MULTI-AGENT] Loading LoRA '{lora_name}' for actor '{actor_id}': step {self.actor_ckpt_steps[actor_id]} -> {latest}")
                 load_start = time.perf_counter()
                 await self.inference_pool.update_weights(
                     weights_path, lora_name=lora_name, step=latest
                 )
                 print(f"[MULTI-AGENT] Loaded LoRA '{lora_name}' in {time.perf_counter() - load_start:.2f}s")
                 self.actor_ckpt_steps[actor_id] = latest
-                any_updated = True
 
-        if any_updated:
-            self.update_weights_time = time.perf_counter() - update_weights_start_time
-            self.checkpoint_ready.set()
-            self.ckpt_step = min(self.actor_ckpt_steps.values())
-            self.last_weight_update_step = self.step
+        self.update_weights_time = time.perf_counter() - update_weights_start_time
+        self.ckpt_step = min(self.actor_ckpt_steps.values())
+        self.checkpoint_ready.set()
 
-            # Cancel old off-policy rollouts
-            tasks_to_remove = []
-            tasks_to_update = []
-            for task, info in self.inflight_group_rollouts.items():
-                if info.off_policy_steps > self.max_off_policy_steps:
-                    if not task.done():
-                        task.cancel()
-                    tasks_to_remove.append((task, info.client_config))
-                else:
-                    tasks_to_update.append((task, info.off_policy_steps + 1, info.client_config))
-            for task, _ in tasks_to_remove:
-                self.inflight_group_rollouts.pop(task, None)
-            self.cancelled_rollouts_count += len(tasks_to_remove)
-            for task, off_policy_steps, client_config in tasks_to_update:
-                if task in self.inflight_group_rollouts:
-                    self.inflight_group_rollouts[task] = InflightRolloutInfo(
-                        off_policy_steps=off_policy_steps, client_config=client_config
-                    )
-        elif self.step - self.ckpt_step > self.max_async_level:
-            last_steps = self.config.max_steps and self.step >= self.config.max_steps - self.max_async_level
-            if not last_steps:
-                print(f"[MULTI-AGENT] Pausing: {self.step - self.ckpt_step} steps since last weight update (max={self.max_async_level})")
-                self.checkpoint_ready.clear()
+        # Cancel old off-policy rollouts
+        tasks_to_remove = []
+        tasks_to_update = []
+        for task, info in self.inflight_group_rollouts.items():
+            if info.off_policy_steps > self.max_off_policy_steps:
+                if not task.done():
+                    task.cancel()
+                tasks_to_remove.append((task, info.client_config))
+            else:
+                tasks_to_update.append((task, info.off_policy_steps + 1, info.client_config))
+        for task, _ in tasks_to_remove:
+            self.inflight_group_rollouts.pop(task, None)
+        self.cancelled_rollouts_count += len(tasks_to_remove)
+        for task, off_policy_steps, client_config in tasks_to_update:
+            if task in self.inflight_group_rollouts:
+                self.inflight_group_rollouts[task] = InflightRolloutInfo(
+                    off_policy_steps=off_policy_steps, client_config=client_config
+                )
 
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
         """Continuously generates a batch of rollouts."""
