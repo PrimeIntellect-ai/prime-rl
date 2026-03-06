@@ -229,6 +229,29 @@ def _decode_b64_image(b64_data: str) -> Image.Image:
 _PARALLEL_DECODE_THRESHOLD = 4
 
 
+_IMAGE_STRIPPED_PLACEHOLDER = "[image preprocessed]"
+
+
+def strip_base64_images(examples: list[tuple[int, vf.RolloutOutput]]) -> None:
+    """Strip base64 image data from rollout prompts to free memory.
+
+    The images have been decoded and indexed; the original data is no longer needed.
+    """
+    for _, output in examples:
+        for step in output.get("trajectory", []):
+            prompt = step.get("prompt")
+            if not prompt or not isinstance(prompt, list):
+                continue
+            for msg in prompt:
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for item in content:
+                        if item.get("type") == "image_url":
+                            url = item.get("image_url", {}).get("url", "")
+                            if url.startswith("data:image"):
+                                item["image_url"]["url"] = _IMAGE_STRIPPED_PLACEHOLDER
+
+
 def _extract_images_from_examples(
     examples: list[tuple[int, vf.RolloutOutput]],
 ) -> tuple[list[Image.Image], dict[int, list[list[int]]]]:
@@ -281,22 +304,7 @@ def _extract_images_from_examples(
         all_images = [_decode_b64_image(k) for k in unique_keys]
     del unique_keys, key_to_index
 
-    # Strip base64 image data from rollout prompts to free memory.
-    # The images have been decoded and indexed; the original data is no longer needed.
-    _IMAGE_STRIPPED_PLACEHOLDER = "[image preprocessed]"
-    for _, output in examples:
-        for step in output.get("trajectory", []):
-            prompt = step.get("prompt")
-            if not prompt or not isinstance(prompt, list):
-                continue
-            for msg in prompt:
-                content = msg.get("content", [])
-                if isinstance(content, list):
-                    for item in content:
-                        if item.get("type") == "image_url":
-                            url = item.get("image_url", {}).get("url", "")
-                            if url.startswith("data:image"):
-                                item["image_url"]["url"] = _IMAGE_STRIPPED_PLACEHOLDER
+    strip_base64_images(examples)
 
     return all_images, step_image_indices_per_example
 
