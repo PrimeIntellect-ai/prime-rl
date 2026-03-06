@@ -3,7 +3,7 @@ from __future__ import annotations
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
-from prime_rl.trainer.config import SchedulerConfigType
+from prime_rl.configs.trainer import SchedulerConfig
 from prime_rl.trainer.optim import CPUOffloadOptimizer, MultiLoRAOptimizer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger
@@ -88,7 +88,7 @@ def setup_cosine_scheduler(
 
 def setup_scheduler(
     optimizer: Optimizer | CPUOffloadOptimizer,
-    scheduler_config: SchedulerConfigType,
+    scheduler_config: SchedulerConfig,
     max_steps: int | None,
     lr: float,
 ) -> LRScheduler:
@@ -131,7 +131,7 @@ class MultiLoRAScheduler:
 
     def __init__(
         self,
-        scheduler_config: SchedulerConfigType,
+        scheduler_config: SchedulerConfig,
         max_steps: int | None,
     ):
         self.scheduler_config = scheduler_config
@@ -178,7 +178,7 @@ class MultiLoRAScheduler:
 
 def setup_multi_scheduler(
     optimizer: MultiLoRAOptimizer,
-    scheduler_config: SchedulerConfigType,
+    scheduler_config: SchedulerConfig,
     max_steps: int | None,
 ) -> MultiLoRAScheduler:
     """Create a MultiLoRAScheduler for managing per-run schedulers."""

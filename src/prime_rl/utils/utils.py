@@ -12,7 +12,7 @@ import torch
 import torch.distributed as dist
 import wandb
 
-from prime_rl.orchestrator.config import EnvConfig, EvalEnvConfig
+from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig
 from prime_rl.utils.logger import get_logger
 
 # TODO: Change all imports to use utils.pathing

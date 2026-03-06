@@ -21,7 +21,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, Genera
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
-from prime_rl.trainer.config import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
+from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -41,6 +41,63 @@ from prime_rl.trainer.weights import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import is_vlm_model
+
+
+def _patch_qwen3_5_moe_conversion_mapping():
+    """Fix Qwen3.5 MoE conversion mapping incorrectly applying qwen2_moe expert weight splitting.
+
+    Qwen3.5 MoE stores expert weights as fused 3D tensors natively in the checkpoint
+    (e.g. experts.gate_up_proj [num_experts, 2*intermediate, hidden]). The upstream mapping
+    incorrectly maps qwen3_5_moe → qwen2_moe, which assumes per-expert 2D checkpoint weights,
+    causing revert_weight_conversion to produce wrong shapes during weight broadcasting.
+
+    Remove once the pinned transformers commit fixes this.
+    """
+    from transformers.conversion_mapping import (
+        get_checkpoint_conversion_mapping,
+        register_checkpoint_conversion_mapping,
+    )
+
+    # qwen3_5_moe_text: keep only the qwen3_5_text renaming, remove qwen2_moe expert conversion
+    qwen3_5_text_mapping = get_checkpoint_conversion_mapping("qwen3_5_text")
+    if qwen3_5_text_mapping is not None:
+        register_checkpoint_conversion_mapping("qwen3_5_moe_text", qwen3_5_text_mapping, overwrite=True)
+
+    # qwen3_5_moe: remove the qwen2_moe fallback entirely
+    register_checkpoint_conversion_mapping("qwen3_5_moe", [], overwrite=True)
+
+
+def _patch_qwen3_5_text_position_ids():
+    """Fix Qwen3.5 passing 3D MRoPE position_ids to decoder layers instead of 2D text_position_ids.
+
+    Upstream fix: https://github.com/huggingface/transformers/pull/44399
+    Remove once the pinned transformers commit includes this fix.
+    """
+    import inspect
+
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5DecoderLayer, Qwen3_5TextModel
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeDecoderLayer, Qwen3_5MoeTextModel
+
+    for text_model_cls, decoder_layer_cls in [
+        (Qwen3_5TextModel, Qwen3_5DecoderLayer),
+        (Qwen3_5MoeTextModel, Qwen3_5MoeDecoderLayer),
+    ]:
+        source = inspect.getsource(text_model_cls.forward)
+        if "decoder_layer" in source and "position_ids=text_position_ids" in source.split("decoder_layer")[-1]:
+            continue  # already fixed upstream
+
+        _original_forward = decoder_layer_cls.forward
+
+        def _make_patched_forward(original):
+            def _patched_forward(self, hidden_states, position_ids=None, **kwargs):
+                if position_ids is not None and position_ids.ndim == 3:
+                    position_ids = position_ids[0]
+                return original(self, hidden_states, position_ids=position_ids, **kwargs)
+
+            return _patched_forward
+
+        decoder_layer_cls.forward = _make_patched_forward(_original_forward)
+
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
@@ -165,6 +222,10 @@ def get_model(
     if is_vlm:
         logger.info(f"Detected vision-language model: {config.name}")
 
+    if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
+        _patch_qwen3_5_text_position_ids()
+        _patch_qwen3_5_moe_conversion_mapping()
+
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
@@ -172,6 +233,10 @@ def get_model(
         ),
     )
     model_config.use_cache = False
+    for subconfig_key in getattr(model_config, "sub_configs", {}):
+        subconfig = getattr(model_config, subconfig_key, None)
+        if subconfig is not None and hasattr(subconfig, "use_cache"):
+            subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
@@ -274,10 +339,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         "reshard_after_forward": config.reshard_after_forward,
     }
 
-    if config.dp_replicate > 1:
-        hsdp_mesh = parallel_dims.world_mesh["dp_replicate", "dp_shard_cp"]
-    else:
-        hsdp_mesh = parallel_dims.world_mesh["dp_shard_cp"]
+    hsdp_mesh = parallel_dims.get_mesh("hsdp")
 
     dp_mod_ep_mesh: DeviceMesh | None = None
     if parallel_dims.ep_enabled:
@@ -580,7 +642,7 @@ def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
         if isinstance(transformer_block.mlp, MoE):
             parallelize_module(
                 transformer_block.mlp.experts,
-                device_mesh=parallel_dims.world_mesh["ep"],
+                device_mesh=parallel_dims.get_mesh("ep"),
                 parallelize_plan=ExpertParallel(),
             )
 
@@ -719,6 +781,7 @@ def forward(
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
+    routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     # Multimodal fields (Qwen3-VL)
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
     image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
@@ -738,6 +801,9 @@ def forward(
         kwargs["image_grid_thw"] = image_grid_thw
     else:
         kwargs["position_ids"] = position_ids
+
+    if routed_experts is not None:
+        kwargs["routed_experts"] = routed_experts
 
     out = model(**kwargs)
 

@@ -90,7 +90,8 @@ The correct alphabetical order by last name should be: Akman, Cakir, Durgun. The
 
 We train with LoRA (rank 32, alpha 64) for 100 steps.
 
-![RL](rl/wandb.png)
+![RL](rl.png)
+
 *Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-4b-lora/workspace?nw=nwuserandrewpi).*
 ```bash
 # In the `Trainer` pane

@@ -13,7 +13,7 @@ from rich.table import Table
 from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.client_utils import setup_openai_client
 
-from prime_rl.orchestrator.config import SamplingConfig
+from prime_rl.configs.orchestrator import SamplingConfig
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.utils import (
     format_num,

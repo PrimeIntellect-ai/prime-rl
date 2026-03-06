@@ -36,7 +36,7 @@ This is of course just a quick vibe check and no full-fledged evaluation, but we
 
 We will fine-tune `PrimeIntellect/Qwen3-0.6B` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-0.6B)), which is a clone of `Qwen/Qwen3-0.6B` ([HF](https://huggingface.co/Qwen/Qwen3-0.6B)) with a chat template suitable for multi-turn RL, on `willcb/R1-reverse-wikipedia-paragraphs-v1-1000` ([HF](https://huggingface.co/datasets/willcb/R1-reverse-wikipedia-paragraphs-v1-1000)) which contains 1K examples of reversals of small paragraphs.
 
-![SFT](sft/wandb.png)
+![SFT](sft.png)
 *Check out the logs of the SFT run on [W&B](https://wandb.ai/primeintellect/examples?nw=s3p14m48jod).*
 
 To train on a single GPU, run
@@ -72,7 +72,7 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT
 
 For the RL we will only do 20 steps at 8x16 rollouts, for a total batch size of 128 and sequence length 128. Because of the small context, training should be extremely quick.
 
-![RL](rl/wandb.png)
+![RL](rl.png)
 *Check out the logs of the RL run on [W&B](https://wandb.ai/primeintellect/examples?nw=yxjwjc556do).*
 
 ```bash

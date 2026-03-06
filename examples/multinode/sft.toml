@@ -1,0 +1,35 @@
+output_dir = "outputs/sft-moe-math"
+max_steps = 500
+
+[slurm]
+job_name = "sft-moe-math"
+
+[deployment]
+type = "multi_node"
+num_nodes = 2
+
+[wandb]
+project = "sft-moe-intellect"
+name = "sft-moe-math"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+impl = "custom"
+attn = "flash_attention_3"
+optim_cpu_offload = true
+
+[model.compile]
+
+[model.ac_offloading]
+max_inflight_activations = 5
+
+[model.ac]
+freq = 1
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+subsets = ["default"]
+splits = ["math"]
+batch_size = 128
+seq_len = 8192

@@ -1,6 +1,6 @@
 import pytest
 
-from prime_rl.inference.config import ModelConfig
+from prime_rl.inference.vllm.server import resolve_tool_call_parser
 
 
 @pytest.mark.parametrize(
@@ -28,14 +28,20 @@ from prime_rl.inference.config import ModelConfig
         ("Qwen/Qwen3-4B-Instruct-2507", "hermes"),
         ("Qwen/Qwen3-Coder-480B-A35B-Instruct", "hermes"),
         ("Qwen/Qwen3-Next-80B-A3B-Instruct", "hermes"),
-        ("Qwen/Qwen3.5-397B-A17B", "hermes"),
+        ("Qwen/Qwen3.5-397B-A17B", "qwen3_coder"),
     ],
 )
 def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
-    config = ModelConfig(name=model_name)
-    assert config.tool_call_parser == expected_parser
+    assert resolve_tool_call_parser(model_name, "auto") == expected_parser
 
 
-def test_explicit_parser_overrides_auto_detect():
-    config = ModelConfig(name="Qwen/Qwen3-4B-Instruct-2507", tool_call_parser="qwen3_xml")
-    assert config.tool_call_parser == "qwen3_xml"
+def test_explicit_parser_not_overridden():
+    assert resolve_tool_call_parser("Qwen/Qwen3-4B-Instruct-2507", "qwen3_xml") == "qwen3_xml"
+
+
+def test_auto_unknown_model():
+    assert resolve_tool_call_parser("some/unknown-model", "auto") is None
+
+
+def test_none_skips_resolution():
+    assert resolve_tool_call_parser("Qwen/Qwen3-0.6B", None) is None

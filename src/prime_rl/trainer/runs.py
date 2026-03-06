@@ -8,13 +8,13 @@ import torch
 import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
 
-from prime_rl.trainer.config import LoRAConfig
+from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_stable_ckpt_steps
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.config import OrchestratorConfig
+    from prime_rl.configs.orchestrator import OrchestratorConfig
     from prime_rl.trainer.models.layers.lora import MultiLoRALinear
 
 
@@ -223,7 +223,7 @@ class MultiRunManager:
             with open(config_path, "rb") as f:
                 config_dict = tomli.load(f)
 
-            from prime_rl.orchestrator.config import OrchestratorConfig
+            from prime_rl.configs.orchestrator import OrchestratorConfig
 
             config = OrchestratorConfig(**config_dict)
         except Exception as e:

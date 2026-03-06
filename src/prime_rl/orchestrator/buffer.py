@@ -10,7 +10,7 @@ import verifiers as vf
 from datasets import Dataset
 from verifiers.utils.save_utils import make_serializable
 
-from prime_rl.orchestrator.config import BufferConfig
+from prime_rl.configs.orchestrator import BufferConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_num, mean, mean_normalize
 

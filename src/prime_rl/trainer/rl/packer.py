@@ -11,7 +11,7 @@ from prime_rl.transport import (
     MicroBatch,
     MicroBatchSender,
     TrainingSample,
-    TransportConfigType,
+    TransportConfig,
     setup_micro_batch_sender,
     setup_training_batch_receiver,
 )
@@ -28,7 +28,7 @@ class BasePacker(ABC):
         seq_len: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
-        config: TransportConfigType,
+        config: TransportConfig,
         start_step: int = 0,
     ):
         self.logger = get_logger()
@@ -56,7 +56,7 @@ class SinglePacker(BasePacker):
         seq_len: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
-        config: TransportConfigType,
+        config: TransportConfig,
         start_step: int = 0,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
@@ -94,7 +94,7 @@ class MultiPacker(BasePacker):
         seq_len: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
-        config: TransportConfigType,
+        config: TransportConfig,
         start_step: int = 0,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
@@ -311,7 +311,7 @@ def setup_packer(
     seq_len: int,
     pad_to_multiple_of: int,
     tokenizer: PreTrainedTokenizer,
-    transport_config: TransportConfigType,
+    transport_config: TransportConfig,
     start_step: int = 0,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()

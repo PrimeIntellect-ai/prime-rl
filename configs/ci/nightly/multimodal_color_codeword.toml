@@ -1,9 +1,10 @@
 # Based on configs/multimodal/rl_color_codeword.toml but tuned for CI
-inference_gpu_ids = [0,1,2,3]
-trainer_gpu_ids = [4,5,6,7]
-
 max_steps = 25
 seq_len = 4096
+
+[deployment]
+num_train_gpus = 4
+num_infer_gpus = 4
 
 [model]
 name = "Qwen/Qwen3-VL-4B-Instruct"

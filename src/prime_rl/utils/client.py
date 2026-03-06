@@ -12,7 +12,7 @@ from httpx import AsyncClient
 from openai import NotFoundError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from prime_rl.utils.config import ClientConfig
+from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
@@ -154,7 +154,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             base_url=base_url,
             headers=headers,
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
-            timeout=httpx.Timeout(client_config.timeout),
+            timeout=httpx.Timeout(None),
         )
 
     return [_setup_admin_client(base_url) for base_url in client_config.base_url]

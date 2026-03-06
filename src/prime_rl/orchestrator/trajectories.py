@@ -1,7 +1,9 @@
 import base64
 import time
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 
+import torch
 import verifiers as vf
 from PIL import Image
 
@@ -10,6 +12,27 @@ from prime_rl.utils.logger import get_logger
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
+
+
+def _align_routed_experts(
+    routed_experts: list[list[list[int]]] | None,
+    expected_len: int,
+) -> list[list[list[int]]] | None:
+    """Align routed_experts length with the expected token count.
+
+    VLLM's capturer uses `num_tokens - 1` slot mappings because the final
+    generated token was never fed as input to a forward pass and has no
+    routing decision. Append zero-filled entries for the missing positions.
+    """
+    if routed_experts is None or not routed_experts:
+        return routed_experts
+    deficit = expected_len - len(routed_experts)
+    if deficit <= 0:
+        return routed_experts
+    num_layers = len(routed_experts[0])
+    topk = len(routed_experts[0][0])
+    zero_entry = [[0] * topk for _ in range(num_layers)]
+    return routed_experts + [zero_entry for _ in range(deficit)]
 
 
 def interleave_rollout(
@@ -51,13 +74,7 @@ def interleave_rollout(
     # this field should be guaranteed because we set temperature in get_sampling_args
     temperature = output["sampling_args"]["temperature"]
 
-    def get_images(step_idx: int) -> tuple[list | None, list | None]:
-        if vlm_cache is None:
-            return None, None
-        key = output["example_id"] if cache_key is None else cache_key
-        return vlm_cache.get_for_step(key, step_idx)
-
-    def make_sample(step: vf.TrajectoryStep, step_idx: int) -> TrainingSample:
+    def make_sample(step: vf.TrajectoryStep) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         tokens = step["tokens"]
         assert tokens is not None
@@ -66,7 +83,12 @@ def interleave_rollout(
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
         completion_ids = list(tokens["completion_ids"])
-        pixel_values, image_grid_thw = get_images(step_idx)
+
+        routed_experts = _align_routed_experts(
+            tokens.get("routed_experts"),
+            len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
+        )
+
         return TrainingSample(
             prompt_ids=list(tokens["prompt_ids"]),
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
@@ -76,11 +98,10 @@ def interleave_rollout(
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
             advantage=None,
-            pixel_values=pixel_values,
-            image_grid_thw=image_grid_thw,
+            routed_experts=routed_experts,
         )
 
-    def extend_sample(sample: TrainingSample, step: vf.TrajectoryStep, prefix_len: int, step_idx: int) -> None:
+    def extend_sample(sample: TrainingSample, step: vf.TrajectoryStep, prefix_len: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = step["tokens"]
         assert tokens is not None
@@ -102,18 +123,24 @@ def interleave_rollout(
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
-        # Update cumulative images to include any new images from this step
-        pixel_values, image_grid_thw = get_images(step_idx)
-        sample.pixel_values = pixel_values
-        sample.image_grid_thw = image_grid_thw
+        if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
+            step_routed = tokens["routed_experts"]
+            # The previous step's last routing entry was zero-padded by _align_routed_experts
+            # (vLLM only captures num_tokens-1 routings per request). This step actually
+            # processed that boundary token as part of its prompt, so replace the zero-fill
+            # with the real routing decision before appending new entries.
+            if prefix_len > 0 and prefix_len <= len(step_routed):
+                sample.routed_experts[prefix_len - 1] = step_routed[prefix_len - 1]
+            sample.routed_experts.extend(step_routed[prefix_len:])
+            expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
+            sample.routed_experts = _align_routed_experts(sample.routed_experts, expected_len)
 
-    # Track multiple active (prefix, sample) pairs to handle interleaved agents
-    # Each entry is [prefix_tokens, sample] where prefix_tokens is the accumulated token sequence
+    # Track [prefix_tokens, sample, last_step_idx] per active sample
     active_samples: list[list] = []
 
     first_tokens = trajectory[0]["tokens"]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    active_samples.append([first_prefix, make_sample(trajectory[0], step_idx=0)])
+    active_samples.append([first_prefix, make_sample(trajectory[0]), 0])
 
     for step_idx, step in enumerate(trajectory[1:], start=1):
         tokens = step["tokens"]
@@ -121,17 +148,17 @@ def interleave_rollout(
 
         # Check if this step extends ANY active prefix
         matched_idx = None
-        for idx, (prefix_tokens, _) in enumerate(active_samples):
+        for idx, (prefix_tokens, _, _) in enumerate(active_samples):
             if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
                 matched_idx = idx
                 break
 
         if matched_idx is not None:
             # Extension holds - merge into matched sample
-            prefix_tokens, sample = active_samples[matched_idx]
-            extend_sample(sample, step, len(prefix_tokens), step_idx=step_idx)
-            # Update prefix for this sample
+            prefix_tokens, sample, _ = active_samples[matched_idx]
+            extend_sample(sample, step, len(prefix_tokens))
             active_samples[matched_idx][0] = tokens["prompt_ids"] + tokens["completion_ids"]
+            active_samples[matched_idx][2] = step_idx
         else:
             # No prefix matches - start a new sample
             logger.debug(
@@ -139,9 +166,18 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples.append([new_prefix, make_sample(step, step_idx=step_idx)])
+            active_samples.append([new_prefix, make_sample(step), step_idx])
 
-    return [sample for _, sample in active_samples]
+    # Attach images once per sample using only the last merged step
+    if vlm_cache is not None:
+        key = output["example_id"] if cache_key is None else cache_key
+        for _, sample, last_step_idx in active_samples:
+            pv, shape, grids = vlm_cache.get_for_step(key, last_step_idx)
+            sample.pixel_values = pv
+            sample.pixel_values_shape = shape
+            sample.image_grid_thw = grids
+
+    return [sample for _, sample, _ in active_samples]
 
 
 # =============================================================================
@@ -149,8 +185,8 @@ def interleave_rollout(
 # =============================================================================
 
 
-def _extract_images_from_messages(messages: list) -> list[Image.Image]:
-    """Extract images from OpenAI-style chat messages."""
+def _extract_images_from_messages(messages: list) -> list[tuple[Image.Image, str]]:
+    """Extract (image, b64_key) pairs from OpenAI-style chat messages."""
     images = []
     if not messages or not isinstance(messages, list):
         return images
@@ -165,121 +201,204 @@ def _extract_images_from_messages(messages: list) -> list[Image.Image]:
                         b64_data = url.split(",", 1)[1]
                         img_bytes = base64.b64decode(b64_data)
                         img = Image.open(BytesIO(img_bytes))
-                        images.append(img)
+                        images.append((img, b64_data))
     return images
+
+
+def _collect_b64_keys_from_messages(messages: list) -> list[str]:
+    """Extract base64 keys from OpenAI-style chat messages without decoding."""
+    keys = []
+    if not messages or not isinstance(messages, list):
+        return keys
+    for msg in messages:
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            for item in content:
+                if item.get("type") == "image_url":
+                    url = item.get("image_url", {}).get("url", "")
+                    if url.startswith("data:image"):
+                        keys.append(url.split(",", 1)[1])
+    return keys
+
+
+def _decode_b64_image(b64_data: str) -> Image.Image:
+    """Decode a single base64 string into a PIL Image."""
+    return Image.open(BytesIO(base64.b64decode(b64_data)))
+
+
+_PARALLEL_DECODE_THRESHOLD = 4
 
 
 def _extract_images_from_examples(
     examples: list[tuple[int, vf.RolloutOutput]],
-) -> tuple[list[Image.Image], dict[int, list[int]]]:
+) -> tuple[list[Image.Image], dict[int, list[list[int]]]]:
     """
     Extract images from all trajectory steps of each example.
 
-    Parses OpenAI-style message content looking for image_url items with base64 data URLs
-    (e.g., "data:image/png;base64,..."). Each trajectory step's prompt is cumulative (contains
-    full conversation history), so we extract only the NEW images introduced in each step.
+    Two-pass approach: first collects unique base64 keys (fast, string-only),
+    then decodes unique images in parallel via ThreadPoolExecutor.
 
     Args:
         examples: List of (cache_key, output) tuples where output contains a "trajectory"
             list with steps that have "prompt" messages in OpenAI chat format.
 
     Returns:
-        Tuple of (all_images, images_per_step_per_example)
-        - all_images: flat list of decoded PIL images, ordered by example then by step
-        - images_per_step_per_example: dict mapping cache_key to list of cumulative image
-          counts per step (e.g., [1, 2, 2] means 1 image after step 0, 2 after step 1, 2 after step 2)
+        Tuple of (all_images, step_image_indices_per_example)
+        - all_images: deduplicated flat list of decoded PIL images
+        - step_image_indices_per_example: dict mapping cache_key to per-step lists of
+          indices into all_images (e.g., [[0], [0, 1], [1]] for the decreasing-images case)
     """
-    all_images = []
-    images_per_step_per_example = {}
+    # Pass 1: collect unique b64 keys and build step indices
+    unique_keys: list[str] = []
+    key_to_index: dict[str, int] = {}
+    step_image_indices_per_example: dict[int, list[list[int]]] = {}
 
     for eid, output in examples:
         trajectory = output.get("trajectory", [])
         if not trajectory:
-            images_per_step_per_example[eid] = []
+            step_image_indices_per_example[eid] = []
             continue
 
-        example_images = []
-        cumulative_counts = []
-
+        step_image_indices = []
         for step in trajectory:
             prompt = step.get("prompt")
-            # Extract all images from this step's prompt (which is cumulative)
-            step_images = _extract_images_from_messages(prompt)
-            # Only take images beyond what we already have (new images in this step)
-            new_images = step_images[len(example_images) :]
-            example_images.extend(new_images)
-            cumulative_counts.append(len(example_images))
+            b64_keys = _collect_b64_keys_from_messages(prompt)
+            indices = []
+            for key in b64_keys:
+                if key not in key_to_index:
+                    key_to_index[key] = len(unique_keys)
+                    unique_keys.append(key)
+                indices.append(key_to_index[key])
+            step_image_indices.append(indices)
 
-        images_per_step_per_example[eid] = cumulative_counts
-        all_images.extend(example_images)
+        step_image_indices_per_example[eid] = step_image_indices
 
-    return all_images, images_per_step_per_example
+    # Pass 2: decode unique images (parallel when worthwhile)
+    if len(unique_keys) > _PARALLEL_DECODE_THRESHOLD:
+        with ThreadPoolExecutor(max_workers=min(len(unique_keys), 16)) as pool:
+            all_images = list(pool.map(_decode_b64_image, unique_keys))
+    else:
+        all_images = [_decode_b64_image(k) for k in unique_keys]
+
+    return all_images, step_image_indices_per_example
+
+
+_DEFAULT_IMAGE_CHUNK_SIZE = 32
+
+
+class _ImageStore:
+    """Holds per-unique-image data, assembled lazily on demand.
+
+    Instead of duplicating pixel bytes for every step that references an image,
+    we store each image's bytes once and assemble the concatenation at retrieval time.
+    """
+
+    def __init__(
+        self,
+        image_bytes: list[bytes],
+        image_num_patches: list[int],
+        patch_dim: int,
+        image_grids: list[list[int]],
+    ):
+        self.image_bytes = image_bytes
+        self.image_num_patches = image_num_patches
+        self.patch_dim = patch_dim
+        self.image_grids = image_grids
+        self._cache: dict[tuple[int, ...], tuple[bytes, list[int], list[list[int]]]] = {}
+
+    def assemble(self, indices: list[int]) -> tuple[bytes, list[int], list[list[int]]]:
+        """Assemble pixel bytes, shape, and grids for a set of image indices.
+
+        Results are cached by index tuple — multi-turn rollouts with the same
+        cumulative image set (common across rollouts of the same example) hit
+        the cache and skip the join.
+        """
+        cache_key = tuple(indices)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        total_patches = sum(self.image_num_patches[i] for i in indices)
+        pixel_bytes = b"".join(self.image_bytes[i] for i in indices)
+        shape = [total_patches, self.patch_dim]
+        grids = [self.image_grids[i] for i in indices]
+        result = (pixel_bytes, shape, grids)
+        self._cache[cache_key] = result
+        return result
 
 
 def _preprocess_images_batched(
     images: list[Image.Image],
-    images_per_step_per_example: dict[int, list[int]],
+    step_image_indices_per_example: dict[int, list[list[int]]],
     processor,
-) -> dict[int, list[tuple[list | None, list | None]]]:
+    chunk_size: int = _DEFAULT_IMAGE_CHUNK_SIZE,
+) -> tuple["_ImageStore | None", dict[int, list[list[int]]]]:
     """
-    Preprocess all images in a single batched call, then distribute results per step.
+    Preprocess all images in chunked batches, returning an _ImageStore and step indices.
 
-    Args:
-        images: Flat list of all PIL images
-        images_per_step_per_example: Dict mapping cache_key to list of cumulative image
-            counts per step
-        processor: HuggingFace processor with image_processor attribute
+    Images are processed in chunks to avoid OOM on large batches. Per-image bytes are
+    stored once in the _ImageStore and assembled lazily at retrieval time.
 
     Returns:
-        Dict mapping cache_key to list of (pixel_values, image_grid_thw) per step.
-        Each step's entry contains cumulative images up to that step.
+        Tuple of (_ImageStore or None, step_image_indices_per_example).
+        The store is None when there are no images or no processor.
     """
     if not images or processor is None:
-        return {
-            eid: [(None, None)] * len(counts) if counts else [(None, None)]
-            for eid, counts in images_per_step_per_example.items()
-        }
-
-    image_sizes = [(img.width, img.height) for img in images]
-    processed = processor.image_processor(images=images, return_tensors="pt")
-    all_pixel_values = processed["pixel_values"]
-    all_grid_thw = processed["image_grid_thw"]
+        return None, step_image_indices_per_example
 
     logger = get_logger()
+    image_sizes = [(img.width, img.height) for img in images]
+
+    # Process images in chunks to avoid OOM, parallelized across threads
+    # (PIL/numpy release the GIL so threads give real concurrency here)
+    chunks = [images[i : i + chunk_size] for i in range(0, len(images), chunk_size)]
+
+    def _process_chunk(chunk: list[Image.Image]) -> tuple[torch.Tensor, torch.Tensor]:
+        processed = processor.image_processor(images=chunk, return_tensors="pt")
+        return processed["pixel_values"], processed["image_grid_thw"]
+
+    if len(chunks) > 1:
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 8)) as pool:
+            results = list(pool.map(_process_chunk, chunks))
+    else:
+        results = [_process_chunk(chunks[0])]
+
+    all_pixel_values_list = [r[0] for r in results]
+    all_grid_thw_list = [r[1] for r in results]
+
+    all_pixel_values = torch.cat(all_pixel_values_list, dim=0)
+    all_grid_thw = torch.cat(all_grid_thw_list, dim=0)
+
     logger.debug(
         f"VLM image processing: {len(images)} images, sizes={image_sizes}, "
         f"pixel_values={all_pixel_values.shape}, grid_thw={all_grid_thw.tolist()}"
     )
 
-    result = {}
-    img_idx = 0
-    patch_idx = 0
+    # Pre-compute patch start offset for each image
+    patch_starts = [0]
+    for g in all_grid_thw:
+        patch_starts.append(patch_starts[-1] + int(g[0] * g[1] * g[2]))
 
-    for eid, cumulative_counts in images_per_step_per_example.items():
-        if not cumulative_counts or cumulative_counts[-1] == 0:
-            result[eid] = [(None, None)] * max(len(cumulative_counts), 1)
-            continue
+    patch_dim = all_pixel_values.shape[1]
 
-        total_images = cumulative_counts[-1]
-        example_grids = all_grid_thw[img_idx : img_idx + total_images]
-        num_patches = sum(int(g[0] * g[1] * g[2]) for g in example_grids)
-        example_pixels = all_pixel_values[patch_idx : patch_idx + num_patches]
+    # Store per-image bytes once
+    image_bytes_list: list[bytes] = []
+    image_num_patches_list: list[int] = []
+    image_grids_list: list[list[int]] = []
+    for i in range(len(images)):
+        img_slice = all_pixel_values[patch_starts[i] : patch_starts[i + 1]]
+        image_bytes_list.append(img_slice.numpy().tobytes())
+        image_num_patches_list.append(img_slice.shape[0])
+        image_grids_list.append(all_grid_thw[i].tolist())
 
-        # Build per-step cumulative entries
-        per_step = []
-        for cum_count in cumulative_counts:
-            if cum_count == 0:
-                per_step.append((None, None))
-            else:
-                step_grids = example_grids[:cum_count]
-                step_patches = sum(int(g[0] * g[1] * g[2]) for g in step_grids)
-                per_step.append((example_pixels[:step_patches].tolist(), step_grids.tolist()))
+    store = _ImageStore(
+        image_bytes=image_bytes_list,
+        image_num_patches=image_num_patches_list,
+        patch_dim=patch_dim,
+        image_grids=image_grids_list,
+    )
 
-        result[eid] = per_step
-        img_idx += total_images
-        patch_idx += num_patches
-
-    return result
+    return store, step_image_indices_per_example
 
 
 class VLMImageCache:
@@ -287,28 +406,71 @@ class VLMImageCache:
 
     def __init__(
         self,
-        cache: dict[int, list[tuple[list | None, list | None]]],
+        cache: dict[int, list[tuple[bytes | None, list[int] | None, list[list[int]] | None]]],
         num_unique_examples: int,
         extract_time: float,
         preprocess_time: float,
     ):
+        self._store: _ImageStore | None = None
+        self._step_indices: dict[int, list[list[int]]] | None = None
         self.cache = cache
         self.num_unique_examples = num_unique_examples
+        self.num_unique_images = 0
         self.extract_time = extract_time
         self.preprocess_time = preprocess_time
 
-    def get_for_step(self, cache_key: int, step_idx: int) -> tuple[list | None, list | None]:
+    @classmethod
+    def from_store(
+        cls,
+        store: _ImageStore | None,
+        step_indices: dict[int, list[list[int]]],
+        num_unique_examples: int,
+        num_unique_images: int,
+        extract_time: float,
+        preprocess_time: float,
+    ) -> "VLMImageCache":
+        """Create a store-backed cache that assembles bytes lazily."""
+        obj = cls.__new__(cls)
+        obj._store = store
+        obj._step_indices = step_indices
+        obj.cache = {}
+        obj.num_unique_examples = num_unique_examples
+        obj.num_unique_images = num_unique_images
+        obj.extract_time = extract_time
+        obj.preprocess_time = preprocess_time
+        return obj
+
+    def _assemble(self, indices: list[int]) -> tuple[bytes | None, list[int] | None, list[list[int]] | None]:
+        if not indices:
+            return (None, None, None)
+        return self._store.assemble(indices)
+
+    def get_for_step(
+        self, cache_key: int, step_idx: int
+    ) -> tuple[bytes | None, list[int] | None, list[list[int]] | None]:
         """Get cumulative images up to and including the given step."""
+        if self._store is not None:
+            steps = self._step_indices.get(cache_key, [])
+            if not steps or step_idx >= len(steps):
+                return (None, None, None)
+            return self._assemble(steps[step_idx])
+
         steps = self.cache.get(cache_key, [])
         if not steps or step_idx >= len(steps):
-            return (None, None)
+            return (None, None, None)
         return steps[step_idx]
 
-    def get_all(self, cache_key: int) -> tuple[list | None, list | None]:
+    def get_all(self, cache_key: int) -> tuple[bytes | None, list[int] | None, list[list[int]] | None]:
         """Get all images for the cache key (last step's cumulative images)."""
+        if self._store is not None:
+            steps = self._step_indices.get(cache_key, [])
+            if not steps:
+                return (None, None, None)
+            return self._assemble(steps[-1])
+
         steps = self.cache.get(cache_key, [])
         if not steps:
-            return (None, None)
+            return (None, None, None)
         return steps[-1]
 
 
@@ -328,12 +490,14 @@ def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMIma
 
     # Preprocess images
     preprocess_start = time.perf_counter()
-    cache = _preprocess_images_batched(all_images, images_per_example, processor)
+    store, step_indices = _preprocess_images_batched(all_images, images_per_example, processor)
     preprocess_time = time.perf_counter() - preprocess_start
 
-    return VLMImageCache(
-        cache=cache,
+    return VLMImageCache.from_store(
+        store=store,
+        step_indices=step_indices,
         num_unique_examples=len(unique_example_ids),
+        num_unique_images=len(all_images),
         extract_time=extract_time,
         preprocess_time=preprocess_time,
     )

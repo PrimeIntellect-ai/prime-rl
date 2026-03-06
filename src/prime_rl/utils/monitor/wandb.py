@@ -10,10 +10,10 @@ import verifiers as vf
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.utils.config import WandbConfig, WandbWithExtrasConfig
+from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
+from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
-from prime_rl.utils.pydantic_config import BaseSettings
 
 
 class WandbMonitor(Monitor):
@@ -24,7 +24,7 @@ class WandbMonitor(Monitor):
         config: WandbConfig | WandbWithExtrasConfig | None,
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
-        run_config: BaseSettings | None = None,
+        run_config: BaseConfig | None = None,
     ):
         self.config = config
         self.logger = get_logger()
@@ -146,6 +146,11 @@ class WandbMonitor(Monitor):
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         """Log distributions (no-op for W&B)."""
         pass
+
+    def flush(self, step: int) -> None:
+        if not self.is_master or not self.enabled:
+            return
+        wandb.log({}, step=step, commit=True)
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to W&B table."""

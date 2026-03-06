@@ -99,6 +99,14 @@ def check_metric_in_range(
         )
 
 
+def check_reward_goes_up(lines: list[str]):
+    return check_number_goes_up_or_down(lines, go_up=True, pattern=r"Reward:\s*(\d+\.\d{4})")
+
+
+def check_loss_goes_down(lines: list[str]):
+    return check_number_goes_up_or_down(lines, go_up=False, pattern=r"Loss:\s*(\d+\.\d{4})")
+
+
 def check_reward_in_range(
     lines: list[str],
     step: int = -1,

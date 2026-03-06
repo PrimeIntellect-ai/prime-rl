@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.eval_utils import get_eval_sampling_args
+from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
@@ -27,9 +27,9 @@ import pandas as pd
 import verifiers as vf
 from transformers import AutoProcessor, AutoTokenizer
 
+from prime_rl.configs.orchestrator import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
-from prime_rl.orchestrator.config import BufferConfig, OrchestratorConfig
 from prime_rl.orchestrator.eval_utils import evaluate_env
 from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
@@ -47,16 +47,17 @@ from prime_rl.orchestrator.vf_utils import (
     intercept_vf_logging,
     setup_env_client,
     spawn_env_server,
+    task_uses_group_scoring,
     wait_for_env_servers,
 )
 from prime_rl.utils.client import (
     init_nccl_broadcast,
     setup_inference_pool,
 )
+from prime_rl.utils.config import cli
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
@@ -169,6 +170,25 @@ async def orchestrate(config: OrchestratorConfig):
         env_names=train_env_names,
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
+    verification_enabled = config.verification.enabled
+
+    train_env_deferred_group_scoring_tasks = (
+        {env_name for env_name in train_env_names if task_uses_group_scoring(train_env_group, env_name)}
+        if verification_enabled
+        else set()
+    )
+    for train_env_name, env_cfg in zip(train_env_names, config.env):
+        env_cfg.extra_env_kwargs["score_rollouts"] = (
+            verification_enabled and train_env_name not in train_env_deferred_group_scoring_tasks
+        )
+    if not verification_enabled:
+        logger.info("Verification disabled; all training envs will skip scoring.")
+    elif train_env_deferred_group_scoring_tasks:
+        deferred_tasks = ", ".join(sorted(train_env_deferred_group_scoring_tasks))
+        logger.info(
+            f"Deferred group scoring enabled for training tasks: {deferred_tasks}. "
+            "Rollouts run individually and are scored once each group completes."
+        )
 
     train_env_addresses = []
     env_processes: list[mp.Process] = []
@@ -185,6 +205,11 @@ async def orchestrate(config: OrchestratorConfig):
             )
             env_processes.append(process)
         else:
+            if env_name in train_env_deferred_group_scoring_tasks:
+                logger.warning(
+                    f"Training env {env_name} uses external server at {env.address}. "
+                    "Ensure that server was started with score_rollouts=False."
+                )
             address = env.address
         logger.info(f"Connecting train environment {env_name} to server at {address}")
         train_env_addresses.append(address)
@@ -268,13 +293,13 @@ async def orchestrate(config: OrchestratorConfig):
         env=train_env_group,
         buffer=buffer,
         inference_pool=inference_pool,
-        oversampling_factor=config.oversampling_factor,
+        max_inflight_rollouts=config.max_inflight_rollouts,
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
         tasks_per_minute=config.tasks_per_minute,
         lora_name=config.model.lora.name if config.model.lora else None,
-        output_dir=config.output_dir,
+        deferred_group_scoring_tasks=train_env_deferred_group_scoring_tasks,
         config=config,
     )
 
@@ -309,6 +334,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Track last online eval checkpoint step for this process
     last_eval_step = -1
+    # Track previous ckpt_step to detect when ckpt_step jumps over eval interval boundaries
+    prev_ckpt_step = -1
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
@@ -318,8 +345,12 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
         if config.eval and config.eval.skip_eval_on_resume:
+            prev_ckpt_step = scheduler.ckpt_step
             last_eval_step = scheduler.ckpt_step
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
+        else:
+            # Allow eval at resumed step by setting prev_ckpt_step one behind
+            prev_ckpt_step = scheduler.ckpt_step - 1
 
         # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
         check_exists = config.weight_broadcast.type != "nccl"
@@ -338,9 +369,6 @@ async def orchestrate(config: OrchestratorConfig):
     is_first_step = True
     await set_semaphore(config.max_concurrent or -1)
 
-    # Start update policy loop
-    update_policy_task = asyncio.create_task(scheduler.update_policy_loop())
-
     # Track consecutive empty batches for retry logic
     empty_batch_retries = 0
     max_empty_batch_retries = 5
@@ -355,13 +383,7 @@ async def orchestrate(config: OrchestratorConfig):
             reason = evicted_path.read_text().strip()
             raise RuntimeError(f"Run evicted by trainer: {reason}")
 
-        # Check if update_policy_task has failed and propagate the exception
-        if update_policy_task.done():
-            # End all other tasks
-            for task in asyncio.all_tasks():
-                task.cancel()
-            update_policy_task.result()  # Raises if the task failed
-        # Capture ckpt_step once for consistency (it's updated by update_policy_loop concurrently)
+        # Capture ckpt_step once for consistency (it's updated inside the scheduler)
         ckpt_step = scheduler.ckpt_step
 
         # Save checkpoint (if we are at an interval step and not at the first or last step)
@@ -385,16 +407,25 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.perf_counter()
 
-        # Run evals BEFORE training (blocking, in subprocess to isolate event loop)
-        # This ensures weights don't change during eval and eval doesn't cause event loop lag
-        if (
-            config.eval
-            and ckpt_step % config.eval.interval == 0
-            and ckpt_step > last_eval_step
-            and ((ckpt_step == 0 and config.eval.eval_base_model) or ckpt_step > 0)
-        ):
+        # Run evals BEFORE training (blocking). Weight updates are paused via
+        # scheduler.checkpoint_ready during eval to ensure consistent weights.
+        # Use range check to handle ckpt_step jumping over interval boundaries.
+        eval_ckpt_step = None
+        if config.eval:
+            eval_ckpt_step = compute_eval_ckpt_step(
+                ckpt_step=ckpt_step,
+                prev_ckpt_step=prev_ckpt_step,
+                last_eval_step=last_eval_step,
+                interval=config.eval.interval,
+                eval_base_model=config.eval.eval_base_model,
+            )
+
+        if eval_ckpt_step is not None:
             last_eval_step = ckpt_step
-            logger.info(f"Running evals for checkpoint step {ckpt_step}")
+            if eval_ckpt_step != ckpt_step:
+                logger.info(f"Running evals for interval step {eval_ckpt_step} (current ckpt_step={ckpt_step})")
+            else:
+                logger.info(f"Running evals for checkpoint step {ckpt_step}")
 
             # Pause weight updates and re-scheduling of training rollouts during eval
             # to avoid evaluating across different checkpoints and avoid congestion
@@ -403,7 +434,7 @@ async def orchestrate(config: OrchestratorConfig):
             # For heavy eval workloads, it might be necessary additionally cancel in-flight training rollouts
             if config.eval.cancel_inflight_rollouts_on_eval:
                 logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
-                scheduler.cancel_inflight_rollouts()
+                await scheduler.cancel_inflight_rollouts()
 
             results = await asyncio.gather(
                 *[
@@ -425,6 +456,9 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Resume weight updates
             scheduler.checkpoint_ready.set()
+
+        # Update prev_ckpt_step for next iteration
+        prev_ckpt_step = ckpt_step
 
         # Schedule generating the training batch
         temperature = compute_temperature(progress.step, config.sampling, config.max_steps)
@@ -460,6 +494,8 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Compute advantages
         example_ids = [r["example_id"] for r in train_rollouts]
+        num_rollouts = len(train_rollouts)
+        num_unique_examples = len(set(example_ids))
         rewards = [r["reward"] for r in train_rollouts]
         completion_lens = [get_completion_len(r) for r in train_rollouts]
         advantages = compute_advantages(
@@ -471,13 +507,13 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
-        num_unique_examples = len(set(example_ids))
 
         # VLM: build image cache for efficient batched preprocessing
         if is_vlm:
             vlm_cache = build_vlm_image_cache(train_rollouts, processor)
             logger.info(
-                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s"
+                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
+                f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
             )
         else:
             vlm_cache = None
@@ -607,17 +643,15 @@ async def orchestrate(config: OrchestratorConfig):
         # Update progress metrics and throughput
         num_tokens = int(results_df.seq_len.sum())
         progress.total_tokens += num_tokens
-        progress.total_samples += config.batch_size
-        progress.total_problems += config.batch_size // config.rollouts_per_example
+        progress.total_samples += num_rollouts
+        progress.total_problems += num_unique_examples
         throughput = num_tokens / generate_completions_time
 
         # Compute solve all and none tensors
-        solve_all = (
-            results_df.groupby("example_id")
-            .apply(lambda x: x.reward.sum() == config.rollouts_per_example, include_groups=False)
-            .mean()
-        )
-        solve_none = results_df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
+        problem_indices = results_df.index // config.rollouts_per_example
+        reward_sum_per_problem = results_df.groupby(problem_indices).reward.sum()
+        solve_all = (reward_sum_per_problem == config.rollouts_per_example).mean()
+        solve_none = (reward_sum_per_problem == 0).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
         step_time = time.perf_counter() - step_start_time
@@ -626,8 +660,8 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/tokens": num_tokens,
             "progress/prefill_tokens": num_prefill_tokens,
             "progress/decode_tokens": num_decode_tokens,
-            "progress/samples": config.batch_size,
-            "progress/problems": config.batch_size // config.rollouts_per_example,
+            "progress/samples": num_rollouts,
+            "progress/problems": num_unique_examples,
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
@@ -664,6 +698,10 @@ async def orchestrate(config: OrchestratorConfig):
             "perf/throughput": throughput,
             # Train reward
             "reward/mean": results_df.reward.mean(),
+            "reward/std": results_df.reward.std(),
+            "reward/min": results_df.reward.min(),
+            "reward/max": results_df.reward.max(),
+            "reward/median": results_df.reward.median(),
             "sampling/temperature": temperature,
             # Batch metrics
             "batch/solve_none": solve_none,
@@ -708,7 +746,15 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Optionally, add val metrics
         if val_results_df is not None:
-            to_log.update({"val_reward/mean": val_results_df.reward.mean()})
+            to_log.update(
+                {
+                    "val_reward/mean": val_results_df.reward.mean(),
+                    "val_reward/std": val_results_df.reward.std(),
+                    "val_reward/min": val_results_df.reward.min(),
+                    "val_reward/max": val_results_df.reward.max(),
+                    "val_reward/median": val_results_df.reward.median(),
+                }
+            )
 
             if val_results_df.task.nunique() > 1:
                 per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
@@ -718,7 +764,7 @@ async def orchestrate(config: OrchestratorConfig):
                 to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
         # Log metrics to monitor(s)
-        monitor.log(to_log)
+        monitor.log(to_log, step=progress.step)
 
         # Log samples to monitor(s) if enabled
         subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
@@ -732,6 +778,9 @@ async def orchestrate(config: OrchestratorConfig):
             },
             step=progress.step,
         )
+
+        # Flush all accumulated metrics for this step
+        monitor.flush(step=progress.step)
 
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
@@ -782,8 +831,7 @@ async def orchestrate(config: OrchestratorConfig):
     rollout_executor.shutdown(wait=False)
 
     # Stop scheduler
-    scheduler.cancel_inflight_rollouts()
-    update_policy_task.cancel()
+    await scheduler.stop()
 
     # Stop inference pool
     await inference_pool.stop()
@@ -812,7 +860,7 @@ async def orchestrate(config: OrchestratorConfig):
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
 
-    asyncio.run(orchestrate(parse_argv(OrchestratorConfig)))
+    asyncio.run(orchestrate(cli(OrchestratorConfig)))
 
 
 if __name__ == "__main__":

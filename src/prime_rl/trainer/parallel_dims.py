@@ -24,7 +24,7 @@ import torch.distributed as dist
 from torch._utils import _get_available_device_type
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
-from prime_rl.trainer.config import ModelConfig
+from prime_rl.configs.trainer import ModelConfig
 from prime_rl.utils.logger import get_logger
 
 device_type = _get_available_device_type() or "cuda"
@@ -43,8 +43,10 @@ class ParallelDims:
     world_size: int
 
     _world_mesh: DeviceMesh = None
+    _submeshes: dict = None
 
     def __post_init__(self):
+        self._submeshes = {}
         self._validate()
 
     def _validate(self):
@@ -136,10 +138,19 @@ class ParallelDims:
             dp_cp_mesh_dim_names.append("cp")
             ep_mesh_dim_names.append("cp")
 
-        mesh[tuple(dp_mesh_dim_names)]._flatten(mesh_dim_name="dp")
-        mesh[tuple(dp_shard_cp_mesh_dim_names)]._flatten(mesh_dim_name="dp_shard_cp")
-        mesh[tuple(dp_cp_mesh_dim_names)]._flatten(mesh_dim_name="dp_cp")
-        mesh[tuple(ep_mesh_dim_names)]._flatten(mesh_dim_name="ep")
+        self._submeshes["dp"] = mesh[tuple(dp_mesh_dim_names)]._flatten(mesh_dim_name="dp")
+        self._submeshes["dp_shard_cp"] = mesh[tuple(dp_shard_cp_mesh_dim_names)]._flatten(mesh_dim_name="dp_shard_cp")
+        self._submeshes["dp_cp"] = mesh[tuple(dp_cp_mesh_dim_names)]._flatten(mesh_dim_name="dp_cp")
+        self._submeshes["ep"] = mesh[tuple(ep_mesh_dim_names)]._flatten(mesh_dim_name="ep")
+
+        if self.dp_replicate_enabled:
+            parent = mesh[tuple(["dp_replicate"] + dp_shard_cp_mesh_dim_names)]
+            hsdp_tensor = parent.mesh.reshape(self.dp_replicate, -1)
+            self._submeshes["hsdp"] = DeviceMesh(
+                device_type, hsdp_tensor, mesh_dim_names=("dp_replicate", "dp_shard_cp")
+            )
+        else:
+            self._submeshes["hsdp"] = self._submeshes["dp_shard_cp"]
 
         return mesh
 
@@ -177,11 +188,22 @@ class ParallelDims:
             dp_cp_mesh_dim_names.append("cp")
 
         if dp_mesh_dim_names != []:
-            mesh[tuple(dp_mesh_dim_names)]._flatten(mesh_dim_name="dp")
+            self._submeshes["dp"] = mesh[tuple(dp_mesh_dim_names)]._flatten(mesh_dim_name="dp")
         if dp_shard_cp_mesh_dim_names != []:
-            mesh[tuple(dp_shard_cp_mesh_dim_names)]._flatten(mesh_dim_name="dp_shard_cp")
+            self._submeshes["dp_shard_cp"] = mesh[tuple(dp_shard_cp_mesh_dim_names)]._flatten(
+                mesh_dim_name="dp_shard_cp"
+            )
         if dp_cp_mesh_dim_names != []:
-            mesh[tuple(dp_cp_mesh_dim_names)]._flatten(mesh_dim_name="dp_cp")
+            self._submeshes["dp_cp"] = mesh[tuple(dp_cp_mesh_dim_names)]._flatten(mesh_dim_name="dp_cp")
+
+        if self.dp_replicate_enabled:
+            parent = mesh[tuple(["dp_replicate"] + dp_shard_cp_mesh_dim_names)]
+            hsdp_tensor = parent.mesh.reshape(self.dp_replicate, -1)
+            self._submeshes["hsdp"] = DeviceMesh(
+                device_type, hsdp_tensor, mesh_dim_names=("dp_replicate", "dp_shard_cp")
+            )
+        else:
+            self._submeshes["hsdp"] = self._submeshes["dp_shard_cp"]
 
         return mesh
 
@@ -192,6 +214,12 @@ class ParallelDims:
         if self._world_mesh is None:
             self._world_mesh = self.build_mesh()
         return self._world_mesh
+
+    def get_mesh(self, name: str) -> DeviceMesh:
+        mesh = self.world_mesh  # ensure lazy init has run
+        if name in self._submeshes:
+            return self._submeshes[name]
+        return mesh[name]
 
     @property
     def dp_enabled(self):

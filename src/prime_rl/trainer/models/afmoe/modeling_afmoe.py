@@ -189,6 +189,19 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
         if self._flash_attn_version == 4:
             self._flash_attn_call = torch._dynamo.disable(self.func)
 
+    def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
+        """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
+        args = [q, k, v, cu_seqlens, cu_seqlens]
+        if self._flash_attn_version != 4:
+            args.extend([max_seqlen, max_seqlen])
+        kwargs: dict = {"causal": True}
+        if self.sliding_window is not None:
+            kwargs["window_size"] = (self.sliding_window - 1, 0)
+        out = self._flash_attn_call(*args, **kwargs)
+        if isinstance(out, tuple):
+            out = out[0]
+        return out
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -209,7 +222,6 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
         key_states = self.k_norm(key_states)
 
         if self.is_local_attention:
-            # apply_rotary_pos_emb expects [batch, heads, seq, dim]
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
             cos, sin = position_embeddings
@@ -217,18 +229,7 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
 
-        # Flash attention varlen expects [total_tokens, heads, dim]
-        args = [query_states[0], key_states[0], value_states[0], cu_seqlens, cu_seqlens]
-        if self._flash_attn_version != 4:
-            args.extend([max_seqlen, max_seqlen])
-
-        kwargs: dict = {"causal": True}
-        if self.sliding_window is not None:
-            kwargs["window_size"] = (self.sliding_window - 1, 0)
-
-        out = self._flash_attn_call(*args, **kwargs)
-        if isinstance(out, tuple):
-            out = out[0]
+        out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
 
         attn_output = out.contiguous().view(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate_states)
@@ -330,6 +331,7 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
 
@@ -346,7 +348,7 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
 
         residual = hidden_states
         hidden_states = self.pre_mlp_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
         hidden_states = self.post_mlp_layernorm(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states
@@ -435,7 +437,12 @@ class AfmoeModel(AfmoePreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        routed_experts: Optional[torch.LongTensor] = None,
     ) -> MoeModelOutputWithPast:
+        """
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+            Routed experts for each token in the sequence. Only used for router replay.
+        """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -485,8 +492,9 @@ class AfmoeModel(AfmoePreTrainedModel):
 
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for decoder_layer in self.layers:
+        for layer_idx, decoder_layer in enumerate(self.layers):
             mask = causal_mask_mapping[decoder_layer.attention_type] if causal_mask_mapping is not None else None
+            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
 
             hidden_states = decoder_layer(
                 hidden_states,
@@ -494,6 +502,7 @@ class AfmoeModel(AfmoePreTrainedModel):
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                routed_experts=routed_experts_layer,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -546,6 +555,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         token_type_ids: Optional[torch.Tensor] = None,  # will be ignored
         temperature: Optional[torch.Tensor] = None,
+        routed_experts: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -554,6 +564,8 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
             If not provided, the wrapped LM head returns logits only.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+            Routed experts for each token in the sequence. Only used for router replay.
         """
         assert use_cache is None, "use_cache is not supported for custom afmoe for now"
         assert past_key_values is None, "past_key_values is not supported for custom afmoe for now"
@@ -563,6 +575,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
             attention_mask=attention_mask,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
+            routed_experts=routed_experts,
         )
 
         hidden_states = outputs.last_hidden_state

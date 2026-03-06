@@ -5,8 +5,8 @@ import pytest
 import verifiers as vf
 from datasets import Dataset
 
+from prime_rl.configs.orchestrator import BufferConfig
 from prime_rl.orchestrator.buffer import Buffer
-from prime_rl.orchestrator.config import BufferConfig
 
 
 @pytest.fixture(autouse=True)

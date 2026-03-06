@@ -6,11 +6,37 @@ import numpy as np
 import pandas as pd
 import verifiers as vf
 
-from prime_rl.orchestrator.config import EvalSamplingConfig
+from prime_rl.configs.orchestrator import EvalSamplingConfig
 from prime_rl.orchestrator.vf_utils import evaluate, get_completion_len
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize
+
+
+def compute_eval_ckpt_step(
+    ckpt_step: int,
+    prev_ckpt_step: int,
+    last_eval_step: int,
+    interval: int,
+    eval_base_model: bool = True,
+) -> int | None:
+    """Determine which checkpoint step (if any) should trigger an eval.
+
+    Handles the case where ckpt_step jumps over interval boundaries by finding
+    the highest interval-aligned step in (prev_ckpt_step, ckpt_step].
+
+    Returns the interval step to eval at, or None if no eval should run.
+    """
+    if ckpt_step <= prev_ckpt_step:
+        return None
+    highest_interval_step = (ckpt_step // interval) * interval
+    if highest_interval_step > prev_ckpt_step and highest_interval_step > last_eval_step:
+        if highest_interval_step == 0:
+            if ckpt_step == 0 and eval_base_model:
+                return 0
+        else:
+            return highest_interval_step
+    return None
 
 
 def get_eval_sampling_args(sampling_config: EvalSamplingConfig) -> dict[str, Any]:
@@ -71,7 +97,7 @@ async def evaluate_env(
     rollouts_per_example: int,
     max_retries: int,
     ckpt_step: int,
-    step: int | None,
+    step: int,
     get_client: Callable[[], Awaitable[vf.ClientConfig]],
 ):
     logger = get_logger()
@@ -142,6 +168,6 @@ async def evaluate_env(
         assert pass_at_k is not None
         eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
     eval_metrics = {**{f"eval/{env_name}/{k}": v for k, v in eval_metrics.items()}}
-    eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step or ckpt_step})
+    eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
     monitor = get_monitor()
-    monitor.log(eval_metrics, step=None)
+    monitor.log(eval_metrics, step=step)

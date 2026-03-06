@@ -1,6 +1,3 @@
-trainer_gpu_ids = [0]
-inference_gpu_ids = [1]
-
 max_steps = 500
 seq_len = 2048
 

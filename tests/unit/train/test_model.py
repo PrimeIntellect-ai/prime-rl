@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.trainer.config import AttnImplementation, ModelConfig
+from prime_rl.configs.trainer import AttnImplementation, ModelConfig
 from prime_rl.trainer.model import get_model
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 
