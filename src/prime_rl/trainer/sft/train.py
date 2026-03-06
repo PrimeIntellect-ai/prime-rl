@@ -247,9 +247,6 @@ def train(config: SFTConfig):
         if was_training:
             model.train()
 
-    if config.val is not None and config.val.eval_on_start:
-        run_validation(progress.step)
-
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
