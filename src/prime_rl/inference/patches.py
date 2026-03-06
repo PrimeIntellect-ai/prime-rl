@@ -298,6 +298,7 @@ def monkey_patch_fp8_online_blockwise_quant():
     def _patched_create_weights(self, layer, *args, **kwargs):
         _original_create_weights(self, layer, *args, **kwargs)
         layer.weight_block_size = [128, 128]
+        layer.input_scale = None
         self.block_quant = True
         self.weight_block_size = [128, 128]
         if not hasattr(self, "w8a8_block_fp8_linear"):
