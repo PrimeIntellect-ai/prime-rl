@@ -40,6 +40,7 @@ class GroupState:
     example: dict
     rollouts_to_schedule: int
     completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
+    pinned_client: vf.ClientConfig | None = None
 
 
 class Scheduler:
@@ -145,16 +146,22 @@ class Scheduler:
         self.groups.clear()
         self.cancelled_rollouts_count += count
 
+    @staticmethod
+    def _client_identity(c: vf.ClientConfig) -> tuple[str, str | None]:
+        return (c.api_base_url, c.extra_headers.get("X-data-parallel-rank"))
+
     async def _select_least_loaded_client(self) -> vf.ClientConfig:
-        """Select the client with the fewest in-flight tasks."""
+        """Select the client with the fewest in-flight tasks.
+
+        Uses (api_base_url, dp_rank) as identity rather than client_idx so that
+        load tracking survives elastic pool refreshes (which reassign indices).
+        """
         clients = self.inference_pool.clients
         while not clients:
             await asyncio.sleep(1)
             clients = self.inference_pool.clients
-        inflight_by_url = Counter()
-        for info in self.inflight_requests.values():
-            inflight_by_url[info.client_config.api_base_url] += 1
-        return min(clients, key=lambda c: inflight_by_url[c.api_base_url])
+        inflight = Counter(self._client_identity(info.client_config) for info in self.inflight_requests.values())
+        return min(clients, key=lambda c: inflight[self._client_identity(c)])
 
     async def drop_group(self, group_id: int) -> int:
         """Drop a group and cancel any remaining in-flight rollouts for it."""
@@ -176,9 +183,13 @@ class Scheduler:
         if group is None or group.rollouts_to_schedule <= 0:
             return
         group.rollouts_to_schedule -= 1
-        client_config = await self._select_least_loaded_client()
-        if group_id not in self.groups:
-            return
+        if group.pinned_client is not None:
+            client_config = group.pinned_client
+        else:
+            client_config = await self._select_least_loaded_client()
+            if group_id not in self.groups:
+                return
+            group.pinned_client = client_config
         run_rollout_task = asyncio.create_task(
             run_rollout(
                 env=self.env,

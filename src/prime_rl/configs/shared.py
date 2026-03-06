@@ -122,6 +122,22 @@ class ClientConfig(BaseConfig):
         ),
     ] = False
 
+    dp_rank_count: Annotated[
+        int,
+        Field(
+            ge=1,
+            description=(
+                "Number of data-parallel ranks behind each base URL. When > 1, "
+                "each URL is expanded into dp_rank_count logical clients, each "
+                "pinned to a specific DP rank via the X-data-parallel-rank header. "
+                "This ensures all requests within a multi-turn rollout hit the same "
+                "DP engine, maximizing KV cache reuse. Auto-set from "
+                "inference.data_parallel_size_local (or inference.parallel.dp) "
+                "when using the RL entrypoint."
+            ),
+        ),
+    ] = 1
+
     elastic: Annotated[
         ElasticConfig | None,
         Field(
