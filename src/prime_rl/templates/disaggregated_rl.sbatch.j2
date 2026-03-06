@@ -111,10 +111,11 @@ if [ "$NODE_RANK" -lt "$NUM_INFER_NODES" ]; then
     # ── Inference node (prefill or decode) ──
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
-    export NCCL_NET_PLUGIN=none
-    export NCCL_SOCKET_IFNAME=bond0
     export GLOO_SOCKET_IFNAME=bond0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
+    export UCX_TLS=all
+    export UCX_NET_DEVICES=all
+    export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
 
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP

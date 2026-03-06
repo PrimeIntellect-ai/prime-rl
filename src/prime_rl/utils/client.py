@@ -303,12 +303,15 @@ async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) 
     await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
 
 
-async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port: int, timeout: int) -> None:
+async def init_nccl_broadcast(
+    admin_clients: list[AsyncClient], host: str, port: int, timeout: int, inference_world_size: int
+) -> None:
     """Make a HTTP post request to the vLLM server to initialize the NCCL broadcast."""
     logger = get_logger()
+    gpus_per_server = inference_world_size // len(admin_clients)
 
     async def _init_nccl_broadcast(
-        admin_client: AsyncClient, host: str, port: int, client_num: int, timeout: int
+        admin_client: AsyncClient, host: str, port: int, rank_offset: int, timeout: int
     ) -> None:
         try:
             response = await admin_client.post(
@@ -316,8 +319,9 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
                 json={
                     "host": host,
                     "port": port,
-                    "server_rank": client_num,
-                    "num_inference_server": len(admin_clients),
+                    "rank_offset": rank_offset,
+                    "inference_world_size": inference_world_size,
+                    "gpus_per_server": gpus_per_server,
                     "timeout": timeout,
                 },
             )
@@ -329,7 +333,7 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
 
     await asyncio.gather(
         *[
-            _init_nccl_broadcast(admin_client, host, port, client_num, timeout)
+            _init_nccl_broadcast(admin_client, host, port, client_num * gpus_per_server, timeout)
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )

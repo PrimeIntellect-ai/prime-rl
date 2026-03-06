@@ -626,6 +626,9 @@ class NCCLWeightBroadcastConfig(BaseModel):
     host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
     port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
+    inference_world_size: Annotated[
+        int, Field(description="Total number of inference GPUs across all servers.")
+    ] = 1
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

@@ -495,6 +495,7 @@ class RLConfig(BaseConfig):
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
                 )
+                self.orchestrator.weight_broadcast.inference_world_size = inference_world_size
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
@@ -656,10 +657,10 @@ class RLConfig(BaseConfig):
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
                 assert self.trainer.weight_broadcast.type == "nccl"
+                inference_world_size = self.deployment.gpus_per_node * self.deployment.num_infer_nodes
                 self.trainer.weight_broadcast.host = "0.0.0.0"
-                self.trainer.weight_broadcast.inference_world_size = (
-                    self.deployment.gpus_per_node * self.deployment.num_infer_nodes
-                )
+                self.trainer.weight_broadcast.inference_world_size = inference_world_size
+                self.orchestrator.weight_broadcast.inference_world_size = inference_world_size
 
         return self
 

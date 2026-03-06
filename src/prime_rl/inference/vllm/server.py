@@ -207,12 +207,12 @@ async def init_broadcaster(request: Request):
     host = data.get("host")
     port = data.get("port")
     timeout = data.get("timeout")
-    # Support both legacy and new field names
-    server_rank = data.get("server_rank")
-    num_inference_server = data.get("num_inference_server")
+    rank_offset = data.get("rank_offset")
+    inference_world_size = data.get("inference_world_size")
+    gpus_per_server = data.get("gpus_per_server")
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, server_rank, num_inference_server, timeout),
+        args=(host, port, rank_offset, inference_world_size, gpus_per_server, timeout),
     )
     return {"status": "ok"}
 
