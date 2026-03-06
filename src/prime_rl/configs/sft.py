@@ -108,7 +108,7 @@ class SFTDataConfig(BaseDataConfig):
 
 class SFTValConfig(BaseConfig):
     interval: Annotated[int, Field(ge=1, description="Run validation every N training steps.")] = 50
-    data: SFTDataConfig = SFTDataConfig()
+    data: SFTDataConfig
 
 
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
