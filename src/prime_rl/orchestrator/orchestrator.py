@@ -3,6 +3,7 @@ import multiprocessing as mp
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import tomli_w
 
@@ -10,7 +11,7 @@ from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
+from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout, pretokenize_rollout_trajectory
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
 
@@ -70,6 +71,24 @@ from prime_rl.utils.utils import (
 from prime_rl.utils.vlm import is_vlm_model
 
 
+def setup_external_rollout_model(config: OrchestratorConfig, logger) -> tuple[Any, str, bool]:
+    """Resolve rollout client/model and whether policy updates should be enabled."""
+    rollout_client_config = config.client
+    rollout_model_name = config.model.name
+    enable_policy_updates = True
+
+    if config.teacher_rollout_model is not None:
+        rollout_client_config = config.teacher_rollout_model.client
+        rollout_model_name = config.teacher_rollout_model.model.name
+        enable_policy_updates = False
+        logger.info(
+            f"Using external teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, "
+            f"model={rollout_model_name})"
+        )
+
+    return rollout_client_config, rollout_model_name, enable_policy_updates
+
+
 @clean_exit
 async def orchestrate(config: OrchestratorConfig):
     # Initialize the logger
@@ -104,17 +123,7 @@ async def orchestrate(config: OrchestratorConfig):
         install_env(env_id)
 
     # Setup rollout inference pool (handles both static and elastic modes)
-    rollout_client_config = config.client
-    rollout_model_name = config.model.name
-    enable_policy_updates = config.rollout_model is None
-
-    if config.rollout_model is not None:
-        rollout_client_config = config.rollout_model.client
-        rollout_model_name = config.rollout_model.model.name
-        logger.info(
-            f"Using external rollout model (base_url={', '.join(rollout_client_config.base_url)}, "
-            f"model={rollout_model_name})"
-        )
+    rollout_client_config, rollout_model_name, enable_policy_updates = setup_external_rollout_model(config, logger)
 
     client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
     if config.use_token_client:
@@ -405,10 +414,8 @@ async def orchestrate(config: OrchestratorConfig):
             raise RuntimeError(f"Run evicted by trainer: {reason}")
 
         # Capture ckpt_step once for consistency (it's updated inside the scheduler)
-        ckpt_step = scheduler.ckpt_step
-        if not enable_policy_updates:
-            ckpt_step = progress.step
-            scheduler.ckpt_step = progress.step
+        ckpt_step = scheduler.ckpt_step if enable_policy_updates else progress.step
+        scheduler.ckpt_step = ckpt_step
 
         # Save checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
@@ -545,7 +552,10 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Process rollouts in parallel
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
-            return interleave_rollout(rollout, tokenizer=tokenizer, vlm_cache=vlm_cache, cache_key=rollout_idx)
+            return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
+
+        for rollout in train_rollouts:
+            pretokenize_rollout_trajectory(rollout, tokenizer)
 
         loop = asyncio.get_event_loop()
         futures = [

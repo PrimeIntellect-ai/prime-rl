@@ -328,24 +328,22 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_external_rollout_mode(self):
-        if self.orchestrator.rollout_model is None:
+        if self.orchestrator.teacher_rollout_model is None:
             return self
 
         if self.trainer.loss.type != "sft":
-            raise ValueError('orchestrator.rollout_model is only supported when trainer.loss.type = "sft".')
+            raise ValueError('orchestrator.teacher_rollout_model is only supported when trainer.loss.type = "sft".')
 
         if self.inference is not None:
             raise ValueError(
-                "inference must be omitted when orchestrator.rollout_model is configured. "
+                "inference must be omitted when orchestrator.teacher_rollout_model is configured. "
                 "External rollout mode does not use the local inference server."
             )
 
         if self.orchestrator.use_token_client:
-            warnings.warn(
-                "orchestrator.rollout_model is configured. Setting orchestrator.use_token_client=false "
-                "for text-level reconstruction in SFT distillation mode."
+            raise ValueError(
+                "orchestrator.use_token_client must be false when orchestrator.teacher_rollout_model is configured."
             )
-            self.orchestrator.use_token_client = False
 
         return self
 

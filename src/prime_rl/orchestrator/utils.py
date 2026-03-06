@@ -49,6 +49,11 @@ def get_sampling_args(sampling_config: SamplingConfig, temperature: float, use_t
     min_tokens = sampling_args.pop("min_tokens")
     repetition_penalty = sampling_args.pop("repetition_penalty")
 
+    if min_tokens > 0:
+        extra_body["min_tokens"] = min_tokens
+    if repetition_penalty != 1.0:
+        extra_body["repetition_penalty"] = repetition_penalty
+
     if use_token_client:
         sampling_args["logprobs"] = True
         extra_body = {
@@ -56,14 +61,7 @@ def get_sampling_args(sampling_config: SamplingConfig, temperature: float, use_t
             "return_token_ids": True,  # Always return token IDs
             "top_k": -1,
             "min_p": 0.0,
-            "min_tokens": min_tokens,
-            "repetition_penalty": repetition_penalty,
         }
-    else:
-        if min_tokens > 0:
-            extra_body["min_tokens"] = min_tokens
-        if repetition_penalty != 1.0:
-            extra_body["repetition_penalty"] = repetition_penalty
 
     if extra_body:
         sampling_args["extra_body"] = extra_body

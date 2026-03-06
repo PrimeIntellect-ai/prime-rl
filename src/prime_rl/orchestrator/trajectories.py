@@ -175,9 +175,32 @@ def _tokenize_step_from_messages(
     }
 
 
+def pretokenize_rollout_trajectory(
+    output: vf.RolloutOutput,
+    tokenizer: PreTrainedTokenizer,
+) -> bool:
+    """Populate missing step tokens from prompt/completion messages."""
+    logger = get_logger()
+
+    for step_idx, step in enumerate(output["trajectory"]):
+        if step["tokens"] is not None:
+            continue
+
+        reconstructed = _tokenize_step_from_messages(step, tokenizer)
+        if reconstructed["prompt_prefix_len"] < len(reconstructed["prompt_ids"]):
+            logger.debug(
+                f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "
+                f"Using longest common prefix length {reconstructed['prompt_prefix_len']}."
+            )
+
+        reconstructed.pop("prompt_prefix_len")
+        step["tokens"] = reconstructed
+
+    return True
+
+
 def interleave_rollout(
     output: vf.RolloutOutput,
-    tokenizer: PreTrainedTokenizer | None = None,
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
 ) -> list[TrainingSample] | None:
@@ -201,7 +224,6 @@ def interleave_rollout(
 
     Args:
         output: vf.RolloutOutput containing trajectory data
-        tokenizer: Tokenizer used to reconstruct step tokens when rollout tokens are unavailable
         vlm_cache: Pre-computed VLM image cache for multimodal training
         cache_key: Cache key to use when retrieving images from the VLM cache
     """
@@ -228,20 +250,8 @@ def interleave_rollout(
                 "routed_experts": tokens.get("routed_experts"),
             }
 
-        if tokenizer is None:
-            logger.warning(
-                f"Missing rollout tokens for example {output['example_id']} step {step_idx}, but no tokenizer was provided."
-            )
-            return None
-
-        reconstructed = _tokenize_step_from_messages(step, tokenizer)
-        if reconstructed["prompt_prefix_len"] < len(reconstructed["prompt_ids"]):
-            logger.debug(
-                f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "
-                f"Using longest common prefix length {reconstructed['prompt_prefix_len']}."
-            )
-        reconstructed.pop("prompt_prefix_len")
-        return reconstructed
+        logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
+        return None
 
     prepared_steps: list[dict[str, Any]] = []
     for step_idx, step in enumerate(trajectory):

@@ -150,29 +150,13 @@ def test_cli_overrides_toml(tmp_path):
     assert config.nested.weight_decay == 0.01
 
 
-def test_rl_config_external_rollout_mode_valid():
-    config = RLConfig(
-        trainer={"loss": {"type": "sft"}},
-        orchestrator={
-            "use_token_client": False,
-            "rollout_model": {
-                "client": {"base_url": ["https://example.com/v1"], "skip_model_check": True},
-                "model": {"name": "gpt-4o-mini"},
-            },
-        },
-        inference=None,
-    )
-    assert config.orchestrator.rollout_model is not None
-    assert config.inference is None
-
-
 def test_rl_config_external_rollout_mode_rejects_inference():
-    with pytest.raises(ValidationError, match="inference must be omitted when orchestrator.rollout_model"):
+    with pytest.raises(ValidationError, match="inference must be omitted when orchestrator.teacher_rollout_model"):
         RLConfig(
             trainer={"loss": {"type": "sft"}},
             orchestrator={
                 "use_token_client": False,
-                "rollout_model": {
+                "teacher_rollout_model": {
                     "client": {"base_url": ["https://example.com/v1"], "skip_model_check": True},
                     "model": {"name": "gpt-4o-mini"},
                 },
@@ -181,30 +165,16 @@ def test_rl_config_external_rollout_mode_rejects_inference():
         )
 
 
-def test_rl_config_external_rollout_mode_auto_disables_token_client():
-    config = RLConfig(
-        trainer={"loss": {"type": "sft"}},
-        orchestrator={
-            "use_token_client": True,
-            "rollout_model": {
-                "client": {"base_url": ["https://example.com/v1"], "skip_model_check": True},
-                "model": {"name": "gpt-4o-mini"},
-            },
-        },
-        inference=None,
-    )
-    assert config.orchestrator.use_token_client is False
-
-
-def test_rl_config_external_rollout_mode_requires_sft_loss():
+def test_rl_config_external_rollout_mode_rejects_token_client():
     with pytest.raises(
         ValidationError,
-        match='orchestrator.rollout_model is only supported when trainer.loss.type = "sft"',
+        match="orchestrator.use_token_client must be false when orchestrator.teacher_rollout_model is configured",
     ):
         RLConfig(
-            trainer={"loss": {"type": "default"}},
+            trainer={"loss": {"type": "sft"}},
             orchestrator={
-                "rollout_model": {
+                "use_token_client": True,
+                "teacher_rollout_model": {
                     "client": {"base_url": ["https://example.com/v1"], "skip_model_check": True},
                     "model": {"name": "gpt-4o-mini"},
                 },

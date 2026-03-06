@@ -647,8 +647,8 @@ class TeacherModelConfig(BaseConfig):
     ] = ModelConfig()
 
 
-class RolloutModelConfig(BaseConfig):
-    """Configures an external model used to generate rollout text."""
+class TeacherRolloutModelConfig(BaseConfig):
+    """Configures an external teacher model used to generate rollout text."""
 
     client: Annotated[
         ClientConfig,
@@ -683,12 +683,12 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = None
 
-    # External rollout model configuration (optional)
-    rollout_model: Annotated[
-        RolloutModelConfig | None,
+    # External teacher rollout model configuration (optional)
+    teacher_rollout_model: Annotated[
+        TeacherRolloutModelConfig | None,
         Field(
             description=(
-                "Optional external model used for rollout generation. "
+                "Optional external teacher model used for rollout generation. "
                 "When set, rollouts are generated from this endpoint/model instead of the student inference server."
             ),
         ),
@@ -884,12 +884,6 @@ class OrchestratorConfig(BaseConfig):
         if self.weight_broadcast.type == "nccl":
             if not self.max_async_level == 1:
                 raise ValueError("max_async_level must be 1 for NCCL broadcast")
-        return self
-
-    @model_validator(mode="after")
-    def validate_rollout_model_with_weight_broadcast(self):
-        if self.rollout_model is not None and self.weight_broadcast.type == "nccl":
-            raise ValueError("rollout_model is not compatible with NCCL weight broadcast.")
         return self
 
     @model_validator(mode="after")

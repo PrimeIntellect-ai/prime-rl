@@ -187,11 +187,7 @@ def setup_loss_fn(loss_config: LossConfig) -> LossFn:
         return loss_fn
 
     if isinstance(loss_config, SFTLossConfig):
-
-        def loss_fn(inputs: LossInputs) -> LossOutputs:
-            return sft_loss_fn(inputs)
-
-        return loss_fn
+        return sft_loss_fn
 
     def loss_fn(inputs: LossInputs) -> LossOutputs:
         return default_loss_fn(inputs, loss_config)
