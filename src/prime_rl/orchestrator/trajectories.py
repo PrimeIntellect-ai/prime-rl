@@ -390,6 +390,7 @@ def _preprocess_images_batched(
         results = [_process_chunk(chunks[0])]
 
     # Free PIL images now that preprocessing is done
+    del chunks
     images.clear()
 
     all_pixel_values_list = [r[0] for r in results]
