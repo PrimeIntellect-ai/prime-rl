@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
 
@@ -89,3 +90,54 @@ def compute_advantages(
 
     result = advantage_fn(inputs)
     return result.advantages.flatten().tolist()
+
+
+def compute_per_agent_advantages(rollouts: list[dict]) -> None:
+    """Compute per-agent GRPO advantages for multi-agent rollouts.
+
+    For multi-agent environments, each trajectory step is tagged with an agent_id
+    and has a per-agent reward. Standard GRPO computes advantages from the rollout-
+    level mean reward, which is invariant when agent payoffs sum to a constant.
+
+    This function computes advantages per agent: for each (example, agent) pair,
+    the baseline is the mean of that agent's rewards across rollouts of the same
+    example. Advantages are written directly to trajectory steps so they flow
+    through interleave_rollout -> TrainingSample.advantage.
+
+    No-ops if rollouts don't contain per-agent trajectory steps.
+    """
+    if not rollouts:
+        return
+
+    # Quick check: do rollouts have per-agent trajectory steps?
+    has_agents = False
+    for r in rollouts[:3]:
+        for step in r.get("trajectory", []):
+            if step.get("extras", {}).get("agent_id"):
+                has_agents = True
+                break
+        if has_agents:
+            break
+    if not has_agents:
+        return
+
+    # Group rollouts by example_id
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for r in rollouts:
+        groups[r["example_id"]].append(r)
+
+    for group in groups.values():
+        # Collect per-agent rewards: agent_id -> list of (step, reward)
+        agent_entries: dict[str, list[tuple[dict, float]]] = defaultdict(list)
+        for r in group:
+            for step in r.get("trajectory", []):
+                agent_id = step.get("extras", {}).get("agent_id")
+                reward = step.get("reward")
+                if agent_id is not None and reward is not None:
+                    agent_entries[agent_id].append((step, reward))
+
+        # Compute per-agent baseline and set per-step advantages
+        for agent_id, entries in agent_entries.items():
+            baseline = sum(reward for _, reward in entries) / len(entries)
+            for step, reward in entries:
+                step["advantage"] = reward - baseline
