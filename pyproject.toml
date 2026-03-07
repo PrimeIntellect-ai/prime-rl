@@ -19,7 +19,7 @@ dependencies = [
     "torch>=2.9.0",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.16.1.dev",
+    "vllm>=0.16.0",
     "wandb>=0.24.2",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.37",
@@ -50,7 +50,7 @@ prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
 
 [project.optional-dependencies]
 flash-attn = [
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl",
 ]
 
 flash-attn-3 = [
@@ -81,17 +81,15 @@ override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
-    "quack-kernels>=0.2.7",
 ]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
-vllm = { index = "vllm-nightly" }
 math-env = { index = "primeintellect" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "45fae8d" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
-transformers = { git = "https://github.com/huggingface/transformers.git", rev = "5c1c72b" }
+transformers = { git = "https://github.com/huggingface/transformers.git", rev = "609e3d5" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
 reverse-text = { index = "primeintellect" }
@@ -109,12 +107,7 @@ url = "https://hub.primeintellect.ai/primeintellect/simple/"
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[[tool.uv.index]]
-name = "vllm-nightly"
-url = "https://wheels.vllm.ai/nightly"
+url = "https://download.pytorch.org/whl/test/cu128"
 explicit = true
 
 
