@@ -732,19 +732,6 @@ async def orchestrate(config: OrchestratorConfig):
             "step": progress.step,
         }
 
-        # Per-agent reward metrics (for multi-agent environments)
-        agent_reward_sums: dict[str, float] = {}
-        agent_reward_counts: dict[str, int] = {}
-        for rollout in train_rollouts:
-            agent_rewards = rollout.get("agent_rewards")
-            if not agent_rewards:
-                continue
-            for agent_id, reward in agent_rewards.items():
-                agent_reward_sums[agent_id] = agent_reward_sums.get(agent_id, 0.0) + reward
-                agent_reward_counts[agent_id] = agent_reward_counts.get(agent_id, 0) + 1
-        for agent_id in agent_reward_sums:
-            to_log[f"agent_reward/{agent_id}"] = agent_reward_sums[agent_id] / agent_reward_counts[agent_id]
-
         # Per-env metrics
         per_env_columns = [
             "seq_len",
