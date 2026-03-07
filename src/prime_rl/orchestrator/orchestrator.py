@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import tomli_w
 
-from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.advantage import compute_advantages, compute_per_agent_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
@@ -506,6 +506,11 @@ async def orchestrate(config: OrchestratorConfig):
             config.advantage,
         )
 
+        # For multi-agent environments, compute per-agent advantages and set them
+        # on trajectory steps. This overrides the rollout-level advantage for each
+        # agent's steps with an advantage relative to that agent's baseline reward.
+        compute_per_agent_advantages(train_rollouts)
+
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
@@ -543,8 +548,11 @@ async def orchestrate(config: OrchestratorConfig):
             if samples is not None:
                 rollout_samples_per_rollout.append(len(samples))
                 for sample in samples:
-                    sample.advantage = advantage
-                    sample.reward = rollout["reward"]
+                    # Use sample-level values if set (multi-agent), else rollout-level
+                    if sample.advantage is None:
+                        sample.advantage = advantage
+                    if sample.reward is None:
+                        sample.reward = rollout["reward"]
                     sample_decode_tokens = sum(sample.completion_mask)
                     sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                     rollout_decode_tokens += sample_decode_tokens
