@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+from typing import Optional
+
+from prime_rl_configs.inference import InferenceConfig
+from prime_rl_configs.orchestrator import OrchestratorConfig
+from prime_rl_configs.trainer import TrainerConfig
+
+
+def validate_shared_ckpt_config(
+    trainer: TrainerConfig,
+    orchestrator: OrchestratorConfig,
+) -> None:
+    if trainer.ckpt and not orchestrator.ckpt:
+        raise ValueError(
+            "Trainer checkpoint config is specified, but orchestrator checkpoint config is not. Please setup checkpointing on both for checkpointing to work properly."
+        )
+    if orchestrator.ckpt and not trainer.ckpt:
+        raise ValueError(
+            "Orchestrator checkpoint config is specified, but trainer checkpoint config is not. Please setup checkpointing on both for checkpointing to work properly."
+        )
+    if trainer.ckpt and orchestrator.ckpt and trainer.ckpt.interval != orchestrator.ckpt.interval:
+        raise ValueError(
+            f"Trainer checkpoint interval ({trainer.ckpt.interval}) and orchestrator checkpoint interval ({orchestrator.ckpt.interval}) are not the same. Please specify the same checkpoint interval for both."
+        )
+    if trainer.ckpt and orchestrator.ckpt and trainer.ckpt.resume_step != orchestrator.ckpt.resume_step:
+        raise ValueError(
+            f"Trainer checkpoint resume step ({trainer.ckpt.resume_step}) and orchestrator checkpoint resume step ({orchestrator.ckpt.resume_step}) are not the same. Please specify the same checkpoint resume step for both."
+        )
+
+
+def validate_shared_model_name(
+    trainer: TrainerConfig,
+    orchestrator: OrchestratorConfig,
+    inference: Optional[InferenceConfig] = None,
+) -> None:
+    if trainer.model.name.startswith("Jackmin108/"):  # The TT MoE models will have a different name on the orchestrator
+        return
+    if trainer.model.name != orchestrator.model.name:
+        raise ValueError(
+            f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
+        )
+
+    if inference and inference.model.name != orchestrator.model.name:
+        raise ValueError(
+            f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}. Please specify the same model name for both."
+        )
+
+
+def validate_shared_output_dir(
+    trainer: TrainerConfig,
+    orchestrator: OrchestratorConfig,
+) -> None:
+    if trainer.output_dir != orchestrator.output_dir.parent:
+        raise ValueError(
+            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory parent ({orchestrator.output_dir.parent}) are not the same. Please specify the same outputs directory for both."
+        )
+
+
+def validate_shared_wandb_config(
+    trainer: TrainerConfig,
+    orchestrator: OrchestratorConfig,
+) -> None:
+    if trainer.wandb and not orchestrator.wandb:
+        raise ValueError(
+            "Trainer W&B config is specified, but orchestrator W&B config is not. "
+            "This means only trainer metrics will be logged. Please specify [orchestrator.wandb] to log orchestrator metrics as well, "
+            "or use [wandb] to configure both at once."
+        )
+    if orchestrator.wandb and not trainer.wandb:
+        raise ValueError(
+            "Orchestrator W&B config is specified, but trainer W&B config is not. "
+            "This means only orchestrator metrics will be logged. Please specify [trainer.wandb] to log trainer metrics as well, "
+            "or use [wandb] to configure both at once."
+        )
+    if trainer.wandb and orchestrator.wandb:
+        if trainer.wandb.project != orchestrator.wandb.project:
+            raise ValueError(
+                f"Trainer W&B project ({trainer.wandb.project}) and orchestrator W&B project ({orchestrator.wandb.project}) are not the same. Please specify the same W&B project for both."
+            )
+
+
+def validate_shared_max_steps(
+    trainer: TrainerConfig,
+    orchestrator: OrchestratorConfig,
+) -> None:
+    if trainer.max_steps != orchestrator.max_steps:
+        raise ValueError(
+            f"Trainer max steps ({trainer.max_steps}) and orchestrator max steps ({orchestrator.max_steps}) are not the same. Please specify the same max steps for both."
+        )
+
+
+def validate_shared_max_async_level(
+    trainer: TrainerConfig,
+    orchestrator: OrchestratorConfig,
+) -> None:
+    if trainer.max_async_level != orchestrator.max_async_level:
+        raise ValueError(
+            f"Trainer max async level ({trainer.max_async_level}) and orchestrator max async level ({orchestrator.max_async_level}) are not the same. Please specify the same max async level for both."
+        )
+
+
+def validate_shared_weight_broadcast(
+    trainer: TrainerConfig,
+    orchestrator: OrchestratorConfig,
+    inference: Optional[InferenceConfig] = None,
+) -> None:
+    if (
+        inference
+        and trainer.weight_broadcast.type != orchestrator.weight_broadcast.type != inference.weight_broadcast.type
+    ):
+        raise ValueError(
+            f"Inference weight broadcast type ({inference.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
+        )
+    elif trainer.weight_broadcast.type != orchestrator.weight_broadcast.type:
+        raise ValueError(
+            f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
+        )

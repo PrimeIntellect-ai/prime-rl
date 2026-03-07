@@ -24,8 +24,8 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`"""
-    config_files = list(Path("configs").rglob("*.toml"))
+    """Any TOML file inside `configs/` or `examples/`, excluding package metadata."""
+    config_files = [f for f in Path("configs").rglob("*.toml") if f.name != "pyproject.toml"]
     example_files = list(Path("examples").rglob("*.toml"))
 
     return config_files + example_files
