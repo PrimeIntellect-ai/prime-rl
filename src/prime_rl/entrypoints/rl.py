@@ -541,6 +541,18 @@ def rl_local(config: RLConfig):
         config.trainer.pack_full_step = True
         config.trainer.max_concurrent_runs = len(actor_models)
 
+        # Create per-actor run dirs so trainer finds them immediately at startup
+        for actor_id in actor_models:
+            run_name = f"run_{actor_id}"
+            control_dir = config.output_dir / run_name / "control"
+            control_dir.mkdir(parents=True, exist_ok=True)
+            actor_orch_config = {
+                "model": {"lora": {"name": run_name}},
+                "optim": {"lr": config.orchestrator.optim.lr},
+            }
+            with open(control_dir / "orch.toml", "wb") as f:
+                tomli_w.dump(actor_orch_config, f)
+
     if mode == "multi_model":
         model_groups = setup_multi_model(config, actor_models, logger)
         rl_local_multi_model(config, model_groups, infer_gpu_ids, trainer_gpu_ids, logger)

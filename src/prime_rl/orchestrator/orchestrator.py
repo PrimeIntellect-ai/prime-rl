@@ -284,17 +284,6 @@ async def orchestrate(config: OrchestratorConfig):
         actor_lora_mapping = {actor_id: f"run_{actor_id}" for actor_id in actors}
         print(f"[MULTI-AGENT] Per-actor LoRA enabled: {actor_lora_mapping}")
 
-        # Create per-actor run dirs (same pattern as single-agent run_default)
-        for actor_id, run_name in actor_lora_mapping.items():
-            control_dir = config.output_dir.parent / run_name / "control"
-            control_dir.mkdir(parents=True, exist_ok=True)
-            actor_orch_config = {
-                "model": {"lora": {"name": run_name}},
-                "optim": {"lr": config.optim.lr},
-            }
-            with open(control_dir / "orch.toml", "wb") as f:
-                tomli_w.dump(actor_orch_config, f)
-
     scheduler = Scheduler(
         env=train_env_group,
         buffer=buffer,
