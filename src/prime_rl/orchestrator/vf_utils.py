@@ -13,7 +13,7 @@ from verifiers.workers import ZMQEnvClient, ZMQEnvServer
 from prime_rl.utils.logger import InterceptHandler, ProgressTracker
 
 DEFAULT_RETRIES = 0
-REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
+REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args", "agent_rewards"]
 DEFAULT_STATE_COLUMNS = []
 
 
