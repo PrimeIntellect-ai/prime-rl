@@ -28,7 +28,7 @@ from prime_rl.inference.vllm.server import resolve_tool_call_parser
         ("Qwen/Qwen3-4B-Instruct-2507", "hermes"),
         ("Qwen/Qwen3-Coder-480B-A35B-Instruct", "hermes"),
         ("Qwen/Qwen3-Next-80B-A3B-Instruct", "hermes"),
-        ("Qwen/Qwen3.5-397B-A17B", "hermes"),
+        ("Qwen/Qwen3.5-397B-A17B", "qwen3_coder"),
     ],
 )
 def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):

@@ -22,6 +22,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # Teacher logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when a teacher model is configured
     teacher_logprobs = training_example.teacher_logprobs
+    routed_experts = training_example.routed_experts
 
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]
@@ -32,6 +33,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures = temperatures[:seq_len]
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
+        if routed_experts is not None:
+            routed_experts = routed_experts[:seq_len]
 
     assert (
         len(input_ids)
@@ -45,6 +48,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
     if teacher_logprobs is not None:
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
+
+    if routed_experts is not None:
+        assert len(routed_experts) == len(input_ids), (
+            f"routed_experts: {len(routed_experts)}, input_ids: {len(input_ids)}"
+        )
+
     return MicroBatch(
         input_ids=input_ids,
         advantages=advantages,
@@ -53,8 +62,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         inference_logprobs=inference_logprobs,
         teacher_logprobs=teacher_logprobs,
         temperatures=temperatures,
+        routed_experts=routed_experts,
         # Multimodal fields (Qwen3-VL) - passed through without modification
         pixel_values=training_example.pixel_values,
+        pixel_values_shape=training_example.pixel_values_shape,
         image_grid_thw=training_example.image_grid_thw,
     )
 
@@ -105,6 +116,10 @@ def packed_samples_into_micro_bs(
                     if bin_content.teacher_logprobs is None:
                         bin_content.teacher_logprobs = []
                     bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
+                if sample.routed_experts is not None:
+                    if bin_content.routed_experts is None:
+                        bin_content.routed_experts = []
+                    bin_content.routed_experts.extend(sample.routed_experts)
                 bin_content.position_ids.extend(sample.position_ids)
                 bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break
@@ -148,6 +163,23 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     return micro_batch
 
 
+def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
+    """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
+    dummy = copy.deepcopy(source)
+    dummy.advantages = [0.0] * len(dummy.input_ids)
+    dummy.loss_mask = [False] * len(dummy.input_ids)
+    return dummy
+
+
+def _pad_group_for_distribution(group: list[MicroBatch], num_train_workers: int) -> list[MicroBatch]:
+    """Pad a group of micro batches so its length is divisible by num_train_workers."""
+    num_padding = -len(group) % num_train_workers
+    if num_padding > 0 and len(group) > 0:
+        dummy = _make_dummy_batch(group[0])
+        group.extend([dummy] * num_padding)
+    return group
+
+
 def prepare_batch(
     rollouts: list[TrainingSample],
     seq_len: int,
@@ -159,32 +191,34 @@ def prepare_batch(
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, seq_len], the number of samples is not fixed per micro batch.
+
+    FSDP requires all ranks to execute the same operations at each step. If one rank
+    processes a multimodal batch (triggering the vision encoder) while another processes
+    a text-only batch, the all-gather will hang. We separate micro batches by modality
+    and distribute them so that at each step index, all ranks see the same modality.
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
-    num_padding_batch = -len(micro_batches) % num_train_workers
+    # Separate by modality so each step index has uniform modality across all ranks
+    mm_batches = [b for b in micro_batches if _is_multimodal_sample(b)]
+    text_batches = [b for b in micro_batches if not _is_multimodal_sample(b)]
 
-    # because of fsdp we need to make sure that each data ran has the same number of micro batches otherwise training will hang.
-    # We create fake micro batches to fill the gap with real data but zero advantages, they would not contribute to the loss.
-    if num_train_workers > 1 and num_padding_batch > 0:
-        padded_batch = copy.deepcopy(micro_batches[0])
-        padded_batch.advantages = [0.0] * len(padded_batch.input_ids)
-        padded_batch.loss_mask = [False] * len(padded_batch.input_ids)
-        micro_batches.extend([padded_batch for _ in range(num_padding_batch)])
+    # Pad each group independently so its count is divisible by num_train_workers
+    mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers)
+    text_batches = _pad_group_for_distribution(text_batches, num_train_workers)
 
-    assert len(micro_batches) % num_train_workers == 0, (
-        "Number of micro batches is not divisible by number of data ranks"
-    )
+    # Combine: all multimodal first, then all text-only. Since each group's length is
+    # divisible by num_train_workers, the modality boundary aligns with distribution rows.
+    ordered = mm_batches + text_batches
 
-    per_gpu_micro_batches = len(micro_batches) // num_train_workers
-    batches_per_gpu = []
-    for _ in range(num_train_workers):
-        batches = []
-        for _ in range(per_gpu_micro_batches):
-            batches.append(micro_batches.pop(0))
-        batches_per_gpu.append(batches)
+    assert len(ordered) % num_train_workers == 0, "Number of micro batches is not divisible by number of data ranks"
+
+    # Distribute in strided order so each step index has the same modality across ranks
+    batches_per_gpu: list[list[MicroBatch]] = [[] for _ in range(num_train_workers)]
+    for i, batch in enumerate(ordered):
+        batches_per_gpu[i % num_train_workers].append(batch)
 
     return batches_per_gpu

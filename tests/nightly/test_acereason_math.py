@@ -1,11 +1,10 @@
-from functools import partial
 from pathlib import Path
 from typing import Callable
 
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.utils import check_mismatch_kl_in_range, check_no_error, check_number_goes_up_or_down, strip_escape_codes
+from tests.utils import check_mismatch_kl_in_range, check_no_error, check_reward_goes_up, strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -39,7 +38,6 @@ def rl_process(
     return run_process(cmd)
 
 
-check_reward_goes_up = partial(check_number_goes_up_or_down, go_up=True, pattern=r"Reward:\s*(\d+\.\d{4})")
 MISMATCH_KL_MIN = 0.0
 MISMATCH_KL_MAX = 0.0015
 

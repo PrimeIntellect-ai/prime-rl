@@ -5,7 +5,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition={{ partition }}
-#SBATCH --exclusive                 # Get the ENTIRE node exclusively
+#SBATCH --exclusive
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
 
@@ -15,7 +15,7 @@ export GPUS_PER_NODE={{ gpus_per_node }}
 
 # Paths
 export PROJECT_DIR={{ project_dir }}
-export CONFIG_DIR={{ config_dir }}
+export CONFIG_PATH={{ config_path }}
 export OUTPUT_DIR={{ output_dir }}
 mkdir -p $OUTPUT_DIR/slurm
 
@@ -74,6 +74,6 @@ srun bash -c '
         --redirects=3 \
         --local-ranks-filter=$(seq -s, 0 $((GPUS_PER_NODE - 1))) \
         -m prime_rl.trainer.sft.train \
-        @ $CONFIG_DIR/trainer.toml \
+        @ $CONFIG_PATH \
         2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${TRAIN_NODE_RANK}.log
 '

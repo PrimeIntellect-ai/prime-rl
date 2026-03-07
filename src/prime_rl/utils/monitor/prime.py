@@ -15,9 +15,9 @@ import verifiers as vf
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.shared import PrimeMonitorConfig
+from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
-from prime_rl.utils.pydantic_config import BaseSettings
 
 
 def _json(val: Any) -> str:
@@ -61,7 +61,7 @@ class PrimeMonitor(Monitor):
         config: PrimeMonitorConfig | None,
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
-        run_config: BaseSettings | None = None,
+        run_config: BaseConfig | None = None,
     ):
         self.config = config
         self.logger = get_logger()

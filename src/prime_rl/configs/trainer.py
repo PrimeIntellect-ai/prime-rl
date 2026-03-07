@@ -13,7 +13,7 @@ from prime_rl.configs.shared import (
     TransportConfig,
     WandbConfig,
 )
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.utils.config import BaseConfig
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
@@ -281,7 +281,7 @@ class ModelConfig(BaseModelConfig):
                 "Explicitly setting an integer value for this feature isn't supported for SFT training."
             ),
         ),
-    ] = "auto"
+    ] = "disabled"
 
     @model_validator(mode="before")
     @classmethod
@@ -530,68 +530,23 @@ class CheckpointConfig(BaseConfig):
     ] = False
 
 
-# -- RL trainer-specific configs --
-
-
 class DefaultLossConfig(BaseModel):
     """Config for the default loss."""
 
     type: Literal["default"] = "default"
-    ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
 
-    token_mask_high: Annotated[
-        float, Field(ge=0, description="The high threshold for token importance ratio to mask.")
-    ] = 8.0
-    token_mask_low: Annotated[
-        float, Field(ge=0, description="The low threshold for token importance ratio to mask.")
-    ] = 0.125
-    sequence_clip_high: Annotated[
-        float, Field(ge=0, description="The high threshold for sequence importance ratio to clip.")
-    ] = 10.0
-    geo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for geo importance ratio to mask.")] = (
-        10.0
-    )
-    geo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for geo importance ratio to mask.")] = 0.1
-    sequence_mask_low: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="If set, masks entire sequences when any generated token has an importance ratio below this value.",
-        ),
-    ] = 0.0
-    sequence_mask_high: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="If set, masks entire sequences when any generated token has an importance ratio above this value.",
-        ),
-    ] = 100.0
-
+    ipo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for masking tokens.")] = 0.2
+    ipo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for masking tokens.")] = 0.2
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
-    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
-
-    @model_validator(mode="after")
-    def validate_mask_bounds(self):
-        if self.token_mask_low >= self.token_mask_high:
-            raise ValueError(
-                f"token_mask_low ({self.token_mask_low}) must be less than token_mask_high ({self.token_mask_high})"
-            )
-        if self.geo_mask_low >= self.geo_mask_high:
-            raise ValueError(
-                f"geo_mask_low ({self.geo_mask_low}) must be less than geo_mask_high ({self.geo_mask_high})"
-            )
-        if self.sequence_mask_low >= self.sequence_mask_high:
-            raise ValueError(
-                f"sequence_mask_low ({self.sequence_mask_low}) must be less than sequence_mask_high ({self.sequence_mask_high})"
-            )
-        return self
+    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
 
 
 class CustomLossConfig(BaseModel):
     """Config for a custom external loss function."""
 
     type: Literal["custom"] = "custom"
+
     import_path: Annotated[str, Field(description="Import path to the loss function (e.g., 'my_module.my_loss')")]
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
@@ -646,7 +601,7 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-class TrainerConfig(BaseSettings):
+class TrainerConfig(BaseConfig):
     """Configures the RL trainer"""
 
     # The model configuration
@@ -701,6 +656,13 @@ class TrainerConfig(BaseSettings):
             description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower performance. If 0, will be fully synchronous.",
         ),
     ] = 1
+
+    enable_router_replay: Annotated[
+        bool,
+        Field(
+            description="Whether to enable router replay. If True, will return routed experts in the batch. This is only supported if `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server. This is only supported for custom models.",
+        ),
+    ] = False
 
     memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
 
@@ -822,5 +784,12 @@ class TrainerConfig(BaseSettings):
     def ep_only_with_custom_impl(self):
         if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")
+
+        return self
+
+    @model_validator(mode="after")
+    def router_replay_only_with_custom_impl(self):
+        if self.enable_router_replay and self.model.impl not in ("custom", "auto"):
+            raise ValueError("Router replay is only supported with the custom implementation or auto mode")
 
         return self
