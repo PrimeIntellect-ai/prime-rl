@@ -2,15 +2,12 @@
 # arm64 post-install fixups for Docker builds.
 set -e
 
-echo "=== building flash-attn from source (sm_100 / GB200) ==="
-# Run from /tmp so uv doesn't read pyproject.toml's [tool.uv.extra-build-variables]
-# which sets FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE and prevents CUDA kernel compilation.
-export TORCH_CUDA_ARCH_LIST="10.0"
-export MAX_JOBS=4
-export FLASH_ATTENTION_FORCE_BUILD=TRUE
-export FLASH_ATTENTION_SKIP_CUDA_BUILD=FALSE
-(cd /tmp && uv pip install --python /app/.venv/bin/python \
-    "flash-attn==2.8.3" --no-build-isolation --no-binary flash-attn --no-cache)
+echo "=== installing flash-attn for arm64 ==="
+# flash-attn setup.py has a CachedWheelsCommand that downloads a prebuilt aarch64
+# wheel from GitHub releases (includes compiled flash_attn_2_cuda.so).
+# Do NOT use --no-binary or --no-cache as those force a source build which is
+# slow and hits FLASH_ATTENTION_SKIP_CUDA_BUILD from pyproject.toml.
+uv pip install "flash-attn==2.8.3" --no-build-isolation
 
 echo "=== reinstalling flash-attn-cute (flash-attn overwrites it with a stub) ==="
 uv pip install --reinstall --no-deps \
