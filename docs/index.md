@@ -12,4 +12,5 @@ This directory maintains the documentation for PRIME-RL. It is organized into th
 - [**Benchmarking**](benchmarking.md) - Performance benchmarking and throughput measurement
 - [**Deployment**](deployment.md) - Training deployment on single-GPU, multi-GPU, and multi-node clusters
 - [**Kubernetes**](kubernetes.md) - Deploying PRIME-RL on Kubernetes with Helm
+- [**FP8 Inference**](fp8.md) - Minimal setup for FP8 quantized inference and RL overrides
 - [**Troubleshooting**](troubleshooting.md) - Common issues and their solutions
