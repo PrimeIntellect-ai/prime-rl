@@ -899,7 +899,7 @@ async def orchestrate(config: OrchestratorConfig):
         is_first_step = False
 
         # Free large per-step objects to prevent memory accumulation
-        del train_rollouts, train_examples, training_batch, vlm_cache
+        del train_rollouts, train_examples, vlm_cache
         del results_df, metrics_df, val_results_df
         gc.collect()
 
