@@ -1,4 +1,4 @@
-max_steps = 400
+max_steps = 200
 
 [wandb]
 project = "multiagent"
