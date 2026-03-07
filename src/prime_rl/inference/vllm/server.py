@@ -129,6 +129,7 @@ def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> s
 
 logger = get_logger()
 from prime_rl.inference.patches import (
+    monkey_patch_fp8_online_blockwise_quant,
     monkey_patch_hermes_tool_parser_thread_safety,
     monkey_patch_load_lora_adapter,
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
@@ -147,6 +148,8 @@ monkey_patch_load_lora_adapter()
 monkey_patch_tokenize_params_validation()
 # NOTE: Monkeypatch Hermes tool parser to fix "Already borrowed" RuntimeError under concurrent load
 monkey_patch_hermes_tool_parser_thread_safety()
+# NOTE: Monkeypatch Fp8OnlineLinearMethod to use block-wise (128x128) FP8 quantization
+monkey_patch_fp8_online_blockwise_quant()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
