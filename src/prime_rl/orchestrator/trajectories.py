@@ -1,5 +1,4 @@
 import base64
-import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -11,6 +10,14 @@ from PIL import Image
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.transport import TrainingSample
+from prime_rl.utils.chat_template import (
+    build_incremental_token_mask,
+    common_prefix_len,
+    deserialize_tool_calls,
+    normalize_messages,
+    render_messages,
+    strip_message_content,
+)
 from prime_rl.utils.logger import get_logger
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
@@ -39,69 +46,19 @@ def _align_routed_experts(
 
 
 def _common_prefix_len(a: list[int], b: list[int]) -> int:
-    max_len = min(len(a), len(b))
-    for idx in range(max_len):
-        if a[idx] != b[idx]:
-            return idx
-    return max_len
+    return common_prefix_len(a, b)
 
 
 def _normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]:
-    if messages is None:
-        return []
-    if isinstance(messages, str):
-        return [{"role": default_role, "content": messages}]
-    if isinstance(messages, dict):
-        return [dict(messages)]
-    if isinstance(messages, list):
-        normalized: list[dict[str, Any]] = []
-        for message in messages:
-            if isinstance(message, str):
-                normalized.append({"role": default_role, "content": message})
-            elif isinstance(message, dict):
-                normalized.append(dict(message))
-            else:
-                raise TypeError(f"Unsupported message type: {type(message)}")
-        return normalized
-    raise TypeError(f"Unsupported messages container type: {type(messages)}")
+    return normalize_messages(messages, default_role)
 
 
 def _deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def _deserialize_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
-        function = tool_call.get("function", {})
-        arguments = function.get("arguments")
-        if isinstance(arguments, str):
-            arguments = json.loads(arguments)
-        return {
-            **tool_call,
-            "function": {**function, "arguments": arguments},
-        }
-
-    deserialized_messages: list[dict[str, Any]] = []
-    for message in messages:
-        if "tool_calls" not in message:
-            deserialized_messages.append(dict(message))
-            continue
-
-        tool_calls = message.get("tool_calls") or []
-        deserialized_messages.append(
-            {
-                **message,
-                "tool_calls": [_deserialize_tool_call(tc) for tc in tool_calls],
-            }
-        )
-
-    return deserialized_messages
+    return deserialize_tool_calls(messages)
 
 
 def _strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def _strip(message: dict[str, Any]) -> dict[str, Any]:
-        content = message.get("content")
-        if isinstance(content, str):
-            return {**message, "content": content.strip()}
-        return message
-
-    return [_strip(message) for message in messages]
+    return strip_message_content(messages)
 
 
 def _should_add_generation_prompt(messages: list[dict[str, Any]], idx: int) -> bool:
@@ -118,12 +75,10 @@ def _render_messages(
     messages: list[dict[str, Any]],
     add_generation_prompt: bool = False,
 ) -> list[int]:
-    return list(
-        tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=add_generation_prompt,
-            return_dict=False,
-        )
+    return render_messages(
+        tokenizer,
+        messages,
+        add_generation_prompt=add_generation_prompt,
     )
 
 
@@ -146,17 +101,11 @@ def _tokenize_step_from_messages(
     )
     full_ids = _render_messages(tokenizer, all_messages)
 
-    full_mask: list[bool] = []
-    prev_ids: list[int] = []
-    for idx, message in enumerate(all_messages):
-        cur_ids = _render_messages(
-            tokenizer,
-            all_messages[: idx + 1],
-            add_generation_prompt=_should_add_generation_prompt(all_messages, idx),
-        )
-        lcp = _common_prefix_len(prev_ids, cur_ids)
-        full_mask = full_mask[:lcp] + [message.get("role") == "assistant"] * (len(cur_ids) - lcp)
-        prev_ids = cur_ids
+    full_ids, full_mask = build_incremental_token_mask(
+        tokenizer,
+        all_messages,
+        role_to_mask=lambda message: message.get("role") == "assistant",
+    )
 
     split_idx = _common_prefix_len(prompt_ids, full_ids)
 
