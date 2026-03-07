@@ -85,6 +85,7 @@ async def run_rollout(
     sampling_args: dict,
     max_retries: int = DEFAULT_RETRIES,
     state_columns: list[str] = DEFAULT_STATE_COLUMNS,
+    actor_models: dict[str, str] | None = None,
 ) -> vf.RolloutOutput:
     """
     Wrapper for vf.Environment.run_rollout().
@@ -100,6 +101,7 @@ async def run_rollout(
         sampling_args=sampling_args,
         max_retries=max_retries,
         state_columns=state_columns,
+        actor_models=actor_models,
     )
 
 
