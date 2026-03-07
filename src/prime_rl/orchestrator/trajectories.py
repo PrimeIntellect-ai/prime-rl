@@ -74,11 +74,14 @@ def interleave_rollout(
     # this field should be guaranteed because we set temperature in get_sampling_args
     temperature = output["sampling_args"]["temperature"]
 
+    def _is_step_trainable(step: vf.TrajectoryStep) -> bool:
+        return step.get("extras", {}).get("is_trainable", True)
+
     def make_sample(step: vf.TrajectoryStep) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         tokens = step["tokens"]
         assert tokens is not None
-        if has_error:
+        if has_error or not _is_step_trainable(step):
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
@@ -117,7 +120,7 @@ def interleave_rollout(
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
         sample.completion_ids.extend(completion_ids)
-        if has_error:
+        if has_error or not _is_step_trainable(step):
             sample.completion_mask.extend([False] * len(tokens["completion_mask"]))
         else:
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
