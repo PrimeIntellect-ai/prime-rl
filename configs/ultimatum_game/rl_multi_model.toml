@@ -1,0 +1,34 @@
+max_steps = 200
+
+[wandb]
+project = "multiagent"
+name = "ultimatum-game-multi-model"
+
+[deployment]
+type = "single_node"
+gpus_per_node = 4
+num_infer_gpus = 2
+num_train_gpus = 2
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 32
+temperature = 1.0
+
+[orchestrator.wandb.log_extras]
+samples = true
+interval = 10
+
+[[orchestrator.env]]
+id = "ultimatum-game"
+name = "ultimatum_game"
+
+[trainer]
+
+[inference]
+
+[inference.model]
+max_model_len = 2048

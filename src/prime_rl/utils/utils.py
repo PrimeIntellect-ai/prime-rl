@@ -308,7 +308,13 @@ def install_env(env_id: str) -> None:
     install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
     result = subprocess.run(install_cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to install environment {env_id} (stdout={result.stdout}, stderr={result.stderr})")
+        module_name = env_id.replace("-", "_")
+        try:
+            importlib.import_module(module_name)
+            logger.info(f"Environment {env_id} already importable as {module_name}, skipping install")
+            return
+        except ImportError:
+            raise RuntimeError(f"Failed to install environment {env_id} (stdout={result.stdout}, stderr={result.stderr})")
     logger.info(f"Successfully installed environment {env_id}")
 
 

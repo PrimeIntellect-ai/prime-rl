@@ -278,11 +278,12 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
         reraise=True,
     )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
-        logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
+        print(f"[LORA] Requesting load: {lora_name} from {lora_path_posix}")
         response = await admin_client.post(
             "/load_lora_adapter",
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
         )
+        print(f"[LORA] Response for {lora_name}: {response.status_code} {response.text[:200]}")
         response.raise_for_status()
 
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])

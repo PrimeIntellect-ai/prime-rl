@@ -3,6 +3,8 @@ import gc
 import multiprocessing as mp
 import random
 import time
+from collections import Counter, defaultdict
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import tomli_w
@@ -12,7 +14,7 @@ from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sa
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
-from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
+from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender, setup_multi_run_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -112,6 +114,16 @@ async def orchestrate(config: OrchestratorConfig):
             "history and the chat template has the extension property."
         )
     inference_pool = await setup_inference_pool(config.client, model_name=config.model.name, client_type=client_type)
+
+    # Setup per-actor inference pools for multi-model training
+    actor_inference_pools = None
+    if config.actor_clients:
+        actor_inference_pools = {}
+        for actor_id, actor_client_config in config.actor_clients.items():
+            actor_model = config.actor_model_names[actor_id]
+            pool = await setup_inference_pool(actor_client_config, model_name=actor_model, client_type=client_type)
+            actor_inference_pools[actor_id] = pool
+        logger.info(f"[MULTI-MODEL] Created {len(actor_inference_pools)} per-actor inference pools")
 
     # Setup teacher inference pool if configured
     if config.teacher_model:
@@ -290,6 +302,14 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             checkpoint_step = config.ckpt.resume_step
 
+    actor_lora_mapping = None
+    has_lora = config.model.lora is not None
+    actors = getattr(train_env_group.envs[0], "actors", [])
+    is_multi_agent_lora = has_lora and len(actors) > 1 and not config.actor_clients
+    if is_multi_agent_lora:
+        actor_lora_mapping = {actor_id: f"run_{actor_id}" for actor_id in actors}
+        print(f"[MULTI-AGENT] Per-actor LoRA enabled: {actor_lora_mapping}")
+
     scheduler = Scheduler(
         env=train_env_group,
         buffer=buffer,
@@ -302,16 +322,35 @@ async def orchestrate(config: OrchestratorConfig):
         lora_name=config.model.lora.name if config.model.lora else None,
         deferred_group_scoring_tasks=train_env_deferred_group_scoring_tasks,
         config=config,
+        actor_lora_mapping=actor_lora_mapping,
+        actor_inference_pools=actor_inference_pools,
     )
 
-    if checkpoint_step is not None and config.model.lora is not None:
+    if config.actor_clients:
+        scheduler.actor_run_dirs = {
+            actor_id: str(Path(run_path).relative_to(config.output_dir.parent))
+            for actor_id, run_path in config.actor_run_paths.items()
+        }
+        logger.info(f"[MULTI-MODEL] Scheduler actor_run_dirs: {scheduler.actor_run_dirs}")
+    elif actor_lora_mapping:
+        scheduler.actor_run_dirs = dict(actor_lora_mapping)
+        print(f"[MULTI-AGENT] Scheduler actor_run_dirs: {scheduler.actor_run_dirs}")
+        print(f"[MULTI-AGENT] Scheduler actor_ckpt_steps: {scheduler.actor_ckpt_steps}")
+    elif checkpoint_step is not None and config.model.lora is not None:
         assert config.model.lora.name is not None
         scheduler.model_name = config.model.lora.name
 
-    # Check health of the inference pool
-    logger.info("Waiting for inference pool to be ready")
-    await inference_pool.wait_for_ready(config.model.name)
-    logger.success("Inference pool ready")
+    # Check health of the inference pool(s)
+    if actor_inference_pools:
+        for actor_id, pool in actor_inference_pools.items():
+            actor_model = config.actor_model_names[actor_id]
+            logger.info(f"Waiting for {actor_id} inference pool to be ready ({actor_model})")
+            await pool.wait_for_ready(actor_model)
+        logger.success(f"All {len(actor_inference_pools)} per-actor inference pools ready")
+    else:
+        logger.info("Waiting for inference pool to be ready")
+        await inference_pool.wait_for_ready(config.model.name)
+        logger.success("Inference pool ready")
 
     # Check health of teacher inference server if configured
     if config.teacher_model and teacher_inference_pool:
@@ -331,7 +370,28 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
-    training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
+    actor_run_name_mapping = None
+    if config.actor_run_paths:
+        # Multi-model: route each actor's rollouts to its own trainer's run directory
+        # base_dir is the RL-level output_dir (parent of orchestrator's output_dir)
+        base_dir = config.output_dir.parent
+        actor_run_name_mapping = {}
+        run_names = set()
+        for actor_id, run_path in config.actor_run_paths.items():
+            relative = Path(run_path).relative_to(base_dir).as_posix()
+            actor_run_name_mapping[actor_id] = relative
+            run_names.add(relative)
+        training_batch_sender = setup_multi_run_training_batch_sender(
+            base_dir, list(run_names), config.rollout_transport
+        )
+    elif actor_lora_mapping:
+        multi_agent_base_dir = config.output_dir.parent
+        actor_run_names = list(actor_lora_mapping.values())
+        training_batch_sender = setup_multi_run_training_batch_sender(
+            multi_agent_base_dir, actor_run_names, config.rollout_transport
+        )
+    else:
+        training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
     # Track last online eval checkpoint step for this process
     last_eval_step = -1
@@ -450,6 +510,7 @@ async def orchestrate(config: OrchestratorConfig):
                         max_retries=eval_env_config.max_retries,
                         ckpt_step=ckpt_step,
                         step=progress.step,
+                        actor_models=scheduler.actor_model_names or None,
                     )
                     for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
                 ]
@@ -493,18 +554,24 @@ async def orchestrate(config: OrchestratorConfig):
         # Apply rollout filters (zeros reward/mask for degenerate generations)
         filter_metrics = apply_filters(rollout_filters, train_rollouts)
 
-        # Compute advantages
+        # Compute advantages (use pre-computed if available from env)
         example_ids = [r["example_id"] for r in train_rollouts]
         num_rollouts = len(train_rollouts)
         num_unique_examples = len(set(example_ids))
         rewards = [r["reward"] for r in train_rollouts]
-        completion_lens = [get_completion_len(r) for r in train_rollouts]
-        advantages = compute_advantages(
-            rewards,
-            completion_lens,
-            config.rollouts_per_example,
-            config.advantage,
-        )
+        precomputed = [r.get("advantage") for r in train_rollouts]
+        if all(a is not None for a in precomputed):
+            advantages = precomputed
+            nonzero = [a for a in precomputed if a != 0.0]
+            print(f"[ADVANTAGE PASSTHROUGH] {len(precomputed)} total, {len(nonzero)} non-zero, sample: {precomputed[:8]}")
+        else:
+            completion_lens = [get_completion_len(r) for r in train_rollouts]
+            advantages = compute_advantages(
+                rewards,
+                completion_lens,
+                config.rollouts_per_example,
+                config.advantage,
+            )
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
@@ -532,6 +599,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Collect results and assign advantages
         train_examples: list[TrainingSample] = []
+        sample_actor_ids: list[str] = []  # parallel list tracking actor_id per sample
         rollout_prefill_lens: list[int] = []
         rollout_decode_lens: list[int] = []
         rollout_samples_per_rollout: list[int] = []
@@ -540,6 +608,9 @@ async def orchestrate(config: OrchestratorConfig):
         for rollout, advantage, samples in zip(train_rollouts, advantages, results):
             rollout_prefill_tokens = 0
             rollout_decode_tokens = 0
+            actor_id = rollout.get("actor_id", "default")
+            if actor_id != "default":
+                print(f"[MULTI-AGENT] Rollout actor_id='{actor_id}', reward={rollout['reward']:.4f}")
             if samples is not None:
                 rollout_samples_per_rollout.append(len(samples))
                 for sample in samples:
@@ -550,6 +621,7 @@ async def orchestrate(config: OrchestratorConfig):
                     rollout_decode_tokens += sample_decode_tokens
                     rollout_prefill_tokens += sample_prefill_tokens
                     train_examples.append(sample)
+                    sample_actor_ids.append(actor_id)
             else:
                 rollout_samples_per_rollout.append(0)
             rollout_prefill_lens.append(rollout_prefill_tokens)
@@ -578,31 +650,67 @@ async def orchestrate(config: OrchestratorConfig):
             teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
             logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
 
-        training_batch = TrainingBatch(
-            examples=train_examples,
-            step=progress.step,
-        )
+        # Send training batch(es) — split by actor for multi-agent LoRA or multi-model
+        if actor_lora_mapping or actor_run_name_mapping:
+            actor_examples: dict[str, list[TrainingSample]] = defaultdict(list)
+            for sample, actor_id in zip(train_examples, sample_actor_ids):
+                actor_examples[actor_id].append(sample)
 
-        # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
-        if len(training_batch.examples) == 0:
-            empty_batch_retries += 1
-            if empty_batch_retries >= max_empty_batch_retries:
-                raise RuntimeError(
-                    f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
+            # Use the appropriate actor -> run_name mapping
+            routing_map = actor_run_name_mapping or actor_lora_mapping
+            total_sent = 0
+            print(f"[MULTI-AGENT] Routing batch: actor_ids seen = {dict(Counter(sample_actor_ids))}")
+            for actor_id, run_name in routing_map.items():
+                examples = actor_examples.get(actor_id, [])
+                if examples:
+                    actor_batch = TrainingBatch(examples=examples, step=progress.step)
+                    training_batch_sender.send_to_run(run_name, actor_batch)
+                    total_sent += len(examples)
+                    print(f"[MULTI-AGENT] Sent {len(examples)} samples -> {run_name} (actor '{actor_id}')")
+                else:
+                    print(f"[MULTI-AGENT] WARNING: No samples for actor '{actor_id}' in this batch")
+
+            if total_sent == 0:
+                empty_batch_retries += 1
+                if empty_batch_retries >= max_empty_batch_retries:
+                    raise RuntimeError(
+                        f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
+                    )
+                backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)
+                logger.warning(
+                    f"Step {progress.step} produced 0 training samples "
+                    f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
                 )
-            backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
-            logger.warning(
-                f"Step {progress.step} produced 0 training samples "
-                f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
+                val_task.cancel()
+                await asyncio.sleep(backoff)
+                continue
+            empty_batch_retries = 0
+        else:
+            training_batch = TrainingBatch(
+                examples=train_examples,
+                step=progress.step,
             )
-            # Cancel validation task to avoid accumulating background tasks
-            val_task.cancel()
-            await asyncio.sleep(backoff)
-            continue
 
-        # Reset retry counter on successful batch
-        empty_batch_retries = 0
-        training_batch_sender.send(training_batch)
+            # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
+            if len(training_batch.examples) == 0:
+                empty_batch_retries += 1
+                if empty_batch_retries >= max_empty_batch_retries:
+                    raise RuntimeError(
+                        f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
+                    )
+                backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
+                logger.warning(
+                    f"Step {progress.step} produced 0 training samples "
+                    f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
+                )
+                # Cancel validation task to avoid accumulating background tasks
+                val_task.cancel()
+                await asyncio.sleep(backoff)
+                continue
+
+            # Reset retry counter on successful batch
+            empty_batch_retries = 0
+            training_batch_sender.send(training_batch)
 
         # Await and process val results
         await val_task
@@ -791,7 +899,7 @@ async def orchestrate(config: OrchestratorConfig):
         is_first_step = False
 
         # Free large per-step objects to prevent memory accumulation
-        del train_rollouts, train_examples, training_batch, vlm_cache
+        del train_rollouts, train_examples, vlm_cache
         del results_df, metrics_df, val_results_df
         gc.collect()
 
@@ -816,6 +924,7 @@ async def orchestrate(config: OrchestratorConfig):
                     max_retries=eval_env_config.max_retries,
                     ckpt_step=ckpt_step,
                     step=progress.step,
+                    actor_models=scheduler.actor_model_names or None,
                 )
                 for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
             ]

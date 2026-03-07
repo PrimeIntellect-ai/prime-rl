@@ -1,0 +1,28 @@
+max_steps = 200
+
+[wandb]
+project = "multiagent"
+name = "ultimatum-game-shared"
+
+[model]
+name = "Qwen/Qwen3-1.7B"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 32
+temperature = 1.0
+
+[orchestrator.wandb.log_extras]
+samples = true
+interval = 10
+
+[[orchestrator.env]]
+id = "ultimatum-game-shared"
+name = "ultimatum_game_shared"
+
+[trainer]
+
+[inference]

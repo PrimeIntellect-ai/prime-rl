@@ -707,6 +707,37 @@ class OrchestratorConfig(BaseConfig):
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
 
+    actor_clients: Annotated[
+        dict[str, ClientConfig] | None,
+        Field(
+            description="Per-actor inference client configs for multi-model training. Auto-populated by entrypoint.",
+        ),
+    ] = None
+
+    actor_run_paths: Annotated[
+        dict[str, str] | None,
+        Field(
+            description="Per-actor run directory paths for multi-model training. "
+            "Maps actor_id to the run directory (e.g. outputs/model_0/run_default). Auto-populated by entrypoint.",
+        ),
+    ] = None
+
+    actor_model_names: Annotated[
+        dict[str, str] | None,
+        Field(
+            description="Per-actor model names for multi-model training. "
+            "Maps actor_id to model name. Auto-populated by entrypoint.",
+        ),
+    ] = None
+
+    actor_lora_names: Annotated[
+        dict[str, str] | None,
+        Field(
+            description="Per-actor LoRA adapter names for weight updates. "
+            "Maps actor_id to LoRA adapter name. Auto-populated by entrypoint.",
+        ),
+    ] = None
+
     rollout_transport: TransportConfig = FileSystemTransportConfig()
 
     output_dir: Annotated[
