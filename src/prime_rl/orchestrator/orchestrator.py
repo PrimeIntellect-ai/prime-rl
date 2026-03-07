@@ -7,7 +7,7 @@ import time
 import tomli_w
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
-from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.advantage import compute_advantages, compute_per_agent_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
@@ -427,6 +427,7 @@ async def orchestrate(config: OrchestratorConfig):
             num_rollouts = len(train_rollouts)
             num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
             compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
+            compute_per_agent_advantages(train_rollouts)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
             apply_filters(rollout_filters, train_rollouts)
