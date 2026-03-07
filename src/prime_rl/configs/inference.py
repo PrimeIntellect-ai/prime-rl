@@ -265,6 +265,13 @@ class InferenceConfig(BaseConfig):
         ),
     ] = False
 
+    attention_backend: Annotated[
+        str | None,
+        Field(
+            description="Attention backend to use (e.g. FLASH_ATTN, FLASHINFER, TRITON_ATTN). If None, vLLM selects automatically.",
+        ),
+    ] = None
+
     vllm_extra: Annotated[
         dict[str, Any],
         Field(
@@ -371,6 +378,7 @@ class InferenceConfig(BaseConfig):
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",
             "seed": "seed",
+            "attention_backend": "attention_backend",
         }
 
         for config_key, vllm_key in to_vllm.items():
