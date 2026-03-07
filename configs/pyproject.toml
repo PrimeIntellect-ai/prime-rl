@@ -1,0 +1,28 @@
+[project]
+name = "prime-rl-configs"
+version = "0.4.0"
+description = "Lightweight config classes for prime-rl (no heavy deps)"
+requires-python = "~=3.12.0"
+dependencies = [
+    "pydantic>=1.10.13",
+    "pydantic-config",
+]
+
+[project.optional-dependencies]
+cli = [
+    "tomli>=2.2.1",
+    "tomli-w>=1.2.0",
+]
+
+[tool.uv.sources]
+pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prime_rl_configs"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
