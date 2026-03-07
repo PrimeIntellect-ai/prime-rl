@@ -182,8 +182,11 @@ def setup_multi_model(
             run_dir = group_dir / "run_default"
             control_dir = run_dir / "control"
             control_dir.mkdir(parents=True, exist_ok=True)
+            model_dict = {"name": model_name}
+            if has_lora:
+                model_dict["lora"] = {"name": "run_default"}
             actor_orch_config = {
-                "model": {"name": model_name},
+                "model": model_dict,
                 "optim": {"lr": config.orchestrator.optim.lr},
             }
             with open(control_dir / "orch.toml", "wb") as f:
@@ -192,7 +195,7 @@ def setup_multi_model(
             for actor_id in actors:
                 actor_run_paths[actor_id] = str(run_dir)
                 if has_lora:
-                    actor_lora_names[actor_id] = config.orchestrator.model.lora.name
+                    actor_lora_names[actor_id] = "run_default"
 
             group = ModelGroup(
                 index=i,
