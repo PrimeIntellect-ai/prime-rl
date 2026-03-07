@@ -29,4 +29,6 @@ name = "ultimatum_game"
 [trainer]
 
 [inference]
+
+[inference.model]
 max_model_len = 2048

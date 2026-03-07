@@ -30,4 +30,6 @@ name = "ultimatum_game"
 rank = 32
 
 [inference]
+
+[inference.model]
 max_model_len = 2048
