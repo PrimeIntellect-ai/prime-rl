@@ -2,10 +2,13 @@ max_steps = 400
 
 [wandb]
 project = "multiagent"
-name = "ultimatum-game-lora"
+name = "ultimatum-game-multi-model-lora"
 
-[model]
-name = "Qwen/Qwen3-1.7B"
+[deployment]
+type = "single_node"
+gpus_per_node = 4
+num_infer_gpus = 2
+num_train_gpus = 2
 
 [orchestrator]
 batch_size = 128
@@ -20,13 +23,10 @@ samples = true
 interval = 10
 
 [[orchestrator.env]]
-id = "ultimatum-game-shared"
-name = "ultimatum_game_shared"
-
-[trainer]
+id = "ultimatum-game"
+name = "ultimatum_game"
 
 [trainer.model.lora]
 rank = 32
 
 [inference]
-enable_lora = true

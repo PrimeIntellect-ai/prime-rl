@@ -339,10 +339,7 @@ class RLConfig(BaseSettings):
     def auto_setup_output_dir(self):
         """Auto-setup shared output directory for trainer and orchestrator."""
         self.trainer.output_dir = self.output_dir
-        if self.orchestrator.multi_agent_lora:
-            self.orchestrator.output_dir = self.output_dir / "orchestrator"
-        else:
-            self.orchestrator.output_dir = self.output_dir / "run_default"
+        self.orchestrator.output_dir = self.output_dir / "run_default"
 
         validate_shared_output_dir(self.trainer, self.orchestrator)
 
@@ -476,14 +473,6 @@ class RLConfig(BaseSettings):
                 f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
                 f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
             )
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_pack_full_step(self):
-        """Auto-enable pack_full_step for multi-agent LoRA (single orchestrator, multiple actors)."""
-        if self.orchestrator.multi_agent_lora:
-            self.trainer.pack_full_step = True
 
         return self
 

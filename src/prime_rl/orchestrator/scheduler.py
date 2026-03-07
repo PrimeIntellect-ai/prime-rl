@@ -56,6 +56,7 @@ class Scheduler:
         lora_name: str | None = None,
         output_dir: Path | None = None,
         actor_lora_mapping: dict[str, str] | None = None,
+        actor_inference_pools: dict[str, InferencePool] | None = None,
     ):
         self.logger = get_logger()
         if tasks_per_minute is not None:
@@ -83,11 +84,16 @@ class Scheduler:
         # Inference pool - used for admin operations (adapter sync) and metrics
         self.inference_pool = inference_pool
 
+        # Multi-model: per-actor inference pools
+        self.actor_inference_pools = actor_inference_pools or {}
+
         # Multi-agent LoRA: per-actor adapter names and weight tracking
         self.actor_lora_mapping = actor_lora_mapping or {}
         self.actor_run_dirs: dict[str, str] = {}
-        self.actor_ckpt_steps: dict[str, int] = {actor: 0 for actor in self.actor_lora_mapping}
-        # Starts empty (base model), populated with LoRA names after first weight broadcast
+        self.actor_ckpt_steps: dict[str, int] = {
+            actor: 0 for actor in (self.actor_lora_mapping or self.actor_inference_pools)
+        }
+        # Starts empty (base model), populated with LoRA/model names after first weight broadcast
         self.actor_model_names: dict[str, str] = {}
 
         # Track in-flight requests: task -> info
@@ -138,10 +144,14 @@ class Scheduler:
 
     async def _select_least_loaded_client(self) -> vf.ClientConfig:
         """Select the client with the fewest in-flight tasks."""
-        clients = self.inference_pool.clients
-        while not clients:
+        while True:
+            if self.actor_inference_pools:
+                clients = [c for pool in self.actor_inference_pools.values() for c in pool.clients]
+            else:
+                clients = self.inference_pool.clients
+            if clients:
+                break
             await asyncio.sleep(1)
-            clients = self.inference_pool.clients
         inflight_by_url = Counter(info.client_config.api_base_url for info in self.inflight_group_rollouts.values())
         return min(clients, key=lambda c: inflight_by_url[c.api_base_url])
 
@@ -173,6 +183,9 @@ class Scheduler:
 
     async def update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
+        if self.actor_inference_pools:
+            await self._update_policy_multi_model()
+            return
         if self.actor_lora_mapping:
             print(f"[MULTI-AGENT] update_policy checking actors: {list(self.actor_lora_mapping.keys())}")
             await self._update_policy_multi_actor()
@@ -301,6 +314,105 @@ class Scheduler:
                 print(f"[MULTI-AGENT] Loaded LoRA '{lora_name}' in {time.perf_counter() - load_start:.2f}s")
                 self.actor_ckpt_steps[actor_id] = latest
                 self.actor_model_names[actor_id] = lora_name
+
+        self.update_weights_time = time.perf_counter() - update_weights_start_time
+        self.ckpt_step = min(self.actor_ckpt_steps.values())
+        self.checkpoint_ready.set()
+
+        # Cancel old off-policy rollouts
+        tasks_to_remove = []
+        tasks_to_update = []
+        for task, info in self.inflight_group_rollouts.items():
+            if info.off_policy_steps > self.max_off_policy_steps:
+                if not task.done():
+                    task.cancel()
+                tasks_to_remove.append((task, info.client_config))
+            else:
+                tasks_to_update.append((task, info.off_policy_steps + 1, info.client_config))
+        for task, _ in tasks_to_remove:
+            self.inflight_group_rollouts.pop(task, None)
+        self.cancelled_rollouts_count += len(tasks_to_remove)
+        for task, off_policy_steps, client_config in tasks_to_update:
+            if task in self.inflight_group_rollouts:
+                self.inflight_group_rollouts[task] = InflightRolloutInfo(
+                    off_policy_steps=off_policy_steps, client_config=client_config
+                )
+
+        if len(tasks_to_remove) > 0:
+            self.logger.warning(
+                f"Cancelled {len(tasks_to_remove)} old rollout requests (will refill naturally). "
+                f"Consider increasing max_off_policy_steps to avoid this."
+            )
+
+    async def _update_policy_multi_model(self):
+        """Check each actor's broadcast directory for new weights and update per-actor inference pools.
+
+        Each actor has its own inference pool and trainer. Supports both full model replacement
+        and per-model LoRA adapters (when trainer.model.lora is configured).
+        """
+        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
+
+        # Find the latest broadcast step across all actors
+        latest_actor_steps = {}
+        for actor_id in self.actor_inference_pools:
+            run_dir_name = self.actor_run_dirs[actor_id]
+            actor_broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_dir_name)
+            latest_actor_steps[actor_id] = get_latest_ckpt_step(actor_broadcast_dir) or 0
+
+        latest_ckpt_step = min(latest_actor_steps.values()) if latest_actor_steps else 0
+        next_ckpt_step = (
+            async_away_ckpt_step if self.strict_async_level else max(async_away_ckpt_step, latest_ckpt_step)
+        )
+
+        if next_ckpt_step <= self.ckpt_step:
+            return
+
+        if next_ckpt_step == async_away_ckpt_step:
+            self.logger.info(
+                f"[MULTI-MODEL] Pausing: waiting for trainers to reach step {next_ckpt_step}"
+            )
+            self.checkpoint_ready.clear()
+            wait_start = time.perf_counter()
+            for actor_id in self.actor_inference_pools:
+                run_dir_name = self.actor_run_dirs[actor_id]
+                actor_broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_dir_name)
+                stable_path = get_step_path(actor_broadcast_dir, next_ckpt_step) / "STABLE"
+                await wait_for_path(stable_path)
+            self.wait_for_ckpt_time = time.perf_counter() - wait_start
+            self.logger.info(
+                f"[MULTI-MODEL] Resumed: trainers reached step {next_ckpt_step} "
+                f"(waited {self.wait_for_ckpt_time:.2f}s)"
+            )
+
+        self.logger.debug(
+            f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
+        )
+
+        # Update weights for each actor's inference pool
+        update_weights_start_time = time.perf_counter()
+        for actor_id, pool in self.actor_inference_pools.items():
+            run_dir_name = self.actor_run_dirs[actor_id]
+            actor_broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_dir_name)
+            latest = get_latest_ckpt_step(actor_broadcast_dir) or 0
+
+            if latest > self.actor_ckpt_steps[actor_id]:
+                weights_path = get_step_path(actor_broadcast_dir, latest)
+                self.logger.debug(
+                    f"[MULTI-MODEL] Updating {actor_id} weights: "
+                    f"step {self.actor_ckpt_steps[actor_id]} -> {latest}"
+                )
+                if self.config.actor_lora_names:
+                    lora_name = self.config.actor_lora_names.get(actor_id)
+                elif self.config.model.lora:
+                    lora_name = self.config.model.lora.name
+                else:
+                    lora_name = None
+                await pool.update_weights(weights_path, lora_name=lora_name, step=latest)
+                self.actor_ckpt_steps[actor_id] = latest
+                if lora_name:
+                    self.actor_model_names[actor_id] = lora_name
+                else:
+                    self.actor_model_names[actor_id] = self.config.actor_model_names[actor_id]
 
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.ckpt_step = min(self.actor_ckpt_steps.values())

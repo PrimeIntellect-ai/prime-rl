@@ -112,6 +112,16 @@ async def orchestrate(config: OrchestratorConfig):
         )
     inference_pool = await setup_inference_pool(config.client, model_name=config.model.name, client_type=client_type)
 
+    # Setup per-actor inference pools for multi-model training
+    actor_inference_pools = None
+    if config.actor_clients:
+        actor_inference_pools = {}
+        for actor_id, actor_client_config in config.actor_clients.items():
+            actor_model = config.actor_model_names[actor_id]
+            pool = await setup_inference_pool(actor_client_config, model_name=actor_model, client_type=client_type)
+            actor_inference_pools[actor_id] = pool
+        logger.info(f"[MULTI-MODEL] Created {len(actor_inference_pools)} per-actor inference pools")
+
     # Setup teacher inference pool if configured
     if config.teacher_model:
         logger.info(
@@ -266,8 +276,10 @@ async def orchestrate(config: OrchestratorConfig):
             checkpoint_step = config.ckpt.resume_step
 
     actor_lora_mapping = None
-    if config.multi_agent_lora:
-        actors = train_env_group.envs[0].actors
+    has_lora = config.model.lora is not None
+    actors = getattr(train_env_group.envs[0], "actors", [])
+    is_multi_agent_lora = has_lora and len(actors) > 1 and not config.actor_clients
+    if is_multi_agent_lora:
         actor_lora_mapping = {actor_id: f"run_{actor_id}" for actor_id in actors}
         print(f"[MULTI-AGENT] Per-actor LoRA enabled: {actor_lora_mapping}")
 
@@ -295,9 +307,16 @@ async def orchestrate(config: OrchestratorConfig):
         output_dir=config.output_dir,
         config=config,
         actor_lora_mapping=actor_lora_mapping,
+        actor_inference_pools=actor_inference_pools,
     )
 
-    if config.multi_agent_lora:
+    if config.actor_clients:
+        scheduler.actor_run_dirs = {
+            actor_id: str(Path(run_path).relative_to(config.output_dir.parent))
+            for actor_id, run_path in config.actor_run_paths.items()
+        }
+        logger.info(f"[MULTI-MODEL] Scheduler actor_run_dirs: {scheduler.actor_run_dirs}")
+    elif actor_lora_mapping:
         scheduler.actor_run_dirs = dict(actor_lora_mapping)
         print(f"[MULTI-AGENT] Scheduler actor_run_dirs: {scheduler.actor_run_dirs}")
         print(f"[MULTI-AGENT] Scheduler actor_ckpt_steps: {scheduler.actor_ckpt_steps}")
@@ -305,10 +324,17 @@ async def orchestrate(config: OrchestratorConfig):
         assert config.model.lora.name is not None
         scheduler.model_name = config.model.lora.name
 
-    # Check health of the inference pool
-    logger.info("Waiting for inference pool to be ready")
-    await inference_pool.wait_for_ready(config.model.name)
-    logger.success("Inference pool ready")
+    # Check health of the inference pool(s)
+    if actor_inference_pools:
+        for actor_id, pool in actor_inference_pools.items():
+            actor_model = config.actor_model_names[actor_id]
+            logger.info(f"Waiting for {actor_id} inference pool to be ready ({actor_model})")
+            await pool.wait_for_ready(actor_model)
+        logger.success(f"All {len(actor_inference_pools)} per-actor inference pools ready")
+    else:
+        logger.info("Waiting for inference pool to be ready")
+        await inference_pool.wait_for_ready(config.model.name)
+        logger.success("Inference pool ready")
 
     # Check health of teacher inference server if configured
     if config.teacher_model and teacher_inference_pool:
@@ -328,7 +354,21 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
-    if config.multi_agent_lora:
+    actor_run_name_mapping = None
+    if config.actor_run_paths:
+        # Multi-model: route each actor's rollouts to its own trainer's run directory
+        # base_dir is the RL-level output_dir (parent of orchestrator's output_dir)
+        base_dir = config.output_dir.parent
+        actor_run_name_mapping = {}
+        run_names = set()
+        for actor_id, run_path in config.actor_run_paths.items():
+            relative = Path(run_path).relative_to(base_dir).as_posix()
+            actor_run_name_mapping[actor_id] = relative
+            run_names.add(relative)
+        training_batch_sender = setup_multi_run_training_batch_sender(
+            base_dir, list(run_names), config.rollout_transport
+        )
+    elif actor_lora_mapping:
         multi_agent_base_dir = config.output_dir.parent
         actor_run_names = list(actor_lora_mapping.values())
         training_batch_sender = setup_multi_run_training_batch_sender(
@@ -584,15 +624,17 @@ async def orchestrate(config: OrchestratorConfig):
             teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
             logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
 
-        # Send training batch(es) — split by actor for multi-agent LoRA
-        if config.multi_agent_lora:
+        # Send training batch(es) — split by actor for multi-agent LoRA or multi-model
+        if actor_lora_mapping or actor_run_name_mapping:
             actor_examples: dict[str, list[TrainingSample]] = defaultdict(list)
             for sample, actor_id in zip(train_examples, sample_actor_ids):
                 actor_examples[actor_id].append(sample)
 
+            # Use the appropriate actor -> run_name mapping
+            routing_map = actor_run_name_mapping or actor_lora_mapping
             total_sent = 0
             print(f"[MULTI-AGENT] Routing batch: actor_ids seen = {dict(Counter(sample_actor_ids))}")
-            for actor_id, run_name in actor_lora_mapping.items():
+            for actor_id, run_name in routing_map.items():
                 examples = actor_examples.get(actor_id, [])
                 if examples:
                     actor_batch = TrainingBatch(examples=examples, step=progress.step)

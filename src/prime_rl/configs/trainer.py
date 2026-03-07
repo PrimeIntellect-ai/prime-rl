@@ -742,7 +742,7 @@ class TrainerConfig(BaseSettings):
         Field(
             description="When True, the packer consumes all samples from one orchestrator step in a single training step "
             "instead of chunking by seq_len. This gives 1:1 trainer-to-orchestrator step ratio. "
-            "Auto-set when multi_agent_lora is configured.",
+            "Auto-set for multi-agent LoRA mode (multiple actors with same model + LoRA).",
         ),
     ] = False
 
