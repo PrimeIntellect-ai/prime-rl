@@ -229,7 +229,7 @@ def _decode_b64_image(b64_data: str) -> Image.Image:
 _PARALLEL_DECODE_THRESHOLD = 4
 
 
-_IMAGE_STRIPPED_PLACEHOLDER = "[image preprocessed]"
+_IMAGE_STRIPPED_PLACEHOLDER = "[preprocessed image]"
 
 
 def strip_base64_images(examples: list[tuple[int, vf.RolloutOutput]]) -> None:
