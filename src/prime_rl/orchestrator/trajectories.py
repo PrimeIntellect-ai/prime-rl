@@ -315,9 +315,14 @@ def interleave_rollout(
             return None
         prepared_steps.append(prepared)
 
-    def make_sample(tokens: dict[str, Any]) -> TrainingSample:
+    def _is_step_trainable(step: vf.TrajectoryStep) -> bool:
+        return step.get("extras", {}).get("is_trainable", True)
+
+    def make_sample(step_idx: int) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
-        if has_error:
+        step = trajectory[step_idx]
+        tokens = prepared_steps[step_idx]
+        if has_error or not _is_step_trainable(step):
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
@@ -345,6 +350,7 @@ def interleave_rollout(
 
     def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
+        step = trajectory[step_idx]
         tokens = prepared_steps[step_idx]
 
         # Extend with new prompt tokens (mask=False, no gradient)
@@ -357,7 +363,7 @@ def interleave_rollout(
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
         sample.completion_ids.extend(completion_ids)
-        if has_error:
+        if has_error or not _is_step_trainable(step):
             sample.completion_mask.extend([False] * len(tokens["completion_mask"]))
         else:
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
@@ -387,7 +393,7 @@ def interleave_rollout(
 
     first_tokens = prepared_steps[0]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    active_samples.append((first_prefix, make_sample(first_tokens), 0))
+    active_samples.append((first_prefix, make_sample(0), 0))
 
     for step_idx, _step in enumerate(trajectory[1:], start=1):
         tokens = prepared_steps[step_idx]
@@ -412,7 +418,7 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples.append((new_prefix, make_sample(tokens), step_idx))
+            active_samples.append((new_prefix, make_sample(step_idx), step_idx))
 
     # Attach images once per sample using only the last merged step. Prompt
     # tokens already contain fully expanded <|image_pad|> placeholders because
