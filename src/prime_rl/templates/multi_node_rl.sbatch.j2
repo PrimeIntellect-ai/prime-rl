@@ -128,10 +128,10 @@ else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
 
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
-        uv run orchestrator \
-            @ $CONFIG_DIR/orchestrator.toml \
-            --weight_broadcast.host $MASTER_ADDR \
-            --client.base-url $INFER_URLS \
+        ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
+        ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.base-url $INFER_URLS"
+        {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+        {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log &
     fi
 
