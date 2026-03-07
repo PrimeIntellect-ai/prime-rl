@@ -21,7 +21,7 @@ from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize
 
-REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
+REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args", "agent_rewards"]
 
 
 class Env:
