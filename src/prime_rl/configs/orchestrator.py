@@ -391,6 +391,14 @@ class EvalConfig(BaseConfig):
         ),
     ] = False
 
+    @model_validator(mode="after")
+    def validate_unique_env_names(self):
+        env_names = [env.name or env.id for env in self.env]
+        duplicates = [n for n in env_names if env_names.count(n) > 1]
+        if duplicates:
+            raise ValueError(f"Duplicate eval environment names: {set(duplicates)}. Each env must have a unique name.")
+        return self
+
 
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
@@ -900,6 +908,14 @@ class OrchestratorConfig(BaseConfig):
 
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_env_names(self):
+        env_names = [env.name or env.id for env in self.env]
+        duplicates = [n for n in env_names if env_names.count(n) > 1]
+        if duplicates:
+            raise ValueError(f"Duplicate environment names: {set(duplicates)}. Each env must have a unique name.")
         return self
 
     @model_validator(mode="after")

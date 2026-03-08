@@ -719,7 +719,7 @@ async def orchestrate(config: OrchestratorConfig):
             **solve_stats(results_df),
             **{f"batch/{env}": r for env, r in results_df.task.value_counts(normalize=True).items()},
             # Error metrics
-            "error/all/mean": by_example.error.apply(lambda e: (~e.isna()).mean()).mean(),
+            "error/all/mean": by_example.error.apply(lambda e: e.notna().mean()).mean(),
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
@@ -739,9 +739,6 @@ async def orchestrate(config: OrchestratorConfig):
         }
 
         # Per-env metrics
-        metrics_with_task = metrics_df.copy()
-        metrics_with_task["task"] = results_df["task"].values
-        metrics_with_task["example_id"] = results_df["example_id"].values
         per_env_columns = [
             "seq_len",
             "prefill_len",
@@ -761,10 +758,10 @@ async def orchestrate(config: OrchestratorConfig):
             to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
-            to_log[f"error/{env}/mean"] = env_by_example.error.apply(lambda e: (~e.isna()).mean()).mean()
-            env_metrics = metrics_with_task[metrics_with_task["task"] == env]
+            to_log[f"error/{env}/mean"] = env_by_example.error.apply(lambda e: e.notna().mean()).mean()
+            env_metrics_df = metrics_df.loc[env_df.index]
             for metric in metrics_df.columns:
-                to_log[f"metrics/{env}/{metric}"] = env_metrics.groupby("example_id")[metric].mean().mean()
+                to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["example_id"])[metric].mean().mean()
 
         # Optionally, add val metrics
         if val_results_df is not None:
