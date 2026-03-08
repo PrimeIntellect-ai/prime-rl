@@ -719,15 +719,7 @@ async def orchestrate(config: OrchestratorConfig):
             **_batch_stats(results_df),
             # Error metrics
             "error/all/mean": (~results_df.error.isna()).mean(),
-            **{
-                f"error/{error}": error_rate
-                for error, error_rate in results_df.error.dropna()
-                .apply(lambda e: e.get("error") if isinstance(e, dict) else e)
-                .value_counts(normalize=True)
-                .items()
-            },
-            # Env metrics (verifier + filter metrics)
-            **{f"metrics/{metric}/all/mean": metrics_df[metric].mean() for metric in metrics_df.columns},
+            # Env metrics (verifier + filter metrics) — per-env only, logged below
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
@@ -754,7 +746,7 @@ async def orchestrate(config: OrchestratorConfig):
         metrics_with_task["task"] = results_df["task"].values
         for env, env_metrics in metrics_with_task.groupby("task"):
             for metric in metrics_df.columns:
-                to_log[f"metrics/{metric}/{env}/mean"] = env_metrics[metric].mean()
+                to_log[f"metrics/{env}/{metric}"] = env_metrics[metric].mean()
 
         # Optionally, add val metrics
         if val_results_df is not None:
