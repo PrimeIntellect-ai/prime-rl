@@ -26,3 +26,6 @@ name = "ultimatum_game_shared"
 [trainer]
 
 [inference]
+
+[inference.model]
+max_model_len = 2048
