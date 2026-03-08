@@ -42,6 +42,63 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import is_vlm_model
 
+
+def _patch_qwen3_5_moe_conversion_mapping():
+    """Fix Qwen3.5 MoE conversion mapping incorrectly applying qwen2_moe expert weight splitting.
+
+    Qwen3.5 MoE stores expert weights as fused 3D tensors natively in the checkpoint
+    (e.g. experts.gate_up_proj [num_experts, 2*intermediate, hidden]). The upstream mapping
+    incorrectly maps qwen3_5_moe → qwen2_moe, which assumes per-expert 2D checkpoint weights,
+    causing revert_weight_conversion to produce wrong shapes during weight broadcasting.
+
+    Remove once the pinned transformers commit fixes this.
+    """
+    from transformers.conversion_mapping import (
+        get_checkpoint_conversion_mapping,
+        register_checkpoint_conversion_mapping,
+    )
+
+    # qwen3_5_moe_text: keep only the qwen3_5_text renaming, remove qwen2_moe expert conversion
+    qwen3_5_text_mapping = get_checkpoint_conversion_mapping("qwen3_5_text")
+    if qwen3_5_text_mapping is not None:
+        register_checkpoint_conversion_mapping("qwen3_5_moe_text", qwen3_5_text_mapping, overwrite=True)
+
+    # qwen3_5_moe: remove the qwen2_moe fallback entirely
+    register_checkpoint_conversion_mapping("qwen3_5_moe", [], overwrite=True)
+
+
+def _patch_qwen3_5_text_position_ids():
+    """Fix Qwen3.5 passing 3D MRoPE position_ids to decoder layers instead of 2D text_position_ids.
+
+    Upstream fix: https://github.com/huggingface/transformers/pull/44399
+    Remove once the pinned transformers commit includes this fix.
+    """
+    import inspect
+
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5DecoderLayer, Qwen3_5TextModel
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeDecoderLayer, Qwen3_5MoeTextModel
+
+    for text_model_cls, decoder_layer_cls in [
+        (Qwen3_5TextModel, Qwen3_5DecoderLayer),
+        (Qwen3_5MoeTextModel, Qwen3_5MoeDecoderLayer),
+    ]:
+        source = inspect.getsource(text_model_cls.forward)
+        if "decoder_layer" in source and "position_ids=text_position_ids" in source.split("decoder_layer")[-1]:
+            continue  # already fixed upstream
+
+        _original_forward = decoder_layer_cls.forward
+
+        def _make_patched_forward(original):
+            def _patched_forward(self, hidden_states, position_ids=None, **kwargs):
+                if position_ids is not None and position_ids.ndim == 3:
+                    position_ids = position_ids[0]
+                return original(self, hidden_states, position_ids=position_ids, **kwargs)
+
+            return _patched_forward
+
+        decoder_layer_cls.forward = _make_patched_forward(_original_forward)
+
+
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
 transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
@@ -164,6 +221,10 @@ def get_model(
     is_vlm = is_vlm_model(config.name)
     if is_vlm:
         logger.info(f"Detected vision-language model: {config.name}")
+
+    if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
+        _patch_qwen3_5_text_position_ids()
+        _patch_qwen3_5_moe_conversion_mapping()
 
     model_config = cast(
         PretrainedConfig,

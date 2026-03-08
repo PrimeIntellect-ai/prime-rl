@@ -406,6 +406,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_tp=config.inference.parallel.tp,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
