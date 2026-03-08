@@ -704,12 +704,3 @@ class RLConfig(BaseConfig):
         return self
 
     ### Warnings
-
-    @model_validator(mode="after")
-    def warn_wandb_resume_id_missing(self):
-        if self.trainer.ckpt is not None and self.trainer.ckpt.resume_step is not None:
-            if self.trainer.wandb and not self.trainer.wandb.id:
-                warnings.warn(
-                    "W&B run ID is not set for trainer even though resuming training. The current run will be created as a new run."
-                )
-        return self
