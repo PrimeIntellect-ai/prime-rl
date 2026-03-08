@@ -382,22 +382,17 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
 
     if config.deployment.type == "single_node":
         script = template.render(
+            **config.slurm.template_vars,
             config_path=config_dir / RL_TOML,
-            job_name=config.slurm.job_name,
-            project_dir=config.slurm.project_dir,
-            partition=config.slurm.partition,
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
-            pre_run_command=config.slurm.pre_run_command,
         )
     else:
         assert config.inference is not None
 
         script = template.render(
+            **config.slurm.template_vars,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
-            job_name=config.slurm.job_name,
-            project_dir=config.slurm.project_dir,
-            partition=config.slurm.partition,
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
@@ -408,7 +403,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_enable_expert_parallel=config.inference.enable_expert_parallel,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            pre_run_command=config.slurm.pre_run_command,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
