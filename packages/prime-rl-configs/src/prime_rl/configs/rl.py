@@ -473,6 +473,8 @@ class RLConfig(BaseConfig):
             raise ValueError("orchestrator.multi_agent_lora requires trainer.model.lora to be configured.")
         if self.orchestrator.multi_agent_lora:
             self.trainer.pack_full_step = True
+            if self.trainer.max_concurrent_runs < 2:
+                self.trainer.max_concurrent_runs = 2
         return self
 
     @model_validator(mode="after")
