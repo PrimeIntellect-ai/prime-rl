@@ -113,6 +113,20 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
             del self._received_steps[idx]
 
 
+class MultiRunFileSystemTrainingBatchSender(TrainingBatchSender):
+    """Filesystem-based sender that routes batches to per-run directories."""
+
+    def __init__(self, output_dir: Path, run_names: list[str]):
+        super().__init__(output_dir)
+        self.senders = {name: FileSystemTrainingBatchSender(output_dir / name) for name in run_names}
+
+    def send_to_run(self, run_name: str, batch: TrainingBatch) -> None:
+        self.senders[run_name].send(batch)
+
+    def send(self, batch: TrainingBatch) -> None:
+        raise NotImplementedError("Use send_to_run() for multi-run sender")
+
+
 class FileSystemMicroBatchSender(MicroBatchSender):
     """Filesystem-based micro batch sender that writes micro batches to disk."""
 

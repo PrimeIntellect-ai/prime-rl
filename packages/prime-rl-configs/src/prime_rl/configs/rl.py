@@ -468,6 +468,12 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_multi_agent_lora(self):
+        if self.orchestrator.multi_agent_lora and self.trainer.model.lora is None:
+            raise ValueError("orchestrator.multi_agent_lora requires trainer.model.lora to be configured.")
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_router_replay(self):
         if self.trainer.enable_router_replay:
             if self.inference is not None:

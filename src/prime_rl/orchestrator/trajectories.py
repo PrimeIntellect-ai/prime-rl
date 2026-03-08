@@ -346,6 +346,7 @@ def interleave_rollout(
             env_name=output["env_name"],
             routed_experts=routed_experts,
             mm_token_type_ids=None,
+            actor_id=step.get("extras", {}).get("agent_id"),
         )
 
     def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
@@ -370,11 +371,14 @@ def interleave_rollout(
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
-        # Update reward/advantage to use the latest merged step's values (multi-agent)
+        # Update reward/advantage/actor_id to use the latest merged step's values (multi-agent)
         if step.get("reward") is not None:
             sample.reward = step["reward"]
         if step.get("advantage") is not None:
             sample.advantage = step["advantage"]
+        agent_id = step.get("extras", {}).get("agent_id")
+        if agent_id is not None:
+            sample.actor_id = agent_id
 
         if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
             step_routed = tokens["routed_experts"]
