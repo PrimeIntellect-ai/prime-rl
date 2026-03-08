@@ -83,8 +83,8 @@ uv sync --all-extras
 {% if pre_run_command %}
 # Pre-run command (runs on all nodes)
 srun bash -c '{{ pre_run_command }}'
-
 {% endif %}
+
 # Run RL
 srun bash -c '
     # Source environment
