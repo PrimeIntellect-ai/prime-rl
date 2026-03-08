@@ -433,12 +433,12 @@ class Scheduler:
         metrics = {
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,
-            "batch/async_level": self.async_level,
+            "async_level": self.async_level,
             "batch/inflight_rollouts": self.inflight_rollout_count,
             "batch/inflight_samples": self.inflight_sample_count,
-            "batch/off_policy_level/max": self.max_off_policy_level,
-            "batch/off_policy_level/mean": self.mean_off_policy_level,
-            "batch/off_policy_level/min": self.min_off_policy_level,
+            "off_policy_level/all/max": self.max_off_policy_level,
+            "off_policy_level/all/mean": self.mean_off_policy_level,
+            "off_policy_level/all/min": self.min_off_policy_level,
             "batch/cancelled_rollouts": self.cancelled_rollouts_count,
         }
         self.cancelled_rollouts_count = 0

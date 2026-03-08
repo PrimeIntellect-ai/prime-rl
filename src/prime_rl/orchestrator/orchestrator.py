@@ -648,13 +648,6 @@ async def orchestrate(config: OrchestratorConfig):
         progress.total_problems += num_unique_examples
         throughput = num_tokens / generate_completions_time
 
-        # Compute solve all and none tensors
-        problem_indices = results_df.index // config.rollouts_per_example
-        reward_sum_per_problem = results_df.groupby(problem_indices).reward.sum()
-        solve_all = (reward_sum_per_problem == config.rollouts_per_example).mean()
-        solve_none = (reward_sum_per_problem == 0).mean()
-        effective_batch_size = 1 - solve_none - solve_all
-
         def _grouped_stats(df, metric, column, stats, groupby="example_id"):
             """Compute {metric}/all/{stat} and {metric}/{env}/{stat}."""
             result = {}
@@ -675,16 +668,32 @@ async def orchestrate(config: OrchestratorConfig):
                 result.update({f"{prefix}/{env}/{s}": getattr(env_df.reward, s)() for s in stat_fns})
             return result
 
-        def _batch_stats(df, prefix="batch"):
-            """Compute {prefix}/all/{metric} and {prefix}/{env}/{metric}."""
+        def _solve_stats(df):
+            """Compute solve_none, solve_all, effective_batch_size globally and per-env."""
+            pi = df.index // config.rollouts_per_example
+            rsp = df.groupby(pi).reward.sum()
+            sn = (rsp == 0).mean()
+            sa = (rsp == config.rollouts_per_example).mean()
+            ebs = 1 - sn - sa
             result = {
-                f"{prefix}/all/solve_none": solve_none,
-                f"{prefix}/all/solve_all": solve_all,
-                f"{prefix}/all/effective_batch_size": effective_batch_size,
+                "solve_none/all": sn,
+                "solve_all/all": sa,
+                "effective_batch_size/all": ebs,
             }
-            ratio = df.task.value_counts(normalize=True).to_dict()
-            result.update({f"{prefix}/all/{env}": r for env, r in ratio.items()})
+            for env, env_df in df.groupby("task"):
+                env_pi = env_df.index // config.rollouts_per_example
+                env_rsp = env_df.groupby(env_pi).reward.sum()
+                env_sn = (env_rsp == 0).mean()
+                env_sa = (env_rsp == config.rollouts_per_example).mean()
+                result[f"solve_none/{env}"] = env_sn
+                result[f"solve_all/{env}"] = env_sa
+                result[f"effective_batch_size/{env}"] = 1 - env_sn - env_sa
             return result
+
+        def _batch_stats(df):
+            """Compute batch/all/{env} ratios."""
+            ratio = df.task.value_counts(normalize=True).to_dict()
+            return {f"batch/all/{env}": r for env, r in ratio.items()}
 
         mean_max_min = {"mean": "mean", "max": "max", "min": "min"}
 
@@ -714,7 +723,8 @@ async def orchestrate(config: OrchestratorConfig):
             # Train reward
             **_reward_stats(results_df),
             "sampling/temperature": temperature,
-            # Batch metrics
+            # Solve / batch metrics
+            **_solve_stats(results_df),
             **_batch_stats(results_df),
             # Error metrics
             "error/all/mean": (~results_df.error.isna()).mean(),
