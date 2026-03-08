@@ -331,6 +331,25 @@ class Scheduler:
 
     async def _update_policy_multi_actor(self):
         """Update per-actor LoRA adapters from their respective broadcast directories."""
+        # Enforce async level: block until all actors reach the required step
+        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
+        if async_away_ckpt_step > self.ckpt_step:
+            self.checkpoint_ready.clear()
+            self.logger.info(
+                f"Orchestrator paused: waiting for all actors to reach step {async_away_ckpt_step} "
+                f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+            )
+            wait_start = time.perf_counter()
+            for agent_id, run_name in self.actor_lora_mapping.items():
+                broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_name)
+                await wait_for_path(get_step_path(broadcast_dir, async_away_ckpt_step) / "STABLE")
+            self.wait_for_ckpt_time = time.perf_counter() - wait_start
+            self.logger.info(
+                f"Orchestrator resumed: all actors reached step {async_away_ckpt_step} "
+                f"(after {self.wait_for_ckpt_time:.2f}s)"
+            )
+
+        # Load latest available weights for each actor
         any_updated = False
         min_actor_step = float("inf")
 
@@ -355,11 +374,12 @@ class Scheduler:
                     f"in {self.update_weights_time:.2f}s"
                 )
 
-        if any_updated:
-            new_ckpt_step = int(min_actor_step) if min_actor_step != float("inf") else 0
-            if new_ckpt_step > self.ckpt_step:
-                self.ckpt_step = new_ckpt_step
-                await self._update_off_policy()
+        new_ckpt_step = int(min_actor_step) if min_actor_step != float("inf") else 0
+        if new_ckpt_step > self.ckpt_step:
+            self.ckpt_step = new_ckpt_step
+            await self._update_off_policy()
+
+        self.checkpoint_ready.set()
 
     async def _update_off_policy(self) -> None:
         stale_group_ids = {
