@@ -712,9 +712,4 @@ class RLConfig(BaseConfig):
                 warnings.warn(
                     "W&B run ID is not set for trainer even though resuming training. The current run will be created as a new run."
                 )
-        if self.orchestrator.ckpt is not None and self.orchestrator.ckpt.resume_step is not None:
-            if self.orchestrator.wandb and not self.orchestrator.wandb.id:
-                warnings.warn(
-                    "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
-                )
         return self
