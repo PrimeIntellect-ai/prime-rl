@@ -691,9 +691,9 @@ async def orchestrate(config: OrchestratorConfig):
             return result
 
         def _batch_stats(df):
-            """Compute batch/all/{env} ratios."""
+            """Compute batch/{env} ratios."""
             ratio = df.task.value_counts(normalize=True).to_dict()
-            return {f"batch/all/{env}": r for env, r in ratio.items()}
+            return {f"batch/{env}": r for env, r in ratio.items()}
 
         mean_max_min = {"mean": "mean", "max": "max", "min": "min"}
 
@@ -763,7 +763,7 @@ async def orchestrate(config: OrchestratorConfig):
             to_log.update({f"val/reward/all/{s}": getattr(val_results_df.reward, s)() for s in stat_fns})
 
             val_ratio = val_results_df.task.value_counts(normalize=True).to_dict()
-            to_log.update({f"val/batch/all/{env}": r for env, r in val_ratio.items()})
+            to_log.update({f"val/batch/{env}": r for env, r in val_ratio.items()})
 
             for env, env_df in val_results_df.groupby("task"):
                 to_log.update({f"val/reward/{env}/{s}": getattr(env_df.reward, s)() for s in stat_fns})
