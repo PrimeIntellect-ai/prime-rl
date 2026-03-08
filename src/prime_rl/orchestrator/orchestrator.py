@@ -587,6 +587,12 @@ async def orchestrate(config: OrchestratorConfig):
             vlm_cache = None
 
         # Process rollouts in parallel
+        from collections import Counter as _Counter
+        _debug = _Counter()
+        for _r in train_rollouts:
+            _debug[(_r.get("actor_id", "default"), len(_r.get("trajectory", [])))] += 1
+        print(f"[ORCH-DEBUG] rollout (actor, traj_len) counts: {dict(_debug)}")
+
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
             return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
 
