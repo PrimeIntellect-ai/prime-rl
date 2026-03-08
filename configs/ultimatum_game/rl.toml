@@ -1,5 +1,4 @@
 max_steps = 200
-max_model_len = 2048
 
 [wandb]
 project = "multiagent"
@@ -31,3 +30,6 @@ rank = 32
 
 [inference]
 enable_lora = true
+
+[inference.model]
+max_model_len = 2048
