@@ -288,6 +288,15 @@ class EnvConfig(BaseConfig):
         ),
     ] = {}
 
+    @model_validator(mode="after")
+    def validate_env_name(self):
+        env_name = self.name or self.id
+        if env_name == "all":
+            raise ValueError(
+                'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
+            )
+        return self
+
 
 class EvalEnvConfig(EnvConfig):
     """Configures an environment for evaluation."""
