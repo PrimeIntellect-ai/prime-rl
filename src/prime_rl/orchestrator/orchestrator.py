@@ -655,6 +655,45 @@ async def orchestrate(config: OrchestratorConfig):
         solve_none = (reward_sum_per_problem == 0).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
+        per_env = results_df.task.nunique() > 1
+
+        def _grouped_stats(df, metric, column, stats, groupby="example_id"):
+            """Compute {metric}/all/{stat} and optionally {metric}/{env}/{stat}."""
+            result = {}
+            grouped = df.groupby(groupby)[column].mean()
+            for stat_name, stat_fn in stats.items():
+                result[f"{metric}/all/{stat_name}"] = getattr(grouped, stat_fn)()
+            if per_env:
+                for env, env_df in df.groupby("task"):
+                    env_grouped = env_df.groupby(groupby)[column].mean()
+                    for stat_name, stat_fn in stats.items():
+                        result[f"{metric}/{env}/{stat_name}"] = getattr(env_grouped, stat_fn)()
+            return result
+
+        def _reward_stats(df, prefix="reward"):
+            """Compute {prefix}/all/{stat} and optionally {prefix}/{env}/{stat}."""
+            stat_fns = ["mean", "std", "min", "max", "median"]
+            result = {f"{prefix}/all/{s}": getattr(df.reward, s)() for s in stat_fns}
+            if per_env:
+                for env, env_df in df.groupby("task"):
+                    result.update({f"{prefix}/{env}/{s}": getattr(env_df.reward, s)() for s in stat_fns})
+            return result
+
+        def _batch_stats(df, prefix="batch"):
+            """Compute {prefix}/all/{metric} and optionally {prefix}/{env}/{metric}."""
+            result = {
+                f"{prefix}/all/solve_none": solve_none,
+                f"{prefix}/all/solve_all": solve_all,
+                f"{prefix}/all/effective_batch_size": effective_batch_size,
+            }
+            if per_env:
+                ratio = df.task.value_counts(normalize=True).to_dict()
+                result.update({f"{prefix}/all/{env}": r for env, r in ratio.items()})
+                result.update({f"{prefix}/{env}/{env}": r for env, r in ratio.items()})
+            return result
+
+        mean_max_min = {"mean": "mean", "max": "max", "min": "min"}
+
         step_time = time.perf_counter() - step_start_time
         to_log = {
             # Progress metrics
@@ -668,48 +707,23 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_problems": progress.total_problems,
             "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             # Sequence length metrics
-            "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
-            "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
-            "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
-            "prefill_len/mean": results_df.groupby("example_id").prefill_len.mean().mean(),
-            "prefill_len/max": results_df.groupby("example_id").prefill_len.mean().max(),
-            "prefill_len/min": results_df.groupby("example_id").prefill_len.mean().min(),
-            "decode_len/mean": results_df.groupby("example_id").decode_len.mean().mean(),
-            "decode_len/max": results_df.groupby("example_id").decode_len.mean().max(),
-            "decode_len/min": results_df.groupby("example_id").decode_len.mean().min(),
-            "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
-            "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
-            "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
-            # Seqs per rollout metrics
-            "samples_per_rollout/mean": results_df.groupby("example_id").samples_per_rollout.mean().mean(),
-            "samples_per_rollout/max": results_df.groupby("example_id").samples_per_rollout.mean().max(),
-            "samples_per_rollout/min": results_df.groupby("example_id").samples_per_rollout.mean().min(),
-            # Turn metrics
-            "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
-            "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
-            "num_turns/min": results_df.groupby("example_id").num_turns.mean().min(),
-            # Verifier timing metrics
-            "generation_ms/mean": results_df.groupby("example_id").generation_ms.mean().mean(),
-            "generation_ms/max": results_df.groupby("example_id").generation_ms.mean().max(),
-            "generation_ms/min": results_df.groupby("example_id").generation_ms.mean().min(),
-            "scoring_ms/mean": results_df.groupby("example_id").scoring_ms.mean().mean(),
-            "scoring_ms/max": results_df.groupby("example_id").scoring_ms.mean().max(),
-            "scoring_ms/min": results_df.groupby("example_id").scoring_ms.mean().min(),
+            **_grouped_stats(results_df, "seq_len", "seq_len", mean_max_min),
+            **_grouped_stats(results_df, "prefill_len", "prefill_len", mean_max_min),
+            **_grouped_stats(results_df, "decode_len", "decode_len", mean_max_min),
+            **_grouped_stats(results_df, "is_truncated", "is_truncated", mean_max_min),
+            **_grouped_stats(results_df, "samples_per_rollout", "samples_per_rollout", mean_max_min),
+            **_grouped_stats(results_df, "num_turns", "num_turns", mean_max_min),
+            **_grouped_stats(results_df, "generation_ms", "generation_ms", mean_max_min),
+            **_grouped_stats(results_df, "scoring_ms", "scoring_ms", mean_max_min),
             # Performance metrics
             "perf/throughput": throughput,
             # Train reward
-            "reward/mean": results_df.reward.mean(),
-            "reward/std": results_df.reward.std(),
-            "reward/min": results_df.reward.min(),
-            "reward/max": results_df.reward.max(),
-            "reward/median": results_df.reward.median(),
+            **_reward_stats(results_df),
             "sampling/temperature": temperature,
             # Batch metrics
-            "batch/solve_none": solve_none,
-            "batch/solve_all": solve_all,
-            "batch/effective_batch_size": effective_batch_size,
+            **_batch_stats(results_df),
             # Error metrics
-            "error/mean": (~results_df.error.isna()).mean(),
+            "error/all/mean": (~results_df.error.isna()).mean(),
             **{
                 f"error/{error}": error_rate
                 for error, error_rate in results_df.error.dropna()
@@ -717,8 +731,8 @@ async def orchestrate(config: OrchestratorConfig):
                 .value_counts(normalize=True)
                 .items()
             },
-            # Env metrics
-            **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
+            # Env metrics (verifier + filter metrics)
+            **{f"metrics/{metric}/all/mean": metrics_df[metric].mean() for metric in metrics_df.columns},
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
@@ -737,32 +751,30 @@ async def orchestrate(config: OrchestratorConfig):
             "step": progress.step,
         }
 
-        # If more than one env, add per-env metrics
-        if results_df.task.nunique() > 1:
-            per_env_reward = results_df.groupby("task").reward.mean().to_dict()
-            to_log.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
+        # Per-env error and verifier metrics
+        if per_env:
+            for env, env_df in results_df.groupby("task"):
+                to_log[f"error/{env}/mean"] = (~env_df.error.isna()).mean()
 
-            per_env_ratio = results_df.task.value_counts(normalize=True).to_dict()
-            to_log.update({f"batch/{env}": ratio for env, ratio in per_env_ratio.items()})
+            metrics_with_task = metrics_df.copy()
+            metrics_with_task["task"] = results_df["task"].values
+            for env, env_metrics in metrics_with_task.groupby("task"):
+                for metric in metrics_df.columns:
+                    to_log[f"metrics/{metric}/{env}/mean"] = env_metrics[metric].mean()
 
         # Optionally, add val metrics
         if val_results_df is not None:
-            to_log.update(
-                {
-                    "val_reward/mean": val_results_df.reward.mean(),
-                    "val_reward/std": val_results_df.reward.std(),
-                    "val_reward/min": val_results_df.reward.min(),
-                    "val_reward/max": val_results_df.reward.max(),
-                    "val_reward/median": val_results_df.reward.median(),
-                }
-            )
+            val_per_env = val_results_df.task.nunique() > 1
+            stat_fns = ["mean", "std", "min", "max", "median"]
+            to_log.update({f"val/reward/all/{s}": getattr(val_results_df.reward, s)() for s in stat_fns})
 
-            if val_results_df.task.nunique() > 1:
-                per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
-                to_log.update({f"val_reward/{env}": reward for env, reward in per_env_reward.items()})
+            val_ratio = val_results_df.task.value_counts(normalize=True).to_dict()
+            to_log.update({f"val/batch/all/{env}": r for env, r in val_ratio.items()})
 
-                per_env_ratio = val_results_df.task.value_counts(normalize=True).to_dict()
-                to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
+            if val_per_env:
+                for env, env_df in val_results_df.groupby("task"):
+                    to_log.update({f"val/reward/{env}/{s}": getattr(env_df.reward, s)() for s in stat_fns})
+                    to_log[f"val/batch/{env}/{env}"] = val_ratio[env]
 
         # Log metrics to monitor(s)
         monitor.log(to_log, step=progress.step)
