@@ -115,8 +115,9 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
-    lm_head_mode = "cross_entropy" if config.loss_impl == "liger_fused" else None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, lm_head_mode=lm_head_mode)
+    model = setup_model(
+        config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=config.loss_impl == "liger_fused"
+    )
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)

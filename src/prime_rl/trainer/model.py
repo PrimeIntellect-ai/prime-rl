@@ -1,7 +1,7 @@
 import logging
 import time
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 import torch
 import torch._dynamo
@@ -696,7 +696,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
-    lm_head_mode: int | Literal["cross_entropy"] | None = None,
+    fused_cross_entropy: bool = False,
 ) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
@@ -724,10 +724,8 @@ def setup_model(
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
-    if lm_head_mode is None and isinstance(config.fused_lm_head_chunk_size, int):
-        lm_head_mode = config.fused_lm_head_chunk_size
-
-    inject_prime_lm_head(model, chunk_size=lm_head_mode)
+    chunk_size = config.fused_lm_head_chunk_size if isinstance(config.fused_lm_head_chunk_size, int) else None
+    inject_prime_lm_head(model, chunk_size=chunk_size, fused_cross_entropy=fused_cross_entropy)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:
