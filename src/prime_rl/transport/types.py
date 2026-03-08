@@ -23,6 +23,8 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
 
     routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
 
+    actor_id: str | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""

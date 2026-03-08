@@ -68,6 +68,7 @@ class Scheduler:
         tasks_per_minute: int | None,
         lora_name: str | None = None,
         deferred_group_scoring_tasks: set[str] | None = None,
+        actor_lora_mapping: dict[str, str] | None = None,
     ):
         self.logger = get_logger()
         if tasks_per_minute is not None:
@@ -98,6 +99,17 @@ class Scheduler:
         if self.deferred_group_scoring_tasks:
             task_list = ", ".join(sorted(self.deferred_group_scoring_tasks))
             self.logger.info(f"Deferred group scoring active for task(s): {task_list}")
+
+        # Multi-agent LoRA: per-actor policy routing
+        self.actor_lora_mapping = actor_lora_mapping
+        if actor_lora_mapping is not None:
+            self.actor_ckpt_steps: dict[str, int] = {agent_id: 0 for agent_id in actor_lora_mapping}
+            self.actor_model_names: dict[str, str] = {agent_id: config.model.name for agent_id in actor_lora_mapping}
+            self.actor_run_dirs: dict[str, str] = {
+                agent_id: run_name for agent_id, run_name in actor_lora_mapping.items()
+            }
+        else:
+            self.actor_model_names: dict[str, str] = {}
 
         # Track in-flight requests: task -> info
         self.inflight_requests: dict[asyncio.Task, InflightRolloutInfo] = {}
@@ -205,6 +217,7 @@ class Scheduler:
                 model_name=self.model_name,
                 sampling_args=self.sampling_args,
                 max_retries=self.max_retries_by_task.get(group.example["task"], 0),
+                actor_models=self.actor_model_names or None,
             )
         )
         self.inflight_requests[run_rollout_task] = InflightRolloutInfo(
@@ -305,6 +318,9 @@ class Scheduler:
 
     async def maybe_update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
+        if self.actor_lora_mapping is not None:
+            return await self._update_policy_multi_actor()
+
         while True:
             next_ckpt_step = self._compute_next_ckpt_step()
             if next_ckpt_step <= self.ckpt_step:
@@ -312,6 +328,38 @@ class Scheduler:
 
             task = await self._get_or_start_policy_update_task(next_ckpt_step)
             await asyncio.shield(task)
+
+    async def _update_policy_multi_actor(self):
+        """Update per-actor LoRA adapters from their respective broadcast directories."""
+        any_updated = False
+        min_actor_step = float("inf")
+
+        for agent_id, run_name in self.actor_lora_mapping.items():
+            broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_name)
+            latest_step = get_latest_ckpt_step(broadcast_dir) or 0
+            min_actor_step = min(min_actor_step, latest_step)
+
+            if latest_step > self.actor_ckpt_steps[agent_id]:
+                weights_path = get_step_path(broadcast_dir, latest_step)
+                lora_name = run_name
+                update_start = time.perf_counter()
+                await self.inference_pool.update_weights(weights_path, lora_name=lora_name, step=latest_step)
+                self.update_weights_time = time.perf_counter() - update_start
+
+                self.actor_ckpt_steps[agent_id] = latest_step
+                self.actor_model_names[agent_id] = lora_name
+                self.inference_pool.update_model_name(lora_name)
+                any_updated = True
+                self.logger.debug(
+                    f"Updated actor {agent_id} ({lora_name}) to step {latest_step} "
+                    f"in {self.update_weights_time:.2f}s"
+                )
+
+        if any_updated:
+            new_ckpt_step = int(min_actor_step) if min_actor_step != float("inf") else 0
+            if new_ckpt_step > self.ckpt_step:
+                self.ckpt_step = new_ckpt_step
+                await self._update_off_policy()
 
     async def _update_off_policy(self) -> None:
         stale_group_ids = {

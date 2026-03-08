@@ -7,6 +7,7 @@ from prime_rl.transport.filesystem import (
     FileSystemMicroBatchSender,
     FileSystemTrainingBatchReceiver,
     FileSystemTrainingBatchSender,
+    MultiRunFileSystemTrainingBatchSender,
 )
 from prime_rl.transport.types import MicroBatch, TrainingBatch, TrainingSample
 from prime_rl.transport.zmq import (
@@ -24,6 +25,14 @@ def setup_training_batch_sender(output_dir: Path, transport: TransportConfig) ->
         return ZMQTrainingBatchSender(output_dir, transport)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
+
+
+def setup_multi_run_training_batch_sender(
+    output_dir: Path, run_names: list[str], transport: TransportConfig
+) -> MultiRunFileSystemTrainingBatchSender:
+    if transport.type != "filesystem":
+        raise ValueError(f"Multi-run sender only supports filesystem transport, got: {transport.type}")
+    return MultiRunFileSystemTrainingBatchSender(output_dir, run_names)
 
 
 def setup_training_batch_receiver(transport: TransportConfig) -> TrainingBatchReceiver:
@@ -62,6 +71,7 @@ __all__ = [
     "FileSystemTrainingBatchReceiver",
     "FileSystemMicroBatchSender",
     "FileSystemMicroBatchReceiver",
+    "MultiRunFileSystemTrainingBatchSender",
     "MicroBatchReceiver",
     "MicroBatchSender",
     "TrainingSample",
@@ -69,6 +79,7 @@ __all__ = [
     "MicroBatch",
     "setup_training_batch_sender",
     "setup_training_batch_receiver",
+    "setup_multi_run_training_batch_sender",
     "setup_micro_batch_sender",
     "setup_micro_batch_receiver",
 ]
