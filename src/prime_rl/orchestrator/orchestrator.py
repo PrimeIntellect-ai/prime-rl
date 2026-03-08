@@ -557,12 +557,15 @@ async def orchestrate(config: OrchestratorConfig):
             mm_token_type_ids_mapping = None
 
         # Process rollouts in parallel
+        split_by_agent = actor_lora_mapping is not None
+
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
             return interleave_rollout(
                 rollout,
                 vlm_cache=vlm_cache,
                 cache_key=rollout_idx,
                 mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+                split_by_agent=split_by_agent,
             )
 
         results = await asyncio.gather(

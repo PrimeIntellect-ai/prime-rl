@@ -254,6 +254,7 @@ def interleave_rollout(
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
+    split_by_agent: bool = False,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -392,29 +393,50 @@ def interleave_rollout(
             expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
             sample.routed_experts = _align_routed_experts(sample.routed_experts, expected_len)
 
-    # Track [prefix_tokens, sample, last_step_idx] per active sample
-    active_samples: list[tuple[list[int], TrainingSample, int]] = []
+    # Track [prefix_tokens, sample, last_step_idx, agent_meta] per active sample
+    # agent_meta: dict with per-completion-token agent_ids and per-agent reward/advantage (for split_by_agent)
+    active_samples: list[tuple[list[int], TrainingSample, int, dict[str, Any]]] = []
+
+    def make_agent_meta(step_idx: int) -> dict[str, Any]:
+        if not split_by_agent:
+            return {}
+        step = trajectory[step_idx]
+        tokens = prepared_steps[step_idx]
+        agent_id = step.get("extras", {}).get("agent_id")
+        return {
+            "ids": [agent_id] * len(tokens["completion_ids"]),
+            "rewards": {agent_id: step.get("reward")} if agent_id else {},
+            "advantages": {agent_id: step.get("advantage")} if agent_id else {},
+        }
 
     first_tokens = prepared_steps[0]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    active_samples.append((first_prefix, make_sample(0), 0))
+    active_samples.append((first_prefix, make_sample(0), 0, make_agent_meta(0)))
 
-    for step_idx, _step in enumerate(trajectory[1:], start=1):
+    for step_idx, step in enumerate(trajectory[1:], start=1):
         tokens = prepared_steps[step_idx]
         step_prompt_ids = tokens["prompt_ids"]
 
         # Check if this step extends ANY active prefix
         matched_idx = None
-        for idx, (prefix_tokens, _, _) in enumerate(active_samples):
+        for idx, (prefix_tokens, _, _, _) in enumerate(active_samples):
             if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
                 matched_idx = idx
                 break
 
         if matched_idx is not None:
             # Extension holds - merge into matched sample
-            prefix_tokens, sample, _ = active_samples[matched_idx]
+            prefix_tokens, sample, _, meta = active_samples[matched_idx]
             extend_sample(sample, len(prefix_tokens), step_idx=step_idx)
-            active_samples[matched_idx] = (tokens["prompt_ids"] + tokens["completion_ids"], sample, step_idx)
+            if split_by_agent:
+                step_agent_id = step.get("extras", {}).get("agent_id")
+                new_prompt_len = len(tokens["prompt_ids"]) - len(prefix_tokens)
+                new_completion_len = len(tokens["completion_ids"])
+                meta["ids"].extend([step_agent_id] * (new_prompt_len + new_completion_len))
+                if step_agent_id:
+                    meta["rewards"][step_agent_id] = step.get("reward")
+                    meta["advantages"][step_agent_id] = step.get("advantage")
+            active_samples[matched_idx] = (tokens["prompt_ids"] + tokens["completion_ids"], sample, step_idx, meta)
         else:
             # No prefix matches - start a new sample
             logger.debug(
@@ -422,7 +444,7 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples.append((new_prefix, make_sample(step_idx), step_idx))
+            active_samples.append((new_prefix, make_sample(step_idx), step_idx, make_agent_meta(step_idx)))
 
     # Attach images once per sample using only the last merged step. Prompt
     # tokens already contain fully expanded <|image_pad|> placeholders because
@@ -431,7 +453,7 @@ def interleave_rollout(
     # fallback path so features and tokens stay 1:1.
     if vlm_cache is not None:
         key = output["example_id"] if cache_key is None else cache_key
-        for _, sample, last_step_idx in active_samples:
+        for _, sample, last_step_idx, _ in active_samples:
             pv, shape, grids = vlm_cache.get_for_step(key, last_step_idx)
             sample.pixel_values = pv
             sample.pixel_values_shape = shape
@@ -441,7 +463,42 @@ def interleave_rollout(
                     mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids
                 ]
 
-    return [sample for _, sample, _ in active_samples]
+    if not split_by_agent:
+        return [sample for _, sample, _, _ in active_samples]
+
+    # Split merged samples into per-agent copies with agent-specific completion masks
+    result: list[TrainingSample] = []
+    for _, sample, _, meta in active_samples:
+        agent_ids = meta["ids"]
+        unique_agents = set(a for a in agent_ids if a is not None)
+        if len(unique_agents) <= 1:
+            result.append(sample)
+            continue
+        for agent_id in unique_agents:
+            agent_mask = [
+                sample.completion_mask[i] and agent_ids[i] == agent_id for i in range(len(agent_ids))
+            ]
+            agent_sample = TrainingSample(
+                prompt_ids=sample.prompt_ids,
+                prompt_mask=sample.prompt_mask,
+                completion_ids=sample.completion_ids,
+                completion_mask=agent_mask,
+                completion_logprobs=sample.completion_logprobs,
+                completion_temperatures=sample.completion_temperatures,
+                env_name=sample.env_name,
+                teacher_logprobs=sample.teacher_logprobs,
+                advantage=meta["advantages"].get(agent_id, sample.advantage),
+                reward=meta["rewards"].get(agent_id, sample.reward),
+                routed_experts=sample.routed_experts,
+                actor_id=agent_id,
+                mm_token_type_ids=sample.mm_token_type_ids,
+                pixel_values=sample.pixel_values,
+                pixel_values_shape=sample.pixel_values_shape,
+                image_grid_thw=sample.image_grid_thw,
+                training_mode=sample.training_mode,
+            )
+            result.append(agent_sample)
+    return result
 
 
 # =============================================================================
