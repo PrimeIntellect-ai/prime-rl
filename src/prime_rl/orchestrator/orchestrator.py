@@ -648,24 +648,22 @@ async def orchestrate(config: OrchestratorConfig):
         progress.total_problems += num_unique_examples
         throughput = num_tokens / generate_completions_time
 
-        def solve_stats(df):
-            """Compute solve_none, solve_all, effective_batch_size globally and per-env."""
+        def compute_solve_rates(df):
+            """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
             reward_per_problem = df.groupby("example_id").reward.sum()
             solve_none = (reward_per_problem == 0).mean()
             solve_all = (reward_per_problem == config.rollouts_per_example).mean()
-            effective_batch_size = 1 - solve_none - solve_all
-            result = {
-                "solve_none/all": solve_none,
-                "solve_all/all": solve_all,
-                "effective_batch_size/all": effective_batch_size,
-            }
+            return solve_none, solve_all, 1 - solve_none - solve_all
+
+        def solve_stats(df):
+            """Compute solve_none, solve_all, effective_batch_size globally and per-env."""
+            sn, sa, ebs = compute_solve_rates(df)
+            result = {"solve_none/all": sn, "solve_all/all": sa, "effective_batch_size/all": ebs}
             for env, env_df in df.groupby("task"):
-                env_reward_per_problem = env_df.groupby("example_id").reward.sum()
-                env_solve_none = (env_reward_per_problem == 0).mean()
-                env_solve_all = (env_reward_per_problem == config.rollouts_per_example).mean()
-                result[f"solve_none/{env}"] = env_solve_none
-                result[f"solve_all/{env}"] = env_solve_all
-                result[f"effective_batch_size/{env}"] = 1 - env_solve_none - env_solve_all
+                sn, sa, ebs = compute_solve_rates(env_df)
+                result[f"solve_none/{env}"] = sn
+                result[f"solve_all/{env}"] = sa
+                result[f"effective_batch_size/{env}"] = ebs
             return result
 
         # Group by example_id to average across rollouts within each problem

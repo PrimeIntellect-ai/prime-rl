@@ -430,12 +430,6 @@ class Scheduler:
     def async_level(self) -> int:
         return self.step - self.ckpt_step
 
-    def _off_policy_steps_by_task(self) -> dict[str, list[int]]:
-        by_task: dict[str, list[int]] = {}
-        for info in self.inflight_requests.values():
-            by_task.setdefault(info.task, []).append(info.off_policy_steps)
-        return by_task
-
     def get_metrics(self) -> dict[str, float]:
         metrics = {
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
@@ -448,7 +442,10 @@ class Scheduler:
             "off_policy_level/all/mean": self.mean_off_policy_level,
             "off_policy_level/all/min": self.min_off_policy_level,
         }
-        for task, steps in self._off_policy_steps_by_task().items():
+        by_task: dict[str, list[int]] = {}
+        for info in self.inflight_requests.values():
+            by_task.setdefault(info.task, []).append(info.off_policy_steps)
+        for task, steps in by_task.items():
             metrics[f"off_policy_level/{task}/max"] = max(steps)
             metrics[f"off_policy_level/{task}/mean"] = sum(steps) / len(steps)
             metrics[f"off_policy_level/{task}/min"] = min(steps)
