@@ -216,7 +216,11 @@ class SFTConfig(BaseConfig):
     ] = 600
 
     loss_impl: Annotated[
-        Literal["liger", "torch"], Field(description="Implementation of the cross entropy loss function to use.")
+        Literal["liger", "torch", "liger_fused"],
+        Field(
+            description="Implementation of the cross entropy loss function to use. "
+            "'liger_fused' fuses the lm_head projection with the CE loss to avoid materializing full logits."
+        ),
     ] = "torch"
 
     heartbeat: Annotated[
@@ -312,9 +316,8 @@ class SFTConfig(BaseConfig):
     def validate_and_disable_chunked_loss(self):
         if isinstance(self.model.fused_lm_head_chunk_size, int):
             raise ValueError(
-                "Chunked loss is not supported for SFT training yet, please set `model.fused_lm_head_chunk_size` to 'disabled'"
+                "Chunked loss is not supported for SFT training, please set `model.fused_lm_head_chunk_size` to 'disabled'"
             )
-
         self.model.fused_lm_head_chunk_size = "disabled"
         return self
 
