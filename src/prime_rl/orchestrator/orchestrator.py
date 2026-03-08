@@ -655,17 +655,6 @@ async def orchestrate(config: OrchestratorConfig):
             solve_all = (reward_per_problem == config.rollouts_per_example).mean()
             return solve_none, solve_all, 1 - solve_none - solve_all
 
-        def solve_stats(df):
-            """Compute solve_none, solve_all, effective_batch_size globally and per-env."""
-            sn, sa, ebs = compute_solve_rates(df)
-            result = {"solve_none/all": sn, "solve_all/all": sa, "effective_batch_size/all": ebs}
-            for env, env_df in df.groupby("task"):
-                sn, sa, ebs = compute_solve_rates(env_df)
-                result[f"solve_none/{env}"] = sn
-                result[f"solve_all/{env}"] = sa
-                result[f"effective_batch_size/{env}"] = ebs
-            return result
-
         # Group by example_id to average across rollouts within each problem
         by_example = results_df.groupby("example_id")
 
@@ -714,7 +703,20 @@ async def orchestrate(config: OrchestratorConfig):
             "reward/all/min": by_example.reward.mean().min(),
             "sampling/temperature": temperature,
             # Solve / batch metrics
-            **solve_stats(results_df),
+            **dict(
+                zip(
+                    ["solve_none/all", "solve_all/all", "effective_batch_size/all"],
+                    compute_solve_rates(results_df),
+                )
+            ),
+            **{
+                k: v
+                for env, env_df in results_df.groupby("task")
+                for k, v in zip(
+                    [f"solve_none/{env}", f"solve_all/{env}", f"effective_batch_size/{env}"],
+                    compute_solve_rates(env_df),
+                )
+            },
             **{f"batch/{env}": r for env, r in results_df.task.value_counts(normalize=True).items()},
             # Error metrics
             "error/all/mean": by_example.error.apply(lambda e: e.notna().mean()).mean(),
