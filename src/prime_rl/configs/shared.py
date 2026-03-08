@@ -51,8 +51,8 @@ class SlurmConfig(BaseConfig):
         str | None,
         Field(
             description="Shell command to run on the head node before starting the job. "
+            "Runs after cd into project dir, .env sourcing, and venv activation. "
             "Useful for cleanup routines like 'sudo pkill -f vllm'. "
-            "For complex logic, point to a script: 'bash scripts/cleanup.sh'. "
             "To run on all nodes, wrap with srun: 'srun bash -c \"pkill -f vllm || true\"'.",
         ),
     ] = None
