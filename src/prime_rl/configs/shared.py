@@ -30,9 +30,10 @@ class SlurmConfig(BaseConfig):
     pre_run_command: Annotated[
         str | None,
         Field(
-            description="Shell command to run on each compute node before starting the job. "
+            description="Shell command to run on the head node before starting the job. "
             "Useful for cleanup routines like 'sudo pkill -f vllm'. "
-            "For complex logic, point to a script: 'bash scripts/cleanup.sh'.",
+            "For complex logic, point to a script: 'bash scripts/cleanup.sh'. "
+            "To run on all nodes, wrap with srun: 'srun bash -c \"pkill -f vllm || true\"'.",
         ),
     ] = None
 
