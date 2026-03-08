@@ -30,3 +30,4 @@ rank = 32
 
 [inference]
 enable_lora = true
+max_model_len = 2048
