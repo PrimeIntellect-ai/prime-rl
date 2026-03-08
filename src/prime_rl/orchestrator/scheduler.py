@@ -441,12 +441,12 @@ class Scheduler:
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,
             "scheduler/async_level": self.async_level,
-            "progress/inflight_rollouts": self.inflight_rollout_count,
-            "progress/inflight_samples": self.inflight_sample_count,
+            "scheduler/inflight_rollouts": self.inflight_rollout_count,
+            "scheduler/inflight_samples": self.inflight_sample_count,
+            "scheduler/cancelled_rollouts": self.cancelled_rollouts_count,
             "off_policy_level/all/max": self.max_off_policy_level,
             "off_policy_level/all/mean": self.mean_off_policy_level,
             "off_policy_level/all/min": self.min_off_policy_level,
-            "progress/cancelled_rollouts": self.cancelled_rollouts_count,
         }
         for task, steps in self._off_policy_steps_by_task().items():
             metrics[f"off_policy_level/{task}/max"] = max(steps)
