@@ -1,4 +1,3 @@
-import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -38,6 +37,7 @@ from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
     validate_shared_max_async_level,
@@ -560,7 +560,7 @@ class RLConfig(BaseConfig):
                 self.inference.enable_lora = True
                 self.inference.max_lora_rank = self.trainer.model.lora.rank
             else:
-                warnings.warn(
+                get_logger().warning(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
                     "make sure to set --enable_lora and --max-lora-rank."
                 )
@@ -572,12 +572,12 @@ class RLConfig(BaseConfig):
         if self.trainer.enable_router_replay:
             if self.inference is not None:
                 if self.inference.enable_return_routed_experts is False:
-                    warnings.warn(
+                    get_logger().warning(
                         "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True."
                     )
                 self.inference.enable_return_routed_experts = True
             else:
-                warnings.warn(
+                get_logger().warning(
                     "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server."
                 )
         return self
@@ -704,17 +704,3 @@ class RLConfig(BaseConfig):
         return self
 
     ### Warnings
-
-    @model_validator(mode="after")
-    def warn_wandb_resume_id_missing(self):
-        if self.trainer.ckpt is not None and self.trainer.ckpt.resume_step is not None:
-            if self.trainer.wandb and not self.trainer.wandb.id:
-                warnings.warn(
-                    "W&B run ID is not set for trainer even though resuming training. The current run will be created as a new run."
-                )
-        if self.orchestrator.ckpt is not None and self.orchestrator.ckpt.resume_step is not None:
-            if self.orchestrator.wandb and not self.orchestrator.wandb.id:
-                warnings.warn(
-                    "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
-                )
-        return self
