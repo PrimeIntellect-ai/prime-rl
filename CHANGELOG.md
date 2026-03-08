@@ -2,6 +2,7 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **Metrics logging overhaul**: All orchestrator metrics now follow a `{metric}/{scope}/{stat}` naming convention where scope is `all` (global) or an env name. Per-env breakdowns are always logged. Key renames: `reward/mean` → `reward/all/mean`, `batch/solve_none` → `solve_none/all`, `val_reward/` → `val/reward/`, `metrics/{name}` → `metrics/{env}/{name}`. Env name `"all"` is now a reserved keyword and rejected at config validation. Solve stats now use `example_id` grouping instead of index arithmetic (pre-existing bug fix). (2026-03-08)
 - **`orchestrator.verification.enabled`**: Added top-level rollout verification switch. `orchestrator.buffer.skip_verification` has been removed; use `verification.enabled = false` instead. When disabled, rewards are always 0 and reward-dependent buffer features (`online_difficulty_filtering`, `easy_threshold`, `hard_threshold`) must be unset (2026-03-03)
 - **`client.dp_rank_count`**: Added configuration for data-parallel inference routing. When > 1, each `client.base_url` is expanded into `dp_rank_count` logical clients and pinned via `X-data-parallel-rank` to keep multi-turn rollouts on a consistent DP rank (default: 1) (2026-03-03)
 - **`model.lora`**: Moved from `model.experimental.lora` to `model.lora` (no longer experimental) (#1440, 2025-12-16)
