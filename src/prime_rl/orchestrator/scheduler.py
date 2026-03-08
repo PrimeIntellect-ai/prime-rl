@@ -106,6 +106,8 @@ class Scheduler:
         # Starts empty (base model), populated with LoRA/model names after first weight broadcast
         self.actor_model_names: dict[str, str] = {}
 
+        self.outputs_per_rollout = max(1, len(actor_lora_mapping or actor_inference_pools or {}))
+
         self.deferred_group_scoring_tasks = set(deferred_group_scoring_tasks or ())
         if self.deferred_group_scoring_tasks:
             task_list = ", ".join(sorted(self.deferred_group_scoring_tasks))
@@ -235,7 +237,7 @@ class Scheduler:
         example = self.buffer.sample_examples(n=1)[0]
         group_id = self.next_group_id
         self.next_group_id += 1
-        self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.rollouts_per_example)
+        self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.rollouts_per_example // self.outputs_per_rollout)
         await self.schedule_rollout(group_id=group_id)
         return True
 
@@ -524,7 +526,11 @@ class Scheduler:
                     group = self.groups.get(group_id)
                     if group is None:
                         continue
-                    group.completed_rollouts.append(finished_task.result())
+                    result = finished_task.result()
+                    if isinstance(result, list):
+                        group.completed_rollouts.extend(result)
+                    else:
+                        group.completed_rollouts.append(result)
                     if len(group.completed_rollouts) < self.rollouts_per_example:
                         continue
                     completed_rollouts = self.groups.pop(group_id).completed_rollouts
