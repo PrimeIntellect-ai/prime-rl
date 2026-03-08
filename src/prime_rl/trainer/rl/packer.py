@@ -96,8 +96,10 @@ class MultiPacker(BasePacker):
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
         start_step: int = 0,
+        pack_full_step: bool = False,
     ):
         super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
+        self.pack_full_step = pack_full_step
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -192,8 +194,22 @@ class MultiPacker(BasePacker):
                     return tokens
         return tokens
 
+    def _all_runs_have_step_data(self) -> bool:
+        """Check that every active run has buffered data for its current step."""
+        if not self.multi_run_manager.used_idxs:
+            return False
+        for run_idx in self.multi_run_manager.used_idxs:
+            if len(self.buffers[run_idx]) == 0:
+                return False
+            _, step = self.buffers[run_idx][0]
+            if step > self.multi_run_manager.progress[run_idx].step:
+                return False
+        return True
+
     def _has_enough_tokens(self) -> bool:
         """Check if we have enough samples in buffer to pack a step"""
+        if self.pack_full_step:
+            return self._all_runs_have_step_data()
         # When not using small batch granularity, require at least one full batch
         threshold = self.seq_len * self.dp_world_size
         return self._count_tokens(threshold) >= threshold
@@ -264,7 +280,10 @@ class MultiPacker(BasePacker):
             time.sleep(1)
             self._get_batch()
 
-        token_budget = self.seq_len * self.dp_world_size
+        if self.pack_full_step:
+            token_budget = self._count_tokens()
+        else:
+            token_budget = self.seq_len * self.dp_world_size
         selected_samples = self._select_samples_round_robin(token_budget)
         assert selected_samples, "No samples selected"
 
@@ -313,9 +332,12 @@ def setup_packer(
     tokenizer: PreTrainedTokenizer,
     transport_config: TransportConfig,
     start_step: int = 0,
+    pack_full_step: bool = False,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
         return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
     else:
-        return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return MultiPacker(
+            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step, pack_full_step
+        )

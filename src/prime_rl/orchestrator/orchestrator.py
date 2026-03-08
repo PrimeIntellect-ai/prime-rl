@@ -312,12 +312,17 @@ async def orchestrate(config: OrchestratorConfig):
         actor_lora_mapping = {agent_id: f"run_{agent_id}" for agent_id in agents}
         logger.info(f"Multi-agent LoRA enabled: {actor_lora_mapping}")
 
-        # Create per-actor run directories with orch.toml
+        # Create per-actor run directories with minimal orch.toml
+        # Only include model.lora.name and optim.lr — the trainer fills in the rest
         for run_name in actor_lora_mapping.values():
             run_config_dir = config.output_dir.parent / run_name / "control"
             run_config_dir.mkdir(parents=True, exist_ok=True)
+            actor_orch_config = {
+                "model": {"lora": {"name": run_name}},
+                "optim": {"lr": config.optim.lr},
+            }
             with open(run_config_dir / "orch.toml", "wb") as f:
-                tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
+                tomli_w.dump(actor_orch_config, f)
 
     scheduler = Scheduler(
         env=train_env_group,

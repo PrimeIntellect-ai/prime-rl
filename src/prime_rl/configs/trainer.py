@@ -705,6 +705,14 @@ class TrainerConfig(BaseConfig):
         ),
     ] = 1
 
+    pack_full_step: Annotated[
+        bool,
+        Field(
+            description="When True, the packer waits for ALL active runs to have data before packing a step. "
+            "Required for multi-agent LoRA training where each agent must contribute data every step.",
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench is not None:

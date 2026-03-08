@@ -632,6 +632,9 @@ class RLConfig(BaseConfig):
                 "Each agent trains its own LoRA adapter."
             )
 
+        # Ensure packer waits for all runs to have data before advancing a step
+        self.trainer.pack_full_step = True
+
         if self.inference is not None:
             self.inference.enable_lora = True
             self.inference.max_lora_rank = self.trainer.model.lora.rank
