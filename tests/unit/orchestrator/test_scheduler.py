@@ -18,8 +18,8 @@ def test_update_off_policy_does_not_increment_interleaved_on_policy_tasks():
         interleaved_task = None
 
         scheduler.inflight_requests = {
-            stale_task: InflightRolloutInfo(off_policy_steps=1, client_config=client, group_id=1),
-            survivor_task: InflightRolloutInfo(off_policy_steps=0, client_config=client, group_id=2),
+            stale_task: InflightRolloutInfo(off_policy_steps=1, client_config=client, task="test", group_id=1),
+            survivor_task: InflightRolloutInfo(off_policy_steps=0, client_config=client, task="test", group_id=2),
         }
 
         async def drop_group(group_id: int) -> int:
@@ -38,6 +38,7 @@ def test_update_off_policy_does_not_increment_interleaved_on_policy_tasks():
                 scheduler.inflight_requests[interleaved_task] = InflightRolloutInfo(
                     off_policy_steps=0,
                     client_config=client,
+                    task="test",
                     group_id=3,
                 )
             return len(tasks_to_remove)
