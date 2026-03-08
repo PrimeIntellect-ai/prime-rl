@@ -521,10 +521,10 @@ def rl_local(config: RLConfig):
     )
 
     config_dir = config.output_dir / "configs"
-    write_subconfigs(config, config_dir)
-    logger.info(f"Wrote subconfigs to {config_dir}")
 
     if config.dry_run:
+        write_subconfigs(config, config_dir)
+        logger.info(f"Wrote subconfigs to {config_dir}")
         logger.success("Dry run complete. To start an RL run locally, remove --dry-run from your command.")
         return
 
@@ -582,6 +582,10 @@ def rl_local(config: RLConfig):
             }
             with open(control_dir / "orch.toml", "wb") as f:
                 tomli_w.dump(actor_orch_config, f)
+
+    # Write subconfigs after mode detection so overrides are included
+    write_subconfigs(config, config_dir)
+    logger.info(f"Wrote subconfigs to {config_dir}")
 
     if mode == "multi_model":
         model_groups = setup_multi_model(config, actor_models, logger)
