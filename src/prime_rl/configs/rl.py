@@ -635,6 +635,10 @@ class RLConfig(BaseConfig):
         # Ensure packer waits for all runs to have data before advancing a step
         self.trainer.pack_full_step = True
 
+        # Need at least 2 LoRA slots for multi-agent training
+        if self.trainer.max_concurrent_runs < 2:
+            self.trainer.max_concurrent_runs = 2
+
         if self.inference is not None:
             self.inference.enable_lora = True
             self.inference.max_lora_rank = self.trainer.model.lora.rank

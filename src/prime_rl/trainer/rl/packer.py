@@ -274,7 +274,7 @@ class MultiPacker(BasePacker):
         start_time = time.time()
 
         while not self._has_enough_tokens():
-            if time.time() - start_time > TIMEOUT_SECONDS and self._count_tokens() > 0:
+            if not self.pack_full_step and time.time() - start_time > TIMEOUT_SECONDS and self._count_tokens() > 0:
                 self.logger.warning("Timeout waiting for enough tokens to pack")
                 break
             time.sleep(1)
