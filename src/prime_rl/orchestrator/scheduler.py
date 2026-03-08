@@ -108,6 +108,8 @@ class Scheduler:
         self.checkpoint_ready.set()
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.update_policy_task: asyncio.Task | None = None
+        self.inflight_policy_update_task: asyncio.Task | None = None
+        self.policy_update_lock = asyncio.Lock()
         self.cancelled_rollouts_count = 0
         self.last_batch_generation_time = 0.0
 
@@ -229,47 +231,71 @@ class Scheduler:
             await self.maybe_update_policy()
             await asyncio.sleep(1)
 
-    async def maybe_update_policy(self):
-        """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
+    def _compute_next_ckpt_step(self) -> int:
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        next_ckpt_step = (
-            async_away_ckpt_step if self.strict_async_level else max(async_away_ckpt_step, latest_ckpt_step)
-        )
+        if self.strict_async_level:
+            return async_away_ckpt_step
+        return max(async_away_ckpt_step, latest_ckpt_step)
 
-        if next_ckpt_step > self.ckpt_step:
-            if next_ckpt_step == async_away_ckpt_step:
-                self.logger.info(
-                    f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
-                    f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
-                )
-                self.checkpoint_ready.clear()
-                wait_for_ckpt_start_time = time.perf_counter()
-                await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
-                self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
-                self.logger.info(
-                    f"Orchestrator resumed: checkpoint {next_ckpt_step} ready (after {self.wait_for_ckpt_time:.2f}s)"
-                )
-
-            self.logger.debug(
-                f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
+    async def _apply_policy_update(self, next_ckpt_step: int) -> None:
+        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
+        if next_ckpt_step == async_away_ckpt_step:
+            self.logger.info(
+                f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
+                f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+            )
+            self.checkpoint_ready.clear()
+            wait_for_ckpt_start_time = time.perf_counter()
+            await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
+            self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
+            self.logger.info(
+                f"Orchestrator resumed: checkpoint {next_ckpt_step} ready (after {self.wait_for_ckpt_time:.2f}s)"
             )
 
-            # Update weights on inference servers
-            update_weights_start_time = time.perf_counter()
-            weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-            await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
-            self.update_weights_time = time.perf_counter() - update_weights_start_time
-            self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
+        self.logger.debug(
+            f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
+        )
 
-            if self.lora_name is not None:
-                self.model_name = self.lora_name
-                self.inference_pool.update_model_name(self.model_name)
+        update_weights_start_time = time.perf_counter()
+        weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
+        await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
+        self.update_weights_time = time.perf_counter() - update_weights_start_time
+        self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
-            self.checkpoint_ready.set()
+        self.ckpt_step = next_ckpt_step
+        if self.lora_name is not None:
+            self.model_name = self.lora_name
+            self.inference_pool.update_model_name(self.model_name)
 
-            await self._update_off_policy()
-            self.ckpt_step = next_ckpt_step
+        self.checkpoint_ready.set()
+        await self._update_off_policy()
+
+    async def _get_or_start_policy_update_task(self, next_ckpt_step: int) -> asyncio.Task:
+        async with self.policy_update_lock:
+            task = self.inflight_policy_update_task
+            if task is not None and not task.done():
+                return task
+
+            task = asyncio.create_task(self._apply_policy_update(next_ckpt_step))
+            self.inflight_policy_update_task = task
+
+            def _clear_inflight_policy_update(done_task: asyncio.Task) -> None:
+                if self.inflight_policy_update_task is done_task:
+                    self.inflight_policy_update_task = None
+
+            task.add_done_callback(_clear_inflight_policy_update)
+            return task
+
+    async def maybe_update_policy(self):
+        """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
+        while True:
+            next_ckpt_step = self._compute_next_ckpt_step()
+            if next_ckpt_step <= self.ckpt_step:
+                return
+
+            task = await self._get_or_start_policy_update_task(next_ckpt_step)
+            await asyncio.shield(task)
 
     async def _update_off_policy(self) -> None:
         stale_group_ids = {
@@ -392,6 +418,9 @@ class Scheduler:
         if self.update_policy_task is not None:
             await safe_cancel(self.update_policy_task)
             self.update_policy_task = None
+        if self.inflight_policy_update_task is not None:
+            await self.inflight_policy_update_task
+            self.inflight_policy_update_task = None
 
     @property
     def max_off_policy_level(self) -> int:
