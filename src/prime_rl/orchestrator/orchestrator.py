@@ -568,8 +568,10 @@ async def orchestrate(config: OrchestratorConfig):
             vlm_cache = None
 
         # Process rollouts in parallel
+        split_by_agent = actor_lora_mapping is not None
+
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
-            return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
+            return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx, split_by_agent=split_by_agent)
 
         loop = asyncio.get_event_loop()
         futures = [
