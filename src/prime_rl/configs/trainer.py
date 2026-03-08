@@ -273,9 +273,9 @@ class ModelConfig(BaseModelConfig):
         int | Literal["auto", "disabled"],
         Field(
             description=(
-                "The chunk size to use for the fused LM head. "
+                "The flattened token chunk size to use for the fused LM head. "
                 "Three behaviors: "
-                "(1) int >= 512: explicitly set chunk size for fused LM head; "
+                "(1) int >= 1: explicitly set the number of tokens per LM-head chunk; "
                 "(2) 'auto': auto-enable (RL training auto-sets to 8192); "
                 "(3) 'disabled': explicitly disable fused LM head (use vanilla). "
                 "Explicitly setting an integer value for this feature isn't supported for SFT training."
@@ -326,15 +326,15 @@ class ModelConfig(BaseModelConfig):
     @model_validator(mode="after")
     def fused_lm_head_chunk_size_is_valid(self):
         if isinstance(self.fused_lm_head_chunk_size, int):
-            low = 512
-            warn_threshold = 8192
+            low = 1
+            warn_threshold = 128
             if self.fused_lm_head_chunk_size < low:
                 raise ValueError(
                     f"Fused LM head chunk size must be at least {low}, got {self.fused_lm_head_chunk_size}"
                 )
             if self.fused_lm_head_chunk_size < warn_threshold:
                 get_logger().warning(
-                    f"Fused LM head chunk size is set to {self.fused_lm_head_chunk_size}, which is less than the recommended threshold of {warn_threshold}. This may cause some runs to diverge due to numerical instability in floating point arithmetic."
+                    f"Fused LM head chunk size is set to {self.fused_lm_head_chunk_size}, which is smaller than the recommended threshold of {warn_threshold}. This is supported, but it may reduce matmul efficiency."
                 )
 
         return self
