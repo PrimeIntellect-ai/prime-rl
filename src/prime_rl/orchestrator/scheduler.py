@@ -81,7 +81,6 @@ class Scheduler:
         self.batch_size = config.batch_size
         self.token_batch_size = config.token_batch_size
         self.rollouts_per_example = config.rollouts_per_example
-        self.max_inflight_rollouts = max_inflight_rollouts
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
@@ -107,6 +106,7 @@ class Scheduler:
         self.actor_model_names: dict[str, str] = {}
 
         self.outputs_per_rollout = max(1, len(actor_lora_mapping or actor_inference_pools or {}))
+        self.max_inflight_rollouts = max_inflight_rollouts // self.outputs_per_rollout
 
         self.deferred_group_scoring_tasks = set(deferred_group_scoring_tasks or ())
         if self.deferred_group_scoring_tasks:
