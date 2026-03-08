@@ -650,8 +650,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         def solve_stats(df):
             """Compute solve_none, solve_all, effective_batch_size globally and per-env."""
-            problem_indices = df.index // config.rollouts_per_example
-            reward_per_problem = df.groupby(problem_indices).reward.sum()
+            reward_per_problem = df.groupby("example_id").reward.sum()
             solve_none = (reward_per_problem == 0).mean()
             solve_all = (reward_per_problem == config.rollouts_per_example).mean()
             effective_batch_size = 1 - solve_none - solve_all
@@ -661,8 +660,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "effective_batch_size/all": effective_batch_size,
             }
             for env, env_df in df.groupby("task"):
-                env_problem_indices = env_df.index // config.rollouts_per_example
-                env_reward_per_problem = env_df.groupby(env_problem_indices).reward.sum()
+                env_reward_per_problem = env_df.groupby("example_id").reward.sum()
                 env_solve_none = (env_reward_per_problem == 0).mean()
                 env_solve_all = (env_reward_per_problem == config.rollouts_per_example).mean()
                 result[f"solve_none/{env}"] = env_solve_none
