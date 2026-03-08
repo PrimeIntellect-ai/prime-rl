@@ -5,7 +5,7 @@ project = "multiagent"
 name = "ultimatum-game-lora"
 
 [model]
-name = "Qwen/Qwen3-1.7B"
+name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
 batch_size = 128
