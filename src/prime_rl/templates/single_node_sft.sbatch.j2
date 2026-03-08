@@ -6,11 +6,19 @@
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --exclusive
 #SBATCH --partition={{ partition }}
-{% if account %}#SBATCH --account={{ account }}
-{% endif %}{% if time %}#SBATCH --time={{ time }}
-{% endif %}{% if nodelist %}#SBATCH --nodelist={{ nodelist }}
-{% endif %}{% if exclude %}#SBATCH --exclude={{ exclude }}
-{% endif %}#SBATCH --output={{ output_dir }}/job_%j.log
+{%- if account %}
+#SBATCH --account={{ account }}
+{%- endif %}
+{%- if time %}
+#SBATCH --time={{ time }}
+{%- endif %}
+{%- if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{%- endif %}
+{%- if exclude %}
+#SBATCH --exclude={{ exclude }}
+{%- endif %}
+#SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
 
 export PROJECT_DIR={{ project_dir }}
