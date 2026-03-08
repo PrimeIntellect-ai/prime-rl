@@ -30,6 +30,7 @@ class InflightRolloutInfo(NamedTuple):
 
     off_policy_steps: int
     client_config: vf.ClientConfig
+    task: str
     group_id: int | None = None
 
 
@@ -201,7 +202,7 @@ class Scheduler:
             )
         )
         self.inflight_requests[run_rollout_task] = InflightRolloutInfo(
-            off_policy_steps=0, client_config=client_config, group_id=group_id
+            off_policy_steps=0, client_config=client_config, task=group.example["task"], group_id=group_id
         )
 
     @property
@@ -429,6 +430,12 @@ class Scheduler:
     def async_level(self) -> int:
         return self.step - self.ckpt_step
 
+    def _off_policy_steps_by_task(self) -> dict[str, list[int]]:
+        by_task: dict[str, list[int]] = {}
+        for info in self.inflight_requests.values():
+            by_task.setdefault(info.task, []).append(info.off_policy_steps)
+        return by_task
+
     def get_metrics(self) -> dict[str, float]:
         metrics = {
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
@@ -441,6 +448,10 @@ class Scheduler:
             "off_policy_level/all/min": self.min_off_policy_level,
             "batch/cancelled_rollouts": self.cancelled_rollouts_count,
         }
+        for task, steps in self._off_policy_steps_by_task().items():
+            metrics[f"off_policy_level/{task}/max"] = max(steps)
+            metrics[f"off_policy_level/{task}/mean"] = sum(steps) / len(steps)
+            metrics[f"off_policy_level/{task}/min"] = min(steps)
         self.cancelled_rollouts_count = 0
 
         # Add inference pool metrics (e.g. elastic pool server counts)
