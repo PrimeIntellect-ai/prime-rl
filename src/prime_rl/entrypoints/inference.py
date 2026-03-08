@@ -41,6 +41,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         partition=config.slurm.partition,
         num_nodes=config.deployment.num_nodes if config.deployment.type == "multi_node" else 1,
         port=config.server.port,
+        pre_run_command=config.slurm.pre_run_command,
     )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

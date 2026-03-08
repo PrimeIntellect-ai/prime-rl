@@ -10,6 +10,11 @@
 #SBATCH --error={{ output_dir }}/job_%j.log
 
 export PROJECT_DIR={{ project_dir }}
+{% if pre_run_command %}
+
+# Pre-run command
+{{ pre_run_command }}
+{% endif %}
 
 # Setup environment
 cd $PROJECT_DIR

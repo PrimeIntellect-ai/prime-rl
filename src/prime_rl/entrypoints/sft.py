@@ -45,6 +45,7 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) 
             project_dir=config.slurm.project_dir,
             gpus_per_node=config.deployment.gpus_per_node,
             partition=config.slurm.partition,
+            pre_run_command=config.slurm.pre_run_command,
         )
     else:
         script = template.render(
@@ -55,6 +56,7 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) 
             num_nodes=config.deployment.num_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
             partition=config.slurm.partition,
+            pre_run_command=config.slurm.pre_run_command,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

@@ -47,6 +47,7 @@ For **multi-node** jobs, sub-configs are written separately and `srun` dispatche
 | `project_dir` | Path to the project root on the cluster | `"."` |
 | `template_path` | Path to a custom Jinja2 template | auto-selected |
 | `partition` | SLURM partition | `"cluster"` |
+| `pre_run_command` | Shell command to run on compute nodes before starting the job (e.g. cleanup) | `None` |
 
 ### `[deployment]` — Node and GPU allocation
 

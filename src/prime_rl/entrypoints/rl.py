@@ -388,6 +388,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             partition=config.slurm.partition,
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
+            pre_run_command=config.slurm.pre_run_command,
         )
     else:
         assert config.inference is not None
@@ -407,6 +408,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_enable_expert_parallel=config.inference.enable_expert_parallel,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+            pre_run_command=config.slurm.pre_run_command,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

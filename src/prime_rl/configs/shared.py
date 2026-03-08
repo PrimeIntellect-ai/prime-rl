@@ -27,6 +27,15 @@ class SlurmConfig(BaseConfig):
         str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
     ] = "cluster"
 
+    pre_run_command: Annotated[
+        str | None,
+        Field(
+            description="Shell command to run on each compute node before starting the job. "
+            "Useful for cleanup routines like 'sudo pkill -f vllm'. "
+            "For complex logic, point to a script: 'bash scripts/cleanup.sh'.",
+        ),
+    ] = None
+
     @model_validator(mode="after")
     def resolve_project_dir(self):
         self.project_dir = self.project_dir.resolve()
