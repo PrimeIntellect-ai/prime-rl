@@ -471,6 +471,8 @@ class RLConfig(BaseConfig):
     def validate_multi_agent_lora(self):
         if self.orchestrator.multi_agent_lora and self.trainer.model.lora is None:
             raise ValueError("orchestrator.multi_agent_lora requires trainer.model.lora to be configured.")
+        if self.orchestrator.multi_agent_lora:
+            self.trainer.pack_full_step = True
         return self
 
     @model_validator(mode="after")

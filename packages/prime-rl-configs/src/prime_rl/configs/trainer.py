@@ -549,6 +549,9 @@ class TrainerConfig(BaseConfig):
     max_concurrent_runs: int = Field(1, ge=1)
     """Maximum number of concurrent runs to allow. If 1, only one run may run at a time."""
 
+    pack_full_step: bool = False
+    """When True, wait for all active runs to have data before packing a training step."""
+
     experimental: TrainerExperimentalConfig = TrainerExperimentalConfig()
 
     @model_validator(mode="after")
