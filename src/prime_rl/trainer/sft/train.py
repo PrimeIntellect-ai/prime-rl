@@ -262,10 +262,12 @@ def train(config: SFTConfig):
                     loss = out["loss"]
                 else:
                     out = forward(model, input_ids, position_ids)
-                    logits = out["logits"]
-                    B, L, V = logits.shape
-                    loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
-                    loss = loss[loss_mask].mean()
+
+            if config.loss_impl != "liger_fused":
+                logits = out["logits"]
+                B, L, V = logits.shape
+                loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+                loss = loss[loss_mask].mean()
 
             # Accumulate average loss over gradient accumulation steps
 
