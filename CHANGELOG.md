@@ -85,6 +85,7 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`trainer.enable_router_replay`**: Added flag to enable router replay. If True, will return routed experts in the batch. This is only supported if `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server. This is only supported for custom models. (2026-02-22)
 - **`inference.enable_return_routed_experts`**: Added flag to enable return routed experts. Passed to vLLM as `--enable-return-routed-experts` (2026-02-22)
 - **`orchestrator.oversampling_factor`**: Added rollout-only over-sampling config that resolves `max_inflight_rollouts = int(batch_size * oversampling_factor)` when `max_inflight_rollouts` is unset. Cannot be used with `token_batch_size` or together with explicit `max_inflight_rollouts` (2026-02-25)
+- **`sft.val`**: Added optional periodic SFT validation with `val/loss` and `val/num_tokens` logging. Configure via `sft.val.data` (validation dataset) and `sft.val.interval` (every N steps, default 50). Runs the full validation dataset each pass. (2026-02-26)
 - **`model.fused_lm_head_chunk_size`**: Changed default value from 2048 to 8192 for RL training (2026-02-26)
 - **`inference.data_parallel_size_local`** and **`inference.data_parallel_rpc_port`**: Added data-parallel node-local controls for vLLM, passed as `--data-parallel-size-local` and `--data-parallel-rpc-port` (defaults: `None`, `13345`) (2026-02-26)
 - **`dump_config`**: Removed from `RLConfig`. Replaced by `dry_run` (see below) (2026-02-26)

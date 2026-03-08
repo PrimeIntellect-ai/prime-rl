@@ -106,6 +106,12 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+class SFTValConfig(BaseConfig):
+    interval: Annotated[int, Field(ge=1, description="Run validation every N training steps.")] = 50
+    eval_on_start: Annotated[bool, Field(description="Run validation before the first training step.")] = False
+    data: SFTDataConfig
+
+
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
@@ -162,6 +168,9 @@ class SFTConfig(BaseConfig):
 
     # The data configuration
     data: DataConfig = SFTDataConfig()
+
+    # Optional validation configuration
+    val: SFTValConfig | None = None
 
     # The optimizer configuration
     optim: OptimizerConfig = AdamWConfig()
@@ -257,27 +266,37 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_pack_function(self):
-        if self.model.cp > 1 and self.data.pack_function != "cat":
-            raise ValueError("Packing function must be 'cat' when CP is enabled")
+        if self.model.cp > 1:
+            if self.data.pack_function != "cat":
+                raise ValueError("Packing function must be 'cat' when CP is enabled")
+            if self.val is not None and self.val.data.pack_function != "cat":
+                raise ValueError("Validation packing function must be 'cat' when CP is enabled")
         return self
 
     @model_validator(mode="after")
     def validate_cp_seq_len(self):
-        if self.model.cp > 1 and self.data.seq_len % self.model.cp != 0:
-            raise ValueError("Sequence length must be divisible by CP degree")
+        if self.model.cp > 1:
+            if self.data.seq_len % self.model.cp != 0:
+                raise ValueError("Sequence length must be divisible by CP degree")
+            if self.val is not None and self.val.data.seq_len % self.model.cp != 0:
+                raise ValueError("Validation sequence length must be divisible by CP degree")
         return self
 
     @model_validator(mode="after")
     def validate_cp_micro_batch_size(self):
-        if self.model.cp > 1 and self.data.micro_batch_size != 1:
-            raise ValueError("Micro batch size must be 1 when CP is enabled")
+        if self.model.cp > 1:
+            if self.data.micro_batch_size != 1:
+                raise ValueError("Micro batch size must be 1 when CP is enabled")
+            if self.val is not None and self.val.data.micro_batch_size != 1:
+                raise ValueError("Validation micro batch size must be 1 when CP is enabled")
         return self
 
     @model_validator(mode="after")
     def validate_seq_len(self):
-        if self.data.pack_function == "stack":
-            if self.data.seq_len % 256 != 0:
-                raise ValueError("The sequence length must be divisible by 256 when using pack function stack")
+        if self.data.pack_function == "stack" and self.data.seq_len % 256 != 0:
+            raise ValueError("The sequence length must be divisible by 256 when using pack function stack")
+        if self.val is not None and self.val.data.pack_function == "stack" and self.val.data.seq_len % 256 != 0:
+            raise ValueError("The validation sequence length must be divisible by 256 when using pack function stack")
         return self
 
     @model_validator(mode="after")
