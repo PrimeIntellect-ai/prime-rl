@@ -144,3 +144,20 @@ def test_validator_skips_when_auto_tool_choice_disabled():
 def test_reasoning_parser_explicit_not_overridden():
     config = VLLMConfig(model="Qwen/Qwen3.5-27B", reasoning_parser="deepseek_r1")
     assert config.reasoning_parser == "deepseek_r1"  # not auto-resolved to "qwen3"
+
+
+def test_shared_model_re_resolves_parsers():
+    """Shared model name must propagate to VLLMConfig before parser auto-resolution runs."""
+    from prime_rl.configs.rl import RLConfig
+
+    config = RLConfig(
+        **{
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {},
+            "model": {"name": "deepseek-ai/DeepSeek-V3.2"},
+        }
+    )
+    assert config.inference.vllm.model == "deepseek-ai/DeepSeek-V3.2"
+    assert config.inference.vllm.tool_call_parser == "deepseek_v32"
+    assert config.inference.vllm.reasoning_parser == "deepseek_r1"

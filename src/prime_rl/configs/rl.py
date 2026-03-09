@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -413,14 +413,45 @@ class RLConfig(BaseConfig):
 
         return self
 
+    @model_validator(mode="before")
+    @classmethod
+    def distribute_shared_model(cls, data: Any) -> Any:
+        """Inject shared model name into nested configs before they are constructed.
+
+        This ensures that VLLMConfig validators (e.g. auto_resolve_parsers)
+        see the correct model name, not the default.
+        """
+        if not isinstance(data, dict):
+            return data
+        model = data.get("model")
+        if model is None:
+            return data
+        name = model.get("name") if isinstance(model, dict) else getattr(model, "name", None)
+        if name is None:
+            return data
+
+        for key in ("trainer", "orchestrator"):
+            section = data.setdefault(key, {})
+            if isinstance(section, dict):
+                section.setdefault("model", {}).setdefault("name", name)
+
+        for key in ("inference", "teacher_inference"):
+            section = data.get(key)
+            if section is not None and isinstance(section, dict):
+                section.setdefault("vllm", {}).setdefault("model", name)
+
+        return data
+
     @model_validator(mode="after")
     def auto_setup_model(self):
-        """Auto-setup shared model config for trainer, orchestrator, and inference."""
+        """Validate that model names are consistent across all sub-configs."""
         if self.model is not None:
             self.trainer.model.name = self.model.name
             self.orchestrator.model.name = self.model.name
             if self.inference is not None:
                 self.inference.vllm.model = self.model.name
+            if self.teacher_inference is not None:
+                self.teacher_inference.vllm.model = self.model.name
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
