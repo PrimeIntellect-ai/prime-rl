@@ -20,14 +20,13 @@ BASE_DIR = Path("/home/matej/dev/prime-rl/scripts/glm5_weight_transfer/checkpoin
 BF16_DIR = BASE_DIR / "glm5-tiny-bf16"
 FP8_DIR = BASE_DIR / "glm5-tiny-fp8"
 
-# Use real GLM-5 head dimensions (required by vLLM MLA backends)
-# but reduce layers, experts, and vocab
+# Exact GLM-5 dimensions, just 2 layers (1 dense + 1 MoE with 256 experts)
 CONFIG = {
     "architectures": ["GlmMoeDsaForCausalLM"],
     "attention_bias": False,
     "attention_dropout": 0.0,
     "dtype": "bfloat16",
-    "eos_token_id": [0],
+    "eos_token_id": [154820, 154827, 154829],
     "ep_size": 1,
     "first_k_dense_replace": 1,
     "hidden_act": "silu",
@@ -35,7 +34,7 @@ CONFIG = {
     "hidden_size": 6144,
     "index_head_dim": 128,
     "index_n_heads": 32,
-    "index_topk": 128,
+    "index_topk": 2048,
     "indexer_rope_interleave": True,
     "initializer_range": 0.02,
     "intermediate_size": 12288,
@@ -45,15 +44,15 @@ CONFIG = {
     "moe_layer_freq": 1,
     "model_type": "glm_moe_dsa",
     "n_group": 1,
-    "n_routed_experts": 8,
+    "n_routed_experts": 16,
     "n_shared_experts": 1,
     "norm_topk_prob": True,
     "num_attention_heads": 64,
-    "num_experts_per_tok": 2,
+    "num_experts_per_tok": 8,
     "num_hidden_layers": 2,
     "num_key_value_heads": 64,
     "num_nextn_predict_layers": 0,
-    "pad_token_id": 0,
+    "pad_token_id": 154820,
     "pretraining_tp": 1,
     "q_lora_rank": 2048,
     "qk_head_dim": 256,
@@ -70,7 +69,7 @@ CONFIG = {
     "transformers_version": "5.0.2.dev0",
     "use_cache": True,
     "v_head_dim": 256,
-    "vocab_size": 1024,
+    "vocab_size": 154880,
 }
 
 # Derived dimensions

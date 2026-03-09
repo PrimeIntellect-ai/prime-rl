@@ -214,6 +214,8 @@ def train(config: TrainerConfig):
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
+        if world.is_master:
+            torch.cuda.memory._record_memory_history()
 
         # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
         # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
@@ -425,8 +427,14 @@ def train(config: TrainerConfig):
             )
 
             # Backward pass
-            with maybe_record_function("backward"):
-                loss.backward()
+            try:
+                with maybe_record_function("backward"):
+                    loss.backward()
+            except Exception as e:
+                logger.error(f"Error during backward pass: {e}")
+                if world.is_master:
+                    torch.cuda.memory._dump_snapshot()
+                raise e
 
             # Add relevant tensors to tensor dict for logging purposes
             tensors["trainer_probs"].append(torch.exp(out["logprobs"])[loss_mask].detach().to("cpu"))

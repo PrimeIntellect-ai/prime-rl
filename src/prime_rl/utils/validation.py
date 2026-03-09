@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from prime_rl.configs.inference import InferenceConfig
@@ -34,16 +35,18 @@ def validate_shared_model_name(
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
+    kernel_transfer = os.environ.get("PRIME_RL_KERNEL_WEIGHT_TRANSFER", "0") == "1"
+
     if trainer.model.name.startswith("Jackmin108/"):  # The TT MoE models will have a different name on the orchestrator
         return
-    if trainer.model.name != orchestrator.model.name:
+    if trainer.model.name != orchestrator.model.name and not kernel_transfer:
         raise ValueError(
             f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
         )
 
-    if inference and inference.model.name != orchestrator.model.name:
+    if inference and inference.model.name != orchestrator.model.name and not kernel_transfer:
         raise ValueError(
-            f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}. Please specify the same model name for both."
+            f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}). Please specify the same model name for both."
         )
 
 
