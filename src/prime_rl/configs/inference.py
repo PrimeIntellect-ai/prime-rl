@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import SlurmConfig
-from prime_rl.utils.parsers import REASONING_PARSER_PATTERNS, TOOL_CALL_PARSER_PATTERNS, resolve_parser
+from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
@@ -173,9 +173,9 @@ class VLLMConfig(BaseConfig):
     def auto_resolve_parsers(self):
         """Auto-detect tool_call_parser and reasoning_parser from the model name if not explicitly set."""
         if self.enable_auto_tool_choice and "tool_call_parser" not in self.model_fields_set:
-            self.tool_call_parser = resolve_parser(self.model, TOOL_CALL_PARSER_PATTERNS)
+            self.tool_call_parser = resolve_tool_call_parser(self.model)
         if "reasoning_parser" not in self.model_fields_set:
-            self.reasoning_parser = resolve_parser(self.model, REASONING_PARSER_PATTERNS)
+            self.reasoning_parser = resolve_reasoning_parser(self.model)
         return self
 
     @model_validator(mode="after")

@@ -30,3 +30,11 @@ def resolve_parser(model_name: str, patterns: list[tuple[re.Pattern[str], str]])
         if pattern.search(model_name):
             return parser_name
     return None
+
+
+def resolve_tool_call_parser(model_name: str) -> str | None:
+    return resolve_parser(model_name, TOOL_CALL_PARSER_PATTERNS)
+
+
+def resolve_reasoning_parser(model_name: str) -> str | None:
+    return resolve_parser(model_name, REASONING_PARSER_PATTERNS)
