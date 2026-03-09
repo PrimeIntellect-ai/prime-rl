@@ -108,7 +108,6 @@ dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "5c1c72b" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "e2743ab5" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
-
 reverse-text = { index = "primeintellect" }
 alphabet-sort = { index = "primeintellect" }
 wiki-search = { index = "primeintellect" }
