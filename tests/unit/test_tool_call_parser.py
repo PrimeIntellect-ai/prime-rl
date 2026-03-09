@@ -1,6 +1,7 @@
 import pytest
 
-from prime_rl.utils.parsers import resolve_tool_call_parser
+from prime_rl.configs.inference import VLLMConfig
+from prime_rl.utils.parsers import TOOL_CALL_PARSER_PATTERNS, resolve_parser
 
 
 # Every model that was explicitly listed in the old dict-based mapping.
@@ -102,12 +103,23 @@ from prime_rl.utils.parsers import resolve_tool_call_parser
     ],
 )
 def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
-    assert resolve_tool_call_parser(model_name, None) == expected_parser
+    assert resolve_parser(model_name, TOOL_CALL_PARSER_PATTERNS) == expected_parser
 
 
 def test_explicit_parser_not_overridden():
-    assert resolve_tool_call_parser("Qwen/Qwen3-4B-Instruct-2507", "qwen3_xml") == "qwen3_xml"
+    config = VLLMConfig(model="Qwen/Qwen3-4B", tool_call_parser="qwen3_xml")
+    assert config.tool_call_parser == "qwen3_xml"
 
 
 def test_unknown_model_returns_none():
-    assert resolve_tool_call_parser("some/unknown-model", None) is None
+    assert resolve_parser("some/unknown-model", TOOL_CALL_PARSER_PATTERNS) is None
+
+
+def test_validator_auto_resolves_when_not_set():
+    config = VLLMConfig(model="Qwen/Qwen3-4B")
+    assert config.tool_call_parser == "hermes"
+
+
+def test_validator_skips_when_explicitly_set_to_none():
+    config = VLLMConfig(model="Qwen/Qwen3-4B", tool_call_parser=None)
+    assert config.tool_call_parser is None

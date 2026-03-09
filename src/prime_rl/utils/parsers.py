@@ -20,21 +20,9 @@ TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = []
 
 
-def resolve_parser(
-    model_name: str, parser_value: str | None, patterns: list[tuple[re.Pattern[str], str]]
-) -> str | None:
-    """Resolve a parser value. If not set, auto-detect from model name using patterns."""
-    if parser_value is not None:
-        return parser_value
+def resolve_parser(model_name: str, patterns: list[tuple[re.Pattern[str], str]]) -> str | None:
+    """Auto-detect parser from model name. Returns the first matching pattern's parser."""
     for pattern, parser_name in patterns:
         if pattern.search(model_name):
             return parser_name
     return None
-
-
-def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> str | None:
-    return resolve_parser(model_name, tool_call_parser, TOOL_CALL_PARSER_PATTERNS)
-
-
-def resolve_reasoning_parser(model_name: str, reasoning_parser: str | None) -> str | None:
-    return resolve_parser(model_name, reasoning_parser, REASONING_PARSER_PATTERNS)
