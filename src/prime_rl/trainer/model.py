@@ -254,6 +254,11 @@ def get_model(
         )
         model_config.pad_token_id = pad_token_id
 
+    # Some HF configs (e.g. Llama 3.2) set pad_token_id to a list, which crashes
+    # transformers' GenerationConfig.validate() when it does `pad_token_id < 0`.
+    if isinstance(getattr(model_config, "pad_token_id", None), list):
+        model_config.pad_token_id = model_config.pad_token_id[0]
+
     # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
     # The model should load in its default dtype (bf16) to match vLLM inference.
     # The FSDP MixedPrecisionPolicy handles compute dtype separately.
