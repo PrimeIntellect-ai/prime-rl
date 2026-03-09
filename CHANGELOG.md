@@ -2,6 +2,8 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`slurm.pre_run_command`**: Added optional shell command to run on the head node before starting the job. Useful for cleanup routines (e.g. killing stale processes, removing lock files). For all-nodes execution, wrap with `srun` in the command string (default: None) (2026-03-08)
+- **`slurm.nodelist`**, **`slurm.exclude`**, **`slurm.account`**, **`slurm.time`**: Added common SLURM scheduling options (all default: None) (2026-03-08)
 - **`orchestrator.verification.enabled`**: Added top-level rollout verification switch. `orchestrator.buffer.skip_verification` has been removed; use `verification.enabled = false` instead. When disabled, rewards are always 0 and reward-dependent buffer features (`online_difficulty_filtering`, `easy_threshold`, `hard_threshold`) must be unset (2026-03-03)
 - **`client.dp_rank_count`**: Added configuration for data-parallel inference routing. When > 1, each `client.base_url` is expanded into `dp_rank_count` logical clients and pinned via `X-data-parallel-rank` to keep multi-turn rollouts on a consistent DP rank (default: 1) (2026-03-03)
 - **`model.lora`**: Moved from `model.experimental.lora` to `model.lora` (no longer experimental) (#1440, 2025-12-16)
