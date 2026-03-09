@@ -4,8 +4,6 @@ from prime_rl.configs.inference import VLLMConfig
 from prime_rl.utils.parsers import REASONING_PARSER_PATTERNS, TOOL_CALL_PARSER_PATTERNS, resolve_parser
 
 
-# Every model that was explicitly listed in the old dict-based mapping.
-# This ensures the regex patterns don't regress.
 @pytest.mark.parametrize(
     "model_name,expected_parser",
     [
@@ -27,9 +25,9 @@ from prime_rl.utils.parsers import REASONING_PARSER_PATTERNS, TOOL_CALL_PARSER_P
         ("MiniMaxAI/MiniMax-M2.1", "minimax_m2"),
         ("MiniMaxAI/MiniMax-M2.5", "minimax_m2"),
         # INTELLECT-3
-        ("PrimeIntellect/INTELLECT-3", "hermes"),
-        ("PrimeIntellect/INTELLECT-3-FP8", "hermes"),
-        ("PrimeIntellect/INTELLECT-3.1", "hermes"),
+        ("PrimeIntellect/INTELLECT-3", "qwen3_coder"),
+        ("PrimeIntellect/INTELLECT-3-FP8", "qwen3_coder"),
+        ("PrimeIntellect/INTELLECT-3.1", "qwen3_coder"),
         # Qwen3 dense
         ("Qwen/Qwen3-0.6B", "hermes"),
         ("Qwen/Qwen3-0.6B-Base", "hermes"),
@@ -113,6 +111,10 @@ def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
         ("MiniMaxAI/MiniMax-M2", "minimax_m2"),
         ("MiniMaxAI/MiniMax-M2.1", "minimax_m2"),
         ("MiniMaxAI/MiniMax-M2.5", "minimax_m2"),
+        # INTELLECT-3
+        ("PrimeIntellect/INTELLECT-3", "deepseek_r1"),
+        ("PrimeIntellect/INTELLECT-3-FP8", "deepseek_r1"),
+        ("PrimeIntellect/INTELLECT-3.1", "deepseek_r1"),
         # Qwen3
         ("Qwen/Qwen3-0.6B", "qwen3"),
         ("Qwen/Qwen3-4B-Thinking-2507", "qwen3"),
