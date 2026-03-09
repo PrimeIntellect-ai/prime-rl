@@ -1,7 +1,7 @@
 import pytest
 
 from prime_rl.configs.inference import VLLMConfig
-from prime_rl.utils.parsers import TOOL_CALL_PARSER_PATTERNS, resolve_parser
+from prime_rl.utils.parsers import REASONING_PARSER_PATTERNS, TOOL_CALL_PARSER_PATTERNS, resolve_parser
 
 
 # Every model that was explicitly listed in the old dict-based mapping.
@@ -106,6 +106,27 @@ def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
     assert resolve_parser(model_name, TOOL_CALL_PARSER_PATTERNS) == expected_parser
 
 
+@pytest.mark.parametrize(
+    "model_name,expected_parser",
+    [
+        # MiniMax M2
+        ("MiniMaxAI/MiniMax-M2", "minimax_m2"),
+        ("MiniMaxAI/MiniMax-M2.1", "minimax_m2"),
+        ("MiniMaxAI/MiniMax-M2.5", "minimax_m2"),
+        # Qwen3
+        ("Qwen/Qwen3-0.6B", "qwen3"),
+        ("Qwen/Qwen3-4B-Thinking-2507", "qwen3"),
+        ("Qwen/Qwen3-235B-A22B", "qwen3"),
+        ("Qwen/Qwen3-Coder-Next", "qwen3"),
+        # Qwen3.5
+        ("Qwen/Qwen3.5-27B", "qwen3"),
+        ("Qwen/Qwen3.5-397B-A17B", "qwen3"),
+    ],
+)
+def test_auto_detect_reasoning_parser(model_name: str, expected_parser: str):
+    assert resolve_parser(model_name, REASONING_PARSER_PATTERNS) == expected_parser
+
+
 def test_explicit_parser_not_overridden():
     config = VLLMConfig(model="Qwen/Qwen3-4B", tool_call_parser="qwen3_xml")
     assert config.tool_call_parser == "qwen3_xml"
@@ -118,6 +139,7 @@ def test_unknown_model_returns_none():
 def test_validator_auto_resolves_when_not_set():
     config = VLLMConfig(model="Qwen/Qwen3-4B")
     assert config.tool_call_parser == "hermes"
+    assert config.reasoning_parser == "qwen3"
     assert config.enable_auto_tool_choice is True
 
 
@@ -129,3 +151,13 @@ def test_validator_skips_when_explicitly_set_to_none():
 def test_validator_skips_when_auto_tool_choice_disabled():
     config = VLLMConfig(model="Qwen/Qwen3-4B", enable_auto_tool_choice=False)
     assert config.tool_call_parser is None
+
+
+def test_reasoning_parser_auto_resolves():
+    config = VLLMConfig(model="Qwen/Qwen3.5-27B")
+    assert config.reasoning_parser == "qwen3"
+
+
+def test_reasoning_parser_explicit_not_overridden():
+    config = VLLMConfig(model="Qwen/Qwen3.5-27B", reasoning_parser="deepseek_r1")
+    assert config.reasoning_parser == "deepseek_r1"

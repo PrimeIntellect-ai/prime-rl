@@ -8,10 +8,6 @@ from pydantic_config import BaseConfig
 from prime_rl.configs.shared import SlurmConfig
 from prime_rl.utils.parsers import REASONING_PARSER_PATTERNS, TOOL_CALL_PARSER_PATTERNS, resolve_parser
 
-# Valid vLLM max_lora_rank values (from vllm/config/lora.py)
-# TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
-VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
-
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
@@ -27,13 +23,18 @@ All2AllBackend = Literal[
     "pplx",
 ]
 
-DEFAULT_MAX_LORAS = 8
+# Valid vLLM max_lora_rank values (from vllm/config/lora.py)
+# TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
+VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
+
 # TODO: The default value is very high because our PipelineRL implementation for
 # LoRA isn't ideal We add a lora with the same name instead of changing weights
 # inplace Because we dont cancel requests that are past max_async, these
 # requests could be using a LoRA that gets unloaded which will crash the
 # inference server
 DEFAULT_MAX_CPU_LORAS = 100
+
+DEFAULT_MAX_LORAS = 8
 
 
 class VLLMConfig(BaseConfig):

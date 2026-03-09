@@ -17,7 +17,11 @@ TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^Qwen/Qwen3-"), "hermes"),
 ]
 
-REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = []
+REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2"),
+    # Qwen3.5 and Qwen3 both use the "qwen3" reasoning parser
+    (re.compile(r"^Qwen/Qwen3"), "qwen3"),
+]
 
 
 def resolve_parser(model_name: str, patterns: list[tuple[re.Pattern[str], str]]) -> str | None:
