@@ -279,9 +279,6 @@ def train(config: SFTConfig):
         if was_training:
             model.train()
 
-    if config.val is not None and config.val.eval_on_start:
-        run_validation(progress.step)
-
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
@@ -436,7 +433,11 @@ def train(config: SFTConfig):
         if is_tt_moe_model(model) and batch_max_vio.item() > 0:
             monitor.log({"max_vio/mean": batch_max_vio.item(), "step": progress.step}, step=progress.step)
 
-        if config.val is not None and not is_first_step and progress.step % config.val.interval == 0:
+        should_eval = config.val is not None and (
+            (is_first_step and config.val.eval_on_start)
+            or (not is_first_step and progress.step % config.val.interval == 0)
+        )
+        if should_eval:
             run_validation(progress.step)
 
         is_first_step = False
