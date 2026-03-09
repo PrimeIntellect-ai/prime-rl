@@ -4,6 +4,7 @@ import multiprocessing as mp
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import tomli_w
 
@@ -51,6 +52,7 @@ from prime_rl.orchestrator.vf_utils import (
     task_uses_group_scoring,
     wait_for_env_servers,
 )
+from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import (
     init_nccl_broadcast,
     setup_inference_pool,
@@ -69,6 +71,57 @@ from prime_rl.utils.utils import (
     to_col_format,
 )
 from prime_rl.utils.vlm import is_vlm_model
+
+
+@dataclass(slots=True)
+class PreparedStep:
+    train_rollouts: list[vf.RolloutOutput]
+    train_examples: list[TrainingSample]
+    val_task: asyncio.Task
+    step: int
+    ckpt_step: int
+    step_start_time: float
+    temperature: float
+    rewards: list[float]
+    advantages: list[float]
+    num_rollouts: int
+    num_unique_examples: int
+    rollout_prefill_lens: list[int]
+    rollout_decode_lens: list[int]
+    rollout_samples_per_rollout: list[int]
+    num_prefill_tokens: int
+    num_decode_tokens: int
+    parallel_preprocess_time: float
+    filter_metrics: dict[str, float]
+    event_loop_lag_marker: int
+
+
+@dataclass(slots=True)
+class IterationState:
+    step: int
+    ckpt_step: int
+    may_need_ckpt: bool
+    eval_ckpt_step: int | None
+    run_val: bool
+
+    def needs_sync(self, *, has_inflight_validation: bool, max_steps: int | None) -> bool:
+        return (
+            has_inflight_validation
+            or self.may_need_ckpt
+            or self.eval_ckpt_step is not None
+            or (max_steps is not None and self.step >= max_steps)
+        )
+
+
+@dataclass(slots=True)
+class InflightPostprocess:
+    step: int
+    has_validation: bool
+    task: asyncio.Task
+
+    @property
+    def next_step(self) -> int:
+        return self.step + 1
 
 
 @clean_exit
@@ -377,128 +430,24 @@ async def orchestrate(config: OrchestratorConfig):
     # Persistent ThreadPoolExecutor for parallel rollout processing
     rollout_executor = ThreadPoolExecutor(max_workers=64)
 
-    while True:
-        # Check if this run has been evicted by the trainer
-        evicted_path = config.output_dir / "control" / "evicted.txt"
-        if evicted_path.exists():
-            reason = evicted_path.read_text().strip()
-            raise RuntimeError(f"Run evicted by trainer: {reason}")
+    async def _prepare_step(
+        *,
+        train_rollouts: list[vf.RolloutOutput],
+        val_task: asyncio.Task,
+        step: int,
+        ckpt_step: int,
+        step_start_time: float,
+        temperature: float,
+        filter_metrics: dict[str, float],
+        event_loop_lag_marker: int,
+    ) -> PreparedStep | None:
+        """Build trainable samples for a step. Returns None when the batch should be retried."""
 
-        # Capture ckpt_step once for consistency (it's updated inside the scheduler)
-        ckpt_step = scheduler.ckpt_step
-
-        # Save checkpoint (if we are at an interval step and not at the first or last step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
-        save_ckpt_time = 0
-        if (
-            ckpt_manager is not None
-            and (config.ckpt and config.ckpt.interval)
-            and not (is_first_step or is_last_step)
-            and progress.step % config.ckpt.interval == 0
-        ):
-            logger.info(f"Saving checkpoint at step {progress.step}")
-            save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress, buffer, step=progress.step)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
-
-        # Break if we have reached the maximum number of steps
-        if config.max_steps and progress.step >= config.max_steps:
-            break
-
-        logger.info(f"Starting orchestrator step {progress.step}")
-        step_start_time = time.perf_counter()
-
-        # Run evals BEFORE training (blocking). Weight updates are paused via
-        # scheduler.checkpoint_ready during eval to ensure consistent weights.
-        # Use range check to handle ckpt_step jumping over interval boundaries.
-        eval_ckpt_step = None
-        if config.eval:
-            eval_ckpt_step = compute_eval_ckpt_step(
-                ckpt_step=ckpt_step,
-                prev_ckpt_step=prev_ckpt_step,
-                last_eval_step=last_eval_step,
-                interval=config.eval.interval,
-                eval_base_model=config.eval.eval_base_model,
-            )
-
-        if eval_ckpt_step is not None:
-            last_eval_step = ckpt_step
-            if eval_ckpt_step != ckpt_step:
-                logger.info(f"Running evals for interval step {eval_ckpt_step} (current ckpt_step={ckpt_step})")
-            else:
-                logger.info(f"Running evals for checkpoint step {ckpt_step}")
-
-            # Pause weight updates and re-scheduling of training rollouts during eval
-            # to avoid evaluating across different checkpoints and avoid congestion
-            scheduler.checkpoint_ready.clear()
-
-            # For heavy eval workloads, it might be necessary additionally cancel in-flight training rollouts
-            if config.eval.cancel_inflight_rollouts_on_eval:
-                logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
-                await scheduler.cancel_inflight_rollouts()
-
-            results = await asyncio.gather(
-                *[
-                    evaluate_env(
-                        env=eval_env,
-                        env_name=eval_env_name,
-                        get_client=inference_pool.get_next_client,
-                        model_name=scheduler.model_name,
-                        sampling_args=eval_sampling_args,
-                        num_examples=eval_env_config.num_examples or config.eval.num_examples,
-                        rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
-                        max_retries=eval_env_config.max_retries,
-                        ckpt_step=ckpt_step,
-                        step=progress.step,
-                    )
-                    for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
-                ]
-            )
-
-            # Resume weight updates
-            scheduler.checkpoint_ready.set()
-
-        # Update prev_ckpt_step for next iteration
-        prev_ckpt_step = ckpt_step
-
-        # Schedule generating the training batch
-        temperature = compute_temperature(progress.step, config.sampling, config.max_steps)
-        sampling_args = get_sampling_args(config.sampling, temperature=temperature)
-        scheduler.set_sampling_args(sampling_args)
-        train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
-
-        # Schedule running validation at the specified interval
-        if val_buffer and config.val and progress.step % config.val.interval == 0:
-            logger.info(f"Running validation for step {progress.step}")
-            val_examples = val_buffer.sample_examples(config.val.num_examples)
-            val_task = asyncio.create_task(
-                generate(
-                    env=train_env_group,
-                    model_name=scheduler.model_name,
-                    examples=val_examples,
-                    rollouts_per_example=config.val.rollouts_per_example,
-                    sampling_args=sampling_args,
-                    clients=inference_pool.clients,
-                    pbar_description="Generating rollouts (val)",
-                )
-            )
-        else:
-            val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
-
-        # Await train rollouts, process results and write batch to disk to consume by trainer
-        await train_task
-        generate_completions_time = scheduler.last_batch_generation_time
-        train_rollouts = train_task.result()
-
-        # Apply rollout filters (zeros reward/mask for degenerate generations)
-        filter_metrics = apply_filters(rollout_filters, train_rollouts)
-
-        # Compute advantages
-        example_ids = [r["example_id"] for r in train_rollouts]
+        example_ids = [rollout["example_id"] for rollout in train_rollouts]
         num_rollouts = len(train_rollouts)
         num_unique_examples = len(set(example_ids))
-        rewards = [r["reward"] for r in train_rollouts]
-        completion_lens = [get_completion_len(r) for r in train_rollouts]
+        rewards = [rollout["reward"] for rollout in train_rollouts]
+        completion_lens = [get_completion_len(rollout) for rollout in train_rollouts]
         advantages = compute_advantages(
             rewards,
             completion_lens,
@@ -506,10 +455,8 @@ async def orchestrate(config: OrchestratorConfig):
             config.advantage,
         )
 
-        # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # VLM: build image cache for efficient batched preprocessing
         if is_vlm:
             vlm_cache = build_vlm_image_cache(train_rollouts, processor)
             logger.info(
@@ -519,18 +466,16 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             vlm_cache = None
 
-        # Process rollouts in parallel
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
             return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
 
         loop = asyncio.get_event_loop()
         futures = [
-            loop.run_in_executor(rollout_executor, process_rollout, r, rollout_idx)
-            for rollout_idx, r in enumerate(train_rollouts)
+            loop.run_in_executor(rollout_executor, process_rollout, rollout, rollout_idx)
+            for rollout_idx, rollout in enumerate(train_rollouts)
         ]
         results = await asyncio.gather(*futures)
 
-        # Collect results and assign advantages
         train_examples: list[TrainingSample] = []
         rollout_prefill_lens: list[int] = []
         rollout_decode_lens: list[int] = []
@@ -557,77 +502,87 @@ async def orchestrate(config: OrchestratorConfig):
             num_prefill_tokens += rollout_prefill_tokens
             num_decode_tokens += rollout_decode_tokens
 
+        del results, vlm_cache
+
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
             f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
             f"to {len(train_examples)} training examples"
         )
 
-        # Compute teacher logprobs if teacher model is configured
+        if not train_examples:
+            return None
+
+        return PreparedStep(
+            train_rollouts=train_rollouts,
+            train_examples=train_examples,
+            val_task=val_task,
+            step=step,
+            ckpt_step=ckpt_step,
+            step_start_time=step_start_time,
+            temperature=temperature,
+            rewards=rewards,
+            advantages=advantages,
+            num_rollouts=num_rollouts,
+            num_unique_examples=num_unique_examples,
+            rollout_prefill_lens=rollout_prefill_lens,
+            rollout_decode_lens=rollout_decode_lens,
+            rollout_samples_per_rollout=rollout_samples_per_rollout,
+            num_prefill_tokens=num_prefill_tokens,
+            num_decode_tokens=num_decode_tokens,
+            parallel_preprocess_time=parallel_preprocess_time,
+            filter_metrics=filter_metrics,
+            event_loop_lag_marker=event_loop_lag_marker,
+        )
+
+    async def _finalize_step(
+        *,
+        prepared_step: PreparedStep,
+        generate_completions_time: float,
+        save_ckpt_time: float,
+        scheduler_metrics: dict[str, float],
+        buffer_metrics: dict[str, float],
+    ) -> None:
         teacher_logprobs_time = 0
         if config.teacher_model and teacher_inference_pool:
-            logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
+            logger.info(f"Computing teacher logprobs for {len(prepared_step.train_examples)} training examples")
             teacher_logprobs_start_time = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs(
                 clients=teacher_inference_pool.clients,
                 model_name=config.teacher_model.model.name,
-                samples=train_examples,
+                samples=prepared_step.train_examples,
             )
-            for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
+            for train_example, teacher_logprobs in zip(prepared_step.train_examples, teacher_logprobs_list):
                 train_example.teacher_logprobs = teacher_logprobs
             teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
             logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
 
         training_batch = TrainingBatch(
-            examples=train_examples,
-            step=progress.step,
+            examples=prepared_step.train_examples,
+            step=prepared_step.step,
         )
-
-        # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
-        if len(training_batch.examples) == 0:
-            empty_batch_retries += 1
-            if empty_batch_retries >= max_empty_batch_retries:
-                raise RuntimeError(
-                    f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
-                )
-            backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
-            logger.warning(
-                f"Step {progress.step} produced 0 training samples "
-                f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
-            )
-            # Cancel validation task to avoid accumulating background tasks
-            val_task.cancel()
-            await asyncio.sleep(backoff)
-            continue
-
-        # Reset retry counter on successful batch
-        empty_batch_retries = 0
         training_batch_sender.send(training_batch)
 
-        # Await and process val results
-        await val_task
-        val_outputs = val_task.result()
+        await prepared_step.val_task
+        val_outputs = prepared_step.val_task.result()
 
-        # Gather metrics in dataframes
         results_df = pd.DataFrame(
             {
-                "example_id": [rollout["example_id"] for rollout in train_rollouts],
-                "task": [rollout["task"] for rollout in train_rollouts],
-                "reward": [rollout["reward"] for rollout in train_rollouts],
-                "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
-                "error": [rollout["error"] for rollout in train_rollouts],
-                "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
-                "prefill_len": rollout_prefill_lens,
-                "decode_len": rollout_decode_lens,
-                "samples_per_rollout": rollout_samples_per_rollout,
-                "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
-                "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
-                "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
+                "example_id": [rollout["example_id"] for rollout in prepared_step.train_rollouts],
+                "task": [rollout["task"] for rollout in prepared_step.train_rollouts],
+                "reward": [rollout["reward"] for rollout in prepared_step.train_rollouts],
+                "is_truncated": [rollout["is_truncated"] for rollout in prepared_step.train_rollouts],
+                "error": [rollout["error"] for rollout in prepared_step.train_rollouts],
+                "seq_len": [get_seq_len(rollout) for rollout in prepared_step.train_rollouts],
+                "prefill_len": prepared_step.rollout_prefill_lens,
+                "decode_len": prepared_step.rollout_decode_lens,
+                "samples_per_rollout": prepared_step.rollout_samples_per_rollout,
+                "num_turns": [len(rollout["trajectory"]) for rollout in prepared_step.train_rollouts],
+                "generation_ms": [rollout["timing"]["generation_ms"] for rollout in prepared_step.train_rollouts],
+                "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in prepared_step.train_rollouts],
             }
         )
-
-        # Gather individual reward function metrics
-        metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
+        metrics_df = pd.DataFrame([rollout["metrics"] for rollout in prepared_step.train_rollouts])
 
         val_results_df = (
             pd.DataFrame(
@@ -641,33 +596,30 @@ async def orchestrate(config: OrchestratorConfig):
             else None
         )
 
-        # Update progress metrics and throughput
         num_tokens = int(results_df.seq_len.sum())
         progress.total_tokens += num_tokens
-        progress.total_samples += num_rollouts
-        progress.total_problems += num_unique_examples
+        progress.total_samples += prepared_step.num_rollouts
+        progress.total_problems += prepared_step.num_unique_examples
         throughput = num_tokens / generate_completions_time
 
-        # Compute solve all and none tensors
         problem_indices = results_df.index // config.rollouts_per_example
         reward_sum_per_problem = results_df.groupby(problem_indices).reward.sum()
         solve_all = (reward_sum_per_problem == config.rollouts_per_example).mean()
         solve_none = (reward_sum_per_problem == 0).mean()
         effective_batch_size = 1 - solve_none - solve_all
 
-        step_time = time.perf_counter() - step_start_time
+        step_time = time.perf_counter() - prepared_step.step_start_time
+        event_loop_lag_metrics = event_loop_lag_monitor.get_metrics_since(prepared_step.event_loop_lag_marker)
         to_log = {
-            # Progress metrics
             "progress/tokens": num_tokens,
-            "progress/prefill_tokens": num_prefill_tokens,
-            "progress/decode_tokens": num_decode_tokens,
-            "progress/samples": num_rollouts,
-            "progress/problems": num_unique_examples,
+            "progress/prefill_tokens": prepared_step.num_prefill_tokens,
+            "progress/decode_tokens": prepared_step.num_decode_tokens,
+            "progress/samples": prepared_step.num_rollouts,
+            "progress/problems": prepared_step.num_unique_examples,
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
-            "progress/ckpt_step": ckpt_step,  # Shared W&B axis
-            # Sequence length metrics
+            "progress/ckpt_step": prepared_step.ckpt_step,
             "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
             "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
             "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
@@ -680,35 +632,28 @@ async def orchestrate(config: OrchestratorConfig):
             "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
             "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
             "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
-            # Seqs per rollout metrics
             "samples_per_rollout/mean": results_df.groupby("example_id").samples_per_rollout.mean().mean(),
             "samples_per_rollout/max": results_df.groupby("example_id").samples_per_rollout.mean().max(),
             "samples_per_rollout/min": results_df.groupby("example_id").samples_per_rollout.mean().min(),
-            # Turn metrics
             "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
             "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
             "num_turns/min": results_df.groupby("example_id").num_turns.mean().min(),
-            # Verifier timing metrics
             "generation_ms/mean": results_df.groupby("example_id").generation_ms.mean().mean(),
             "generation_ms/max": results_df.groupby("example_id").generation_ms.mean().max(),
             "generation_ms/min": results_df.groupby("example_id").generation_ms.mean().min(),
             "scoring_ms/mean": results_df.groupby("example_id").scoring_ms.mean().mean(),
             "scoring_ms/max": results_df.groupby("example_id").scoring_ms.mean().max(),
             "scoring_ms/min": results_df.groupby("example_id").scoring_ms.mean().min(),
-            # Performance metrics
             "perf/throughput": throughput,
-            # Train reward
             "reward/mean": results_df.reward.mean(),
             "reward/std": results_df.reward.std(),
             "reward/min": results_df.reward.min(),
             "reward/max": results_df.reward.max(),
             "reward/median": results_df.reward.median(),
-            "sampling/temperature": temperature,
-            # Batch metrics
+            "sampling/temperature": prepared_step.temperature,
             "batch/solve_none": solve_none,
             "batch/solve_all": solve_all,
             "batch/effective_batch_size": effective_batch_size,
-            # Error metrics
             "error/mean": (~results_df.error.isna()).mean(),
             **{
                 f"error/{error}": error_rate
@@ -717,35 +662,25 @@ async def orchestrate(config: OrchestratorConfig):
                 .value_counts(normalize=True)
                 .items()
             },
-            # Env metrics
             **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
-            # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
             "time/teacher_logprobs": teacher_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
-            "time/parallel_preprocess": parallel_preprocess_time,
-            # Scheduler metrics
-            **scheduler.get_metrics(),
-            # Buffer metrics
-            **buffer.get_metrics(),
-            # Event loop lag metrics
-            **event_loop_lag_monitor.get_metrics(),
-            # Rollout filter metrics
-            **filter_metrics,
-            # W&B axis
-            "step": progress.step,
+            "time/parallel_preprocess": prepared_step.parallel_preprocess_time,
+            **scheduler_metrics,
+            **buffer_metrics,
+            **event_loop_lag_metrics,
+            **prepared_step.filter_metrics,
+            "step": prepared_step.step,
         }
 
-        # If more than one env, add per-env metrics
         if results_df.task.nunique() > 1:
             per_env_reward = results_df.groupby("task").reward.mean().to_dict()
             to_log.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
-
             per_env_ratio = results_df.task.value_counts(normalize=True).to_dict()
             to_log.update({f"batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
-        # Optionally, add val metrics
         if val_results_df is not None:
             to_log.update(
                 {
@@ -756,54 +691,98 @@ async def orchestrate(config: OrchestratorConfig):
                     "val_reward/median": val_results_df.reward.median(),
                 }
             )
-
             if val_results_df.task.nunique() > 1:
                 per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
                 to_log.update({f"val_reward/{env}": reward for env, reward in per_env_reward.items()})
-
                 per_env_ratio = val_results_df.task.value_counts(normalize=True).to_dict()
                 to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
 
-        # Log metrics to monitor(s)
-        monitor.log(to_log, step=progress.step)
+        monitor.log(to_log, step=prepared_step.step)
 
-        # Log samples to monitor(s) if enabled
-        subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
-        monitor.log_samples(subset_train_rollouts, step=progress.step)
-
-        # Log distributions (rewards, advantages) if enabled
+        subset_train_rollouts = random.sample(
+            prepared_step.train_rollouts,
+            min(8, len(prepared_step.train_rollouts)),
+        )
+        monitor.log_samples(subset_train_rollouts, step=prepared_step.step)
         monitor.log_distributions(
             distributions={
-                "rewards": rewards,
-                "advantages": advantages,
+                "rewards": prepared_step.rewards,
+                "advantages": prepared_step.advantages,
             },
-            step=progress.step,
+            step=prepared_step.step,
         )
+        monitor.flush(step=prepared_step.step)
 
-        # Flush all accumulated metrics for this step
-        monitor.flush(step=progress.step)
-
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        step_message = (
+            f"Step {prepared_step.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |"
+            f"{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} "
+            f"Throughput: {throughput:.1f} tokens/s | "
+            f"Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | "
+            f"Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        )
         logger.success(step_message)
 
-        # Increment step
-        progress.step += 1
-        is_first_step = False
-
-        # Free large per-step objects to prevent memory accumulation
-        del train_rollouts, train_examples, training_batch, vlm_cache
-        del results_df, metrics_df, val_results_df
+        del training_batch, results_df, metrics_df, val_results_df
         gc.collect()
 
-        event_loop_lag_monitor.reset()
-
-        # Send heartbeat if configured
         if heart is not None:
             heart.beat()
 
-    if config.eval:
-        logger.info("Running final evals")
-        results = await asyncio.gather(
+    inflight_postprocess: InflightPostprocess | None = None
+
+    def _current_step() -> int:
+        if inflight_postprocess is None:
+            return progress.step
+        return inflight_postprocess.next_step
+
+    def _build_iteration_state(step: int) -> IterationState:
+        ckpt_step = scheduler.ckpt_step
+        may_need_ckpt = (
+            ckpt_manager is not None
+            and (config.ckpt and config.ckpt.interval)
+            and step % config.ckpt.interval == 0
+        )
+        eval_ckpt_step = None
+        if config.eval:
+            eval_ckpt_step = compute_eval_ckpt_step(
+                ckpt_step=ckpt_step,
+                prev_ckpt_step=prev_ckpt_step,
+                last_eval_step=last_eval_step,
+                interval=config.eval.interval,
+                eval_base_model=config.eval.eval_base_model,
+            )
+        run_val = bool(val_buffer and config.val and step % config.val.interval == 0)
+        return IterationState(
+            step=step,
+            ckpt_step=ckpt_step,
+            may_need_ckpt=may_need_ckpt,
+            eval_ckpt_step=eval_ckpt_step,
+            run_val=run_val,
+        )
+
+    async def _consume_postprocess() -> None:
+        nonlocal inflight_postprocess, is_first_step
+        assert inflight_postprocess is not None
+        await inflight_postprocess.task
+        inflight_postprocess = None
+        progress.step += 1
+        is_first_step = False
+
+    async def _retry_empty_batch(step: int, val_task: asyncio.Task) -> None:
+        nonlocal empty_batch_retries
+        empty_batch_retries += 1
+        if empty_batch_retries >= max_empty_batch_retries:
+            raise RuntimeError(f"Step {step} failed after {max_empty_batch_retries} consecutive empty batches")
+        backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)
+        logger.warning(
+            f"Step {step} produced 0 training samples "
+            f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
+        )
+        await safe_cancel(val_task)
+        await asyncio.sleep(backoff)
+
+    async def _evaluate_envs(*, ckpt_step: int, step: int) -> None:
+        await asyncio.gather(
             *[
                 evaluate_env(
                     env=eval_env,
@@ -815,11 +794,168 @@ async def orchestrate(config: OrchestratorConfig):
                     rollouts_per_example=eval_env_config.rollouts_per_example or config.eval.rollouts_per_example,
                     max_retries=eval_env_config.max_retries,
                     ckpt_step=ckpt_step,
-                    step=progress.step,
+                    step=step,
                 )
                 for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
             ]
         )
+
+    async def _sync_iteration(iteration: IterationState) -> IterationState:
+        if inflight_postprocess is None:
+            return iteration
+        if not iteration.needs_sync(
+            has_inflight_validation=inflight_postprocess.has_validation,
+            max_steps=config.max_steps,
+        ):
+            return iteration
+        await _consume_postprocess()
+        return _build_iteration_state(progress.step)
+
+    def _save_checkpoint_if_needed(iteration: IterationState) -> float:
+        if not iteration.may_need_ckpt or is_first_step:
+            return 0
+        is_last_step = config.max_steps is not None and iteration.step == config.max_steps - 1
+        if is_last_step:
+            return 0
+
+        logger.info(f"Saving checkpoint at step {progress.step}")
+        save_ckpt_start_time = time.perf_counter()
+        ckpt_manager.save(progress, buffer, step=progress.step)
+        return time.perf_counter() - save_ckpt_start_time
+
+    async def _run_online_eval(iteration: IterationState) -> None:
+        nonlocal last_eval_step
+        if iteration.eval_ckpt_step is None:
+            return
+
+        ckpt_step = iteration.ckpt_step
+        last_eval_step = ckpt_step
+        if iteration.eval_ckpt_step != ckpt_step:
+            logger.info(
+                f"Running evals for interval step {iteration.eval_ckpt_step} "
+                f"(current ckpt_step={ckpt_step})"
+            )
+        else:
+            logger.info(f"Running evals for checkpoint step {ckpt_step}")
+
+        scheduler.checkpoint_ready.clear()
+        if config.eval.cancel_inflight_rollouts_on_eval:
+            logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
+            await scheduler.cancel_inflight_rollouts()
+
+        await _evaluate_envs(ckpt_step=ckpt_step, step=iteration.step)
+        scheduler.checkpoint_ready.set()
+
+    def _create_val_task(iteration: IterationState, sampling_args: dict) -> asyncio.Task:
+        if not iteration.run_val:
+            return asyncio.create_task(asyncio.sleep(0))
+
+        logger.info(f"Running validation for step {iteration.step}")
+        val_examples = val_buffer.sample_examples(config.val.num_examples)
+        return asyncio.create_task(
+            generate(
+                env=train_env_group,
+                model_name=scheduler.model_name,
+                examples=val_examples,
+                rollouts_per_example=config.val.rollouts_per_example,
+                sampling_args=sampling_args,
+                clients=inference_pool.clients,
+                pbar_description="Generating rollouts (val)",
+            )
+        )
+
+    async def _start_postprocess(
+        *,
+        iteration: IterationState,
+        train_rollouts: list[vf.RolloutOutput],
+        val_task: asyncio.Task,
+        step_start_time: float,
+        temperature: float,
+        save_ckpt_time: float,
+    ) -> bool:
+        nonlocal empty_batch_retries, inflight_postprocess
+
+        event_loop_lag_marker = event_loop_lag_monitor.mark()
+        filter_metrics = apply_filters(rollout_filters, train_rollouts)
+        prepared_step = await _prepare_step(
+            train_rollouts=train_rollouts,
+            val_task=val_task,
+            step=iteration.step,
+            ckpt_step=iteration.ckpt_step,
+            step_start_time=step_start_time,
+            temperature=temperature,
+            filter_metrics=filter_metrics,
+            event_loop_lag_marker=event_loop_lag_marker,
+        )
+        if prepared_step is None:
+            await _retry_empty_batch(iteration.step, val_task)
+            return False
+
+        empty_batch_retries = 0
+        inflight_postprocess = InflightPostprocess(
+            step=iteration.step,
+            has_validation=iteration.run_val,
+            task=asyncio.create_task(
+                _finalize_step(
+                    prepared_step=prepared_step,
+                    generate_completions_time=scheduler.last_batch_generation_time,
+                    save_ckpt_time=save_ckpt_time,
+                    scheduler_metrics=scheduler.get_metrics(),
+                    buffer_metrics=buffer.get_metrics(),
+                )
+            ),
+        )
+        return True
+
+    while True:
+        evicted_path = config.output_dir / "control" / "evicted.txt"
+        if evicted_path.exists():
+            reason = evicted_path.read_text().strip()
+            raise RuntimeError(f"Run evicted by trainer: {reason}")
+
+        iteration = _build_iteration_state(_current_step())
+        iteration = await _sync_iteration(iteration)
+
+        if config.max_steps and progress.step >= config.max_steps:
+            break
+
+        save_ckpt_time = _save_checkpoint_if_needed(iteration)
+
+        logger.info(f"Starting orchestrator step {iteration.step}")
+        step_start_time = time.perf_counter()
+
+        await _run_online_eval(iteration)
+        prev_ckpt_step = iteration.ckpt_step
+
+        temperature = compute_temperature(iteration.step, config.sampling, config.max_steps)
+        sampling_args = get_sampling_args(config.sampling, temperature=temperature)
+        scheduler.set_sampling_args(sampling_args)
+        train_task = asyncio.create_task(scheduler.generate_batch(step=iteration.step))
+        val_task = _create_val_task(iteration, sampling_args)
+
+        await train_task
+        train_rollouts = train_task.result()
+
+        if inflight_postprocess is not None:
+            await _consume_postprocess()
+
+        if not await _start_postprocess(
+            iteration=iteration,
+            train_rollouts=train_rollouts,
+            val_task=val_task,
+            step_start_time=step_start_time,
+            temperature=temperature,
+            save_ckpt_time=save_ckpt_time,
+        ):
+            continue
+
+    if inflight_postprocess is not None:
+        await _consume_postprocess()
+
+    ckpt_step = scheduler.ckpt_step
+    if config.eval:
+        logger.info("Running final evals")
+        await _evaluate_envs(ckpt_step=ckpt_step, step=progress.step)
 
     # Log final (immutable) samples and distributions to monitor(s)
     monitor.log_final_samples()

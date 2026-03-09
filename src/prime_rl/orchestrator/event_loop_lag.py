@@ -31,6 +31,7 @@ class EventLoopLagMonitor:
         self.warn_p90_lag_threshold = warn_p90_lag_threshold
         self.logger = get_logger()
         self.lags = []
+        self.samples_seen = 0
 
     async def measure_lag(self):
         """Measures event loop lag by asynchronously sleeping for interval seconds"""
@@ -45,19 +46,37 @@ class EventLoopLagMonitor:
         while True:
             lag = await self.measure_lag()
             self.lags.append(lag)
+            self.samples_seen += 1
             if len(self.lags) > self.max_window_size:
                 self.lags.pop(0)
 
     def reset(self):
         """Reset the list of measured lags."""
         self.lags = []
+        self.samples_seen = 0
+
+    def mark(self) -> int:
+        """Return a cursor that can be used with get_metrics_since."""
+        return self.samples_seen
+
+    def get_metrics_since(self, marker: int) -> dict[str, float]:
+        """Compute lag metrics for samples recorded since the given marker."""
+        if marker < 0 or marker > self.samples_seen:
+            raise ValueError(f"Invalid lag marker {marker} for samples_seen={self.samples_seen}")
+
+        earliest_marker = self.samples_seen - len(self.lags)
+        start_idx = max(marker - earliest_marker, 0)
+        return self._compute_metrics(self.lags[start_idx:])
 
     def get_metrics(self) -> dict[str, float]:
         """Compute metrics for the event loop lag over the last window_size measurements."""
-        window_size = int(min(self.max_window_size, len(self.lags)))
+        return self._compute_metrics(self.lags)
+
+    def _compute_metrics(self, lags: list[float]) -> dict[str, float]:
+        window_size = int(min(self.max_window_size, len(lags)))
         if window_size <= 0:
             return {}
-        last_lags = np.array(self.lags[-window_size:])
+        last_lags = np.array(lags[-window_size:])
         mean_lag = float(np.mean(last_lags))
         med_lag = float(np.median(last_lags))
         p90_lag = float(np.percentile(last_lags, 90))
