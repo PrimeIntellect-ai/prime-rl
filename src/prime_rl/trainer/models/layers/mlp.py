@@ -38,12 +38,32 @@ class MLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.gate_act_fn = ACT2FN[config.gate_act]
         self._quack_activation = _GATE_ACT2QUACK_GATED_ACT.get(config.gate_act)
+        # Cache fused gate/up weights for inference to avoid re-stacking every forward
+        self._quack_gate_up_weight_cache: torch.Tensor | None = None
 
     def forward(self, x):
         if self._quack_activation is not None and quack_kernels_enabled():
-            gate_up_weight = torch.stack((self.gate_proj.weight, self.up_proj.weight), dim=1).reshape(
-                2 * self.intermediate_size, self.hidden_size
-            )
+            # Training path: build a fresh fused view so autograd correctly tracks gradients
+            if torch.is_grad_enabled():
+                gate_up_weight = torch.stack((self.gate_proj.weight, self.up_proj.weight), dim=1).reshape(
+                    2 * self.intermediate_size, self.hidden_size
+                )
+            else:
+                # Inference path: reuse cached fused weights when possible
+                cached = self._quack_gate_up_weight_cache
+                needs_refresh = (
+                    cached is None
+                    or cached.dtype != self.gate_proj.weight.dtype
+                    or cached.device != self.gate_proj.weight.device
+                )
+                if needs_refresh:
+                    with torch.no_grad():
+                        self._quack_gate_up_weight_cache = torch.stack(
+                            (self.gate_proj.weight, self.up_proj.weight), dim=1
+                        ).reshape(2 * self.intermediate_size, self.hidden_size)
+                    gate_up_weight = self._quack_gate_up_weight_cache
+                else:
+                    gate_up_weight = cached
             preact, postact = quack_linear_gated_func(
                 x,
                 gate_up_weight,

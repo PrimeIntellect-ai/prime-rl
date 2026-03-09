@@ -66,11 +66,42 @@ class FeedForward(nn.Module):
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        # Cache fused gate/up weights for inference to avoid re-stacking every forward
+        self._quack_gate_up_weight_cache: torch.Tensor | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        quack_out = _run_quack_gated_feedforward(x, self.w1.weight, self.w2.weight, self.w3.weight)
-        if quack_out is not None:
-            return quack_out
+        if quack_kernels_enabled():
+            if torch.is_grad_enabled():
+                quack_out = _run_quack_gated_feedforward(x, self.w1.weight, self.w2.weight, self.w3.weight)
+                if quack_out is not None:
+                    return quack_out
+            else:
+                cached = self._quack_gate_up_weight_cache
+                needs_refresh = (
+                    cached is None
+                    or cached.dtype != self.w1.weight.dtype
+                    or cached.device != self.w1.weight.device
+                )
+                if needs_refresh:
+                    with torch.no_grad():
+                        self._quack_gate_up_weight_cache = torch.stack(
+                            (self.w1.weight, self.w3.weight), dim=1
+                        ).reshape(2 * self.w1.weight.shape[0], self.w1.weight.shape[1])
+                    gate_up_weight = self._quack_gate_up_weight_cache
+                else:
+                    gate_up_weight = cached
+                preact, postact = quack_linear_gated_func(
+                    x,
+                    gate_up_weight,
+                    activation="swiglu",
+                    store_preact=torch.is_grad_enabled(),
+                )
+                return quack_gated_linear_func(
+                    preact,
+                    self.w2.weight,
+                    postact,
+                    activation="swiglu",
+                )
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
     def init_weights(self, init_std: float = 0.02):
@@ -89,11 +120,42 @@ class BCFeedForward(nn.Module):
         self.w1 = nn.Parameter(torch.empty(hidden_dim, dim))
         self.w2 = nn.Parameter(torch.empty(dim, hidden_dim))
         self.w3 = nn.Parameter(torch.empty(hidden_dim, dim))
+        # Cache fused gate/up weights for inference to avoid re-stacking every forward
+        self._quack_gate_up_weight_cache: torch.Tensor | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        quack_out = _run_quack_gated_feedforward(x, self.w1, self.w2, self.w3)
-        if quack_out is not None:
-            return quack_out
+        if quack_kernels_enabled():
+            if torch.is_grad_enabled():
+                quack_out = _run_quack_gated_feedforward(x, self.w1, self.w2, self.w3)
+                if quack_out is not None:
+                    return quack_out
+            else:
+                cached = self._quack_gate_up_weight_cache
+                needs_refresh = (
+                    cached is None
+                    or cached.dtype != self.w1.dtype
+                    or cached.device != self.w1.device
+                )
+                if needs_refresh:
+                    with torch.no_grad():
+                        self._quack_gate_up_weight_cache = torch.stack((self.w1, self.w3), dim=1).reshape(
+                            2 * self.w1.shape[0], self.w1.shape[1]
+                        )
+                    gate_up_weight = self._quack_gate_up_weight_cache
+                else:
+                    gate_up_weight = cached
+                preact, postact = quack_linear_gated_func(
+                    x,
+                    gate_up_weight,
+                    activation="swiglu",
+                    store_preact=torch.is_grad_enabled(),
+                )
+                return quack_gated_linear_func(
+                    preact,
+                    self.w2,
+                    postact,
+                    activation="swiglu",
+                )
         return torch.matmul(F.silu(torch.matmul(x, self.w1.T)) * torch.matmul(x, self.w3.T), self.w2.T)
 
     def init_weights(self, init_std: float):
