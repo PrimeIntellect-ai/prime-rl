@@ -110,7 +110,7 @@ class Scheduler:
         self.update_weights_time, self.wait_for_ckpt_time = 0, 0
         self.update_policy_task: asyncio.Task | None = None
         self.cancelled_rollouts_count = 0
-        self.empty_trajectory_count = 0
+        self.empty_rollouts_count = 0
         self.last_batch_generation_time = 0.0
 
     @property
@@ -394,7 +394,7 @@ class Scheduler:
                         f"Filtered {empty_count}/{len(accepted_rollouts)} rollouts with empty trajectories"
                     )
                     accepted_rollouts = [r for r in accepted_rollouts if len(r["trajectory"]) > 0]
-                    self.empty_trajectory_count += empty_count
+                    self.empty_rollouts_count += empty_count
 
                 batch_rollouts.extend(accepted_rollouts)
                 progress_increment = self.get_batch_progress_increment(accepted_rollouts)
@@ -450,10 +450,10 @@ class Scheduler:
             "batch/off_policy_level/mean": self.mean_off_policy_level,
             "batch/off_policy_level/min": self.min_off_policy_level,
             "batch/cancelled_rollouts": self.cancelled_rollouts_count,
-            "batch/empty_trajectory_rollouts": self.empty_trajectory_count,
+            "batch/empty_rollouts": self.empty_rollouts_count,
         }
         self.cancelled_rollouts_count = 0
-        self.empty_trajectory_count = 0
+        self.empty_rollouts_count = 0
 
         # Add inference pool metrics (e.g. elastic pool server counts)
         metrics.update(self.inference_pool.get_metrics())
