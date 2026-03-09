@@ -15,7 +15,7 @@ from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
-from prime_rl.trainer.weights import get_max_layer_num
+from prime_rl.trainer.weights import get_layers_prefix, get_max_layer_num
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
@@ -67,18 +67,19 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
 
 
 def filter_state_dict_by_layers(
-    state_dict: dict[str, torch.Tensor], num_layers: int
+    state_dict: dict[str, torch.Tensor], num_layers: int, layers_prefix: str
 ) -> Generator[tuple[int, dict[str, torch.Tensor]], None, None]:
     """Yield a generator of state dicts for each layer as well as the remaining weights."""
-    yield 0, {key: value for key, value in state_dict.items() if "model.layers" not in key}
+    yield 0, {key: value for key, value in state_dict.items() if layers_prefix not in key}
 
     for i in range(1, num_layers + 1):  # +1 because layer indices start from 1
+        prefix = f"{layers_prefix}{i}"
         yield (
             i,
             {
                 key: value
                 for key, value in state_dict.items()
-                if key.startswith(f"model.layers.{i}.") or key == f"model.layers.{i}"
+                if key.startswith(f"{prefix}.") or key == prefix
             },
         )
 
@@ -112,6 +113,7 @@ class NCCLWeightBroadcastSender:
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
+        layers_prefix = get_layers_prefix(state_dict)
         num_layers = get_max_layer_num(state_dict)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
 
@@ -120,7 +122,7 @@ class NCCLWeightBroadcastSender:
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
-        for layer_id, state_dict in filter_state_dict_by_layers(state_dict, num_layers):
+        for layer_id, state_dict in filter_state_dict_by_layers(state_dict, num_layers, layers_prefix):
             for key, value in list(state_dict.items()):
                 if isinstance(value, DTensor):
                     value = cast(DTensor, value.to(self.dtype)).full_tensor()
