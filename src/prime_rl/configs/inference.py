@@ -130,6 +130,11 @@ All2AllBackend = Literal[
 ]
 
 DEFAULT_MAX_LORAS = 8
+# TODO: The default value is very high because our PipelineRL implementation for
+# LoRA isn't ideal We add a lora with the same name instead of changing weights
+# inplace Because we dont cancel requests that are past max_async, these
+# requests could be using a LoRA that gets unloaded which will crash the
+# inference server
 DEFAULT_MAX_CPU_LORAS = 100
 
 
@@ -144,31 +149,39 @@ class VLLMConfig(BaseConfig):
     model_config = ConfigDict(extra="allow")
 
     model: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
+
     host: Annotated[str | None, Field(description="The host to bind to.")] = None
+
     port: Annotated[int | None, Field(description="The port to bind to.")] = None
+
     max_model_len: Annotated[
         int | None,
         Field(description="Maximum model context length."),
     ] = None
+
     enforce_eager: Annotated[
         bool | None,
         Field(
             description="Whether to enforce eager mode. If False, will use PyTorch eager and cuda graphs in hybrid for maximal performance."
         ),
     ] = None
+
     trust_remote_code: Annotated[bool | None, Field(description="Whether to trust remote code.")] = None
+
     tool_call_parser: Annotated[
         str | None,
         Field(
             description='The tool call parser to use. Set to "auto" to infer from the model name.',
         ),
     ] = None
+
     reasoning_parser: Annotated[
         str | None,
         Field(
             description="Parser for extracting reasoning content from model outputs. Setting this enables reasoning mode."
         ),
     ] = None
+
     rope_scaling: Annotated[
         dict[str, Any] | str | None,
         Field(
@@ -180,34 +193,36 @@ class VLLMConfig(BaseConfig):
         int,
         Field(description="The tensor parallel size."),
     ] = 1
+
     data_parallel_size: Annotated[
         int,
         Field(description="The data parallel size."),
     ] = 1
+
     data_parallel_size_local: Annotated[
         int | None,
         Field(description="Number of data parallel replicas to run on this node."),
     ] = None
+
     data_parallel_rpc_port: Annotated[
         int | None,
         Field(description="RPC port for data parallel communication."),
     ] = None
+
     enable_lora: Annotated[
         bool | None,
         Field(description="Whether to enable LoRA."),
     ] = None
+
     max_loras: Annotated[
         int | None,
         Field(description="The maximum number of LoRAs to use."),
     ] = None
 
-    # TODO: The default value is very high because our areal impl for lora isn't ideal
-    # We add a lora with the same name instead of changing weights inplace
-    # Because we dont cancel requests that are past max_async, these requests could be using a LoRA that gets unloaded which will crash the inference server
     max_cpu_loras: Annotated[
-        int,
+        int | None,
         Field(description="The maximum number of LoRAs to use on CPU."),
-    ] = 100
+    ] = None
 
     max_lora_rank: Annotated[
         int | None,
@@ -225,9 +240,9 @@ class VLLMConfig(BaseConfig):
     ] = 0.9
 
     api_server_count: Annotated[
-        int | None,
+        int,
         Field(description="The number of API servers to use."),
-    ] = None
+    ] = 1
 
     seed: Annotated[
         int | None,

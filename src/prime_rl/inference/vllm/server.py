@@ -1,7 +1,6 @@
 from argparse import Namespace
 from http import HTTPStatus
 
-import uvloop
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import State
@@ -11,7 +10,7 @@ from vllm.entrypoints.cli.serve import run_api_server_worker_proc
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.api_server import init_app_state
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionResponse
-from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
+from vllm.entrypoints.openai.cli_args import make_arg_parser
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse
 from vllm.entrypoints.openai.engine.serving import OpenAIServing
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
@@ -224,11 +223,8 @@ vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_wo
 
 
 # Adapted from vllm/entrypoints/cli/serve.py
-# Only difference we do some config translation (i.e. pass populated namespace
-# to `parse_args`) and additional arg validation
 def server(config: InferenceConfig):
-    from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
-    from vllm.entrypoints.openai.api_server import run_server
+    from vllm.entrypoints.cli.serve import ServeSubcommand
 
     namespace = config.to_namespace()
 
@@ -236,16 +232,7 @@ def server(config: InferenceConfig):
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=[], namespace=namespace)
     assert args is not None
-    validate_parsed_serve_args(args)
 
-    if args.tool_call_parser is not None:
-        logger.info(f"Using tool_call_parser='{args.tool_call_parser}' for model '{args.model}'")
-
-    if args.headless or args.api_server_count < 1:
-        run_headless(args)
-    else:
-        if args.api_server_count > 1:
-            run_multi_api_server(args)
-        else:
-            # Single API server (this process).
-            uvloop.run(run_server(args))
+    serve_subcommand = ServeSubcommand()
+    serve_subcommand.validate(args)
+    serve_subcommand.cmd(args)
