@@ -117,7 +117,7 @@ class SharedWeightBroadcastConfig(BaseConfig):
     port: Annotated[int, Field(description="The port to use for NCCL weight broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
 
-    use_kernel_format_transfer: Annotated[
+    use_vllm_format_transfer: Annotated[
         bool,
         Field(
             description="Transfer weights in vLLM kernel format instead of HF checkpoint format. "
@@ -129,7 +129,7 @@ class SharedWeightBroadcastConfig(BaseConfig):
         bool,
         Field(
             description="Quantize weights to FP8 (e4m3) with block-wise scaling during kernel format transfer. "
-            "Only used when use_kernel_format_transfer is True."
+            "Only used when use_vllm_format_transfer is True."
         ),
     ] = False
 
@@ -296,16 +296,6 @@ class RLConfig(BaseConfig):
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
-    allow_different_inference_model: Annotated[
-        bool,
-        Field(
-            description="Allow the inference server to use a different model name than the trainer. "
-            "When enabled, the orchestrator uses the inference model name for querying. "
-            "Useful for kernel format weight transfer where the trainer uses a bf16 model "
-            "and inference uses a quantized (e.g. FP8) variant.",
-        ),
-    ] = False
-
     slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
@@ -441,23 +431,28 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_model(self):
-        """Auto-setup shared model config for trainer, orchestrator, and inference."""
-        allow_different = self.allow_different_inference_model
+        """Auto-setup shared model config for trainer, orchestrator, and inference.
 
+        model.name propagates to trainer.model.name unconditionally.
+        model.name propagates to inference.model.name only when the user hasn't
+        explicitly set inference.model.name (allowing e.g. an FP8 variant for inference).
+        The orchestrator always uses the inference model name so it queries the
+        correct model on the inference server.
+        """
         if self.model is not None:
             self.trainer.model.name = self.model.name
             if self.inference is not None:
-                default_name = type(self.inference.model).model_fields["name"].default
-                if not allow_different or self.inference.model.name == default_name:
+                inference_model_explicitly_set = "name" in self.inference.model.model_fields_set
+                if not inference_model_explicitly_set:
                     self.inference.model.name = self.model.name
 
             # Orchestrator must use the inference model name so it queries the correct model
-            if allow_different and self.inference is not None and self.inference.model.name != self.model.name:
+            if self.inference is not None:
                 self.orchestrator.model.name = self.inference.model.name
             else:
                 self.orchestrator.model.name = self.model.name
 
-        validate_shared_model_name(self.trainer, self.orchestrator, self.inference, allow_different=allow_different)
+        validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
         return self
 
@@ -515,14 +510,14 @@ class RLConfig(BaseConfig):
                     inference_world_size=inference_world_size,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
-                    use_kernel_format_transfer=self.weight_broadcast.use_kernel_format_transfer,
+                    use_vllm_format_transfer=self.weight_broadcast.use_vllm_format_transfer,
                     quantize_fp8=self.weight_broadcast.quantize_fp8,
                 )
                 self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
-                    use_kernel_format_transfer=self.weight_broadcast.use_kernel_format_transfer,
+                    use_vllm_format_transfer=self.weight_broadcast.use_vllm_format_transfer,
                 )
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()

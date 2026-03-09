@@ -93,10 +93,10 @@ class NCCLWeightUpdateWorker(Worker):
         server_rank: int,
         num_inference_server: int,
         timeout: int,
-        use_kernel_format_transfer: bool = False,
+        use_vllm_format_transfer: bool = False,
     ) -> None:
         """Initialize the NCCL broadcast receiver."""
-        self.use_kernel_format_transfer = use_kernel_format_transfer
+        self.use_vllm_format_transfer = use_vllm_format_transfer
 
         tp_size = get_tp_group().world_size
         tp_rank = get_tp_group().rank_in_group
@@ -129,7 +129,7 @@ class NCCLWeightUpdateWorker(Worker):
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
 
-        if self.use_kernel_format_transfer:
+        if self.use_vllm_format_transfer:
             self._load_kernel_format(model, state_iter)
             self._update_mla_absorbed_weights(model)
         else:
