@@ -132,6 +132,7 @@ flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 [[tool.uv.index]]
 name = "primeintellect"
 url = "https://hub.primeintellect.ai/primeintellect/simple/"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
