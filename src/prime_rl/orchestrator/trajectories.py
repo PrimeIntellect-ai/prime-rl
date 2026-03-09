@@ -2,12 +2,22 @@ import base64
 import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+from typing import Any
 
 import torch
 import verifiers as vf
 from PIL import Image
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.transport import TrainingSample
+from prime_rl.utils.chat_template import (
+    build_incremental_token_mask,
+    common_prefix_len,
+    deserialize_tool_calls,
+    normalize_messages,
+    render_messages,
+    strip_message_content,
+)
 from prime_rl.utils.logger import get_logger
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
@@ -33,6 +43,109 @@ def _align_routed_experts(
     topk = len(routed_experts[0][0])
     zero_entry = [[0] * topk for _ in range(num_layers)]
     return routed_experts + [zero_entry for _ in range(deficit)]
+
+
+def _common_prefix_len(a: list[int], b: list[int]) -> int:
+    return common_prefix_len(a, b)
+
+
+def _normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]:
+    return normalize_messages(messages, default_role)
+
+
+def _deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return deserialize_tool_calls(messages)
+
+
+def _strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return strip_message_content(messages)
+
+
+def _should_add_generation_prompt(messages: list[dict[str, Any]], idx: int) -> bool:
+    role = messages[idx].get("role")
+    if role not in ("user", "tool"):
+        return False
+    if idx + 1 >= len(messages):
+        return False
+    return messages[idx + 1].get("role") == "assistant"
+
+
+def _render_messages(
+    tokenizer: PreTrainedTokenizer,
+    messages: list[dict[str, Any]],
+    add_generation_prompt: bool = False,
+) -> list[int]:
+    return render_messages(
+        tokenizer,
+        messages,
+        add_generation_prompt=add_generation_prompt,
+    )
+
+
+def _tokenize_step_from_messages(
+    step: vf.TrajectoryStep,
+    tokenizer: PreTrainedTokenizer,
+) -> dict[str, Any]:
+    prompt = _normalize_messages(step.get("prompt"), default_role="user")
+    completion = _normalize_messages(step.get("completion"), default_role="assistant")
+
+    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
+    completion = _strip_message_content(_deserialize_tool_calls(completion))
+
+    all_messages = prompt + completion
+    prompt_has_assistant_completion = len(completion) > 0 and completion[0].get("role") == "assistant"
+    prompt_ids = _render_messages(
+        tokenizer,
+        prompt,
+        add_generation_prompt=prompt_has_assistant_completion,
+    )
+    full_ids = _render_messages(tokenizer, all_messages)
+
+    full_ids, full_mask = build_incremental_token_mask(
+        tokenizer,
+        all_messages,
+        role_to_mask=lambda message: message.get("role") == "assistant",
+    )
+
+    split_idx = _common_prefix_len(prompt_ids, full_ids)
+
+    completion_ids = full_ids[split_idx:]
+    completion_mask = full_mask[split_idx:]
+    completion_logprobs = [0.0] * len(completion_ids)
+
+    return {
+        "prompt_ids": prompt_ids,
+        "prompt_mask": [False] * len(prompt_ids),
+        "completion_ids": completion_ids,
+        "completion_mask": completion_mask,
+        "completion_logprobs": completion_logprobs,
+        "routed_experts": None,
+        "prompt_prefix_len": split_idx,
+    }
+
+
+def pretokenize_rollout_trajectory(
+    output: vf.RolloutOutput,
+    tokenizer: PreTrainedTokenizer,
+) -> bool:
+    """Populate missing step tokens from prompt/completion messages."""
+    logger = get_logger()
+
+    for step_idx, step in enumerate(output["trajectory"]):
+        if step["tokens"] is not None:
+            continue
+
+        reconstructed = _tokenize_step_from_messages(step, tokenizer)
+        if reconstructed["prompt_prefix_len"] < len(reconstructed["prompt_ids"]):
+            logger.debug(
+                f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "
+                f"Using longest common prefix length {reconstructed['prompt_prefix_len']}."
+            )
+
+        reconstructed.pop("prompt_prefix_len")
+        step["tokens"] = reconstructed
+
+    return True
 
 
 def interleave_rollout(
@@ -74,10 +187,30 @@ def interleave_rollout(
     # this field should be guaranteed because we set temperature in get_sampling_args
     temperature = output["sampling_args"]["temperature"]
 
-    def make_sample(step: vf.TrajectoryStep) -> TrainingSample:
-        """Create a new TrainingSample from a trajectory step."""
+    def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
-        assert tokens is not None
+        if tokens is not None:
+            return {
+                "prompt_ids": list(tokens["prompt_ids"]),
+                "prompt_mask": [bool(i) for i in tokens["prompt_mask"]],
+                "completion_ids": list(tokens["completion_ids"]),
+                "completion_mask": [bool(i) for i in tokens["completion_mask"]],
+                "completion_logprobs": list(tokens["completion_logprobs"]),
+                "routed_experts": tokens.get("routed_experts"),
+            }
+
+        logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
+        return None
+
+    prepared_steps: list[dict[str, Any]] = []
+    for step_idx, step in enumerate(trajectory):
+        prepared = prepare_step_tokens(step, step_idx)
+        if prepared is None:
+            return None
+        prepared_steps.append(prepared)
+
+    def make_sample(tokens: dict[str, Any]) -> TrainingSample:
+        """Create a new TrainingSample from a trajectory step."""
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
@@ -101,10 +234,9 @@ def interleave_rollout(
             routed_experts=routed_experts,
         )
 
-    def extend_sample(sample: TrainingSample, step: vf.TrajectoryStep, prefix_len: int) -> None:
+    def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
-        tokens = step["tokens"]
-        assert tokens is not None
+        tokens = prepared_steps[step_idx]
 
         # Extend with new prompt tokens (mask=False, no gradient)
         new_prompt_ids = tokens["prompt_ids"][prefix_len:]
@@ -138,12 +270,12 @@ def interleave_rollout(
     # Track [prefix_tokens, sample, last_step_idx] per active sample
     active_samples: list[list] = []
 
-    first_tokens = trajectory[0]["tokens"]
+    first_tokens = prepared_steps[0]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    active_samples.append([first_prefix, make_sample(trajectory[0]), 0])
+    active_samples.append([first_prefix, make_sample(first_tokens), 0])
 
-    for step_idx, step in enumerate(trajectory[1:], start=1):
-        tokens = step["tokens"]
+    for step_idx, _step in enumerate(trajectory[1:], start=1):
+        tokens = prepared_steps[step_idx]
         step_prompt_ids = tokens["prompt_ids"]
 
         # Check if this step extends ANY active prefix
@@ -156,7 +288,7 @@ def interleave_rollout(
         if matched_idx is not None:
             # Extension holds - merge into matched sample
             prefix_tokens, sample, _ = active_samples[matched_idx]
-            extend_sample(sample, step, len(prefix_tokens))
+            extend_sample(sample, len(prefix_tokens), step_idx=step_idx)
             active_samples[matched_idx][0] = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples[matched_idx][2] = step_idx
         else:
@@ -166,7 +298,7 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples.append([new_prefix, make_sample(step), step_idx])
+            active_samples.append([new_prefix, make_sample(tokens), step_idx])
 
     # Attach images once per sample using only the last merged step
     if vlm_cache is not None:

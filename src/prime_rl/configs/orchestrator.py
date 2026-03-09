@@ -647,6 +647,20 @@ class TeacherModelConfig(BaseConfig):
     ] = ModelConfig()
 
 
+class TeacherRolloutModelConfig(BaseConfig):
+    """Configures an external teacher model used to generate rollout text."""
+
+    client: Annotated[
+        ClientConfig,
+        Field(description="The OAI client configuration for rollout generation."),
+    ] = ClientConfig()
+
+    model: Annotated[
+        ModelConfig,
+        Field(description="The model configuration for rollout generation."),
+    ] = ModelConfig()
+
+
 class OrchestratorConfig(BaseConfig):
     """Configures the orchestrator for RL training."""
 
@@ -666,6 +680,17 @@ class OrchestratorConfig(BaseConfig):
             description="The teacher model configuration for computing teacher logprobs (e.g. for distillation). "
             "If provided, teacher logprobs will be computed using the specified model. "
             "If None, no teacher model will be used."
+        ),
+    ] = None
+
+    # External teacher rollout model configuration (optional)
+    teacher_rollout_model: Annotated[
+        TeacherRolloutModelConfig | None,
+        Field(
+            description=(
+                "Optional external teacher model used for rollout generation. "
+                "When set, rollouts are generated from this endpoint/model instead of the student inference server."
+            ),
         ),
     ] = None
 
