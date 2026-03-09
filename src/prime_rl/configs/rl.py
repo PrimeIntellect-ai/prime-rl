@@ -284,6 +284,33 @@ class RLConfig(BaseConfig):
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
+    # Distribute shared configs before per-component validators run
+
+    @model_validator(mode="before")
+    @classmethod
+    def distribute_shared_model(cls, data: Any) -> Any:
+        """Inject shared model name into nested configs to ensure parsers auto-resolve correctly."""
+        if not isinstance(data, dict):
+            return data
+        model = data.get("model")
+        if model is None:
+            return data
+        name = model.get("name") if isinstance(model, dict) else getattr(model, "name", None)
+        if name is None:
+            return data
+
+        for key in ("trainer", "orchestrator"):
+            section = data.setdefault(key, {})
+            if isinstance(section, dict):
+                section.setdefault("model", {}).setdefault("name", name)
+
+        for key in ("inference", "teacher_inference"):
+            section = data.get(key)
+            if section is not None and isinstance(section, dict):
+                section.setdefault("vllm", {}).setdefault("model", name)
+
+        return data
+
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="after")
@@ -412,35 +439,6 @@ class RLConfig(BaseConfig):
         validate_shared_wandb_config(self.trainer, self.orchestrator)
 
         return self
-
-    @model_validator(mode="before")
-    @classmethod
-    def distribute_shared_model(cls, data: Any) -> Any:
-        """Inject shared model name into nested configs before they are constructed.
-
-        This ensures that VLLMConfig validators (e.g. auto_resolve_parsers)
-        see the correct model name, not the default.
-        """
-        if not isinstance(data, dict):
-            return data
-        model = data.get("model")
-        if model is None:
-            return data
-        name = model.get("name") if isinstance(model, dict) else getattr(model, "name", None)
-        if name is None:
-            return data
-
-        for key in ("trainer", "orchestrator"):
-            section = data.setdefault(key, {})
-            if isinstance(section, dict):
-                section.setdefault("model", {}).setdefault("name", name)
-
-        for key in ("inference", "teacher_inference"):
-            section = data.get(key)
-            if section is not None and isinstance(section, dict):
-                section.setdefault("vllm", {}).setdefault("model", name)
-
-        return data
 
     @model_validator(mode="after")
     def auto_setup_model(self):
