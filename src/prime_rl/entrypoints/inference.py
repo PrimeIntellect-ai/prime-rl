@@ -91,9 +91,7 @@ def inference_local(config: InferenceConfig):
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
         return
 
-    host = config.vllm.host or "0.0.0.0"
-    port = config.vllm.port
-    logger.info(f"Starting inference on http://{host}:{port}/v1\n")
+    logger.info("Starting inference")
 
     setup_vllm_env(config)
 

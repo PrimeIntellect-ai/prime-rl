@@ -32,9 +32,8 @@ class VLLMConfig(BaseConfig):
     model_config = ConfigDict(extra="allow")
 
     model: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
-
     host: Annotated[str | None, Field(description="The host to bind to.")] = None
-    port: Annotated[int, Field(description="The port to bind to.")] = 8000
+    port: Annotated[int | None, Field(description="The port to bind to.")] = None
 
     dtype: Annotated[
         Literal["auto", "float16", "bfloat16", "float32"],
