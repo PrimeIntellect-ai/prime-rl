@@ -6,10 +6,10 @@ from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_p
 # (model_name, expected_tool_call_parser, expected_reasoning_parser)
 EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     # DeepSeek
-    ("deepseek-ai/DeepSeek-V3.2", "deepseek_v32", None),
-    ("deepseek-ai/DeepSeek-V3.2-Exp", "deepseek_v32", None),
-    ("deepseek-ai/DeepSeek-V3.1", "deepseek_v31", None),
-    ("deepseek-ai/DeepSeek-V3.1-FP8", "deepseek_v31", None),
+    ("deepseek-ai/DeepSeek-V3.2", "deepseek_v32", "deepseek_r1"),
+    ("deepseek-ai/DeepSeek-V3.2-Exp", "deepseek_v32", "deepseek_r1"),
+    ("deepseek-ai/DeepSeek-V3.1", "deepseek_v31", "deepseek_r1"),
+    ("deepseek-ai/DeepSeek-V3.1-FP8", "deepseek_v31", "deepseek_r1"),
     # GLM-4.5
     ("zai-org/GLM-4.5", "glm45", "glm45"),
     ("zai-org/GLM-4.5-FP8", "glm45", "glm45"),
@@ -24,9 +24,9 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("zai-org/GLM-4.7-FP8", "glm47", "glm45"),
     ("zai-org/GLM-4.7-Flash", "glm47", "glm45"),
     # MiniMax M2
-    ("MiniMaxAI/MiniMax-M2", "minimax_m2", "minimax_m2"),
-    ("MiniMaxAI/MiniMax-M2.1", "minimax_m2", "minimax_m2"),
-    ("MiniMaxAI/MiniMax-M2.5", "minimax_m2", "minimax_m2"),
+    ("MiniMaxAI/MiniMax-M2", "minimax_m2", "minimax_m2_append_think"),
+    ("MiniMaxAI/MiniMax-M2.1", "minimax_m2", "minimax_m2_append_think"),
+    ("MiniMaxAI/MiniMax-M2.5", "minimax_m2", "minimax_m2_append_think"),
     # INTELLECT-3
     ("PrimeIntellect/INTELLECT-3", "qwen3_coder", "deepseek_r1"),
     ("PrimeIntellect/INTELLECT-3-FP8", "qwen3_coder", "deepseek_r1"),
@@ -76,33 +76,33 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("Qwen/Qwen3-Next-80B-A3B-Instruct-FP8", "hermes", None),
     ("Qwen/Qwen3-Next-80B-A3B-Thinking-FP8", "hermes", "deepseek_r1"),
     # Qwen3-Coder
-    ("Qwen/Qwen3-Coder-480B-A35B-Instruct", "hermes", None),
-    ("Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "hermes", None),
-    ("Qwen/Qwen3-Coder-30B-A3B-Instruct", "hermes", None),
-    ("Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8", "hermes", None),
+    ("Qwen/Qwen3-Coder-480B-A35B-Instruct", "qwen3_coder", None),
+    ("Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "qwen3_coder", None),
+    ("Qwen/Qwen3-Coder-30B-A3B-Instruct", "qwen3_coder", None),
+    ("Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8", "qwen3_coder", None),
     # Qwen3-Coder-Next
-    ("Qwen/Qwen3-Coder-Next", "hermes", None),
-    ("Qwen/Qwen3-Coder-Next-Base", "hermes", None),
-    ("Qwen/Qwen3-Coder-Next-FP8", "hermes", None),
+    ("Qwen/Qwen3-Coder-Next", "qwen3_coder", None),
+    ("Qwen/Qwen3-Coder-Next-Base", "qwen3_coder", None),
+    ("Qwen/Qwen3-Coder-Next-FP8", "qwen3_coder", None),
     # Qwen3.5 dense
-    ("Qwen/Qwen3.5-0.8B", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-0.8B-Base", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-2B", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-2B-Base", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-4B", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-4B-Base", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-9B", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-9B-Base", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-27B", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-27B-FP8", "qwen3_coder", None),
+    ("Qwen/Qwen3.5-0.8B", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-0.8B-Base", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-2B", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-2B-Base", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-4B", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-4B-Base", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-9B", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-9B-Base", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-27B", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-27B-FP8", "qwen3_coder", "qwen3"),
     # Qwen3.5 MoE
-    ("Qwen/Qwen3.5-35B-A3B", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-35B-A3B-Base", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-35B-A3B-FP8", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-122B-A10B", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-122B-A10B-FP8", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-397B-A17B", "qwen3_coder", None),
-    ("Qwen/Qwen3.5-397B-A17B-FP8", "qwen3_coder", None),
+    ("Qwen/Qwen3.5-35B-A3B", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-35B-A3B-Base", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-35B-A3B-FP8", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-122B-A10B", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-122B-A10B-FP8", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-397B-A17B", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.5-397B-A17B-FP8", "qwen3_coder", "qwen3"),
     # Unknown
     ("some/unknown-model", None, None),
 ]
@@ -141,11 +141,6 @@ def test_validator_skips_when_auto_tool_choice_disabled():
     assert config.tool_call_parser is None
 
 
-def test_reasoning_parser_auto_resolves():
-    config = VLLMConfig(model="Qwen/Qwen3-4B-Thinking-2507")
-    assert config.reasoning_parser == "deepseek_r1"
-
-
 def test_reasoning_parser_explicit_not_overridden():
     config = VLLMConfig(model="Qwen/Qwen3.5-27B", reasoning_parser="deepseek_r1")
-    assert config.reasoning_parser == "deepseek_r1"
+    assert config.reasoning_parser == "deepseek_r1"  # not auto-resolved to "qwen3"
