@@ -2,6 +2,7 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`model.fused_lm_head_token_chunk_size`**: Added as the new fused LM-head chunking field. Unlike the old `model.fused_lm_head_chunk_size`, this chunks over flattened sequence tokens rather than vocabulary rows. `model.fused_lm_head_chunk_size` is now deprecated: `'auto'` and `'disabled'` warn and fall back to `model.fused_lm_head_token_chunk_size`, while integer values now raise an error to avoid silently changing semantics. (2026-03-09)
 - **`slurm.pre_run_command`**: Added optional shell command to run on the head node before starting the job. Useful for cleanup routines (e.g. killing stale processes, removing lock files). For all-nodes execution, wrap with `srun` in the command string (default: None) (2026-03-08)
 - **`slurm.nodelist`**, **`slurm.exclude`**, **`slurm.account`**, **`slurm.time`**: Added common SLURM scheduling options (all default: None) (2026-03-08)
 - **`orchestrator.verification.enabled`**: Added top-level rollout verification switch. `orchestrator.buffer.skip_verification` has been removed; use `verification.enabled = false` instead. When disabled, rewards are always 0 and reward-dependent buffer features (`online_difficulty_filtering`, `easy_threshold`, `hard_threshold`) must be unset (2026-03-03)

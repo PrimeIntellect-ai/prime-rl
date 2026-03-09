@@ -314,11 +314,14 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_and_disable_chunked_loss(self):
-        if isinstance(self.model.fused_lm_head_chunk_size, int):
+        if isinstance(self.model.fused_lm_head_token_chunk_size, int):
             raise ValueError(
-                "Chunked loss is not supported for SFT training, please set `model.fused_lm_head_chunk_size` to 'disabled'"
+                "Chunked loss is not supported for SFT training yet, please set "
+                "`model.fused_lm_head_token_chunk_size` to 'disabled'"
             )
-        self.model.fused_lm_head_chunk_size = "disabled"
+
+        self.model.fused_lm_head_token_chunk_size = "disabled"
+        self.model.fused_lm_head_chunk_size = None
         return self
 
     @model_validator(mode="after")

@@ -729,8 +729,11 @@ def setup_model(
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
-    chunk_size = config.fused_lm_head_chunk_size if isinstance(config.fused_lm_head_chunk_size, int) else None
-    inject_prime_lm_head(model, chunk_size=chunk_size, fused_cross_entropy=fused_cross_entropy)
+    lm_head_chunk_size: int | None = None
+    if isinstance(config.fused_lm_head_token_chunk_size, int):
+        lm_head_chunk_size = config.fused_lm_head_token_chunk_size
+
+    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:

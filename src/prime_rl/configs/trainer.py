@@ -270,6 +270,17 @@ class ModelConfig(BaseModelConfig):
     ] = DebugModelConfig()
 
     fused_lm_head_chunk_size: Annotated[
+        int | Literal["auto", "disabled"] | None,
+        Field(
+            description=(
+                "Deprecated alias for `fused_lm_head_token_chunk_size`. "
+                "Only `'auto'` and `'disabled'` are supported during migration. "
+                "Integer values now raise an error."
+            ),
+        ),
+    ] = None
+
+    fused_lm_head_token_chunk_size: Annotated[
         int | Literal["auto", "disabled"],
         Field(
             description=(
@@ -287,8 +298,31 @@ class ModelConfig(BaseModelConfig):
     @classmethod
     def _normalize_attn_alias(cls, data):
         """Rewrite user-facing `flash_attention_4` to internal `fa4` before validation."""
-        if isinstance(data, dict) and data.get("attn") in _ATTN_ALIASES:
-            data["attn"] = _ATTN_ALIASES[data["attn"]]
+        if isinstance(data, dict):
+            if data.get("attn") in _ATTN_ALIASES:
+                data["attn"] = _ATTN_ALIASES[data["attn"]]
+
+            if "fused_lm_head_chunk_size" in data:
+                old_value = data["fused_lm_head_chunk_size"]
+                if isinstance(old_value, int):
+                    raise ValueError(
+                        "`model.fused_lm_head_chunk_size` is deprecated and no longer accepts integers. "
+                        "Use `model.fused_lm_head_token_chunk_size` for token chunking instead."
+                    )
+
+                if old_value in {"auto", "disabled"}:
+                    logger = get_logger()
+                    if "fused_lm_head_token_chunk_size" not in data:
+                        data["fused_lm_head_token_chunk_size"] = old_value
+                        logger.warning(
+                            "`model.fused_lm_head_chunk_size` is deprecated. "
+                            f"Falling back to `model.fused_lm_head_token_chunk_size={old_value!r}`."
+                        )
+                    else:
+                        logger.warning(
+                            "`model.fused_lm_head_chunk_size` is deprecated and ignored because "
+                            "`model.fused_lm_head_token_chunk_size` is already set."
+                        )
         return data
 
     @model_validator(mode="after")
@@ -324,17 +358,19 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
-    def fused_lm_head_chunk_size_is_valid(self):
-        if isinstance(self.fused_lm_head_chunk_size, int):
+    def fused_lm_head_token_chunk_size_is_valid(self):
+        if isinstance(self.fused_lm_head_token_chunk_size, int):
             low = 1
             warn_threshold = 128
-            if self.fused_lm_head_chunk_size < low:
+            if self.fused_lm_head_token_chunk_size < low:
                 raise ValueError(
-                    f"Fused LM head chunk size must be at least {low}, got {self.fused_lm_head_chunk_size}"
+                    f"Fused LM head token chunk size must be at least {low}, got {self.fused_lm_head_token_chunk_size}"
                 )
-            if self.fused_lm_head_chunk_size < warn_threshold:
+            if self.fused_lm_head_token_chunk_size < warn_threshold:
                 get_logger().warning(
-                    f"Fused LM head chunk size is set to {self.fused_lm_head_chunk_size}, which is smaller than the recommended threshold of {warn_threshold}. This is supported, but it may reduce matmul efficiency."
+                    "Fused LM head token chunk size is set to "
+                    f"{self.fused_lm_head_token_chunk_size}, which is smaller than the "
+                    f"recommended threshold of {warn_threshold}. This is supported, but it may reduce matmul efficiency."
                 )
 
         return self
@@ -765,9 +801,9 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_fused_lm_head_chunk_size(self):
-        if self.model.fused_lm_head_chunk_size == "auto":
-            self.model.fused_lm_head_chunk_size = 8192
+    def auto_setup_fused_lm_head_token_chunk_size(self):
+        if self.model.fused_lm_head_token_chunk_size == "auto":
+            self.model.fused_lm_head_token_chunk_size = 8192
 
         return self
 
