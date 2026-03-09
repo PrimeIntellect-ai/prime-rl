@@ -89,7 +89,7 @@ def benchmark_process_1gpu(
         str(benchmark_output_file_1gpu),
         "--timeout",
         str(TIMEOUT - 5 * 60),  # Leave 5 min buffer
-        "--fused-lm-head-chunk-size",
+        "--fused-lm-head-token-chunk-size",
         "8192",
     ]
     return run_process(cmd, timeout=TIMEOUT, env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
@@ -122,7 +122,7 @@ def benchmark_process_4gpu(
         str(benchmark_output_file_4gpu),
         "--timeout",
         str(TIMEOUT - 5 * 60),  # Leave 5 min buffer
-        "--fused-lm-head-chunk-size",
+        "--fused-lm-head-token-chunk-size",
         "8192",
     ]
     return run_process(cmd, timeout=TIMEOUT, env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
