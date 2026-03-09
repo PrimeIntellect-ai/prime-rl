@@ -165,6 +165,8 @@ def train(config: SFTConfig):
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     cp_size = parallel_dims.cp
+    dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
+    fsdp_world_size = parallel_dims.fsdp_gradient_divide_factor
 
     match config.loss_impl:
         case "liger":
@@ -223,6 +225,7 @@ def train(config: SFTConfig):
         forward_backward_start_time = time.perf_counter()
 
         batch_loss = torch.tensor(0.0).to("cuda")
+        batch_token_count = 0.0
         nan_loss_count = torch.tensor(0).to("cuda")
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
         for micro_step in range(grad_accum_steps):
@@ -256,16 +259,16 @@ def train(config: SFTConfig):
             # Compute loss
             loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
 
-            # Compute average loss over unmasked tokens
-            loss = loss[loss_mask].mean()
+            # Sum loss over unmasked tokens, allreduce count across dp_cp ranks
+            local_loss_sum = loss[loss_mask].sum()
+            global_count = loss_mask.sum().clone().float()
+            dist.all_reduce(global_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_count = torch.clamp_min(global_count, 1)
+            loss = local_loss_sum * fsdp_world_size / global_count
 
-            # Accumulate average loss over gradient accumulation steps
-
-            current_loss = loss.detach() / grad_accum_steps
-
-            # only add if the loss is not nan
-            if not torch.isnan(current_loss):
-                batch_loss += current_loss
+            if not torch.isnan(local_loss_sum.detach()):
+                batch_loss += local_loss_sum.detach()
+                batch_token_count += global_count.item()
             else:
                 nan_loss_count += 1
                 logger.warning("Loss is nan, not taking into account in the batch loss calculation")
@@ -286,7 +289,8 @@ def train(config: SFTConfig):
                     batch_max_vio += max_vio / grad_accum_steps
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{grad_accum_steps} | Loss: {loss.item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['dataset']['step']}"
+            local_count = max(loss_mask.sum().item(), 1)
+            micro_step_message = f"Micro Step {micro_step}/{grad_accum_steps} | Loss: {local_loss_sum.item() / local_count:.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['dataset']['step']}"
             if is_tt_moe_model(model) and max_vio is not None:
                 micro_step_message += f" | Max Vio: {max_vio.item():.4f}"
             logger.debug(micro_step_message)
@@ -314,8 +318,9 @@ def train(config: SFTConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         logger.debug("Synchronizing tensor metrics across all steps and ranks")
-        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
-        dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(batch_loss, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        batch_loss = batch_loss / max(batch_token_count, 1)
+        dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
 
         # Compute step metrics
         # Divide by CP and TP since those ranks process the same data
