@@ -267,11 +267,51 @@ class EvalSaveHFConfig(BaseConfig):
     ] = False
 
 
+def _coerce_dict_values(d: dict) -> dict:
+    """Coerce string values from CLI parsing to their proper types.
+
+    tyro parses untyped dict values as strings. This converts them back:
+    "800" -> 800, "3.14" -> 3.14, "true"/"false" -> bool.
+    """
+    coerced = {}
+    for k, v in d.items():
+        if isinstance(v, str):
+            # Try int
+            try:
+                coerced[k] = int(v)
+                continue
+            except ValueError:
+                pass
+            # Try float
+            try:
+                coerced[k] = float(v)
+                continue
+            except ValueError:
+                pass
+            # Try bool
+            if v.lower() == "true":
+                coerced[k] = True
+                continue
+            if v.lower() == "false":
+                coerced[k] = False
+                continue
+            coerced[k] = v
+        else:
+            coerced[k] = v
+    return coerced
+
+
 class EnvConfig(BaseConfig):
     """Configures an environment for training."""
 
     id: Annotated[str, Field(description="ID of the environment to use.")] = "reverse-text"
     args: Annotated[dict, Field(description="Arguments to pass to the environment.")] = {}
+
+    @model_validator(mode="after")
+    def coerce_args_types(self):
+        """Coerce env args types after tyro CLI parsing (which makes all dict values strings)."""
+        self.args = _coerce_dict_values(self.args)
+        return self
     name: Annotated[str | None, Field(description="Name of the environment to use.")] = None
     address: Annotated[
         str | None,
