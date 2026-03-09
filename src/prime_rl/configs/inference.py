@@ -170,15 +170,6 @@ class VLLMConfig(BaseConfig):
     api_server_count: Annotated[int, Field(description="The number of API servers to use.")] = 1
 
     @model_validator(mode="after")
-    def auto_resolve_parsers(self):
-        """Auto-detect tool_call_parser and reasoning_parser from the model name if not explicitly set."""
-        if self.enable_auto_tool_choice and "tool_call_parser" not in self.model_fields_set:
-            self.tool_call_parser = resolve_tool_call_parser(self.model)
-        if "reasoning_parser" not in self.model_fields_set:
-            self.reasoning_parser = resolve_reasoning_parser(self.model)
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_max_lora(self):
         """Auto-setup LoRA settings:
         - Max. 8 LoRAs
@@ -226,6 +217,16 @@ class VLLMConfig(BaseConfig):
     def to_namespace(self) -> Namespace:
         """Convert VLLMConfig to vLLM-compatible Namespace."""
         data = self.model_dump(exclude_none=True)
+
+        # Auto-resolve parsers from model name if not explicitly set
+        if self.enable_auto_tool_choice and "tool_call_parser" not in data:
+            tool_call_parser = resolve_tool_call_parser(self.model)
+            if tool_call_parser:
+                data["tool_call_parser"] = tool_call_parser
+        if "reasoning_parser" not in data:
+            reasoning_parser = resolve_reasoning_parser(self.model)
+            if reasoning_parser:
+                data["reasoning_parser"] = reasoning_parser
 
         # ALWAYS set logprobs_mode="processed_logprobs" to get
         # sampling-corrected logprobs for RL training

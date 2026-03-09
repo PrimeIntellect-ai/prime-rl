@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -283,33 +283,6 @@ class RLConfig(BaseConfig):
     slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
-
-    # Distribute shared configs before per-component validators run
-
-    @model_validator(mode="before")
-    @classmethod
-    def distribute_shared_model(cls, data: Any) -> Any:
-        """Inject shared model name into nested configs to ensure parsers auto-resolve correctly."""
-        if not isinstance(data, dict):
-            return data
-        model = data.get("model")
-        if model is None:
-            return data
-        name = model.get("name") if isinstance(model, dict) else getattr(model, "name", None)
-        if name is None:
-            return data
-
-        for key in ("trainer", "orchestrator"):
-            section = data.setdefault(key, {})
-            if isinstance(section, dict):
-                section.setdefault("model", {}).setdefault("name", name)
-
-        for key in ("inference", "teacher_inference"):
-            section = data.get(key)
-            if section is not None and isinstance(section, dict):
-                section.setdefault("vllm", {}).setdefault("model", name)
-
-        return data
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 

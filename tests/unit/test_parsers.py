@@ -119,35 +119,30 @@ def test_resolve_reasoning_parser(model_name: str, expected_tool_call: str | Non
 
 
 @pytest.mark.parametrize("model_name,expected_tool_call,expected_reasoning", EXPECTED_PARSERS)
-def test_auto_resolve_parsers(model_name: str, expected_tool_call: str | None, expected_reasoning: str | None):
-    config = VLLMConfig(model=model_name)
-    assert config.enable_auto_tool_choice is True
-    assert config.tool_call_parser == expected_tool_call
-    assert config.reasoning_parser == expected_reasoning
+def test_to_namespace_resolves_parsers(model_name: str, expected_tool_call: str | None, expected_reasoning: str | None):
+    """to_namespace() must auto-resolve parsers from the model name."""
+    ns = VLLMConfig(model=model_name).to_namespace()
+    assert getattr(ns, "tool_call_parser", None) == expected_tool_call
+    assert getattr(ns, "reasoning_parser", None) == expected_reasoning
 
 
 def test_explicit_parser_not_overridden():
-    config = VLLMConfig(model="Qwen/Qwen3-4B", tool_call_parser="my_parser")
-    assert config.tool_call_parser == "my_parser"
+    ns = VLLMConfig(model="Qwen/Qwen3-4B", tool_call_parser="my_parser").to_namespace()
+    assert ns.tool_call_parser == "my_parser"
 
 
-def test_validator_skips_when_explicitly_set_to_none():
-    config = VLLMConfig(model="Qwen/Qwen3-4B", tool_call_parser=None)
-    assert config.tool_call_parser is None
-
-
-def test_validator_skips_when_auto_tool_choice_disabled():
-    config = VLLMConfig(model="Qwen/Qwen3-4B", enable_auto_tool_choice=False)
-    assert config.tool_call_parser is None
+def test_auto_tool_choice_disabled():
+    ns = VLLMConfig(model="Qwen/Qwen3-4B", enable_auto_tool_choice=False).to_namespace()
+    assert not hasattr(ns, "tool_call_parser")
 
 
 def test_reasoning_parser_explicit_not_overridden():
-    config = VLLMConfig(model="Qwen/Qwen3.5-27B", reasoning_parser="deepseek_r1")
-    assert config.reasoning_parser == "deepseek_r1"  # not auto-resolved to "qwen3"
+    ns = VLLMConfig(model="Qwen/Qwen3.5-27B", reasoning_parser="deepseek_r1").to_namespace()
+    assert ns.reasoning_parser == "deepseek_r1"
 
 
-def test_shared_model_re_resolves_parsers():
-    """Shared model name must propagate to VLLMConfig before parser auto-resolution runs."""
+def test_shared_model_resolves_parsers():
+    """Parsers must resolve correctly when model name comes from RLConfig shared config."""
     from prime_rl.configs.rl import RLConfig
 
     config = RLConfig(
@@ -158,6 +153,6 @@ def test_shared_model_re_resolves_parsers():
             "model": {"name": "deepseek-ai/DeepSeek-V3.2"},
         }
     )
-    assert config.inference.vllm.model == "deepseek-ai/DeepSeek-V3.2"
-    assert config.inference.vllm.tool_call_parser == "deepseek_v32"
-    assert config.inference.vllm.reasoning_parser == "deepseek_r1"
+    ns = config.inference.vllm.to_namespace()
+    assert ns.tool_call_parser == "deepseek_v32"
+    assert ns.reasoning_parser == "deepseek_r1"
