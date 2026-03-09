@@ -324,6 +324,7 @@ def train(config: SFTConfig):
         forward_backward_start_time = time.perf_counter()
 
         batch_loss, nan_loss_count, batch_max_vio = run_forward_loop(dataiter, grad_accum_steps, backward=True)
+        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -347,8 +348,6 @@ def train(config: SFTConfig):
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
-
-        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
