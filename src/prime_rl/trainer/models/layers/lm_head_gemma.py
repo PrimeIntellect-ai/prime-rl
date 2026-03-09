@@ -6,6 +6,7 @@ from torch import Tensor
 
 from prime_rl.trainer.models.layers.lm_head import (
     PrimeLmOutput,
+    _online_logsumexp_and_weighted_update,
     _patch_model_forward,
 )
 from prime_rl.utils.logger import get_logger
@@ -78,28 +79,45 @@ class _GemmaChunkedLogProbEntropyFn(torch.autograd.Function):
 
         device = hidden.device
         n = hidden.shape[0]
+        vocab = weight.shape[0]
+        vocab_chunk_size = min(vocab, 8192)
         logprobs = torch.empty((n,), device=device, dtype=torch.float32)
         entropy = torch.empty((n,), device=device, dtype=torch.float32)
+        logz = torch.empty((n,), device=device, dtype=torch.float32)
 
         for start in range(0, n, chunk_size):
             end = min(start + chunk_size, n)
             hidden_chunk = hidden[start:end]
             labels_chunk = labels[start:end]
             inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
+            token_count = end - start
 
-            logits = hidden_chunk @ weight.t()
-            scaled_logits = logits.to(torch.float32)
-            scaled_logits = softcap * torch.tanh(scaled_logits / softcap)
-            scaled_logits = scaled_logits * inv_t_chunk
+            m = torch.full((token_count,), float("-inf"), device=device, dtype=torch.float32)
+            s = torch.zeros((token_count,), device=device, dtype=torch.float32)
+            t = torch.zeros((token_count,), device=device, dtype=torch.float32)
+            target_logits = torch.zeros((token_count,), device=device, dtype=torch.float32)
 
-            logprobs_chunk = scaled_logits.log_softmax(dim=-1)
-            token_idx = torch.arange(end - start, device=device)
-            logprobs[start:end] = logprobs_chunk[token_idx, labels_chunk]
+            for vocab_start in range(0, vocab, vocab_chunk_size):
+                vocab_end = min(vocab_start + vocab_chunk_size, vocab)
+                weight_chunk = weight[vocab_start:vocab_end]
+                logits_chunk = hidden_chunk @ weight_chunk.t()
+                scaled_logits = logits_chunk.to(torch.float32)
+                scaled_logits = softcap * torch.tanh(scaled_logits / softcap)
+                scaled_logits = scaled_logits * inv_t_chunk
 
-            probs = torch.softmax(scaled_logits, dim=-1)
-            entropy[start:end] = torch.logsumexp(scaled_logits, dim=-1) - torch.sum(probs * scaled_logits, dim=-1)
+                m, s, t = _online_logsumexp_and_weighted_update(m, s, t, scaled_logits)
 
-        ctx.save_for_backward(hidden, weight, labels, inv_temperature)
+                mask = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
+                if torch.any(mask):
+                    idx = (labels_chunk[mask] - vocab_start).to(torch.long)
+                    target_logits[mask] = scaled_logits[mask, idx]
+
+            logz_chunk = m + torch.log(s)
+            logz[start:end] = logz_chunk
+            logprobs[start:end] = target_logits - logz_chunk
+            entropy[start:end] = logz_chunk - (t / s)
+
+        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz)
         ctx.chunk_size = chunk_size
         ctx.softcap = softcap
 
@@ -111,11 +129,13 @@ class _GemmaChunkedLogProbEntropyFn(torch.autograd.Function):
             "Backward through entropy is not implemented in GemmaFusedOutputLinear"
         )
 
-        hidden, weight, labels, inv_temperature = ctx.saved_tensors
+        hidden, weight, labels, inv_temperature, logz = ctx.saved_tensors
         chunk_size: int = ctx.chunk_size
         softcap: float = ctx.softcap
 
         n, _ = hidden.shape
+        vocab = weight.shape[0]
+        vocab_chunk_size = min(vocab, 8192)
 
         grad_hidden = torch.zeros_like(hidden)
         grad_weight = torch.zeros_like(weight)
@@ -126,22 +146,28 @@ class _GemmaChunkedLogProbEntropyFn(torch.autograd.Function):
             labels_chunk = labels[start:end]
             grad_chunk = grad_logprobs[start:end].to(torch.float32)
             inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
+            logz_chunk = logz[start:end]
 
-            logits = hidden_chunk @ weight.t()
-            logits_f = logits.to(torch.float32)
-            tanh_val = torch.tanh(logits_f / softcap)
-            scaled_logits = softcap * tanh_val
-            scaled_logits = scaled_logits * inv_t_chunk
-            probs = torch.softmax(scaled_logits, dim=-1)
+            for vocab_start in range(0, vocab, vocab_chunk_size):
+                vocab_end = min(vocab_start + vocab_chunk_size, vocab)
+                weight_chunk = weight[vocab_start:vocab_end]
+                logits_chunk = hidden_chunk @ weight_chunk.t()
+                logits_f = logits_chunk.to(torch.float32)
+                tanh_val = torch.tanh(logits_f / softcap)
+                scaled_logits = softcap * tanh_val
+                scaled_logits = scaled_logits * inv_t_chunk
+                probs = torch.exp(scaled_logits - logz_chunk.unsqueeze(-1))
 
-            grad_logits = (-grad_chunk).unsqueeze(-1) * probs
-            token_idx = torch.arange(end - start, device=hidden.device)
-            grad_logits[token_idx, labels_chunk] += grad_chunk
-            grad_logits = grad_logits * inv_t_chunk
-            grad_logits = grad_logits * (1 - tanh_val**2)
+                grad_logits = (-grad_chunk).unsqueeze(-1) * probs
+                mask = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
+                if torch.any(mask):
+                    idx = (labels_chunk[mask] - vocab_start).to(torch.long)
+                    grad_logits[mask, idx] += grad_chunk[mask]
+                grad_logits = grad_logits * inv_t_chunk
+                grad_logits = grad_logits * (1 - tanh_val**2)
 
-            grad_hidden[start:end].add_(grad_logits.to(hidden.dtype) @ weight)
-            grad_weight.add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
+                grad_hidden[start:end].add_(grad_logits.to(hidden.dtype) @ weight_chunk)
+                grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
 
         return grad_hidden, grad_weight, None, None, None, None
 
