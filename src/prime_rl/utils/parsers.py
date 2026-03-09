@@ -19,9 +19,8 @@ REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "deepseek_r1"),
     (re.compile(r"^stepfun-ai/Step-3\.5"), "step3p5"),
-    # Qwen3 Thinking-2507 models use deepseek_r1 — must be before the Qwen3 catch-all
+    # Only Qwen3 Thinking models reason — Instruct models do not
     (re.compile(r"^Qwen/Qwen3-.*Thinking"), "deepseek_r1"),
-    (re.compile(r"^Qwen/Qwen3"), "qwen3"),
 ]
 
 

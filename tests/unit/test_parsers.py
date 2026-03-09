@@ -133,14 +133,14 @@ def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
         ("Qwen/Qwen3-4B-Thinking-2507", "deepseek_r1"),
         ("Qwen/Qwen3-30B-A3B-Thinking-2507", "deepseek_r1"),
         ("Qwen/Qwen3-235B-A22B-Thinking-2507", "deepseek_r1"),
-        # Qwen3 (non-thinking) → qwen3
-        ("Qwen/Qwen3-0.6B", "qwen3"),
-        ("Qwen/Qwen3-4B-Instruct-2507", "qwen3"),
-        ("Qwen/Qwen3-235B-A22B", "qwen3"),
-        ("Qwen/Qwen3-Coder-Next", "qwen3"),
+        # Qwen3 non-thinking and Instruct → no reasoning parser
+        ("Qwen/Qwen3-0.6B", None),
+        ("Qwen/Qwen3-4B-Instruct-2507", None),
+        ("Qwen/Qwen3-235B-A22B", None),
+        ("Qwen/Qwen3-Coder-Next", None),
         # Qwen3.5
-        ("Qwen/Qwen3.5-27B", "qwen3"),
-        ("Qwen/Qwen3.5-397B-A17B", "qwen3"),
+        ("Qwen/Qwen3.5-27B", None),
+        ("Qwen/Qwen3.5-397B-A17B", None),
     ],
 )
 def test_auto_detect_reasoning_parser(model_name: str, expected_parser: str | None):
@@ -159,7 +159,7 @@ def test_unknown_model_returns_none():
 def test_validator_auto_resolves_when_not_set():
     config = VLLMConfig(model="Qwen/Qwen3-4B")
     assert config.tool_call_parser == "hermes"
-    assert config.reasoning_parser == "qwen3"
+    assert config.reasoning_parser is None
     assert config.enable_auto_tool_choice is True
 
 
@@ -174,8 +174,8 @@ def test_validator_skips_when_auto_tool_choice_disabled():
 
 
 def test_reasoning_parser_auto_resolves():
-    config = VLLMConfig(model="Qwen/Qwen3.5-27B")
-    assert config.reasoning_parser == "qwen3"
+    config = VLLMConfig(model="Qwen/Qwen3-4B-Thinking-2507")
+    assert config.reasoning_parser == "deepseek_r1"
 
 
 def test_reasoning_parser_explicit_not_overridden():
