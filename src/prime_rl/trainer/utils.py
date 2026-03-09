@@ -73,6 +73,16 @@ def count_zero_gradient_elements(parameters: Iterable[nn.Parameter]) -> tuple[Te
     return num_zeros, num_tracked
 
 
+def get_zero_gradient_ratio(parameters: Iterable[nn.Parameter], dp_replicate: int = 1) -> float:
+    num_zero_grad, num_grad_elements = count_zero_gradient_elements(parameters)
+    dist.all_reduce(num_zero_grad, op=dist.ReduceOp.SUM)
+    dist.all_reduce(num_grad_elements, op=dist.ReduceOp.SUM)
+    if dp_replicate > 1:
+        num_zero_grad = torch.div(num_zero_grad, dp_replicate, rounding_mode="floor")
+        num_grad_elements = torch.div(num_grad_elements, dp_replicate, rounding_mode="floor")
+    return (num_zero_grad.float() / num_grad_elements.clamp_min(1).float()).item()
+
+
 def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     """
     Disk usage metrics for the checkpoint directory (<output_dir>/checkpoints).
