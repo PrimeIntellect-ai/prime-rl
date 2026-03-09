@@ -45,6 +45,7 @@ from prime_rl.utils.config import cli
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
+from prime_rl.trainer.models.layers.lm_head import FusedCrossEntropyOutputLinear
 
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -114,7 +115,9 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    model = setup_model(
+        config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=config.loss_impl == "liger_fused"
+    )
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -171,15 +174,18 @@ def train(config: SFTConfig):
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     cp_size = parallel_dims.cp
 
+    ce_loss = None
     match config.loss_impl:
         case "liger":
             ce_loss = LigerCrossEntropyLoss(reduction="none")
         case "torch":
             ce_loss = CrossEntropyLoss(reduction="none")
+        case "liger_fused":
+            pass  # loss is computed inside the fused lm_head
         case _:
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
-    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+    def compute_loss(micro_batch: dict) -> torch.Tensor:
         input_ids = micro_batch["input_ids"].to("cuda")
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
@@ -191,13 +197,21 @@ def train(config: SFTConfig):
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
         with maybe_activation_offloading(config.model.ac_offloading):
-            out = forward(model, input_ids, position_ids)
-        logits = out["logits"]
-        B, L, V = logits.shape
-        per_token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+            if config.loss_impl == "liger_fused":
+                masked_target_ids = target_ids.clone()
+                masked_target_ids[~loss_mask] = FusedCrossEntropyOutputLinear.IGNORE_INDEX
+                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
+                loss = out["loss"]
+            else:
+                out = forward(model, input_ids, position_ids)
+                logits = out["logits"]
+                B, L, V = logits.shape
+                loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+                loss = loss[loss_mask].mean()
+                del logits
 
-        del out, logits
-        return per_token_loss, loss_mask
+        del out
+        return loss
 
     maybe_record_function = nullcontext
 
@@ -217,8 +231,7 @@ def train(config: SFTConfig):
                     print_sample(input_ids_log, loss_mask_log, tokenizer)
 
                 with maybe_record_function("forward"):
-                    per_token_loss, loss_mask = compute_loss(micro_batch)
-                loss = per_token_loss[loss_mask].mean()
+                    loss = compute_loss(micro_batch)
 
                 if not torch.isnan(loss.detach()):
                     total_loss += loss.detach()

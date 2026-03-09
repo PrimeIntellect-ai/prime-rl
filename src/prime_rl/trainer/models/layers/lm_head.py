@@ -16,6 +16,7 @@ class PrimeLmOutput(TypedDict, total=False):
     logits: Tensor | None
     logprobs: Tensor | None
     entropy: Tensor | None
+    loss: Tensor | None
 
 
 def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
@@ -28,6 +29,7 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
         logits=_float_and_contiguous(output.get("logits")),
         logprobs=_float_and_contiguous(output.get("logprobs")),
         entropy=_float_and_contiguous(output.get("entropy")),
+        loss=output.get("loss"),
     )
 
 
@@ -66,6 +68,39 @@ class VanillaOutputLinear(torch.nn.Linear):
     ) -> PrimeLmOutput:
         # VanillaOutputLinear just returns logits - temperature scaling is done externally in train.py
         return PrimeLmOutput(logits=super().forward(hidden_states))
+
+
+class FusedCrossEntropyOutputLinear(torch.nn.Linear):
+    """Fused lm_head + cross-entropy loss using Liger kernel.
+
+    Avoids materializing the full [N, V] logits tensor by fusing the linear
+    projection with the cross-entropy loss computation.
+    """
+
+    IGNORE_INDEX = -100
+
+    def __init__(self, in_features: int, out_features: int, softcap: float | None = None):
+        super().__init__(in_features, out_features, bias=False)
+        from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+
+        self.fused_ce = LigerFusedLinearCrossEntropyLoss(
+            ignore_index=self.IGNORE_INDEX, reduction="mean", softcap=softcap
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        labels: torch.Tensor | None = None,
+        temperature: Tensor | None = None,
+    ) -> PrimeLmOutput:
+        if labels is None:
+            return PrimeLmOutput(logits=super().forward(hidden_states))
+
+        b, s, h = hidden_states.shape
+        hidden_flat = hidden_states.reshape(b * s, h).contiguous()
+        labels_flat = labels.reshape(b * s).contiguous()
+        loss = self.fused_ce(self.weight, hidden_flat, labels_flat)
+        return PrimeLmOutput(loss=loss)
 
 
 class _ChunkedLogProbEntropyFn(torch.autograd.Function):
@@ -200,17 +235,18 @@ def _online_logsumexp_and_weighted_update(
     return m_new, s_new, t_new
 
 
-def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> None:
+def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None, fused_cross_entropy: bool = False) -> None:
     """
-    Inject a PrimeRL LM head (FusedOutputLinear or VanillaOutputLinear) into a model.
+    Inject a PrimeRL LM head into a model.
 
     This replaces the model's lm_head and overrides the forward method to use labels
     and temperature for chunked loss computation.
 
     Args:
         model: The model to wrap.
-        chunk_size: If int, use FusedOutputLinear with chunked logprob/entropy computation with the given chunk size.
-                    If None, use VanillaOutputLinear which just returns logits.
+        chunk_size: When set to an int, uses FusedOutputLinear with chunked logprob/entropy (for RL).
+        fused_cross_entropy: When True, uses FusedCrossEntropyOutputLinear which fuses the lm_head
+            projection with cross-entropy loss to avoid materializing full logits (for SFT).
     """
     # Guards so we have nicer error messages when a non-standard model is used
     assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
@@ -225,21 +261,28 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None) -> Non
 
     # Check for Gemma-style softcapping - dispatch to specialized implementation
     final_logit_softcapping = getattr(model.config, "final_logit_softcapping", None)
-    if final_logit_softcapping:
+    if final_logit_softcapping and not fused_cross_entropy:
         from prime_rl.trainer.models.layers.lm_head_gemma import inject_gemma_lm_head
 
         inject_gemma_lm_head(model, chunk_size, final_logit_softcapping)
         return
 
-    logger.info(f"Injecting Prime LM head with chunk size {chunk_size}")
-
     # Replace the lm_head with the appropriate wrapper
     old_lm_head = model.lm_head
-    if chunk_size is not None:
+    if fused_cross_entropy:
+        logger.info("Injecting fused cross-entropy LM head (Liger kernel)")
+        model.lm_head = FusedCrossEntropyOutputLinear(
+            in_features=old_lm_head.in_features,
+            out_features=old_lm_head.out_features,
+            softcap=final_logit_softcapping,
+        )
+    elif isinstance(chunk_size, int):
+        logger.info(f"Injecting chunked LM head with chunk size {chunk_size}")
         model.lm_head = FusedOutputLinear(
             in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
         )
     else:
+        logger.info("Injecting vanilla LM head")
         model.lm_head = VanillaOutputLinear(in_features=old_lm_head.in_features, out_features=old_lm_head.out_features)
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head

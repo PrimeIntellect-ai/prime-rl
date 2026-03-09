@@ -39,22 +39,18 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) 
 
     if config.deployment.type == "single_node":
         script = template.render(
+            **config.slurm.template_vars,
             config_path=config_path,
             output_dir=config.output_dir,
-            job_name=config.slurm.job_name,
-            project_dir=config.slurm.project_dir,
             gpus_per_node=config.deployment.gpus_per_node,
-            partition=config.slurm.partition,
         )
     else:
         script = template.render(
+            **config.slurm.template_vars,
             config_path=config_path,
             output_dir=config.output_dir,
-            job_name=config.slurm.job_name,
-            project_dir=config.slurm.project_dir,
             num_nodes=config.deployment.num_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
-            partition=config.slurm.partition,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
