@@ -270,34 +270,41 @@ class EvalSaveHFConfig(BaseConfig):
 def _coerce_dict_values(d: dict) -> dict:
     """Coerce string values from CLI parsing to their proper types.
 
-    tyro parses untyped dict values as strings. This converts them back:
-    "800" -> 800, "3.14" -> 3.14, "true"/"false" -> bool.
+    tyro parses untyped dict values as strings. This only runs when ALL values
+    are strings (i.e. from CLI parsing). TOML/programmatic configs already have
+    proper types so they pass through unchanged.
+
+    Converts: "800" -> 800, "3.14" -> 3.14, "true"/"false" -> bool.
     """
+    if not d or not all(isinstance(v, str) for v in d.values()):
+        return d
+
     coerced = {}
     for k, v in d.items():
-        if isinstance(v, str):
-            # Try int
-            try:
-                coerced[k] = int(v)
+        # Try bool first (before int, since int("true") would fail anyway)
+        if v.lower() == "true":
+            coerced[k] = True
+            continue
+        if v.lower() == "false":
+            coerced[k] = False
+            continue
+        # Try int (only if the string representation round-trips cleanly)
+        try:
+            int_val = int(v)
+            if str(int_val) == v:
+                coerced[k] = int_val
                 continue
-            except ValueError:
-                pass
-            # Try float
-            try:
-                coerced[k] = float(v)
+        except ValueError:
+            pass
+        # Try float
+        try:
+            float_val = float(v)
+            if str(float_val) == v:
+                coerced[k] = float_val
                 continue
-            except ValueError:
-                pass
-            # Try bool
-            if v.lower() == "true":
-                coerced[k] = True
-                continue
-            if v.lower() == "false":
-                coerced[k] = False
-                continue
-            coerced[k] = v
-        else:
-            coerced[k] = v
+        except ValueError:
+            pass
+        coerced[k] = v
     return coerced
 
 
