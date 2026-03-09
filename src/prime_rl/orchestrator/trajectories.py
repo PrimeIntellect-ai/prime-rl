@@ -67,7 +67,11 @@ def interleave_rollout(
 
     trajectory = output["trajectory"]
     if len(trajectory) == 0:
-        logger.warning(f"No trajectory steps for example {output['example_id']}. Skipping rollout.")
+        error = output.get("error")
+        stop = output.get("stop_condition")
+        logger.warning(
+            f"No trajectory steps for example {output['example_id']} (error={error}, stop={stop}). Skipping rollout."
+        )
         return None
 
     has_error = output["error"] is not None
