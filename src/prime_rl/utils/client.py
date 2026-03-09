@@ -315,7 +315,7 @@ async def init_nccl_broadcast(
     host: str,
     port: int,
     timeout: int,
-    use_kernel_format_transfer: bool = False,
+    use_vllm_format_transfer: bool = False,
 ) -> None:
     """Make a HTTP post request to the vLLM server to initialize the NCCL broadcast."""
     logger = get_logger()
@@ -332,7 +332,7 @@ async def init_nccl_broadcast(
                     "server_rank": client_num,
                     "num_inference_server": len(admin_clients),
                     "timeout": timeout,
-                    "use_kernel_format_transfer": use_kernel_format_transfer,
+                    "use_vllm_format_transfer": use_vllm_format_transfer,
                 },
             )
             response.raise_for_status()

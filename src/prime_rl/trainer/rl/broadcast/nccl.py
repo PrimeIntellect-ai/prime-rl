@@ -93,13 +93,13 @@ class NCCLWeightBroadcastSender:
         device: int | str | torch.device,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
-        use_kernel_format_transfer: bool = False,
+        use_vllm_format_transfer: bool = False,
         quantize_fp8: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = dtype
-        self.use_kernel_format_transfer = use_kernel_format_transfer
+        self.use_vllm_format_transfer = use_vllm_format_transfer
         self.quantize_fp8 = quantize_fp8
 
         if self.world.is_master:
@@ -124,7 +124,7 @@ class NCCLWeightBroadcastSender:
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
-        if self.use_kernel_format_transfer:
+        if self.use_vllm_format_transfer:
             self._broadcast_kernel_format(model, state_dict, num_layers)
         else:
             self._broadcast_checkpoint_format(model, state_dict, num_layers)
@@ -203,7 +203,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
             device,
             config.timeout,
             dtype,
-            use_kernel_format_transfer=config.use_kernel_format_transfer,
+            use_vllm_format_transfer=config.use_vllm_format_transfer,
             quantize_fp8=config.quantize_fp8,
         )
 
