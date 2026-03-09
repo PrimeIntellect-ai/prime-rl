@@ -22,6 +22,7 @@ TIMEOUT = 15 * 60  # 15 minutes
 # Note: I would prefer 5% but massed compute A600s seem to be slower than hyperstack A600s (which is the baseline)
 METRIC_TOLERANCE = 0.1  # 10% tolerance for mfu, throughput, step_time
 MEMORY_TOLERANCE = 0.01  # 1% tolerance for peak memory
+TOKEN_CHUNK_SIZE = "1024"
 
 # Baseline files for the Qwen3-0.6B RL benchmark
 BASELINE_FILE_1GPU = Path(
@@ -90,7 +91,7 @@ def benchmark_process_1gpu(
         "--timeout",
         str(TIMEOUT - 5 * 60),  # Leave 5 min buffer
         "--fused-lm-head-token-chunk-size",
-        "8192",
+        TOKEN_CHUNK_SIZE,
     ]
     return run_process(cmd, timeout=TIMEOUT, env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
 
@@ -123,7 +124,7 @@ def benchmark_process_4gpu(
         "--timeout",
         str(TIMEOUT - 5 * 60),  # Leave 5 min buffer
         "--fused-lm-head-token-chunk-size",
-        "8192",
+        TOKEN_CHUNK_SIZE,
     ]
     return run_process(cmd, timeout=TIMEOUT, env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
 
