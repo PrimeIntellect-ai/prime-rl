@@ -23,8 +23,8 @@ REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = []
 def resolve_parser(
     model_name: str, parser_value: str | None, patterns: list[tuple[re.Pattern[str], str]]
 ) -> str | None:
-    """Resolve a parser value. If "auto", walk patterns and return the first match."""
-    if parser_value != "auto":
+    """Resolve a parser value. If not set, auto-detect from model name using patterns."""
+    if parser_value is not None:
         return parser_value
     for pattern, parser_name in patterns:
         if pattern.search(model_name):

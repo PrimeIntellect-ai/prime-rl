@@ -102,16 +102,12 @@ from prime_rl.utils.parsers import resolve_tool_call_parser
     ],
 )
 def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
-    assert resolve_tool_call_parser(model_name, "auto") == expected_parser
+    assert resolve_tool_call_parser(model_name, None) == expected_parser
 
 
 def test_explicit_parser_not_overridden():
     assert resolve_tool_call_parser("Qwen/Qwen3-4B-Instruct-2507", "qwen3_xml") == "qwen3_xml"
 
 
-def test_auto_unknown_model():
-    assert resolve_tool_call_parser("some/unknown-model", "auto") is None
-
-
-def test_none_skips_resolution():
-    assert resolve_tool_call_parser("Qwen/Qwen3-0.6B", None) is None
+def test_unknown_model_returns_none():
+    assert resolve_tool_call_parser("some/unknown-model", None) is None

@@ -70,7 +70,7 @@ class VLLMConfig(BaseConfig):
     tool_call_parser: Annotated[
         str | None,
         Field(
-            description='The tool call parser to use. Set to "auto" to infer from the model name.',
+            description="The tool call parser to use. Auto-detected from the model name if not set.",
         ),
     ] = None
 
@@ -170,7 +170,7 @@ class VLLMConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_resolve_parsers(self):
-        """Resolve tool_call_parser="auto" and reasoning_parser="auto" to the correct parser for the model."""
+        """Auto-detect tool_call_parser and reasoning_parser from the model name if not explicitly set."""
         self.tool_call_parser = resolve_tool_call_parser(self.model, self.tool_call_parser)
         self.reasoning_parser = resolve_reasoning_parser(self.model, self.reasoning_parser)
         return self
