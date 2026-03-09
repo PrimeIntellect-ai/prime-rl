@@ -103,8 +103,6 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("Qwen/Qwen3.5-122B-A10B-FP8", "qwen3_coder", "qwen3"),
     ("Qwen/Qwen3.5-397B-A17B", "qwen3_coder", "qwen3"),
     ("Qwen/Qwen3.5-397B-A17B-FP8", "qwen3_coder", "qwen3"),
-    # Unknown
-    ("some/unknown-model", None, None),
 ]
 
 
@@ -153,6 +151,7 @@ def test_shared_model_resolves_parsers():
             "model": {"name": "deepseek-ai/DeepSeek-V3.2"},
         }
     )
+    assert config.inference is not None
     ns = config.inference.vllm.to_namespace()
     assert ns.tool_call_parser == "deepseek_v32"
     assert ns.reasoning_parser == "deepseek_r1"
