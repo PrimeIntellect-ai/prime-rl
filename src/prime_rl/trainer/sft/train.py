@@ -319,6 +319,13 @@ def train(config: SFTConfig):
         if config.max_steps is not None and progress.step >= config.max_steps:
             break
 
+        # Run validation (at start if eval_on_start, then every interval steps)
+        if config.val is not None and (
+            (is_first_step and config.val.eval_on_start)
+            or (not is_first_step and progress.step % config.val.interval == 0)
+        ):
+            run_validation(progress.step)
+
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
         )
@@ -432,13 +439,6 @@ def train(config: SFTConfig):
 
         if is_tt_moe_model(model) and batch_max_vio.item() > 0:
             monitor.log({"max_vio/mean": batch_max_vio.item(), "step": progress.step}, step=progress.step)
-
-        should_eval = config.val is not None and (
-            (is_first_step and config.val.eval_on_start)
-            or (not is_first_step and progress.step % config.val.interval == 0)
-        )
-        if should_eval:
-            run_validation(progress.step)
 
         is_first_step = False
         progress.step += 1
