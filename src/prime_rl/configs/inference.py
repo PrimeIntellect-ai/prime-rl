@@ -7,8 +7,6 @@ from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import SlurmConfig
 
-# TODO: Set thinking/ solution budget
-
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)
 # TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
