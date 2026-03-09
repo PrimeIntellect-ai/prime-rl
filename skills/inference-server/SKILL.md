@@ -14,7 +14,7 @@ Always use the `inference` entry point — never `vllm serve` or `python -m vllm
 uv run inference @ path/to/config.toml
 
 # With CLI overrides
-uv run inference --vllm.model Qwen/Qwen3-0.6B --vllm.max_model_len 2048 --vllm.enforce_eager
+uv run inference --vllm.model Qwen/Qwen3-0.6B --vllm.max-model-len 2048 --vllm.enforce-eager True
 
 # Combined
 uv run inference @ path/to/config.toml --vllm.port 8001 --vllm.gpu-memory-utilization 0.5

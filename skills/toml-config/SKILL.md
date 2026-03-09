@@ -18,9 +18,13 @@ uv run rl @ configs/debug/rl/train.toml
 # CLI overrides (take precedence over TOML)
 uv run inference @ config.toml --vllm.model Qwen/Qwen3-0.6B --vllm.port 8001
 
-# Boolean flags: no value needed
-uv run inference --vllm.enforce-eager          # sets to true
-uv run inference --no-vllm.enforce-eager       # sets to false
+# Pure boolean flags: no value needed
+uv run inference --dry-run          # sets to true
+uv run inference --no-dry-run       # sets to false
+
+# Optional boolean flags: value needed
+uv run inference --vllm.enforce-eager True
+uv run inference --vllm.enforce-eager False
 
 # CLI-only (no TOML file)
 uv run inference --vllm.model Qwen/Qwen3-0.6B --vllm.max-model-len 2048

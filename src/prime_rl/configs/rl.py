@@ -421,8 +421,6 @@ class RLConfig(BaseConfig):
             self.orchestrator.model.name = self.model.name
             if self.inference is not None:
                 self.inference.vllm.model = self.model.name
-            if self.teacher_inference is not None:
-                self.teacher_inference.vllm.model = self.model.name
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 

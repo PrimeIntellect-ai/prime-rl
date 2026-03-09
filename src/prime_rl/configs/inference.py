@@ -141,7 +141,7 @@ class VLLMConfig(BaseConfig):
 
     # --- LoRA ---
 
-    enable_lora: Annotated[bool, Field(description="Whether to enable LoRA.")] = False
+    enable_lora: Annotated[bool | None, Field(description="Whether to enable LoRA.")] = None
 
     max_loras: Annotated[int | None, Field(description="The maximum number of LoRAs to use.")] = None
 
@@ -165,7 +165,7 @@ class VLLMConfig(BaseConfig):
 
     host: Annotated[str | None, Field(description="The host to bind to.")] = None
 
-    port: Annotated[int | None, Field(description="The port to bind to.")] = None
+    port: Annotated[int, Field(description="The port to bind to.")] = 8000
 
     api_server_count: Annotated[int, Field(description="The number of API servers to use.")] = 1
 
