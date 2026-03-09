@@ -143,8 +143,8 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
         for start in range(0, vocab, chunk_size):
             end = min(start + chunk_size, vocab)
             w_chunk = weight[start:end]  # [C, H]
-            logits = hidden @ w_chunk.t()  # [N, C] (model dtype)
-            logits_f = logits.to(torch.float32) * inv_t_broadcast  # [N, C] fp32
+            logits = hidden.to(torch.float32) @ w_chunk.to(torch.float32).t()  # [N, C] fp32
+            logits_f = logits * inv_t_broadcast  # [N, C] fp32
 
             # Shared intermediates for logZ and entropy stats.
             m, s, t = _online_logsumexp_and_weighted_update(m, s, t, logits_f)
@@ -191,8 +191,8 @@ class _ChunkedLogProbEntropyFn(torch.autograd.Function):
             end = min(start + chunk_size, vocab)
             w_chunk = weight[start:end]  # [C, H]
 
-            logits = hidden @ w_chunk.t()  # [N, C] (model dtype)
-            logits_f = logits.to(torch.float32) * inv_t_broadcast  # [N, C] fp32
+            logits = hidden.to(torch.float32) @ w_chunk.to(torch.float32).t()  # [N, C] fp32
+            logits_f = logits * inv_t_broadcast  # [N, C] fp32
 
             # p = softmax(logits_f) chunk = exp(logits_f - logz)
             p = torch.exp(logits_f - logz.unsqueeze(-1))  # [N, C] fp32
