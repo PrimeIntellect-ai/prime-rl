@@ -115,9 +115,9 @@ class VLLMConfig(BaseConfig):
     ] = None
 
     data_parallel_rpc_port: Annotated[
-        int | None,
+        int,
         Field(description="RPC port for data parallel communication."),
-    ] = None
+    ] = 13345
 
     # --- Scheduling ---
 
