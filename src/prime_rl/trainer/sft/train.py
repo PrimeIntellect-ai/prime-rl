@@ -266,8 +266,7 @@ def train(config: SFTConfig):
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
-        was_training = model.training
-        model.eval()
+        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
         mean_loss, nan_count, _ = run_forward_loop(val_dataloader, backward=False)
         if nan_count > 0:
             logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
@@ -276,8 +275,6 @@ def train(config: SFTConfig):
         else:
             logger.success(f"Validation | Step {step} | Loss: {mean_loss:.4f}")
         monitor.log({"val/loss": mean_loss, "step": step}, step=step)
-        if was_training:
-            model.train()
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
