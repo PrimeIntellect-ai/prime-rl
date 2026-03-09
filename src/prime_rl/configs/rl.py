@@ -416,11 +416,22 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_model(self):
         """Auto-setup shared model config for trainer, orchestrator, and inference."""
+        import os
+
+        kernel_transfer = os.environ.get("PRIME_RL_KERNEL_WEIGHT_TRANSFER", "0") == "1"
+
         if self.model is not None:
             self.trainer.model.name = self.model.name
-            self.orchestrator.model.name = self.model.name
             if self.inference is not None:
-                self.inference.model.name = self.model.name
+                default_name = type(self.inference.model).model_fields["name"].default
+                if not kernel_transfer or self.inference.model.name == default_name:
+                    self.inference.model.name = self.model.name
+
+            # Orchestrator must use the inference model name so it queries the correct model
+            if kernel_transfer and self.inference is not None and self.inference.model.name != self.model.name:
+                self.orchestrator.model.name = self.inference.model.name
+            else:
+                self.orchestrator.model.name = self.model.name
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 

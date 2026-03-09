@@ -1,3 +1,4 @@
+import os
 import pickle
 from typing import TYPE_CHECKING, Generator, cast
 
@@ -18,6 +19,8 @@ else:
     Worker = object
 
 logger = init_logger("vllm.inference.vllm.worker_nccl")
+
+KERNEL_WEIGHT_TRANSFER = os.environ.get("PRIME_RL_KERNEL_WEIGHT_TRANSFER", "0") == "1"
 
 
 def receive_integer(communicator: PyNcclCommunicator) -> int:
@@ -111,12 +114,72 @@ class NCCLWeightUpdateWorker(Worker):
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator."""
         model_runner = self.model_runner
-        model = model_runner.model.runnable
+        if hasattr(model_runner.model, "runnable"):
+            model = model_runner.model.runnable
+        else:
+            model = model_runner.model
         assert isinstance(model, Module)
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        model.load_weights(state_iter)  # type: ignore
 
-        # # Process weights after loading (important for some models)
-        device = next(model.parameters()).device
-        process_weights_after_loading(model, self.model_runner.model_config, device)
+        if KERNEL_WEIGHT_TRANSFER:
+            self._load_kernel_format(model, state_iter)
+            self._update_mla_absorbed_weights(model)
+        else:
+            model.load_weights(state_iter)  # type: ignore
+            device = next(model.parameters()).device
+            process_weights_after_loading(model, self.model_runner.model_config, device)
+
+    @torch.no_grad()
+    def _update_mla_absorbed_weights(self, model: Module) -> None:
+        """Recompute MLA absorbed KV weights in-place after kernel weight transfer.
+
+        After updating kv_b_proj via copy_(), we must recompute the absorbed
+        W_UV and W_UK_T matrices. We use copy_() to update them in-place
+        so captured CUDA graphs remain valid.
+        """
+        from vllm.model_executor.layers.quantization.utils.quant_utils import get_and_maybe_dequant_weights
+
+        for name, module in model.named_modules():
+            if not hasattr(module, "W_UV") and not hasattr(module, "W_UK_T"):
+                continue
+            if not hasattr(module, "kv_b_proj"):
+                continue
+
+            act_dtype = torch.bfloat16
+            kv_b_proj_weight = get_and_maybe_dequant_weights(module.kv_b_proj, out_dtype=act_dtype).T
+            kv_b_proj_weight = kv_b_proj_weight.view(
+                module.kv_lora_rank, module.num_heads, module.qk_nope_head_dim + module.v_head_dim
+            )
+            W_UK, W_UV = kv_b_proj_weight.split([module.qk_nope_head_dim, module.v_head_dim], dim=-1)
+
+            if hasattr(module, "W_UV"):
+                new_W_UV = W_UV.transpose(0, 1)
+                module.W_UV.copy_(new_W_UV)
+            if hasattr(module, "W_UK_T"):
+                new_W_UK_T = W_UK.permute(1, 2, 0)
+                module.W_UK_T.copy_(new_W_UK_T)
+
+            logger.info(f"Updated MLA absorbed weights in-place for {name}")
+
+    @torch.no_grad()
+    def _load_kernel_format(self, model: Module, state_iter) -> None:
+        """Load kernel-format weights using in-place copy_ (CUDA-graph safe)."""
+        params = dict(model.named_parameters())
+        loaded = 0
+        skipped = []
+        shape_mismatches = []
+        for name, tensor in state_iter:
+            if name in params:
+                if params[name].shape != tensor.shape:
+                    shape_mismatches.append(f"{name}: param={list(params[name].shape)} != received={list(tensor.shape)}")
+                else:
+                    params[name].copy_(tensor)
+                    loaded += 1
+            else:
+                skipped.append(name)
+        if shape_mismatches:
+            logger.error(f"Kernel weight transfer: {len(shape_mismatches)} SHAPE MISMATCHES: {shape_mismatches}")
+        if skipped:
+            logger.warning(f"Kernel weight transfer: {len(skipped)} skipped (not in model): {skipped}")
+        logger.info(f"Kernel weight transfer: copied {loaded} weights in-place")

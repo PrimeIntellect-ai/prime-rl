@@ -78,7 +78,7 @@ echo "MASTER_PORT=${MASTER_PORT}"
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-uv sync --all-extras
+uv sync --all-extras --group fp8-inference
 
 # Run RL
 srun bash -c '
@@ -106,15 +106,15 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         if [ "$INFER_NODE_RANK" -eq 0 ]; then
             uv run inference \
                 @ $CONFIG_DIR/inference.toml \
-                --data-parallel-address $INFER_HEAD_HOST \
-                --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
+                --data_parallel_address $INFER_HEAD_HOST \
+                --data_parallel_rpc_port $INFERENCE_DATA_PARALLEL_RPC_PORT \
                 2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
         else
             uv run inference \
                 @ $CONFIG_DIR/inference.toml \
-                --data-parallel-start-rank $INFER_DP_START_RANK \
-                --data-parallel-address $INFER_HEAD_HOST \
-                --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
+                --data_parallel_start_rank $INFER_DP_START_RANK \
+                --data_parallel_address $INFER_HEAD_HOST \
+                --data_parallel_rpc_port $INFERENCE_DATA_PARALLEL_RPC_PORT \
                 --headless \
                 2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
         fi

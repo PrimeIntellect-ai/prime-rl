@@ -226,6 +226,28 @@ class InferenceConfig(BaseConfig):
         ),
     ] = 13345
 
+    data_parallel_address: Annotated[
+        str | None,
+        Field(
+            description="Address for cross-node data parallel communication. Passed to vLLM as `--data-parallel-address`.",
+        ),
+    ] = None
+
+    data_parallel_start_rank: Annotated[
+        int | None,
+        Field(
+            ge=0,
+            description="Starting DP rank for this node in multi-node EP. Passed to vLLM as `--data-parallel-start-rank`.",
+        ),
+    ] = None
+
+    headless: Annotated[
+        bool,
+        Field(
+            description="Run in headless mode (no API server). Passed to vLLM as `--headless`.",
+        ),
+    ] = False
+
     seed: Annotated[
         int,
         Field(
@@ -332,6 +354,10 @@ class InferenceConfig(BaseConfig):
         size. Unless LoRA is enabled, in which case only one API server is
         supported (vLLM limitation).
         """
+        if self.headless:
+            self.api_server_count = 0
+            return self
+
         if "api_server_count" not in self.model_fields_set:
             min_api_server_count = self.data_parallel_size_local or self.parallel.dp
             if self.api_server_count < min_api_server_count:
@@ -371,6 +397,9 @@ class InferenceConfig(BaseConfig):
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",
             "seed": "seed",
+            "data_parallel_address": "data_parallel_address",
+            "data_parallel_start_rank": "data_parallel_start_rank",
+            "headless": "headless",
         }
 
         for config_key, vllm_key in to_vllm.items():
