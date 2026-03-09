@@ -129,9 +129,13 @@ def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
         ("PrimeIntellect/INTELLECT-3.1", "deepseek_r1"),
         # StepFun
         ("stepfun-ai/Step-3.5-Flash", "step3p5"),
-        # Qwen3
+        # Qwen3 Thinking → deepseek_r1
+        ("Qwen/Qwen3-4B-Thinking-2507", "deepseek_r1"),
+        ("Qwen/Qwen3-30B-A3B-Thinking-2507", "deepseek_r1"),
+        ("Qwen/Qwen3-235B-A22B-Thinking-2507", "deepseek_r1"),
+        # Qwen3 (non-thinking) → qwen3
         ("Qwen/Qwen3-0.6B", "qwen3"),
-        ("Qwen/Qwen3-4B-Thinking-2507", "qwen3"),
+        ("Qwen/Qwen3-4B-Instruct-2507", "qwen3"),
         ("Qwen/Qwen3-235B-A22B", "qwen3"),
         ("Qwen/Qwen3-Coder-Next", "qwen3"),
         # Qwen3.5
