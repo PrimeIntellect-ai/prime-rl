@@ -1,9 +1,9 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from prime_rl.utils.pydantic_config import BaseConfig
+from prime_rl.utils.config import BaseConfig
 
 
 class SlurmConfig(BaseConfig):
@@ -27,9 +27,10 @@ class SlurmConfig(BaseConfig):
         str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
     ] = "cluster"
 
-    dry_run: Annotated[bool, Field(description="Only generate the SLURM script and configs without submitting.")] = (
-        False
-    )
+    @model_validator(mode="after")
+    def resolve_project_dir(self):
+        self.project_dir = self.project_dir.resolve()
+        return self
 
 
 ServerType = Literal["vllm", "openai"]
@@ -120,6 +121,22 @@ class ClientConfig(BaseConfig):
             description="Whether to skip checking if the model is available in the inference pool. Useful for external APIs or API Keys that don't support the /models endpoint.",
         ),
     ] = False
+
+    dp_rank_count: Annotated[
+        int,
+        Field(
+            ge=1,
+            description=(
+                "Number of data-parallel ranks behind each base URL. When > 1, "
+                "each URL is expanded into dp_rank_count logical clients, each "
+                "pinned to a specific DP rank via the X-data-parallel-rank header. "
+                "This ensures all requests within a multi-turn rollout hit the same "
+                "DP engine, maximizing KV cache reuse. Auto-set from "
+                "inference.data_parallel_size_local (or inference.parallel.dp) "
+                "when using the RL entrypoint."
+            ),
+        ),
+    ] = 1
 
     elastic: Annotated[
         ElasticConfig | None,

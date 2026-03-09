@@ -12,14 +12,14 @@ dependencies = [
     "loguru>=0.7.3",
     "pyarrow>=21.0.0",
     "pydantic>=1.10.13",
-    "pydantic-settings>=2.12.0",
+    "pydantic-config",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
     "numpy>=2.2.6",
     "torch>=2.9.0",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm",
+    "vllm>=0.17.0",
     "wandb>=0.24.2",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.37",
@@ -40,9 +40,9 @@ dependencies = [
 [project.scripts]
 rl = "prime_rl.entrypoints.rl:main"
 sft = "prime_rl.entrypoints.sft:main"
+inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
-inference = "prime_rl.inference.server:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
 
 [project.entry-points."vllm.general_plugins"]
@@ -50,16 +50,19 @@ prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
 
 [project.optional-dependencies]
 flash-attn = [
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3%2Bcu128torch2.10-cp312-cp312-linux_x86_64.whl",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
+
 flash-attn-3 = [
-    "flash_attn_3 @ https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl",
+    "flash_attn_3 @ https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
 flash-attn-cute = [
     "flash-attn-cute",
 ]
-
 [dependency-groups]
+fp8-inference = [
+    "deep-gemm @ https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
+]
 dev = [
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.7",
@@ -72,23 +75,28 @@ dev = [
 [tool.uv]
 preview = true
 no-build-isolation-package = ["flash-attn"]
-prerelease = "allow"
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
 # Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
+    "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
+    "quack-kernels>=0.2.7",
 ]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 math-env = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "3f555af" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "45fae8d" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
-transformers = { git = "https://github.com/huggingface/transformers.git", rev = "609e3d5" }
-vllm = { url = "https://vllm-wheels.s3.us-west-2.amazonaws.com/7a06e5b05b170d7da31845866da0a99fc65253a1/vllm-0.16.0rc3-cp38-abi3-manylinux_2_31_x86_64.whl" }
-flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
+transformers = { git = "https://github.com/huggingface/transformers.git", rev = "5c1c72b" }
+flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "e2743ab5" }
+pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
 reverse-text = { index = "primeintellect" }
 
 [tool.uv.extra-build-dependencies]
@@ -104,8 +112,9 @@ url = "https://hub.primeintellect.ai/primeintellect/simple/"
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/test/cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
 
 [tool.ruff.lint]
 select = ["F", "I"]

@@ -1,10 +1,11 @@
 from argparse import Namespace
-from typing import Annotated, Any, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import BaseModelConfig
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings, get_all_fields
+from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
 from prime_rl.utils.utils import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
@@ -93,7 +94,7 @@ class ModelConfig(BaseModelConfig):
     ] = None
 
 
-class WeightBroadcastConfig(BaseSettings):
+class WeightBroadcastConfig(BaseConfig):
     """Configures weight broadcast settings."""
 
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
@@ -116,7 +117,34 @@ All2AllBackend = Literal[
 ]
 
 
-class InferenceConfig(BaseSettings):
+class BaseInferenceDeploymentConfig(BaseModel):
+    """Base deployment config for inference."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+
+
+class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
+    """Configures a single-node inference deployment."""
+
+    type: Literal["single_node"] = "single_node"
+
+
+class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
+    """Configures a multi-node inference deployment. Each node runs an independent vLLM replica."""
+
+    type: Literal["multi_node"] = "multi_node"
+
+    num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 2
+
+
+InferenceDeploymentConfig: TypeAlias = Annotated[
+    SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig, Field(discriminator="type")
+]
+
+
+class InferenceConfig(BaseConfig):
     """Configures inference."""
 
     # The server configuration
@@ -181,6 +209,23 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 1
 
+    data_parallel_size_local: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of data parallel replicas to run on this node. Passed to vLLM as `--data-parallel-size-local`.",
+        ),
+    ] = None
+
+    data_parallel_rpc_port: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=65535,
+            description="RPC port for data parallel communication. Passed to vLLM as `--data-parallel-rpc-port`.",
+        ),
+    ] = 13345
+
     seed: Annotated[
         int,
         Field(
@@ -213,9 +258,58 @@ class InferenceConfig(BaseSettings):
         WeightBroadcastConfig()
     )
 
+    enable_return_routed_experts: Annotated[
+        bool,
+        Field(
+            description="Whether to enable return routed experts. Passed to vLLM as `--enable-return-routed-experts`",
+        ),
+    ] = False
+
+    vllm_extra: Annotated[
+        dict[str, Any],
+        Field(
+            description="Extra arguments to pass to vLLM. These are applied as attributes on the vLLM namespace after config translation.",
+        ),
+    ] = {}
+
+    # Launcher-only fields
+
+    deployment: Annotated[
+        InferenceDeploymentConfig,
+        Field(
+            description="Deployment configuration for inference.",
+        ),
+    ] = SingleNodeInferenceDeploymentConfig()
+
+    slurm: Annotated[
+        SlurmConfig | None,
+        Field(
+            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
+        ),
+    ] = None
+
+    output_dir: Annotated[Path, Field(description="Directory for SLURM logs and generated scripts.")] = Path("outputs")
+
+    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+
     @model_validator(mode="after")
-    def round_up_max_lora_rank(self):
-        """Round up max_lora_rank to the nearest valid vLLM value.
+    def validate_multi_node_requires_slurm(self):
+        if self.deployment.type == "multi_node" and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_slurm_template(self):
+        if self.slurm is not None and self.slurm.template_path is None:
+            import prime_rl
+
+            templates_dir = Path(prime_rl.__file__).parent / "templates"
+            self.slurm.template_path = templates_dir / "inference.sbatch.j2"
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_max_lora_rank(self):
+        """Auto-setup max_lora_rank by rounding up to the nearest valid vLLM value.
 
         vLLM only accepts specific values for max_lora_rank: (1, 8, 16, 32, 64, 128, 256, 320, 512).
         This validator ensures that any configured rank is rounded up to the minimum valid value
@@ -238,8 +332,10 @@ class InferenceConfig(BaseSettings):
         size. Unless LoRA is enabled, in which case only one API server is
         supported (vLLM limitation).
         """
-        if self.api_server_count < self.parallel.dp:
-            self.api_server_count = self.parallel.dp
+        if "api_server_count" not in self.model_fields_set:
+            min_api_server_count = self.data_parallel_size_local or self.parallel.dp
+            if self.api_server_count < min_api_server_count:
+                self.api_server_count = min_api_server_count
 
         if self.enable_lora:
             self.api_server_count = 1  # LoRA requires only one API server
@@ -261,6 +357,8 @@ class InferenceConfig(BaseSettings):
             "model.rope_scaling": "rope_scaling",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
+            "data_parallel_size_local": "data_parallel_size_local",
+            "data_parallel_rpc_port": "data_parallel_rpc_port",
             "enable_lora": "enable_lora",
             "enable_prefix_caching": "enable_prefix_caching",
             "max_loras": "max_loras",
@@ -268,14 +366,16 @@ class InferenceConfig(BaseSettings):
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
+            "enable_return_routed_experts": "enable_return_routed_experts",
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",
+            "seed": "seed",
         }
 
-        for key in get_all_fields(self):
-            value = rgetattr(self, key.replace("-", "_"))
-            rsetattr(namespace, to_vllm.get(key, key), value)
+        for config_key, vllm_key in to_vllm.items():
+            value = rgetattr(self, config_key.replace("-", "_"))
+            rsetattr(namespace, vllm_key, value)
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")

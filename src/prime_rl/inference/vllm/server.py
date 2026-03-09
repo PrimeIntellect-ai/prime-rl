@@ -1,5 +1,6 @@
 from argparse import Namespace
 from http import HTTPStatus
+from typing import Any
 
 import uvloop
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -97,9 +98,25 @@ MODEL_TOOL_CALL_PARSER: dict[str, str] = {
     "Qwen/Qwen3-Coder-Next": "hermes",
     "Qwen/Qwen3-Coder-Next-Base": "hermes",
     "Qwen/Qwen3-Coder-Next-FP8": "hermes",
-    # Qwen3.5
-    "Qwen/Qwen3.5-397B-A17B": "hermes",
-    "Qwen/Qwen3.5-397B-A17B-FP8": "hermes",
+    # Qwen3.5 dense (uses qwen3_coder tool format, not hermes)
+    "Qwen/Qwen3.5-0.8B": "qwen3_coder",
+    "Qwen/Qwen3.5-0.8B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-2B": "qwen3_coder",
+    "Qwen/Qwen3.5-2B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-4B": "qwen3_coder",
+    "Qwen/Qwen3.5-4B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-9B": "qwen3_coder",
+    "Qwen/Qwen3.5-9B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-27B": "qwen3_coder",
+    "Qwen/Qwen3.5-27B-FP8": "qwen3_coder",
+    # Qwen3.5 MoE (uses qwen3_coder tool format, not hermes)
+    "Qwen/Qwen3.5-35B-A3B": "qwen3_coder",
+    "Qwen/Qwen3.5-35B-A3B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-35B-A3B-FP8": "qwen3_coder",
+    "Qwen/Qwen3.5-122B-A10B": "qwen3_coder",
+    "Qwen/Qwen3.5-122B-A10B-FP8": "qwen3_coder",
+    "Qwen/Qwen3.5-397B-A17B": "qwen3_coder",
+    "Qwen/Qwen3.5-397B-A17B-FP8": "qwen3_coder",
 }
 
 
@@ -254,28 +271,31 @@ async def custom_init_app_state(
 
     resolved_chat_template = load_chat_template(args.chat_template)
 
-    state.openai_serving_chat_with_tokens = (
-        OpenAIServingChatWithTokens(
-            engine_client,
-            state.openai_serving_models,
-            args.response_role,
-            request_logger=request_logger,
-            chat_template=resolved_chat_template,
-            chat_template_content_format=args.chat_template_content_format,
-            trust_request_chat_template=args.trust_request_chat_template,
-            return_tokens_as_token_ids=args.return_tokens_as_token_ids,
-            enable_auto_tools=args.enable_auto_tool_choice,
-            exclude_tools_when_tool_choice_none=args.exclude_tools_when_tool_choice_none,
-            tool_parser=args.tool_call_parser,
-            reasoning_parser=args.structured_outputs_config.reasoning_parser,
-            enable_prompt_tokens_details=args.enable_prompt_tokens_details,
-            enable_force_include_usage=args.enable_force_include_usage,
-            enable_log_outputs=args.enable_log_outputs,
-            log_error_stack=args.log_error_stack,
-        )
-        if "generate" in supported_tasks
-        else None
+    chat_kwargs = dict(
+        request_logger=request_logger,
+        chat_template=resolved_chat_template,
+        chat_template_content_format=args.chat_template_content_format,
+        trust_request_chat_template=args.trust_request_chat_template,
+        return_tokens_as_token_ids=args.return_tokens_as_token_ids,
+        enable_auto_tools=args.enable_auto_tool_choice,
+        exclude_tools_when_tool_choice_none=args.exclude_tools_when_tool_choice_none,
+        tool_parser=args.tool_call_parser,
+        reasoning_parser=args.structured_outputs_config.reasoning_parser,
+        enable_prompt_tokens_details=args.enable_prompt_tokens_details,
+        enable_force_include_usage=args.enable_force_include_usage,
+        enable_log_outputs=args.enable_log_outputs,
     )
+    if hasattr(args, "log_error_stack"):
+        chat_kwargs["log_error_stack"] = args.log_error_stack
+
+    serving_chat = OpenAIServingChatWithTokens(
+        engine_client,
+        state.openai_serving_models,
+        args.response_role,
+        **chat_kwargs,
+    )
+    state.openai_serving_chat = serving_chat if "generate" in supported_tasks else None
+    state.openai_serving_chat_with_tokens = serving_chat if "generate" in supported_tasks else None
 
 
 def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
@@ -315,13 +335,18 @@ vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_wo
 # Adapted from vllm/entrypoints/cli/serve.py
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
-def server(config: InferenceConfig, vllm_args: list[str]):
+def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.openai.api_server import run_server
 
+    namespace = config.to_vllm()
+    if vllm_extra:
+        for key, value in vllm_extra.items():
+            setattr(namespace, key, value)
+
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
-    args = parser.parse_args(args=vllm_args, namespace=config.to_vllm())
+    args = parser.parse_args(args=[], namespace=namespace)
     assert args is not None
     validate_parsed_serve_args(args)
 

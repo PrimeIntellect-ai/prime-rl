@@ -1,6 +1,8 @@
-from collections.abc import AsyncGenerator
+import base64
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import ClassVar, Optional, Union
 
+import numpy as np
 from fastapi import Request
 from pydantic import Field
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest, ChatCompletionResponse
@@ -8,57 +10,37 @@ from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.openai.engine.serving import GenerationError
 from vllm.entrypoints.utils import get_max_tokens
+from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.reasoning import ReasoningParser
 from vllm.sampling_params import BeamSearchParams, SamplingParams
-from vllm.v1.sample.logits_processor import validate_logits_processors_parameters
 
 logger = init_logger(__name__)
 
 
-def _collapse_image_placeholders(
-    original_tokens: list[int],
-    override_tokens: list[int],
-) -> list[int]:
-    """
-    Collapse pre-expanded image placeholder tokens in override_tokens.
+class _RoutedExpertsCapture:
+    def __init__(self, generator: AsyncGenerator[RequestOutput, None]):
+        self._generator = generator
+        self.routed_experts: dict[int, dict] = {}
 
-    In multi-turn VLM conversations, tokens from previous turns already have
-    expanded image placeholders (e.g., 64 consecutive <|image_pad|> tokens).
-    If left as-is, _process_inputs re-expands each token individually, causing
-    compounding token inflation across turns.
+    def _encode_routed_experts(self, arr: np.ndarray) -> dict:
+        return {
+            "data": base64.b85encode(arr.tobytes()).decode("ascii"),
+            "shape": list(arr.shape),
+        }
 
-    Detects placeholder token IDs by comparing with the original engine tokens
-    (which have single placeholders from _preprocess_chat), then collapses
-    consecutive runs back to single tokens so _process_inputs can expand
-    them correctly.
-    """
-    if not override_tokens or original_tokens == override_tokens:
-        return override_tokens
+    async def __aiter__(self):
+        async for request_output in self._generator:
+            for output in request_output.outputs:
+                if output.routed_experts is not None:
+                    self.routed_experts[output.index] = self._encode_routed_experts(output.routed_experts)
+            yield request_output
 
-    def get_block_tokens(tokens: list[int], min_run: int) -> set[int]:
-        """Return token IDs that appear in consecutive runs >= min_run."""
-        result = set()
-        run_start = 0
-        for i in range(1, len(tokens) + 1):
-            if i == len(tokens) or tokens[i] != tokens[run_start]:
-                if i - run_start >= min_run:
-                    result.add(tokens[run_start])
-                run_start = i
-        return result
-
-    # Placeholder tokens appear in blocks of 2+ in override but only as singles in original
-    placeholder_ids = get_block_tokens(override_tokens, 2) - get_block_tokens(original_tokens, 2)
-    if not placeholder_ids:
-        return override_tokens
-
-    result = []
-    for token in override_tokens:
-        if token in placeholder_ids and result and result[-1] == token:
-            continue
-        result.append(token)
-    return result
+    def post_process(self, response: ChatCompletionResponse):
+        for choice in response.choices:
+            if choice.index in self.routed_experts:
+                choice.routed_experts = self.routed_experts[choice.index]
 
 
 class ChatCompletionRequestWithTokens(ChatCompletionRequest):
@@ -67,7 +49,46 @@ class ChatCompletionRequestWithTokens(ChatCompletionRequest):
 
 
 class OpenAIServingChatWithTokens(OpenAIServingChat):
-    """OpenAI-compatible generate API that allows token-in."""
+    """OpenAI-compatible generate API that allows token-in and routed experts capture."""
+
+    async def chat_completion_full_generator(
+        self,
+        request: ChatCompletionRequest,
+        result_generator: AsyncIterator[RequestOutput],
+        request_id: str,
+        model_name: str,
+        conversation,
+        tokenizer,
+        request_metadata: RequestResponseMetadata,
+        reasoning_parser: ReasoningParser | None = None,
+    ) -> ErrorResponse | ChatCompletionResponse:
+        # We need to override the full_generator to be able to capture the routed experts
+        # By default, VLLM does not save the routed experts into ChatCompletionResponse.choices, so we need to capture them manually
+        # How this works:
+        # 1. We create a custom generator that encapsulates the original result_generator in self._generator
+        # 2. We override it's __aiter__ method to also capture the routed experts as an extra field in ChatCompletionResponse.choices
+        # 3. We override the full_generator method to use the custom generator instead of the original one if expert routing is enabled
+        if self.model_config.enable_return_routed_experts:
+            capture = _RoutedExpertsCapture(result_generator)
+            result_generator = capture
+        else:
+            capture = None
+
+        response = await super().chat_completion_full_generator(
+            request,
+            result_generator,
+            request_id,
+            model_name,
+            conversation,
+            tokenizer,
+            request_metadata,
+            reasoning_parser,
+        )
+
+        if capture and isinstance(response, ChatCompletionResponse):
+            capture.post_process(response)
+
+        return response
 
     async def create_chat_completion_with_tokens(
         self,
@@ -75,8 +96,11 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         raw_request: Optional[Request] = None,
     ) -> Union[AsyncGenerator[str, None], ChatCompletionResponse, ErrorResponse]:
         """
-        Copy of OpenAIServingChat.create_chat_completion, adapted to use prompt
-        ids directly via ChatCompletionRequestWithTokens.
+        Chat Completion API similar to OpenAI's API.
+
+        See https://platform.openai.com/docs/api-reference/chat/create
+        for the API specification. This API mimics the OpenAI
+        Chat Completion API.
         """
         # Streaming response
         tokenizer = self.renderer.tokenizer
@@ -102,16 +126,10 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
 
         conversation, engine_prompts = result
 
-        # For VLM models: collapse pre-expanded image placeholders before _process_inputs.
-        # In multi-turn token prompts, previous turns' image placeholders are already expanded
-        # (e.g., 64 consecutive <|image_pad|>). Without collapsing, _process_inputs re-expands
-        # each token, inflating counts (64 → 127 → 253 → ...) across turns.
-        if engine_prompts[0].get("multi_modal_data"):
-            override_tokens = _collapse_image_placeholders(engine_prompts[0]["prompt_token_ids"], request.tokens)  # type: ignore
-        else:
-            override_tokens = request.tokens
-
-        engine_prompts[0]["prompt_token_ids"] = override_tokens  # type: ignore
+        # We override prompt tokens directly.
+        # VLM conversations use MITO (message-based) instead of TITO, so
+        # multi_modal_data is not expected here.
+        engine_prompts[0]["prompt_token_ids"] = request.tokens  # type: ignore
 
         request_id = f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
 
@@ -131,20 +149,33 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         data_parallel_rank = self._get_data_parallel_rank(raw_request)
 
         # Schedule the request and get the result generator.
+        max_model_len = self.model_config.max_model_len
         generators: list[AsyncGenerator[RequestOutput, None]] = []
         try:
             for i, engine_prompt in enumerate(engine_prompts):
-                prompt_text = self._extract_prompt_text(engine_prompt)
+                prompt_token_ids = self._extract_prompt_components(engine_prompt).token_ids
 
                 # If we are creating sub requests for multiple prompts, ensure that they
                 # have unique request ids.
                 sub_request_id = request_id if len(engine_prompts) == 1 else f"{request_id}_{i}"
 
+                prompt_len = self._extract_prompt_len(engine_prompt)
+                if prompt_len >= max_model_len:
+                    raise VLLMValidationError(
+                        f"This model's maximum context length is "
+                        f"{max_model_len} tokens. However, your request has "
+                        f"{prompt_len} input tokens. Please reduce the length of "
+                        "the input messages.",
+                        parameter="input_tokens",
+                        value=prompt_len,
+                    )
+
                 max_tokens = get_max_tokens(
-                    self.max_model_len,
+                    max_model_len,
                     request.max_completion_tokens if request.max_completion_tokens is not None else request.max_tokens,
                     self._extract_prompt_len(engine_prompt),
                     self.default_sampling_params,
+                    self.override_max_tokens,
                 )
 
                 sampling_params: SamplingParams | BeamSearchParams
@@ -153,12 +184,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 else:
                     sampling_params = request.to_sampling_params(
                         max_tokens,
-                        self.model_config.logits_processor_pattern,
                         self.default_sampling_params,
-                    )
-                    validate_logits_processors_parameters(
-                        self.logits_processors,
-                        sampling_params,
                     )
 
                 self._log_inputs(
@@ -179,35 +205,19 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                         trace_headers=trace_headers,
                     )
                 else:
-                    tok_params = request.build_tok_params(self.model_config)
-                    tokenization_kwargs = tok_params.get_encode_kwargs()
+                    reasoning_ended = (
+                        reasoning_parser.is_reasoning_end(prompt_token_ids or []) if reasoning_parser else None
+                    )
 
-                    engine_request = self.input_processor.process_inputs(
-                        sub_request_id,
+                    generator = self.engine_client.generate(
                         engine_prompt,
                         sampling_params,
-                        lora_request=lora_request,
-                        tokenization_kwargs=tokenization_kwargs,
-                        trace_headers=trace_headers,
-                        priority=request.priority,
-                        data_parallel_rank=data_parallel_rank,
-                    )
-                    reasoning_ended = None
-                    if reasoning_parser:
-                        reasoning_ended = reasoning_parser.is_reasoning_end(
-                            engine_request.prompt_token_ids or []  # type: ignore[attr-defined]
-                        )
-                        engine_request.reasoning_ended = reasoning_ended
-                    generator = self.engine_client.generate(
-                        engine_request,
-                        sampling_params,
                         sub_request_id,
                         lora_request=lora_request,
                         trace_headers=trace_headers,
                         priority=request.priority,
-                        prompt_text=prompt_text,
-                        tokenization_kwargs=tokenization_kwargs,
                         data_parallel_rank=data_parallel_rank,
+                        reasoning_ended=reasoning_ended,
                     )
 
                 generators.append(generator)
