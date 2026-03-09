@@ -18,6 +18,7 @@ from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
     convert_tt_layer_to_hf,
+    convert_tt_layer_to_vllm_kernel,
     convert_tt_to_hf_moe,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
@@ -306,6 +307,12 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         convert_hf_layer_to_tt(state_dict, layer_idx)
         return state_dict
+
+    @classmethod
+    def convert_layer_to_vllm_kernel(
+        cls, state_dict: dict[str, Tensor], layer_idx: int, quantize_fp8: bool = False
+    ) -> dict[str, Tensor]:
+        return convert_tt_layer_to_vllm_kernel(state_dict, layer_idx, quantize_fp8=quantize_fp8)
 
 
 @auto_docstring
