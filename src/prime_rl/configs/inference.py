@@ -67,6 +67,11 @@ class VLLMConfig(BaseConfig):
 
     trust_remote_code: Annotated[bool | None, Field(description="Whether to trust remote code.")] = None
 
+    enable_auto_tool_choice: Annotated[
+        bool,
+        Field(description="Enable automatic tool choice. When enabled, tool_call_parser is auto-detected if not set."),
+    ] = True
+
     tool_call_parser: Annotated[
         str | None,
         Field(
@@ -171,7 +176,7 @@ class VLLMConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_resolve_parsers(self):
         """Auto-detect tool_call_parser and reasoning_parser from the model name if not explicitly set."""
-        if "tool_call_parser" not in self.model_fields_set:
+        if self.enable_auto_tool_choice and "tool_call_parser" not in self.model_fields_set:
             self.tool_call_parser = resolve_parser(self.model, TOOL_CALL_PARSER_PATTERNS)
         if "reasoning_parser" not in self.model_fields_set:
             self.reasoning_parser = resolve_parser(self.model, REASONING_PARSER_PATTERNS)
@@ -228,9 +233,6 @@ class VLLMConfig(BaseConfig):
 
         # ALWAYS set logprobs_mode="processed_logprobs"
         data["logprobs_mode"] = "processed_logprobs"
-
-        # Enable auto tool choice when a tool_call_parser is configured
-        data["enable_auto_tool_choice"] = self.tool_call_parser is not None
 
         return Namespace(**data)
 

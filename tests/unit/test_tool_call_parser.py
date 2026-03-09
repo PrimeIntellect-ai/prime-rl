@@ -118,8 +118,14 @@ def test_unknown_model_returns_none():
 def test_validator_auto_resolves_when_not_set():
     config = VLLMConfig(model="Qwen/Qwen3-4B")
     assert config.tool_call_parser == "hermes"
+    assert config.enable_auto_tool_choice is True
 
 
 def test_validator_skips_when_explicitly_set_to_none():
     config = VLLMConfig(model="Qwen/Qwen3-4B", tool_call_parser=None)
+    assert config.tool_call_parser is None
+
+
+def test_validator_skips_when_auto_tool_choice_disabled():
+    config = VLLMConfig(model="Qwen/Qwen3-4B", enable_auto_tool_choice=False)
     assert config.tool_call_parser is None
