@@ -76,11 +76,7 @@ def filter_state_dict_by_layers(
         prefix = f"{layers_prefix}{i}"
         yield (
             i,
-            {
-                key: value
-                for key, value in state_dict.items()
-                if key.startswith(f"{prefix}.") or key == prefix
-            },
+            {key: value for key, value in state_dict.items() if key.startswith(f"{prefix}.") or key == prefix},
         )
 
 
