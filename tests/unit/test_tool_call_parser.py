@@ -1,6 +1,6 @@
 import pytest
 
-from prime_rl.inference.vllm.server import resolve_tool_call_parser
+from prime_rl.configs.inference import resolve_tool_call_parser
 
 
 @pytest.mark.parametrize(

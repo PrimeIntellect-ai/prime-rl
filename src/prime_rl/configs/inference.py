@@ -11,6 +11,114 @@ from prime_rl.configs.shared import SlurmConfig
 # TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
+WORKER_EXTENSION_CLS = {
+    "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
+    "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+}
+
+# Model name → vLLM tool_call_parser mapping for auto-detection.
+MODEL_TOOL_CALL_PARSER: dict[str, str] = {
+    # GLM-4.5
+    "zai-org/GLM-4.5": "glm45",
+    "zai-org/GLM-4.5-FP8": "glm45",
+    "zai-org/GLM-4.5-Base": "glm45",
+    "zai-org/GLM-4.5-Air": "glm45",
+    "zai-org/GLM-4.5-Air-FP8": "glm45",
+    "zai-org/GLM-4.5-Air-Base": "glm45",
+    "zai-org/GLM-4.5V": "glm45",
+    "zai-org/GLM-4.5V-FP8": "glm45",
+    # GLM-4.7
+    "zai-org/GLM-4.7": "glm47",
+    "zai-org/GLM-4.7-FP8": "glm47",
+    "zai-org/GLM-4.7-Flash": "glm47",
+    # MiniMax M2
+    "MiniMaxAI/MiniMax-M2": "minimax_m2",
+    "MiniMaxAI/MiniMax-M2.1": "minimax_m2",
+    "MiniMaxAI/MiniMax-M2.5": "minimax_m2",
+    # INTELLECT-3
+    "PrimeIntellect/INTELLECT-3": "hermes",
+    "PrimeIntellect/INTELLECT-3-FP8": "hermes",
+    "PrimeIntellect/INTELLECT-3.1": "hermes",
+    # Qwen3 dense
+    "Qwen/Qwen3-0.6B": "hermes",
+    "Qwen/Qwen3-0.6B-Base": "hermes",
+    "Qwen/Qwen3-0.6B-FP8": "hermes",
+    "Qwen/Qwen3-1.7B": "hermes",
+    "Qwen/Qwen3-1.7B-Base": "hermes",
+    "Qwen/Qwen3-1.7B-FP8": "hermes",
+    "Qwen/Qwen3-4B": "hermes",
+    "Qwen/Qwen3-4B-Base": "hermes",
+    "Qwen/Qwen3-4B-FP8": "hermes",
+    "Qwen/Qwen3-8B": "hermes",
+    "Qwen/Qwen3-8B-Base": "hermes",
+    "Qwen/Qwen3-8B-FP8": "hermes",
+    "Qwen/Qwen3-14B": "hermes",
+    "Qwen/Qwen3-14B-Base": "hermes",
+    "Qwen/Qwen3-14B-FP8": "hermes",
+    "Qwen/Qwen3-32B": "hermes",
+    "Qwen/Qwen3-32B-FP8": "hermes",
+    # Qwen3 MoE
+    "Qwen/Qwen3-30B-A3B": "hermes",
+    "Qwen/Qwen3-30B-A3B-Base": "hermes",
+    "Qwen/Qwen3-30B-A3B-FP8": "hermes",
+    "Qwen/Qwen3-235B-A22B": "hermes",
+    "Qwen/Qwen3-235B-A22B-FP8": "hermes",
+    # Qwen3 2507
+    "Qwen/Qwen3-4B-Instruct-2507": "hermes",
+    "Qwen/Qwen3-4B-Thinking-2507": "hermes",
+    "Qwen/Qwen3-4B-Instruct-2507-FP8": "hermes",
+    "Qwen/Qwen3-4B-Thinking-2507-FP8": "hermes",
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": "hermes",
+    "Qwen/Qwen3-30B-A3B-Thinking-2507": "hermes",
+    "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8": "hermes",
+    "Qwen/Qwen3-30B-A3B-Thinking-2507-FP8": "hermes",
+    "Qwen/Qwen3-235B-A22B-Instruct-2507": "hermes",
+    "Qwen/Qwen3-235B-A22B-Thinking-2507": "hermes",
+    "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8": "hermes",
+    "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8": "hermes",
+    # Qwen3-Next
+    "Qwen/Qwen3-Next-80B-A3B-Instruct": "hermes",
+    "Qwen/Qwen3-Next-80B-A3B-Thinking": "hermes",
+    "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8": "hermes",
+    "Qwen/Qwen3-Next-80B-A3B-Thinking-FP8": "hermes",
+    # Qwen3-Coder
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct": "hermes",
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "hermes",
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct": "hermes",
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8": "hermes",
+    # Qwen3-Coder-Next
+    "Qwen/Qwen3-Coder-Next": "hermes",
+    "Qwen/Qwen3-Coder-Next-Base": "hermes",
+    "Qwen/Qwen3-Coder-Next-FP8": "hermes",
+    # Qwen3.5 dense (uses qwen3_coder tool format, not hermes)
+    "Qwen/Qwen3.5-0.8B": "qwen3_coder",
+    "Qwen/Qwen3.5-0.8B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-2B": "qwen3_coder",
+    "Qwen/Qwen3.5-2B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-4B": "qwen3_coder",
+    "Qwen/Qwen3.5-4B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-9B": "qwen3_coder",
+    "Qwen/Qwen3.5-9B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-27B": "qwen3_coder",
+    "Qwen/Qwen3.5-27B-FP8": "qwen3_coder",
+    # Qwen3.5 MoE (uses qwen3_coder tool format, not hermes)
+    "Qwen/Qwen3.5-35B-A3B": "qwen3_coder",
+    "Qwen/Qwen3.5-35B-A3B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-35B-A3B-FP8": "qwen3_coder",
+    "Qwen/Qwen3.5-122B-A10B": "qwen3_coder",
+    "Qwen/Qwen3.5-122B-A10B-FP8": "qwen3_coder",
+    "Qwen/Qwen3.5-397B-A17B": "qwen3_coder",
+    "Qwen/Qwen3.5-397B-A17B-FP8": "qwen3_coder",
+}
+
+
+def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> str | None:
+    """Resolve tool_call_parser from model name if set to "auto"."""
+    if tool_call_parser == "auto":
+        return MODEL_TOOL_CALL_PARSER.get(model_name)
+    return tool_call_parser
+
+
 # vLLM all2all backend options for expert-parallel deployments.
 All2AllBackend = Literal[
     "allgather_reducescatter",
@@ -21,12 +129,16 @@ All2AllBackend = Literal[
     "pplx",
 ]
 
+DEFAULT_MAX_LORAS = 8
+DEFAULT_MAX_CPU_LORAS = 100
+
 
 class VLLMConfig(BaseConfig):
     """Configures vLLM server arguments.
 
-    All fields use vLLM's native CLI arg names. Explicitly typed fields are validated
-    by prime-rl; any additional vLLM args can be passed through via extra="allow".
+    All fields use vLLM's native arg names. If a value is None, we use the vLLM
+    default. We allow arbitrary vLLM args (alo those not defined in this config)
+    only via TOML but not CLI.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -34,47 +146,29 @@ class VLLMConfig(BaseConfig):
     model: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
     host: Annotated[str | None, Field(description="The host to bind to.")] = None
     port: Annotated[int | None, Field(description="The port to bind to.")] = None
-
-    dtype: Annotated[
-        Literal["auto", "float16", "bfloat16", "float32"],
-        Field(
-            description="Data type for model weights and activations. If 'auto' will use FP16 precision for FP32 and FP16 models, and BF16 precision for BF16 models.",
-        ),
-    ] = "auto"
-
     max_model_len: Annotated[
         int | None,
-        Field(
-            description="Maximum model context length. If None, will use the maximum context length from model config."
-        ),
+        Field(description="Maximum model context length."),
     ] = None
-
     enforce_eager: Annotated[
-        bool,
+        bool | None,
         Field(
             description="Whether to enforce eager mode. If False, will use PyTorch eager and cuda graphs in hybrid for maximal performance."
         ),
-    ] = False
-
-    trust_remote_code: Annotated[
-        bool,
-        Field(description="Whether to trust remote code."),
-    ] = False
-
+    ] = None
+    trust_remote_code: Annotated[bool | None, Field(description="Whether to trust remote code.")] = None
     tool_call_parser: Annotated[
         str | None,
         Field(
             description='The tool call parser to use. Set to "auto" to infer from the model name.',
         ),
     ] = None
-
     reasoning_parser: Annotated[
         str | None,
         Field(
             description="Parser for extracting reasoning content from model outputs. Setting this enables reasoning mode."
         ),
     ] = None
-
     rope_scaling: Annotated[
         dict[str, Any] | str | None,
         Field(
@@ -86,31 +180,26 @@ class VLLMConfig(BaseConfig):
         int,
         Field(description="The tensor parallel size."),
     ] = 1
-
     data_parallel_size: Annotated[
         int,
-        Field(ge=1, description="The data parallel size."),
+        Field(description="The data parallel size."),
     ] = 1
-
     data_parallel_size_local: Annotated[
         int | None,
-        Field(ge=1, description="Number of data parallel replicas to run on this node."),
+        Field(description="Number of data parallel replicas to run on this node."),
     ] = None
-
     data_parallel_rpc_port: Annotated[
-        int,
-        Field(ge=1, le=65535, description="RPC port for data parallel communication."),
-    ] = 13345
-
+        int | None,
+        Field(description="RPC port for data parallel communication."),
+    ] = None
     enable_lora: Annotated[
-        bool,
+        bool | None,
         Field(description="Whether to enable LoRA."),
-    ] = False
-
+    ] = None
     max_loras: Annotated[
-        int,
+        int | None,
         Field(description="The maximum number of LoRAs to use."),
-    ] = 8
+    ] = None
 
     # TODO: The default value is very high because our areal impl for lora isn't ideal
     # We add a lora with the same name instead of changing weights inplace
@@ -136,14 +225,14 @@ class VLLMConfig(BaseConfig):
     ] = 0.9
 
     api_server_count: Annotated[
-        int,
-        Field(ge=1, description="The number of API servers to use."),
-    ] = 1
+        int | None,
+        Field(description="The number of API servers to use."),
+    ] = None
 
     seed: Annotated[
-        int,
+        int | None,
         Field(description="Seed the inference components."),
-    ] = 0
+    ] = None
 
     enable_expert_parallel: Annotated[
         bool,
@@ -166,21 +255,39 @@ class VLLMConfig(BaseConfig):
     ] = False
 
     @model_validator(mode="after")
-    def auto_setup_max_lora_rank(self):
-        """Auto-setup max_lora_rank by rounding up to the nearest valid vLLM value.
+    def auto_resolve_tool_call_parser(self):
+        """Resolve tool_call_parser="auto" to the correct parser for the model."""
+        self.tool_call_parser = resolve_tool_call_parser(self.model, self.tool_call_parser)
+        return self
 
-        vLLM only accepts specific values for max_lora_rank: (1, 8, 16, 32, 64, 128, 256, 320, 512).
-        This validator ensures that any configured rank is rounded up to the minimum valid value
-        that can serve adapters of the requested rank.
+    @model_validator(mode="after")
+    def auto_setup_max_lora(self):
+        """Auto-setup LoRA settings:
+        - Max. 8 LoRAs
+        - Max. 100 LoRAs on CPU
+        - Rounding up max_lora_rank to the nearest valid vLLM value.
         """
-        if self.max_lora_rank is not None:
-            original_rank = self.max_lora_rank
-            for valid_rank in VALID_VLLM_LORA_RANKS:
-                if valid_rank >= self.max_lora_rank:
-                    self.max_lora_rank = valid_rank
-                    break
-            else:
-                raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
+        if self.enable_lora:
+            # setup max_loras
+            if self.max_loras is None:
+                self.max_loras = DEFAULT_MAX_LORAS
+
+            # setup max_lora_rank
+            if self.max_lora_rank is not None:
+                original_rank = self.max_lora_rank
+                for valid_rank in VALID_VLLM_LORA_RANKS:
+                    if valid_rank >= self.max_lora_rank:
+                        self.max_lora_rank = valid_rank
+                        break
+                else:
+                    raise ValueError(
+                        f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}"
+                    )
+
+            # setup max_cpu_loras
+            if self.max_cpu_loras is None:
+                self.max_cpu_loras = DEFAULT_MAX_CPU_LORAS
+
         return self
 
     @model_validator(mode="after")
@@ -189,7 +296,7 @@ class VLLMConfig(BaseConfig):
         size. Unless LoRA is enabled, in which case only one API server is
         supported (vLLM limitation).
         """
-        if "api_server_count" not in self.model_fields_set:
+        if "api_server_count" not in self.model_fields_set and self.api_server_count is not None:
             min_api_server_count = self.data_parallel_size_local or self.data_parallel_size
             if self.api_server_count < min_api_server_count:
                 self.api_server_count = min_api_server_count
@@ -200,16 +307,13 @@ class VLLMConfig(BaseConfig):
 
     def to_namespace(self) -> Namespace:
         """Convert VLLMConfig to vLLM-compatible Namespace."""
-        # Exclude non-vLLM fields, dump everything else
         data = self.model_dump(exclude_none=True)
 
-        # Set logprobs_mode to processed_logprobs by default
+        # ALWAYS set logprobs_mode="processed_logprobs"
         data["logprobs_mode"] = "processed_logprobs"
 
-        # Remove reasoning_parser if not set (vLLM doesn't accept None)
-        data.pop("reasoning_parser", None)
-        # Remove rope_scaling if not set (vLLM doesn't accept None)
-        data.pop("rope_scaling", None)
+        # Enable auto tool choice when a tool_call_parser is configured
+        data["enable_auto_tool_choice"] = self.tool_call_parser is not None
 
         return Namespace(**data)
 
@@ -277,6 +381,12 @@ class InferenceConfig(BaseConfig):
     output_dir: Annotated[Path, Field(description="Directory for SLURM logs and generated scripts.")] = Path("outputs")
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+
+    def to_namespace(self) -> Namespace:
+        """Convert to vLLM-compatible Namespace, including worker extension class."""
+        namespace = self.vllm.to_namespace()
+        namespace.worker_extension_cls = WORKER_EXTENSION_CLS[self.weight_broadcast.type]
+        return namespace
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
