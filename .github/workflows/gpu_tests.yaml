@@ -22,8 +22,14 @@ jobs:
     steps:
       - name: Install Git
         run: |
-          apt-get update
-          apt-get install -y git
+          if ! command -v git >/dev/null 2>&1; then
+            cuda_repo_files="$(grep -rl --fixed-strings 'developer.download.nvidia.com/compute/cuda/repos' /etc/apt/sources.list.d 2>/dev/null || true)"
+            for repo_file in $cuda_repo_files; do
+              mv "$repo_file" "$repo_file.disabled"
+            done
+            apt-get update
+            apt-get install -y git
+          fi
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -81,8 +87,14 @@ jobs:
     steps:
       - name: Install Git
         run: |
-          apt-get update
-          apt-get install -y git
+          if ! command -v git >/dev/null 2>&1; then
+            cuda_repo_files="$(grep -rl --fixed-strings 'developer.download.nvidia.com/compute/cuda/repos' /etc/apt/sources.list.d 2>/dev/null || true)"
+            for repo_file in $cuda_repo_files; do
+              mv "$repo_file" "$repo_file.disabled"
+            done
+            apt-get update
+            apt-get install -y git
+          fi
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Checkout repository
         uses: actions/checkout@v4
