@@ -2,6 +2,7 @@ import hashlib
 import json
 import random
 from collections import defaultdict
+from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from typing import cast
@@ -78,6 +79,10 @@ class Buffer:
         self.rollout_history: list[vf.RolloutOutput] = []
 
         self.reset_step_metrics()
+
+    @staticmethod
+    def _copy_rollout(rollout: vf.RolloutOutput) -> vf.RolloutOutput:
+        return cast(vf.RolloutOutput, deepcopy(rollout))
 
     def get_example_hash(self, example: dict) -> str:
         """Returns a hash of the example based on hash keys."""
@@ -227,7 +232,7 @@ class Buffer:
 
     def update(self, rollouts: list[vf.RolloutOutput]):
         """Updates the buffer state with completed rollouts."""
-        self.rollout_history.extend(rollouts)
+        self.rollout_history.extend(self._copy_rollout(rollout) for rollout in rollouts)
 
         rollouts_by_example = defaultdict(list)
         for rollout in rollouts:
@@ -274,7 +279,7 @@ class Buffer:
         eligible = [rollout for rollout in self.rollout_history if rollout["task"] not in exclude_tasks]
         if not eligible:
             return None
-        return random.choice(eligible)
+        return self._copy_rollout(random.choice(eligible))
 
     def sample_random_incorrect_history_rollout(self, exclude_tasks: set[str] | None = None) -> vf.RolloutOutput | None:
         """Sample one random incorrect historical rollout."""
@@ -286,7 +291,7 @@ class Buffer:
         ]
         if not eligible:
             return None
-        return random.choice(eligible)
+        return self._copy_rollout(random.choice(eligible))
 
     def reset_step_metrics(self) -> None:
         """Reset per-step metrics (called after get_metrics)."""
