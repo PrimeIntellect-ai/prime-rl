@@ -29,7 +29,5 @@ reduce_dtype = "bfloat16"
 [trainer.optim]
 lr = 3e-6
 
-[inference]
-
-[inference.parallel]
-dp = 1
+[inference.vllm]
+data_parallel_size = 1

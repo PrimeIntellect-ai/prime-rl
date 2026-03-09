@@ -114,23 +114,23 @@ To run TP=4 and DP=4 with DP ranks 0 and 1 on the head node and DP ranks 2 and 3
 ```bash
 # On node 0
 uv run inference \
-	--data-parallel-size 4 \
-	--tensor-parallel-size 4 \
-	--data-parallel-size-local 2 \
-	--data-parallel-address $DATA_PARALLEL_ADDRESS \
-	--data-parallel-rpc-port $DATA_PARALLEL_RPC_PORT
+	--vllm.data-parallel-size 4 \
+	--vllm.tensor-parallel-size 4 \
+	--vllm.data-parallel-size-local 2 \
+	--vllm.data-parallel-address $DATA_PARALLEL_ADDRESS \
+	--vllm.data-parallel-rpc-port $DATA_PARALLEL_RPC_PORT
 ```
 
 ```bash
 # On node 1
 uv run inference \
-	--data-parallel-size 4 \
-	--tensor-parallel-size 4 \
-	--data-parallel-size-local 2 \
-	--data-parallel-address $DATA_PARALLEL_ADDRESS \
-	--data-parallel-rpc-port $DATA_PARALLEL_RPC_PORT \
-	--data-parallel-start-rank 2 \
-	--headless
+	--vllm.data-parallel-size 4 \
+	--vllm.tensor-parallel-size 4 \
+	--vllm.data-parallel-size-local 2 \
+	--vllm.data-parallel-address $DATA_PARALLEL_ADDRESS \
+	--vllm.data-parallel-rpc-port $DATA_PARALLEL_RPC_PORT \
+	--vllm.data-parallel-start-rank 2 \
+	--vllm.headless
 ```
 
 ## RL
@@ -152,16 +152,16 @@ uv run rl \
   --inference @ path/to/infer.toml \
   --trainer-gpu-ids 0 \
   --inference-gpu-ids 0 \
-  --inference.gpu-memory-utilization 0.5
+  --inference.vllm.gpu-memory-utilization 0.5
 ```
 
-*Make sure to tune the `--gpu-memory-utilization` value such that you have enough GPU memory for the RL trainer.* 
+*Make sure to tune the `--gpu-memory-utilization` value such that you have enough GPU memory for the RL trainer.*
 
 You can also set this up by starting each submodule manually.
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference @ path/to/infer.toml --gpu-memory-utilization 0.5
+uv run inference @ path/to/infer.toml --vllm.gpu-memory-utilization 0.5
 ```
 
 ```bash
@@ -196,7 +196,7 @@ uv run rl \
   --inference @ path/to/infer.toml \
   --inference-gpu-ids 0,1,2,3,4,5 \
   --trainer-gpu-ids 6,7 \
-  --inference.parallel.dp 6
+  --inference.vllm.data-parallel-size 6
 ```
 
 ### Parallel Experiments
@@ -232,7 +232,7 @@ uv run rl \
   --inference @ path/to/infer.toml \
   --inference-gpu-ids 2 \
   --trainer-gpu-ids 3 \
-  --inference.server.port 8001 \
+  --inference.vllm.port 8001 \
   --orchestrator.client.base-url http://localhost:8001/v1 \
   --output-dir outputs2
 ```

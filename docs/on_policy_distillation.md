@@ -22,8 +22,8 @@ This automatically starts a teacher inference server using the same model as inf
 [deployment]
 num_teacher_gpus = 2
 
-[teacher_inference.model]
-name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+[teacher_inference.vllm]
+model = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
 [trainer.loss]
 teacher_tau = 0.5

@@ -29,6 +29,6 @@ max_tokens = 128
 [[orchestrator.env]]
 id = "reverse-text"
 
-[inference]
+[inference.vllm]
 enable_lora = true
 gpu_memory_utilization = 0.7

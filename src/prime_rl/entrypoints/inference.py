@@ -40,7 +40,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         gpus_per_node=config.deployment.gpus_per_node,
         partition=config.slurm.partition,
         num_nodes=config.deployment.num_nodes if config.deployment.type == "multi_node" else 1,
-        port=config.server.port,
+        port=config.vllm.port,
     )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,15 +91,15 @@ def inference_local(config: InferenceConfig):
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
         return
 
-    host = config.server.host or "0.0.0.0"
-    port = config.server.port
+    host = config.vllm.host or "0.0.0.0"
+    port = config.vllm.port
     logger.info(f"Starting inference on http://{host}:{port}/v1\n")
 
     setup_vllm_env(config)
 
     from prime_rl.inference.vllm.server import server  # pyright: ignore
 
-    server(config, vllm_extra=config.vllm_extra)
+    server(config)
 
 
 def inference(config: InferenceConfig):

@@ -27,5 +27,5 @@ max_tokens = 1024
 
 [trainer] # Default trainer config
 
-[inference.parallel]
-dp = 6
+[inference.vllm]
+data_parallel_size = 6

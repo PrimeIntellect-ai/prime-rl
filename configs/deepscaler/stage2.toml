@@ -31,5 +31,5 @@ args = { dataset_name= "agentica-org/DeepScaleR-Preview-Dataset", dataset_subset
 
 [trainer.model.ac]
 
-[inference.parallel]
-dp = 6
+[inference.vllm]
+data_parallel_size = 6

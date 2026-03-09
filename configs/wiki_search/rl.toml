@@ -39,5 +39,5 @@ online_difficulty_filtering = true
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"
 
-[inference.model]
+[inference.vllm]
 tool_call_parser = "hermes"

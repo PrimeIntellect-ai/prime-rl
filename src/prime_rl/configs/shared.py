@@ -132,7 +132,7 @@ class ClientConfig(BaseConfig):
                 "pinned to a specific DP rank via the X-data-parallel-rank header. "
                 "This ensures all requests within a multi-turn rollout hit the same "
                 "DP engine, maximizing KV cache reuse. Auto-set from "
-                "inference.data_parallel_size_local (or inference.parallel.dp) "
+                "inference.vllm.data_parallel_size_local (or inference.vllm.data_parallel_size) "
                 "when using the RL entrypoint."
             ),
         ),

@@ -45,5 +45,5 @@ rollouts_per_example = 32
 
 [trainer.model.ac]
 
-[inference.parallel]
-dp = 6
+[inference.vllm]
+data_parallel_size = 6
