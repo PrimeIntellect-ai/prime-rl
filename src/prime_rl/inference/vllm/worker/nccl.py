@@ -1,4 +1,3 @@
-import os
 import pickle
 from typing import TYPE_CHECKING, Generator, cast
 
@@ -19,8 +18,6 @@ else:
     Worker = object
 
 logger = init_logger("vllm.inference.vllm.worker_nccl")
-
-KERNEL_WEIGHT_TRANSFER = os.environ.get("PRIME_RL_KERNEL_WEIGHT_TRANSFER", "0") == "1"
 
 
 def receive_integer(communicator: PyNcclCommunicator) -> int:
@@ -89,8 +86,18 @@ class NCCLWeightBroadcastReceiver:
 class NCCLWeightUpdateWorker(Worker):
     """vLLM worker extension for updating weights in-place using NCCL."""
 
-    def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int) -> None:
+    def init_broadcaster(
+        self,
+        host: str,
+        port: int,
+        server_rank: int,
+        num_inference_server: int,
+        timeout: int,
+        use_kernel_format_transfer: bool = False,
+    ) -> None:
         """Initialize the NCCL broadcast receiver."""
+        self.use_kernel_format_transfer = use_kernel_format_transfer
+
         tp_size = get_tp_group().world_size
         tp_rank = get_tp_group().rank_in_group
         dp_size = get_dp_group().world_size
@@ -122,7 +129,7 @@ class NCCLWeightUpdateWorker(Worker):
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
 
-        if KERNEL_WEIGHT_TRANSFER:
+        if self.use_kernel_format_transfer:
             self._load_kernel_format(model, state_iter)
             self._update_mla_absorbed_weights(model)
         else:
@@ -146,7 +153,7 @@ class NCCLWeightUpdateWorker(Worker):
             if not hasattr(module, "kv_b_proj"):
                 continue
 
-            act_dtype = torch.bfloat16
+            act_dtype = module.W_UV.dtype if hasattr(module, "W_UV") else torch.bfloat16
             kv_b_proj_weight = get_and_maybe_dequant_weights(module.kv_b_proj, out_dtype=act_dtype).T
             kv_b_proj_weight = kv_b_proj_weight.view(
                 module.kv_lora_rank, module.num_heads, module.qk_nope_head_dim + module.v_head_dim
@@ -160,7 +167,7 @@ class NCCLWeightUpdateWorker(Worker):
                 new_W_UK_T = W_UK.permute(1, 2, 0)
                 module.W_UK_T.copy_(new_W_UK_T)
 
-            logger.info(f"Updated MLA absorbed weights in-place for {name}")
+            logger.debug(f"Updated MLA absorbed weights in-place for {name}")
 
     @torch.no_grad()
     def _load_kernel_format(self, model: Module, state_iter) -> None:
@@ -172,7 +179,9 @@ class NCCLWeightUpdateWorker(Worker):
         for name, tensor in state_iter:
             if name in params:
                 if params[name].shape != tensor.shape:
-                    shape_mismatches.append(f"{name}: param={list(params[name].shape)} != received={list(tensor.shape)}")
+                    shape_mismatches.append(
+                        f"{name}: param={list(params[name].shape)} != received={list(tensor.shape)}"
+                    )
                 else:
                     params[name].copy_(tensor)
                     loaded += 1

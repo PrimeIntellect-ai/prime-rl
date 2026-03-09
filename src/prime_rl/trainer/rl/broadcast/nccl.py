@@ -1,4 +1,3 @@
-import os
 import pickle
 import time
 from pathlib import Path
@@ -22,8 +21,6 @@ from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 NCCL_READY_MARKER = "NCCL_READY"
-
-KERNEL_WEIGHT_TRANSFER = os.environ.get("PRIME_RL_KERNEL_WEIGHT_TRANSFER", "0") == "1"
 
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
@@ -86,141 +83,6 @@ def filter_state_dict_by_layers(
         )
 
 
-def _quantize_to_fp8_blockwise(weight: Tensor, block_size: int = 128) -> tuple[Tensor, Tensor]:
-    """Quantize a 2D weight tensor to FP8 e4m3 with block-wise scaling."""
-    rows, cols = weight.shape
-    br = bc = block_size
-    pad_r = (br - rows % br) % br
-    pad_c = (bc - cols % bc) % bc
-    if pad_r > 0 or pad_c > 0:
-        padded = torch.zeros(rows + pad_r, cols + pad_c, dtype=weight.dtype, device=weight.device)
-        padded[:rows, :cols] = weight
-    else:
-        padded = weight.clone()
-    pr, pc = padded.shape
-    blocks = padded.reshape(pr // br, br, pc // bc, bc).permute(0, 2, 1, 3)
-    max_abs = blocks.float().abs().amax(dim=(2, 3))
-    fp8_max = torch.finfo(torch.float8_e4m3fn).max
-    scale = (max_abs / fp8_max).clamp(min=1e-12)
-    blocks_fp8 = (blocks.float() / scale[:, :, None, None]).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn)
-    return blocks_fp8.permute(0, 2, 1, 3).reshape(pr, pc)[:rows, :cols].contiguous(), scale.float().contiguous()
-
-
-def _convert_layer_to_kernel_format(
-    state_dict: dict[str, Tensor],
-    layer_idx: int,
-    config: object,
-    quantize_fp8: bool = False,
-) -> dict[str, Tensor]:
-    """Convert a single layer's PrimeRL state dict to vLLM kernel format.
-
-    Handles: fusing q_a_proj+kv_a_proj_with_mqa, gate+up projections,
-    stacking MoE experts, and optional FP8 quantization.
-    """
-    out: dict[str, Tensor] = {}
-    p = f"model.layers.{layer_idx}"
-
-    def add(name: str, tensor: Tensor) -> None:
-        out[name] = tensor
-
-    def add_maybe_fp8(name: str, tensor: Tensor) -> None:
-        if quantize_fp8 and tensor.ndim == 2:
-            fp8_w, scale = _quantize_to_fp8_blockwise(tensor.cuda())
-            out[name] = fp8_w
-            out[name[: -len(".weight")] + ".weight_scale_inv" if name.endswith(".weight") else name + "_scale_inv"] = (
-                scale
-            )
-        else:
-            out[name] = tensor
-
-    # Norms
-    for key in [f"{p}.input_layernorm.weight", f"{p}.post_attention_layernorm.weight"]:
-        if key in state_dict:
-            add(key, state_dict[key])
-
-    # Attention: fuse q_a_proj + kv_a_proj_with_mqa → fused_qkv_a_proj
-    q_a_key = f"{p}.self_attn.q_a_proj.weight"
-    kv_a_key = f"{p}.self_attn.kv_a_proj_with_mqa.weight"
-    if q_a_key in state_dict and kv_a_key in state_dict:
-        fused = torch.cat([state_dict[q_a_key], state_dict[kv_a_key]], dim=0)
-        add_maybe_fp8(f"{p}.self_attn.fused_qkv_a_proj.weight", fused)
-
-    for suffix in ["q_a_layernorm.weight", "kv_a_layernorm.weight"]:
-        key = f"{p}.self_attn.{suffix}"
-        if key in state_dict:
-            add(key, state_dict[key])
-
-    for suffix in ["q_b_proj.weight", "kv_b_proj.weight", "o_proj.weight"]:
-        key = f"{p}.self_attn.{suffix}"
-        if key in state_dict:
-            add_maybe_fp8(key, state_dict[key])
-
-    # Indexer
-    for suffix in ["indexer.wq_b.weight", "indexer.wk.weight"]:
-        key = f"{p}.self_attn.{suffix}"
-        if key in state_dict:
-            add_maybe_fp8(key, state_dict[key])
-    for suffix in ["indexer.k_norm.weight", "indexer.k_norm.bias", "indexer.weights_proj.weight"]:
-        key = f"{p}.self_attn.{suffix}"
-        if key in state_dict:
-            add(key, state_dict[key])
-
-    # Dense MLP: fuse gate_proj + up_proj → gate_up_proj
-    gate_key = f"{p}.mlp.gate_proj.weight"
-    up_key = f"{p}.mlp.up_proj.weight"
-    if gate_key in state_dict and up_key in state_dict:
-        gate_up = torch.cat([state_dict[gate_key], state_dict[up_key]], dim=0)
-        add_maybe_fp8(f"{p}.mlp.gate_up_proj.weight", gate_up)
-        add_maybe_fp8(f"{p}.mlp.down_proj.weight", state_dict[f"{p}.mlp.down_proj.weight"])
-
-    # MoE: router
-    router_key = f"{p}.mlp.router.gate.weight"
-    if router_key in state_dict:
-        add(f"{p}.mlp.gate.weight", state_dict[router_key])
-    expert_bias_key = f"{p}.mlp.expert_bias"
-    if expert_bias_key in state_dict:
-        add(f"{p}.mlp.gate.e_score_correction_bias", state_dict[expert_bias_key])
-
-    # MoE: routed experts w1+w3 → w13, w2
-    w1_key = f"{p}.mlp.experts.w1"
-    if w1_key in state_dict:
-        w1 = state_dict[w1_key].cuda()
-        w3 = state_dict[f"{p}.mlp.experts.w3"].cuda()
-        w2 = state_dict[f"{p}.mlp.experts.w2"].cuda()
-        w13 = torch.cat([w1, w3], dim=1)
-        n_experts = w1.shape[0]
-
-        if quantize_fp8:
-            w13_fp8, w13_s, w2_fp8, w2_s = [], [], [], []
-            for j in range(n_experts):
-                f8, s = _quantize_to_fp8_blockwise(w13[j])
-                w13_fp8.append(f8)
-                w13_s.append(s)
-                f8, s = _quantize_to_fp8_blockwise(w2[j])
-                w2_fp8.append(f8)
-                w2_s.append(s)
-            out[f"{p}.mlp.experts.w13_weight"] = torch.stack(w13_fp8)
-            out[f"{p}.mlp.experts.w13_weight_scale_inv"] = torch.stack(w13_s)
-            out[f"{p}.mlp.experts.w2_weight"] = torch.stack(w2_fp8)
-            out[f"{p}.mlp.experts.w2_weight_scale_inv"] = torch.stack(w2_s)
-        else:
-            out[f"{p}.mlp.experts.w13_weight"] = w13
-            out[f"{p}.mlp.experts.w2_weight"] = w2
-
-    # MoE: shared experts w1+w3 → gate_up_proj, w2 → down_proj
-    sw1_key = f"{p}.mlp.shared_expert.w1"
-    if sw1_key in state_dict:
-        sw1 = state_dict[sw1_key].cuda()
-        sw3 = state_dict[f"{p}.mlp.shared_expert.w3"].cuda()
-        sw2 = state_dict[f"{p}.mlp.shared_expert.w2"].cuda()
-        if sw1.dim() == 3:
-            sw1, sw3, sw2 = sw1.squeeze(0), sw3.squeeze(0), sw2.squeeze(0)
-        add_maybe_fp8(f"{p}.mlp.shared_experts.gate_up_proj.weight", torch.cat([sw1, sw3], dim=0))
-        add_maybe_fp8(f"{p}.mlp.shared_experts.down_proj.weight", sw2)
-
-    return out
-
-
 class NCCLWeightBroadcastSender:
     def __init__(
         self,
@@ -231,10 +93,14 @@ class NCCLWeightBroadcastSender:
         device: int | str | torch.device,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
+        use_kernel_format_transfer: bool = False,
+        quantize_fp8: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = dtype
+        self.use_kernel_format_transfer = use_kernel_format_transfer
+        self.quantize_fp8 = quantize_fp8
 
         if self.world.is_master:
             # Trainer is on rank 0 in process group with all inference GPUs
@@ -258,7 +124,7 @@ class NCCLWeightBroadcastSender:
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
-        if True:
+        if self.use_kernel_format_transfer:
             self._broadcast_kernel_format(model, state_dict, num_layers)
         else:
             self._broadcast_checkpoint_format(model, state_dict, num_layers)
@@ -291,7 +157,10 @@ class NCCLWeightBroadcastSender:
         Converts PrimeRL naming to vLLM kernel naming in-place,
         so the receiver can use param.copy_() directly.
         """
-        quantize_fp8 = os.environ.get("PRIME_RL_KERNEL_WEIGHT_TRANSFER_FP8", "0") == "1"
+        assert isinstance(model, PreTrainedModelPrimeRL), (
+            f"Kernel format transfer requires a PrimeRL model, got {type(model).__name__}"
+        )
+        quantize_fp8 = self.quantize_fp8
         self.logger.debug(f"Using kernel weight transfer (quantize_fp8={quantize_fp8})")
 
         # Non-layer weights (embeddings, norm, lm_head) — resolve DTensors for this slice only
@@ -305,7 +174,7 @@ class NCCLWeightBroadcastSender:
         for layer_idx in range(num_layers):
             layer_sd = {k: v for k, v in state_dict.items() if k.startswith(f"model.layers.{layer_idx}.")}
             layer_sd = self._resolve_dtensors(layer_sd)
-            kernel_sd = _convert_layer_to_kernel_format(layer_sd, layer_idx, model.config, quantize_fp8=quantize_fp8)
+            kernel_sd = model.convert_layer_to_vllm_kernel(layer_sd, layer_idx, quantize_fp8=quantize_fp8)
             del layer_sd
             if self.world.is_master:
                 broadcast_state_dict(kernel_sd, self.communicator)
@@ -327,7 +196,15 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
-            config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout, dtype
+            config.host,
+            config.port,
+            0,
+            config.inference_world_size + 1,
+            device,
+            config.timeout,
+            dtype,
+            use_kernel_format_transfer=config.use_kernel_format_transfer,
+            quantize_fp8=config.quantize_fp8,
         )
 
     @torch.no_grad()

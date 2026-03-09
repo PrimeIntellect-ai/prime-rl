@@ -207,12 +207,13 @@ async def init_broadcaster(request: Request):
     host = data.get("host")
     port = data.get("port")
     timeout = data.get("timeout")
-    # Support both legacy and new field names
     server_rank = data.get("server_rank")
     num_inference_server = data.get("num_inference_server")
+    use_kernel_format_transfer = data.get("use_kernel_format_transfer", False)
     await engine_client(request).collective_rpc(
         "init_broadcaster",
         args=(host, port, server_rank, num_inference_server, timeout),
+        kwargs={"use_kernel_format_transfer": use_kernel_format_transfer},
     )
     return {"status": "ok"}
 
