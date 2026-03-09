@@ -12,6 +12,7 @@ TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"^zai-org/GLM-4"), "glm45"),
     (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "deepseek_r1"),
     # Qwen3.5 and Qwen3 both use the "qwen3" reasoning parser

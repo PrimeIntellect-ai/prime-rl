@@ -107,6 +107,11 @@ def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
 @pytest.mark.parametrize(
     "model_name,expected_parser",
     [
+        # GLM
+        ("zai-org/GLM-4.5", "glm45"),
+        ("zai-org/GLM-4.5-Air", "glm45"),
+        ("zai-org/GLM-4.7", "glm45"),
+        ("zai-org/GLM-4.7-Flash", "glm45"),
         # MiniMax M2
         ("MiniMaxAI/MiniMax-M2", "minimax_m2"),
         ("MiniMaxAI/MiniMax-M2.1", "minimax_m2"),
@@ -125,7 +130,7 @@ def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
         ("Qwen/Qwen3.5-397B-A17B", "qwen3"),
     ],
 )
-def test_auto_detect_reasoning_parser(model_name: str, expected_parser: str):
+def test_auto_detect_reasoning_parser(model_name: str, expected_parser: str | None):
     assert resolve_parser(model_name, REASONING_PARSER_PATTERNS) == expected_parser
 
 
