@@ -7,6 +7,11 @@ from prime_rl.utils.parsers import REASONING_PARSER_PATTERNS, TOOL_CALL_PARSER_P
 @pytest.mark.parametrize(
     "model_name,expected_parser",
     [
+        # DeepSeek
+        ("deepseek-ai/DeepSeek-V3.2", "deepseek_v32"),
+        ("deepseek-ai/DeepSeek-V3.2-Exp", "deepseek_v32"),
+        ("deepseek-ai/DeepSeek-V3.1", "deepseek_v31"),
+        ("deepseek-ai/DeepSeek-V3.1-FP8", "deepseek_v31"),
         # GLM-4.5
         ("zai-org/GLM-4.5", "glm45"),
         ("zai-org/GLM-4.5-FP8", "glm45"),

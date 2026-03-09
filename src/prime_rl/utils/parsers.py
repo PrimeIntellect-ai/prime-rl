@@ -2,6 +2,8 @@ import re
 
 # (regex, parser_name) — first match wins.
 TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"^deepseek-ai/DeepSeek-V3\.2"), "deepseek_v32"),
+    (re.compile(r"^deepseek-ai/DeepSeek-V3\.1"), "deepseek_v31"),
     (re.compile(r"^zai-org/GLM-4\.5"), "glm45"),
     (re.compile(r"^zai-org/GLM-4\.7"), "glm47"),
     (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2"),
