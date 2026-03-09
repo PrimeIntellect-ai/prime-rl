@@ -319,6 +319,7 @@ class EnvConfig(BaseConfig):
         """Coerce env args types after tyro CLI parsing (which makes all dict values strings)."""
         self.args = _coerce_dict_values(self.args)
         return self
+
     name: Annotated[str | None, Field(description="Name of the environment to use.")] = None
     address: Annotated[
         str | None,
