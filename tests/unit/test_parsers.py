@@ -33,6 +33,8 @@ from prime_rl.utils.parsers import REASONING_PARSER_PATTERNS, TOOL_CALL_PARSER_P
         ("PrimeIntellect/INTELLECT-3", "qwen3_coder"),
         ("PrimeIntellect/INTELLECT-3-FP8", "qwen3_coder"),
         ("PrimeIntellect/INTELLECT-3.1", "qwen3_coder"),
+        # StepFun
+        ("stepfun-ai/Step-3.5-Flash", "step3p5"),
         # Qwen3 dense
         ("Qwen/Qwen3-0.6B", "hermes"),
         ("Qwen/Qwen3-0.6B-Base", "hermes"),
@@ -125,6 +127,8 @@ def test_auto_detect_tool_call_parser(model_name: str, expected_parser: str):
         ("PrimeIntellect/INTELLECT-3", "deepseek_r1"),
         ("PrimeIntellect/INTELLECT-3-FP8", "deepseek_r1"),
         ("PrimeIntellect/INTELLECT-3.1", "deepseek_r1"),
+        # StepFun
+        ("stepfun-ai/Step-3.5-Flash", "step3p5"),
         # Qwen3
         ("Qwen/Qwen3-0.6B", "qwen3"),
         ("Qwen/Qwen3-4B-Thinking-2507", "qwen3"),
