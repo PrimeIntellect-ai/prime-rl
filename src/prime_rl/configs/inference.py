@@ -223,6 +223,8 @@ class VLLMConfig(BaseConfig):
             tool_call_parser = resolve_tool_call_parser(self.model)
             if tool_call_parser:
                 data["tool_call_parser"] = tool_call_parser
+            else:
+                data["enable_auto_tool_choice"] = False
         if "reasoning_parser" not in data:
             reasoning_parser = resolve_reasoning_parser(self.model)
             if reasoning_parser:
