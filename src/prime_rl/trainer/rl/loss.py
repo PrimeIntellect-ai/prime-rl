@@ -39,6 +39,24 @@ Expected signature:
 
 
 @jaxtyped(typechecker=typechecker)
+def apply_top_k_mask(
+    logits: Float[Tensor, "batch seq vocab"],
+    top_k: int,
+    keep_indices: Int[Tensor, "batch seq"],
+) -> Float[Tensor, "batch seq vocab"]:
+    """Mask logits to keep only the top-k values per position, setting the rest to -inf.
+
+    The target token (keep_indices) is always preserved in the mask to avoid -inf logprobs
+    for already-sampled tokens whose rank may have shifted between inference and training.
+    """
+    threshold = logits.topk(top_k, dim=-1, sorted=False).values.amin(dim=-1, keepdim=True)
+    mask = logits >= threshold
+    # Always keep the target token in the mask
+    mask.scatter_(-1, keep_indices.unsqueeze(-1), True)
+    return logits.masked_fill(~mask, -1e20)
+
+
+@jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def selective_log_softmax(
     logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]

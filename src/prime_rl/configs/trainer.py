@@ -657,6 +657,14 @@ class TrainerConfig(BaseConfig):
         ),
     ] = 1
 
+    top_k: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Top-k masking for the trainer: restrict logprob computation to the k most likely tokens (plus the target token). Prevents gradient updates for very low-probability tokens and reduces distribution mismatch when inference also uses top-k sampling. Requires fused_lm_head_chunk_size to be disabled.",
+        ),
+    ] = None
+
     enable_router_replay: Annotated[
         bool,
         Field(
@@ -769,6 +777,15 @@ class TrainerConfig(BaseConfig):
         if self.model.fused_lm_head_chunk_size == "auto":
             self.model.fused_lm_head_chunk_size = 8192
 
+        return self
+
+    @model_validator(mode="after")
+    def top_k_requires_vanilla_lm_head(self):
+        if self.top_k is not None and self.model.fused_lm_head_chunk_size != "disabled":
+            raise ValueError(
+                "top_k masking requires fused_lm_head_chunk_size to be 'disabled' because it needs access to full logits. "
+                "Set model.fused_lm_head_chunk_size = 'disabled' in your config."
+            )
         return self
 
     @model_validator(mode="after")

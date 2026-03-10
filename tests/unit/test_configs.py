@@ -148,3 +148,29 @@ def test_cli_overrides_toml(tmp_path):
     assert config.nested.lr == 5e-5
     # TOML value not overridden by CLI should still be applied (not reverted to class default)
     assert config.nested.weight_decay == 0.01
+
+
+def test_rl_config_top_k_propagates_from_sampling():
+    """sampling.top_k propagates to trainer.top_k automatically."""
+    config = cli(
+        RLConfig,
+        args=["@", "configs/ci/integration/rl/start.toml", "--orchestrator.sampling.top-k", "50"],
+    )
+    assert config.orchestrator.sampling.top_k == 50
+    assert config.trainer.top_k == 50
+
+
+def test_rl_config_top_k_mismatch_raises():
+    """Conflicting top_k values between sampling and trainer should raise."""
+    with pytest.raises(ValidationError, match="top_k"):
+        cli(
+            RLConfig,
+            args=[
+                "@",
+                "configs/ci/integration/rl/start.toml",
+                "--orchestrator.sampling.top-k",
+                "50",
+                "--trainer.top-k",
+                "100",
+            ],
+        )
