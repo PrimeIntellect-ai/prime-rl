@@ -168,7 +168,14 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["multi_node"] = "multi_node"
 
     num_train_nodes: Annotated[int, Field(description="Number of training nodes.")]
-    num_infer_nodes: Annotated[int, Field(description="Number of inference nodes.")]
+    num_infer_nodes: Annotated[int, Field(description="Number of inference nodes per replica.")]
+    num_infer_replicas: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of independent inference replicas. Total inference nodes = num_infer_nodes * num_infer_replicas.",
+        ),
+    ] = 1
     num_teacher_nodes: Annotated[int | None, Field(description="Number of teacher inference nodes.")] = None
 
     nodes_per_fsdp_group: Annotated[
@@ -177,6 +184,10 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
             description="Number of training nodes per FSDP island. Auto-sets trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group."
         ),
     ] = None
+
+    @property
+    def total_infer_nodes(self) -> int:
+        return self.num_infer_nodes * self.num_infer_replicas
 
     @model_validator(mode="after")
     def teacher_inference_not_supported(self):
@@ -677,7 +688,7 @@ class RLConfig(BaseConfig):
                 assert self.trainer.weight_broadcast.type == "nccl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = (
-                    self.deployment.gpus_per_node * self.deployment.num_infer_nodes
+                    self.deployment.gpus_per_node * self.deployment.total_infer_nodes
                 )
 
         return self
