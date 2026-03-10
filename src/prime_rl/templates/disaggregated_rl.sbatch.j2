@@ -109,6 +109,11 @@ cd $PROJECT_DIR
 source .venv/bin/activate
 uv sync --all-extras --group fp8-inference
 
+# Install disaggregated inference dependencies if not already present
+bash scripts/install_nixl_from_source.sh
+bash scripts/install_ep_kernels.sh
+bash scripts/install_vllm_router.sh
+
 {% if pre_run_command %}
 # Pre-run command
 {{ pre_run_command }}
@@ -163,36 +168,19 @@ if [ "$SLURM_PROCID" -lt "$TOTAL_INFER_NODES" ]; then
     if [ "$ROLE" = "prefill" ] && [ "$RANK_IN_ROLE" -eq 0 ]; then
         REPLICA_BASE=$((REPLICA_IDX * NODES_PER_REPLICA))
 
-        # Build prefill and decode server URLs for the router
-        PREFILL_SERVERS=""
+        # Build --prefill and --decode args for the router
+        ROUTER_ARGS="--pd-disaggregation --port $ROUTER_PORT"
         for ((p=0; p<NUM_PREFILL_NODES; p++)); do
             node_idx=$((REPLICA_BASE + p))
-            host="${HOSTNAMES[$node_idx]}"
-            if [ -z "$PREFILL_SERVERS" ]; then
-                PREFILL_SERVERS="http://${host}:${PREFILL_PORT}"
-            else
-                PREFILL_SERVERS="${PREFILL_SERVERS},http://${host}:${PREFILL_PORT}"
-            fi
+            ROUTER_ARGS="$ROUTER_ARGS --prefill http://${HOSTNAMES[$node_idx]}:${PREFILL_PORT}"
         done
-
-        DECODE_SERVERS=""
         for ((d=0; d<NUM_DECODE_NODES; d++)); do
             node_idx=$((REPLICA_BASE + NUM_PREFILL_NODES + d))
-            host="${HOSTNAMES[$node_idx]}"
-            if [ -z "$DECODE_SERVERS" ]; then
-                DECODE_SERVERS="http://${host}:${DECODE_PORT}"
-            else
-                DECODE_SERVERS="${DECODE_SERVERS},http://${host}:${DECODE_PORT}"
-            fi
+            ROUTER_ARGS="$ROUTER_ARGS --decode http://${HOSTNAMES[$node_idx]}:${DECODE_PORT}"
         done
 
-        echo "Starting vllm-router for replica $REPLICA_IDX: prefill=$PREFILL_SERVERS decode=$DECODE_SERVERS"
-        vllm-router-rs \
-            --port $ROUTER_PORT \
-            --service-discovery static \
-            --static-backends "$PREFILL_SERVERS" \
-            --static-decode-backends "$DECODE_SERVERS" \
-            --engine-stats-interval 5 \
+        echo "Starting vllm-router for replica $REPLICA_IDX: $ROUTER_ARGS"
+        vllm-router-rs $ROUTER_ARGS \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_router_replica_${REPLICA_IDX}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_router_replica_${REPLICA_IDX}.log &
     fi
 
