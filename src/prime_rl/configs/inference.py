@@ -204,8 +204,8 @@ class InferenceConfig(BaseConfig):
     api_server_count: Annotated[
         int,
         Field(
-            ge=1,
-            description="The number of API servers to use. Passed to vLLM as `--api-server-count`",
+            ge=0,
+            description="The number of API servers to use. Passed to vLLM as `--api-server-count`. Set to 0 for headless mode.",
         ),
     ] = 1
 

@@ -115,11 +115,15 @@ class NCCLWeightBroadcastSender:
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
+        self.logger.debug(f"Broadcasting weights for step {step}")
         state_dict = model.state_dict()
+        self.logger.debug("Have state dict")
         num_layers = get_max_layer_num(state_dict)
+        self.logger.debug(f"Have {num_layers} layers")
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
 
         if self.world.is_master:
+            self.logger.debug("Broadcasting number of state dicts to send")
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")

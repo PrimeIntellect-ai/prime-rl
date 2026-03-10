@@ -107,13 +107,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             uv run inference \
                 @ $CONFIG_DIR/inference.toml \
                 --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
-                --vllm-extra '{"data_parallel_address": "'"$INFER_HEAD_HOST"'"}' \
+                --vllm-extra "{\"data_parallel_address\": \"$INFER_HEAD_HOST\"}" \
                 2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
         else
             uv run inference \
                 @ $CONFIG_DIR/inference.toml \
                 --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
-                --vllm-extra '{"data_parallel_address": "'"$INFER_HEAD_HOST"'", "data_parallel_start_rank": '"$INFER_DP_START_RANK"', "headless": true}' \
+                --vllm-extra "{\"data_parallel_address\": \"$INFER_HEAD_HOST\", \"data_parallel_start_rank\": $INFER_DP_START_RANK, \"headless\": true}" \
                 2>&1 | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
         fi
     else
