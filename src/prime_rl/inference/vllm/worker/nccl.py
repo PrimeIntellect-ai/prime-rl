@@ -169,22 +169,54 @@ class NCCLWeightUpdateWorker(Worker):
 
             logger.debug(f"Updated MLA absorbed weights in-place for {name}")
 
+    def _build_expert_map(self, model: Module) -> dict[str, torch.Tensor]:
+        """Build a mapping from parameter name prefix to expert global indices.
+
+        For each FusedMoE module, finds which global expert indices are local
+        to this rank, so we can slice received full-expert tensors.
+        """
+        from vllm.model_executor.layers.fused_moe.layer import FusedMoE
+
+        expert_slices: dict[str, torch.Tensor] = {}
+        for module_name, module in model.named_modules():
+            if not isinstance(module, FusedMoE):
+                continue
+            if module._expert_map is None:
+                continue
+            # global indices where expert_map >= 0 (i.e. assigned to this rank)
+            global_indices = torch.where(module._expert_map >= 0)[0]
+            # sort by local index to preserve correct ordering
+            local_indices = module._expert_map[global_indices]
+            global_indices = global_indices[local_indices.argsort()]
+            expert_slices[module_name] = global_indices
+        return expert_slices
+
     @torch.no_grad()
     def _load_kernel_format(self, model: Module, state_iter) -> None:
         """Load kernel-format weights using in-place copy_ (CUDA-graph safe)."""
         params = dict(model.named_parameters())
+        expert_slices = self._build_expert_map(model)
         loaded = 0
         skipped = []
         shape_mismatches = []
         for name, tensor in state_iter:
             if name in params:
-                if params[name].shape != tensor.shape:
-                    shape_mismatches.append(
-                        f"{name}: param={list(params[name].shape)} != received={list(tensor.shape)}"
-                    )
-                else:
-                    params[name].copy_(tensor)
-                    loaded += 1
+                param = params[name]
+                if param.shape != tensor.shape:
+                    # Check if this is an expert weight that needs EP slicing
+                    sliced = False
+                    for module_name, global_indices in expert_slices.items():
+                        if name.startswith(module_name + "."):
+                            tensor = tensor[global_indices]
+                            sliced = True
+                            break
+                    if not sliced or param.shape != tensor.shape:
+                        shape_mismatches.append(
+                            f"{name}: param={list(param.shape)} != received={list(tensor.shape)}"
+                        )
+                        continue
+                param.copy_(tensor)
+                loaded += 1
             else:
                 skipped.append(name)
         if shape_mismatches:
