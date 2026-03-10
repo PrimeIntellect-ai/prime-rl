@@ -99,7 +99,7 @@ class Scheduler:
 
         # Track in-flight requests: task -> info
         self.inflight_requests: dict[asyncio.Task, InflightRolloutInfo] = {}
-        self.inflight_request_counts: Counter[ClientIdentity] = Counter()
+        self.inflight_request_counts: Counter[tuple[str, str | None]] = Counter()
 
         # Track in-progress groups while rollouts are generated independently.
         self.next_group_id = 0
