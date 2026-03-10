@@ -9,12 +9,6 @@ BUILD_DIR="/tmp/vllm-router-build"
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_DIR="$SCRIPT_DIR/.venv/bin"
 
-# Skip if already installed
-if [ -x "$INSTALL_DIR/vllm-router-rs" ]; then
-    echo "vllm-router-rs already installed, skipping."
-    exit 0
-fi
-
 echo "Cloning $REPO_URL (branch: $BRANCH)..."
 rm -rf "$BUILD_DIR"
 git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$BUILD_DIR"

@@ -10,12 +10,6 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_BIN="$PROJECT_DIR/.venv/bin"
 PYTHON="$VENV_BIN/python"
 
-# Skip if NIXL is already installed
-if "$PYTHON" -c "import nixl" 2>/dev/null; then
-    echo "NIXL already installed, skipping."
-    exit 0
-fi
-
 UCX_SRC=/tmp/ucx_source
 UCX_INSTALL="$PROJECT_DIR/third_party/ucx"
 NIXL_SRC=/tmp/nixl_source
@@ -68,7 +62,6 @@ export LD_LIBRARY_PATH="$UCX_INSTALL/lib:$UCX_INSTALL/lib/ucx:${LD_LIBRARY_PATH:
 # Build and install directly (no auditwheel) so NIXL links to our UCX at runtime
 WHEEL_DIR=/tmp/nixl_wheels
 rm -rf "$WHEEL_DIR"
-uv pip install pip
 "$PYTHON" -m pip wheel . --no-deps --wheel-dir="$WHEEL_DIR"
 
 WHEEL=$(ls "$WHEEL_DIR"/nixl*.whl | head -1)
