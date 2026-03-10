@@ -286,6 +286,12 @@ def train(config: TrainerConfig):
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
         batch_size = len(micro_batches)
+
+        if batch_size == 0:
+            logger.warning(f"Step {progress.step}: received empty batch, skipping training step")
+            progress.step += 1
+            continue
+
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)

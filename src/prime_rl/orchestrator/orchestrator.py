@@ -1,7 +1,6 @@
 import asyncio
 import gc
 import multiprocessing as mp
-import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -574,6 +573,12 @@ async def orchestrate(config: OrchestratorConfig):
             teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
             logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
 
+        if not train_examples:
+            logger.warning(
+                f"Step {progress.step}: all {len(train_rollouts)} rollouts produced 0 training examples "
+                f"(empty trajectories or tokenization failures)"
+            )
+
         training_batch = TrainingBatch(
             examples=train_examples,
             step=progress.step,
@@ -745,8 +750,7 @@ async def orchestrate(config: OrchestratorConfig):
         monitor.log(to_log, step=progress.step)
 
         # Log samples to monitor(s) if enabled
-        subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
-        monitor.log_samples(subset_train_rollouts, step=progress.step)
+        monitor.log_samples(train_rollouts, step=progress.step)
 
         # Log distributions (rewards, advantages) if enabled
         monitor.log_distributions(
@@ -801,6 +805,9 @@ async def orchestrate(config: OrchestratorConfig):
     # Log final (immutable) samples and distributions to monitor(s)
     monitor.log_final_samples()
     monitor.save_final_summary()
+
+    # Drain monitor queues and wait for pending uploads
+    monitor.close()
 
     # Write final checkpoint
     if ckpt_manager is not None:
