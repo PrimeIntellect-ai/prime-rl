@@ -238,7 +238,10 @@ def _load_file_image(path_str: str) -> Image.Image:
 
 
 def _extract_images_from_messages(messages: list) -> list[tuple[Image.Image, str]]:
-    """Extract (image, b64_key) pairs from OpenAI-style chat messages."""
+    """Extract (image, key) pairs from OpenAI-style chat messages.
+
+    Handles both base64 data URLs and file:// paths from disk offloading.
+    """
     images = []
     if not messages or not isinstance(messages, list):
         return images
@@ -249,7 +252,10 @@ def _extract_images_from_messages(messages: list) -> list[tuple[Image.Image, str
             for item in content:
                 if item.get("type") == "image_url":
                     url = item.get("image_url", {}).get("url", "")
-                    if url.startswith("data:image"):
+                    if url.startswith(_FILE_URL_PREFIX):
+                        img = _load_file_image(url)
+                        images.append((img, url))
+                    elif url.startswith("data:image"):
                         b64_data = url.split(",", 1)[1]
                         img_bytes = base64.b64decode(b64_data)
                         img = Image.open(BytesIO(img_bytes))
