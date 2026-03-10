@@ -22,6 +22,7 @@ interval = 10
 [[orchestrator.env]]
 id = "arc-codegen"
 name = "arc_codegen"
+args = { num_examples = 20 }
 
 [trainer]
 
