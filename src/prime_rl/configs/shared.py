@@ -182,6 +182,16 @@ class ClientConfig(BaseConfig):
         ),
     ] = 1
 
+    admin_base_url: Annotated[
+        list[str] | None,
+        Field(
+            description="Separate base URLs for admin operations (weight updates, health checks). "
+            "When set, admin clients use these URLs instead of base_url, allowing weight "
+            "updates to bypass routers and hit each server directly. Used in disaggregated "
+            "P/D deployments where the inference router should not handle admin traffic.",
+        ),
+    ] = None
+
     elastic: Annotated[
         ElasticConfig | None,
         Field(

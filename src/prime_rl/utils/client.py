@@ -145,10 +145,13 @@ def setup_clients(client_config: ClientConfig, client_type: str = "openai_chat_c
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
-    """Create a dedicated admin client for weight update operations.
+    """Create dedicated admin clients for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
+    When admin_base_url is set, uses those URLs instead of base_url, allowing
+    weight updates to bypass routers in disaggregated P/D deployments.
     """
+    urls = client_config.admin_base_url if client_config.admin_base_url else client_config.base_url
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
         headers = client_config.headers.copy()  # avoid mutating config
@@ -166,7 +169,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             timeout=httpx.Timeout(None),
         )
 
-    return [_setup_admin_client(base_url) for base_url in client_config.base_url]
+    return [_setup_admin_client(base_url) for base_url in urls]
 
 
 async def maybe_check_has_model(
@@ -316,12 +319,31 @@ async def init_nccl_broadcast(
     port: int,
     timeout: int,
     use_vllm_format_transfer: bool = False,
+    inference_world_size: int | None = None,
 ) -> None:
-    """Make a HTTP post request to the vLLM server to initialize the NCCL broadcast."""
+    """Initialize NCCL broadcast on all inference servers.
+
+    Each admin client represents one vLLM server. The function computes
+    per-server rank_offset and gpus_per_server so that every inference GPU
+    gets a unique rank in the NCCL broadcast group.
+    """
     logger = get_logger()
 
+    if inference_world_size is None:
+        inference_world_size = len(admin_clients)
+        logger.warning(
+            f"inference_world_size not provided, defaulting to {inference_world_size} (one GPU per admin client)"
+        )
+
+    gpus_per_server = inference_world_size // len(admin_clients)
+
+    logger.info(
+        f"Initializing NCCL broadcast: {len(admin_clients)} servers, "
+        f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}"
+    )
+
     async def _init_nccl_broadcast(
-        admin_client: AsyncClient, host: str, port: int, client_num: int, timeout: int
+        admin_client: AsyncClient, rank_offset: int
     ) -> None:
         try:
             response = await admin_client.post(
@@ -329,8 +351,9 @@ async def init_nccl_broadcast(
                 json={
                     "host": host,
                     "port": port,
-                    "server_rank": client_num,
-                    "num_inference_server": len(admin_clients),
+                    "rank_offset": rank_offset,
+                    "inference_world_size": inference_world_size,
+                    "gpus_per_server": gpus_per_server,
                     "timeout": timeout,
                     "use_vllm_format_transfer": use_vllm_format_transfer,
                 },
@@ -343,7 +366,7 @@ async def init_nccl_broadcast(
 
     await asyncio.gather(
         *[
-            _init_nccl_broadcast(admin_client, host, port, client_num, timeout)
+            _init_nccl_broadcast(admin_client, client_num * gpus_per_server)
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )

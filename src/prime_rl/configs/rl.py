@@ -528,6 +528,7 @@ class RLConfig(BaseConfig):
                     type=self.weight_broadcast.type,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
+                    inference_world_size=inference_world_size,
                     use_vllm_format_transfer=self.weight_broadcast.use_vllm_format_transfer,
                 )
             elif self.weight_broadcast.type == "filesystem":
@@ -656,7 +657,7 @@ class RLConfig(BaseConfig):
                     self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
                 )
 
-            if self.inference is not None and self.inference.enable_expert_parallel:
+            if self.inference is not None and self.inference.enable_expert_parallel and self.inference.deployment.type != "disaggregated":
                 inference_tp = self.inference.parallel.tp
                 if self.deployment.gpus_per_node % inference_tp != 0:
                     raise ValueError(
@@ -685,11 +686,38 @@ class RLConfig(BaseConfig):
                     self.inference.api_server_count = inferred_dp_local
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+                total_infer_gpus = self.deployment.gpus_per_node * self.deployment.total_infer_nodes
                 assert self.trainer.weight_broadcast.type == "nccl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
-                self.trainer.weight_broadcast.inference_world_size = (
-                    self.deployment.gpus_per_node * self.deployment.total_infer_nodes
-                )
+                self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
+                assert self.orchestrator.weight_broadcast.type == "nccl"
+                self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_disaggregated_inference(self):
+        """Auto-setup for disaggregated P/D inference within a multi-node deployment."""
+        if self.inference is None or self.inference.deployment.type != "disaggregated":
+            return self
+        if self.deployment.type != "multi_node":
+            return self
+
+        infer_deploy = self.inference.deployment
+        expected_infer_nodes = infer_deploy.num_prefill_nodes + infer_deploy.num_decode_nodes
+        if self.deployment.num_infer_nodes != expected_infer_nodes:
+            raise ValueError(
+                f"deployment.num_infer_nodes ({self.deployment.num_infer_nodes}) must equal "
+                f"inference.deployment.num_prefill_nodes ({infer_deploy.num_prefill_nodes}) + "
+                f"inference.deployment.num_decode_nodes ({infer_deploy.num_decode_nodes}) = {expected_infer_nodes}"
+            )
+
+        total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
+        if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+            assert self.trainer.weight_broadcast.type == "nccl"
+            self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
+            assert self.orchestrator.weight_broadcast.type == "nccl"
+            self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self
 
@@ -757,6 +785,8 @@ class RLConfig(BaseConfig):
             templates_dir = Path(prime_rl.__file__).parent / "templates"
             if self.deployment.type == "single_node":
                 self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
+            elif self.inference is not None and self.inference.deployment.type == "disaggregated":
+                self.slurm.template_path = templates_dir / "disaggregated_rl.sbatch.j2"
             else:
                 self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
         return self
