@@ -1,20 +1,25 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
+from prime_rl.configs.trainer import (
+    CustomLossConfig,
+    DefaultLossConfig,
+    PPOClipLossConfig,
+    ReinforceLossConfig,
+)
 from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_loss_fn
 
 pytestmark = [pytest.mark.gpu]
 
 
-def test_grpo_loss():
+def test_default_loss():
     trainer_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
     teacher_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
     advantages = [torch.randn(50).cuda(), torch.randn(30).cuda()]
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
-    loss_fn = setup_loss_fn(DefaultLossConfig(ratio_type="token", token_mask_high=10.0))
+    loss_fn = setup_loss_fn(DefaultLossConfig())
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
@@ -27,18 +32,37 @@ def test_grpo_loss():
     assert loss.shape == ()
 
 
-def test_gspo_loss():
+def test_ppo_clip_loss():
     trainer_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
-    teacher_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
     advantages = [torch.randn(40).cuda(), torch.randn(60).cuda()]
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
-    loss_fn = setup_loss_fn(DefaultLossConfig(ratio_type="sequence", token_mask_high=10.0))
+    loss_fn = setup_loss_fn(PPOClipLossConfig(clip_eps=0.2))
+    loss, metrics = compute_loss(
+        trainer_logprobs,
+        inference_logprobs,
+        [None, None],
+        advantages,
+        loss_mask=loss_mask,
+        loss_fn=loss_fn,
+        loss_scale=1.0,
+    )
+    assert loss.shape == ()
+    assert "clip_frac" in metrics
+
+
+def test_reinforce_loss():
+    trainer_logprobs = [torch.randn(20, dtype=torch.float32).cuda()]
+    inference_logprobs = [torch.randn(20, dtype=torch.float32).cuda()]
+    advantages = [torch.randn(20).cuda()]
+    loss_mask = [torch.ones(20, dtype=torch.bool).cuda()]
+
+    loss_fn = setup_loss_fn(ReinforceLossConfig())
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
-        teacher_logprobs,
+        [None],
         advantages,
         loss_mask=loss_mask,
         loss_fn=loss_fn,

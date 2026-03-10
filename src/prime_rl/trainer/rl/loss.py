@@ -6,7 +6,13 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
+from prime_rl.configs.trainer import (
+    CustomLossConfig,
+    DefaultLossConfig,
+    LossConfig,
+    PPOClipLossConfig,
+    ReinforceLossConfig,
+)
 from prime_rl.utils.utils import import_object
 
 
@@ -163,6 +169,46 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+def ppo_clip_loss_fn(inputs: LossInputs, loss_config: PPOClipLossConfig) -> LossOutputs:
+    """PPO clipped surrogate loss (token-level): min(r * A, clip(r) * A) with optional KL penalty."""
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_ratio = trainer_logprobs - inference_logprobs
+    ratio = torch.exp(log_ratio)
+    clipped_ratio = torch.clamp(
+        ratio, 1.0 - loss_config.clip_eps, 1.0 + loss_config.clip_eps
+    )
+    surr1 = ratio * advantages
+    surr2 = clipped_ratio * advantages
+    pg_loss = torch.min(surr1, surr2)
+    loss = -pg_loss[loss_mask].sum()
+
+    metrics = {
+        "clip_frac": _safe_mean((ratio != clipped_ratio).float(), loss_mask),
+    }
+    if loss_config.kl_coef > 0:
+        kl = (inference_logprobs - trainer_logprobs)[loss_mask].sum()
+        loss = loss + loss_config.kl_coef * kl
+        metrics["kl_ref"] = _safe_mean(inference_logprobs - trainer_logprobs, loss_mask)
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
+def reinforce_loss_fn(inputs: LossInputs, loss_config: ReinforceLossConfig) -> LossOutputs:
+    """REINFORCE policy gradient: -sum(log π(a|s) * A) over masked tokens."""
+    trainer_logprobs = inputs.trainer_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    pg_loss = trainer_logprobs * advantages
+    loss = -pg_loss[loss_mask].sum()
+    metrics: dict[str, Tensor] = {}
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def setup_loss_fn(loss_config: LossConfig) -> LossFn:
     """Setup the loss function based on config."""
     if isinstance(loss_config, CustomLossConfig):
@@ -172,6 +218,16 @@ def setup_loss_fn(loss_config: LossConfig) -> LossFn:
         def loss_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
 
+        return loss_fn
+
+    if isinstance(loss_config, PPOClipLossConfig):
+        def loss_fn(inputs: LossInputs) -> LossOutputs:
+            return ppo_clip_loss_fn(inputs, loss_config)
+        return loss_fn
+
+    if isinstance(loss_config, ReinforceLossConfig):
+        def loss_fn(inputs: LossInputs) -> LossOutputs:
+            return reinforce_loss_fn(inputs, loss_config)
         return loss_fn
 
     def loss_fn(inputs: LossInputs) -> LossOutputs:

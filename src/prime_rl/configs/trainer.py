@@ -525,6 +525,36 @@ class DefaultLossConfig(BaseModel):
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
 
 
+class PPOClipLossConfig(BaseModel):
+    """Config for PPO-style clipped surrogate loss (token-level)."""
+
+    type: Literal["ppo_clip"] = "ppo_clip"
+
+    clip_eps: Annotated[
+        float,
+        Field(gt=0, le=1, description="PPO clipping range; ratio is clamped to [1 - clip_eps, 1 + clip_eps]."),
+    ] = 0.2
+    kl_coef: Annotated[
+        float,
+        Field(ge=0, description="Coefficient for KL penalty vs reference (inference) policy."),
+    ] = 0.0
+    entropy_coef: Annotated[
+        float,
+        Field(ge=0, description="Coefficient for entropy bonus (not used unless trainer passes entropy)."),
+    ] = 0.0
+
+
+class ReinforceLossConfig(BaseModel):
+    """Config for REINFORCE / policy gradient loss: -log π(a|s) * A."""
+
+    type: Literal["reinforce"] = "reinforce"
+
+    entropy_coef: Annotated[
+        float,
+        Field(ge=0, description="Coefficient for entropy bonus (not used unless trainer passes entropy)."),
+    ] = 0.0
+
+
 class CustomLossConfig(BaseModel):
     """Config for a custom external loss function."""
 
@@ -534,7 +564,10 @@ class CustomLossConfig(BaseModel):
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
 
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[
+    DefaultLossConfig | PPOClipLossConfig | ReinforceLossConfig | CustomLossConfig,
+    Field(discriminator="type"),
+]
 
 
 class FakeDataLoaderConfig(BaseConfig):

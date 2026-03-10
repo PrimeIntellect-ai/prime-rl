@@ -36,7 +36,36 @@ class LossOutputs:
     metrics: dict[str, Tensor]      # Metrics to log
 ```
 
-### Example: PPO Clipped Loss
+### Built-in loss types
+
+You can use these without writing custom code by setting `type` in `[trainer.loss]`:
+
+| Type | Description | Key config |
+|------|-------------|------------|
+| `default` | IPO-style loss (DPPO-Binary TV + KL); supports teacher distillation | `ipo_mask_low`, `ipo_mask_high`, `adv_tau`, `teacher_tau`, `kl_tau` |
+| `ppo_clip` | Token-level PPO clipped surrogate; optional KL penalty vs reference policy | `clip_eps` (default: 0.2), `kl_coef`, `entropy_coef` |
+| `reinforce` | REINFORCE policy gradient: -log π(a\|s) * A | `entropy_coef` |
+| `custom` | Your own function via `import_path` and `kwargs` | `import_path`, `kwargs` |
+
+Example: PPO clip with optional KL penalty:
+
+```toml
+[trainer.loss]
+type = "ppo_clip"
+clip_eps = 0.2
+kl_coef = 0.01
+```
+
+Example: REINFORCE:
+
+```toml
+[trainer.loss]
+type = "reinforce"
+```
+
+### Example: Custom PPO-style loss (advanced)
+
+If you need a variant not covered by the built-in `ppo_clip`, you can still plug in a custom loss:
 
 ```python
 import torch
@@ -57,7 +86,7 @@ def ppo_clip_loss(inputs: LossInputs, clip_eps: float = 0.2) -> LossOutputs:
     )
 ```
 
-### Configuration
+### Custom loss configuration
 
 ```toml
 [loss]
@@ -98,7 +127,33 @@ class AdvantageOutputs:
     advantages: Float[Tensor, "num_examples rollouts_per_example"]
 ```
 
-### Example: Normalized Advantage
+### Built-in advantage types
+
+You can use these by setting `type` in the orchestrator’s advantage config (e.g. `[orchestrator.advantage]` or the config key your entrypoint uses):
+
+| Type | Description | Key config |
+|------|-------------|------------|
+| `default` | Reward minus per-problem baseline (GRPO-style); optional length-weighted mean | `length_weighted_mean` |
+| `normalized` | Zero-mean, unit-variance per problem | `eps` |
+| `reinforce` | Raw rewards as advantages (no baseline); use with REINFORCE loss | — |
+| `custom` | Your own function via `import_path` and `kwargs` | `import_path`, `kwargs` |
+
+Example: normalized advantages:
+
+```toml
+[orchestrator.advantage]
+type = "normalized"
+eps = 1e-8
+```
+
+Example: REINFORCE (raw rewards):
+
+```toml
+[orchestrator.advantage]
+type = "reinforce"
+```
+
+### Example: Custom normalized advantage (advanced)
 
 ```python
 import torch
@@ -112,7 +167,7 @@ def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> Advantag
     return AdvantageOutputs(advantages=advantages)
 ```
 
-### Configuration
+### Custom advantage configuration
 
 ```toml
 [advantage]
@@ -123,14 +178,14 @@ kwargs = { eps = 1e-8 }
 
 ---
 
-## Default Implementations
+## Default behavior
 
-If no custom function is specified:
+If you do not set a custom or built-in type:
 
-- **Loss**: Uses `default_loss_fn` (masked importance sampling with KL against the inference policy, and optional masking strategies)
-- **Advantage**: Uses `default_advantage_fn` (reward minus per-example baseline, a.k.a. DR-GRPO without std normalization)
+- **Loss**: Uses `default` (IPO-style masked importance sampling with KL and optional teacher).
+- **Advantage**: Uses `default` (reward minus per-example baseline).
 
-See `LossConfig` and `AdvantageConfig` for available parameters.
+See `LossConfig` and `AdvantageConfig` in the codebase for all parameters.
 
 ## Tips
 

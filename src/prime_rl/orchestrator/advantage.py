@@ -5,7 +5,12 @@ import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from prime_rl.configs.orchestrator import AdvantageConfig, CustomAdvantageConfig
+from prime_rl.configs.orchestrator import (
+    AdvantageConfig,
+    CustomAdvantageConfig,
+    NormalizedAdvantageConfig,
+    ReinforceAdvantageConfig,
+)
 from prime_rl.utils.utils import import_object
 
 
@@ -45,6 +50,19 @@ def default_advantage_fn(inputs: AdvantageInputs, length_weighted_mean: bool = F
     return AdvantageOutputs(advantages=inputs.rewards - baseline)
 
 
+def normalized_advantage_fn(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
+    """Normalize advantages to zero mean and unit variance per problem."""
+    mean = inputs.rewards.mean(dim=1, keepdim=True)
+    std = inputs.rewards.std(dim=1, keepdim=True)
+    advantages = (inputs.rewards - mean) / (std + eps)
+    return AdvantageOutputs(advantages=advantages)
+
+
+def reinforce_advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
+    """Use raw rewards as advantages (no baseline)."""
+    return AdvantageOutputs(advantages=inputs.rewards.clone())
+
+
 def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
     """Setup advantage function from config."""
     if isinstance(config, CustomAdvantageConfig):
@@ -55,6 +73,14 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
             return custom_fn(inputs, **kwargs)
 
         return advantage_fn
+
+    if isinstance(config, NormalizedAdvantageConfig):
+        def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
+            return normalized_advantage_fn(inputs, eps=config.eps)
+        return advantage_fn
+
+    if isinstance(config, ReinforceAdvantageConfig):
+        return reinforce_advantage_fn
 
     def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
         return default_advantage_fn(inputs, length_weighted_mean=config.length_weighted_mean)

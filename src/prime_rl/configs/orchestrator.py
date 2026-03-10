@@ -530,12 +530,32 @@ class VerificationConfig(BaseConfig):
 
 
 class DefaultAdvantageConfig(BaseModel):
-    """Config for the default advantage."""
+    """Config for the default advantage (reward minus per-problem baseline, GRPO-style)."""
 
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["default"] = "default"
     length_weighted_mean: bool = False
+
+
+class NormalizedAdvantageConfig(BaseModel):
+    """Config for zero-mean, unit-variance normalized advantages per problem."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["normalized"] = "normalized"
+    eps: Annotated[
+        float,
+        Field(ge=0, description="Small constant added to std for numerical stability."),
+    ] = 1e-8
+
+
+class ReinforceAdvantageConfig(BaseModel):
+    """Config for raw rewards as advantages (no baseline). Used with REINFORCE loss."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["reinforce"] = "reinforce"
 
 
 class CustomAdvantageConfig(BaseModel):
@@ -551,7 +571,7 @@ class CustomAdvantageConfig(BaseModel):
 
 
 AdvantageConfig: TypeAlias = Annotated[
-    DefaultAdvantageConfig | CustomAdvantageConfig,
+    DefaultAdvantageConfig | NormalizedAdvantageConfig | ReinforceAdvantageConfig | CustomAdvantageConfig,
     Field(discriminator="type"),
 ]
 

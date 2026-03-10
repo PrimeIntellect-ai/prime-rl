@@ -1,11 +1,18 @@
 import torch
 
-from prime_rl.configs.orchestrator import CustomAdvantageConfig, DefaultAdvantageConfig
+from prime_rl.configs.orchestrator import (
+    CustomAdvantageConfig,
+    DefaultAdvantageConfig,
+    NormalizedAdvantageConfig,
+    ReinforceAdvantageConfig,
+)
 from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
     AdvantageOutputs,
     compute_advantages,
     default_advantage_fn,
+    normalized_advantage_fn,
+    reinforce_advantage_fn,
     setup_advantage_fn,
 )
 
@@ -55,6 +62,49 @@ def test_compute_advantages_without_config():
     result = compute_advantages(rewards, lengths, samples_per_problem=3, advantage_config=None)
 
     # Without config, returns raw rewards
+    assert result == rewards
+
+
+def test_normalized_advantage_fn():
+    inputs = AdvantageInputs(
+        rewards=torch.tensor([[1.0, 0.5, 0.8], [0.2, 0.9, 0.1]]),
+        completion_lengths=torch.tensor([[10, 12, 8], [15, 11, 9]]),
+    )
+    result = normalized_advantage_fn(inputs, eps=1e-8)
+    assert result.advantages.shape == (2, 3)
+    assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
+    assert torch.allclose(result.advantages.std(dim=1), torch.ones(2), atol=1e-5)
+
+
+def test_reinforce_advantage_fn():
+    inputs = AdvantageInputs(
+        rewards=torch.tensor([[1.0, 0.5, 0.8]]),
+        completion_lengths=torch.tensor([[10, 12, 8]]),
+    )
+    result = reinforce_advantage_fn(inputs)
+    assert torch.allclose(result.advantages, inputs.rewards)
+
+
+def test_setup_advantage_fn_normalized_config():
+    result = compute_advantages(
+        [1.0, 0.5, 0.8, 0.2, 0.9, 0.1],
+        [10, 12, 8, 15, 11, 9],
+        samples_per_problem=3,
+        advantage_config=NormalizedAdvantageConfig(),
+    )
+    assert len(result) == 6
+    assert abs(sum(result[:3])) < 1e-5
+    assert abs(sum(result[3:])) < 1e-5
+
+
+def test_setup_advantage_fn_reinforce_config():
+    rewards = [1.0, 0.5, 0.8, 0.2, 0.9, 0.1]
+    result = compute_advantages(
+        rewards,
+        [10, 12, 8, 15, 11, 9],
+        samples_per_problem=3,
+        advantage_config=ReinforceAdvantageConfig(),
+    )
     assert result == rewards
 
 
