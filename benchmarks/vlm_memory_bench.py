@@ -12,7 +12,6 @@ import argparse
 import base64
 import ctypes
 import gc
-import json
 import os
 import shutil
 import subprocess
@@ -52,6 +51,7 @@ def _render_screenshot(seed, screen_width, screen_height):
     matching typical browser screenshot sizes.
     """
     import io
+
     import numpy as np
     from PIL import Image
 
@@ -246,7 +246,7 @@ def main():
                  args.screen_width, args.screen_height, use_offload, use_zmq)
         return
 
-    print(f"=== VLM Memory Benchmark ===")
+    print("=== VLM Memory Benchmark ===")
     print(f"Config: {args.num_rollouts} rollouts, {args.num_turns} turns, "
           f"{args.screen_width}x{args.screen_height}, ZMQ={'off' if args.no_zmq else 'on'}")
 
@@ -279,7 +279,7 @@ def main():
 
     # Summary
     print(f"\n{'='*60}")
-    print(f"  SUMMARY")
+    print("  SUMMARY")
     print(f"{'='*60}")
     print(f"  WITHOUT offload: +{no_offload:.1f} MB")
     print(f"  WITH offload:    +{with_offload:.1f} MB")
