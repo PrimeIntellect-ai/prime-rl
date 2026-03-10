@@ -370,7 +370,16 @@ class Scheduler:
                     group = self.groups.get(group_id)
                     if group is None:
                         continue
-                    group.completed_rollouts.append(finished_task.result())
+                    rollout = finished_task.result()
+                    if len(rollout["trajectory"]) == 0:
+                        self.empty_rollouts_count += 1
+                        group.rollouts_to_schedule += 1
+                        self.logger.warning(
+                            f"Empty trajectory in group {group_id}, re-scheduling "
+                            f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
+                        )
+                        continue
+                    group.completed_rollouts.append(rollout)
                     if len(group.completed_rollouts) < self.rollouts_per_example:
                         continue
                     completed_rollouts = self.groups.pop(group_id).completed_rollouts
@@ -387,14 +396,6 @@ class Scheduler:
 
                 self.buffer.update(completed_rollouts)
                 accepted_rollouts = self.buffer.sample_rollouts(n=self.rollouts_per_example)
-
-                empty_count = sum(1 for r in accepted_rollouts if len(r["trajectory"]) == 0)
-                if empty_count > 0:
-                    self.logger.warning(
-                        f"Filtered {empty_count}/{len(accepted_rollouts)} rollouts with empty trajectories"
-                    )
-                    accepted_rollouts = [r for r in accepted_rollouts if len(r["trajectory"]) > 0]
-                    self.empty_rollouts_count += empty_count
 
                 batch_rollouts.extend(accepted_rollouts)
                 progress_increment = self.get_batch_progress_increment(accepted_rollouts)
