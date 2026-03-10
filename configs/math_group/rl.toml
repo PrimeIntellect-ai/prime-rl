@@ -42,7 +42,7 @@ rollouts_per_example = 4
 [trainer.model]
 seq_len = 4096
 
-[inference.model]
+[inference.vllm]
 max_model_len = 2048
 
 

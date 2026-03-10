@@ -143,11 +143,11 @@ def rl_local(config: RLConfig):
         base_url = config.orchestrator.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
-        expected_port = config.inference.server.port
+        expected_port = config.inference.vllm.port
         if client_port != expected_port:
             raise ValueError(
                 f"orchestrator.client.base_url port ({client_port}) does not match "
-                f"inference.server.port ({expected_port}). "
+                f"inference.vllm.port ({expected_port}). "
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
 
@@ -399,9 +399,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_infer_nodes=config.deployment.num_infer_nodes,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
-            inference_tp=config.inference.parallel.tp,
-            inference_enable_expert_parallel=config.inference.enable_expert_parallel,
-            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            inference_tp=config.inference.vllm.tensor_parallel_size,
+            inference_enable_expert_parallel=config.inference.vllm.enable_expert_parallel,
+            inference_data_parallel_rpc_port=config.inference.vllm.data_parallel_rpc_port,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
         )
 

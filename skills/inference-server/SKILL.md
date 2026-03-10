@@ -14,10 +14,10 @@ Always use the `inference` entry point — never `vllm serve` or `python -m vllm
 uv run inference @ path/to/config.toml
 
 # With CLI overrides
-uv run inference --model.name Qwen/Qwen3-0.6B --model.max_model_len 2048 --model.enforce_eager
+uv run inference --vllm.model Qwen/Qwen3-0.6B --vllm.max-model-len 2048 --vllm.enforce-eager True
 
 # Combined
-uv run inference @ path/to/config.toml --server.port 8001 --gpu-memory-utilization 0.5
+uv run inference @ path/to/config.toml --vllm.port 8001 --vllm.gpu-memory-utilization 0.5
 ```
 
 ## SLURM scheduling
@@ -30,11 +30,9 @@ The inference entrypoint supports optional SLURM scheduling, following the same 
 # inference_slurm.toml
 output_dir = "/shared/outputs/my-inference"
 
-[model]
-name = "Qwen/Qwen3-8B"
-
-[parallel]
-tp = 8
+[vllm]
+model = "Qwen/Qwen3-8B"
+tensor_parallel_size = 8
 
 [slurm]
 job_name = "my-inference"
@@ -53,12 +51,10 @@ Each node runs an independent vLLM instance. No cross-node parallelism — TP an
 # inference_multinode.toml
 output_dir = "/shared/outputs/my-inference"
 
-[model]
-name = "PrimeIntellect/INTELLECT-3-RL-600"
-
-[parallel]
-tp = 8
-dp = 1
+[vllm]
+model = "PrimeIntellect/INTELLECT-3-RL-600"
+tensor_parallel_size = 8
+data_parallel_size = 1
 
 [deployment]
 type = "multi_node"

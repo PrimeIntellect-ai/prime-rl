@@ -112,7 +112,7 @@ def start_inference_and_trainer(
                     "inference",
                     "@",
                     "configs/ci/integration/rl_multi_run/inference.toml",
-                    "--server.port",
+                    "--vllm.port",
                     str(port),
                 ],
                 stdout=f,

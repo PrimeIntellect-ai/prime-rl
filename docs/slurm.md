@@ -148,9 +148,9 @@ id = "math-env"
 name = "hendrycks-math"
 args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
 
-[inference.parallel]
-tp = 4
-dp = 2
+[inference.vllm]
+tensor_parallel_size = 4
+data_parallel_size = 2
 ```
 
 See [`examples/hendrycks_math/rl.toml`](../examples/hendrycks_math/rl.toml) for the full example.
@@ -215,11 +215,9 @@ Run a vLLM server on a single allocated node:
 ```toml
 output_dir = "/shared/outputs/my-inference"
 
-[model]
-name = "Qwen/Qwen3-8B"
-
-[parallel]
-tp = 8
+[vllm]
+model = "Qwen/Qwen3-8B"
+tensor_parallel_size = 8
 
 [slurm]
 job_name = "my-inference"
@@ -236,12 +234,10 @@ Each node runs an independent vLLM replica. TP and DP must fit within a single n
 ```toml
 output_dir = "/shared/outputs/my-inference"
 
-[model]
-name = "PrimeIntellect/INTELLECT-3-RL-600"
-
-[parallel]
-tp = 4
-dp = 2
+[vllm]
+model = "PrimeIntellect/INTELLECT-3-RL-600"
+tensor_parallel_size = 4
+data_parallel_size = 2
 
 [deployment]
 type = "multi_node"

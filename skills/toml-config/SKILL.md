@@ -16,14 +16,18 @@ uv run sft @ configs/debug/sft/train.toml
 uv run rl @ configs/debug/rl/train.toml
 
 # CLI overrides (take precedence over TOML)
-uv run inference @ config.toml --model.name Qwen/Qwen3-0.6B --server.port 8001
+uv run inference @ config.toml --vllm.model Qwen/Qwen3-0.6B --vllm.port 8001
 
-# Boolean flags: no value needed
-uv run inference --model.enforce-eager          # sets to true
-uv run inference --no-model.enforce-eager       # sets to false
+# Pure boolean flags: no value needed
+uv run inference --dry-run          # sets to true
+uv run inference --no-dry-run       # sets to false
+
+# Optional boolean flags: value needed
+uv run inference --vllm.enforce-eager True
+uv run inference --vllm.enforce-eager False
 
 # CLI-only (no TOML file)
-uv run inference --model.name Qwen/Qwen3-0.6B --model.max-model-len 2048
+uv run inference --vllm.model Qwen/Qwen3-0.6B --vllm.max-model-len 2048
 
 # Compose multiple config files (later files override earlier ones)
 uv run rl @ examples/reverse_text/rl.toml @ examples/reverse_text/slurm_rl.toml
@@ -38,15 +42,14 @@ Top-level fields must come before any `[section]` header — this is a TOML rule
 
 ```toml
 # Top-level fields first
-gpu_memory_utilization = 0.5
-seed = 42
+dry_run = false
 
 # Then sections
-[model]
-name = "Qwen/Qwen3-0.6B"
+[vllm]
+model = "Qwen/Qwen3-0.6B"
 max_model_len = 4096
-
-[server]
+gpu_memory_utilization = 0.5
+seed = 42
 port = 8000
 ```
 

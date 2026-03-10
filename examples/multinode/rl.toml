@@ -50,6 +50,6 @@ args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "defau
 easy_threshold = 1.0
 hard_threshold = 0.0
 
-[inference.parallel]
-tp = 4
-dp = 2
+[inference.vllm]
+tensor_parallel_size = 4
+data_parallel_size = 2

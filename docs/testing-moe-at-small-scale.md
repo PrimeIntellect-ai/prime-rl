@@ -63,8 +63,8 @@ Requires 2 GPUs (one for inference, one for training).
 uv run rl @ configs/ci/integration/rl/start.toml \
     --model.name samsja/mini-glm-moe \
     --trainer.model.impl custom \
-    --inference.gpu-memory-utilization 0.7 \
-    --inference.model.max-model-len 2048
+    --inference.vllm.gpu-memory-utilization 0.7 \
+    --inference.vllm.max-model-len 2048
 ```
 
 Or to use the checkpoint from step 2:
@@ -73,8 +73,8 @@ Or to use the checkpoint from step 2:
 uv run rl @ configs/ci/integration/rl/start.toml \
     --model.name outputs/weights/step_200 \
     --trainer.model.impl custom \
-    --inference.gpu-memory-utilization 0.7 \
-    --inference.model.max-model-len 2048
+    --inference.vllm.gpu-memory-utilization 0.7 \
+    --inference.vllm.max-model-len 2048
 ```
 
 What to look for:

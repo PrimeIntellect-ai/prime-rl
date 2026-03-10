@@ -415,12 +415,12 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_model(self):
-        """Auto-setup shared model config for trainer, orchestrator, and inference."""
+        """Validate that model names are consistent across all sub-configs."""
         if self.model is not None:
             self.trainer.model.name = self.model.name
             self.orchestrator.model.name = self.model.name
             if self.inference is not None:
-                self.inference.model.name = self.model.name
+                self.inference.vllm.model = self.model.name
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
@@ -474,7 +474,11 @@ class RLConfig(BaseConfig):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
         if self.weight_broadcast is not None:
             if self.weight_broadcast.type == "nccl":
-                inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+                inference_world_size = (
+                    self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
+                    if self.inference
+                    else 1
+                )
                 self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     inference_world_size=inference_world_size,
@@ -557,8 +561,8 @@ class RLConfig(BaseConfig):
                 )
 
             if self.inference is not None:
-                self.inference.enable_lora = True
-                self.inference.max_lora_rank = self.trainer.model.lora.rank
+                self.inference.vllm.enable_lora = True
+                self.inference.vllm.max_lora_rank = self.trainer.model.lora.rank
             else:
                 get_logger().warning(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
@@ -571,11 +575,11 @@ class RLConfig(BaseConfig):
     def auto_setup_router_replay(self):
         if self.trainer.enable_router_replay:
             if self.inference is not None:
-                if self.inference.enable_return_routed_experts is False:
+                if self.inference.vllm.enable_return_routed_experts is False:
                     get_logger().warning(
-                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True."
+                        "Router replay is enabled, but inference.vllm.enable_return_routed_experts is False. Setting to True."
                     )
-                self.inference.enable_return_routed_experts = True
+                self.inference.vllm.enable_return_routed_experts = True
             else:
                 get_logger().warning(
                     "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server."
@@ -593,11 +597,11 @@ class RLConfig(BaseConfig):
             # fill up inference capacity with dp ranks
             if self.inference is not None:
                 num_infer_gpus = self.deployment.num_infer_gpus
-                if num_infer_gpus != self.inference.parallel.dp * self.inference.parallel.tp:
-                    assert num_infer_gpus % self.inference.parallel.tp == 0, (
+                if num_infer_gpus != self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size:
+                    assert num_infer_gpus % self.inference.vllm.tensor_parallel_size == 0, (
                         "Number of inference GPUs must be divisible by the tensor parallel size"
                     )
-                    self.inference.parallel.dp = num_infer_gpus // self.inference.parallel.tp
+                    self.inference.vllm.data_parallel_size = num_infer_gpus // self.inference.vllm.tensor_parallel_size
 
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node
@@ -612,33 +616,36 @@ class RLConfig(BaseConfig):
                     self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
                 )
 
-            if self.inference is not None and self.inference.enable_expert_parallel:
-                inference_tp = self.inference.parallel.tp
+            if self.inference is not None and self.inference.vllm.enable_expert_parallel:
+                inference_tp = self.inference.vllm.tensor_parallel_size
                 if self.deployment.gpus_per_node % inference_tp != 0:
                     raise ValueError(
-                        "deployment.gpus_per_node must be divisible by inference.parallel.tp "
-                        "when inference.enable_expert_parallel is enabled in multi-node deployment."
+                        "deployment.gpus_per_node must be divisible by inference.vllm.tensor_parallel_size "
+                        "when inference.vllm.enable_expert_parallel is enabled in multi-node deployment."
                     )
 
                 inferred_dp_local = self.deployment.gpus_per_node // inference_tp
                 total_infer_gpus = self.deployment.num_infer_nodes * self.deployment.gpus_per_node
-                expected_global_world_size = self.inference.parallel.dp * inference_tp
+                expected_global_world_size = self.inference.vllm.data_parallel_size * inference_tp
                 if expected_global_world_size != total_infer_gpus:
                     raise ValueError(
-                        "For multi-node expert parallel inference, inference.parallel.dp * inference.parallel.tp "
+                        "For multi-node expert parallel inference, inference.vllm.data_parallel_size * inference.vllm.tensor_parallel_size "
                         f"must match total inference GPUs ({total_infer_gpus}), got {expected_global_world_size}."
                     )
 
-                if self.inference.data_parallel_size_local is None:
-                    self.inference.data_parallel_size_local = inferred_dp_local
-                elif self.inference.data_parallel_size_local != inferred_dp_local:
+                if self.inference.vllm.data_parallel_size_local is None:
+                    self.inference.vllm.data_parallel_size_local = inferred_dp_local
+                elif self.inference.vllm.data_parallel_size_local != inferred_dp_local:
                     raise ValueError(
-                        "inference.data_parallel_size_local must equal deployment.gpus_per_node / inference.parallel.tp "
-                        f"({inferred_dp_local}) when inference.enable_expert_parallel is enabled in multi-node deployment."
+                        "inference.vllm.data_parallel_size_local must equal deployment.gpus_per_node / inference.vllm.tensor_parallel_size "
+                        f"({inferred_dp_local}) when inference.vllm.enable_expert_parallel is enabled in multi-node deployment."
                     )
 
-                if not self.inference.enable_lora and self.inference.api_server_count == self.inference.parallel.dp:
-                    self.inference.api_server_count = inferred_dp_local
+                if (
+                    not self.inference.vllm.enable_lora
+                    and self.inference.vllm.api_server_count == self.inference.vllm.data_parallel_size
+                ):
+                    self.inference.vllm.api_server_count = inferred_dp_local
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
                 assert self.trainer.weight_broadcast.type == "nccl"
@@ -659,7 +666,7 @@ class RLConfig(BaseConfig):
         """
         if self.inference is not None and "dp_rank_count" not in self.orchestrator.client.model_fields_set:
             self.orchestrator.client.dp_rank_count = (
-                self.inference.data_parallel_size_local or self.inference.parallel.dp
+                self.inference.vllm.data_parallel_size_local or self.inference.vllm.data_parallel_size
             )
         return self
 
@@ -680,27 +687,27 @@ class RLConfig(BaseConfig):
                 self.teacher_inference = InferenceConfig()
             else:
                 self.teacher_inference = copy.deepcopy(self.inference)
-            self.teacher_inference.server.port = (self.inference.server.port if self.inference else 8000) + 1
-        elif self.inference is not None and self.teacher_inference.server.port == self.inference.server.port:
+            self.teacher_inference.vllm.port = (self.inference.vllm.port if self.inference else 8000) + 1
+        elif self.inference is not None and self.teacher_inference.vllm.port == self.inference.vllm.port:
             raise ValueError(
-                f"teacher_inference.server.port ({self.teacher_inference.server.port}) conflicts with "
-                f"inference.server.port ({self.inference.server.port}). "
+                f"teacher_inference.vllm.port ({self.teacher_inference.vllm.port}) conflicts with "
+                f"inference.vllm.port ({self.inference.vllm.port}). "
                 "Either use different ports or let teacher_inference be auto-configured."
             )
 
-        tp = self.teacher_inference.parallel.tp
+        tp = self.teacher_inference.vllm.tensor_parallel_size
         num_teacher_gpus = self.deployment.num_teacher_gpus
-        if num_teacher_gpus != self.teacher_inference.parallel.dp * tp:
+        if num_teacher_gpus != self.teacher_inference.vllm.data_parallel_size * tp:
             assert num_teacher_gpus % tp == 0, "Number of teacher GPUs must be divisible by tensor parallel size"
             assert num_teacher_gpus > 0, "num_teacher_gpus cannot be zero"
-            self.teacher_inference.parallel.dp = num_teacher_gpus // tp
+            self.teacher_inference.vllm.data_parallel_size = num_teacher_gpus // tp
 
         if self.orchestrator.teacher_model is None:
             self.orchestrator.teacher_model = TeacherModelConfig()
-        host = self.teacher_inference.server.host or "localhost"
-        port = self.teacher_inference.server.port
+        host = self.teacher_inference.vllm.host or "localhost"
+        port = self.teacher_inference.vllm.port
         self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
-        self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
+        self.orchestrator.teacher_model.model.name = self.teacher_inference.vllm.model
 
         return self
 

@@ -1,8 +1,6 @@
 from argparse import Namespace
 from http import HTTPStatus
-from typing import Any
 
-import uvloop
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import State
@@ -12,7 +10,7 @@ from vllm.entrypoints.cli.serve import run_api_server_worker_proc
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.api_server import init_app_state
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionResponse
-from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
+from vllm.entrypoints.openai.cli_args import make_arg_parser
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse
 from vllm.entrypoints.openai.engine.serving import OpenAIServing
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
@@ -24,108 +22,6 @@ from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.logger import get_logger
-
-MODEL_TOOL_CALL_PARSER: dict[str, str] = {
-    # GLM-4.5
-    "zai-org/GLM-4.5": "glm45",
-    "zai-org/GLM-4.5-FP8": "glm45",
-    "zai-org/GLM-4.5-Base": "glm45",
-    "zai-org/GLM-4.5-Air": "glm45",
-    "zai-org/GLM-4.5-Air-FP8": "glm45",
-    "zai-org/GLM-4.5-Air-Base": "glm45",
-    "zai-org/GLM-4.5V": "glm45",
-    "zai-org/GLM-4.5V-FP8": "glm45",
-    # GLM-4.7
-    "zai-org/GLM-4.7": "glm47",
-    "zai-org/GLM-4.7-FP8": "glm47",
-    "zai-org/GLM-4.7-Flash": "glm47",
-    # MiniMax M2
-    "MiniMaxAI/MiniMax-M2": "minimax_m2",
-    "MiniMaxAI/MiniMax-M2.1": "minimax_m2",
-    "MiniMaxAI/MiniMax-M2.5": "minimax_m2",
-    # INTELLECT-3
-    "PrimeIntellect/INTELLECT-3": "hermes",
-    "PrimeIntellect/INTELLECT-3-FP8": "hermes",
-    "PrimeIntellect/INTELLECT-3.1": "hermes",
-    # Qwen3 dense
-    "Qwen/Qwen3-0.6B": "hermes",
-    "Qwen/Qwen3-0.6B-Base": "hermes",
-    "Qwen/Qwen3-0.6B-FP8": "hermes",
-    "Qwen/Qwen3-1.7B": "hermes",
-    "Qwen/Qwen3-1.7B-Base": "hermes",
-    "Qwen/Qwen3-1.7B-FP8": "hermes",
-    "Qwen/Qwen3-4B": "hermes",
-    "Qwen/Qwen3-4B-Base": "hermes",
-    "Qwen/Qwen3-4B-FP8": "hermes",
-    "Qwen/Qwen3-8B": "hermes",
-    "Qwen/Qwen3-8B-Base": "hermes",
-    "Qwen/Qwen3-8B-FP8": "hermes",
-    "Qwen/Qwen3-14B": "hermes",
-    "Qwen/Qwen3-14B-Base": "hermes",
-    "Qwen/Qwen3-14B-FP8": "hermes",
-    "Qwen/Qwen3-32B": "hermes",
-    "Qwen/Qwen3-32B-FP8": "hermes",
-    # Qwen3 MoE
-    "Qwen/Qwen3-30B-A3B": "hermes",
-    "Qwen/Qwen3-30B-A3B-Base": "hermes",
-    "Qwen/Qwen3-30B-A3B-FP8": "hermes",
-    "Qwen/Qwen3-235B-A22B": "hermes",
-    "Qwen/Qwen3-235B-A22B-FP8": "hermes",
-    # Qwen3 2507
-    "Qwen/Qwen3-4B-Instruct-2507": "hermes",
-    "Qwen/Qwen3-4B-Thinking-2507": "hermes",
-    "Qwen/Qwen3-4B-Instruct-2507-FP8": "hermes",
-    "Qwen/Qwen3-4B-Thinking-2507-FP8": "hermes",
-    "Qwen/Qwen3-30B-A3B-Instruct-2507": "hermes",
-    "Qwen/Qwen3-30B-A3B-Thinking-2507": "hermes",
-    "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8": "hermes",
-    "Qwen/Qwen3-30B-A3B-Thinking-2507-FP8": "hermes",
-    "Qwen/Qwen3-235B-A22B-Instruct-2507": "hermes",
-    "Qwen/Qwen3-235B-A22B-Thinking-2507": "hermes",
-    "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8": "hermes",
-    "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8": "hermes",
-    # Qwen3-Next
-    "Qwen/Qwen3-Next-80B-A3B-Instruct": "hermes",
-    "Qwen/Qwen3-Next-80B-A3B-Thinking": "hermes",
-    "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8": "hermes",
-    "Qwen/Qwen3-Next-80B-A3B-Thinking-FP8": "hermes",
-    # Qwen3-Coder
-    "Qwen/Qwen3-Coder-480B-A35B-Instruct": "hermes",
-    "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "hermes",
-    "Qwen/Qwen3-Coder-30B-A3B-Instruct": "hermes",
-    "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8": "hermes",
-    # Qwen3-Coder-Next
-    "Qwen/Qwen3-Coder-Next": "hermes",
-    "Qwen/Qwen3-Coder-Next-Base": "hermes",
-    "Qwen/Qwen3-Coder-Next-FP8": "hermes",
-    # Qwen3.5 dense (uses qwen3_coder tool format, not hermes)
-    "Qwen/Qwen3.5-0.8B": "qwen3_coder",
-    "Qwen/Qwen3.5-0.8B-Base": "qwen3_coder",
-    "Qwen/Qwen3.5-2B": "qwen3_coder",
-    "Qwen/Qwen3.5-2B-Base": "qwen3_coder",
-    "Qwen/Qwen3.5-4B": "qwen3_coder",
-    "Qwen/Qwen3.5-4B-Base": "qwen3_coder",
-    "Qwen/Qwen3.5-9B": "qwen3_coder",
-    "Qwen/Qwen3.5-9B-Base": "qwen3_coder",
-    "Qwen/Qwen3.5-27B": "qwen3_coder",
-    "Qwen/Qwen3.5-27B-FP8": "qwen3_coder",
-    # Qwen3.5 MoE (uses qwen3_coder tool format, not hermes)
-    "Qwen/Qwen3.5-35B-A3B": "qwen3_coder",
-    "Qwen/Qwen3.5-35B-A3B-Base": "qwen3_coder",
-    "Qwen/Qwen3.5-35B-A3B-FP8": "qwen3_coder",
-    "Qwen/Qwen3.5-122B-A10B": "qwen3_coder",
-    "Qwen/Qwen3.5-122B-A10B-FP8": "qwen3_coder",
-    "Qwen/Qwen3.5-397B-A17B": "qwen3_coder",
-    "Qwen/Qwen3.5-397B-A17B-FP8": "qwen3_coder",
-}
-
-
-def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> str | None:
-    """Resolve tool_call_parser from model name if set to "auto"."""
-    if tool_call_parser == "auto":
-        return MODEL_TOOL_CALL_PARSER.get(model_name)
-    return tool_call_parser
-
 
 logger = get_logger()
 from prime_rl.inference.patches import (
@@ -164,12 +60,6 @@ def base(request: Request) -> OpenAIServing:
 
 def models(request: Request) -> OpenAIServingModels:
     return request.app.state.openai_serving_models
-
-
-WORKER_EXTENSION_CLS = {
-    "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
-    "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
-}
 
 
 def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
@@ -333,36 +223,16 @@ vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_wo
 
 
 # Adapted from vllm/entrypoints/cli/serve.py
-# Only difference we do some config translation (i.e. pass populated namespace
-# to `parse_args`) and additional arg validation
-def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
-    from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
-    from vllm.entrypoints.openai.api_server import run_server
+def server(config: InferenceConfig):
+    from vllm.entrypoints.cli.serve import ServeSubcommand
 
-    namespace = config.to_vllm()
-    if vllm_extra:
-        for key, value in vllm_extra.items():
-            setattr(namespace, key, value)
+    namespace = config.to_namespace()
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=[], namespace=namespace)
     assert args is not None
-    validate_parsed_serve_args(args)
 
-    args.tool_call_parser = resolve_tool_call_parser(args.model, args.tool_call_parser)
-    args.enable_auto_tool_choice = args.tool_call_parser is not None
-    if args.tool_call_parser is not None:
-        logger.info(f"Using tool_call_parser='{args.tool_call_parser}' for model '{args.model}'")
-
-    # Set the worker extension class based on the broadcast backend
-    args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
-
-    if args.headless or args.api_server_count < 1:
-        run_headless(args)
-    else:
-        if args.api_server_count > 1:
-            run_multi_api_server(args)
-        else:
-            # Single API server (this process).
-            uvloop.run(run_server(args))
+    serve_subcommand = ServeSubcommand()
+    serve_subcommand.validate(args)
+    serve_subcommand.cmd(args)

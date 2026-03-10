@@ -41,9 +41,9 @@ def validate_shared_model_name(
             f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
         )
 
-    if inference and inference.model.name != orchestrator.model.name:
+    if inference and inference.vllm.model != orchestrator.model.name:
         raise ValueError(
-            f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}. Please specify the same model name for both."
+            f"Inference model name ({inference.vllm.model}) and orchestrator model name ({orchestrator.model.name}). Please specify the same model name for both."
         )
 
 
