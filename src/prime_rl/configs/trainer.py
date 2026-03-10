@@ -13,7 +13,6 @@ from prime_rl.configs.shared import (
     WandbConfig,
 )
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.logger import get_logger
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
@@ -321,24 +320,6 @@ class ModelConfig(BaseModelConfig):
     def cpu_offload_mutual_exclusion(self):
         if self.fsdp_cpu_offload and self.optim_cpu_offload:
             raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
-        return self
-
-    @model_validator(mode="after")
-    def fused_lm_head_token_chunk_size_is_valid(self):
-        if isinstance(self.fused_lm_head_token_chunk_size, int):
-            low = 1
-            warn_threshold = 128
-            if self.fused_lm_head_token_chunk_size < low:
-                raise ValueError(
-                    f"Fused LM head token chunk size must be at least {low}, got {self.fused_lm_head_token_chunk_size}"
-                )
-            if self.fused_lm_head_token_chunk_size < warn_threshold:
-                get_logger().warning(
-                    "Fused LM head token chunk size is set to "
-                    f"{self.fused_lm_head_token_chunk_size}, which is smaller than the "
-                    f"recommended threshold of {warn_threshold}. This is supported, but it may reduce matmul efficiency."
-                )
-
         return self
 
     @model_validator(mode="after")
