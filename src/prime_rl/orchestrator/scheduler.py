@@ -419,7 +419,7 @@ class Scheduler:
             await safe_cancel(self.update_policy_task)
             self.update_policy_task = None
         if self.inflight_policy_update_task is not None:
-            await self.inflight_policy_update_task
+            await safe_cancel(self.inflight_policy_update_task)
             self.inflight_policy_update_task = None
 
     @property

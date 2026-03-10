@@ -86,7 +86,7 @@ def test_update_off_policy_does_not_increment_interleaved_on_policy_tasks():
     asyncio.run(run())
 
 
-def test_maybe_update_policy_does_not_duplicate_updates_after_cancelling_background_task():
+def test_maybe_update_policy_reuses_inflight_update_after_cancellation():
     async def run() -> None:
         scheduler = make_scheduler()
         started = asyncio.Event()
@@ -108,17 +108,16 @@ def test_maybe_update_policy_does_not_duplicate_updates_after_cancelling_backgro
             patch("prime_rl.orchestrator.scheduler.get_latest_ckpt_step", return_value=8),
             patch("prime_rl.orchestrator.scheduler.wait_for_path", new=AsyncMock()),
         ):
-            scheduler.update_policy_task = asyncio.create_task(scheduler.maybe_update_policy())
+            first = asyncio.create_task(scheduler.maybe_update_policy())
             await started.wait()
+            await safe_cancel(first)
 
-            await safe_cancel(scheduler.update_policy_task)
-
-            second_update = asyncio.create_task(scheduler.maybe_update_policy())
+            second = asyncio.create_task(scheduler.maybe_update_policy())
             await asyncio.sleep(0)
             assert applied_steps == [8]
 
             release.set()
-            await second_update
+            await second
 
         assert applied_steps == [8]
         assert scheduler.ckpt_step == 8
@@ -126,28 +125,35 @@ def test_maybe_update_policy_does_not_duplicate_updates_after_cancelling_backgro
     asyncio.run(run())
 
 
-def test_apply_policy_update_commits_ckpt_step_before_off_policy_bookkeeping():
+def test_stop_cancels_inflight_policy_update_task():
     async def run() -> None:
         scheduler = make_scheduler()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
 
         async def update_weights(weight_dir, lora_name=None, step=0) -> None:
-            assert step == 8
-
-        async def update_off_policy() -> None:
-            assert scheduler.ckpt_step == 8
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
 
         scheduler.inference_pool = SimpleNamespace(
             update_weights=update_weights,
             update_model_name=MagicMock(),
         )
-        scheduler._update_off_policy = update_off_policy
+        scheduler._update_off_policy = AsyncMock()
 
         with (
             patch("prime_rl.orchestrator.scheduler.get_latest_ckpt_step", return_value=8),
             patch("prime_rl.orchestrator.scheduler.wait_for_path", new=AsyncMock()),
         ):
-            await scheduler.maybe_update_policy()
+            scheduler.update_policy_task = asyncio.create_task(scheduler.maybe_update_policy())
+            await started.wait()
+            await asyncio.wait_for(scheduler.stop(), timeout=0.2)
 
-        assert scheduler.ckpt_step == 8
+        assert cancelled.is_set()
+        assert scheduler.update_policy_task is None
+        assert scheduler.inflight_policy_update_task is None
 
     asyncio.run(run())
