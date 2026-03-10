@@ -17,7 +17,7 @@ temperature = 1.0
 
 [orchestrator.wandb.log_extras]
 samples = true
-interval = 10
+interval = 1
 
 [[orchestrator.env]]
 id = "arc-codegen"
