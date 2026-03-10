@@ -31,16 +31,54 @@ def _trim_multimodal_to_match(
     if num_image_tokens == expected_tokens:
         return input_ids, None, pixel_values, pixel_values_shape, image_grid_thw
 
-    # Keep only complete images that fit within the available image tokens
-    kept_grids = []
-    valid_tokens = 0
-    for grid in image_grid_thw:
-        t = _grid_tokens(grid)
-        if valid_tokens + t <= num_image_tokens:
-            kept_grids.append(grid)
-            valid_tokens += t
-        else:
+    # Determine which images to keep based on the truncation pattern
+    # Count tokens per image
+    tokens_per_image = [_grid_tokens(g) for g in image_grid_thw]
+    
+    # Detect if we have left-truncation by checking if the first image is incomplete
+    # Count image tokens before the first complete image boundary
+    first_image_tokens = 0
+    for t in input_ids:
+        if t == _IMAGE_PAD_TOKEN_ID:
+            first_image_tokens += 1
+        elif first_image_tokens > 0:
+            # We've seen some image tokens and now hit a non-image token
             break
+    
+    # Check if first image is partial (indicates left-truncation)
+    skip_images = 0
+    if first_image_tokens > 0 and first_image_tokens < tokens_per_image[0]:
+        # Left-truncation case: skip images from the beginning
+        remaining_tokens = num_image_tokens - first_image_tokens
+        skip_images = 1  # Skip the partial first image
+        
+        # Skip additional complete images that don't have tokens
+        for i in range(1, len(tokens_per_image)):
+            if remaining_tokens >= tokens_per_image[i]:
+                break
+            skip_images += 1
+        
+        # Keep grids starting after the skipped images
+        kept_grids = []
+        valid_tokens = 0
+        for i in range(skip_images, len(image_grid_thw)):
+            t = tokens_per_image[i]
+            if valid_tokens + t <= remaining_tokens:
+                kept_grids.append(image_grid_thw[i])
+                valid_tokens += t
+            else:
+                break
+    else:
+        # Right-truncation case: keep images from the beginning
+        kept_grids = []
+        valid_tokens = 0
+        for grid in image_grid_thw:
+            t = _grid_tokens(grid)
+            if valid_tokens + t <= num_image_tokens:
+                kept_grids.append(grid)
+                valid_tokens += t
+            else:
+                break
 
     # Build keep mask: True for non-image tokens and complete-image tokens, False for orphans
     keep_mask = []
@@ -58,9 +96,18 @@ def _trim_multimodal_to_match(
         return input_ids, keep_mask, None, None, None
 
     patch_dim = pixel_values_shape[1] if pixel_values_shape else 0
+    
+    # Calculate pixel_values offset for left-truncation
+    if skip_images > 0:
+        # Calculate bytes to skip for the dropped images
+        skipped_patches = sum(g[0] * g[1] * g[2] for g in image_grid_thw[:skip_images])
+        skip_bytes = skipped_patches * 4 * patch_dim
+    else:
+        skip_bytes = 0
+    
     kept_patches = sum(g[0] * g[1] * g[2] for g in kept_grids)
     kept_bytes = kept_patches * 4 * patch_dim
-    return input_ids, keep_mask, pixel_values[:kept_bytes], [kept_patches, patch_dim], kept_grids
+    return input_ids, keep_mask, pixel_values[skip_bytes:skip_bytes + kept_bytes], [kept_patches, patch_dim], kept_grids
 
 
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
