@@ -13,7 +13,7 @@ from verifiers.workers import ZMQEnvClient, ZMQEnvServer
 from prime_rl.utils.logger import InterceptHandler, ProgressTracker
 
 DEFAULT_RETRIES = 0
-REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
+REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args", "extras"]
 DEFAULT_STATE_COLUMNS = []
 
 
@@ -276,8 +276,10 @@ def get_completion_len(output: vf.RolloutOutput) -> int:
 
 
 def task_uses_group_scoring(env: vf.Environment, task_name: str) -> bool:
-    """Check if a task's rubric contains any group-level reward functions."""
+    """Check if a task's rubric requires group-level scoring."""
     rubric = env.get_env_for_task(task_name).rubric
+    if getattr(rubric, "needs_group_scoring", False):
+        return True
     return any(rubric._is_group_func(func) for func in rubric._get_reward_funcs())
 
 
