@@ -134,6 +134,9 @@ srun bash -c '
     export NVSHMEM_DISABLE_CUDA_VMM=1
     export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=eth0
 
+    # Reconstruct hostnames array from exported string (bash arrays cannot be exported)
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+
 if [ "$SLURM_PROCID" -lt "$TOTAL_INFER_NODES" ]; then
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     INFER_NODE_RANK=$SLURM_PROCID
