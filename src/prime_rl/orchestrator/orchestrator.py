@@ -572,6 +572,8 @@ async def orchestrate(config: OrchestratorConfig):
                 config.rollouts_per_example,
                 config.advantage,
             )
+            nonzero = [a for a in advantages if a != 0.0]
+            print(f"[ADVANTAGE COMPUTED] {len(advantages)} total, {len(nonzero)} non-zero, sample: {advantages[:8]}")
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
