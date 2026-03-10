@@ -1,7 +1,9 @@
 import base64
+import hashlib
 import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+from pathlib import Path
 
 import torch
 import verifiers as vf
@@ -67,7 +69,11 @@ def interleave_rollout(
 
     trajectory = output["trajectory"]
     if len(trajectory) == 0:
-        logger.warning(f"No trajectory steps for example {output['example_id']}. Skipping rollout.")
+        error = output.get("error")
+        stop = output.get("stop_condition")
+        logger.warning(
+            f"No trajectory steps for example {output['example_id']} (error={error}, stop={stop}). Skipping rollout."
+        )
         return None
 
     has_error = output["error"] is not None
@@ -185,8 +191,61 @@ def interleave_rollout(
 # =============================================================================
 
 
+_FILE_URL_PREFIX = "file://"
+
+
+def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -> int:
+    """Replace base64 image data in rollout trajectories with file paths on disk.
+
+    Scans all trajectory step prompts for data:image URLs, writes the decoded
+    image bytes to ``{output_dir}/assets/images/{hash}.png``, and replaces the
+    URL in-place with ``file://{path}``.  Deduplicates by content hash so each
+    unique image is written only once.
+
+    Returns the number of unique images written to disk.
+    """
+    images_dir = output_dir / "assets" / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    written: set[str] = set()
+
+    for output in rollouts:
+        for step in output.get("trajectory", []):
+            prompt = step.get("prompt")
+            if not prompt or not isinstance(prompt, list):
+                continue
+            for msg in prompt:
+                content = msg.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for item in content:
+                    if item.get("type") != "image_url":
+                        continue
+                    url = item.get("image_url", {}).get("url", "")
+                    if not url.startswith("data:image"):
+                        continue
+                    b64_data = url.split(",", 1)[1]
+                    content_hash = hashlib.sha256(b64_data.encode()).hexdigest()[:16]
+                    path = images_dir / f"{content_hash}.png"
+                    if content_hash not in written:
+                        if not path.exists():
+                            path.write_bytes(base64.b64decode(b64_data))
+                        written.add(content_hash)
+                    item["image_url"]["url"] = f"{_FILE_URL_PREFIX}{path}"
+
+    return len(written)
+
+
+def _load_file_image(path_str: str) -> Image.Image:
+    """Load an image from a file:// path."""
+    return Image.open(path_str.removeprefix(_FILE_URL_PREFIX))
+
+
 def _extract_images_from_messages(messages: list) -> list[tuple[Image.Image, str]]:
-    """Extract (image, b64_key) pairs from OpenAI-style chat messages."""
+    """Extract (image, key) pairs from OpenAI-style chat messages.
+
+    Handles both base64 data URLs and file:// paths from disk offloading.
+    """
     images = []
     if not messages or not isinstance(messages, list):
         return images
@@ -197,7 +256,10 @@ def _extract_images_from_messages(messages: list) -> list[tuple[Image.Image, str
             for item in content:
                 if item.get("type") == "image_url":
                     url = item.get("image_url", {}).get("url", "")
-                    if url.startswith("data:image"):
+                    if url.startswith(_FILE_URL_PREFIX):
+                        img = _load_file_image(url)
+                        images.append((img, url))
+                    elif url.startswith("data:image"):
                         b64_data = url.split(",", 1)[1]
                         img_bytes = base64.b64decode(b64_data)
                         img = Image.open(BytesIO(img_bytes))
@@ -205,8 +267,11 @@ def _extract_images_from_messages(messages: list) -> list[tuple[Image.Image, str
     return images
 
 
-def _collect_b64_keys_from_messages(messages: list) -> list[str]:
-    """Extract base64 keys from OpenAI-style chat messages without decoding."""
+def _collect_image_keys_from_messages(messages: list) -> list[str]:
+    """Extract image keys from OpenAI-style chat messages without decoding.
+
+    Handles both base64 data URLs and file:// paths from disk offloading.
+    """
     keys = []
     if not messages or not isinstance(messages, list):
         return keys
@@ -218,15 +283,43 @@ def _collect_b64_keys_from_messages(messages: list) -> list[str]:
                     url = item.get("image_url", {}).get("url", "")
                     if url.startswith("data:image"):
                         keys.append(url.split(",", 1)[1])
+                    elif url.startswith(_FILE_URL_PREFIX):
+                        keys.append(url)
     return keys
 
 
-def _decode_b64_image(b64_data: str) -> Image.Image:
-    """Decode a single base64 string into a PIL Image."""
-    return Image.open(BytesIO(base64.b64decode(b64_data)))
+def _decode_image(key: str) -> Image.Image:
+    """Decode an image from a base64 string or load from a file:// path."""
+    if key.startswith(_FILE_URL_PREFIX):
+        return _load_file_image(key)
+    return Image.open(BytesIO(base64.b64decode(key)))
 
 
 _PARALLEL_DECODE_THRESHOLD = 4
+
+
+_IMAGE_STRIPPED_PLACEHOLDER = "[preprocessed image]"
+
+
+def strip_base64_images(examples: list[tuple[int, vf.RolloutOutput]]) -> None:
+    """Strip image data from rollout prompts to free memory.
+
+    Handles both base64 data URLs and file:// paths from disk offloading.
+    The images have been decoded and indexed; the original data is no longer needed.
+    """
+    for _, output in examples:
+        for step in output.get("trajectory", []):
+            prompt = step.get("prompt")
+            if not prompt or not isinstance(prompt, list):
+                continue
+            for msg in prompt:
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for item in content:
+                        if item.get("type") == "image_url":
+                            url = item.get("image_url", {}).get("url", "")
+                            if url.startswith("data:image") or url.startswith(_FILE_URL_PREFIX):
+                                item["image_url"]["url"] = _IMAGE_STRIPPED_PLACEHOLDER
 
 
 def _extract_images_from_examples(
@@ -262,9 +355,9 @@ def _extract_images_from_examples(
         step_image_indices = []
         for step in trajectory:
             prompt = step.get("prompt")
-            b64_keys = _collect_b64_keys_from_messages(prompt)
+            image_keys = _collect_image_keys_from_messages(prompt)
             indices = []
-            for key in b64_keys:
+            for key in image_keys:
                 if key not in key_to_index:
                     key_to_index[key] = len(unique_keys)
                     unique_keys.append(key)
@@ -276,9 +369,12 @@ def _extract_images_from_examples(
     # Pass 2: decode unique images (parallel when worthwhile)
     if len(unique_keys) > _PARALLEL_DECODE_THRESHOLD:
         with ThreadPoolExecutor(max_workers=min(len(unique_keys), 16)) as pool:
-            all_images = list(pool.map(_decode_b64_image, unique_keys))
+            all_images = list(pool.map(_decode_image, unique_keys))
     else:
-        all_images = [_decode_b64_image(k) for k in unique_keys]
+        all_images = [_decode_image(k) for k in unique_keys]
+    del unique_keys, key_to_index
+
+    strip_base64_images(examples)
 
     return all_images, step_image_indices_per_example
 
@@ -363,14 +459,19 @@ def _preprocess_images_batched(
     else:
         results = [_process_chunk(chunks[0])]
 
+    # Free PIL images now that preprocessing is done
+    del chunks
+    images.clear()
+
     all_pixel_values_list = [r[0] for r in results]
     all_grid_thw_list = [r[1] for r in results]
 
     all_pixel_values = torch.cat(all_pixel_values_list, dim=0)
     all_grid_thw = torch.cat(all_grid_thw_list, dim=0)
+    del all_pixel_values_list, all_grid_thw_list, results
 
     logger.debug(
-        f"VLM image processing: {len(images)} images, sizes={image_sizes}, "
+        f"VLM image processing: {len(image_sizes)} images, sizes={image_sizes}, "
         f"pixel_values={all_pixel_values.shape}, grid_thw={all_grid_thw.tolist()}"
     )
 
@@ -381,15 +482,16 @@ def _preprocess_images_batched(
 
     patch_dim = all_pixel_values.shape[1]
 
-    # Store per-image bytes once
+    # Convert to bytes per-image and free the tensor immediately after
     image_bytes_list: list[bytes] = []
     image_num_patches_list: list[int] = []
     image_grids_list: list[list[int]] = []
-    for i in range(len(images)):
+    for i in range(len(image_sizes)):
         img_slice = all_pixel_values[patch_starts[i] : patch_starts[i + 1]]
         image_bytes_list.append(img_slice.numpy().tobytes())
         image_num_patches_list.append(img_slice.shape[0])
         image_grids_list.append(all_grid_thw[i].tolist())
+    del all_pixel_values, all_grid_thw
 
     store = _ImageStore(
         image_bytes=image_bytes_list,
@@ -483,12 +585,13 @@ def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMIma
     examples = [(idx, rollout) for idx, rollout in enumerate(rollouts)]
     unique_example_ids = {rollout["example_id"] for rollout in rollouts}
 
-    # Extract images
+    # Extract images (also strips base64 data from rollout prompts to free memory)
     extract_start = time.perf_counter()
     all_images, images_per_example = _extract_images_from_examples(examples)
+    num_unique_images = len(all_images)
     extract_time = time.perf_counter() - extract_start
 
-    # Preprocess images
+    # Preprocess images (clears PIL image list when done)
     preprocess_start = time.perf_counter()
     store, step_indices = _preprocess_images_batched(all_images, images_per_example, processor)
     preprocess_time = time.perf_counter() - preprocess_start
@@ -497,7 +600,7 @@ def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMIma
         store=store,
         step_indices=step_indices,
         num_unique_examples=len(unique_example_ids),
-        num_unique_images=len(all_images),
+        num_unique_images=num_unique_images,
         extract_time=extract_time,
         preprocess_time=preprocess_time,
     )

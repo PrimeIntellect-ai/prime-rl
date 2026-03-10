@@ -939,7 +939,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_extra_env_kwargs(self):
         train_extra_env_kwargs = dict(
-            seq_len=self.seq_len,
+            max_seq_len=self.seq_len,
             score_rollouts=self.verification.enabled,
         )
         for env in self.env:

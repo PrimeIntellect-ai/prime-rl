@@ -6,6 +6,18 @@
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --exclusive
 #SBATCH --partition={{ partition }}
+{%- if account %}
+#SBATCH --account={{ account }}
+{%- endif %}
+{%- if time %}
+#SBATCH --time={{ time }}
+{%- endif %}
+{%- if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{%- endif %}
+{%- if exclude %}
+#SBATCH --exclude={{ exclude }}
+{%- endif %}
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
 
@@ -17,4 +29,8 @@ cd $PROJECT_DIR
 source .venv/bin/activate
 uv sync --all-extras
 
+{% if pre_run_command %}
+# Pre-run command
+{{ pre_run_command }}
+{% endif %}
 uv run sft @ {{ config_path }}

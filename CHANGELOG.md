@@ -2,7 +2,11 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`model.fused_lm_head_token_chunk_size`**: Added as the fused LM-head chunking field for the token-chunked implementation. Unlike the removed `model.fused_lm_head_chunk_size`, this chunks over flattened sequence tokens rather than vocabulary rows. `model.fused_lm_head_chunk_size` is no longer accepted; switch configs to `model.fused_lm_head_token_chunk_size` explicitly. (2026-03-09)
+- **`slurm.pre_run_command`**: Added optional shell command to run on the head node before starting the job. Useful for cleanup routines (e.g. killing stale processes, removing lock files). For all-nodes execution, wrap with `srun` in the command string (default: None) (2026-03-08)
+- **`slurm.nodelist`**, **`slurm.exclude`**, **`slurm.account`**, **`slurm.time`**: Added common SLURM scheduling options (all default: None) (2026-03-08)
 - **`orchestrator.verification.enabled`**: Added top-level rollout verification switch. `orchestrator.buffer.skip_verification` has been removed; use `verification.enabled = false` instead. When disabled, rewards are always 0 and reward-dependent buffer features (`online_difficulty_filtering`, `easy_threshold`, `hard_threshold`) must be unset (2026-03-03)
+- **`client.dp_rank_count`**: Added configuration for data-parallel inference routing. When > 1, each `client.base_url` is expanded into `dp_rank_count` logical clients and pinned via `X-data-parallel-rank` to keep multi-turn rollouts on a consistent DP rank (default: 1) (2026-03-03)
 - **`model.lora`**: Moved from `model.experimental.lora` to `model.lora` (no longer experimental) (#1440, 2025-12-16)
 - Auto-set `api_server_count=1` on inference when LoRA is enabled, because vLLM doesn't support hotloading for multiple API servers (#1422, 2025-12-17)
 - **`inference.model.rope_scaling`**: Added RoPE scaling configuration passthrough to vLLM (#1447 2025-12-17)
@@ -85,6 +89,7 @@ Documenting changes which affect configuration usage patterns (added/moved/remov
 - **`trainer.enable_router_replay`**: Added flag to enable router replay. If True, will return routed experts in the batch. This is only supported if `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server. This is only supported for custom models. (2026-02-22)
 - **`inference.enable_return_routed_experts`**: Added flag to enable return routed experts. Passed to vLLM as `--enable-return-routed-experts` (2026-02-22)
 - **`orchestrator.oversampling_factor`**: Added rollout-only over-sampling config that resolves `max_inflight_rollouts = int(batch_size * oversampling_factor)` when `max_inflight_rollouts` is unset. Cannot be used with `token_batch_size` or together with explicit `max_inflight_rollouts` (2026-02-25)
+- **`sft.val`**: Added optional periodic SFT validation with `val/loss` and `val/num_tokens` logging. Configure via `sft.val.data` (validation dataset) and `sft.val.interval` (every N steps, default 50). Runs the full validation dataset each pass. (2026-02-26)
 - **`model.fused_lm_head_chunk_size`**: Changed default value from 2048 to 8192 for RL training (2026-02-26)
 - **`inference.data_parallel_size_local`** and **`inference.data_parallel_rpc_port`**: Added data-parallel node-local controls for vLLM, passed as `--data-parallel-size-local` and `--data-parallel-rpc-port` (defaults: `None`, `13345`) (2026-02-26)
 - **`dump_config`**: Removed from `RLConfig`. Replaced by `dry_run` (see below) (2026-02-26)

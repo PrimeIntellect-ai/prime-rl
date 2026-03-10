@@ -27,6 +27,50 @@ class SlurmConfig(BaseConfig):
         str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
     ] = "cluster"
 
+    nodelist: Annotated[
+        str | None,
+        Field(description="Comma-separated list of specific nodes to run on. Passed as #SBATCH --nodelist."),
+    ] = None
+
+    exclude: Annotated[
+        str | None,
+        Field(description="Comma-separated list of nodes to exclude. Passed as #SBATCH --exclude."),
+    ] = None
+
+    account: Annotated[
+        str | None,
+        Field(description="SLURM account to charge. Passed as #SBATCH --account."),
+    ] = None
+
+    time: Annotated[
+        str | None,
+        Field(description="Maximum wall time (e.g. '24:00:00', '7-00:00:00'). Passed as #SBATCH --time."),
+    ] = None
+
+    pre_run_command: Annotated[
+        str | None,
+        Field(
+            description="Shell command to run on the head node before starting the job. "
+            "Runs after cd into project dir, .env sourcing, and venv activation. "
+            "Useful for cleanup routines like 'sudo pkill -f vllm'. "
+            "To run on all nodes, wrap with srun: 'srun bash -c \"pkill -f vllm || true\"'.",
+        ),
+    ] = None
+
+    @property
+    def template_vars(self) -> dict:
+        """Common template variables for all SLURM templates."""
+        return {
+            "job_name": self.job_name,
+            "project_dir": self.project_dir,
+            "partition": self.partition,
+            "nodelist": self.nodelist,
+            "exclude": self.exclude,
+            "account": self.account,
+            "time": self.time,
+            "pre_run_command": self.pre_run_command,
+        }
+
     @model_validator(mode="after")
     def resolve_project_dir(self):
         self.project_dir = self.project_dir.resolve()
@@ -121,6 +165,22 @@ class ClientConfig(BaseConfig):
             description="Whether to skip checking if the model is available in the inference pool. Useful for external APIs or API Keys that don't support the /models endpoint.",
         ),
     ] = False
+
+    dp_rank_count: Annotated[
+        int,
+        Field(
+            ge=1,
+            description=(
+                "Number of data-parallel ranks behind each base URL. When > 1, "
+                "each URL is expanded into dp_rank_count logical clients, each "
+                "pinned to a specific DP rank via the X-data-parallel-rank header. "
+                "This ensures all requests within a multi-turn rollout hit the same "
+                "DP engine, maximizing KV cache reuse. Auto-set from "
+                "inference.data_parallel_size_local (or inference.parallel.dp) "
+                "when using the RL entrypoint."
+            ),
+        ),
+    ] = 1
 
     elastic: Annotated[
         ElasticConfig | None,

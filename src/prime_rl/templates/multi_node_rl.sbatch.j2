@@ -5,6 +5,18 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition={{ partition }}
+{%- if account %}
+#SBATCH --account={{ account }}
+{%- endif %}
+{%- if time %}
+#SBATCH --time={{ time }}
+{%- endif %}
+{%- if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{%- endif %}
+{%- if exclude %}
+#SBATCH --exclude={{ exclude }}
+{%- endif %}
 #SBATCH --exclusive
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
@@ -80,6 +92,11 @@ cd $PROJECT_DIR
 source .venv/bin/activate
 uv sync --all-extras
 
+{% if pre_run_command %}
+# Pre-run command
+{{ pre_run_command }}
+{% endif %}
+
 # Run RL
 srun bash -c '
     # Source environment
@@ -128,10 +145,10 @@ else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
 
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
-        uv run orchestrator \
-            @ $CONFIG_DIR/orchestrator.toml \
-            --weight_broadcast.host $MASTER_ADDR \
-            --client.base-url $INFER_URLS \
+        ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
+        ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.base-url $INFER_URLS"
+        {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+        {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log &
     fi
 

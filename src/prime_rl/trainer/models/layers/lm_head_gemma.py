@@ -66,10 +66,7 @@ class _GemmaChunkedLogProbEntropyFn(torch.autograd.Function):
         softcap: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Returns (per-token logprobs, per-token entropy) without materializing [N, V].
-
-        Important: entropy is computed from the *same* per-chunk logits used for the softmax
-        normalization (no extra W @ hidden matmul).
+        Returns per-token logprobs and entropy by chunking over flattened sequence tokens.
         """
         assert hidden.dim() == 2, f"expected hidden [N,H], got {tuple(hidden.shape)}"
         assert weight.dim() == 2, f"expected weight [V,H], got {tuple(weight.shape)}"
@@ -83,45 +80,47 @@ class _GemmaChunkedLogProbEntropyFn(torch.autograd.Function):
         device = hidden.device
         n = hidden.shape[0]
         vocab = weight.shape[0]
+        vocab_chunk_size = min(vocab, 8192)
+        logprobs = torch.empty((n,), device=device, dtype=torch.float32)
+        entropy = torch.empty((n,), device=device, dtype=torch.float32)
+        logz = torch.empty((n,), device=device, dtype=torch.float32)
 
-        # Running stats in fp32.
-        m = torch.full((n,), float("-inf"), device=device, dtype=torch.float32)
-        s = torch.zeros((n,), device=device, dtype=torch.float32)
-        t = torch.zeros((n,), device=device, dtype=torch.float32)
-        target_logits = torch.zeros((n,), device=device, dtype=torch.float32)
+        for start in range(0, n, chunk_size):
+            end = min(start + chunk_size, n)
+            hidden_chunk = hidden[start:end]
+            labels_chunk = labels[start:end]
+            inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
+            token_count = end - start
 
-        inv_t_broadcast = inv_temperature.unsqueeze(-1)  # [N, 1]
+            m = torch.full((token_count,), float("-inf"), device=device, dtype=torch.float32)
+            s = torch.zeros((token_count,), device=device, dtype=torch.float32)
+            t = torch.zeros((token_count,), device=device, dtype=torch.float32)
+            target_logits = torch.zeros((token_count,), device=device, dtype=torch.float32)
 
-        for start in range(0, vocab, chunk_size):
-            end = min(start + chunk_size, vocab)
-            w_chunk = weight[start:end]  # [C, H]
-            logits = hidden @ w_chunk.t()  # [N, C] (model dtype)
-            logits_f = logits.to(torch.float32)  # [N, C] fp32
+            for vocab_start in range(0, vocab, vocab_chunk_size):
+                vocab_end = min(vocab_start + vocab_chunk_size, vocab)
+                weight_chunk = weight[vocab_start:vocab_end]
+                logits_chunk = hidden_chunk @ weight_chunk.t()
+                scaled_logits = logits_chunk.to(torch.float32)
+                scaled_logits = softcap * torch.tanh(scaled_logits / softcap)
+                scaled_logits = scaled_logits * inv_t_chunk
 
-            # Apply final logit softcapping (Gemma2/3) before temperature
-            logits_f = softcap * torch.tanh(logits_f / softcap)
-            logits_f = logits_f * inv_t_broadcast  # [N, C] fp32
+                m, s, t = _online_logsumexp_and_weighted_update(m, s, t, scaled_logits)
 
-            # Shared intermediates for logZ and entropy stats.
-            m, s, t = _online_logsumexp_and_weighted_update(m, s, t, logits_f)
+                mask = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
+                if torch.any(mask):
+                    idx = (labels_chunk[mask] - vocab_start).to(torch.long)
+                    target_logits[mask] = scaled_logits[mask, idx]
 
-            # Fill target logits for labels that fall in this chunk.
-            mask = (labels >= start) & (labels < end)
-            if torch.any(mask):
-                idx = (labels[mask] - start).to(torch.long)
-                target_logits[mask] = logits_f[mask, idx]
+            logz_chunk = m + torch.log(s)
+            logz[start:end] = logz_chunk
+            logprobs[start:end] = target_logits - logz_chunk
+            entropy[start:end] = logz_chunk - (t / s)
 
-        logz = m + torch.log(s)
-        logprobs = target_logits - logz
-        entropy = logz - (t / s)
-
-        # Save for backward (recompute logits per chunk for grad)
-        ctx.save_for_backward(hidden, weight, labels, logz)
-        ctx.inv_temperature = inv_temperature
+        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz)
         ctx.chunk_size = chunk_size
         ctx.softcap = softcap
 
-        # Return fp32 for numerical stability (matching baseline behavior).
         return logprobs, entropy
 
     @staticmethod
@@ -130,52 +129,45 @@ class _GemmaChunkedLogProbEntropyFn(torch.autograd.Function):
             "Backward through entropy is not implemented in GemmaFusedOutputLinear"
         )
 
-        hidden, weight, labels, logz = ctx.saved_tensors
-        inv_temperature: torch.Tensor = ctx.inv_temperature  # [N]
+        hidden, weight, labels, inv_temperature, logz = ctx.saved_tensors
         chunk_size: int = ctx.chunk_size
         softcap: float = ctx.softcap
 
-        n, h = hidden.shape
+        n, _ = hidden.shape
         vocab = weight.shape[0]
+        vocab_chunk_size = min(vocab, 8192)
 
         grad_hidden = torch.zeros_like(hidden)
         grad_weight = torch.zeros_like(weight)
 
-        g = grad_logprobs.to(torch.float32)  # [N] fp32 for stable scaling
+        for start in range(0, n, chunk_size):
+            end = min(start + chunk_size, n)
+            hidden_chunk = hidden[start:end]
+            labels_chunk = labels[start:end]
+            grad_chunk = grad_logprobs[start:end].to(torch.float32)
+            inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
+            logz_chunk = logz[start:end]
 
-        inv_t_broadcast = inv_temperature.unsqueeze(-1)  # [N, 1]
+            for vocab_start in range(0, vocab, vocab_chunk_size):
+                vocab_end = min(vocab_start + vocab_chunk_size, vocab)
+                weight_chunk = weight[vocab_start:vocab_end]
+                logits_chunk = hidden_chunk @ weight_chunk.t()
+                logits_f = logits_chunk.to(torch.float32)
+                tanh_val = torch.tanh(logits_f / softcap)
+                scaled_logits = softcap * tanh_val
+                scaled_logits = scaled_logits * inv_t_chunk
+                probs = torch.exp(scaled_logits - logz_chunk.unsqueeze(-1))
 
-        for start in range(0, vocab, chunk_size):
-            end = min(start + chunk_size, vocab)
-            w_chunk = weight[start:end]  # [C, H]
+                grad_logits = (-grad_chunk).unsqueeze(-1) * probs
+                mask = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
+                if torch.any(mask):
+                    idx = (labels_chunk[mask] - vocab_start).to(torch.long)
+                    grad_logits[mask, idx] += grad_chunk[mask]
+                grad_logits = grad_logits * inv_t_chunk
+                grad_logits = grad_logits * (1 - tanh_val**2)
 
-            logits = hidden @ w_chunk.t()  # [N, C] (model dtype)
-            logits_f = logits.to(torch.float32)  # [N, C] fp32
-
-            # Apply final logit softcapping (Gemma2/3) before temperature
-            tanh_val = torch.tanh(logits_f / softcap)
-            logits_f = softcap * tanh_val
-            logits_f = logits_f * inv_t_broadcast  # [N, C] fp32
-
-            # p = softmax(logits_f) chunk = exp(logits_f - logz)
-            p = torch.exp(logits_f - logz.unsqueeze(-1))  # [N, C] fp32
-
-            # dL/dlogits = g * (1_{label} - p)
-            grad_logits = (-g).unsqueeze(-1) * p  # [N, C] fp32
-            mask = (labels >= start) & (labels < end)
-            if torch.any(mask):
-                idx = (labels[mask] - start).to(torch.long)
-                grad_logits[mask, idx] += g[mask]
-
-            # Chain through temperature scaling
-            grad_logits = grad_logits * inv_t_broadcast
-
-            # Chain through softcapping: d/dx[c*tanh(x/c)] = 1 - tanh^2(x/c)
-            grad_logits = grad_logits * (1 - tanh_val**2)
-
-            grad_hidden.add_(grad_logits.to(hidden.dtype) @ w_chunk)
-            grad_w_chunk = grad_logits.to(weight.dtype).t() @ hidden  # [C, H]
-            grad_weight[start:end].add_(grad_w_chunk)
+                grad_hidden[start:end].add_(grad_logits.to(hidden.dtype) @ weight_chunk)
+                grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
 
         return grad_hidden, grad_weight, None, None, None, None
 

@@ -201,8 +201,27 @@ def monkey_patch_tokenize_params_validation():
                 )
         return text
 
+    def _patched_get_encode_kwargs(self):
+        """Use max_total_tokens (max_model_len) instead of max_input_tokens for HF tokenizer truncation.
+
+        The original uses max_input_tokens (= max_model_len - max_tokens) + 1, which causes HuggingFace's
+        tokenizer.encode() to left-truncate prompts before _token_len_check even runs.
+        """
+        max_length = self.truncate_prompt_tokens
+        if max_length is not None and max_length < 0:
+            max_length = self.max_total_tokens
+        elif max_length is None and self.max_total_tokens is not None:
+            max_length = self.max_total_tokens + 1
+
+        return dict(
+            truncation=max_length is not None,
+            max_length=max_length,
+            add_special_tokens=self.add_special_tokens,
+        )
+
     TokenizeParams._token_len_check = _patched_token_len_check
     TokenizeParams._text_len_check = _patched_text_len_check
+    TokenizeParams.get_encode_kwargs = _patched_get_encode_kwargs
 
 
 def monkey_patch_hermes_tool_parser_thread_safety():
@@ -270,6 +289,42 @@ def monkey_patch_hermes_tool_parser_thread_safety():
             }
 
     Hermes2ProToolParser.__init__ = _patched_init
+
+
+def monkey_patch_tokenizer_thread_safety():
+    """Patch HuggingFace tokenizer to make _encode_plus thread-safe.
+
+    Under concurrent request load, vLLM's API server calls _encode_plus from
+    multiple async handlers simultaneously. _encode_plus mutates the Rust
+    tokenizer's internal state via set_truncation_and_padding (enable_truncation/
+    enable_padding) and encode_special_tokens. The Rust backend uses RefCell-style
+    borrow tracking (PyO3), and concurrent mutable borrows cause it to panic
+    with ``RuntimeError: Already borrowed``.
+
+    Fix: wrap the entire _encode_plus method in a per-tokenizer threading lock
+    so that state mutation and the subsequent encode call are atomic.
+    """
+    import threading
+
+    from transformers import PreTrainedTokenizerFast
+
+    _original_encode_plus = PreTrainedTokenizerFast._encode_plus
+    _locks: dict[int, threading.Lock] = {}
+    _meta_lock = threading.Lock()
+
+    def _get_lock(tokenizer_id: int) -> threading.Lock:
+        if tokenizer_id not in _locks:
+            with _meta_lock:
+                if tokenizer_id not in _locks:
+                    _locks[tokenizer_id] = threading.Lock()
+        return _locks[tokenizer_id]
+
+    def _patched_encode_plus(self, *args, **kwargs):
+        lock = _get_lock(id(self._tokenizer))
+        with lock:
+            return _original_encode_plus(self, *args, **kwargs)
+
+    PreTrainedTokenizerFast._encode_plus = _patched_encode_plus
 
 
 def monkey_patch_minimax_m2_for_lora():

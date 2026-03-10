@@ -1,7 +1,7 @@
 #inspired from https://github.com/astral-sh/uv-docker-example/blob/main/multistage.Dockerfile
 
-# Build stage
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel AS builder
+# Build stage - multi-arch base (supports amd64 + arm64)
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS builder
 LABEL maintainer="prime intellect"
 LABEL repository="prime-rl"
 
@@ -12,12 +12,22 @@ RUN echo "LC_ALL=en_US.UTF-8" >> /etc/environment
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 
-# Install packages
+# Install packages (including Python 3.12 and ninja for fast CUDA kernel compilation)
+ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
 RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
     build-essential \
     curl \
     sudo \
     git \
+    ninja-build \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends python3.12 python3.12-dev python3.12-venv \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python \
     && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Download the latest installer
@@ -44,6 +54,11 @@ COPY benchmarks/scripts /app/benchmarks/scripts
 
 RUN --mount=type=cache,target=/app/.cache/uv \
     uv sync --all-extras --locked --no-dev
+
+# arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
+ARG TARGETARCH
+COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
+RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
 
 FROM python:3.12-slim
 

@@ -254,6 +254,11 @@ def get_model(
         )
         model_config.pad_token_id = pad_token_id
 
+    # Some HF configs (e.g. Llama 3.2) set pad_token_id to a list, which crashes
+    # transformers' GenerationConfig.validate() when it does `pad_token_id < 0`.
+    if isinstance(getattr(model_config, "pad_token_id", None), list):
+        model_config.pad_token_id = model_config.pad_token_id[0]
+
     # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
     # The model should load in its default dtype (bf16) to match vLLM inference.
     # The FSDP MixedPrecisionPolicy handles compute dtype separately.
@@ -693,7 +698,10 @@ def _register_fa4_attention_interface() -> None:
 
 
 def setup_model(
-    config: ModelConfig, parallel_dims: ParallelDims, loading_from_checkpoint_later: bool = False
+    config: ModelConfig,
+    parallel_dims: ParallelDims,
+    loading_from_checkpoint_later: bool = False,
+    fused_cross_entropy: bool = False,
 ) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
@@ -722,10 +730,10 @@ def setup_model(
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
     lm_head_chunk_size: int | None = None
-    if isinstance(config.fused_lm_head_chunk_size, int):
-        lm_head_chunk_size = config.fused_lm_head_chunk_size
+    if isinstance(config.fused_lm_head_token_chunk_size, int):
+        lm_head_chunk_size = config.fused_lm_head_token_chunk_size
 
-    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
+    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:
