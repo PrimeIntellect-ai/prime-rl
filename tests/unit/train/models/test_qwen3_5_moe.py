@@ -50,7 +50,7 @@ def test_qwen3_5_moe():
 
     with torch.device("cuda"), default_dtype(torch.float32):
         input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
-        position_ids = torch.arange(1, 101).unsqueeze(0)
+        position_ids = torch.arange(0, 100).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids=position_ids)
     prime_output = prime_model(input_ids, position_ids=position_ids)
@@ -96,7 +96,7 @@ def test_qwen3_5_moe_router_replay():
 
     with torch.device("cuda"), default_dtype(torch.float32):
         input_ids = torch.randint(0, prime_model.config.vocab_size, (1, 100))
-        position_ids = torch.arange(1, 101).unsqueeze(0)
+        position_ids = torch.arange(0, 100).unsqueeze(0)
 
     out_normal = prime_model(input_ids, position_ids=position_ids)
 
