@@ -147,34 +147,44 @@ class Scheduler:
         count = len(self.inflight_requests)
         await safe_cancel_all(list(self.inflight_requests))
         self.inflight_requests.clear()
-        self.inflight_request_counts.clear()
+        self._ensure_inflight_request_counts().clear()
         self.groups.clear()
         self.cancelled_rollouts_count += count
 
     @staticmethod
     def _client_identity(c: vf.ClientConfig) -> tuple[str, str | None]:
-        return (c.api_base_url, c.extra_headers.get("X-data-parallel-rank"))
+        headers = getattr(c, "extra_headers", None) or {}
+        return (c.api_base_url, headers.get("X-data-parallel-rank"))
+
+    def _ensure_inflight_request_counts(self) -> Counter[ClientIdentity]:
+        counts = getattr(self, "inflight_request_counts", None)
+        if counts is None:
+            counts = Counter(self._client_identity(info.client_config) for info in self.inflight_requests.values())
+            self.inflight_request_counts = counts
+        return counts
 
     def _track_inflight_request(self, task: asyncio.Task, info: InflightRolloutInfo) -> None:
+        inflight_request_counts = self._ensure_inflight_request_counts()
         old_info = self.inflight_requests.get(task)
         if old_info is not None:
             old_identity = self._client_identity(old_info.client_config)
-            self.inflight_request_counts[old_identity] -= 1
-            if self.inflight_request_counts[old_identity] == 0:
-                del self.inflight_request_counts[old_identity]
+            inflight_request_counts[old_identity] -= 1
+            if inflight_request_counts[old_identity] == 0:
+                del inflight_request_counts[old_identity]
 
         self.inflight_requests[task] = info
-        self.inflight_request_counts[self._client_identity(info.client_config)] += 1
+        inflight_request_counts[self._client_identity(info.client_config)] += 1
 
     def _pop_inflight_request(self, task: asyncio.Task) -> InflightRolloutInfo | None:
+        inflight_request_counts = self._ensure_inflight_request_counts()
         info = self.inflight_requests.pop(task, None)
         if info is None:
             return None
 
         identity = self._client_identity(info.client_config)
-        self.inflight_request_counts[identity] -= 1
-        if self.inflight_request_counts[identity] == 0:
-            del self.inflight_request_counts[identity]
+        inflight_request_counts[identity] -= 1
+        if inflight_request_counts[identity] == 0:
+            del inflight_request_counts[identity]
         return info
 
     async def _select_least_loaded_client(self) -> vf.ClientConfig:
@@ -187,7 +197,8 @@ class Scheduler:
         while not clients:
             await asyncio.sleep(1)
             clients = self.inference_pool.clients
-        return min(clients, key=lambda c: self.inflight_request_counts[self._client_identity(c)])
+        inflight_request_counts = self._ensure_inflight_request_counts()
+        return min(clients, key=lambda c: inflight_request_counts[self._client_identity(c)])
 
     async def drop_group(self, group_id: int) -> int:
         """Drop a group and cancel any remaining in-flight rollouts for it."""

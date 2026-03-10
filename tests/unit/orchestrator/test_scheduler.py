@@ -1,5 +1,4 @@
 import asyncio
-from collections import Counter
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -12,29 +11,23 @@ def test_update_off_policy_does_not_increment_interleaved_on_policy_tasks():
         scheduler.max_off_policy_steps = 1
         scheduler.cancelled_rollouts_count = 0
         scheduler.logger = MagicMock()
-        scheduler.inflight_request_counts = Counter()
 
-        client = SimpleNamespace(api_base_url="http://test", extra_headers={})
+        client = SimpleNamespace(api_base_url="http://test")
         stale_task = asyncio.create_task(asyncio.sleep(60))
         survivor_task = asyncio.create_task(asyncio.sleep(60))
         interleaved_task = None
 
-        scheduler.inflight_requests = {}
-        scheduler._track_inflight_request(
-            stale_task,
-            InflightRolloutInfo(off_policy_steps=1, client_config=client, group_id=1),
-        )
-        scheduler._track_inflight_request(
-            survivor_task,
-            InflightRolloutInfo(off_policy_steps=0, client_config=client, group_id=2),
-        )
+        scheduler.inflight_requests = {
+            stale_task: InflightRolloutInfo(off_policy_steps=1, client_config=client, group_id=1),
+            survivor_task: InflightRolloutInfo(off_policy_steps=0, client_config=client, group_id=2),
+        }
 
         async def drop_group(group_id: int) -> int:
             tasks_to_remove = [
                 task for task, info in list(scheduler.inflight_requests.items()) if info.group_id == group_id
             ]
             for task in tasks_to_remove:
-                scheduler._pop_inflight_request(task)
+                scheduler.inflight_requests.pop(task, None)
                 task.cancel()
 
             await asyncio.sleep(0)
@@ -42,13 +35,10 @@ def test_update_off_policy_does_not_increment_interleaved_on_policy_tasks():
             nonlocal interleaved_task
             if interleaved_task is None:
                 interleaved_task = asyncio.create_task(asyncio.sleep(60))
-                scheduler._track_inflight_request(
-                    interleaved_task,
-                    InflightRolloutInfo(
-                        off_policy_steps=0,
-                        client_config=client,
-                        group_id=3,
-                    ),
+                scheduler.inflight_requests[interleaved_task] = InflightRolloutInfo(
+                    off_policy_steps=0,
+                    client_config=client,
+                    group_id=3,
                 )
             return len(tasks_to_remove)
 
