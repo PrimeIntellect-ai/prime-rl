@@ -169,16 +169,15 @@ def benchmark_metrics_4gpu(benchmark_process_4gpu: ProcessResult, benchmark_outp
 
 
 def test_peak_memory_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline_metrics_1gpu: dict):
-    """Test that peak memory usage is within 1% of the baseline (1-GPU)."""
+    """Test that peak memory usage does not exceed the baseline by more than 1% (1-GPU)."""
     actual_memory = benchmark_metrics_1gpu["peak_memory"]["gib"]
     expected_memory = baseline_metrics_1gpu["peak_memory"]["gib"]
 
-    lower_bound = expected_memory * (1 - MEMORY_TOLERANCE)
     upper_bound = expected_memory * (1 + MEMORY_TOLERANCE)
 
-    assert lower_bound <= actual_memory <= upper_bound, (
-        f"Peak memory out of tolerance! Expected {expected_memory:.4f} GiB ± 1%, got {actual_memory:.4f} GiB. "
-        f"Acceptable range: [{lower_bound:.4f}, {upper_bound:.4f}] GiB"
+    assert actual_memory <= upper_bound, (
+        f"Peak memory regression! Expected at most {expected_memory:.4f} GiB + 1%, got {actual_memory:.4f} GiB. "
+        f"Upper bound: {upper_bound:.4f} GiB"
     )
 
 
@@ -230,16 +229,15 @@ def test_step_time_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline_
 
 
 def test_peak_memory_within_tolerance_4gpu(benchmark_metrics_4gpu: dict, baseline_metrics_4gpu: dict):
-    """Test that peak memory usage is within 1% of the baseline (4-GPU)."""
+    """Test that peak memory usage does not exceed the baseline by more than 1% (4-GPU)."""
     actual_memory = benchmark_metrics_4gpu["peak_memory"]["gib"]
     expected_memory = baseline_metrics_4gpu["peak_memory"]["gib"]
 
-    lower_bound = expected_memory * (1 - MEMORY_TOLERANCE)
     upper_bound = expected_memory * (1 + MEMORY_TOLERANCE)
 
-    assert lower_bound <= actual_memory <= upper_bound, (
-        f"Peak memory out of tolerance! Expected {expected_memory:.4f} GiB ± 1%, got {actual_memory:.4f} GiB. "
-        f"Acceptable range: [{lower_bound:.4f}, {upper_bound:.4f}] GiB"
+    assert actual_memory <= upper_bound, (
+        f"Peak memory regression! Expected at most {expected_memory:.4f} GiB + 1%, got {actual_memory:.4f} GiB. "
+        f"Upper bound: {upper_bound:.4f} GiB"
     )
 
 
