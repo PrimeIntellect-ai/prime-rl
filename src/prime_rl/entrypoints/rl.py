@@ -388,8 +388,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             gpus_per_node=config.deployment.gpus_per_node,
         )
     else:
-        assert config.inference is not None
-
         script = template.render(
             **config.slurm.template_vars,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
@@ -399,9 +397,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_infer_nodes=config.deployment.num_infer_nodes,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
-            inference_tp=config.inference.parallel.tp,
-            inference_enable_expert_parallel=config.inference.enable_expert_parallel,
-            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            inference_tp=config.inference.parallel.tp if config.inference else 1,
+            inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
+            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
         )
 
@@ -431,12 +429,11 @@ def rl_slurm(config: RLConfig):
         logger.info(f"Wrote subconfigs to {config_dir}")
 
         slurm_log_dir = config.output_dir / "slurm"
-        log_message = (
-            f"Logs:\n"
-            f"  Trainer:       tail -F {slurm_log_dir}/latest_train_node_rank_0.log\n"
-            f"  Orchestrator:  tail -F {slurm_log_dir}/latest_orchestrator.log\n"
-            f"  Inference:     tail -F {slurm_log_dir}/latest_infer_node_rank_0.log"
-        )
+        log_lines = [f"  Trainer:       tail -F {slurm_log_dir}/latest_train_node_rank_0.log"]
+        if config.deployment.num_infer_nodes > 0:
+            log_lines.append(f"  Orchestrator:  tail -F {slurm_log_dir}/latest_orchestrator.log")
+            log_lines.append(f"  Inference:     tail -F {slurm_log_dir}/latest_infer_node_rank_0.log")
+        log_message = "Logs:\n" + "\n".join(log_lines)
 
     script_path = config.output_dir / RL_SBATCH
     write_slurm_script(config, config_dir, script_path)

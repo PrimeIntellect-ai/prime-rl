@@ -152,7 +152,13 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["multi_node"] = "multi_node"
 
     num_train_nodes: Annotated[int, Field(description="Number of training nodes.")]
-    num_infer_nodes: Annotated[int, Field(description="Number of inference nodes.")]
+    num_infer_nodes: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Number of inference nodes. Set to 0 to skip inference and orchestrator (requires fake data).",
+        ),
+    ]
     num_teacher_nodes: Annotated[int | None, Field(description="Number of teacher inference nodes.")] = None
 
     nodes_per_fsdp_group: Annotated[
@@ -291,8 +297,18 @@ class RLConfig(BaseConfig):
         if self.deployment.type == "multi_node":
             if self.slurm is None:
                 raise ValueError("Must use SLURM for multi-node deployment.")
-            if not self.inference:
-                raise ValueError("Must configure inference when using multi-node deployment.")
+            if self.deployment.num_infer_nodes > 0 and not self.inference:
+                raise ValueError("Must configure inference when using multi-node deployment with inference nodes.")
+            if self.deployment.num_infer_nodes == 0 and self.inference:
+                raise ValueError(
+                    "Cannot configure inference with num_infer_nodes = 0. "
+                    "Either set num_infer_nodes > 0 or remove the inference config."
+                )
+            if self.deployment.num_infer_nodes == 0 and not self.trainer.data.fake and not self.bench:
+                raise ValueError(
+                    "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
+                    "since no orchestrator or inference server will be running."
+                )
         return self
 
     # TODO: fix this

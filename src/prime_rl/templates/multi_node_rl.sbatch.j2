@@ -25,6 +25,7 @@
 export NUM_TRAIN_NODES={{ num_train_nodes }}
 export NUM_INFER_NODES={{ num_infer_nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
+{% if num_infer_nodes > 0 -%}
 export INFERENCE_TP={{ inference_tp }}
 export INFERENCE_ENABLE_EXPERT_PARALLEL={{ "1" if inference_enable_expert_parallel else "0" }}
 export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
@@ -35,6 +36,7 @@ export USE_DISTRIBUTED_EP=0
 if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$NUM_INFER_NODES" -gt 1 ]; then
     USE_DISTRIBUTED_EP=1
 fi
+{%- endif %}
 
 # Paths
 export PROJECT_DIR={{ project_dir }}
@@ -57,10 +59,12 @@ export OMP_NUM_THREADS=1
 
 # Networking
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
-INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
 TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$SLURM_JOB_NUM_NODES} )
-export INFER_HEAD_HOST="${INFER_HOSTS[0]}"
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
+
+{% if num_infer_nodes > 0 -%}
+INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
+export INFER_HEAD_HOST="${INFER_HOSTS[0]}"
 
 INFER_URLS=""
 if [ "$USE_DISTRIBUTED_EP" -eq 1 ]; then
@@ -75,11 +79,13 @@ else
     done
 fi
 export INFER_URLS
-echo "HOSTNAMES=${HOSTNAMES[*]}"
-echo "TRAIN_HOSTS=${TRAIN_HOSTS[*]}"
 echo "INFER_HOSTS=${INFER_HOSTS[*]}"
 echo "INFER_URLS=${INFER_URLS}"
 echo "USE_DISTRIBUTED_EP=${USE_DISTRIBUTED_EP}"
+{%- endif %}
+
+echo "HOSTNAMES=${HOSTNAMES[*]}"
+echo "TRAIN_HOSTS=${TRAIN_HOSTS[*]}"
 
 export MASTER_ADDR="${HOSTNAMES[$NUM_INFER_NODES]}"
 export MASTER_PORT=29500
@@ -113,6 +119,7 @@ srun bash -c '
     IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
     export NCCL_IB_HCA=$IB_HCA
 
+{% if num_infer_nodes > 0 -%}
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     INFER_NODE_RANK=$SLURM_PROCID
@@ -151,6 +158,9 @@ else
         {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log &
     fi
+{%- else %}
+    TRAIN_NODE_RANK=$SLURM_PROCID
+{%- endif %}
 
     export HF_HUB_OFFLINE=1
 
@@ -172,5 +182,5 @@ else
         -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.toml \
         2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${TRAIN_NODE_RANK}.log
-    fi
+{% if num_infer_nodes > 0 %}    fi{% endif %}
 '
