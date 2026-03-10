@@ -141,11 +141,13 @@ class VLLMConfig(BaseConfig):
 
     # --- LoRA ---
 
-    enable_lora: Annotated[bool | None, Field(description="Whether to enable LoRA.")] = None
+    enable_lora: Annotated[bool, Field(description="Whether to enable LoRA.")] = False
 
-    max_loras: Annotated[int | None, Field(description="The maximum number of LoRAs to use.")] = None
+    max_loras: Annotated[int, Field(description="The maximum number of LoRAs to use.")] = DEFAULT_MAX_LORAS
 
-    max_cpu_loras: Annotated[int | None, Field(description="The maximum number of LoRAs to use on CPU.")] = None
+    max_cpu_loras: Annotated[int, Field(description="The maximum number of LoRAs to use on CPU.")] = (
+        DEFAULT_MAX_CPU_LORAS
+    )
 
     max_lora_rank: Annotated[int | None, Field(description="The maximum LoRA rank to use.")] = None
 
@@ -170,33 +172,16 @@ class VLLMConfig(BaseConfig):
     api_server_count: Annotated[int, Field(description="The number of API servers to use.")] = 1
 
     @model_validator(mode="after")
-    def auto_setup_max_lora(self):
-        """Auto-setup LoRA settings:
-        - Max. 8 LoRAs
-        - Max. 100 LoRAs on CPU
-        - Rounding up max_lora_rank to the nearest valid vLLM value.
-        """
-        if self.enable_lora:
-            # setup max_loras
-            if self.max_loras is None:
-                self.max_loras = DEFAULT_MAX_LORAS
-
-            # setup max_lora_rank
-            if self.max_lora_rank is not None:
-                original_rank = self.max_lora_rank
-                for valid_rank in VALID_VLLM_LORA_RANKS:
-                    if valid_rank >= self.max_lora_rank:
-                        self.max_lora_rank = valid_rank
-                        break
-                else:
-                    raise ValueError(
-                        f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}"
-                    )
-
-            # setup max_cpu_loras
-            if self.max_cpu_loras is None:
-                self.max_cpu_loras = DEFAULT_MAX_CPU_LORAS
-
+    def auto_setup_max_lora_rank(self):
+        """Round up max_lora_rank to the nearest valid vLLM value."""
+        if self.max_lora_rank is not None:
+            original_rank = self.max_lora_rank
+            for valid_rank in VALID_VLLM_LORA_RANKS:
+                if valid_rank >= self.max_lora_rank:
+                    self.max_lora_rank = valid_rank
+                    break
+            else:
+                raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
         return self
 
     @model_validator(mode="after")
