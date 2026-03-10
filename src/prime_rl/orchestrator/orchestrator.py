@@ -496,8 +496,7 @@ async def orchestrate(config: OrchestratorConfig):
             num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
             if num_offloaded:
                 logger.info(
-                    f"VLM offloaded {num_offloaded} unique images to disk in "
-                    f"{time.perf_counter() - offload_start:.2f}s"
+                    f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
                 )
 
         # Apply rollout filters (zeros reward/mask for degenerate generations)

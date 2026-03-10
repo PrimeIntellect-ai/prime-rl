@@ -108,14 +108,16 @@ def generate_rollouts(num_rollouts, num_turns, screen_width, screen_height):
             }
             trajectory.append(step)
 
-        rollouts.append({
-            "trajectory": trajectory,
-            "example_id": i,
-            "reward": 1.0,
-            "error": None,
-            "task": "tic_tac_toe",
-            "sampling_args": {"temperature": 1.0},
-        })
+        rollouts.append(
+            {
+                "trajectory": trajectory,
+                "example_id": i,
+                "reward": 1.0,
+                "error": None,
+                "task": "tic_tac_toe",
+                "sampling_args": {"temperature": 1.0},
+            }
+        )
 
     del screenshot_pool
     return rollouts
@@ -124,6 +126,7 @@ def generate_rollouts(num_rollouts, num_turns, screen_width, screen_height):
 def simulate_zmq(rollouts):
     """Simulate ZMQ msgpack roundtrip — creates fresh string objects for everything."""
     import msgpack
+
     packed = msgpack.packb(rollouts, use_bin_type=True)
     payload_mb = len(packed) / 1024 / 1024
     result = msgpack.unpackb(packed, raw=False)
@@ -156,9 +159,9 @@ def count_images(rollouts):
 
 def run_test(label, num_rollouts, num_turns, screen_width, screen_height, use_offload, simulate_zmq_roundtrip):
     """Run a single test: generate rollouts, optionally offload, measure memory."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {label}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # Pre-import heavy deps so their memory is in the baseline
     if use_offload:
@@ -242,26 +245,37 @@ def main():
     if args._run_single:
         use_offload = args._run_single == "offload"
         label = "WITH disk offloading" if use_offload else "WITHOUT disk offloading (current behavior)"
-        run_test(label, args.num_rollouts, args.num_turns,
-                 args.screen_width, args.screen_height, use_offload, use_zmq)
+        run_test(label, args.num_rollouts, args.num_turns, args.screen_width, args.screen_height, use_offload, use_zmq)
         return
 
     print("=== VLM Memory Benchmark ===")
-    print(f"Config: {args.num_rollouts} rollouts, {args.num_turns} turns, "
-          f"{args.screen_width}x{args.screen_height}, ZMQ={'off' if args.no_zmq else 'on'}")
+    print(
+        f"Config: {args.num_rollouts} rollouts, {args.num_turns} turns, "
+        f"{args.screen_width}x{args.screen_height}, ZMQ={'off' if args.no_zmq else 'on'}"
+    )
 
     # Run each test in a subprocess for clean memory isolation
     def run_isolated(label, use_offload):
         env = dict(os.environ)
         result = subprocess.run(
-            [sys.executable, __file__,
-             "--num-rollouts", str(args.num_rollouts),
-             "--num-turns", str(args.num_turns),
-             "--screen-width", str(args.screen_width),
-             "--screen-height", str(args.screen_height),
-             *(["--no-zmq"] if args.no_zmq else []),
-             "--_run-single", "offload" if use_offload else "no-offload"],
-            capture_output=True, text=True, env=env,
+            [
+                sys.executable,
+                __file__,
+                "--num-rollouts",
+                str(args.num_rollouts),
+                "--num-turns",
+                str(args.num_turns),
+                "--screen-width",
+                str(args.screen_width),
+                "--screen-height",
+                str(args.screen_height),
+                *(["--no-zmq"] if args.no_zmq else []),
+                "--_run-single",
+                "offload" if use_offload else "no-offload",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
         )
         print(result.stdout, end="")
         if result.stderr:
@@ -278,9 +292,9 @@ def main():
     with_offload = run_isolated("WITH", True)
 
     # Summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  SUMMARY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  WITHOUT offload: +{no_offload:.1f} MB")
     print(f"  WITH offload:    +{with_offload:.1f} MB")
     if no_offload > 0:
