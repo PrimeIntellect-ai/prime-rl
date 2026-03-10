@@ -24,8 +24,6 @@ from prime_rl.utils.utils import (
     wait_for_path,
 )
 
-type ClientIdentity = tuple[str, str | None]
-
 
 class InflightRolloutInfo(NamedTuple):
     """Metadata for an in-flight request."""
@@ -147,7 +145,7 @@ class Scheduler:
         count = len(self.inflight_requests)
         await safe_cancel_all(list(self.inflight_requests))
         self.inflight_requests.clear()
-        self._ensure_inflight_request_counts().clear()
+        self._inflight_request_counts.clear()
         self.groups.clear()
         self.cancelled_rollouts_count += count
 
@@ -156,35 +154,27 @@ class Scheduler:
         headers = getattr(c, "extra_headers", None) or {}
         return (c.api_base_url, headers.get("X-data-parallel-rank"))
 
-    def _ensure_inflight_request_counts(self) -> Counter[ClientIdentity]:
+    @property
+    def _inflight_request_counts(self) -> Counter[tuple[str, str | None]]:
         counts = getattr(self, "inflight_request_counts", None)
         if counts is None:
             counts = Counter(self._client_identity(info.client_config) for info in self.inflight_requests.values())
             self.inflight_request_counts = counts
         return counts
 
-    def _track_inflight_request(self, task: asyncio.Task, info: InflightRolloutInfo) -> None:
-        inflight_request_counts = self._ensure_inflight_request_counts()
+    def _set_inflight_request(self, task: asyncio.Task, info: InflightRolloutInfo) -> None:
         old_info = self.inflight_requests.get(task)
         if old_info is not None:
-            old_identity = self._client_identity(old_info.client_config)
-            inflight_request_counts[old_identity] -= 1
-            if inflight_request_counts[old_identity] == 0:
-                del inflight_request_counts[old_identity]
-
+            self._inflight_request_counts[self._client_identity(old_info.client_config)] -= 1
         self.inflight_requests[task] = info
-        inflight_request_counts[self._client_identity(info.client_config)] += 1
+        self._inflight_request_counts[self._client_identity(info.client_config)] += 1
 
     def _pop_inflight_request(self, task: asyncio.Task) -> InflightRolloutInfo | None:
-        inflight_request_counts = self._ensure_inflight_request_counts()
         info = self.inflight_requests.pop(task, None)
         if info is None:
             return None
 
-        identity = self._client_identity(info.client_config)
-        inflight_request_counts[identity] -= 1
-        if inflight_request_counts[identity] == 0:
-            del inflight_request_counts[identity]
+        self._inflight_request_counts[self._client_identity(info.client_config)] -= 1
         return info
 
     async def _select_least_loaded_client(self) -> vf.ClientConfig:
@@ -197,8 +187,7 @@ class Scheduler:
         while not clients:
             await asyncio.sleep(1)
             clients = self.inference_pool.clients
-        inflight_request_counts = self._ensure_inflight_request_counts()
-        return min(clients, key=lambda c: inflight_request_counts[self._client_identity(c)])
+        return min(clients, key=lambda c: self._inflight_request_counts[self._client_identity(c)])
 
     async def drop_group(self, group_id: int) -> int:
         """Drop a group and cancel any remaining in-flight rollouts for it."""
@@ -237,10 +226,12 @@ class Scheduler:
                 max_retries=0,  # TODO: make configurable
             )
         )
-        self._track_inflight_request(
+        self._set_inflight_request(
             run_rollout_task,
             InflightRolloutInfo(
-            off_policy_steps=0, client_config=client_config, group_id=group_id
+                off_policy_steps=0,
+                client_config=client_config,
+                group_id=group_id,
             ),
         )
 
@@ -340,7 +331,7 @@ class Scheduler:
             info = self.inflight_requests.get(task)
             if info is None:
                 continue
-            self._track_inflight_request(task, info._replace(off_policy_steps=info.off_policy_steps + 1))
+            self._set_inflight_request(task, info._replace(off_policy_steps=info.off_policy_steps + 1))
 
         self.cancelled_rollouts_count += removed
         if removed:
