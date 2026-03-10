@@ -337,7 +337,9 @@ def train(config: SFTConfig):
         batch_max_vio = torch.tensor(0.0, device="cuda")
         for micro_step, micro_batch in enumerate(micro_batches):
             if config.log.log_data:
-                print_sample(micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer)
+                print_sample(
+                    micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
+                )
 
             with maybe_record_function("forward"):
                 local_loss_sum, local_token_count = compute_loss(micro_batch)
