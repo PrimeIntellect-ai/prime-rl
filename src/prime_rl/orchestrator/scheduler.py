@@ -24,6 +24,8 @@ from prime_rl.utils.utils import (
     wait_for_path,
 )
 
+type ClientIdentity = tuple[str, str | None]
+
 
 class InflightRolloutInfo(NamedTuple):
     """Metadata for an in-flight request."""
@@ -99,6 +101,7 @@ class Scheduler:
 
         # Track in-flight requests: task -> info
         self.inflight_requests: dict[asyncio.Task, InflightRolloutInfo] = {}
+        self.inflight_request_counts: Counter[ClientIdentity] = Counter()
 
         # Track in-progress groups while rollouts are generated independently.
         self.next_group_id = 0
@@ -144,12 +147,35 @@ class Scheduler:
         count = len(self.inflight_requests)
         await safe_cancel_all(list(self.inflight_requests))
         self.inflight_requests.clear()
+        self.inflight_request_counts.clear()
         self.groups.clear()
         self.cancelled_rollouts_count += count
 
     @staticmethod
     def _client_identity(c: vf.ClientConfig) -> tuple[str, str | None]:
         return (c.api_base_url, c.extra_headers.get("X-data-parallel-rank"))
+
+    def _track_inflight_request(self, task: asyncio.Task, info: InflightRolloutInfo) -> None:
+        old_info = self.inflight_requests.get(task)
+        if old_info is not None:
+            old_identity = self._client_identity(old_info.client_config)
+            self.inflight_request_counts[old_identity] -= 1
+            if self.inflight_request_counts[old_identity] == 0:
+                del self.inflight_request_counts[old_identity]
+
+        self.inflight_requests[task] = info
+        self.inflight_request_counts[self._client_identity(info.client_config)] += 1
+
+    def _pop_inflight_request(self, task: asyncio.Task) -> InflightRolloutInfo | None:
+        info = self.inflight_requests.pop(task, None)
+        if info is None:
+            return None
+
+        identity = self._client_identity(info.client_config)
+        self.inflight_request_counts[identity] -= 1
+        if self.inflight_request_counts[identity] == 0:
+            del self.inflight_request_counts[identity]
+        return info
 
     async def _select_least_loaded_client(self) -> vf.ClientConfig:
         """Select the client with the fewest in-flight tasks.
@@ -161,8 +187,7 @@ class Scheduler:
         while not clients:
             await asyncio.sleep(1)
             clients = self.inference_pool.clients
-        inflight = Counter(self._client_identity(info.client_config) for info in self.inflight_requests.values())
-        return min(clients, key=lambda c: inflight[self._client_identity(c)])
+        return min(clients, key=lambda c: self.inflight_request_counts[self._client_identity(c)])
 
     async def drop_group(self, group_id: int) -> int:
         """Drop a group and cancel any remaining in-flight rollouts for it."""
@@ -170,7 +195,7 @@ class Scheduler:
         for task, info in list(self.inflight_requests.items()):
             if info.group_id != group_id:
                 continue
-            self.inflight_requests.pop(task, None)
+            self._pop_inflight_request(task)
             tasks_to_cancel.append(task)
         self.groups.pop(group_id, None)
         await safe_cancel_all(tasks_to_cancel)
@@ -201,8 +226,11 @@ class Scheduler:
                 max_retries=0,  # TODO: make configurable
             )
         )
-        self.inflight_requests[run_rollout_task] = InflightRolloutInfo(
+        self._track_inflight_request(
+            run_rollout_task,
+            InflightRolloutInfo(
             off_policy_steps=0, client_config=client_config, group_id=group_id
+            ),
         )
 
     @property
@@ -301,7 +329,7 @@ class Scheduler:
             info = self.inflight_requests.get(task)
             if info is None:
                 continue
-            self.inflight_requests[task] = info._replace(off_policy_steps=info.off_policy_steps + 1)
+            self._track_inflight_request(task, info._replace(off_policy_steps=info.off_policy_steps + 1))
 
         self.cancelled_rollouts_count += removed
         if removed:
@@ -360,7 +388,7 @@ class Scheduler:
                 if batch_progress >= self.batch_target:
                     break
 
-                rollout_info = self.inflight_requests.pop(finished_task, None)
+                rollout_info = self._pop_inflight_request(finished_task)
                 if rollout_info is None:
                     continue
 
