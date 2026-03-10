@@ -718,7 +718,8 @@ async def orchestrate(config: OrchestratorConfig):
             f"{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} "
             f"Throughput: {throughput:.1f} tokens/s | "
             f"Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | "
-            f"Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+            f"Async Level: {int(scheduler_metrics['batch/async_level'])} | "
+            f"Max. Off-Policy Level: {int(scheduler_metrics['batch/off_policy_level/max'])}"
         )
         logger.success(step_message)
 
@@ -872,10 +873,10 @@ async def orchestrate(config: OrchestratorConfig):
         step_start_time: float,
         temperature: float,
         save_ckpt_time: float,
+        event_loop_lag_marker: int,
     ) -> bool:
         nonlocal empty_batch_retries, inflight_postprocess
 
-        event_loop_lag_marker = event_loop_lag_monitor.mark()
         filter_metrics = apply_filters(rollout_filters, train_rollouts)
         prepared_step = await _prepare_step(
             train_rollouts=train_rollouts,
@@ -919,6 +920,7 @@ async def orchestrate(config: OrchestratorConfig):
         if config.max_steps and progress.step >= config.max_steps:
             break
 
+        event_loop_lag_marker = event_loop_lag_monitor.mark()
         save_ckpt_time = _save_checkpoint_if_needed(iteration)
 
         logger.info(f"Starting orchestrator step {iteration.step}")
@@ -946,6 +948,7 @@ async def orchestrate(config: OrchestratorConfig):
             step_start_time=step_start_time,
             temperature=temperature,
             save_ckpt_time=save_ckpt_time,
+            event_loop_lag_marker=event_loop_lag_marker,
         ):
             continue
 
