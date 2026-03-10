@@ -151,12 +151,6 @@ def test_cli_overrides_toml(tmp_path):
     assert config.nested.weight_decay == 0.01
 
 
-def test_deprecated_fused_lm_head_chunk_size_auto_maps_to_token_chunk_size():
-    config = TrainerModelConfig(fused_lm_head_chunk_size="auto")
-    assert config.fused_lm_head_chunk_size == "auto"
-    assert config.fused_lm_head_token_chunk_size == "auto"
-
-
-def test_deprecated_fused_lm_head_chunk_size_int_raises():
-    with pytest.raises(ValidationError, match="deprecated and no longer accepts integers"):
-        TrainerModelConfig(fused_lm_head_chunk_size=1024)
+def test_removed_fused_lm_head_chunk_size_field_is_rejected():
+    with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
+        TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})

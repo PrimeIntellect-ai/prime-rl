@@ -321,7 +321,6 @@ class SFTConfig(BaseConfig):
             )
 
         self.model.fused_lm_head_token_chunk_size = "disabled"
-        self.model.fused_lm_head_chunk_size = None
         return self
 
     @model_validator(mode="after")

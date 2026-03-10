@@ -269,17 +269,6 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = DebugModelConfig()
 
-    fused_lm_head_chunk_size: Annotated[
-        int | Literal["auto", "disabled"] | None,
-        Field(
-            description=(
-                "Deprecated alias for `fused_lm_head_token_chunk_size`. "
-                "Only `'auto'` and `'disabled'` are supported during migration. "
-                "Integer values now raise an error."
-            ),
-        ),
-    ] = None
-
     fused_lm_head_token_chunk_size: Annotated[
         int | Literal["auto", "disabled"],
         Field(
@@ -298,31 +287,8 @@ class ModelConfig(BaseModelConfig):
     @classmethod
     def _normalize_attn_alias(cls, data):
         """Rewrite user-facing `flash_attention_4` to internal `fa4` before validation."""
-        if isinstance(data, dict):
-            if data.get("attn") in _ATTN_ALIASES:
-                data["attn"] = _ATTN_ALIASES[data["attn"]]
-
-            if "fused_lm_head_chunk_size" in data:
-                old_value = data["fused_lm_head_chunk_size"]
-                if isinstance(old_value, int):
-                    raise ValueError(
-                        "`model.fused_lm_head_chunk_size` is deprecated and no longer accepts integers. "
-                        "Use `model.fused_lm_head_token_chunk_size` for token chunking instead."
-                    )
-
-                if old_value in {"auto", "disabled"}:
-                    logger = get_logger()
-                    if "fused_lm_head_token_chunk_size" not in data:
-                        data["fused_lm_head_token_chunk_size"] = old_value
-                        logger.warning(
-                            "`model.fused_lm_head_chunk_size` is deprecated. "
-                            f"Falling back to `model.fused_lm_head_token_chunk_size={old_value!r}`."
-                        )
-                    else:
-                        logger.warning(
-                            "`model.fused_lm_head_chunk_size` is deprecated and ignored because "
-                            "`model.fused_lm_head_token_chunk_size` is already set."
-                        )
+        if isinstance(data, dict) and data.get("attn") in _ATTN_ALIASES:
+            data["attn"] = _ATTN_ALIASES[data["attn"]]
         return data
 
     @model_validator(mode="after")
