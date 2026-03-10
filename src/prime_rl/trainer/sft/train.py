@@ -223,12 +223,38 @@ def train(config: SFTConfig):
         step_start_time = time.perf_counter()
         forward_backward_start_time = time.perf_counter()
 
+        # Pre-fetch micro-batches and compute the global supervised-token count so that each
+        # backward pass can use the correct normalization factor directly, avoiding a post-hoc
+        # param.grad traversal.
+        micro_batches = []
+        step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        for _ in range(grad_accum_steps):
+            micro_batch = next(dataiter)
+            micro_batches.append(micro_batch)
+            loss_mask = micro_batch["loss_mask"].to("cuda")
+            if cp_enabled:
+                loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+            step_local_token_count += loss_mask.sum(dtype=torch.int64)
+
+        global_step_token_count = step_local_token_count.clone()
+        dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        global_token_count_val = global_step_token_count.item()
+
+        # Scaling factor applied to each micro-step's raw loss sum before backward.  Undoes the
+        # FSDP gradient average and normalises by the global supervised-token count in one shot.
+        # NOTE: global_token_count_val is computed before forward passes, so it includes tokens
+        # from micro-steps that may later produce NaN loss (which are excluded from backward).
+        # This makes the denominator marginally too large on NaN steps — acceptable since NaN
+        # micro-steps are extremely rare and the alternative is a second all-reduce after the loop.
+        if global_token_count_val > 0:
+            loss_scale = parallel_dims.fsdp_gradient_divide_factor / global_token_count_val
+        else:
+            loss_scale = 0.0
+
         step_loss_sum = torch.tensor(0.0, device="cuda")
-        step_token_count = torch.tensor(0, device="cuda")
         nan_loss_count = torch.tensor(0).to("cuda")
         batch_max_vio, max_vio = torch.tensor(0.0).to("cuda"), None
-        for micro_step in range(grad_accum_steps):
-            micro_batch = next(dataiter)
+        for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
@@ -255,20 +281,17 @@ def train(config: SFTConfig):
             logits = out["logits"]
             B, L, V = logits.shape
 
-            # Keep a local loss numerator and token count so the step is normalized by the global
-            # number of supervised tokens instead of an average of local masked means.
             token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
             local_loss_sum = token_loss[loss_mask].sum()
             local_token_count = loss_mask.sum(dtype=torch.int64)
-            safe_local_loss_sum = local_loss_sum
-            safe_local_token_count = local_token_count
+
             if torch.isnan(local_loss_sum.detach()):
                 nan_loss_count += 1
-                logger.warning("Local loss is nan, excluding this micro step from loss accounting and backward")
-                safe_local_loss_sum = torch.zeros_like(local_loss_sum)
-                safe_local_token_count = torch.zeros_like(local_token_count)
-            step_loss_sum += safe_local_loss_sum.detach()
-            step_token_count += safe_local_token_count
+                logger.warning("Local loss is nan, excluding this micro step from backward")
+                scaled_loss = local_loss_sum * 0  # preserve graph so FSDP hooks fire
+            else:
+                step_loss_sum += local_loss_sum.detach()
+                scaled_loss = local_loss_sum * loss_scale
 
             # Delete logits before backward pass to avoid memory spike
             del logits
@@ -276,9 +299,7 @@ def train(config: SFTConfig):
             # Backward pass
             logger.debug("Starting backward pass")
             with maybe_record_function("backward"):
-                # FSDP/HSDP averages grads across dp_replicate * dp_shard * cp, so multiply by
-                # that factor here and normalize once with the global supervised-token count below.
-                (safe_local_loss_sum * parallel_dims.fsdp_gradient_divide_factor).backward()
+                scaled_loss.backward()
 
             if is_tt_moe_model(model):
                 max_vio = get_load_balance_stats(model)["max_vio"]
@@ -298,17 +319,11 @@ def train(config: SFTConfig):
                 micro_step_message += f" | Max Vio: {max_vio.item():.4f}"
             logger.debug(micro_step_message)
 
-        # Aggregate the step-level loss numerator and token count across the ranks that hold
-        # distinct data or context shards, then normalize gradients once to recover a global mean.
-        logger.debug("Synchronizing step loss sums and token counts across dp_cp ranks")
+        # Compute the global mean loss for logging.  step_loss_sum is local (excludes NaN
+        # micro-steps); all-reduce it over the dp_cp group for a consistent logged value.
         dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        global_step_token_count = step_token_count.item()
-        if global_step_token_count > 0:
-            batch_loss = step_loss_sum / global_step_token_count
-            for param in model.parameters():
-                if param.grad is not None:
-                    param.grad.div_(global_step_token_count)
+        if global_token_count_val > 0:
+            batch_loss = step_loss_sum / global_token_count_val
         else:
             batch_loss = torch.tensor(0.0, device="cuda")
             nan_loss_count += 1
