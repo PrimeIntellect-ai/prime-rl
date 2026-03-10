@@ -194,7 +194,13 @@ if [ "$SLURM_PROCID" -lt "$TOTAL_INFER_NODES" ]; then
     fi
 
     # Build vLLM extra args for disaggregated mode
-    VLLM_EXTRA="{\"kv_transfer_config\": {\"kv_connector\": \"NixlConnector\", \"kv_role\": \"$ROLE\", \"kv_parallel_size\": 1}}"
+    # vLLM uses kv_producer/kv_consumer (not prefill/decode)
+    if [ "$ROLE" = "prefill" ]; then
+        KV_ROLE="kv_producer"
+    else
+        KV_ROLE="kv_consumer"
+    fi
+    VLLM_EXTRA="{\"kv_transfer_config\": {\"kv_connector\": \"NixlConnector\", \"kv_role\": \"$KV_ROLE\", \"kv_parallel_size\": 1}}"
 
     uv run inference \
         @ $CONFIG_DIR/inference.toml \
