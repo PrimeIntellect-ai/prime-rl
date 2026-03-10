@@ -246,7 +246,7 @@ def substitute_ring_attn(
     heads_k_stride: int,
     attn_impl: str = "flash_attention_2",
 ) -> None:
-    """Patch _compute_attention on FlashAttention (and AfmoeFlashAttention) to use ring attention."""
+    """Patch _compute_attention on FlashAttention variants to use ring attention."""
     from ring_flash_attn import llama3_flash_attn_varlen_func
 
     from .ring_attn import ring_fa3_varlen_func
@@ -285,3 +285,7 @@ def substitute_ring_attn(
     from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
 
     AfmoeFlashAttention._compute_attention = _ring_compute_attention
+
+    from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeGatedFlashAttention
+
+    Qwen3_5MoeGatedFlashAttention._compute_attention = _ring_compute_attention
