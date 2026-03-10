@@ -347,7 +347,7 @@ def train(config: SFTConfig):
             if torch.isnan(local_loss_sum.detach()):
                 nan_loss_count += 1
                 logger.warning("Local loss is nan, excluding this micro step from backward")
-                scaled_loss = local_loss_sum * 0  # preserve graph so FSDP hooks fire
+                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0)  # zero with grad_fn so FSDP hooks fire
             else:
                 step_loss_sum += local_loss_sum.detach()
                 scaled_loss = local_loss_sum * loss_scale
