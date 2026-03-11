@@ -743,8 +743,26 @@ async def orchestrate(config: OrchestratorConfig):
             "num_turns",
             "generation_ms",
             "scoring_ms",
-            "stop_condition",
         ]
+
+        # Initialize all per-env metrics to 0 so envs missing from a step show as 0 in wandb
+        for env in train_env_names:
+            for col in per_env_columns:
+                to_log[f"{col}/{env}/mean"] = 0
+                to_log[f"{col}/{env}/max"] = 0
+                to_log[f"{col}/{env}/min"] = 0
+            to_log[f"reward/{env}/mean"] = 0
+            to_log[f"reward/{env}/max"] = 0
+            to_log[f"reward/{env}/min"] = 0
+            to_log[f"error/{env}/mean"] = 0
+            to_log[f"solve_none/{env}"] = 0
+            to_log[f"solve_all/{env}"] = 0
+            to_log[f"effective_batch_size/{env}"] = 0
+            to_log[f"batch/{env}"] = 0
+            to_log[f"stop_condition/{env}/generation_truncated"] = 0
+            for metric in metrics_df.columns:
+                to_log[f"metrics/{env}/{metric}"] = 0
+
         for env, env_df in results_df.groupby("task"):
             env_by_example = env_df.groupby("example_id")
             for col in per_env_columns:
@@ -755,6 +773,11 @@ async def orchestrate(config: OrchestratorConfig):
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
             to_log[f"error/{env}/mean"] = env_by_example.error.apply(lambda e: e.notna().mean()).mean()
+            to_log[f"stop_condition/{env}/generation_truncated"] = (
+                env_df.is_truncated & (env_df.stop_condition != "prompt_too_long")
+            ).mean()
+            for sc, rate in env_df.stop_condition.dropna().value_counts(normalize=True).items():
+                to_log[f"stop_condition/{env}/{sc}"] = rate
             env_metrics_df = metrics_df.loc[env_df.index]
             for metric in metrics_df.columns:
                 to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["example_id"])[metric].mean().mean()
