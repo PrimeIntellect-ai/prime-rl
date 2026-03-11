@@ -328,7 +328,7 @@ class InferenceConfig(BaseConfig):
         if self.deployment.type == "disaggregated":
             self.parallel.tp = 1
             self.enable_expert_parallel = True
-            self.enable_eplb = True
+            self.enable_eplb = False
             if self.data_parallel_size_local is None:
                 self.data_parallel_size_local = self.deployment.gpus_per_node
             if self.parallel.dp == 1:
