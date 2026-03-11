@@ -19,11 +19,6 @@ temperature = 1.0
 samples = true
 interval = 1
 
-[orchestrator.actor_models]
-codegen_v1b = "Qwen/Qwen3-4B-Instruct-2507"
-codegen_v4 = "Qwen/Qwen3-4B-Instruct-2507"
-image = "Qwen/Qwen3-VL-4B-Instruct"
-
 [[orchestrator.env]]
 id = "arc-multistrategy"
 name = "arc_multistrategy"
