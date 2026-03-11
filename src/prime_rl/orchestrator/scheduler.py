@@ -113,6 +113,7 @@ class Scheduler:
         self.cancelled_rollouts_count = 0
         self.empty_rollouts_by_task: dict[str, int] = defaultdict(int)
         self.errored_rollouts_by_task: dict[str, int] = defaultdict(int)
+        self.total_rollouts_by_task: dict[str, int] = defaultdict(int)
         self.last_batch_generation_time = 0.0
 
     @property
@@ -375,6 +376,7 @@ class Scheduler:
                     rollout = finished_task.result()
 
                     task = rollout_info.task
+                    self.total_rollouts_by_task[task] += 1
                     should_reschedule = False
                     if len(rollout["trajectory"]) == 0:
                         self.empty_rollouts_by_task[task] += 1
@@ -457,6 +459,7 @@ class Scheduler:
         return self.step - self.ckpt_step
 
     def get_metrics(self) -> dict[str, float]:
+        total_rollouts = sum(self.total_rollouts_by_task.values())
         metrics = {
             "time/wait_for_ckpt": self.wait_for_ckpt_time,
             "time/update_weights": self.update_weights_time,
@@ -464,16 +467,18 @@ class Scheduler:
             "scheduler/inflight_rollouts": self.inflight_rollout_count,
             "scheduler/inflight_samples": self.inflight_sample_count,
             "scheduler/cancelled_rollouts": self.cancelled_rollouts_count,
-            "empty_rollouts/all": sum(self.empty_rollouts_by_task.values()),
-            "errored_rollouts/all": sum(self.errored_rollouts_by_task.values()),
+            "empty_rollouts/all": sum(self.empty_rollouts_by_task.values()) / max(total_rollouts, 1),
+            "errored_rollouts/all": sum(self.errored_rollouts_by_task.values()) / max(total_rollouts, 1),
             "off_policy_level/all/max": self.max_off_policy_level,
             "off_policy_level/all/mean": self.mean_off_policy_level,
             "off_policy_level/all/min": self.min_off_policy_level,
         }
         for task, count in self.empty_rollouts_by_task.items():
-            metrics[f"empty_rollouts/{task}"] = count
+            task_total = max(self.total_rollouts_by_task[task], 1)
+            metrics[f"empty_rollouts/{task}"] = count / task_total
         for task, count in self.errored_rollouts_by_task.items():
-            metrics[f"errored_rollouts/{task}"] = count
+            task_total = max(self.total_rollouts_by_task[task], 1)
+            metrics[f"errored_rollouts/{task}"] = count / task_total
         by_task: dict[str, list[int]] = {}
         for info in self.inflight_requests.values():
             by_task.setdefault(info.task, []).append(info.off_policy_steps)
@@ -484,6 +489,7 @@ class Scheduler:
         self.cancelled_rollouts_count = 0
         self.empty_rollouts_by_task.clear()
         self.errored_rollouts_by_task.clear()
+        self.total_rollouts_by_task.clear()
 
         # Add inference pool metrics (e.g. elastic pool server counts)
         metrics.update(self.inference_pool.get_metrics())
