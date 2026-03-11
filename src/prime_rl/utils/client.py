@@ -134,6 +134,7 @@ def setup_clients(client_config: ClientConfig, client_type: str = "openai_chat_c
                     api_base_url=base_url,
                     api_key_var=client_config.api_key_var,
                     timeout=client_config.timeout,
+                    connect_timeout=client_config.connect_timeout,
                     max_connections=8192,
                     max_keepalive_connections=8192,
                     max_retries=10,

@@ -170,6 +170,7 @@ class ElasticInferencePool:
                 setup_clients(
                     ClientConfig(
                         timeout=self.client_config.timeout,
+                        connect_timeout=self.client_config.connect_timeout,
                         base_url=urls,
                         api_key_var=self.client_config.api_key_var,
                         headers=self.client_config.headers,
