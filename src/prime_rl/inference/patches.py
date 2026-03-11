@@ -32,9 +32,6 @@ def _patch_qwen35_lora():
 
     qkvz_fix = ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z"]
 
-    if Qwen3_5ForCausalLMBase.packed_modules_mapping.get("in_proj_qkvz") == qkvz_fix:
-        return
-
     Qwen3_5ForCausalLMBase.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
     Qwen3_5ForConditionalGeneration.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
 
