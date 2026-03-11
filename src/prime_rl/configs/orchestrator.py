@@ -288,10 +288,13 @@ class EnvConfig(BaseConfig):
         ),
     ] = {}
 
+    @property
+    def resolved_name(self) -> str:
+        return self.name or self.id.split("@")[0]
+
     @model_validator(mode="after")
     def validate_env_name(self):
-        env_name = self.name or self.id
-        if env_name == "all":
+        if self.resolved_name == "all":
             raise ValueError(
                 'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
             )
@@ -393,7 +396,7 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_unique_env_names(self):
-        env_names = [env.name or env.id for env in self.env]
+        env_names = [env.resolved_name for env in self.env]
         duplicates = [n for n in env_names if env_names.count(n) > 1]
         if duplicates:
             raise ValueError(f"Duplicate eval environment names: {set(duplicates)}. Each env must have a unique name.")
@@ -912,7 +915,7 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_unique_env_names(self):
-        env_names = [env.name or env.id for env in self.env]
+        env_names = [env.resolved_name for env in self.env]
         duplicates = [n for n in env_names if env_names.count(n) > 1]
         if duplicates:
             raise ValueError(f"Duplicate environment names: {set(duplicates)}. Each env must have a unique name.")
