@@ -506,14 +506,25 @@ class VLMImageCache:
         return steps[-1]
 
 
-def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMImageCache:
+def build_vlm_image_cache(
+    rollouts: list[vf.RolloutOutput] | list[tuple[int, vf.RolloutOutput]],
+    processor,
+) -> VLMImageCache:
     """
     Build image cache for VLM training by extracting and preprocessing images.
 
     Caches per rollout to keep images aligned with divergent multi-turn trajectories.
+
+    rollouts can be either a plain list (auto-indexed from 0) or pre-indexed
+    (cache_key, rollout) tuples for mixed text+VLM setups where cache keys must
+    match original rollout indices.
     """
-    examples = [(idx, rollout) for idx, rollout in enumerate(rollouts)]
-    unique_example_ids = {rollout["example_id"] for rollout in rollouts}
+    if rollouts and isinstance(rollouts[0], tuple):
+        examples = rollouts
+        unique_example_ids = {r["example_id"] for _, r in examples}
+    else:
+        examples = [(idx, rollout) for idx, rollout in enumerate(rollouts)]
+        unique_example_ids = {rollout["example_id"] for rollout in rollouts}
 
     # Extract images (also strips base64 data from rollout prompts to free memory)
     extract_start = time.perf_counter()

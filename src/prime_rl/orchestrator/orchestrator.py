@@ -137,18 +137,24 @@ async def orchestrate(config: OrchestratorConfig):
     else:
         teacher_inference_pool = None
 
-    # Check if this is a vision-language model (used throughout for VLM-specific paths)
-    is_vlm = is_vlm_model(config.model.name)
-
+    # Detect VLM models across all actors (not just the default model)
+    all_model_names = set()
+    all_model_names.add(config.model.name)
+    if config.actor_model_names:
+        all_model_names.update(config.actor_model_names.values())
+    vlm_model_name = next((m for m in all_model_names if is_vlm_model(m)), None)
+    vlm_actor_ids = set()
+    if config.actor_model_names:
+        vlm_actor_ids = {aid for aid, m in config.actor_model_names.items() if is_vlm_model(m)}
     # Load tokenizer and processor (processor only for VLM models)
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
 
     processor = None
-    if is_vlm:
-        logger.info(f"Loading VLM processor for {config.model.name}")
+    if vlm_model_name:
+        logger.info(f"Loading VLM processor for {vlm_model_name}")
         processor = AutoProcessor.from_pretrained(
-            config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
+            vlm_model_name, trust_remote_code=config.model.trust_remote_code, use_fast=True
         )
 
     # Build rollout filters
@@ -579,14 +585,19 @@ async def orchestrate(config: OrchestratorConfig):
         parallel_preprocess_start = time.perf_counter()
 
         # VLM: build image cache for efficient batched preprocessing
-        if is_vlm:
-            vlm_cache = build_vlm_image_cache(train_rollouts, processor)
-            logger.info(
-                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
-                f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
-            )
-        else:
-            vlm_cache = None
+        # In mixed text+VLM setups, only process VLM actor rollouts
+        vlm_cache = None
+        if processor is not None:
+            if vlm_actor_ids:
+                vlm_indexed = [(i, r) for i, r in enumerate(train_rollouts) if r.get("actor_id") in vlm_actor_ids]
+            else:
+                vlm_indexed = list(enumerate(train_rollouts))
+            if vlm_indexed:
+                vlm_cache = build_vlm_image_cache(vlm_indexed, processor)
+                logger.info(
+                    f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
+                    f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
+                )
 
         # Process rollouts in parallel
         from collections import Counter as _Counter
@@ -596,7 +607,8 @@ async def orchestrate(config: OrchestratorConfig):
         print(f"[ORCH-DEBUG] rollout (actor, traj_len) counts: {dict(_debug)}")
 
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
-            return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
+            use_vlm = vlm_cache is not None and rollout.get("actor_id", "default") in vlm_actor_ids
+            return interleave_rollout(rollout, vlm_cache=vlm_cache if use_vlm else None, cache_key=rollout_idx)
 
         loop = asyncio.get_event_loop()
         futures = [
