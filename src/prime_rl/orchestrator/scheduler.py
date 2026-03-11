@@ -389,7 +389,7 @@ class Scheduler:
                         self.logger.warning(
                             f"Rollout error in group {group_id} ({task}), re-scheduling "
                             f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
-                            f"{rollout['error']!r}"
+                            f"{rollout['error'].get('error_chain_repr', rollout['error'])}"
                         )
                     if should_reschedule:
                         group.rollouts_to_schedule += 1
