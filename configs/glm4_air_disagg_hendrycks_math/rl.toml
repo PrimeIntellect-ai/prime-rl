@@ -1,5 +1,6 @@
 seq_len = 2048
 output_dir = "/data/outputs/glm4-air-disagg-hendrycks-math"
+clean_output_dir = true
 
 [log]
 level = "debug"

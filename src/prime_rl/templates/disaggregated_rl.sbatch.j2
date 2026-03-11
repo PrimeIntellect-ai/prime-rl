@@ -110,8 +110,8 @@ uv sync --all-extras --inexact
 
 # Install disaggregated inference dependencies
 bash scripts/install_ep_kernels.sh
-bash scripts/install_nixl_from_source.sh
-bash scripts/install_vllm_router.sh
+bash scripts/install_nixl_from_source.sh || true
+uv pip install nixl
 
 {% if pre_run_command %}
 # Pre-run command
