@@ -8,11 +8,11 @@ name = "arc-multi-4b-lora"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-batch_size = 24
+batch_size = 64
 rollouts_per_example = 8
 
 [orchestrator.sampling]
-max_tokens = 4096
+max_tokens = 8192
 temperature = 1.0
 
 [orchestrator.wandb.log_extras]
@@ -31,6 +31,9 @@ sort_by_size = true
 interval = 50
 keep_last = 3
 
+[trainer.optim]
+lr = 1e-5
+
 [trainer.model.lora]
 rank = 32
 
@@ -38,4 +41,4 @@ rank = 32
 enable_lora = true
 
 [inference.model]
-max_model_len = 8192
+max_model_len = 16384
