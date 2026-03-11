@@ -464,16 +464,16 @@ class Scheduler:
             "scheduler/inflight_rollouts": self.inflight_rollout_count,
             "scheduler/inflight_samples": self.inflight_sample_count,
             "scheduler/cancelled_rollouts": self.cancelled_rollouts_count,
-            "scheduler/empty_rollouts/all": sum(self.empty_rollouts_by_task.values()),
-            "scheduler/errored_rollouts/all": sum(self.errored_rollouts_by_task.values()),
+            "empty_rollouts/all": sum(self.empty_rollouts_by_task.values()),
+            "errored_rollouts/all": sum(self.errored_rollouts_by_task.values()),
             "off_policy_level/all/max": self.max_off_policy_level,
             "off_policy_level/all/mean": self.mean_off_policy_level,
             "off_policy_level/all/min": self.min_off_policy_level,
         }
         for task, count in self.empty_rollouts_by_task.items():
-            metrics[f"scheduler/empty_rollouts/{task}"] = count
+            metrics[f"empty_rollouts/{task}"] = count
         for task, count in self.errored_rollouts_by_task.items():
-            metrics[f"scheduler/errored_rollouts/{task}"] = count
+            metrics[f"errored_rollouts/{task}"] = count
         by_task: dict[str, list[int]] = {}
         for info in self.inflight_requests.values():
             by_task.setdefault(info.task, []).append(info.off_policy_steps)
