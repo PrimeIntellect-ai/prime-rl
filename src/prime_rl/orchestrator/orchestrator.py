@@ -646,6 +646,7 @@ async def orchestrate(config: OrchestratorConfig):
         by_example = results_df.groupby("example_id")
 
         step_time = time.perf_counter() - step_start_time
+        solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
         to_log = {
             # Progress metrics
             "progress/tokens": num_tokens,
@@ -698,20 +699,9 @@ async def orchestrate(config: OrchestratorConfig):
             "reward/all/min": by_example.reward.mean().min(),
             "sampling/temperature": temperature,
             # Solve / batch metrics
-            **dict(
-                zip(
-                    ["solve_none/all", "solve_all/all", "effective_batch_size/all"],
-                    compute_solve_rates(results_df),
-                )
-            ),
-            **{
-                k: v
-                for env, env_df in results_df.groupby("task")
-                for k, v in zip(
-                    [f"solve_none/{env}", f"solve_all/{env}", f"effective_batch_size/{env}"],
-                    compute_solve_rates(env_df),
-                )
-            },
+            "solve_none/all": solve_none,
+            "solve_all/all": solve_all,
+            "effective_batch_size/all": effective_batch_size,
             **{f"batch/{env}": r for env, r in results_df.task.value_counts(normalize=True).items()},
             # Error metrics
             "error/all/mean": by_example.error.apply(lambda e: e.notna().mean()).mean(),
@@ -745,24 +735,6 @@ async def orchestrate(config: OrchestratorConfig):
             "scoring_ms",
         ]
 
-        # Initialize all per-env metrics to 0 so envs missing from a step show as 0 in wandb
-        for env in train_env_names:
-            for col in per_env_columns:
-                to_log[f"{col}/{env}/mean"] = 0
-                to_log[f"{col}/{env}/max"] = 0
-                to_log[f"{col}/{env}/min"] = 0
-            to_log[f"reward/{env}/mean"] = 0
-            to_log[f"reward/{env}/max"] = 0
-            to_log[f"reward/{env}/min"] = 0
-            to_log[f"error/{env}/mean"] = 0
-            to_log[f"solve_none/{env}"] = 0
-            to_log[f"solve_all/{env}"] = 0
-            to_log[f"effective_batch_size/{env}"] = 0
-            to_log[f"batch/{env}"] = 0
-            to_log[f"stop_condition/{env}/generation_truncated"] = 0
-            for metric in metrics_df.columns:
-                to_log[f"metrics/{env}/{metric}"] = 0
-
         for env, env_df in results_df.groupby("task"):
             env_by_example = env_df.groupby("example_id")
             for col in per_env_columns:
@@ -773,6 +745,10 @@ async def orchestrate(config: OrchestratorConfig):
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
             to_log[f"error/{env}/mean"] = env_by_example.error.apply(lambda e: e.notna().mean()).mean()
+            solve_none, solve_all, effective_batch_size = compute_solve_rates(env_df)
+            to_log[f"solve_none/{env}"] = solve_none
+            to_log[f"solve_all/{env}"] = solve_all
+            to_log[f"effective_batch_size/{env}"] = effective_batch_size
             to_log[f"stop_condition/{env}/generation_truncated"] = (
                 env_df.is_truncated & (env_df.stop_condition != "prompt_too_long")
             ).mean()
