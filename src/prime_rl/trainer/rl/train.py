@@ -166,9 +166,13 @@ def train(config: TrainerConfig):
 
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
-    # Set up weight broadcast
-    logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-    weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
+    # Set up weight broadcast (skip when using fake data since there's no inference server)
+    if config.data.fake:
+        weight_broadcast = None
+        logger.info("Skipping weight broadcast setup (fake data mode)")
+    else:
+        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
 
     if parallel_dims.cp_enabled:
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
@@ -217,21 +221,24 @@ def train(config: TrainerConfig):
 
         # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
         # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
-        last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
-        if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
-            broadcast_weights_start_time = time.perf_counter()
-            weight_broadcast.broadcast_weights(model, step=progress.step)
-            broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
-            # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-            ckpt_interval = config.ckpt and config.ckpt.interval
-            interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
-            if config.weight_broadcast.type == "filesystem":
-                weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
-        else:
+        if weight_broadcast is None:
             broadcast_weights_time = 0
-            # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
-            for idx in multi_run_manager.used_idxs:
-                multi_run_manager.ready_to_update[idx] = False
+        else:
+            last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
+            if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
+                broadcast_weights_start_time = time.perf_counter()
+                weight_broadcast.broadcast_weights(model, step=progress.step)
+                broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
+                # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
+                ckpt_interval = config.ckpt and config.ckpt.interval
+                interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
+                if config.weight_broadcast.type == "filesystem":
+                    weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
+            else:
+                broadcast_weights_time = 0
+                # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
+                for idx in multi_run_manager.used_idxs:
+                    multi_run_manager.ready_to_update[idx] = False
 
         if (
             ckpt_manager is not None
