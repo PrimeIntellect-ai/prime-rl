@@ -455,8 +455,11 @@ def rl_slurm(config: RLConfig):
 def rl(config: RLConfig):
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
-    validate_output_dir(config.output_dir, resuming=resuming, clean=clean)
+    ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
+    validate_output_dir(config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir)
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    if ckpt_output_dir is not None:
+        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
 
     if config.slurm is not None:
         rl_slurm(config)

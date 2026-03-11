@@ -75,6 +75,13 @@ class SharedWandbConfig(BaseConfig):
 class SharedCheckpointConfig(BaseConfig):
     """Configures shared checkpoint configs."""
 
+    output_dir: Annotated[
+        Path | None,
+        Field(
+            description="Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer output_dir.",
+        ),
+    ] = None
+
     interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
 
     resume_step: Annotated[
@@ -378,6 +385,10 @@ class RLConfig(BaseConfig):
                 self.trainer.ckpt = TrainerCheckpointConfig()
             if self.orchestrator.ckpt is None:
                 self.orchestrator.ckpt = OrchestratorCheckpointConfig()
+
+            # If specified, override checkpoint output directory
+            if self.ckpt.output_dir is not None:
+                self.trainer.ckpt.output_dir = self.ckpt.output_dir
 
             # If specified, use the same ckpt interval
             if self.ckpt.interval is not None:

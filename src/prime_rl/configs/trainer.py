@@ -457,6 +457,13 @@ class WeightCheckpointConfig(BaseConfig):
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the full model, optimizer and training state for resuming training."""
 
+    output_dir: Annotated[
+        Path | None,
+        Field(
+            description="Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer output_dir. Useful for writing large checkpoints to a separate storage volume.",
+        ),
+    ] = None
+
     interval: Annotated[
         int | None,
         Field(
