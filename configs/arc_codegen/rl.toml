@@ -22,7 +22,11 @@ interval = 1
 [[orchestrator.env]]
 id = "arc-codegen"
 name = "arc_codegen"
-args = { num_examples = 64 }
+args = { num_examples = 200, sort_by_size = true }
+
+[ckpt]
+interval = 50
+keep_last = 3
 
 [trainer]
 
