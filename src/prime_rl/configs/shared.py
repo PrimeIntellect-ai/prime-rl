@@ -27,6 +27,50 @@ class SlurmConfig(BaseConfig):
         str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
     ] = "cluster"
 
+    nodelist: Annotated[
+        str | None,
+        Field(description="Comma-separated list of specific nodes to run on. Passed as #SBATCH --nodelist."),
+    ] = None
+
+    exclude: Annotated[
+        str | None,
+        Field(description="Comma-separated list of nodes to exclude. Passed as #SBATCH --exclude."),
+    ] = None
+
+    account: Annotated[
+        str | None,
+        Field(description="SLURM account to charge. Passed as #SBATCH --account."),
+    ] = None
+
+    time: Annotated[
+        str | None,
+        Field(description="Maximum wall time (e.g. '24:00:00', '7-00:00:00'). Passed as #SBATCH --time."),
+    ] = None
+
+    pre_run_command: Annotated[
+        str | None,
+        Field(
+            description="Shell command to run on the head node before starting the job. "
+            "Runs after cd into project dir, .env sourcing, and venv activation. "
+            "Useful for cleanup routines like 'sudo pkill -f vllm'. "
+            "To run on all nodes, wrap with srun: 'srun bash -c \"pkill -f vllm || true\"'.",
+        ),
+    ] = None
+
+    @property
+    def template_vars(self) -> dict:
+        """Common template variables for all SLURM templates."""
+        return {
+            "job_name": self.job_name,
+            "project_dir": self.project_dir,
+            "partition": self.partition,
+            "nodelist": self.nodelist,
+            "exclude": self.exclude,
+            "account": self.account,
+            "time": self.time,
+            "pre_run_command": self.pre_run_command,
+        }
+
     @model_validator(mode="after")
     def resolve_project_dir(self):
         self.project_dir = self.project_dir.resolve()

@@ -133,6 +133,7 @@ from prime_rl.inference.patches import (
     monkey_patch_load_lora_adapter,
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
     monkey_patch_tokenize_params_validation,
+    monkey_patch_tokenizer_thread_safety,
 )
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
@@ -147,6 +148,9 @@ monkey_patch_load_lora_adapter()
 monkey_patch_tokenize_params_validation()
 # NOTE: Monkeypatch Hermes tool parser to fix "Already borrowed" RuntimeError under concurrent load
 monkey_patch_hermes_tool_parser_thread_safety()
+# NOTE: Monkeypatch HF tokenizer to fix "Already borrowed" RuntimeError during concurrent chat template processing
+# Can be removed once https://github.com/vllm-project/vllm/pull/36557 is merged and we upgrade vllm
+monkey_patch_tokenizer_thread_safety()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 

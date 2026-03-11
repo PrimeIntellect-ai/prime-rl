@@ -13,7 +13,6 @@ from prime_rl.configs.shared import (
     WandbConfig,
 )
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.logger import get_logger
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
@@ -269,13 +268,13 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = DebugModelConfig()
 
-    fused_lm_head_chunk_size: Annotated[
+    fused_lm_head_token_chunk_size: Annotated[
         int | Literal["auto", "disabled"],
         Field(
             description=(
-                "The chunk size to use for the fused LM head. "
+                "The flattened token chunk size to use for the fused LM head. "
                 "Three behaviors: "
-                "(1) int >= 512: explicitly set chunk size for fused LM head; "
+                "(1) int >= 1: explicitly set the number of tokens per LM-head chunk; "
                 "(2) 'auto': auto-enable (RL training auto-sets to 8192); "
                 "(3) 'disabled': explicitly disable fused LM head (use vanilla). "
                 "Explicitly setting an integer value for this feature isn't supported for SFT training."
@@ -321,22 +320,6 @@ class ModelConfig(BaseModelConfig):
     def cpu_offload_mutual_exclusion(self):
         if self.fsdp_cpu_offload and self.optim_cpu_offload:
             raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
-        return self
-
-    @model_validator(mode="after")
-    def fused_lm_head_chunk_size_is_valid(self):
-        if isinstance(self.fused_lm_head_chunk_size, int):
-            low = 512
-            warn_threshold = 8192
-            if self.fused_lm_head_chunk_size < low:
-                raise ValueError(
-                    f"Fused LM head chunk size must be at least {low}, got {self.fused_lm_head_chunk_size}"
-                )
-            if self.fused_lm_head_chunk_size < warn_threshold:
-                get_logger().warning(
-                    f"Fused LM head chunk size is set to {self.fused_lm_head_chunk_size}, which is less than the recommended threshold of {warn_threshold}. This may cause some runs to diverge due to numerical instability in floating point arithmetic."
-                )
-
         return self
 
     @model_validator(mode="after")
@@ -765,9 +748,9 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_fused_lm_head_chunk_size(self):
-        if self.model.fused_lm_head_chunk_size == "auto":
-            self.model.fused_lm_head_chunk_size = 8192
+    def auto_setup_fused_lm_head_token_chunk_size(self):
+        if self.model.fused_lm_head_token_chunk_size == "auto":
+            self.model.fused_lm_head_token_chunk_size = 8192
 
         return self
 

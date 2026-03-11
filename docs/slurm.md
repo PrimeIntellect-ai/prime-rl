@@ -47,6 +47,11 @@ For **multi-node** jobs, sub-configs are written separately and `srun` dispatche
 | `project_dir` | Path to the project root on the cluster | `"."` |
 | `template_path` | Path to a custom Jinja2 template | auto-selected |
 | `partition` | SLURM partition | `"cluster"` |
+| `nodelist` | Comma-separated list of specific nodes to run on (`--nodelist`) | `None` |
+| `exclude` | Comma-separated list of nodes to exclude (`--exclude`) | `None` |
+| `account` | SLURM account to charge (`--account`) | `None` |
+| `time` | Maximum wall time, e.g. `"24:00:00"` (`--time`) | `None` |
+| `pre_run_command` | Shell command to run on head node after env setup, before starting the job (e.g. cleanup) | `None` |
 
 ### `[deployment]` — Node and GPU allocation
 
