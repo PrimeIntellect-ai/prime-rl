@@ -596,9 +596,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         step_time = time.perf_counter() - step_start_time
 
-        # Gather metrics in dataframe
-        reward_metrics = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
-        reward_metric_columns = list(reward_metrics.columns)
+        # Gather metrics in dataframes
         results_df = pd.DataFrame(
             {
                 "example_id": [rollout["example_id"] for rollout in train_rollouts],
@@ -614,9 +612,11 @@ async def orchestrate(config: OrchestratorConfig):
                 "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
                 "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
                 "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
-                **{col: reward_metrics[col] for col in reward_metric_columns},
             }
         )
+
+        # Separate DataFrame for env reward function metrics to avoid column name collisions
+        metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
 
         val_results_df = (
             pd.DataFrame(
@@ -754,8 +754,9 @@ async def orchestrate(config: OrchestratorConfig):
             ).mean()
             for sc, rate in env_df.stop_condition.dropna().value_counts(normalize=True).items():
                 to_log[f"stop_condition/{env}/{sc}"] = rate
-            for metric in reward_metric_columns:
-                to_log[f"metrics/{env}/{metric}"] = env_by_example[metric].mean().mean()
+            env_metrics_df = metrics_df.loc[env_df.index]
+            for metric in metrics_df.columns:
+                to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["example_id"])[metric].mean().mean()
 
         # Optionally, add val metrics
         if val_results_df is not None:
@@ -797,7 +798,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Free large per-step objects to prevent memory accumulation
         del train_rollouts, train_examples, training_batch, vlm_cache
-        del results_df, val_results_df
+        del results_df, metrics_df, val_results_df
         gc.collect()
 
         event_loop_lag_monitor.reset()
