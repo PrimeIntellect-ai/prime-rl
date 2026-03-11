@@ -603,7 +603,6 @@ async def orchestrate(config: OrchestratorConfig):
                 "task": [rollout["task"] for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
                 "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
-                "error": [rollout["error"] for rollout in train_rollouts],
                 "stop_condition": [rollout.get("stop_condition") for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
                 "prefill_len": rollout_prefill_lens,
@@ -703,8 +702,6 @@ async def orchestrate(config: OrchestratorConfig):
             "solve_all/all": solve_all,
             "effective_batch_size/all": effective_batch_size,
             **{f"batch/{env}": r for env, r in results_df.task.value_counts(normalize=True).items()},
-            # Error metrics
-            "error/all/mean": by_example.error.apply(lambda e: e.notna().mean()).mean(),
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
@@ -744,7 +741,6 @@ async def orchestrate(config: OrchestratorConfig):
             to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
-            to_log[f"error/{env}/mean"] = env_by_example.error.apply(lambda e: e.notna().mean()).mean()
             solve_none, solve_all, effective_batch_size = compute_solve_rates(env_df)
             to_log[f"solve_none/{env}"] = solve_none
             to_log[f"solve_all/{env}"] = solve_all
