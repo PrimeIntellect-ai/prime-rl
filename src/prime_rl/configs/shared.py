@@ -143,7 +143,7 @@ class ClientConfig(BaseConfig):
         Field(
             description="TCP connect timeout in seconds for inference API requests.",
         ),
-    ] = 5.0
+    ] = 30.0
 
     base_url: Annotated[
         list[str],
