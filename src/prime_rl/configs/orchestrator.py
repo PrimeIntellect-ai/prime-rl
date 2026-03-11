@@ -288,6 +288,18 @@ class EnvConfig(BaseConfig):
         ),
     ] = {}
 
+    @property
+    def resolved_name(self) -> str:
+        return self.name or self.id.split("@")[0]
+
+    @model_validator(mode="after")
+    def validate_env_name(self):
+        if self.resolved_name == "all":
+            raise ValueError(
+                'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
+            )
+        return self
+
 
 class EvalEnvConfig(EnvConfig):
     """Configures an environment for evaluation."""
@@ -381,6 +393,14 @@ class EvalConfig(BaseConfig):
             description="Whether to cancel in-flight training rollouts before starting online evals. This is useful to avoid congestion (e.g. do not have training + eval rollouts happening at the same time) but leads to slower training steps as rollouts get cancelled and the pipeline has to fill up after each eval",
         ),
     ] = False
+
+    @model_validator(mode="after")
+    def validate_unique_env_names(self):
+        env_names = [env.resolved_name for env in self.env]
+        duplicates = [n for n in env_names if env_names.count(n) > 1]
+        if duplicates:
+            raise ValueError(f"Duplicate eval environment names: {set(duplicates)}. Each env must have a unique name.")
+        return self
 
 
 class CheckpointConfig(BaseConfig):
@@ -906,6 +926,14 @@ class OrchestratorConfig(BaseConfig):
 
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_env_names(self):
+        env_names = [env.resolved_name for env in self.env]
+        duplicates = [n for n in env_names if env_names.count(n) > 1]
+        if duplicates:
+            raise ValueError(f"Duplicate environment names: {set(duplicates)}. Each env must have a unique name.")
         return self
 
     @model_validator(mode="after")
