@@ -9,6 +9,48 @@ def transformers_v5_compat():
     if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
+    _patch_qwen35_lora()
+
+
+def _patch_qwen35_lora():
+    """Fix Qwen3.5 LoRA: align packed_modules_mapping with output_sizes.
+
+    Qwen3.5's GDN layers use create_qkvz_proj with 4 output_sizes (q, k, v, z)
+    but packed_modules_mapping only lists 2 entries, causing an IndexError
+    during LoRA initialization.
+
+    Also generalizes MergedColumnParallelLinearWithLoRA.can_replace_layer
+    to accept any number of packed modules (not just 2).
+
+    Upstream: https://github.com/vllm-project/vllm/issues/36372
+    """
+    from vllm.lora.layers.column_parallel_linear import MergedColumnParallelLinearWithLoRA
+    from vllm.model_executor.models.qwen3_5 import (
+        Qwen3_5ForCausalLMBase,
+        Qwen3_5ForConditionalGeneration,
+    )
+
+    qkvz_fix = ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z"]
+
+    if Qwen3_5ForCausalLMBase.packed_modules_mapping.get("in_proj_qkvz") == qkvz_fix:
+        return
+
+    Qwen3_5ForCausalLMBase.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
+    Qwen3_5ForConditionalGeneration.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
+
+    from vllm.lora.layers.utils import _not_fully_sharded_can_replace
+
+    @classmethod
+    @_not_fully_sharded_can_replace
+    def can_replace_layer(cls, source_layer, lora_config, packed_modules_list, model_config=None):
+        from vllm.model_executor.layers.linear import MergedColumnParallelLinear
+
+        return type(source_layer) is MergedColumnParallelLinear and len(packed_modules_list) == len(
+            source_layer.output_sizes
+        )
+
+    MergedColumnParallelLinearWithLoRA.can_replace_layer = can_replace_layer
+
 
 # Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 def monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode():
