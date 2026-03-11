@@ -112,6 +112,7 @@ class Scheduler:
         self.update_policy_task: asyncio.Task | None = None
         self.cancelled_rollouts_count = 0
         self.empty_rollouts_count = 0
+        self.errored_rollouts_count = 0
         self.last_batch_generation_time = 0.0
 
     @property
@@ -372,14 +373,27 @@ class Scheduler:
                     if group is None:
                         continue
                     rollout = finished_task.result()
+
+                    should_reschedule = False
                     if len(rollout["trajectory"]) == 0:
                         self.empty_rollouts_count += 1
-                        group.rollouts_to_schedule += 1
+                        should_reschedule = True
                         self.logger.warning(
                             f"Empty trajectory in group {group_id}, re-scheduling "
                             f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
                         )
+                    if rollout["error"] is not None:
+                        self.errored_rollouts_count += 1
+                        should_reschedule = True
+                        self.logger.warning(
+                            f"Rollout error in group {group_id}, re-scheduling "
+                            f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
+                            f"{rollout['error']}"
+                        )
+                    if should_reschedule:
+                        group.rollouts_to_schedule += 1
                         continue
+
                     group.completed_rollouts.append(rollout)
                     if len(group.completed_rollouts) < self.rollouts_per_example:
                         continue
@@ -450,6 +464,7 @@ class Scheduler:
             "scheduler/inflight_samples": self.inflight_sample_count,
             "scheduler/cancelled_rollouts": self.cancelled_rollouts_count,
             "scheduler/empty_rollouts": self.empty_rollouts_count,
+            "scheduler/errored_rollouts": self.errored_rollouts_count,
             "off_policy_level/all/max": self.max_off_policy_level,
             "off_policy_level/all/mean": self.mean_off_policy_level,
             "off_policy_level/all/min": self.min_off_policy_level,
@@ -463,6 +478,7 @@ class Scheduler:
             metrics[f"off_policy_level/{task}/min"] = min(steps)
         self.cancelled_rollouts_count = 0
         self.empty_rollouts_count = 0
+        self.errored_rollouts_count = 0
 
         # Add inference pool metrics (e.g. elastic pool server counts)
         metrics.update(self.inference_pool.get_metrics())
