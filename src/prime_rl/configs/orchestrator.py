@@ -287,6 +287,13 @@ class EnvConfig(BaseConfig):
             ),
         ),
     ] = {}
+    max_retries: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum number of times the environment will retry a failed rollout.",
+        ),
+    ] = 0
 
     @property
     def resolved_name(self) -> str:
@@ -321,17 +328,6 @@ class EvalEnvConfig(EnvConfig):
         int,
         Field(
             description="Number of examples to skip from the beginning of the dataset.",
-        ),
-    ] = 0
-
-    # TODO: should live on the EnvConfig and also apply to training envs but
-    # this is hard right now because we use the vf.EnvGroup which treats all
-    # envs as one. for now training envs hardcode no retries, but we should
-    # probably treat them like environment groups long-term
-    max_retries: Annotated[
-        int,
-        Field(
-            description="Maximum number of times the environment will try to retry running a rollout.",
         ),
     ] = 0
 

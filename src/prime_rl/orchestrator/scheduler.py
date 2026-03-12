@@ -93,6 +93,7 @@ class Scheduler:
         # Inference pool - used for admin operations (adapter sync) and metrics
         self.inference_pool = inference_pool
 
+        self.max_retries_by_task = {env.resolved_name: env.max_retries for env in config.env}
         self.deferred_group_scoring_tasks = set(deferred_group_scoring_tasks or ())
         if self.deferred_group_scoring_tasks:
             task_list = ", ".join(sorted(self.deferred_group_scoring_tasks))
@@ -203,7 +204,7 @@ class Scheduler:
                 example=group.example,
                 model_name=self.model_name,
                 sampling_args=self.sampling_args,
-                max_retries=0,  # TODO: make configurable
+                max_retries=self.max_retries_by_task.get(group.example["task"], 0),
             )
         )
         self.inflight_requests[run_rollout_task] = InflightRolloutInfo(
