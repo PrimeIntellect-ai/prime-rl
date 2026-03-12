@@ -1,0 +1,11 @@
+max_steps = 1
+
+[model]
+name = "Qwen/Qwen3.5-35B-A3B"
+impl = "custom"
+attn = "sdpa"
+
+[data]
+type = "fake"
+batch_size = 2
+seq_len = 128
