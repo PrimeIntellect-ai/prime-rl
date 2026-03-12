@@ -269,6 +269,18 @@ class LogExtrasConfig(BaseConfig):
         ),
     ] = 10
 
+    sample_percentage: Annotated[
+        int | None,
+        Field(
+            ge=0,
+            le=100,
+            description="Percentage of rollouts to log per step (0–100). "
+            "When set, the effective sample cap is len(rollouts) * sample_percentage / 100. "
+            "100 = all rollouts, 50 = half, 0 = none. "
+            "None (default) = log all rollouts (current behavior).",
+        ),
+    ] = None
+
 
 class WandbConfig(BaseConfig):
     """Configures logging to Weights and Biases."""
