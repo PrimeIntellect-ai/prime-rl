@@ -1,4 +1,5 @@
 import json
+import re
 import warnings
 from pathlib import Path
 from typing import Literal, cast
@@ -33,9 +34,26 @@ def _strip_pytorch_wrapper_prefix(key: str) -> str:
     return key
 
 
+_LAYER_RE = re.compile(r"^model\.(?:\w+\.)*layers\.(\d+)\b")
+
+
+def get_layers_prefix(state_dict: dict[str, Tensor]) -> str:
+    """Detect the layers prefix in state_dict keys."""
+    for key in state_dict:
+        m = _LAYER_RE.search(key)
+        if m:
+            return key[: m.start(1)]
+    raise ValueError("No 'model.[*.]layers.N' pattern found in state_dict keys")
+
+
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
     """Get the maximum number of layers in the model."""
-    return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
+    prefix = get_layers_prefix(state_dict)
+    matches = [_LAYER_RE.search(key) for key in state_dict if key.startswith(prefix)]
+    layer_nums = [int(m.group(1)) for m in matches if m]
+    if not layer_nums:
+        raise ValueError(f"No layer keys found with prefix '{prefix}'")
+    return max(layer_nums) + 1
 
 
 def load_state_dict_keys(save_dir: Path) -> list[str]:
