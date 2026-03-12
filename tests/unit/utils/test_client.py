@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter
+from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, update_weights
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -83,3 +83,37 @@ def test_load_lora_adapter_raises_non_retryable_error_immediately():
 
     assert exc_info.value.response.status_code == 400
     assert mock_client.post.call_count == 1
+
+
+def test_update_weights_skips_prefix_cache_reset_at_step_zero(tmp_path):
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    asyncio.run(update_weights([mock_client], tmp_path, step=0))
+
+    mock_client.post.assert_called_once_with(
+        "/update_weights",
+        json={
+            "weight_dir": tmp_path.as_posix(),
+            "skip_prefix_cache_reset": True,
+        },
+    )
+
+
+def test_update_weights_resets_prefix_cache_after_step_zero(tmp_path):
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    asyncio.run(update_weights([mock_client], tmp_path, step=1))
+
+    mock_client.post.assert_called_once_with(
+        "/update_weights",
+        json={
+            "weight_dir": tmp_path.as_posix(),
+            "skip_prefix_cache_reset": False,
+        },
+    )
