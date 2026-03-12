@@ -17,7 +17,7 @@ Logging to W&B is disabled by default. Enable the default configuration with `--
 uv run sft ... --wandb
 ```
 
-This will log to the `prime-rl` project with a random run name. You can specify which project and name to log to 
+This will log to the `prime-rl` project with a random run name. You can specify which project and name to log to
 
 ```bash
 uv run sft ... --wandb.project my-project --wandb.name my-run
@@ -52,4 +52,3 @@ uv run rl  ... \
   --no-trainer.wandb.log-extras.distributions \
   --orchestrator.wandb.log-extras.interval 50
 ```
-

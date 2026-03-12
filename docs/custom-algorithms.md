@@ -1,4 +1,4 @@
-# Bring Your Own Algorithms
+# Custom Algorithms
 
 Prime-RL supports custom implementations for key algorithmic components, allowing you to experiment with different RL objectives and techniques.
 
@@ -105,7 +105,6 @@ import torch
 from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs
 
 def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
-    """Normalize advantages to zero mean and unit variance per example."""
     mean = inputs.rewards.mean(dim=1, keepdim=True)
     std = inputs.rewards.std(dim=1, keepdim=True)
     advantages = (inputs.rewards - mean) / (std + eps)
@@ -131,10 +130,3 @@ If no custom function is specified:
 - **Advantage**: Uses `default_advantage_fn` (reward minus per-example baseline, a.k.a. DR-GRPO without std normalization)
 
 See `LossConfig` and `AdvantageConfig` for available parameters.
-
-## Tips
-
-- Your functions receive structured inputs via dataclasses with jaxtyping annotations
-- Return metrics as scalars or 1D tensors - they'll be aggregated automatically
-- Use the `loss_mask` / tensor shapes to handle variable-length sequences
-- Test your custom functions with the provided test patterns before training

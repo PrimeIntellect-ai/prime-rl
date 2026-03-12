@@ -1,4 +1,4 @@
-# Configs
+# Config System
 
 We use `pydantic-settings` with some custom functionality for configuring runs. We support the following sources, in this order of precedence:
 
@@ -11,6 +11,8 @@ We use `pydantic-settings` with some custom functionality for configuring runs. 
 4. **Defaults**: For almost all config arguments, we have a default value which will be used if no other source is provided.
 
 In general we recommend setting configurations via config files to define reproducible experiments and use command-line arguments to override the config values to run variants of the same experiment. Environment variables are usually only used in production settings to communicate with the [Prime Protocol](https://github.com/PrimeIntellect-ai/protocol) worker. In most cases, you should not need to use environment variables.
+
+## Precedence
 
 The precedence order will be important if multiple sources try to configure the same argument. For example, in the following command, all sources will define a model name
 

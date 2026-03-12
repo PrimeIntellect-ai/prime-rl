@@ -2,19 +2,67 @@
     "$schema": "https://mintlify.com/docs.json",
     "navigation": [
         {
-            "group": "PRIME-RL",
+            "group": "Getting Started",
             "pages": [
-                "index",
-                "entrypoints",
-                "configs",
-                "environments",
-                "async",
+                "getting-started/installation",
+                "getting-started/quickstart",
+                "getting-started/config-system",
+                "getting-started/development"
+            ]
+        },
+        {
+            "group": "Architecture",
+            "pages": [
+                "architecture/overview",
+                "architecture/orchestrator",
+                "architecture/trainer",
+                "architecture/inference",
+                "architecture/environments",
+                "architecture/trajectories",
+                "architecture/checkpointing",
+                "architecture/pipeline-rl",
+                "architecture/async-rl"
+            ]
+        },
+        {
+            "group": "Performance",
+            "pages": [
+                "performance/overview",
+                "performance/moe",
+                "performance/context-parallelism",
+                "performance/memory-efficiency",
+                "performance/distributed-inference",
+                "performance/benchmarking"
+            ]
+        },
+        {
+            "group": "Single Node",
+            "pages": [
+                "single-node/overview",
+                "single-node/sft",
+                "single-node/rl",
+                "single-node/lora",
+                "single-node/distillation",
+                "single-node/multimodal"
+            ]
+        },
+        {
+            "group": "Multi Node",
+            "pages": [
+                "multi-node/overview",
+                "multi-node/slurm",
+                "multi-node/kubernetes",
+                "multi-node/sft",
+                "multi-node/rl"
+            ]
+        },
+        {
+            "group": "Resources",
+            "pages": [
+                "supported-models",
+                "custom-algorithms",
+                "metrics",
                 "logging",
-                "multi_run_manager",
-                "checkpointing",
-                "benchmarking",
-                "deployment",
-                "kubernetes",
                 "troubleshooting"
             ]
         }

@@ -39,7 +39,7 @@ For **multi-node** jobs, sub-configs are written separately and `srun` dispatche
 
 ## Configuration
 
-### `[slurm]` — Job submission (shared between RL and SFT)
+### `[slurm]` — Job submission
 
 | Field | Description | Default |
 |---|---|---|
@@ -47,11 +47,11 @@ For **multi-node** jobs, sub-configs are written separately and `srun` dispatche
 | `project_dir` | Path to the project root on the cluster | `"."` |
 | `template_path` | Path to a custom Jinja2 template | auto-selected |
 | `partition` | SLURM partition | `"cluster"` |
-| `nodelist` | Comma-separated list of specific nodes to run on (`--nodelist`) | `None` |
+| `nodelist` | Comma-separated list of specific nodes (`--nodelist`) | `None` |
 | `exclude` | Comma-separated list of nodes to exclude (`--exclude`) | `None` |
 | `account` | SLURM account to charge (`--account`) | `None` |
 | `time` | Maximum wall time, e.g. `"24:00:00"` (`--time`) | `None` |
-| `pre_run_command` | Shell command to run on head node after env setup, before starting the job (e.g. cleanup) | `None` |
+| `pre_run_command` | Shell command to run on head node before starting | `None` |
 
 ### `[deployment]` — Node and GPU allocation
 
@@ -82,20 +82,9 @@ For **multi-node** jobs, sub-configs are written separately and `srun` dispatche
 | `gpus_per_node` | Number of GPUs per node (default: 8) | Same |
 | `num_nodes` | — | Number of inference nodes (default: 1) |
 
-The SLURM template is auto-selected based on `deployment.type`. You can override it with `slurm.template_path`.
-
-### Constraints
-
-- `output_dir` should be explicitly set when using SLURM (defaults to `"outputs"`)
-- Multi-node deployment requires `[slurm]` to be set
-
----
-
 ## RL Examples
 
 ### Single-node SLURM
-
-The simplest case: run on a single allocated node. No `[deployment]` needed — defaults to `single_node`.
 
 ```toml
 output_dir = "/shared/outputs/my-rl-run"
@@ -153,10 +142,6 @@ tp = 4
 dp = 2
 ```
 
-See [`examples/hendrycks_math/rl.toml`](../examples/hendrycks_math/rl.toml) for the full example.
-
----
-
 ## SFT Examples
 
 ### Single-node SLURM
@@ -202,15 +187,9 @@ batch_size = 128
 seq_len = 8192
 ```
 
-See [`examples/hendrycks_math/sft.toml`](../examples/hendrycks_math/sft.toml) for the full example.
-
----
-
 ## Inference Examples
 
 ### Single-node SLURM
-
-Run a vLLM server on a single allocated node:
 
 ```toml
 output_dir = "/shared/outputs/my-inference"
@@ -225,13 +204,9 @@ tp = 8
 job_name = "my-inference"
 ```
 
-```bash
-uv run inference @ inference_slurm.toml
-```
-
 ### Multi-node SLURM
 
-Each node runs an independent vLLM replica. TP and DP must fit within a single node — there is no cross-node parallelism.
+Each node runs an independent vLLM replica. TP and DP must fit within a single node.
 
 ```toml
 output_dir = "/shared/outputs/my-inference"
@@ -251,21 +226,9 @@ num_nodes = 4
 job_name = "my-inference"
 ```
 
-After submission, the SLURM template prints the inference URLs for all nodes (one per node).
-
-### Dry run
-
-Use `dry_run = true` to generate the sbatch script without submitting:
-
-```bash
-uv run inference @ config.toml --dry-run true
-```
-
----
-
 ## Custom SLURM Templates
 
-The default templates handle standard setups with InfiniBand detection, environment setup, and `srun`-based process dispatch. For advanced use cases (custom partitions, account settings, module loads, etc.), provide your own Jinja2 template:
+The default templates handle standard setups with InfiniBand detection, environment setup, and `srun`-based process dispatch. For advanced use cases, provide your own Jinja2 template:
 
 ```bash
 uv run rl @ my_config.toml --slurm.template-path path/to/my_template.sbatch.j2
@@ -285,9 +248,6 @@ tail -F {output_dir}/logs/trainer/rank_0.log
 tail -F {output_dir}/slurm/latest_train_node_rank_0.log
 tail -F {output_dir}/slurm/latest_infer_node_rank_0.log
 tail -F {output_dir}/slurm/latest_orchestrator.log
-
-# Inference (single or multi-node)
-tail -F {output_dir}/slurm/latest_infer_node_rank_0.log
 ```
 
 For convenience, a tmux launcher sets up a session with all log streams:
