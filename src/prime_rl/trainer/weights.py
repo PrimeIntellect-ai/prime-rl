@@ -33,27 +33,15 @@ def _strip_pytorch_wrapper_prefix(key: str) -> str:
     return key
 
 
-import re
-
-_LAYER_RE = re.compile(r"(.+\.layers\.)(\d+)")
-
-
-def _detect_layer_prefix(state_dict: dict[str, Tensor]) -> str:
-    """Detect the layer key prefix from the state dict (e.g. 'model.layers.' or 'model.language_model.layers.')."""
-    for key in state_dict:
-        m = _LAYER_RE.search(key)
-        if m:
-            return m.group(1)
-    return "model.layers."
-
-
-def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.layers.") -> int:
     """Get the maximum number of layers in the model."""
     max_num = -1
     for key in state_dict:
-        m = _LAYER_RE.search(key)
-        if m:
-            max_num = max(max_num, int(m.group(2)))
+        if not key.startswith(layer_prefix):
+            continue
+        layer_num_str = key[len(layer_prefix) :].split(".")[0]
+        if layer_num_str.isdigit():
+            max_num = max(max_num, int(layer_num_str))
     return max_num + 1
 
 

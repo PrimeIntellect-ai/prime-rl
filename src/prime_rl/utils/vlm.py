@@ -14,12 +14,31 @@ SUPPORTED_VLM_PATTERNS = [
     "Qwen/Qwen3.5*",
 ]
 
-# model_type values that correspond to composite VLM configs
-SUPPORTED_VLM_MODEL_TYPES = {
-    "qwen3_5_moe",
-    "qwen2_5_vl",
-    "qwen3_vl",
+DEFAULT_LAYER_PREFIX = "model.layers."
+
+# Per-VLM registry: model_type -> layer key prefix.
+# VLM models nest the text decoder under a different prefix
+# (e.g. 'model.language_model.layers.' instead of 'model.layers.').
+# Add new VLM model types here — this is the single source of truth.
+VLM_REGISTRY: dict[str, str] = {
+    "qwen3_vl": "model.language_model.layers.",
+    "qwen3_5": "model.language_model.layers.",
+    "qwen3_5_moe": "model.language_model.layers.",
 }
+
+# Derived from the registry — used by is_vlm_config()
+SUPPORTED_VLM_MODEL_TYPES = set(VLM_REGISTRY)
+
+
+def get_layer_prefix(model_config: PretrainedConfig) -> str:
+    """Return the layer key prefix for a model config.
+
+    VLM models nest their text decoder under a different prefix
+    (e.g. 'model.language_model.layers.') while standard decoder
+    models use 'model.layers.'.
+    """
+    model_type = getattr(model_config, "model_type", None)
+    return VLM_REGISTRY.get(model_type, DEFAULT_LAYER_PREFIX)
 
 
 def is_vlm_model(model_name: str) -> bool:
