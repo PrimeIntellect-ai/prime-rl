@@ -344,6 +344,11 @@ def train(config: TrainerConfig):
             image_grid_thw = (
                 micro_batch["image_grid_thw"].to("cuda") if micro_batch.get("image_grid_thw") is not None else None
             )
+            mm_token_type_ids = (
+                micro_batch["mm_token_type_ids"].to("cuda")
+                if micro_batch.get("mm_token_type_ids") is not None
+                else None
+            )
 
             labels = shift_tensor_left(input_ids)
 
@@ -388,6 +393,7 @@ def train(config: TrainerConfig):
                     temperature=temperatures,
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
+                    mm_token_type_ids=mm_token_type_ids,
                     routed_experts=routed_experts,
                 )
 

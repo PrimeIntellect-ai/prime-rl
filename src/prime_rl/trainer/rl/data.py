@@ -36,6 +36,8 @@ class TensorMicroBatch(TypedDict):
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None
     # image_grid_thw: grid dimensions [num_images, 3] where each entry is [temporal, height, width]
     image_grid_thw: Int[Tensor, "num_images 3"] | None
+    # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
+    mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
 
 class FakeDataLoader:
@@ -108,6 +110,7 @@ class FakeDataLoader:
             "routed_experts": None,
             "pixel_values": None,
             "image_grid_thw": None,
+            "mm_token_type_ids": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -133,6 +136,7 @@ class FakeDataLoader:
             "routed_experts": None,
             "pixel_values": None,
             "image_grid_thw": None,
+            "mm_token_type_ids": None,
         }
 
 
@@ -201,6 +205,9 @@ class DataLoader:
             else None,
             image_grid_thw=torch.tensor(micro_batch.image_grid_thw, dtype=torch.long)
             if micro_batch.image_grid_thw is not None
+            else None,
+            mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
+            if micro_batch.mm_token_type_ids is not None
             else None,
             routed_experts=torch.tensor(micro_batch.routed_experts, dtype=torch.int32).unsqueeze(
                 0
