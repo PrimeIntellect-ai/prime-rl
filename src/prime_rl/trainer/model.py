@@ -28,6 +28,7 @@ from prime_rl.trainer.models import (
     PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    get_custom_vlm_cls,
     supports_custom_impl,
 )
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -40,7 +41,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import is_vlm_model
+from prime_rl.utils.vlm import is_vlm_config, is_vlm_model
 
 
 def _patch_qwen3_5_moe_conversion_mapping():
@@ -217,10 +218,8 @@ def get_model(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
-    # Check if this is a vision-language model
+    # Check if this is a vision-language model (by name pattern first)
     is_vlm = is_vlm_model(config.name)
-    if is_vlm:
-        logger.info(f"Detected vision-language model: {config.name}")
 
     if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
         _patch_qwen3_5_text_position_ids()
@@ -233,6 +232,17 @@ def get_model(
         ),
     )
     model_config.use_cache = False
+
+    # Fallback VLM detection from loaded config (catches local paths)
+    if not is_vlm and is_vlm_config(model_config):
+        is_vlm = True
+    if is_vlm:
+        logger.info(f"Detected vision-language model: {config.name}")
+
+    # Fallback Qwen3.5 patch detection from loaded config model_type
+    if getattr(model_config, "model_type", "").startswith("qwen3_5_moe"):
+        _patch_qwen3_5_text_position_ids()
+        _patch_qwen3_5_moe_conversion_mapping()
     for subconfig_key in getattr(model_config, "sub_configs", {}):
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
@@ -273,19 +283,24 @@ def get_model(
         model_config.num_hidden_layers = num_hidden_layers
 
     # Determine the implementation to use
+    custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm else None
     if config.impl == "auto":
-        impl_to_use = "custom" if supports_custom_impl(model_config) else "hf"
-        logger.info(
-            f"Auto-selected implementation: {impl_to_use} (custom implementation {'supported' if supports_custom_impl(model_config) else 'not supported'})"
-        )
+        if is_vlm:
+            impl_to_use = "custom" if custom_vlm_cls is not None else "hf"
+        else:
+            impl_to_use = "custom" if supports_custom_impl(model_config) else "hf"
+        logger.info(f"Auto-selected implementation: {impl_to_use}")
     else:
         impl_to_use = config.impl
 
     with device:
         if is_vlm:
-            from transformers import AutoModelForImageTextToText
+            if impl_to_use == "custom" and custom_vlm_cls is not None:
+                model_cls = custom_vlm_cls
+            else:
+                from transformers import AutoModelForImageTextToText
 
-            model_cls = AutoModelForImageTextToText
+                model_cls = AutoModelForImageTextToText
         else:
             match impl_to_use:
                 case "hf":
@@ -294,8 +309,9 @@ def get_model(
                     model_cls = AutoModelForCausalLMPrimeRL
 
         load_model_start_time = time.perf_counter()
-        # VLM models use standard HF API which requires torch_dtype, custom models use dtype
-        dtype_kwarg = {"torch_dtype": dtype} if is_vlm else {"dtype": dtype}
+        # HF VLM models require torch_dtype; custom PrimeRL models and text Auto models use dtype
+        use_torch_dtype = is_vlm and model_cls is not custom_vlm_cls
+        dtype_kwarg = {"torch_dtype": dtype} if use_torch_dtype else {"dtype": dtype}
         if device == torch.device("meta"):
             logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
             model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, **dtype_kwarg)
@@ -351,7 +367,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     # For VLM models, shard the frozen vision encoder as a single unit
     # This allows FSDP to manage the memory while keeping it frozen
-    is_vlm = is_vlm_model(config.name)
+    is_vlm = is_vlm_model(config.name) or (hasattr(model, "model") and hasattr(model.model, "visual"))
     if is_vlm:
         if hasattr(model, "model") and hasattr(model.model, "visual"):
             vision_encoder = model.model.visual
@@ -567,6 +583,10 @@ def can_reinit_empty_buffers(model: nn.Module):
     The main issue is with anything that is not in the checkpoint.
     This is usually any non-persistent buffers.
     """
+    # Custom PrimeRL models handle buffer reinit via init_buffers_post_meta
+    if isinstance(model, PreTrainedModelPrimeRL):
+        return True
+
     buffer_names = [name for name, _ in model.named_buffers()]
 
     # TT MoE buffers

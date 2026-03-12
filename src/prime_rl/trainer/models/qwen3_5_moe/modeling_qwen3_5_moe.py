@@ -6,9 +6,11 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 from transformers.cache_utils import Cache
+from transformers.configuration_utils import PretrainedConfig
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeVisionModel
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, logging
 
@@ -692,24 +694,200 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         return MoeModelOutputWithPast(last_hidden_state=hidden_states)
 
 
+# ---------------------------------------------------------------------------
+# VLM composite model body
+# ---------------------------------------------------------------------------
+
+
+def _build_text_config(composite_config: PretrainedConfig) -> Qwen3_5MoeConfig:
+    """Build custom PrimeRL text config from HF's composite VLM config."""
+    text_dict = composite_config.text_config.to_dict()
+    text_config = Qwen3_5MoeConfig(**text_dict)
+    attn_impl = getattr(
+        composite_config.text_config,
+        "_attn_implementation",
+        getattr(composite_config, "_attn_implementation", None),
+    )
+    if attn_impl is not None:
+        text_config._attn_implementation = attn_impl
+    return text_config
+
+
+class Qwen3_5MoeVLMModel(nn.Module):
+    """Composite VLM body: HF vision encoder + custom PrimeRL text model."""
+
+    def __init__(self, config: PretrainedConfig):
+        super().__init__()
+        self.config = config
+        self.visual = Qwen3_5MoeVisionModel._from_config(config.vision_config)
+        self.language_model = Qwen3_5MoeModel(_build_text_config(config))
+
+    def get_input_embeddings(self):
+        return self.language_model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.language_model.embed_tokens = value
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.LongTensor | None = None,
+        routed_experts: torch.LongTensor | None = None,
+        **kwargs,
+    ) -> MoeModelOutputWithPast:
+        if inputs_embeds is None:
+            inputs_embeds = self.language_model.embed_tokens(input_ids)
+
+        if pixel_values is not None:
+            pixel_values = pixel_values.type(self.visual.dtype)
+            vision_output = self.visual(pixel_values, grid_thw=image_grid_thw, return_dict=True)
+            image_embeds = vision_output.pooler_output.to(inputs_embeds.device, inputs_embeds.dtype)
+
+            image_mask = input_ids == self.config.image_token_id
+            image_mask = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
+            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+
+        if position_ids is None:
+            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
+
+        return self.language_model(
+            inputs_embeds=inputs_embeds,
+            position_ids=position_ids,
+            routed_experts=routed_experts,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Unified CausalLM / VLM class
+# ---------------------------------------------------------------------------
+
+
+def _has_vlm_keys(state_dict: dict[str, Tensor]) -> bool:
+    return any(k.startswith("model.language_model.") for k in state_dict)
+
+
+def _remap_lm_keys(state_dict: dict[str, Tensor], to_flat: bool = True) -> None:
+    """Remap language model keys between VLM and flat format for weight conversion.
+
+    to_flat=True:  model.language_model.* -> model.*
+    to_flat=False: model.*               -> model.language_model.*
+
+    Vision keys (model.visual.*) are never touched.
+    """
+    src = "model.language_model." if to_flat else "model."
+    dst = "model." if to_flat else "model.language_model."
+    for k in [k for k in list(state_dict.keys()) if k.startswith(src) and not k.startswith("model.visual.")]:
+        state_dict[dst + k[len(src) :]] = state_dict.pop(k)
+
+
 class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
+    """Unified Qwen3.5 MoE model for both text-only and VLM configs.
+
+    When config has a vision_config, creates a composite model with HF's frozen
+    vision encoder + custom text model. Otherwise creates a text-only model.
+    """
+
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    _checkpoint_conversion_mapping = {}
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
-    def __init__(self, config):
-        super().__init__(config)
-        self.model = Qwen3_5MoeModel(config)
-        self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+    def __init__(self, config, **kwargs):
+        super().__init__(config, **kwargs)
+        self._is_vlm = hasattr(config, "vision_config")
 
+        if self._is_vlm:
+            self.model = Qwen3_5MoeVLMModel(config)
+            text_config = config.text_config
+            self._tied_weights_keys = {"lm_head.weight": "model.language_model.embed_tokens.weight"}
+        else:
+            self.model = Qwen3_5MoeModel(config)
+            text_config = config
+
+        self.vocab_size = text_config.vocab_size
+        self.lm_head = nn.Linear(text_config.hidden_size, text_config.vocab_size, bias=False)
         self.post_init()
+
+    def get_input_embeddings(self):
+        if self._is_vlm:
+            return self.model.get_input_embeddings()
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        if self._is_vlm:
+            self.model.set_input_embeddings(value)
+        else:
+            self.model.embed_tokens = value
 
     def set_decoder(self, decoder):
         self.model = decoder
 
     def get_decoder(self):
         return self.model
+
+    # ------------------------------------------------------------------
+    # State dict detection & conversion (handles both text-only and VLM)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return any(
+            "mlp.experts.gate_up_proj" in name
+            or "mlp.experts.1.up_proj" in name
+            or "mlp.shared_expert.gate_proj" in name
+            for name in state_dict
+        )
+
+    @classmethod
+    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return any("mlp.experts.w1" in name for name in state_dict)
+
+    @classmethod
+    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        vlm = _has_vlm_keys(state_dict)
+        if vlm:
+            _remap_lm_keys(state_dict, to_flat=True)
+        convert_tt_to_hf_moe(state_dict)
+        if vlm:
+            _remap_lm_keys(state_dict, to_flat=False)
+        return state_dict
+
+    @classmethod
+    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        vlm = _has_vlm_keys(state_dict)
+        if vlm:
+            _remap_lm_keys(state_dict, to_flat=True)
+        convert_hf_to_tt_moe(state_dict)
+        if vlm:
+            _remap_lm_keys(state_dict, to_flat=False)
+        return state_dict
+
+    @classmethod
+    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        vlm = _has_vlm_keys(state_dict)
+        if vlm:
+            _remap_lm_keys(state_dict, to_flat=True)
+        convert_tt_layer_to_hf(state_dict, layer_idx)
+        if vlm:
+            _remap_lm_keys(state_dict, to_flat=False)
+        return state_dict
+
+    @classmethod
+    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        vlm = _has_vlm_keys(state_dict)
+        if vlm:
+            _remap_lm_keys(state_dict, to_flat=True)
+        convert_hf_layer_to_tt(state_dict, layer_idx)
+        if vlm:
+            _remap_lm_keys(state_dict, to_flat=False)
+        return state_dict
+
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
 
     def forward(
         self,
@@ -723,6 +901,8 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Union[torch.Tensor, None] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5_moe for now"
@@ -731,15 +911,25 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         if position_ids is None:
             if inputs_embeds is not None:
                 position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
-            else:
+            elif input_ids is not None:
                 position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
 
-        outputs: MoeModelOutputWithPast = self.model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            inputs_embeds=inputs_embeds,
-            routed_experts=routed_experts,
-        )
+        if self._is_vlm:
+            outputs: MoeModelOutputWithPast = self.model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                inputs_embeds=inputs_embeds,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                routed_experts=routed_experts,
+            )
+        else:
+            outputs = self.model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                inputs_embeds=inputs_embeds,
+                routed_experts=routed_experts,
+            )
 
         hidden_states = outputs.last_hidden_state
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
@@ -749,14 +939,29 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
             temperature=temperature,
         )
 
+    # ------------------------------------------------------------------
+    # Buffer init after meta-device loading
+    # ------------------------------------------------------------------
+
     def init_buffers_post_meta(self):
-        buffer_names = [name for name, _ in self.named_buffers()]
-        if "model.rotary_emb.inv_freq" in buffer_names:
-            rotary_emb = self.model.rotary_emb
-            inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(
-                rotary_emb.config, rotary_emb.inv_freq.device
-            )
-            rotary_emb.inv_freq.copy_(inv_freq)
+        if self._is_vlm:
+            lm_rope = self.model.language_model.rotary_emb
+        else:
+            lm_rope = self.model.rotary_emb
+
+        if hasattr(lm_rope, "rope_init_fn"):
+            inv_freq, lm_rope.attention_scaling = lm_rope.rope_init_fn(lm_rope.config, lm_rope.inv_freq.device)
+            lm_rope.inv_freq.copy_(inv_freq)
+
+        if self._is_vlm:
+            vis_rope = self.model.visual.rotary_pos_emb
+            if hasattr(vis_rope, "inv_freq"):
+                dim = vis_rope.inv_freq.shape[0]
+                inv_freq = 1.0 / (
+                    10000.0
+                    ** (torch.arange(0, dim * 2, 2, dtype=torch.float32, device=vis_rope.inv_freq.device) / (dim * 2))
+                )
+                vis_rope.inv_freq.copy_(inv_freq)
 
 
 __all__ = [
