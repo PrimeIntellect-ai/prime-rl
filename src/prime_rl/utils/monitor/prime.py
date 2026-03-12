@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import os
+import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -143,14 +144,22 @@ class PrimeMonitor(Monitor):
             or not self.config.log_extras.samples
             or step % self.config.log_extras.interval != 0
         ):
-            # Do not log samples if not enabled or not log interval step
             return
+
+        ratio = self.config.log_extras.sample_ratio
+        if ratio is not None:
+            if ratio <= 0.0:
+                return
+            if ratio < 1.0:
+                max_samples = max(1, int(len(rollouts) * ratio))
+                if len(rollouts) > max_samples:
+                    rollouts = random.sample(rollouts, max_samples)
 
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
         assert step not in self._pending_sample_steps, f"Step {step} upload already in progress"
         assert self.logger is not None, "Logger is required for sample logging"
 
-        self.logger.info(f"Logging samples to Prime Intellect API at step {step}")
+        self.logger.info(f"Logging {len(rollouts)} samples to Prime Intellect API at step {step}")
         start_time = time.perf_counter()
 
         parquet_bytes = self._rollouts_to_parquet_bytes(rollouts, step)
