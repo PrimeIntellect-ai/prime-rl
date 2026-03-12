@@ -30,13 +30,25 @@ INFERENCE_TOML = "inference.toml"
 TEACHER_INFERENCE_TOML = "teacher_inference.toml"
 
 
-def get_physical_gpu_ids() -> list[int]:
-    """Return physical GPU IDs visible to the launcher."""
+def get_physical_gpu_ids() -> list[int | str]:
+    """Return physical GPU IDs visible to the launcher.
+
+    Returns integer indices for numeric CUDA_VISIBLE_DEVICES (e.g. "0,1,2"),
+    or the original UUID strings for UUID-style values (e.g. "GPU-abc123,...").
+    Preserving UUIDs is critical so child processes reference the correct
+    physical devices when CUDA_VISIBLE_DEVICES is overridden.
+    """
     raw_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if raw_visible is None:
         pynvml.nvmlInit()
         return list(range(pynvml.nvmlDeviceGetCount()))
-    return [int(token.strip()) for token in raw_visible.split(",") if token.strip()]
+    tokens = [t.strip() for t in raw_visible.split(",") if t.strip()]
+    if not tokens:
+        return []
+    try:
+        return [int(t) for t in tokens]
+    except ValueError:
+        return tokens
 
 
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
@@ -67,13 +79,16 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)
 
 
-def check_gpus_available(gpu_ids: list[int]) -> None:
+def check_gpus_available(gpu_ids: list[int | str]) -> None:
     """Raise error if there are existing processes on the specified GPUs."""
     pynvml.nvmlInit()
 
     occupied = []
     for gpu_id in gpu_ids:
-        handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+        if isinstance(gpu_id, int):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+        else:
+            handle = pynvml.nvmlDeviceGetHandleByUUID(gpu_id.encode())
         processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
         if processes:
             pids = [p.pid for p in processes]

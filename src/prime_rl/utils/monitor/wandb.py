@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -97,7 +98,11 @@ class WandbMonitor(Monitor):
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
         assert self.logger is not None, "Logger is required for sample logging"
 
-        self.logger.info(f"Logging samples to W&B table at step {step}")
+        max_samples = self.config.log_extras.max_samples
+        if max_samples is not None and len(rollouts) > max_samples:
+            rollouts = random.sample(rollouts, max_samples)
+
+        self.logger.info(f"Logging {len(rollouts)} samples to W&B table at step {step}")
         start_time = time.perf_counter()
 
         for rollout in rollouts:
