@@ -220,6 +220,31 @@ async def check_health(
 NCCL_READY_MARKER = "NCCL_READY"
 
 
+async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
+    """Pause all inference engines, waiting for in-flight requests to drain."""
+    logger = get_logger()
+    logger.info("Pausing inference engines for weight update")
+
+    async def _pause(client: AsyncClient) -> None:
+        response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
+        response.raise_for_status()
+
+    await asyncio.gather(*[_pause(client) for client in admin_clients])
+    logger.info("All inference engines paused")
+
+
+async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
+    """Resume all inference engines after weight update."""
+    logger = get_logger()
+
+    async def _resume(client: AsyncClient) -> None:
+        response = await client.post("/resume")
+        response.raise_for_status()
+
+    await asyncio.gather(*[_resume(client) for client in admin_clients])
+    logger.info("All inference engines resumed")
+
+
 async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
@@ -228,9 +253,9 @@ async def update_weights(
 ) -> None:
     """Update weights on static inference servers.
 
-    Creates a NCCL_READY marker file before calling the update endpoint to signal
-    to the trainer that inference workers are about to enter the receive path.
-    This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
+    Pauses all engines first to drain in-flight requests, then performs the
+    weight update, then resumes. This ensures all DP workers are idle and can
+    participate in the collective weight transfer.
 
     Note: The server-side /update_weights endpoint automatically resets the prefix cache
     to invalidate any cached KV states computed with the old weights.
@@ -244,14 +269,11 @@ async def update_weights(
     else:
 
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
-            try:
-                response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
-                response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 404:
-                    logger.warning("The route /update_weights does not exist. Skipping weight update.")
-                    return
-                raise
+            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
+            response.raise_for_status()
+
+        # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
+        await _pause_engines(admin_clients)
 
         # Create ready marker before servers enter receive path (used by NCCL broadcast)
         if weight_dir is not None:
@@ -261,6 +283,9 @@ async def update_weights(
             logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
         await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
+
+        # Resume engines to accept new requests
+        await _resume_engines(admin_clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:

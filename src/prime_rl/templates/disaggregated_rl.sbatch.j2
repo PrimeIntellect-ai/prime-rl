@@ -50,6 +50,7 @@ rm -rf $OUTPUT_DIR/rollouts
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
+export VLLM_CACHE_ROOT=/tmp/.vllm_cache
 
 # Node assignment (per replica: prefill nodes first, then decode nodes)
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
@@ -212,6 +213,7 @@ if [ "$NODE_RANK" -lt "$TOTAL_INFER_NODES" ]; then
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size 1 \
+            --worker-startup-timeout-secs 1200 \
             --log-level debug \
             >> $ROUTER_LOG 2>&1 &
     fi

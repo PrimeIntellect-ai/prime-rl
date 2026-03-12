@@ -19,7 +19,7 @@ dependencies = [
     "torch>=2.9.0",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm",
+    "vllm==0.17.0",
     "wandb==0.24.2",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.37",
@@ -65,7 +65,7 @@ flash-attn-4 = [
 
 [dependency-groups]
 fp8-inference = [
-    "deep-gemm @ https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl",
+    "deep-gemm",
 ]
 dev = [
     "ipykernel>=6.29.5",
@@ -97,7 +97,7 @@ verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = 
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "609e3d5" }
-vllm = { url = "https://vllm-wheels.s3.us-west-2.amazonaws.com/7a06e5b05b170d7da31845866da0a99fc65253a1/vllm-0.16.0rc3-cp38-abi3-manylinux_2_31_x86_64.whl" }
+deep-gemm = { path = "wheels/deep_gemm-2.3.0+477618c-cp312-cp312-linux_x86_64.whl" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
 reverse-text = { index = "primeintellect" }

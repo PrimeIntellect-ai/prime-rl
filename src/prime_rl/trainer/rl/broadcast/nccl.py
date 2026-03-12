@@ -125,6 +125,7 @@ class NCCLWeightBroadcastSender:
         if self.world.is_master:
             self.logger.debug("Broadcasting number of state dicts to send")
             broadcast_integer(num_state_dict_to_send, self.communicator)
+            torch.cuda.current_stream().synchronize()
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
@@ -154,6 +155,10 @@ class NCCLWeightBroadcastSender:
 
             if self.world.is_master:
                 broadcast_state_dict(layer_sd, self.communicator)
+                # Synchronize to ensure the broadcast completes before the next
+                # layer's DTensor resolution launches FSDP all-gathers. Running
+                # two NCCL communicators concurrently on the same GPU deadlocks.
+                torch.cuda.current_stream().synchronize()
 
     def _broadcast_kernel_format(self, model: nn.Module, state_dict: dict[str, Tensor], num_layers: int) -> None:
         """Broadcast weights in vLLM kernel format (fused, optionally FP8).
@@ -172,6 +177,7 @@ class NCCLWeightBroadcastSender:
         non_layer_sd = self._resolve_dtensors(non_layer_sd)
         if self.world.is_master:
             broadcast_state_dict(non_layer_sd, self.communicator)
+            torch.cuda.current_stream().synchronize()
         del non_layer_sd
 
         # Per-layer kernel-format conversion — resolve DTensors per layer to avoid OOM
@@ -182,6 +188,7 @@ class NCCLWeightBroadcastSender:
             del layer_sd
             if self.world.is_master:
                 broadcast_state_dict(kernel_sd, self.communicator)
+                torch.cuda.current_stream().synchronize()
             del kernel_sd
 
 
