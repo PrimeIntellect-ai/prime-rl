@@ -7,40 +7,42 @@
     "seq_len": 16384,
     "ac": "Recompute",
     "attention": "flash_attention_3",
-    "output": "/tmp/benchmark_result.json",
+    "output": "/home/ubuntu/prime-rl/benchmarks/scripts/../gpu_scaling_results/benchmark-8xh100-Qwen--Qwen3-4B-Instruct-2507-rl-16-8gpu-Recompute-flash_attention_3-16384-cp1-ep1.json",
     "dry_run": false,
     "timeout": 1500,
     "micro_batches": 2,
-    "docker_image": "primeintellect/prime-rl-jackmin@sha256:5a146f7dfdcdf6b0e90fd3f1ed0874d22a3a0641378dc8dad46ce213d02fa2e6",
+    "ep": 1,
+    "cp": 1,
+    "docker_image": null,
     "device_name": "NVIDIA H100 80GB HBM3",
-    "commit_sha": "unknown",
-    "timestamp": "2026-01-15T22:07:58.431560+00:00",
+    "commit_sha": "8dbd955a",
+    "timestamp": "2026-02-07T06:41:57.333612+00:00",
     "success": true,
     "error_reason": null,
-    "time_taken": 118.56876047700007
+    "time_taken": 92.67485128599947
   },
   "metrics": {
     "mfu": {
-      "mean": 21.186359822422222,
-      "std": 0.0008420584654773224,
-      "min": 21.185637325200606,
-      "max": 21.187284596349986
+      "mean": 20.874520535122677,
+      "std": 0.011437249457328855,
+      "min": 20.86197869674414,
+      "max": 20.884374385055644
     },
     "throughput": {
-      "mean": 48719.19229289033,
-      "std": 1.9363594617136561,
-      "min": 48717.53087104316,
-      "max": 48721.31886107815
+      "mean": 48002.1008090411,
+      "std": 26.300580198005672,
+      "min": 47973.260166250555,
+      "max": 48024.76027549656
     },
     "step_time": {
-      "mean": 5.380075431333201,
-      "std": 0.0007378815620199924,
-      "min": 5.379241290999744,
-      "max": 5.3806429229998685
+      "mean": 5.4572164656668365,
+      "std": 0.004244874310119045,
+      "min": 5.454022728999917,
+      "max": 5.462033425999834
     },
     "peak_memory": {
-      "gib": 10.255859375,
-      "pct": 12.95277915246372
+      "gib": 11.068359375,
+      "pct": 13.9736483794732
     }
   }
 }

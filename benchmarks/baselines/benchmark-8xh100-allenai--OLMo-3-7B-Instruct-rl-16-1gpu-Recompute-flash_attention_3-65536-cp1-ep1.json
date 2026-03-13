@@ -1,0 +1,48 @@
+{
+  "config": {
+    "type": "rl",
+    "num_gpus": 1,
+    "model_name": "allenai/OLMo-3-7B-Instruct",
+    "lora_rank": 16,
+    "seq_len": 65536,
+    "ac": "Recompute",
+    "attention": "flash_attention_3",
+    "output": "/home/ubuntu/prime-rl/benchmarks/scripts/../gpu_scaling_results/benchmark-8xh100-allenai--OLMo-3-7B-Instruct-rl-16-1gpu-Recompute-flash_attention_3-65536-cp1-ep1.json",
+    "dry_run": false,
+    "timeout": 1500,
+    "micro_batches": 2,
+    "ep": 1,
+    "cp": 1,
+    "docker_image": null,
+    "device_name": "NVIDIA H100 80GB HBM3",
+    "commit_sha": "8dbd955a",
+    "timestamp": "2026-02-07T09:12:11.182053+00:00",
+    "success": true,
+    "error_reason": null,
+    "time_taken": 168.0372949199991
+  },
+  "metrics": {
+    "mfu": {
+      "mean": 66.73128400315322,
+      "std": 0.04314206584532609,
+      "min": 66.69888917052636,
+      "max": 66.78025593639231
+    },
+    "throughput": {
+      "mean": 5043.113802675867,
+      "std": 3.2603950454520403,
+      "min": 5040.665613194781,
+      "max": 5046.814780952415
+    },
+    "step_time": {
+      "mean": 25.995730912,
+      "std": 0.032858610725290664,
+      "min": 25.970570772999054,
+      "max": 26.03290597800151
+    },
+    "peak_memory": {
+      "gib": 70.673828125,
+      "pct": 89.2247161833841
+    }
+  }
+}
