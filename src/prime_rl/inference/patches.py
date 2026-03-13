@@ -20,11 +20,16 @@ def _patch_qwen35_lora():
     during LoRA initialization.
 
     Also generalizes MergedColumnParallelLinearWithLoRA.can_replace_layer
-    to accept any number of packed modules (not just 2).
+    to accept any number of packed modules (not just 2), and generalizes
+    MergedColumnParallelLinearWithShardedLoRA.slice_lora_a to handle N
+    subloras instead of the hardcoded 2 (needed for fully_sharded_loras=True).
 
     Upstream: https://github.com/vllm-project/vllm/issues/36372
     """
-    from vllm.lora.layers.column_parallel_linear import MergedColumnParallelLinearWithLoRA
+    from vllm.lora.layers.column_parallel_linear import (
+        MergedColumnParallelLinearWithLoRA,
+        MergedColumnParallelLinearWithShardedLoRA,
+    )
     from vllm.model_executor.models.qwen3_5 import (
         Qwen3_5ForCausalLMBase,
         Qwen3_5ForConditionalGeneration,
@@ -47,6 +52,15 @@ def _patch_qwen35_lora():
         )
 
     MergedColumnParallelLinearWithLoRA.can_replace_layer = can_replace_layer
+
+    def slice_lora_a(self, lora_a):
+        output_shard_size = self.lora_a_stacked[0].shape[2]
+        output_start_idx = self.tp_rank * output_shard_size
+        return [
+            a[output_start_idx : output_start_idx + output_shard_size, :] if a is not None else None for a in lora_a
+        ]
+
+    MergedColumnParallelLinearWithShardedLoRA.slice_lora_a = slice_lora_a
 
 
 # Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
