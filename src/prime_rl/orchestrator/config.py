@@ -365,12 +365,21 @@ class BufferConfig(BaseConfig):
 
 class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False
-    gr3_alpha: float | None = None
+    gr3_alpha: Annotated[
+        float | None,
+        Field(
+            description="Penalty coefficient for Group Relative Reward Scaling. Recommended value: 0.33"
+        ),
+    ] = None
+
 
     @model_validator(mode="after")
     def validate_gr3_alpha(self):
-        if not self.online_difficulty_filtering:
-            raise ValueError("Group Relative Reward scaling requires online difficulty filtering")
+        if self.gr3_alpha:
+            if self.length_weighted_mean:
+                raise ValueError("Group Relative Reward scaling cannot be used in conjunction with length weighted mean")
+            if not self.online_difficulty_filtering:
+                raise ValueError("Group Relative Reward scaling requires online difficulty filtering")
         return self
 
 
