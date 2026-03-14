@@ -365,6 +365,7 @@ class BufferConfig(BaseConfig):
 
 class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False
+    gr3_alpha: float | None = None
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):
