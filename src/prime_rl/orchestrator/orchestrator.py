@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import gc
 import multiprocessing as mp
 import random
@@ -193,6 +194,17 @@ async def orchestrate(config: OrchestratorConfig):
 
     train_env_addresses = []
     env_processes: list[mp.Process] = []
+
+    def _cleanup_env_processes():
+        for proc in env_processes:
+            proc.terminate()
+            proc.join(timeout=5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=5)
+
+    atexit.register(_cleanup_env_processes)
+
     for env_id, env, env_name in zip(env_ids, config.env, train_env_names):
         if env.address is None:
             address, process = spawn_env_server(
@@ -850,13 +862,9 @@ async def orchestrate(config: OrchestratorConfig):
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
 
-    # Shutdown env processes
-    for process in env_processes:
-        process.terminate()
-        process.join(timeout=5)
-        if process.is_alive():
-            process.kill()
-            process.join(timeout=5)
+    # Shutdown env processes (also registered as atexit handler for crash safety)
+    atexit.unregister(_cleanup_env_processes)
+    _cleanup_env_processes()
 
     logger.success("Orchestrator finished.")
 
