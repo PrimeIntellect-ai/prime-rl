@@ -27,7 +27,7 @@ def compute_advantages(
         return (rewards - baseline).flatten().tolist()
     elif advantage_config.gr3_alpha:
         baseline = rewards.mean(dim=1, keepdim=True)
-        lengths_normalized = lengths / lengths.sum(dim=1, keepdim=True)
+        lengths_normalized = lengths / lengths.mean(dim=1, keepdim=True)
         length_shaping = (1 + advantage_config.gr3_alpha * lengths_normalized)**-1
         rewards_corrected = rewards * length_shaping
         return (rewards_corrected - baseline).flatten().tolist()
