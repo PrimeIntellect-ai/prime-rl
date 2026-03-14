@@ -22,15 +22,14 @@ def compute_advantages(
         return rewards
     rewards = torch.tensor(rewards).view(-1, samples_per_problem)
     lengths = torch.tensor(completion_lengths).view(-1, samples_per_problem)
-    if advantage_config.length_weighted_mean:
-        baseline = (rewards * lengths).sum(dim=1, keepdim=True) / lengths.sum(dim=1, keepdim=True)
-        return (rewards - baseline).flatten().tolist()
-    elif advantage_config.gr3_alpha:
+    if advantage_config.gr3_alpha:
         baseline = rewards.mean(dim=1, keepdim=True)
         lengths_normalized = lengths / lengths.mean(dim=1, keepdim=True)
         length_shaping = (1 + advantage_config.gr3_alpha * lengths_normalized)**-1
         rewards_corrected = rewards * length_shaping
         return (rewards_corrected - baseline).flatten().tolist()
+    elif advantage_config.length_weighted_mean:
+        baseline = (rewards * lengths).sum(dim=1, keepdim=True) / lengths.sum(dim=1, keepdim=True)
     else:
         baseline = rewards.mean(dim=1, keepdim=True)
-        return (rewards - baseline).flatten().tolist()
+    return (rewards - baseline).flatten().tolist()
