@@ -367,6 +367,12 @@ class AdvantageConfig(BaseConfig):
     length_weighted_mean: bool = False
     gr3_alpha: float | None = None
 
+    @model_validator(mode="after")
+    def validate_gr3_alpha(self):
+        if not self.online_difficulty_filtering:
+            raise ValueError("Group Relative Reward scaling requires online difficulty filtering")
+        return self
+
 
 class FileSystemWeightBroadcastConfig(BaseModel):
     """Configures the filesystem weight broadcast."""
