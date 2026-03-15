@@ -116,8 +116,16 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
+    fused_cross_entropy_backend = None
+    if config.loss_impl == "liger_fused":
+        fused_cross_entropy_backend = "liger"
+    elif config.loss_impl == "quack_fused":
+        fused_cross_entropy_backend = "quack"
     model = setup_model(
-        config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=config.loss_impl == "liger_fused"
+        config.model,
+        parallel_dims,
+        loading_from_ckpt_later,
+        fused_cross_entropy_backend=fused_cross_entropy_backend,
     )
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
@@ -183,6 +191,8 @@ def train(config: SFTConfig):
             ce_loss = CrossEntropyLoss(reduction="none")
         case "liger_fused":
             pass  # loss is computed inside the fused lm_head
+        case "quack_fused":
+            pass  # loss is computed inside the fused lm_head
         case _:
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
@@ -198,7 +208,7 @@ def train(config: SFTConfig):
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
         with maybe_activation_offloading(config.model.ac_offloading):
-            if config.loss_impl == "liger_fused":
+            if config.loss_impl in {"liger_fused", "quack_fused"}:
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FusedCrossEntropyOutputLinear.IGNORE_INDEX
                 out = forward(model, input_ids, position_ids, labels=masked_target_ids)

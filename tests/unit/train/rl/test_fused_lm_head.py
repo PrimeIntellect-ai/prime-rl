@@ -1,13 +1,28 @@
+import importlib.util
+
 import pytest
 import torch
 from transformers import AutoModelForCausalLM
 from transformers.models.llama.configuration_llama import LlamaConfig
 
 from prime_rl.trainer.models import cast_float_and_contiguous
-from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
+from prime_rl.trainer.models.layers.lm_head import (
+    FusedCrossEntropyOutputLinear,
+    FusedOutputLinear,
+    VanillaOutputLinear,
+    inject_prime_lm_head,
+)
 from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
 from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
 from prime_rl.utils.utils import default_dtype
+
+
+QUACK_INSTALLED = importlib.util.find_spec("quack") is not None
+QUACK_SUPPORTED_GPU = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] in {9, 10, 11}
+requires_quack_fused = pytest.mark.skipif(
+    not (QUACK_INSTALLED and QUACK_SUPPORTED_GPU),
+    reason="quack_fused requires quack-kernels on a supported SM90+ CUDA GPU",
+)
 
 
 def _baseline_logprobs_and_entropy(
@@ -423,3 +438,91 @@ def test_hf_model_fused_vs_vanilla_matches():
     # Compare results
     torch.testing.assert_close(fused_logprobs, vanilla_logprobs, rtol=1e-3, atol=1e-4)
     torch.testing.assert_close(fused_entropy, vanilla_entropy, rtol=1e-3, atol=1e-4)
+
+
+def test_inject_prime_lm_head_selects_quack_fused_backend():
+    config = LlamaConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        max_position_embeddings=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        num_hidden_layers=1,
+        vocab_size=1024,
+        rms_norm_eps=1e-5,
+        rope_theta=10000.0,
+        attention_bias=False,
+        mlp_bias=False,
+    )
+    model = AutoModelForCausalLM.from_config(config)
+
+    inject_prime_lm_head(model, fused_cross_entropy_backend="quack")
+
+    assert isinstance(model.lm_head, FusedCrossEntropyOutputLinear)
+    assert model.lm_head.backend == "quack"
+
+
+def test_inject_prime_lm_head_rejects_quack_with_softcapping():
+    config = LlamaConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        max_position_embeddings=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        num_hidden_layers=1,
+        vocab_size=1024,
+        rms_norm_eps=1e-5,
+        rope_theta=10000.0,
+        attention_bias=False,
+        mlp_bias=False,
+    )
+    config.final_logit_softcapping = 30.0
+    model = AutoModelForCausalLM.from_config(config)
+
+    with pytest.raises(ValueError, match="final_logit_softcapping"):
+        inject_prime_lm_head(model, fused_cross_entropy_backend="quack")
+
+
+@pytest.mark.gpu
+@requires_quack_fused
+def test_quack_fused_cross_entropy_matches_full_logits_forward_and_backward():
+    torch.manual_seed(7)
+    batch_size, seq_len, hidden_size, vocab_size = 2, 4, 16, 64
+    labels = torch.randint(0, vocab_size, (batch_size, seq_len), device="cuda")
+    labels[0, 0] = FusedCrossEntropyOutputLinear.IGNORE_INDEX
+
+    hidden_ref = torch.randn(
+        batch_size, seq_len, hidden_size, device="cuda", dtype=torch.bfloat16, requires_grad=True
+    )
+    weight_ref = torch.randn(vocab_size, hidden_size, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+
+    logits = (hidden_ref.reshape(-1, hidden_size) @ weight_ref.t()).float()
+    loss_ref = torch.nn.functional.cross_entropy(
+        logits,
+        labels.reshape(-1),
+        ignore_index=FusedCrossEntropyOutputLinear.IGNORE_INDEX,
+        reduction="mean",
+    )
+    loss_ref.backward()
+    grad_hidden_ref = hidden_ref.grad.detach().clone()
+    grad_weight_ref = weight_ref.grad.detach().clone()
+
+    hidden_quack = hidden_ref.detach().clone().requires_grad_(True)
+    weight_quack = weight_ref.detach().clone().requires_grad_(True)
+    lm_head = FusedCrossEntropyOutputLinear(
+        in_features=hidden_size,
+        out_features=vocab_size,
+        backend="quack",
+    ).to(
+        device="cuda", dtype=torch.bfloat16
+    )
+    lm_head.weight = torch.nn.Parameter(weight_quack)
+
+    out = lm_head(hidden_quack, labels=labels)
+    loss_quack = out["loss"]
+    assert loss_quack is not None
+    loss_quack.backward()
+
+    torch.testing.assert_close(loss_quack.float(), loss_ref.float(), rtol=5e-3, atol=5e-3)
+    torch.testing.assert_close(hidden_quack.grad, grad_hidden_ref, rtol=5e-2, atol=5e-2)
+    torch.testing.assert_close(lm_head.weight.grad, grad_weight_ref, rtol=5e-2, atol=5e-2)

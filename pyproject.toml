@@ -13,6 +13,7 @@ dependencies = [
     "pyarrow>=21.0.0",
     "pydantic>=1.10.13",
     "pydantic-config",
+    "quack-kernels>=0.2.7",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
     "numpy>=2.2.6",

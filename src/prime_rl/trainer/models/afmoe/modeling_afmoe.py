@@ -63,6 +63,7 @@ class AfmoeAttentionConfig:
     num_key_value_heads: int
     rms_norm_eps: float
     is_local_attention: bool
+    rms_norm_impl: Literal["torch", "quack"] = "torch"
     sliding_window: int | None = None
     attention_dropout: float = 0.0
 
@@ -98,8 +99,12 @@ class AfmoeAttentionBase(nn.Module):
         self.gate_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=False)
 
         # QK normalization
-        self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
-        self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+        self.q_norm = RMSNorm(
+            RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps, impl=config.rms_norm_impl)
+        )
+        self.k_norm = RMSNorm(
+            RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps, impl=config.rms_norm_impl)
+        )
 
     def _project_states(
         self,
@@ -268,6 +273,7 @@ def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
         num_attention_heads=config.num_attention_heads,
         num_key_value_heads=config.num_key_value_heads,
         rms_norm_eps=config.rms_norm_eps,
+        rms_norm_impl=getattr(config, "rms_norm_impl", "torch"),
         is_local_attention=is_local,
         sliding_window=config.sliding_window if is_local else None,
         attention_dropout=config.attention_dropout,
@@ -295,11 +301,35 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         self.self_attn = _get_afmoe_attention(config, layer_idx)
         self.attention_type = config.layer_types[layer_idx]
 
-        self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.input_layernorm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
+        self.post_attention_layernorm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
 
-        self.pre_mlp_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.post_mlp_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.pre_mlp_layernorm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
+        self.post_mlp_layernorm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
 
         self.moe_enabled = layer_idx >= config.num_dense_layers
         mlp_config = MLPConfig(
@@ -419,7 +449,13 @@ class AfmoeModel(AfmoePreTrainedModel):
         self.layers = nn.ModuleList(
             [AfmoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.norm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
         self.rotary_emb = _create_rotary_emb(config)
         self.gradient_checkpointing = False
 

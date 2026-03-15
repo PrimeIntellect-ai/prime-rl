@@ -238,6 +238,7 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
+    model_config.rms_norm_impl = config.rms_norm_impl
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -280,6 +281,12 @@ def get_model(
         )
     else:
         impl_to_use = config.impl
+
+    if config.rms_norm_impl == "quack" and impl_to_use != "custom":
+        raise ValueError(
+            f"rms_norm_impl='quack' requires the custom model implementation, but got impl='{config.impl}' "
+            f"(resolved to '{impl_to_use}')"
+        )
 
     if is_vlm and impl_to_use != "hf":
         raise ValueError(
@@ -701,7 +708,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
-    fused_cross_entropy: bool = False,
+    fused_cross_entropy_backend: str | None = None,
 ) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
@@ -733,7 +740,11 @@ def setup_model(
     if isinstance(config.fused_lm_head_token_chunk_size, int):
         lm_head_chunk_size = config.fused_lm_head_token_chunk_size
 
-    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
+    inject_prime_lm_head(
+        model,
+        chunk_size=lm_head_chunk_size,
+        fused_cross_entropy_backend=fused_cross_entropy_backend,
+    )
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:

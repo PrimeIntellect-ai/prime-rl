@@ -226,6 +226,13 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = "auto"
 
+    rms_norm_impl: Annotated[
+        Literal["torch", "quack"],
+        Field(
+            description="RMSNorm implementation to use for custom model implementations.",
+        ),
+    ] = "torch"
+
     optimization_dtype: Annotated[
         Literal["bfloat16", "float32"],
         Field(

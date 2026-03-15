@@ -37,6 +37,7 @@ class AttentionConfig:
     attention_bias: bool
     use_qk_norm: bool
     rms_norm_eps: float
+    rms_norm_impl: Literal["torch", "quack"] = "torch"
     qk_norm_type: Literal["per_head", "per_layer"] = "per_head"
 
 
@@ -76,14 +77,26 @@ class FlashAttention(nn.Module):
         if self.use_qk_norm:
             if self.qk_norm_type == "per_layer":
                 self.q_norm = RMSNorm(
-                    RMSNormConfig(hidden_size=config.num_attention_heads * self.head_dim, eps=config.rms_norm_eps)
+                    RMSNormConfig(
+                        hidden_size=config.num_attention_heads * self.head_dim,
+                        eps=config.rms_norm_eps,
+                        impl=config.rms_norm_impl,
+                    )
                 )
                 self.k_norm = RMSNorm(
-                    RMSNormConfig(hidden_size=config.num_key_value_heads * self.head_dim, eps=config.rms_norm_eps)
+                    RMSNormConfig(
+                        hidden_size=config.num_key_value_heads * self.head_dim,
+                        eps=config.rms_norm_eps,
+                        impl=config.rms_norm_impl,
+                    )
                 )
             else:
-                self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
-                self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+                self.q_norm = RMSNorm(
+                    RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps, impl=config.rms_norm_impl)
+                )
+                self.k_norm = RMSNorm(
+                    RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps, impl=config.rms_norm_impl)
+                )
 
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
@@ -178,14 +191,26 @@ class SDPAAttention(nn.Module):
         if self.use_qk_norm:
             if self.qk_norm_type == "per_layer":
                 self.q_norm = RMSNorm(
-                    RMSNormConfig(hidden_size=config.num_attention_heads * self.head_dim, eps=config.rms_norm_eps)
+                    RMSNormConfig(
+                        hidden_size=config.num_attention_heads * self.head_dim,
+                        eps=config.rms_norm_eps,
+                        impl=config.rms_norm_impl,
+                    )
                 )
                 self.k_norm = RMSNorm(
-                    RMSNormConfig(hidden_size=config.num_key_value_heads * self.head_dim, eps=config.rms_norm_eps)
+                    RMSNormConfig(
+                        hidden_size=config.num_key_value_heads * self.head_dim,
+                        eps=config.rms_norm_eps,
+                        impl=config.rms_norm_impl,
+                    )
                 )
             else:
-                self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
-                self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+                self.q_norm = RMSNorm(
+                    RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps, impl=config.rms_norm_impl)
+                )
+                self.k_norm = RMSNorm(
+                    RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps, impl=config.rms_norm_impl)
+                )
 
     def forward(
         self,

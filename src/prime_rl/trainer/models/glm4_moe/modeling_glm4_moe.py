@@ -54,6 +54,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             attention_bias=config.attention_bias,
             use_qk_norm=config.use_qk_norm,
             rms_norm_eps=config.rms_norm_eps,
+            rms_norm_impl=getattr(config, "rms_norm_impl", "torch"),
         )
         self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
 
@@ -80,8 +81,20 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         else:
             self.mlp = MLP(mlp_config)
 
-        self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.input_layernorm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
+        self.post_attention_layernorm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
 
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
@@ -179,7 +192,13 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         self.layers = nn.ModuleList(
             [Glm4MoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.norm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
 
         if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
             rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))

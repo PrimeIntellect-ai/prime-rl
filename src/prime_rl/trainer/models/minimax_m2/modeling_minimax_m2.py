@@ -40,6 +40,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
             attention_bias=config.attention_bias,
             use_qk_norm=config.use_qk_norm,
             rms_norm_eps=config.rms_norm_eps,
+            rms_norm_impl=getattr(config, "rms_norm_impl", "torch"),
             qk_norm_type=config.qk_norm_type,
         )
         self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
@@ -57,8 +58,20 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
         )
         self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.intermediate_size)
 
-        self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.input_layernorm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
+        self.post_attention_layernorm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
 
     def forward(
         self,
@@ -141,7 +154,13 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
         self.layers = nn.ModuleList(
             [MiniMaxM2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.norm = RMSNorm(
+            RMSNormConfig(
+                hidden_size=config.hidden_size,
+                eps=config.rms_norm_eps,
+                impl=getattr(config, "rms_norm_impl", "torch"),
+            )
+        )
 
         if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
             rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
