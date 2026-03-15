@@ -571,15 +571,43 @@ async def orchestrate(config: OrchestratorConfig):
             nonzero = [a for a in precomputed if a != 0.0]
             print(f"[ADVANTAGE PASSTHROUGH] {len(precomputed)} total, {len(nonzero)} non-zero, sample: {precomputed[:8]}")
         else:
-            completion_lens = [get_completion_len(r) for r in train_rollouts]
-            advantages = compute_advantages(
-                rewards,
-                completion_lens,
-                config.rollouts_per_example,
-                config.advantage,
-            )
-            nonzero = [a for a in advantages if a != 0.0]
-            print(f"[ADVANTAGE COMPUTED] {len(advantages)} total, {len(nonzero)} non-zero, values: {advantages}")
+            actor_ids = [r.get("actor_id") for r in train_rollouts]
+            unique_actors = sorted(set(a for a in actor_ids if a is not None))
+
+            if len(unique_actors) > 1:
+                # Per-actor GRPO: compute advantages within each actor group
+                advantages = [0.0] * len(train_rollouts)
+                samples_per_actor = config.rollouts_per_example // len(unique_actors)
+                for actor_id in unique_actors:
+                    idxs = [i for i, a in enumerate(actor_ids) if a == actor_id]
+                    actor_rewards = [rewards[i] for i in idxs]
+                    actor_lens = [get_completion_len(train_rollouts[i]) for i in idxs]
+                    actor_advs = compute_advantages(
+                        actor_rewards,
+                        actor_lens,
+                        samples_per_actor,
+                        config.advantage,
+                    )
+                    for idx, adv in zip(idxs, actor_advs):
+                        advantages[idx] = adv
+                nonzero = [a for a in advantages if a != 0.0]
+                per_actor_summary = {}
+                for actor_id in unique_actors:
+                    idxs = [i for i, a in enumerate(actor_ids) if a == actor_id]
+                    actor_r = [rewards[i] for i in idxs]
+                    actor_a = [advantages[i] for i in idxs]
+                    per_actor_summary[actor_id] = f"reward={sum(actor_r)/len(actor_r):.4f}, adv_nonzero={sum(1 for a in actor_a if a != 0.0)}/{len(actor_a)}"
+                print(f"[ADVANTAGE PER-ACTOR] {len(advantages)} total, {len(nonzero)} non-zero, {per_actor_summary}")
+            else:
+                completion_lens = [get_completion_len(r) for r in train_rollouts]
+                advantages = compute_advantages(
+                    rewards,
+                    completion_lens,
+                    config.rollouts_per_example,
+                    config.advantage,
+                )
+                nonzero = [a for a in advantages if a != 0.0]
+                print(f"[ADVANTAGE COMPUTED] {len(advantages)} total, {len(nonzero)} non-zero, values: {advantages}")
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
