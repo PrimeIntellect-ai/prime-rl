@@ -34,6 +34,9 @@ keep_last = 3
 [trainer.model]
 seq_len = 16384
 
+[trainer.model.ac]
+freq = 1
+
 [trainer.optim]
 lr = 1e-5
 
