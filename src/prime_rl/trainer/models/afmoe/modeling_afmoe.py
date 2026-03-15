@@ -22,6 +22,7 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe_backends import MoEBackendSelection
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import (
     RotaryEmbedding,
@@ -318,6 +319,7 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             use_grouped_mm=getattr(config, "use_grouped_mm", True),
             load_balance_coeff=getattr(config, "load_balance_coeff", None),
+            backends=MoEBackendSelection.from_config(config),
         )
         if self.moe_enabled:
             self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)

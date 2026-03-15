@@ -37,6 +37,7 @@ from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe_backends import MoEBackendSelection
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
@@ -67,6 +68,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             load_balance_coeff=1e-3,
             use_grouped_mm=config.use_grouped_mm,
+            backends=MoEBackendSelection.from_config(config),
         )
         mlp_config = MLPConfig(
             hidden_size=config.hidden_size,

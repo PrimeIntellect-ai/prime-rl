@@ -17,6 +17,7 @@ from transformers.utils import TransformersKwargs, logging
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe_backends import MoEBackendSelection
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
@@ -511,6 +512,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=config.load_balance_coeff,
+            backends=MoEBackendSelection.from_config(config),
         )
         self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
 

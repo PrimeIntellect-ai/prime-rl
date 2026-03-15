@@ -60,6 +60,50 @@ class CompileConfig(BaseConfig):
     ] = False
 
 
+class MoEBackendConfig(BaseConfig):
+    """Configures optional MoE kernel backends."""
+
+    routing: Annotated[
+        Literal["torch", "triton"],
+        Field(
+            description=(
+                "Backend for MoE routing internals such as expert histograms and scatter-index computation. "
+                "'torch' keeps the current safe path; 'triton' uses Triton kernels when available and otherwise falls back to torch."
+            ),
+        ),
+    ] = "torch"
+
+    scatter: Annotated[
+        Literal["torch", "triton"],
+        Field(
+            description=(
+                "Backend for dispatching token activations into expert order. "
+                "'triton' uses the staged index_scatter accelerator when available."
+            ),
+        ),
+    ] = "torch"
+
+    gather: Annotated[
+        Literal["torch", "triton"],
+        Field(
+            description=(
+                "Backend for combining expert outputs back into token order. "
+                "'triton' uses the staged weighted-gather accelerator when available."
+            ),
+        ),
+    ] = "torch"
+
+    grouped_ffn: Annotated[
+        Literal["torch", "triton"],
+        Field(
+            description=(
+                "Execution strategy for the routed grouped-FFN path. "
+                "'torch' keeps the current safe routed-expert flow; 'triton' switches to the staged grouped-FFN path that uses Triton histogram/scatter/gather kernels and a fused gate/up expert projection when available, otherwise falls back to the shared path."
+            ),
+        ),
+    ] = "torch"
+
+
 class BenchConfig(BaseConfig):
     """Configures benchmark mode."""
 
@@ -246,6 +290,16 @@ class ModelConfig(BaseModelConfig):
             description="Whether to use grouped mm for the MoE layers. Require compute capability >= 9.0",
         ),
     ] = True
+
+    moe_backends: Annotated[
+        MoEBackendConfig,
+        Field(
+            description=(
+                "Backend selection for trainer-side MoE routing, dispatch/combine, and grouped-FFN internals. "
+                "Defaults keep the existing torch path."
+            ),
+        ),
+    ] = MoEBackendConfig()
 
     freeze_moe_router: Annotated[
         bool,

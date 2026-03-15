@@ -248,6 +248,7 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
+    model_config.moe_backends = config.moe_backends.model_dump(mode="python")
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.

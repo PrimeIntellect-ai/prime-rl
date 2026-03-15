@@ -13,6 +13,7 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe_backends import MoEBackendSelection
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.minimax_m2.configuration_minimax_m2 import MiniMaxM2Config
@@ -54,6 +55,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=1e-3 if config.use_routing_bias else None,
+            backends=MoEBackendSelection.from_config(config),
         )
         self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.intermediate_size)
 
