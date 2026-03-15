@@ -31,8 +31,8 @@ sort_by_size = true
 interval = 50
 keep_last = 3
 
-[trainer]
-max_seq_len = 16384
+[trainer.model]
+seq_len = 16384
 
 [trainer.optim]
 lr = 1e-5
