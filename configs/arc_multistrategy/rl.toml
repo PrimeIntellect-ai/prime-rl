@@ -30,7 +30,6 @@ sort_by_size = true
 [ckpt]
 interval = 5
 keep_last = 3
-resume_step = -1
 
 [trainer.model]
 seq_len = 16384
