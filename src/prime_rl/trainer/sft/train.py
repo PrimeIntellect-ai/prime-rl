@@ -242,19 +242,22 @@ def train(config: SFTConfig):
             )
             return per_sample_mean.sum(), valid.sum(dtype=torch.int64)
 
-        # cat packing: group by sample using position_ids-derived boundaries
-        tl = token_loss[0]
-        mask = loss_mask[0]
-        num_samples = sample_ids[-1].item() + 1
-        masked_ids = sample_ids[mask]
-        masked_losses = tl[mask]
-        per_sample_loss = tl.new_zeros(num_samples)
-        per_sample_loss.scatter_add_(0, masked_ids, masked_losses)
-        per_sample_token_count = tl.new_zeros(num_samples)
-        per_sample_token_count.scatter_add_(0, masked_ids, torch.ones_like(masked_losses))
-        valid = per_sample_token_count > 0
-        per_sample_mean = torch.where(valid, per_sample_loss / per_sample_token_count, per_sample_loss.new_zeros(()))
-        return per_sample_mean.sum(), valid.sum(dtype=torch.int64)
+        elif config.data.pack_function == "cat":
+            # Group by sample using position_ids-derived boundaries
+            tl = token_loss[0]
+            mask = loss_mask[0]
+            num_samples = sample_ids[-1].item() + 1
+            masked_ids = sample_ids[mask]
+            masked_losses = tl[mask]
+            per_sample_loss = tl.new_zeros(num_samples)
+            per_sample_loss.scatter_add_(0, masked_ids, masked_losses)
+            per_sample_token_count = tl.new_zeros(num_samples)
+            per_sample_token_count.scatter_add_(0, masked_ids, torch.ones_like(masked_losses))
+            valid = per_sample_token_count > 0
+            per_sample_mean = torch.where(
+                valid, per_sample_loss / per_sample_token_count, per_sample_loss.new_zeros(())
+            )
+            return per_sample_mean.sum(), valid.sum(dtype=torch.int64)
 
     maybe_record_function = nullcontext
 
