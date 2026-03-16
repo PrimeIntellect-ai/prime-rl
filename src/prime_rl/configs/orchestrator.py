@@ -654,13 +654,6 @@ class NCCLWeightBroadcastConfig(BaseModel):
         ),
     ] = 1
 
-    use_vllm_format_transfer: Annotated[
-        bool,
-        Field(
-            description="Transfer weights in vLLM kernel format instead of HF checkpoint format.",
-        ),
-    ] = False
-
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")

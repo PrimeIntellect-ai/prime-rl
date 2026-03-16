@@ -344,7 +344,6 @@ async def init_nccl_broadcast(
     host: str,
     port: int,
     timeout: int,
-    use_vllm_format_transfer: bool = False,
     inference_world_size: int | None = None,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
@@ -379,7 +378,6 @@ async def init_nccl_broadcast(
                     "inference_world_size": inference_world_size,
                     "gpus_per_server": gpus_per_server,
                     "timeout": timeout,
-                    "use_vllm_format_transfer": use_vllm_format_transfer,
                 },
             )
             response.raise_for_status()
