@@ -11,10 +11,8 @@ that calls it and accumulates gradients. The key changes:
 import torch
 import triton
 from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
-from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_backward
+from liger_kernel.ops.fused_linear_cross_entropy import MAX_FUSED_SIZE, fused_linear_cross_entropy_backward
 from liger_kernel.ops.utils import amp_custom_bwd, amp_custom_fwd, is_hip
-
-MAX_FUSED_SIZE = 65536 // 2
 
 
 def _fused_linear_cross_entropy_forward_with_token_weight(
