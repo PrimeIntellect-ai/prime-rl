@@ -140,4 +140,3 @@ class NCCLWeightUpdateWorker(Worker):
         model.load_weights(state_iter)  # type: ignore
         device = next(model.parameters()).device
         process_weights_after_loading(model, self.model_runner.model_config, device)
-

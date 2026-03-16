@@ -142,5 +142,3 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
     num_layers = get_max_layer_num(state_dict)
     for i in range(num_layers):
         convert_tt_layer_to_hf(state_dict, i)
-
-

@@ -156,7 +156,6 @@ class NCCLWeightBroadcastSender:
                 torch.cuda.current_stream().synchronize()
 
 
-
 class NCCLWeightBroadcast(WeightBroadcast):
     """Broadcast weights into the inference engine using NCCL."""
 
