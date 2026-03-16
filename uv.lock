@@ -594,6 +594,14 @@ wheels = [
 ]
 
 [[package]]
+name = "deep-ep"
+version = "1.2.1+73b6ea4"
+source = { path = "deps/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }
+wheels = [
+    { filename = "deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl", hash = "sha256:ddf25e5d9c8543d27d7ae7a62ff7752560bf79c03c5991d48721352818b320d3" },
+]
+
+[[package]]
 name = "deep-gemm"
 version = "2.3.0+35c4bc8"
 source = { url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" }
@@ -2488,6 +2496,9 @@ dev = [
     { name = "pytest", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "ruff", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
+disagg = [
+    { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
 fp8-inference = [
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
@@ -2548,6 +2559,7 @@ dev = [
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "ruff", specifier = ">=0.12.1" },
 ]
+disagg = [{ name = "deep-ep", marker = "platform_machine == 'x86_64'", path = "deps/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }]
 fp8-inference = [{ name = "deep-gemm", marker = "platform_machine == 'x86_64'", url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" }]
 
 [[package]]

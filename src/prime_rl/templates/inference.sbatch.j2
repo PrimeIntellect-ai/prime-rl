@@ -53,13 +53,6 @@ cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
 uv sync --all-extras
-{% if disaggregated -%}
-
-# Install disaggregated inference dependencies
-bash scripts/install_ep_kernels.sh
-bash scripts/install_nixl_from_source.sh || true
-uv pip install nixl
-{%- endif %}
 
 # Print inference URLs
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
