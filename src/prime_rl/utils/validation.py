@@ -34,16 +34,11 @@ def validate_shared_model_name(
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
-    if trainer.model.name.startswith("Jackmin108/"):  # The TT MoE models will have a different name on the orchestrator
-        return
-    if trainer.model.name != orchestrator.model.name:
-        raise ValueError(
-            f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
-        )
-
+    # Orchestrator must match inference (it queries the inference server)
     if inference and inference.model.name != orchestrator.model.name:
         raise ValueError(
-            f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}. Please specify the same model name for both."
+            f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. "
+            "The orchestrator queries the inference server and must use the same model name."
         )
 
 

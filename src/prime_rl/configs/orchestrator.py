@@ -643,6 +643,21 @@ class NCCLWeightBroadcastConfig(BaseModel):
     port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
 
+    inference_world_size: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Total number of inference GPUs across all servers. Used by init_nccl_broadcast to compute per-server rank offsets.",
+        ),
+    ] = 1
+
+    use_vllm_format_transfer: Annotated[
+        bool,
+        Field(
+            description="Transfer weights in vLLM kernel format instead of HF checkpoint format.",
+        ),
+    ] = False
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
