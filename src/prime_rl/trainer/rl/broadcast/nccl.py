@@ -112,48 +112,31 @@ class NCCLWeightBroadcastSender:
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
-        self.logger.debug(f"Broadcasting weights for step {step}")
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
 
         if self.world.is_master:
-            self.logger.debug("Broadcasting number of state dicts to send")
             broadcast_integer(num_state_dict_to_send, self.communicator)
-            torch.cuda.current_stream().synchronize()
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
-        self._broadcast_checkpoint_format(model, state_dict, num_layers, layer_prefix)
+        for layer_id, state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
+            for key, value in list(state_dict.items()):
+                if isinstance(value, DTensor):
+                    value = cast(DTensor, value.to(self.dtype)).full_tensor()
+                state_dict[key] = value
 
-    def _resolve_dtensors(self, sd: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Resolve DTensors to full tensors in-place and return the dict."""
-        for key, value in list(sd.items()):
-            if isinstance(value, DTensor):
-                sd[key] = cast(DTensor, value.to(self.dtype)).full_tensor()
-        return sd
-
-    def _broadcast_checkpoint_format(
-        self, model: nn.Module, state_dict: dict[str, Tensor], num_layers: int, layer_prefix: str
-    ) -> None:
-        """Broadcast weights in HF checkpoint format (original path)."""
-        for layer_id, layer_sd in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
-            layer_sd = self._resolve_dtensors(layer_sd)
-
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_sd):
-                model.convert_layer_to_hf(layer_sd, layer_id)
+            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+                model.convert_layer_to_hf(state_dict, layer_id)
             else:
                 from transformers.core_model_loading import revert_weight_conversion
 
-                layer_sd = revert_weight_conversion(model, layer_sd)
+                state_dict = revert_weight_conversion(model, state_dict)
 
             if self.world.is_master:
-                broadcast_state_dict(layer_sd, self.communicator)
-                # Synchronize to ensure the broadcast completes before the next
-                # layer's DTensor resolution launches FSDP all-gathers. Running
-                # two NCCL communicators concurrently on the same GPU deadlocks.
-                torch.cuda.current_stream().synchronize()
+                broadcast_state_dict(state_dict, self.communicator)
 
 
 class NCCLWeightBroadcast(WeightBroadcast):

@@ -470,26 +470,12 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_model(self):
-        """Auto-setup shared model config for trainer, orchestrator, and inference.
-
-        model.name propagates to trainer.model.name unconditionally.
-        model.name propagates to inference.model.name only when the user hasn't
-        explicitly set inference.model.name (allowing e.g. an FP8 variant for inference).
-        The orchestrator always uses the inference model name so it queries the
-        correct model on the inference server.
-        """
+        """Auto-setup shared model config for trainer, orchestrator, and inference."""
         if self.model is not None:
             self.trainer.model.name = self.model.name
+            self.orchestrator.model.name = self.model.name
             if self.inference is not None:
-                inference_model_explicitly_set = "name" in self.inference.model.model_fields_set
-                if not inference_model_explicitly_set:
-                    self.inference.model.name = self.model.name
-
-            # Orchestrator must use the inference model name so it queries the correct model
-            if self.inference is not None:
-                self.orchestrator.model.name = self.inference.model.name
-            else:
-                self.orchestrator.model.name = self.model.name
+                self.inference.model.name = self.model.name
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 

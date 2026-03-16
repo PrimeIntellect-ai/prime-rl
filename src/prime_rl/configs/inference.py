@@ -322,9 +322,12 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_disaggregated(self):
-        """Auto-configure inference for disaggregated P/D: force TP=1, enable EP."""
+        """Auto-configure inference for disaggregated P/D: validate TP=1, enable EP."""
         if self.deployment.type == "disaggregated":
-            self.parallel.tp = 1
+            if self.parallel.tp != 1:
+                raise ValueError(
+                    f"Disaggregated P/D requires TP=1 (got tp={self.parallel.tp}). Use expert parallelism instead."
+                )
             self.enable_expert_parallel = True
             self.enable_eplb = False
             if self.data_parallel_size_local is None:
