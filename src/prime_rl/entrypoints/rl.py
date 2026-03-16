@@ -582,6 +582,8 @@ def rl_local(config: RLConfig):
                 "model": {"lora": {"name": run_name}},
                 "optim": {"lr": config.orchestrator.optim.lr},
             }
+            if config.orchestrator.ckpt is not None:
+                actor_orch_config["ckpt"] = config.orchestrator.ckpt.model_dump(exclude_none=True, mode="json")
             with open(control_dir / "orch.toml", "wb") as f:
                 tomli_w.dump(actor_orch_config, f)
 
