@@ -422,11 +422,22 @@ async def orchestrate(config: OrchestratorConfig):
         # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
         check_exists = config.weight_broadcast.type != "nccl"
         wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
-        weights_path = get_weight_dir(
-            config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
-        )
-        lora_name = config.model.lora.name if config.model.lora else None
-        await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+        if actor_lora_mapping:
+            # Multi-LoRA: load per-actor weights from their run broadcast dirs
+            for actor_id, lora_name in actor_lora_mapping.items():
+                run_dir_name = scheduler.actor_run_dirs[actor_id]
+                weights_path = get_weight_dir(
+                    config.output_dir.parent / run_dir_name, scheduler.ckpt_step,
+                    check_exists=check_exists, wait_timeout=wait_timeout,
+                )
+                await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+                logger.info(f"Resumed LoRA '{lora_name}' for actor '{actor_id}' from step {scheduler.ckpt_step}")
+        else:
+            weights_path = get_weight_dir(
+                config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
+            )
+            lora_name = config.model.lora.name if config.model.lora else None
+            await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
         logger.info("Training from scratch")
 
