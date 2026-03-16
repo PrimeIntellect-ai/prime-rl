@@ -9,9 +9,10 @@ def test_sample_normalization_rejects_liger_fused():
         SFTConfig(loss_impl="liger_fused", loss_normalization="sample")
 
 
-def test_sample_normalization_rejects_cp():
-    with pytest.raises(ValueError, match="context parallelism"):
-        SFTConfig(loss_normalization="sample", model={"cp": 2, "name": "dummy"})
+def test_sample_normalization_allows_cp():
+    config = SFTConfig(loss_normalization="sample", model={"cp": 2, "name": "dummy"})
+    assert config.loss_normalization == "sample"
+    assert config.model.cp == 2
 
 
 def test_token_normalization_is_default():

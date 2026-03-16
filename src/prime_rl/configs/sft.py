@@ -367,8 +367,6 @@ class SFTConfig(BaseConfig):
                     "because the fused kernel does not support per-token loss output. "
                     "Use loss_impl='liger' or loss_impl='torch' instead."
                 )
-            if self.model.cp > 1:
-                raise ValueError("loss_normalization='sample' is not supported with context parallelism (cp > 1).")
         return self
 
     ### Auto-setup and validate shared configs

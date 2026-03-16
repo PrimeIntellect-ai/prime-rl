@@ -197,19 +197,23 @@ def train(config: SFTConfig):
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
 
-        # Detect sample boundaries from position_ids resets (for cat packing + sample normalization)
+        # Detect sample boundaries from position_ids resets before CP sharding
         sample_ids = None
+        num_samples = 0
         if config.loss_normalization == "sample" and config.data.pack_function == "cat":
             pos = position_ids[0]
             is_boundary = torch.zeros_like(pos, dtype=torch.bool)
             is_boundary[0] = True
             is_boundary[1:] = pos[1:] <= pos[:-1]
             sample_ids = is_boundary.cumsum(0) - 1
+            num_samples = sample_ids[-1].item() + 1
 
         if cp_enabled:
             input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+            if sample_ids is not None:
+                sample_ids = shard_for_cp(sample_ids.unsqueeze(0), cp_rank=cp_rank, cp_world_size=cp_size).squeeze(0)
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
@@ -246,18 +250,30 @@ def train(config: SFTConfig):
             # Group by sample using position_ids-derived boundaries
             tl = token_loss[0]
             mask = loss_mask[0]
-            num_samples = sample_ids[-1].item() + 1
             masked_ids = sample_ids[mask]
             masked_losses = tl[mask]
             per_sample_loss = tl.new_zeros(num_samples)
             per_sample_loss.scatter_add_(0, masked_ids, masked_losses)
             per_sample_token_count = tl.new_zeros(num_samples)
             per_sample_token_count.scatter_add_(0, masked_ids, torch.ones_like(masked_losses))
-            valid = per_sample_token_count > 0
-            per_sample_mean = torch.where(
-                valid, per_sample_loss / per_sample_token_count, per_sample_loss.new_zeros(())
+
+            if cp_enabled:
+                # All-reduce token counts across CP so each rank knows global per-sample counts.
+                # Only the counts are synchronized — per_sample_loss stays local so gradients
+                # are correct per-rank when backward is called.
+                global_token_count = per_sample_token_count.detach().clone()
+                dist.all_reduce(global_token_count, op=dist.ReduceOp.SUM, group=cp_group)
+            else:
+                global_token_count = per_sample_token_count
+
+            valid = global_token_count > 0
+            per_sample_mean = torch.where(valid, per_sample_loss / global_token_count, per_sample_loss.new_zeros(()))
+            # With CP, all ranks in the same CP group process the same sequence, so only
+            # cp_rank 0 reports the sample count to avoid double-counting after dp+cp all-reduce.
+            sample_count = (
+                valid.sum(dtype=torch.int64) if cp_rank == 0 else torch.tensor(0, dtype=torch.int64, device="cuda")
             )
-            return per_sample_mean.sum(), valid.sum(dtype=torch.int64)
+            return per_sample_mean.sum(), sample_count
 
     maybe_record_function = nullcontext
 
