@@ -189,6 +189,8 @@ def setup_multi_model(
                     "model": {"lora": {"name": f"run_{actor_id}"}},
                     "optim": {"lr": config.orchestrator.optim.lr},
                 }
+                if config.orchestrator.ckpt is not None:
+                    actor_orch_config["ckpt"] = config.orchestrator.ckpt.model_dump(exclude_none=True, mode="json")
                 with open(control_dir / "orch.toml", "wb") as f:
                     tomli_w.dump(actor_orch_config, f)
                 actor_run_paths[actor_id] = str(run_dir)
