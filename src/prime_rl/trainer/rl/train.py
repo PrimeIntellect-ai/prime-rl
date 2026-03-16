@@ -236,6 +236,7 @@ def train(config: TrainerConfig):
 
         if (
             ckpt_manager is not None
+            and config.max_concurrent_runs <= 1
             and (config.ckpt and config.ckpt.interval)
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
