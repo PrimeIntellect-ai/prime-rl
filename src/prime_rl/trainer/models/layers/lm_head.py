@@ -94,9 +94,18 @@ class FusedCrossEntropyOutputLinear(torch.nn.Linear):
         hidden_states: torch.Tensor,
         labels: torch.Tensor | None = None,
         temperature: Tensor | None = None,
+        token_weight: Tensor | None = None,
     ) -> PrimeLmOutput:
         if labels is None:
             return PrimeLmOutput(logits=super().forward(hidden_states))
+
+        if token_weight is not None:
+            from prime_rl.trainer.models.layers.fused_ce_sample_norm import sample_weighted_fused_cross_entropy
+
+            loss = sample_weighted_fused_cross_entropy(
+                self.weight, hidden_states, labels, token_weight, self.IGNORE_INDEX, self.fused_ce.softcap
+            )
+            return PrimeLmOutput(loss=loss)
 
         b, s, h = hidden_states.shape
         hidden_flat = hidden_states.reshape(b * s, h).contiguous()
@@ -293,6 +302,7 @@ def _patch_model_forward(model: nn.Module) -> None:
         labels: torch.Tensor | None = None,
         logits_to_keep: int = 0,
         temperature: torch.Tensor | None = None,
+        token_weight: torch.Tensor | None = None,
         **kwargs: object,
     ) -> PrimeLmOutput:
         # For VLM with images, don't create position_ids - let model compute MRoPE internally
@@ -318,6 +328,7 @@ def _patch_model_forward(model: nn.Module) -> None:
             hidden_states[:, slice_indices, :],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature[:, slice_indices] if temperature is not None else None,
+            token_weight=token_weight[:, slice_indices] if token_weight is not None else None,
         )
 
     # Bind the new forward to the model

@@ -360,13 +360,6 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_loss_normalization(self):
-        if self.loss_normalization == "sample":
-            if self.loss_impl == "liger_fused":
-                raise ValueError(
-                    "loss_normalization='sample' is not supported with loss_impl='liger_fused' "
-                    "because the fused kernel does not support per-token loss output. "
-                    "Use loss_impl='liger' or loss_impl='torch' instead."
-                )
         return self
 
     ### Auto-setup and validate shared configs

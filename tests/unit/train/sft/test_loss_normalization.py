@@ -4,9 +4,10 @@ import torch
 from prime_rl.configs.sft import SFTConfig
 
 
-def test_sample_normalization_rejects_liger_fused():
-    with pytest.raises(ValueError, match="liger_fused"):
-        SFTConfig(loss_impl="liger_fused", loss_normalization="sample")
+def test_sample_normalization_allows_liger_fused():
+    config = SFTConfig(loss_impl="liger_fused", loss_normalization="sample")
+    assert config.loss_impl == "liger_fused"
+    assert config.loss_normalization == "sample"
 
 
 def test_sample_normalization_allows_cp():
