@@ -188,11 +188,23 @@ def train(config: SFTConfig):
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+        """Forward pass returning (loss_sum, count).
+        token normalization: (sum of per-token losses, token count)
+        sample normalization: (sum of per-sample mean losses, sample count)
+        """
         input_ids = micro_batch["input_ids"].to("cuda")
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
+
+        # Detect sample boundaries from position_ids resets (for cat packing + sample normalization)
+        sample_ids = None
+        if config.loss_normalization == "sample" and config.data.pack_function == "cat":
+            pos = position_ids[0]
+            is_boundary = torch.zeros_like(pos, dtype=torch.bool)
+            is_boundary[0] = True
+            is_boundary[1:] = pos[1:] <= pos[:-1]
+            sample_ids = is_boundary.cumsum(0) - 1
 
         if cp_enabled:
             input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
@@ -216,7 +228,33 @@ def train(config: SFTConfig):
                 del logits
 
         del out
-        return loss_sum, token_count
+
+        if config.loss_normalization == "token":
+            return loss_sum, token_count
+
+        # Per-sample mean loss, then sum across samples (Nemotron Stage 2)
+        if config.data.pack_function == "stack":
+            per_sample_token_count = loss_mask.sum(dim=1).float()
+            valid = per_sample_token_count > 0
+            per_sample_loss = (token_loss * loss_mask).sum(dim=1)
+            per_sample_mean = torch.where(
+                valid, per_sample_loss / per_sample_token_count, per_sample_loss.new_zeros(())
+            )
+            return per_sample_mean.sum(), valid.sum(dtype=torch.int64)
+
+        # cat packing: group by sample using position_ids-derived boundaries
+        tl = token_loss[0]
+        mask = loss_mask[0]
+        num_samples = sample_ids[-1].item() + 1
+        masked_ids = sample_ids[mask]
+        masked_losses = tl[mask]
+        per_sample_loss = tl.new_zeros(num_samples)
+        per_sample_loss.scatter_add_(0, masked_ids, masked_losses)
+        per_sample_token_count = tl.new_zeros(num_samples)
+        per_sample_token_count.scatter_add_(0, masked_ids, torch.ones_like(masked_losses))
+        valid = per_sample_token_count > 0
+        per_sample_mean = torch.where(valid, per_sample_loss / per_sample_token_count, per_sample_loss.new_zeros(()))
+        return per_sample_mean.sum(), valid.sum(dtype=torch.int64)
 
     maybe_record_function = nullcontext
 

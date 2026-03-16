@@ -232,6 +232,15 @@ class SFTConfig(BaseConfig):
         ),
     ] = "torch"
 
+    loss_normalization: Annotated[
+        Literal["token", "sample"],
+        Field(
+            description="Loss normalization mode. "
+            "'token' averages over all output tokens globally. "
+            "'sample' computes per-sample mean loss then averages across samples.",
+        ),
+    ] = "token"
+
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
@@ -347,6 +356,19 @@ class SFTConfig(BaseConfig):
         if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_loss_normalization(self):
+        if self.loss_normalization == "sample":
+            if self.loss_impl == "liger_fused":
+                raise ValueError(
+                    "loss_normalization='sample' is not supported with loss_impl='liger_fused' "
+                    "because the fused kernel does not support per-token loss output. "
+                    "Use loss_impl='liger' or loss_impl='torch' instead."
+                )
+            if self.model.cp > 1:
+                raise ValueError("loss_normalization='sample' is not supported with context parallelism (cp > 1).")
         return self
 
     ### Auto-setup and validate shared configs
