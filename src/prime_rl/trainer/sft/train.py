@@ -284,7 +284,7 @@ def train(config: SFTConfig):
             if config.data.pack_function == "cat":
                 per_sample_token_count = loss_mask.new_zeros(num_samples, dtype=torch.float)
                 per_sample_token_count.scatter_add_(
-                    0, sample_ids[loss_mask[0]], torch.ones(loss_mask.sum(), device=loss_mask.device)
+                    0, sample_ids[loss_mask[0]], torch.ones(loss_mask[0].sum(), device=loss_mask.device)
                 )
                 if cp_enabled:
                     global_count = per_sample_token_count.detach().clone()

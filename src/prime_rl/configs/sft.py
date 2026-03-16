@@ -358,10 +358,6 @@ class SFTConfig(BaseConfig):
 
         return self
 
-    @model_validator(mode="after")
-    def validate_loss_normalization(self):
-        return self
-
     ### Auto-setup and validate shared configs
 
     @model_validator(mode="after")
