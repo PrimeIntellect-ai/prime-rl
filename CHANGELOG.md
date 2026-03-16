@@ -2,6 +2,12 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`deployment.num_infer_replicas`**: Added number of independent inference replicas for multi-node deployment. Total inference nodes = `num_infer_nodes * num_infer_replicas` (default: 1) (2026-03-16)
+- **`weight_broadcast.use_vllm_format_transfer`**: Added flag to transfer weights in vLLM kernel format instead of HF checkpoint format. Avoids the HF conversion intermediate step and allows direct in-place weight updates (default: False) (2026-03-16)
+- **`weight_broadcast.quantize_fp8`**: Added flag to quantize weights to FP8 (e4m3) with block-wise scaling during kernel format transfer. Only used when `use_vllm_format_transfer` is True (default: False) (2026-03-16)
+- **`client.admin_base_url`**: Added separate base URLs for admin operations (weight updates, health checks). When set, admin clients use these URLs instead of `base_url`, allowing weight updates to bypass routers and hit each server directly. Used in disaggregated P/D deployments where the inference router should not handle admin traffic (default: None) (2026-03-16)
+- **`inference.deployment.type = "disaggregated"`**: Added disaggregated prefill/decode inference deployment config. Fields: `num_prefill_nodes` (default: 1), `num_decode_nodes` (default: 1), `router_port` (default: 8000), `prefill_port` (default: 8100), `decode_port` (default: 8200). Requires NIXL for KV transfer and vllm-router for request routing (2026-03-16)
+- **`inference.api_server_count`**: Changed minimum from 1 to 0 to support headless mode. Set to 0 for headless inference servers (2026-03-16)
 - **`client.connect_timeout`**: Added configurable TCP connect timeout for inference API requests (default: 30.0s). Previously hardcoded to 5.0s. Helps with vLLM or cluster flakiness (2026-03-11)
 - **`model.fused_lm_head_token_chunk_size`**: Added as the fused LM-head chunking field for the token-chunked implementation. Unlike the removed `model.fused_lm_head_chunk_size`, this chunks over flattened sequence tokens rather than vocabulary rows. `model.fused_lm_head_chunk_size` is no longer accepted; switch configs to `model.fused_lm_head_token_chunk_size` explicitly. (2026-03-09)
 - **`slurm.pre_run_command`**: Added optional shell command to run on the head node before starting the job. Useful for cleanup routines (e.g. killing stale processes, removing lock files). For all-nodes execution, wrap with `srun` in the command string (default: None) (2026-03-08)
