@@ -8,7 +8,7 @@ name = "arc-multi-vision-4b-lora"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-batch_size = 48
+batch_size = 72
 rollouts_per_example = 24
 
 [orchestrator.sampling]
@@ -28,7 +28,7 @@ num_examples = 200
 sort_by_size = true
 
 [ckpt]
-interval = 50
+interval = 10
 keep_last = 3
 
 [trainer.model]
@@ -38,7 +38,7 @@ seq_len = 16384
 freq = 1
 
 [trainer.optim]
-lr = 1e-5
+lr = 1e-4
 
 [trainer.model.lora]
 rank = 32
