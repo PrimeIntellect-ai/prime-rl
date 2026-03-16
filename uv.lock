@@ -1818,6 +1818,30 @@ wheels = [
 ]
 
 [[package]]
+name = "nixl"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nixl-cu12", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/f8/e5bf11e31bcd42a86d6e5d0b7d166860d73d792ec6e7afbd7f04cf7eca06/nixl-1.0.0-py3-none-any.whl", hash = "sha256:d4f2944e592358e53607276cdb4cc9d0827e11d5d6a8737edf020a134c3dca60", size = 6667, upload-time = "2026-03-13T06:55:26.394Z" },
+]
+
+[[package]]
+name = "nixl-cu12"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "torch", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8e/db/c55b409e400d7ea709ba2ee84a265fdb345b7298524a2014b8ddb6e584bd/nixl_cu12-1.0.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:8435786378e6c6481499b019454e51a4bf6f09d98729ab2607ded36cf9ac2b20", size = 49952359, upload-time = "2026-03-13T06:49:10.803Z" },
+    { url = "https://files.pythonhosted.org/packages/48/68/f58b0b1aa8d2d03dd8354f6893fa858c77267ddef6cdd2d20868cf0ea88b/nixl_cu12-1.0.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:d4347c489c930fc4c2f35693be14dd6c54f7d094639b29564f477396bad664ab", size = 51247001, upload-time = "2026-03-13T06:47:22.813Z" },
+]
+
+[[package]]
 name = "nodeenv"
 version = "1.9.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2498,6 +2522,8 @@ dev = [
 ]
 disagg = [
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nixl", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "vllm-router", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 fp8-inference = [
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -2559,7 +2585,11 @@ dev = [
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "ruff", specifier = ">=0.12.1" },
 ]
-disagg = [{ name = "deep-ep", marker = "platform_machine == 'x86_64'", path = "deps/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }]
+disagg = [
+    { name = "deep-ep", marker = "platform_machine == 'x86_64'", path = "deps/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" },
+    { name = "nixl" },
+    { name = "vllm-router", git = "https://github.com/S1ro1/router.git?branch=fix%2Fpreserve-extra-fields-disagg" },
+]
 fp8-inference = [{ name = "deep-gemm", marker = "platform_machine == 'x86_64'", url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" }]
 
 [[package]]
@@ -3860,6 +3890,19 @@ sdist = { url = "https://files.pythonhosted.org/packages/13/d5/af83a4262ca4d5692
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f2/72/78a48668f2631def18bbaaa331d7878bcfc5c3137455422aafb0748e1261/vllm-0.17.0-cp38-abi3-manylinux_2_31_aarch64.whl", hash = "sha256:310fb82fe061ed75dceeb4aeb803cd8ee0d590337ec720f7abfb03a69314d710", size = 385329399, upload-time = "2026-03-07T03:54:34.261Z" },
     { url = "https://files.pythonhosted.org/packages/25/4f/972726f9a501f01203b5c4796e1932abbe435fae6d7715a4c3f1aad14a58/vllm-0.17.0-cp38-abi3-manylinux_2_31_x86_64.whl", hash = "sha256:0296670a09d392ee43455d9bebf590d05a9bc2ebce5e25e2919222fc815158da", size = 432927988, upload-time = "2026-03-07T03:54:02.312Z" },
+]
+
+[[package]]
+name = "vllm-router"
+version = "0.1.11"
+source = { git = "https://github.com/S1ro1/router.git?branch=fix%2Fpreserve-extra-fields-disagg#d677895f4dcf2a7172eded18e9734150496a08fb" }
+dependencies = [
+    { name = "aiohttp", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "fastapi", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "orjson", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "requests", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "setproctitle", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "uvicorn", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
 [[package]]
