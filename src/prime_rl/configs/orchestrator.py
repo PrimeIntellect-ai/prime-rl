@@ -714,6 +714,9 @@ class OrchestratorConfig(BaseSettings):
     # The prime monitor configuration
     prime_monitor: PrimeMonitorConfig | None = None
 
+    # Usage reporting (reuses PrimeMonitor's base_url and api_key_var)
+    usage: PrimeMonitorConfig | None = None
+
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
 

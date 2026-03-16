@@ -1,5 +1,6 @@
 import asyncio
 import multiprocessing as mp
+import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -58,6 +59,7 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
+from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
     get_env_ids_to_install,
@@ -151,6 +153,9 @@ async def orchestrate(config: OrchestratorConfig):
         tokenizer=tokenizer,
         run_config=config,
     )
+
+    usage_reporter = UsageReporter(config.usage)
+    run_id = os.getenv("RUN_ID", "")
 
     # Setup heartbeat (only on rank 0, orchestrator is single process)
     heart = None
@@ -740,6 +745,13 @@ async def orchestrate(config: OrchestratorConfig):
         # Log metrics to monitor(s)
         monitor.log(to_log, step=progress.step)
 
+        usage_reporter.report_inference_usage(
+            run_id=run_id,
+            step=progress.step,
+            input_tokens=num_prefill_tokens,
+            output_tokens=num_decode_tokens,
+        )
+
         # Log samples to monitor(s) if enabled
         subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
         monitor.log_samples(subset_train_rollouts, step=progress.step)
@@ -792,6 +804,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Log final (immutable) samples and distributions to monitor(s)
     monitor.log_final_samples()
     monitor.save_final_summary()
+    usage_reporter.close()
 
     # Write final checkpoint
     if ckpt_manager is not None:
