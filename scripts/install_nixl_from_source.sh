@@ -10,9 +10,11 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_BIN="$PROJECT_DIR/.venv/bin"
 PYTHON="$VENV_BIN/python"
 
-UCX_SRC=/tmp/ucx_source
+WORKSPACE="$PROJECT_DIR/nixl_workspace"
+mkdir -p "$WORKSPACE"
+UCX_SRC="$WORKSPACE/ucx_source"
 UCX_INSTALL="$PROJECT_DIR/third_party/ucx"
-NIXL_SRC=/tmp/nixl_source
+NIXL_SRC="$WORKSPACE/nixl_source"
 NIXL_VERSION="${NIXL_VERSION:-0.10.1}"
 CUDA_PATH="${CUDA_HOME:-/usr/local/cuda}"
 NPROC=$(nproc)
@@ -60,18 +62,10 @@ export PKG_CONFIG_PATH="$UCX_INSTALL/lib/pkgconfig"
 export LD_LIBRARY_PATH="$UCX_INSTALL/lib:$UCX_INSTALL/lib/ucx:${LD_LIBRARY_PATH:-}"
 
 # Build and install directly (no auditwheel) so NIXL links to our UCX at runtime
-WHEEL_DIR=/tmp/nixl_wheels
-rm -rf "$WHEEL_DIR"
+WHEEL_DIR="$PROJECT_DIR/deps"
+mkdir -p "$WHEEL_DIR"
+uv pip install pip 2>/dev/null
 "$PYTHON" -m pip wheel . --no-deps --wheel-dir="$WHEEL_DIR"
 
 WHEEL=$(ls "$WHEEL_DIR"/nixl*.whl | head -1)
-echo "=== Installing wheel directly (no auditwheel) ==="
-uv pip install --no-deps --reinstall "$WHEEL"
-
-echo "=== Testing NIXL UCX backend ==="
-LD_LIBRARY_PATH="$UCX_INSTALL/lib:$UCX_INSTALL/lib/ucx:${LD_LIBRARY_PATH:-}" \
-  "$PYTHON" -c "
-from nixl._api import nixl_agent
-agent = nixl_agent('test')
-print('SUCCESS: NIXL UCX backend working')
-"
+echo "=== NIXL wheel built at: $WHEEL ==="

@@ -31,7 +31,6 @@ export NODES_PER_REPLICA=$((NUM_PREFILL_NODES + NUM_DECODE_NODES))
 export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
 export ROUTER_PORT={{ router_port }}
-export RPC_PORT={{ inference_data_parallel_rpc_port }}
 {%- endif %}
 
 # Paths
@@ -44,9 +43,7 @@ mkdir -p $OUTPUT_DIR/slurm
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
-{% if disaggregated -%}
-export VLLM_CACHE_ROOT=/tmp/.vllm_cache
-{%- endif %}
+export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
 
 # Setup environment
 cd $PROJECT_DIR
@@ -113,6 +110,12 @@ srun bash -c '
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
 {% if disaggregated -%}
+    # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
+    if [ ! -d /tmp/deepep_build/nvshmem/lib ] && [ -d "$OUTPUT_DIR/nvshmem/lib" ]; then
+        mkdir -p /tmp/deepep_build/nvshmem
+        ln -sfn "$OUTPUT_DIR/nvshmem/lib" /tmp/deepep_build/nvshmem/lib
+    fi
+
     # Reconstruct hostnames array
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
 
@@ -135,41 +138,16 @@ srun bash -c '
     RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_REPLICA))
 
     if [ "$RANK_IN_REPLICA" -lt "$NUM_PREFILL_NODES" ]; then
-        # ── Prefill node ──
         ROLE="prefill"
-        ROLE_RANK=$RANK_IN_REPLICA
-        EP=$((NUM_PREFILL_NODES * GPUS_PER_NODE))
         PORT=$PREFILL_PORT
-        START_RANK=$((ROLE_RANK * GPUS_PER_NODE))
-        HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_REPLICA))]}"
-
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
-
-        if [ "$ROLE_RANK" -eq 0 ]; then
-            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
-        else
-            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
-        fi
     else
-        # ── Decode node ──
-        export UCX_NET_DEVICES=mlx5_0:1
         ROLE="decode"
-        ROLE_RANK=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
-        EP=$((NUM_DECODE_NODES * GPUS_PER_NODE))
         PORT=$DECODE_PORT
-        START_RANK=$((ROLE_RANK * GPUS_PER_NODE))
-        HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_REPLICA + NUM_PREFILL_NODES))]}"
-
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
-
-        if [ "$ROLE_RANK" -eq 0 ]; then
-            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
-        else
-            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
-        fi
     fi
 
-    echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX ROLE_RANK=$ROLE_RANK EP=$EP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
+    VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"kv_transfer_config\": $KV_CFG}"
+
+    echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
               $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
 
@@ -180,15 +158,13 @@ srun bash -c '
 
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
-        {{ project_dir }}/.venv/bin/vllm-router-rs \
+        vllm-router \
             --policy round_robin \
             --vllm-pd-disaggregation \
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
-            --intra-node-data-parallel-size 1 \
             --worker-startup-timeout-secs 1200 \
-            --log-level debug \
             >> $ROUTER_LOG 2>&1 &
     fi
 
@@ -196,8 +172,6 @@ srun bash -c '
         @ $CONFIG_PATH \
         --server.host 0.0.0.0 \
         --server.port $PORT \
-        --parallel.dp $EP \
-        --data-parallel-rpc-port $RPC_PORT \
         --vllm-extra "$VLLM_EXTRA" \
         2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
                       $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log

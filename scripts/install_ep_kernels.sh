@@ -137,10 +137,13 @@ cd "$DEEPEP_DIR"
 git fetch origin
 git checkout "$DEEPEP_COMMIT_HASH"
 
-uv pip install --no-build-isolation -v "$DEEPEP_DIR"
+WHEEL_DIR="$REPO_ROOT/deps"
+mkdir -p "$WHEEL_DIR"
+python setup.py bdist_wheel --dist-dir "$WHEEL_DIR"
 
+WHEEL=$(ls "$WHEEL_DIR"/deep_ep*.whl | head -1)
 echo ""
-echo "--- DeepEP installed successfully ---"
+echo "--- DeepEP wheel built at: $WHEEL ---"
 
 # ── Step 4 (optional): Configure IBGDA drivers ───────────────────────────────
 if [ "$CONFIGURE_DRIVERS" -eq 1 ]; then

@@ -322,20 +322,17 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_disaggregated(self):
-        """Auto-configure inference for disaggregated P/D: validate TP=1, enable EP."""
+        """Auto-configure inference DP for disaggregated P/D."""
         if self.deployment.type == "disaggregated":
-            if self.parallel.tp != 1:
-                raise ValueError(
-                    f"Disaggregated P/D requires TP=1 (got tp={self.parallel.tp}). Use expert parallelism instead."
-                )
-            self.enable_expert_parallel = True
-            self.enable_eplb = False
+            gpus_per_node = self.deployment.gpus_per_node
+            tp = self.parallel.tp
+            dp_per_node = gpus_per_node // tp
             if self.data_parallel_size_local is None:
-                self.data_parallel_size_local = self.deployment.gpus_per_node
+                self.data_parallel_size_local = dp_per_node
             if self.parallel.dp == 1:
-                self.parallel.dp = self.deployment.gpus_per_node
+                self.parallel.dp = dp_per_node
             if self.api_server_count == 1:
-                self.api_server_count = self.deployment.gpus_per_node
+                self.api_server_count = dp_per_node
         return self
 
     @model_validator(mode="after")
