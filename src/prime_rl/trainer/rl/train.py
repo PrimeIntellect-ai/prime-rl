@@ -16,7 +16,7 @@ from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
-from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     setup_cp_params,
@@ -302,10 +302,7 @@ def train(config: TrainerConfig):
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        if isinstance(config.loss, DefaultLossConfig):
-            loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        else:
-            loss_scale = batch_size
+        loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
         loss_scale = max(loss_scale, 1)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
