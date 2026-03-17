@@ -236,6 +236,7 @@ class SDPAAttention(nn.Module):
 ATTN_IMPL2CLASS = {
     "flash_attention_2": functools.partial(FlashAttention, flash_attn_version=2),
     "sdpa": SDPAAttention,
+    "sdpa_fa4": SDPAAttention,
     "flash_attention_3": functools.partial(FlashAttention, flash_attn_version=3),
     "fa4": functools.partial(FlashAttention, flash_attn_version=4),
 }

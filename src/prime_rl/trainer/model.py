@@ -711,6 +711,14 @@ def _register_fa4_attention_interface() -> None:
     AttentionInterface.register("fa4", _noop)
 
 
+def _activate_sdpa_fa4_backend() -> None:
+    """Activate FA4 as the flash attention backend for SDPA."""
+    from torch.nn.attention import activate_flash_attention_impl
+
+    activate_flash_attention_impl("FA4")
+    get_logger().info("Activated FA4 flash attention backend for SDPA")
+
+
 def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
@@ -725,6 +733,9 @@ def setup_model(
     if config.attn == "fa4":
         _validate_flash_attn_4_installed()
         _register_fa4_attention_interface()
+
+    if config.attn == "sdpa_fa4":
+        _activate_sdpa_fa4_backend()
 
     logger = get_logger()
 

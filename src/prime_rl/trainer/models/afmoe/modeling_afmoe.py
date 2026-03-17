@@ -239,6 +239,7 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
 
 AFMOE_ATTN_IMPL2CLASS = {
     "sdpa": AfmoeSDPAAttention,
+    "sdpa_fa4": AfmoeSDPAAttention,
     "flash_attention_2": functools.partial(AfmoeFlashAttention, flash_attn_version=2),
     "flash_attention_3": functools.partial(AfmoeFlashAttention, flash_attn_version=3),
     "fa4": functools.partial(AfmoeFlashAttention, flash_attn_version=4),
