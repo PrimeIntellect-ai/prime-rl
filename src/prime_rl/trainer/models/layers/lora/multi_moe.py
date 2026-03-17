@@ -286,6 +286,16 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         detached_w3_lora_a = self.w3_lora_A[idx].detach()
         detached_w3_lora_b = self.w3_lora_B[idx].detach()
 
+        # With EP, LoRA weights are DTensors sharded across expert-parallel ranks.
+        # Gather them before per-expert indexing.
+        if isinstance(detached_w1_lora_a, DTensor):
+            detached_w1_lora_a = detached_w1_lora_a.full_tensor()
+            detached_w1_lora_b = detached_w1_lora_b.full_tensor()
+            detached_w2_lora_a = detached_w2_lora_a.full_tensor()
+            detached_w2_lora_b = detached_w2_lora_b.full_tensor()
+            detached_w3_lora_a = detached_w3_lora_a.full_tensor()
+            detached_w3_lora_b = detached_w3_lora_b.full_tensor()
+
         # The clone is necessary to avoid views that cause giant memory spikes
         # TODO: There's probably a better way to do this
         for expert_id in range(self.num_experts):
