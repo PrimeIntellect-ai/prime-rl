@@ -14,6 +14,7 @@ from prime_rl.configs.shared import (
     WandbWithExtrasConfig,
 )
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.usage_reporter import UsageConfig
 
 
 class OptimizerConfig(BaseConfig):
@@ -714,6 +715,11 @@ class OrchestratorConfig(BaseConfig):
 
     # The prime monitor configuration
     prime_monitor: PrimeMonitorConfig | None = None
+
+    usage: Annotated[
+        UsageConfig | None,
+        Field(description="Platform usage reporting. Reports inference tokens per step for billing."),
+    ] = None
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None

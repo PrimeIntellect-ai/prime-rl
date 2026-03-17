@@ -208,6 +208,10 @@ def train(config: TrainerConfig):
             config.rollout_transport,
         )
 
+    if config.max_concurrent_runs > 1:
+        from prime_rl.utils.usage_reporter import UsageConfig
+        ckpt_manager.set_usage_reporting(dataloader, config.usage or UsageConfig.from_env())
+
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
     maybe_record_function = nullcontext
