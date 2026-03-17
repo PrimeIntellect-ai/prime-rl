@@ -163,10 +163,15 @@ class Scheduler:
         self.cancelled_rollouts_count += count
 
     async def _select_least_loaded_client(self) -> vf.ClientConfig:
-        """Select the client with the fewest in-flight tasks."""
+        """Select the client with the fewest in-flight tasks.
+
+        In multi-model mode, use the first actor's pool (default model) for the
+        parent rollout. Per-actor routing for child envs is handled by agent.client.
+        """
         while True:
             if self.actor_inference_pools:
-                clients = [c for pool in self.actor_inference_pools.values() for c in pool.clients]
+                first_pool = next(iter(self.actor_inference_pools.values()))
+                clients = first_pool.clients
             else:
                 clients = self.inference_pool.clients
             if clients:
