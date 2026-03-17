@@ -74,11 +74,11 @@ class NCCLWeightBroadcastReceiver:
     @torch.no_grad()
     def receive_state_dict(self):
         """Receives the state dict of a model from the trainer master rank using NCCL communicator."""
-        logger.debug("Receiving weights from trainer")
+        logger.info("Receiving weights from trainer")
         num_state_dict_to_receive = receive_integer(self.communicator)
-        logger.debug(f"Receiving {num_state_dict_to_receive} layer state dicts")
+        logger.info(f"Receiving {num_state_dict_to_receive} layer state dicts")
         for layer_id in range(num_state_dict_to_receive):
-            logger.debug(f"Receiving state dict {layer_id + 1}/{num_state_dict_to_receive}")
+            logger.info(f"Receiving state dict {layer_id + 1}/{num_state_dict_to_receive}")
             for key, value in receive_state_dict(self.communicator):
                 yield key, value
 
