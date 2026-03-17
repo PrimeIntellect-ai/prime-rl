@@ -225,11 +225,20 @@ async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
     logger = get_logger()
     logger.info("Pausing inference engines for weight update")
 
-    async def _pause(client: AsyncClient) -> None:
-        response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
-        response.raise_for_status()
+    async def _pause(client: AsyncClient) -> bool:
+        try:
+            response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
+            response.raise_for_status()
+            return True
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning("The route /pause does not exist. Skipping engine pause.")
+                return False
+            raise
 
-    await asyncio.gather(*[_pause(client) for client in admin_clients])
+    paused = await asyncio.gather(*[_pause(client) for client in admin_clients])
+    if not all(paused):
+        return
     logger.info("Waiting for in-flight requests to drain")
     # just wait for the engines to pause lol
     await asyncio.sleep(10)
@@ -240,11 +249,20 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     """Resume all inference engines after weight update."""
     logger = get_logger()
 
-    async def _resume(client: AsyncClient) -> None:
-        response = await client.post("/resume")
-        response.raise_for_status()
+    async def _resume(client: AsyncClient) -> bool:
+        try:
+            response = await client.post("/resume")
+            response.raise_for_status()
+            return True
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning("The route /resume does not exist. Skipping engine resume.")
+                return False
+            raise
 
-    await asyncio.gather(*[_resume(client) for client in admin_clients])
+    resumed = await asyncio.gather(*[_resume(client) for client in admin_clients])
+    if not all(resumed):
+        return
     # just wait for the engines to resume lol
     await asyncio.sleep(10)
     logger.info("All inference engines resumed")
@@ -274,8 +292,16 @@ async def update_weights(
     else:
 
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
-            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
-            response.raise_for_status()
+            try:
+                response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    logger.warning(
+                        "The route /update_weights does not exist. Skipping weight update on this inference server."
+                    )
+                    return
+                raise
 
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
         await _pause_engines(admin_clients)
