@@ -282,7 +282,8 @@ def train(config: SFTConfig):
                 # Save full checkpoint
                 logger.info(f"Saving checkpoint at step {progress.step}")
                 ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
-                ckpt_manager.maybe_clean()
+
+            ckpt_manager.maybe_clean()
 
             # Save weight checkpoint
             if weight_ckpt_manager is not None:

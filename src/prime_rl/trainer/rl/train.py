@@ -253,7 +253,8 @@ def train(config: TrainerConfig):
                 # Single-run: Save full checkpoint
                 logger.info(f"Saving checkpoint at step {progress.step}")
                 ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-                ckpt_manager.maybe_clean()
+
+            ckpt_manager.maybe_clean()
 
             # Save weight checkpoint
             if weight_ckpt_manager is not None:
