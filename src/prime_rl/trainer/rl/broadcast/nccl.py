@@ -126,7 +126,7 @@ class NCCLWeightBroadcastSender:
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
         if self.use_vllm_format_transfer:
-            self._broadcast_kernel_format(model, state_dict, num_layers)
+            self._broadcast_kernel_format(model, state_dict, num_layers, layer_prefix)
             return
 
         self._broadcast_checkpoint_format(model, state_dict, num_layers, layer_prefix)
@@ -158,7 +158,13 @@ class NCCLWeightBroadcastSender:
             if self.world.is_master:
                 broadcast_state_dict(layer_state_dict, self.communicator)
 
-    def _broadcast_kernel_format(self, model: nn.Module, state_dict: dict[str, Tensor], num_layers: int) -> None:
+    def _broadcast_kernel_format(
+        self,
+        model: nn.Module,
+        state_dict: dict[str, Tensor],
+        num_layers: int,
+        layer_prefix: str,
+    ) -> None:
         """Broadcast weights in vLLM kernel format."""
         assert isinstance(model, PreTrainedModelPrimeRL), (
             f"Kernel format transfer requires PreTrainedModelPrimeRL, got {type(model).__name__}"
@@ -166,23 +172,16 @@ class NCCLWeightBroadcastSender:
 
         self.logger.debug(f"Broadcasting kernel-format weights (quantize_fp8={self.quantize_fp8})")
 
-        non_layer_state = {key: value for key, value in state_dict.items() if not key.startswith("model.layers.")}
-        non_layer_state = self._resolve_dtensors(non_layer_state)
-        if self.world.is_master:
-            broadcast_state_dict(non_layer_state, self.communicator)
-
-        for layer_idx in range(num_layers):
-            layer_state = {
-                key: value for key, value in state_dict.items() if key.startswith(f"model.layers.{layer_idx}.")
-            }
+        for layer_idx, layer_state in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
             layer_state = self._resolve_dtensors(layer_state)
-            kernel_layer_state = model.convert_layer_to_vllm_kernel(
-                layer_state,
-                layer_idx,
-                quantize_fp8=self.quantize_fp8,
-            )
+            if layer_idx >= 0:
+                layer_state = model.convert_layer_to_vllm_kernel(
+                    layer_state,
+                    layer_idx,
+                    quantize_fp8=self.quantize_fp8,
+                )
             if self.world.is_master:
-                broadcast_state_dict(kernel_layer_state, self.communicator)
+                broadcast_state_dict(layer_state, self.communicator)
 
 
 class NCCLWeightBroadcast(WeightBroadcast):

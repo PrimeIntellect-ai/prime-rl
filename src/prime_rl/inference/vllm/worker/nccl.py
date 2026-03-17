@@ -204,23 +204,19 @@ class NCCLWeightUpdateWorker(Worker):
                 for module_name, global_indices in expert_slices.items():
                     if not name.startswith(f"{module_name}."):
                         continue
-                    tensor = tensor[global_indices]
+                    tensor = tensor[global_indices.to(tensor.device)]
                     sliced = True
                     break
 
                 if not sliced or param.shape != tensor.shape:
-                    shape_mismatches.append(
-                        f"{name}: param={list(param.shape)} != received={list(tensor.shape)}"
-                    )
+                    shape_mismatches.append(f"{name}: param={list(param.shape)} != received={list(tensor.shape)}")
                     continue
 
             param.copy_(tensor)
             loaded += 1
 
         if shape_mismatches:
-            logger.error(
-                f"Kernel weight transfer had {len(shape_mismatches)} shape mismatches: {shape_mismatches}"
-            )
+            logger.error(f"Kernel weight transfer had {len(shape_mismatches)} shape mismatches: {shape_mismatches}")
         if skipped:
             logger.warning(f"Kernel weight transfer skipped {len(skipped)} weights not found in model: {skipped}")
         logger.info(f"Kernel weight transfer copied {loaded} weights in-place")

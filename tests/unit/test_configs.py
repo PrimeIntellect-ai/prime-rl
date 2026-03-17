@@ -166,7 +166,7 @@ def test_rl_nccl_weight_broadcast_kernel_transfer_flags_propagate():
                 "type": "nccl",
                 "use_vllm_format_transfer": True,
                 "quantize_fp8": True,
-            }
+            },
         }
     )
 
@@ -176,3 +176,19 @@ def test_rl_nccl_weight_broadcast_kernel_transfer_flags_propagate():
 
     assert config.orchestrator.weight_broadcast.type == "nccl"
     assert config.orchestrator.weight_broadcast.use_vllm_format_transfer is True
+
+
+def test_rl_allows_distinct_trainer_and_inference_model_names():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"model": {"name": "zai-org/GLM-4.5-FP8"}},
+            "model": {"name": "zai-org/GLM-4.5"},
+        }
+    )
+
+    assert config.trainer.model.name == "zai-org/GLM-4.5"
+    assert config.inference is not None
+    assert config.inference.model.name == "zai-org/GLM-4.5-FP8"
+    assert config.orchestrator.model.name == "zai-org/GLM-4.5-FP8"

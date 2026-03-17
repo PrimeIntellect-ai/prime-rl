@@ -463,9 +463,13 @@ class RLConfig(BaseConfig):
         """Auto-setup shared model config for trainer, orchestrator, and inference."""
         if self.model is not None:
             self.trainer.model.name = self.model.name
-            self.orchestrator.model.name = self.model.name
             if self.inference is not None:
-                self.inference.model.name = self.model.name
+                inference_model_explicitly_set = "name" in self.inference.model.model_fields_set
+                if not inference_model_explicitly_set:
+                    self.inference.model.name = self.model.name
+                self.orchestrator.model.name = self.inference.model.name
+            else:
+                self.orchestrator.model.name = self.model.name
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 

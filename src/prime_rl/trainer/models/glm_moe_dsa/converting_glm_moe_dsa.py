@@ -1,6 +1,8 @@
 import torch
 from torch import Tensor
 
+from prime_rl.trainer.models.fp8 import quantize_to_fp8_blockwise
+
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
     return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
@@ -144,43 +146,6 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
         convert_tt_layer_to_hf(state_dict, i)
 
 
-def _quantize_to_fp8_blockwise(weight: Tensor, block_size: int = 128) -> tuple[Tensor, Tensor]:
-    """Quantize a 2D weight tensor to FP8 e4m3 with block-wise scales."""
-    if weight.ndim != 2:
-        raise ValueError(f"FP8 quantization expects a 2D tensor, got shape={tuple(weight.shape)}")
-
-    rows, cols = weight.shape
-    pad_rows = (block_size - rows % block_size) % block_size
-    pad_cols = (block_size - cols % block_size) % block_size
-
-    if pad_rows or pad_cols:
-        padded = torch.zeros(
-            rows + pad_rows,
-            cols + pad_cols,
-            dtype=weight.dtype,
-            device=weight.device,
-        )
-        padded[:rows, :cols] = weight
-    else:
-        padded = weight.contiguous()
-
-    padded_rows, padded_cols = padded.shape
-    blocks = padded.view(
-        padded_rows // block_size,
-        block_size,
-        padded_cols // block_size,
-        block_size,
-    ).permute(0, 2, 1, 3)
-
-    fp8_max = torch.finfo(torch.float8_e4m3fn).max
-    max_abs = blocks.float().abs().amax(dim=(2, 3))
-    scales = (max_abs / fp8_max).clamp(min=1e-12)
-    blocks_fp8 = (blocks.float() / scales[:, :, None, None]).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn)
-
-    quantized = blocks_fp8.permute(0, 2, 1, 3).reshape(padded_rows, padded_cols)[:rows, :cols].contiguous()
-    return quantized, scales.float().contiguous()
-
-
 def convert_tt_layer_to_vllm_kernel(
     state_dict: dict[str, Tensor],
     layer_idx: int,
@@ -195,7 +160,7 @@ def convert_tt_layer_to_vllm_kernel(
 
     def add_maybe_fp8(name: str, tensor: Tensor) -> None:
         if quantize_fp8 and tensor.ndim == 2:
-            fp8_weight, scale = _quantize_to_fp8_blockwise(tensor)
+            fp8_weight, scale = quantize_to_fp8_blockwise(tensor)
             out[name] = fp8_weight
             scale_name = name.removesuffix(".weight") + ".weight_scale_inv"
             out[scale_name] = scale
@@ -209,7 +174,9 @@ def convert_tt_layer_to_vllm_kernel(
     q_a_key = f"{prefix}.self_attn.q_a_proj.weight"
     kv_a_key = f"{prefix}.self_attn.kv_a_proj_with_mqa.weight"
     if q_a_key in state_dict and kv_a_key in state_dict:
-        add_maybe_fp8(f"{prefix}.self_attn.fused_qkv_a_proj.weight", torch.cat([state_dict[q_a_key], state_dict[kv_a_key]], dim=0))
+        add_maybe_fp8(
+            f"{prefix}.self_attn.fused_qkv_a_proj.weight", torch.cat([state_dict[q_a_key], state_dict[kv_a_key]], dim=0)
+        )
 
     for suffix in ["q_a_layernorm.weight", "kv_a_layernorm.weight"]:
         key = f"{prefix}.self_attn.{suffix}"
@@ -260,8 +227,8 @@ def convert_tt_layer_to_vllm_kernel(
             w2_fp8: list[Tensor] = []
             w2_scales: list[Tensor] = []
             for expert_idx in range(w1.shape[0]):
-                expert_w13_fp8, expert_w13_scales = _quantize_to_fp8_blockwise(w13[expert_idx])
-                expert_w2_fp8, expert_w2_scales = _quantize_to_fp8_blockwise(w2[expert_idx])
+                expert_w13_fp8, expert_w13_scales = quantize_to_fp8_blockwise(w13[expert_idx])
+                expert_w2_fp8, expert_w2_scales = quantize_to_fp8_blockwise(w2[expert_idx])
                 w13_fp8.append(expert_w13_fp8)
                 w13_scales.append(expert_w13_scales)
                 w2_fp8.append(expert_w2_fp8)
