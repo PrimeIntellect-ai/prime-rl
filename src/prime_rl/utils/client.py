@@ -230,6 +230,9 @@ async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
         response.raise_for_status()
 
     await asyncio.gather(*[_pause(client) for client in admin_clients])
+    logger.info("Waiting for in-flight requests to drain")
+    # just wait for the engines to pause lol
+    await asyncio.sleep(10)
     logger.info("All inference engines paused")
 
 
@@ -242,6 +245,8 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
         response.raise_for_status()
 
     await asyncio.gather(*[_resume(client) for client in admin_clients])
+    # just wait for the engines to resume lol
+    await asyncio.sleep(10)
     logger.info("All inference engines resumed")
 
 
@@ -367,9 +372,7 @@ async def init_nccl_broadcast(
         f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}"
     )
 
-    async def _init_nccl_broadcast(
-        admin_client: AsyncClient, rank_offset: int
-    ) -> None:
+    async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
         try:
             response = await admin_client.post(
                 "/init_broadcaster",

@@ -444,7 +444,7 @@ def setup_ckpt_managers(
     if ckpt_config is None:
         return None, None
     ckpt_manager = CheckpointManager(output_dir, ckpt_config)
-    if ckpt_config.weights:
+    if ckpt_config.weights and not ckpt_config.skip_gather_master_weights:
         weight_ckpt_manager = WeightCheckpointManager(
             output_dir,
             ckpt_config.weights,
