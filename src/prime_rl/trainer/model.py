@@ -22,7 +22,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
-from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
+from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PreTrainedModelPrimeRL,
@@ -758,6 +758,10 @@ def setup_model(
 
     if parallel_dims.ep_enabled:
         apply_ep(model, parallel_dims)
+        # EP replaces params with DTensors that default to requires_grad=True,
+        # re-freeze base params that LoRA froze earlier.
+        if config.lora is not None:
+            freeze_all_except_lora_and_specified(model, config.lora)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:

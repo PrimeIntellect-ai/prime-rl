@@ -260,7 +260,7 @@ def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropo
             target_modules.add(module_suffix)
 
     for name, param in model.named_parameters():
-        if param.requires_grad and "lora_A" not in name and "lora_B" not in name and "base_layer" not in name:
+        if param.requires_grad and "lora_A" not in name and "lora_B" not in name:
             module_name = name.rsplit(".", 1)[0].split(".")[-1]
             modules_to_save.add(module_name)
 
