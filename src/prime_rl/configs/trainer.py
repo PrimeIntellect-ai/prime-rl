@@ -527,6 +527,7 @@ class CheckpointConfig(BaseConfig):
     ] = False
 
 
+
 class DefaultLossConfig(BaseModel):
     """Config for the default loss."""
 
