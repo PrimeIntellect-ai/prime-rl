@@ -1819,26 +1819,50 @@ wheels = [
 
 [[package]]
 name = "nixl"
-version = "1.0.0"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nixl-cu12", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nixl-cu12", version = "0.10.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+    { name = "nixl-cu12", version = "0.10.1", source = { path = "deps/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7b/f8/e5bf11e31bcd42a86d6e5d0b7d166860d73d792ec6e7afbd7f04cf7eca06/nixl-1.0.0-py3-none-any.whl", hash = "sha256:d4f2944e592358e53607276cdb4cc9d0827e11d5d6a8737edf020a134c3dca60", size = 6667, upload-time = "2026-03-13T06:55:26.394Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/a4/10e80e623790d3fb070e966b36bced009419d483c92ae0df6645230f606f/nixl-0.10.1-py3-none-any.whl", hash = "sha256:616465673dae5180d296525a03237af4cd5f2c00c3228d185bc06dbe621509b7", size = 6680, upload-time = "2026-03-03T19:55:44.848Z" },
 ]
 
 [[package]]
 name = "nixl-cu12"
-version = "1.0.0"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
 dependencies = [
-    { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "torch", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "numpy", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+    { name = "torch", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8e/db/c55b409e400d7ea709ba2ee84a265fdb345b7298524a2014b8ddb6e584bd/nixl_cu12-1.0.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:8435786378e6c6481499b019454e51a4bf6f09d98729ab2607ded36cf9ac2b20", size = 49952359, upload-time = "2026-03-13T06:49:10.803Z" },
-    { url = "https://files.pythonhosted.org/packages/48/68/f58b0b1aa8d2d03dd8354f6893fa858c77267ddef6cdd2d20868cf0ea88b/nixl_cu12-1.0.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:d4347c489c930fc4c2f35693be14dd6c54f7d094639b29564f477396bad664ab", size = 51247001, upload-time = "2026-03-13T06:47:22.813Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/21/c1f34212a3e612b5c0da389c1aa3557588d9cfc2adf864914b32e270847b/nixl_cu12-0.10.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:b4712c6e0f18f57fee34cd970faac01480f0caf12da33d4a40ef4e9096a4caf7", size = 50227261, upload-time = "2026-03-03T19:55:17.177Z" },
+]
+
+[[package]]
+name = "nixl-cu12"
+version = "0.10.1"
+source = { path = "deps/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+wheels = [
+    { filename = "nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl", hash = "sha256:e4d07b81afdcc7991b4fadec53978032094c9e3433b9ca1a9ea8f2de6654e7a3" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy" },
+    { name = "torch" },
 ]
 
 [[package]]
@@ -2488,6 +2512,12 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+disagg = [
+    { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nixl", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nixl-cu12", version = "0.10.1", source = { path = "deps/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm-router", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
 envs = [
     { name = "aime2024", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "aime2025", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2520,11 +2550,6 @@ dev = [
     { name = "pytest", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "ruff", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-disagg = [
-    { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "nixl", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "vllm-router", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-]
 fp8-inference = [
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
@@ -2539,6 +2564,7 @@ requires-dist = [
     { name = "code-env", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "color-codeword", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "datasets", specifier = ">=4.0.0" },
+    { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", path = "deps/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "platform_machine == 'x86_64' and extra == 'flash-attn-3'", url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl" },
@@ -2550,6 +2576,8 @@ requires-dist = [
     { name = "math-env", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "math-python", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "math500", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
+    { name = "nixl", marker = "extra == 'disagg'" },
+    { name = "nixl-cu12", marker = "platform_machine == 'x86_64' and extra == 'disagg'", path = "deps/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "prime", specifier = ">=0.5.37" },
@@ -2572,10 +2600,11 @@ requires-dist = [
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=1960e77" },
     { name = "vllm", specifier = ">=0.17.0" },
+    { name = "vllm-router", marker = "extra == 'disagg'" },
     { name = "wandb", specifier = ">=0.24.2" },
     { name = "wiki-search", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
 ]
-provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "envs"]
+provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "envs", "disagg"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2584,11 +2613,6 @@ dev = [
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "ruff", specifier = ">=0.12.1" },
-]
-disagg = [
-    { name = "deep-ep", marker = "platform_machine == 'x86_64'", path = "deps/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" },
-    { name = "nixl" },
-    { name = "vllm-router", git = "https://github.com/S1ro1/router.git?branch=fix%2Fpreserve-extra-fields-disagg" },
 ]
 fp8-inference = [{ name = "deep-gemm", marker = "platform_machine == 'x86_64'", url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" }]
 
@@ -3895,7 +3919,7 @@ wheels = [
 [[package]]
 name = "vllm-router"
 version = "0.1.11"
-source = { git = "https://github.com/S1ro1/router.git?branch=fix%2Fpreserve-extra-fields-disagg#d677895f4dcf2a7172eded18e9734150496a08fb" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "fastapi", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3903,6 +3927,11 @@ dependencies = [
     { name = "requests", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "setproctitle", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uvicorn", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6b/f3/5d0043120d5b39bd80c3f193ea99ced3134382491409e50e3d5bcf42df0e/vllm_router-0.1.11.tar.gz", hash = "sha256:a9c9d14a478f3d14281f4cbf3fee1e771c3ecf3d8471ac89336affb549d09e59", size = 247092, upload-time = "2026-03-04T05:02:24.645Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3c/41/e7d6fd9c98e2e58f13ac30a08750253f89aea2e1e9e2ca5c09b6bc48990e/vllm_router-0.1.11-cp38-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:c6b5c670356a5f96a0619b9cb34a134406bee9b328bf7eca6aaea5fdfeac371e", size = 11318072, upload-time = "2026-03-04T05:02:20.811Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/fd/b2ec2b4ba958a7b7ee6e6efd9f97be623a1e58f5464762ca4a3547b31886/vllm_router-0.1.11-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:2845423faa2bbccaa60d1f0a9206c3f7d2ac7b6edb30d703e7cf415f818b252b", size = 11595125, upload-time = "2026-03-04T05:02:23.046Z" },
 ]
 
 [[package]]
