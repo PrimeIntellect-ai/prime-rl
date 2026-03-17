@@ -247,21 +247,23 @@ def train(config: TrainerConfig):
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
+            save_ckpt_time = 0
+
             if not config.ckpt.weights_only:
                 # Single-run: Save full checkpoint
                 logger.info(f"Saving checkpoint at step {progress.step}")
                 save_ckpt_start_time = time.perf_counter()
                 ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-                save_ckpt_time = time.perf_counter() - save_ckpt_start_time
-            else:
-                save_ckpt_time = 0
+                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
 
             # Save weight checkpoint
             if weight_ckpt_manager is not None:
                 logger.info(f"Saving weight checkpoint at step {progress.step}")
+                save_ckpt_start_time = time.perf_counter()
                 weight_ckpt_manager.save(progress.step, model, tokenizer)
+                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
                 weight_ckpt_manager.maybe_clean()
         elif config.max_concurrent_runs > 1:
             # Multi-run: Save per-run checkpoints (each run has its own interval from orchestrator config)
