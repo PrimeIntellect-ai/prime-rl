@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -156,12 +157,17 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_rl_nccl_weight_broadcast_kernel_transfer_flags_propagate():
+def test_rl_nccl_weight_broadcast_kernel_transfer_flags_propagate(tmp_path):
+    model_dir = tmp_path / "glm_moe_dsa_model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "config.json").write_text(json.dumps({"model_type": "glm_moe_dsa"}))
+
     config = RLConfig.model_validate(
         {
             "trainer": {"model": {"impl": "custom"}},
             "orchestrator": {},
             "inference": {},
+            "model": {"name": str(model_dir)},
             "weight_broadcast": {
                 "type": "nccl",
                 "quantize_in_weight_transfer": True,
@@ -205,3 +211,4 @@ def test_rl_quantize_in_weight_transfer_requires_custom_impl():
                 },
             }
         )
+
