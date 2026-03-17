@@ -9,6 +9,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 
+from prime_rl.trainer.activation_checkpointing import SelectiveActivationCheckpointingMixin
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
@@ -26,9 +27,10 @@ from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import (
 logger = logging.get_logger(__name__)
 
 
-class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
+class MiniMaxM2DecoderLayer(GradientCheckpointingLayer, SelectiveActivationCheckpointingMixin):
     def __init__(self, config: MiniMaxM2Config, layer_idx: int):
         super().__init__()
+        self._init_selective_activation_checkpointing()
         self.hidden_size = config.hidden_size
 
         attn_config = AttentionConfig(
@@ -69,8 +71,10 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, _ = self.self_attn(
+        hidden_states = self._maybe_checkpoint("attn_norm", self.input_layernorm, hidden_states)
+        hidden_states, _ = self._maybe_checkpoint(
+            "attention",
+            self.self_attn,
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
@@ -79,8 +83,13 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
+        hidden_states = self._maybe_checkpoint("ffn_norm", self.post_attention_layernorm, hidden_states)
+        hidden_states = self._run_feed_forward(
+            self._forward_mlp,
+            hidden_states,
+            routed_experts=routed_experts,
+            use_moe_recompute=True,
+        )
         hidden_states = residual + hidden_states
         return hidden_states
 

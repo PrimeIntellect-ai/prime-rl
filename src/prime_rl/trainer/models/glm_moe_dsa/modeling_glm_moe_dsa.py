@@ -12,6 +12,7 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
+from prime_rl.trainer.activation_checkpointing import SelectiveActivationCheckpointingMixin
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
@@ -202,9 +203,10 @@ class GlmMoeDsaAttention(nn.Module):
         return self.o_proj(out), None
 
 
-class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
+class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer, SelectiveActivationCheckpointingMixin):
     def __init__(self, config: GlmMoeDsaConfig, layer_idx: int):
         super().__init__()
+        self._init_selective_activation_checkpointing()
         self.hidden_size = config.hidden_size
         self.self_attn = GlmMoeDsaAttention(config)
 
@@ -244,8 +246,10 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, _ = self.self_attn(
+        hidden_states = self._maybe_checkpoint("attn_norm", self.input_layernorm, hidden_states)
+        hidden_states, _ = self._maybe_checkpoint(
+            "attention",
+            self.self_attn,
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             ks=ks,
@@ -254,8 +258,13 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
+        hidden_states = self._maybe_checkpoint("ffn_norm", self.post_attention_layernorm, hidden_states)
+        hidden_states = self._run_feed_forward(
+            self._forward_mlp_module,
+            hidden_states,
+            routed_experts=routed_experts,
+            use_moe_recompute=isinstance(self.mlp, MoE),
+        )
         hidden_states = residual + hidden_states
         return hidden_states
 

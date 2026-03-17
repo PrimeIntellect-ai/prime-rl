@@ -32,9 +32,53 @@ class ActivationCheckpointConfig(BaseConfig):
         int,
         Field(
             ge=1,
-            description="Applies activation checkpointing to every `freq` layers. Defaults to 1, which will is full activation checkpointing.",
+            description=(
+                "Applies activation checkpointing to every `freq` layers. "
+                "When no scopes are enabled, this wraps whole transformer blocks. "
+                "When scopes are enabled, it applies those scoped recompute rules to every `freq` layers."
+            ),
         ),
     ] = 1
+
+    attention: Annotated[
+        bool,
+        Field(description="Whether to recompute the attention or token-mixer module inside selected custom layers."),
+    ] = False
+
+    attn_norm: Annotated[
+        bool,
+        Field(description="Whether to recompute the attention-side layer norms inside selected custom layers."),
+    ] = False
+
+    feed_forward: Annotated[
+        bool,
+        Field(description="Whether to recompute the full feed-forward path inside selected custom layers."),
+    ] = False
+
+    ffn_norm: Annotated[
+        bool,
+        Field(description="Whether to recompute the feed-forward-side layer norms inside selected custom layers."),
+    ] = False
+
+    moe: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to recompute only the MoE path inside selected custom layers when present. "
+                "Ignored when `feed_forward` is enabled."
+            ),
+        ),
+    ] = False
+
+    shared_expert: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to recompute shared-expert feed-forward paths when present. "
+                "Ignored when `feed_forward` is enabled."
+            ),
+        ),
+    ] = False
 
 
 class ActivationOffloadingConfig(BaseConfig):

@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torchtitan.distributed.expert_parallel import expert_parallel
+from torch.utils.checkpoint import checkpoint
 
 
 @dataclass
@@ -375,40 +376,35 @@ class MoE(nn.Module):
             persistent=False,
         )
 
-    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
-        """
-        Args:
-            x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
-            routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs, slen, top_k)``.
+    def _flatten_routed_experts(self, routed_experts: torch.Tensor | None = None) -> torch.Tensor | None:
+        if routed_experts is None:
+            return None
 
-        Returns:
-            out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
-        """
-        bs, slen, dim = x.shape
-        x = x.view(-1, dim)
+        _, _, top_k = routed_experts.shape
+        return routed_experts.reshape(-1, top_k)  # original tensor can be non-contiguous
 
-        if routed_experts is not None:
-            _, _, top_k = routed_experts.shape
-            routed_experts = routed_experts.reshape(
-                -1, top_k
-            )  # we have to reshape here because the original is non-contiguous
-
-        # top_scores and selected_experts_indices shape (bs*slen*top_k,)
-        # num_tokens_per_expert shape (num_experts,)
+    def _route_tokens(
+        self, x: torch.Tensor, routed_experts: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         (
             top_scores,
             selected_experts_indices,
             num_tokens_per_expert,
         ) = self.router(x, self.expert_bias, routed_experts=routed_experts)
 
-        # tokens_per_expert will be used to update the expert bias for load balancing.
-        # and also to count the expert usage
-        # TODO: Activation Checkpointing has the side effect of double counting tokens_per_expert --
-        #       first in the forward pass, and then in the backward pass. However, this has no
-        #       effect on the expert bias update thanks to the torch.sign() operator.
+        # Keeping router execution outside checkpointed expert recompute avoids
+        # double-counting these stats during backward replay.
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
 
+        return top_scores, selected_experts_indices
+
+    def _forward_expert_path(
+        self,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+    ) -> torch.Tensor:
         # top_scores and token_indices_experts_sorted shape (bs*slen*top_k,)
         # num_tokens_per_expert shape (num_experts,)
         # NOTE: the reason we need to compute num_tokens_per_expert again is:
@@ -422,6 +418,8 @@ class MoE(nn.Module):
             token_indices_experts_sorted,
             num_tokens_per_expert,
         ) = self.reorderer(top_scores, selected_experts_indices)
+
+        dim = x.shape[-1]
 
         # shape (bs*slen*top_k, dim)
         token_indices_experts_sorted = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
@@ -445,6 +443,38 @@ class MoE(nn.Module):
             out = torch.zeros_like(x)
 
         out = out.scatter_add(dim=0, index=token_indices_experts_sorted, src=routed_output)
+        return out
+
+    def forward(
+        self, x: torch.Tensor, routed_experts: torch.Tensor | None = None, recompute: bool = False
+    ) -> torch.Tensor:
+        """
+        Args:
+            x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
+            routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs, slen, top_k)``.
+            recompute (bool, optional): Whether to checkpoint the post-routing expert path.
+
+        Returns:
+            out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
+        """
+        bs, slen, dim = x.shape
+        x = x.view(-1, dim)
+
+        routed_experts = self._flatten_routed_experts(routed_experts)
+        top_scores, selected_experts_indices = self._route_tokens(x, routed_experts=routed_experts)
+
+        if recompute:
+            out = checkpoint(
+                self._forward_expert_path,
+                x,
+                top_scores,
+                selected_experts_indices,
+                use_reentrant=False,
+                preserve_rng_state=False,
+            )
+        else:
+            out = self._forward_expert_path(x, top_scores, selected_experts_indices)
+
         out = out.reshape(bs, slen, dim)
         return out
 

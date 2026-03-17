@@ -14,6 +14,7 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeVisio
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, logging
 
+from prime_rl.trainer.activation_checkpointing import SelectiveActivationCheckpointingMixin
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
@@ -488,9 +489,10 @@ def _get_gated_attention(config: Qwen3_5MoeConfig) -> nn.Module:
     return QWEN35MOE_ATTN_IMPL2CLASS[attn_impl](attn_config)
 
 
-class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
+class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer, SelectiveActivationCheckpointingMixin):
     def __init__(self, config: Qwen3_5MoeConfig, layer_idx: int):
         super().__init__()
+        self._init_selective_activation_checkpointing()
         self.hidden_size = config.hidden_size
         self.layer_type = config.layer_types[layer_idx]
 
@@ -522,6 +524,21 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         self.input_layernorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
+    def _forward_routed_experts(
+        self,
+        hidden_states: torch.Tensor,
+        routed_experts: Optional[torch.LongTensor] = None,
+        recompute: bool = False,
+    ) -> torch.Tensor:
+        return self.mlp(hidden_states, routed_experts=routed_experts, recompute=recompute)
+
+    def _forward_shared_expert(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        bs, slen, dim = hidden_states.shape
+        hidden_flat = hidden_states.view(-1, dim)
+        shared_output = self.shared_expert(hidden_flat)
+        shared_output = F.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
+        return shared_output.view(bs, slen, dim)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -531,13 +548,15 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = self._maybe_checkpoint("attn_norm", self.input_layernorm, hidden_states)
 
         # Token mixer
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(hidden_states)
+            hidden_states = self._maybe_checkpoint("attention", self.linear_attn, hidden_states)
         elif self.layer_type == "full_attention":
-            hidden_states, _ = self.self_attn(
+            hidden_states, _ = self._maybe_checkpoint(
+                "attention",
+                self.self_attn,
                 hidden_states=hidden_states,
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
@@ -548,17 +567,14 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
 
         # MLP: routed experts + gated shared expert
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-
-        # Routed experts
-        routed_output = self.mlp(hidden_states, routed_experts=routed_experts)
-
-        # Gated shared expert
-        bs, slen, dim = hidden_states.shape
-        hidden_flat = hidden_states.view(-1, dim)
-        shared_output = self.shared_expert(hidden_flat)
-        shared_output = F.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
-        shared_output = shared_output.view(bs, slen, dim)
+        hidden_states = self._maybe_checkpoint("ffn_norm", self.post_attention_layernorm, hidden_states)
+        routed_output = self._run_feed_forward(
+            self._forward_routed_experts,
+            hidden_states,
+            routed_experts=routed_experts,
+            use_moe_recompute=True,
+        )
+        shared_output = self._run_shared_expert(self._forward_shared_expert, hidden_states)
 
         hidden_states = residual + routed_output + shared_output
         return hidden_states

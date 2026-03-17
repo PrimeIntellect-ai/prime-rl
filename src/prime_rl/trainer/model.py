@@ -22,6 +22,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
+from prime_rl.trainer.activation_checkpointing import ActivationCheckpointScopes
 from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -639,6 +640,39 @@ def reshard_module(model: nn.Module):
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     language_model = get_language_model(model)
+    scopes = ActivationCheckpointScopes.from_config(ac_config)
+    if scopes.has_any():
+        unsupported_layers = sorted(
+            {
+                type(transformer_block).__name__
+                for transformer_block in language_model.layers
+                if not hasattr(transformer_block, "set_activation_checkpoint_scopes")
+                or not hasattr(transformer_block, "clear_activation_checkpoint_scopes")
+            }
+        )
+        if unsupported_layers:
+            unsupported = ", ".join(unsupported_layers)
+            raise ValueError(
+                "Scoped activation checkpointing requires the custom transformer-block path. "
+                f"Unsupported layer types: {unsupported}. "
+                "Use `model.impl='custom'` when available, or fall back to `model.ac.freq` without scoped flags."
+            )
+
+        enabled_layers = 0
+        for layer_id, transformer_block in enumerate(language_model.layers):
+            if layer_id % ac_config.freq == 0:
+                transformer_block.set_activation_checkpoint_scopes(scopes)
+                enabled_layers += 1
+            else:
+                transformer_block.clear_activation_checkpoint_scopes()
+
+        enabled_scopes = ", ".join(scopes.enabled_scopes())
+        get_logger().info(
+            f"Applied selective activation checkpointing (freq={ac_config.freq}, scopes=[{enabled_scopes}]) "
+            f"to {enabled_layers} layers"
+        )
+        return
+
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq == 0:
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
