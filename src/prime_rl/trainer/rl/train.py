@@ -612,9 +612,10 @@ def train(config: TrainerConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint (only for single-run mode; multi-run checkpoints are managed by MultiCheckpointManager)
-    if config.max_concurrent_runs == 1 and ckpt_manager is not None and not (config.ckpt and config.ckpt.weights_only):
-        logger.info("Writing final checkpoint")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+    if config.max_concurrent_runs == 1 and ckpt_manager is not None:
+        if not (config.ckpt and config.ckpt.weights_only):
+            logger.info("Writing final checkpoint")
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
 
     if config.max_concurrent_runs == 1 and weight_ckpt_manager is not None:

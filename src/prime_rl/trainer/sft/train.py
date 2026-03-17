@@ -496,9 +496,10 @@ def train(config: SFTConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if ckpt_manager is not None and not (config.ckpt and config.ckpt.weights_only):
-        logger.info("Writing final checkpoint")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+    if ckpt_manager is not None:
+        if not (config.ckpt and config.ckpt.weights_only):
+            logger.info("Writing final checkpoint")
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 
     # Write final weight checkpoint
