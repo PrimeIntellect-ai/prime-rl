@@ -154,3 +154,25 @@ def test_cli_overrides_toml(tmp_path):
 def test_removed_fused_lm_head_chunk_size_field_is_rejected():
     with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
+
+
+def test_rl_nccl_weight_broadcast_kernel_transfer_flags_propagate():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {},
+            "weight_broadcast": {
+                "type": "nccl",
+                "use_vllm_format_transfer": True,
+                "quantize_fp8": True,
+            }
+        }
+    )
+
+    assert config.trainer.weight_broadcast.type == "nccl"
+    assert config.trainer.weight_broadcast.use_vllm_format_transfer is True
+    assert config.trainer.weight_broadcast.quantize_fp8 is True
+
+    assert config.orchestrator.weight_broadcast.type == "nccl"
+    assert config.orchestrator.weight_broadcast.use_vllm_format_transfer is True

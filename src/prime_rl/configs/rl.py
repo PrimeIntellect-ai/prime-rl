@@ -123,6 +123,24 @@ class SharedWeightBroadcastConfig(BaseConfig):
 
     port: Annotated[int, Field(description="The port to use for NCCL weight broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
+    use_vllm_format_transfer: Annotated[
+        bool,
+        Field(
+            description=(
+                "Transfer weights in vLLM kernel format instead of HF checkpoint format. "
+                "Required for direct in-place kernel/FP8 weight updates."
+            ),
+        ),
+    ] = False
+    quantize_fp8: Annotated[
+        bool,
+        Field(
+            description=(
+                "Quantize kernel-format weights to FP8 (e4m3) with block-wise scales during transfer. "
+                "Only used when use_vllm_format_transfer is True."
+            ),
+        ),
+    ] = False
 
 
 class BaseDeploymentConfig(BaseModel):
@@ -507,11 +525,14 @@ class RLConfig(BaseConfig):
                     inference_world_size=inference_world_size,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
+                    use_vllm_format_transfer=self.weight_broadcast.use_vllm_format_transfer,
+                    quantize_fp8=self.weight_broadcast.quantize_fp8,
                 )
                 self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
+                    use_vllm_format_transfer=self.weight_broadcast.use_vllm_format_transfer,
                 )
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()

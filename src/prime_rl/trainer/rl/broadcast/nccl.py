@@ -94,10 +94,14 @@ class NCCLWeightBroadcastSender:
         device: int | str | torch.device,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
+        use_vllm_format_transfer: bool = False,
+        quantize_fp8: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = dtype
+        self.use_vllm_format_transfer = use_vllm_format_transfer
+        self.quantize_fp8 = quantize_fp8
 
         if self.world.is_master:
             # Trainer is on rank 0 in process group with all inference GPUs
@@ -121,24 +125,64 @@ class NCCLWeightBroadcastSender:
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
+        if self.use_vllm_format_transfer:
+            self._broadcast_kernel_format(model, state_dict, num_layers)
+            return
 
-        for layer_id, state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
-            for key, value in list(state_dict.items()):
-                if isinstance(value, DTensor):
-                    value = cast(DTensor, value.to(self.dtype)).full_tensor()
-                state_dict[key] = value
+        self._broadcast_checkpoint_format(model, state_dict, num_layers, layer_prefix)
 
-            # Convert to HF hub format for this layer if needed
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
-                model.convert_layer_to_hf(state_dict, layer_id)
+    def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        for key, value in list(state_dict.items()):
+            if isinstance(value, DTensor):
+                state_dict[key] = cast(DTensor, value.to(self.dtype)).full_tensor()
+        return state_dict
+
+    def _broadcast_checkpoint_format(
+        self,
+        model: nn.Module,
+        state_dict: dict[str, Tensor],
+        num_layers: int,
+        layer_prefix: str,
+    ) -> None:
+        """Broadcast weights in HF checkpoint format."""
+        for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
+            layer_state_dict = self._resolve_dtensors(layer_state_dict)
+
+            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state_dict):
+                model.convert_layer_to_hf(layer_state_dict, layer_id)
             else:
-                # For regular transformers models, revert internal format to original HF hub format
                 from transformers.core_model_loading import revert_weight_conversion
 
-                state_dict = revert_weight_conversion(model, state_dict)
+                layer_state_dict = revert_weight_conversion(model, layer_state_dict)
 
             if self.world.is_master:
-                broadcast_state_dict(state_dict, self.communicator)
+                broadcast_state_dict(layer_state_dict, self.communicator)
+
+    def _broadcast_kernel_format(self, model: nn.Module, state_dict: dict[str, Tensor], num_layers: int) -> None:
+        """Broadcast weights in vLLM kernel format."""
+        assert isinstance(model, PreTrainedModelPrimeRL), (
+            f"Kernel format transfer requires PreTrainedModelPrimeRL, got {type(model).__name__}"
+        )
+
+        self.logger.debug(f"Broadcasting kernel-format weights (quantize_fp8={self.quantize_fp8})")
+
+        non_layer_state = {key: value for key, value in state_dict.items() if not key.startswith("model.layers.")}
+        non_layer_state = self._resolve_dtensors(non_layer_state)
+        if self.world.is_master:
+            broadcast_state_dict(non_layer_state, self.communicator)
+
+        for layer_idx in range(num_layers):
+            layer_state = {
+                key: value for key, value in state_dict.items() if key.startswith(f"model.layers.{layer_idx}.")
+            }
+            layer_state = self._resolve_dtensors(layer_state)
+            kernel_layer_state = model.convert_layer_to_vllm_kernel(
+                layer_state,
+                layer_idx,
+                quantize_fp8=self.quantize_fp8,
+            )
+            if self.world.is_master:
+                broadcast_state_dict(kernel_layer_state, self.communicator)
 
 
 class NCCLWeightBroadcast(WeightBroadcast):
@@ -156,7 +200,15 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
-            config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout, dtype
+            config.host,
+            config.port,
+            0,
+            config.inference_world_size + 1,
+            device,
+            config.timeout,
+            dtype,
+            use_vllm_format_transfer=config.use_vllm_format_transfer,
+            quantize_fp8=config.quantize_fp8,
         )
 
     @torch.no_grad()

@@ -642,6 +642,10 @@ class NCCLWeightBroadcastConfig(BaseModel):
     host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
     port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
+    use_vllm_format_transfer: Annotated[
+        bool,
+        Field(description="Transfer weights in vLLM kernel format instead of HF checkpoint format."),
+    ] = False
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

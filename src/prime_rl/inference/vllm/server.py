@@ -211,12 +211,13 @@ async def init_broadcaster(request: Request):
     host = data.get("host")
     port = data.get("port")
     timeout = data.get("timeout")
+    use_vllm_format_transfer = data.get("use_vllm_format_transfer", False)
     # Support both legacy and new field names
     server_rank = data.get("server_rank")
     num_inference_server = data.get("num_inference_server")
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, server_rank, num_inference_server, timeout),
+        args=(host, port, server_rank, num_inference_server, timeout, use_vllm_format_transfer),
     )
     return {"status": "ok"}
 
