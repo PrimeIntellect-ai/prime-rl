@@ -327,7 +327,7 @@ async def orchestrate(config: OrchestratorConfig):
             config.weight_broadcast.host,
             config.weight_broadcast.port,
             config.weight_broadcast.timeout,
-            use_vllm_format_transfer=config.weight_broadcast.use_vllm_format_transfer,
+            quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
         )
 
     # Setup training batch sender for sending training examples to trainer

@@ -74,11 +74,11 @@ class NCCLWeightBroadcastReceiver:
     @torch.no_grad()
     def receive_state_dict(self):
         """Receives the state dict of a model from the trainer master rank using NCCL communicator."""
-        logger.info("Receiving weights from trainer")
+        logger.debug("Receiving weights from trainer")
         num_state_dict_to_receive = receive_integer(self.communicator)
-        logger.info(f"Receiving {num_state_dict_to_receive} layer state dicts")
+        logger.debug(f"Receiving {num_state_dict_to_receive} layer state dicts")
         for layer_id in range(num_state_dict_to_receive):
-            logger.info(f"Receiving state dict {layer_id + 1}/{num_state_dict_to_receive}")
+            logger.debug(f"Receiving state dict {layer_id + 1}/{num_state_dict_to_receive}")
             for key, value in receive_state_dict(self.communicator):
                 yield key, value
 
@@ -93,10 +93,10 @@ class NCCLWeightUpdateWorker(Worker):
         server_rank: int,
         num_inference_server: int,
         timeout: int,
-        use_vllm_format_transfer: bool = False,
+        quantize_in_weight_transfer: bool = False,
     ) -> None:
         """Initialize the NCCL broadcast receiver."""
-        self.use_vllm_format_transfer = use_vllm_format_transfer
+        self.quantize_in_weight_transfer = quantize_in_weight_transfer
         tp_size = get_tp_group().world_size
         tp_rank = get_tp_group().rank_in_group
         dp_size = get_dp_group().world_size
@@ -127,7 +127,7 @@ class NCCLWeightUpdateWorker(Worker):
         assert isinstance(model, Module)
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        if self.use_vllm_format_transfer:
+        if self.quantize_in_weight_transfer:
             self._load_kernel_format(model, state_iter)
             self._update_mla_absorbed_weights(model)
             return
@@ -216,7 +216,7 @@ class NCCLWeightUpdateWorker(Worker):
             loaded += 1
 
         if shape_mismatches:
-            logger.error(f"Kernel weight transfer had {len(shape_mismatches)} shape mismatches: {shape_mismatches}")
+            raise ValueError(f"Kernel weight transfer had {len(shape_mismatches)} shape mismatches: {shape_mismatches}")
         if skipped:
-            logger.warning(f"Kernel weight transfer skipped {len(skipped)} weights not found in model: {skipped}")
-        logger.info(f"Kernel weight transfer copied {loaded} weights in-place")
+            raise ValueError(f"Kernel weight transfer skipped {len(skipped)} weights not found in model: {skipped}")
+        logger.debug(f"Kernel weight transfer copied {loaded} weights in-place")

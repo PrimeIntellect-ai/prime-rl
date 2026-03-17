@@ -159,23 +159,21 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_rl_nccl_weight_broadcast_kernel_transfer_flags_propagate():
     config = RLConfig.model_validate(
         {
-            "trainer": {},
+            "trainer": {"model": {"impl": "custom"}},
             "orchestrator": {},
             "inference": {},
             "weight_broadcast": {
                 "type": "nccl",
-                "use_vllm_format_transfer": True,
-                "quantize_fp8": True,
+                "quantize_in_weight_transfer": True,
             },
         }
     )
 
     assert config.trainer.weight_broadcast.type == "nccl"
-    assert config.trainer.weight_broadcast.use_vllm_format_transfer is True
-    assert config.trainer.weight_broadcast.quantize_fp8 is True
+    assert config.trainer.weight_broadcast.quantize_in_weight_transfer is True
 
     assert config.orchestrator.weight_broadcast.type == "nccl"
-    assert config.orchestrator.weight_broadcast.use_vllm_format_transfer is True
+    assert config.orchestrator.weight_broadcast.quantize_in_weight_transfer is True
 
 
 def test_rl_allows_distinct_trainer_and_inference_model_names():
@@ -192,3 +190,18 @@ def test_rl_allows_distinct_trainer_and_inference_model_names():
     assert config.inference is not None
     assert config.inference.model.name == "zai-org/GLM-4.5-FP8"
     assert config.orchestrator.model.name == "zai-org/GLM-4.5-FP8"
+
+
+def test_rl_quantize_in_weight_transfer_requires_custom_impl():
+    with pytest.raises(ValidationError, match="trainer.model.impl = 'custom'"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {},
+                "inference": {},
+                "weight_broadcast": {
+                    "type": "nccl",
+                    "quantize_in_weight_transfer": True,
+                },
+            }
+        )

@@ -94,14 +94,12 @@ class NCCLWeightBroadcastSender:
         device: int | str | torch.device,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
-        use_vllm_format_transfer: bool = False,
-        quantize_fp8: bool = False,
+        quantize_in_weight_transfer: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = dtype
-        self.use_vllm_format_transfer = use_vllm_format_transfer
-        self.quantize_fp8 = quantize_fp8
+        self.quantize_in_weight_transfer = quantize_in_weight_transfer
 
         if self.world.is_master:
             # Trainer is on rank 0 in process group with all inference GPUs
@@ -125,7 +123,7 @@ class NCCLWeightBroadcastSender:
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
-        if self.use_vllm_format_transfer:
+        if self.quantize_in_weight_transfer:
             self._broadcast_kernel_format(model, state_dict, num_layers, layer_prefix)
             return
 
@@ -167,10 +165,15 @@ class NCCLWeightBroadcastSender:
     ) -> None:
         """Broadcast weights in vLLM kernel format."""
         assert isinstance(model, PreTrainedModelPrimeRL), (
-            f"Kernel format transfer requires PreTrainedModelPrimeRL, got {type(model).__name__}"
+            f"quantize_in_weight_transfer requires a custom PrimeRL model implementation, got {type(model).__name__}."
         )
+        if model.__class__.convert_layer_to_vllm_kernel is PreTrainedModelPrimeRL.convert_layer_to_vllm_kernel:
+            raise ValueError(
+                f"quantize_in_weight_transfer is not supported for {type(model).__name__}: "
+                "convert_layer_to_vllm_kernel is not implemented."
+            )
 
-        self.logger.debug(f"Broadcasting kernel-format weights (quantize_fp8={self.quantize_fp8})")
+        self.logger.debug("Broadcasting kernel-format FP8 quantized weights")
 
         for layer_idx, layer_state in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
             layer_state = self._resolve_dtensors(layer_state)
@@ -178,7 +181,7 @@ class NCCLWeightBroadcastSender:
                 layer_state = model.convert_layer_to_vllm_kernel(
                     layer_state,
                     layer_idx,
-                    quantize_fp8=self.quantize_fp8,
+                    quantize_fp8=True,
                 )
             if self.world.is_master:
                 broadcast_state_dict(layer_state, self.communicator)
@@ -206,8 +209,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
             device,
             config.timeout,
             dtype,
-            use_vllm_format_transfer=config.use_vllm_format_transfer,
-            quantize_fp8=config.quantize_fp8,
+            quantize_in_weight_transfer=config.quantize_in_weight_transfer,
         )
 
     @torch.no_grad()
