@@ -22,6 +22,19 @@ def test_default_advantage_fn_simple_mean():
     assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
 
 
+def test_default_advantage_fn_gr3_length_shaping():
+    inputs = AdvantageInputs(
+        rewards=torch.tensor([[1.0, 0.5, 0.8]]),
+        completion_lengths=torch.tensor([[10, 20, 10]]),
+    )
+
+    result = default_advantage_fn(inputs, length_shaping_alpha=0.33)
+
+    expected = torch.tensor([[0.20915856, -0.25799648, 0.04883792]])
+    assert torch.allclose(result.advantages, expected, atol=1e-6)
+    assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(1), atol=1e-6)
+
+
 def test_compute_advantages_with_config():
     rewards = [1.0, 0.5, 0.8, 0.2, 0.9, 0.1]
     lengths = [10, 12, 8, 15, 11, 9]
