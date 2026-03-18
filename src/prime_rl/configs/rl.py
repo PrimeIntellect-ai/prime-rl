@@ -54,7 +54,17 @@ class SharedLogConfig(BaseConfig):
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
 
+    vf_level: Annotated[
+        str | None,
+        Field(description="The verifiers package log level to use."),
+    ] = "info"
+
     file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
+
+    env_worker_logs: Annotated[
+        bool | None,
+        Field(description="Whether env workers should log to files."),
+    ] = False
 
     json_logging: Annotated[
         bool,
