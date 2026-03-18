@@ -505,6 +505,13 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = False
 
+    skip_optimizer: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading optimizer state from checkpoint.",
+        ),
+    ] = False
+
     skip_dataloader: Annotated[
         bool,
         Field(

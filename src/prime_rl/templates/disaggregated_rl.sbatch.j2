@@ -207,7 +207,7 @@ if [ "$NODE_RANK" -lt "$TOTAL_INFER_NODES" ]; then
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
         {{ project_dir }}/.venv/bin/vllm-router-rs \
-            --policy round_robin \
+            --policy consistent_hash \
             --vllm-pd-disaggregation \
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \

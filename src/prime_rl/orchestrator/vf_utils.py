@@ -17,6 +17,14 @@ REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
 DEFAULT_STATE_COLUMNS = []
 
 
+def _run_env_server_with_patches(*args, **kwargs):
+    """Wrapper that applies monkey patches before starting the env server."""
+    from prime_rl.orchestrator.patches import monkey_patch_session_id_header
+
+    monkey_patch_session_id_header()
+    ZMQEnvServer.run_server(*args, **kwargs)
+
+
 def spawn_env_server(
     env_id: str,
     env_args: dict[str, Any],
@@ -38,7 +46,7 @@ def spawn_env_server(
     # the parent process, which has caused hangs when multiple env server
     # subprocesses share the same fds.
     process = mp.get_context("spawn").Process(
-        target=ZMQEnvServer.run_server,
+        target=_run_env_server_with_patches,
         args=(
             env_id,
             env_args,

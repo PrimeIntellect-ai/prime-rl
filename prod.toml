@@ -60,6 +60,7 @@ max_inflight_activations = 1
 
 [trainer.ckpt]
 skip_gather_master_weights = true
+skip_optimizer = true
 
 [trainer.optim]
 type = "adamw"
