@@ -127,10 +127,6 @@ async def orchestrate(config: OrchestratorConfig):
     else:
         teacher_inference_pool = None
 
-    # Start inference metrics collector
-    inference_metrics_collector = InferenceMetricsCollector(inference_pool)
-    await inference_metrics_collector.start()
-
     # Check if this is a vision-language model (used throughout for VLM-specific paths)
     is_vlm = is_vlm_model(config.model.name)
 
@@ -329,6 +325,10 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info("Waiting for inference pool to be ready")
     await inference_pool.wait_for_ready(config.model.name)
     logger.success("Inference pool ready")
+
+    # Start inference metrics collector
+    inference_metrics_collector = InferenceMetricsCollector(inference_pool)
+    await inference_metrics_collector.start()
 
     # Check health of teacher inference server if configured
     if config.teacher_model and teacher_inference_pool:
