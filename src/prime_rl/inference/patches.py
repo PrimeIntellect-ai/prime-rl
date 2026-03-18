@@ -473,9 +473,16 @@ def monkey_patch_multiproc_executor_init_order():
     only set during init_device(). This causes cross-node TP via headless
     multiproc executor to fail.
 
+    Only applied in multi-node setups (NNODES > 1).
+
     Related: https://github.com/vllm-project/vllm/issues/36389
     """
     import logging
+    import os
+
+    nnodes = int(os.environ.get("NNODES", "1"))
+    if nnodes <= 1:
+        return
 
     from vllm.v1.executor.multiproc_executor import WorkerProc
 
@@ -518,10 +525,17 @@ def monkey_patch_parallel_state_same_node():
     Fix: compute same-node membership locally using cuda.device_count() and
     get_process_group_ranks() for sub-group rank mapping. No network needed.
 
+    Only applied in multi-node setups (NNODES > 1).
+
     Related: https://github.com/vllm-project/vllm/pull/22553
     Related: https://github.com/vllm-project/vllm/pull/19112
     """
     import logging
+    import os
+
+    nnodes = int(os.environ.get("NNODES", "1"))
+    if nnodes <= 1:
+        return
 
     import torch
     import vllm.distributed.parallel_state as ps_module
