@@ -58,7 +58,7 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 
 # W&B shared mode: single run for trainer + orchestrator
-export WANDB_SHARED_MODE=1
+export WANDB_SHARED_RUN_ID=$(python3 -c "import uuid; print(uuid.uuid4().hex)")
 
 # Networking
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )

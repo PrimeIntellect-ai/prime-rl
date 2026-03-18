@@ -1,4 +1,3 @@
-import uuid
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -442,11 +441,6 @@ class RLConfig(BaseConfig):
                 self.orchestrator.wandb.project = self.wandb.project
 
             if self.wandb.shared:
-                # Both processes log to the same run
-                shared_id = uuid.uuid4().hex
-                self.trainer.wandb.id = self.trainer.wandb.id or shared_id
-                self.orchestrator.wandb.id = self.orchestrator.wandb.id or shared_id
-
                 if self.wandb.name:
                     self.trainer.wandb.name = self.wandb.name
                     self.orchestrator.wandb.name = self.wandb.name

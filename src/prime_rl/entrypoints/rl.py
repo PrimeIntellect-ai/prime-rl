@@ -135,7 +135,7 @@ def rl_local(config: RLConfig):
     # Build shared W&B env vars for subprocesses
     wandb_shared_env: dict[str, str] = {}
     if config.wandb and config.wandb.shared:
-        wandb_shared_env["WANDB_SHARED_MODE"] = "1"
+        wandb_shared_env["WANDB_SHARED_RUN_ID"] = uuid.uuid4().hex
 
     # Check for existing processes on GPUs
     all_gpu_ids = list(set(infer_gpu_ids + trainer_gpu_ids + teacher_gpu_ids))
