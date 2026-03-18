@@ -378,8 +378,6 @@ class AdvantageConfig(BaseConfig):
         if self.gr3_alpha:
             if self.length_weighted_mean:
                 raise ValueError("Group Relative Reward scaling cannot be used in conjunction with length weighted mean")
-            if not self.online_difficulty_filtering:
-                raise ValueError("Group Relative Reward scaling requires online difficulty filtering")
         return self
 
 
@@ -577,6 +575,13 @@ class OrchestratorConfig(BaseSettings):
     def validate_batch_size(self):
         if self.batch_size % self.rollouts_per_example != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
+        return self
+
+    @model_validator(mode="after")
+    def validate_gr3_requires_online_difficulty_filtering(self):
+        if self.advantage and self.advantage.gr3_alpha:
+            if not self.buffer.online_difficulty_filtering:
+                raise ValueError("Group Relative Reward scaling requires online difficulty filtering")
         return self
 
     @model_validator(mode="after")
