@@ -21,7 +21,7 @@ def compute_advantages(
     if not advantage_config:
         return rewards
     rewards = torch.tensor(rewards).view(-1, samples_per_problem)
-    lengths = torch.tensor(completion_lengths).view(-1, samples_per_problem)
+    lengths = torch.tensor(completion_lengths, dtype=torch.float32).view(-1, samples_per_problem)
     if advantage_config.gr3_alpha:
         lengths_normalized = lengths / lengths.mean(dim=1, keepdim=True)
         length_shaping = (1 + advantage_config.gr3_alpha * lengths_normalized) ** -1
