@@ -26,7 +26,7 @@ def test_fused_lm_head_matches_full_logits_forward_and_backward_cpu():
     torch.manual_seed(0)
     b, s, h, v = 2, 4, 8, 37
     temperature = torch.full((b, s), 1.7, dtype=torch.float32)
-    chunk_size = 11
+    chunk_size = 3
 
     hidden0 = torch.randn(b, s, h, dtype=torch.float32, requires_grad=True)
     labels = torch.randint(0, v, (b, s), dtype=torch.long)
@@ -104,7 +104,7 @@ def test_fused_vs_vanilla_integration():
     b, s, h, v = 2, 4, 8, 37
     temp_value = 1.7
     temperature = torch.full((b, s), temp_value, dtype=torch.float32)
-    chunk_size = 11
+    chunk_size = 3
 
     hidden = torch.randn(b, s, h, dtype=torch.float16)
     labels = torch.randint(0, v, (b, s), dtype=torch.long)
@@ -163,7 +163,7 @@ def test_full_model_fused_vs_vanilla():
 
         # Wrap with different LM heads
         inject_prime_lm_head(model_vanilla, chunk_size=None)  # Vanilla
-        inject_prime_lm_head(model_fused, chunk_size=256)  # Fused with chunking
+        inject_prime_lm_head(model_fused, chunk_size=32)  # Fused with chunking
 
     # Setup optimizers
     optimizer_vanilla = torch.optim.AdamW(model_vanilla.parameters(), lr=1e-4)
@@ -336,7 +336,7 @@ def test_inject_prime_lm_head_fused():
     with torch.device("cuda"), default_dtype(torch.float32):
         model = AutoModelForCausalLM.from_config(config)
 
-    # Wrap with FusedOutputLinear (chunk_size=512)
+    # Wrap with FusedOutputLinear
     inject_prime_lm_head(model, chunk_size=512)
 
     assert isinstance(model.lm_head, FusedOutputLinear), "lm_head should be FusedOutputLinear"
@@ -390,7 +390,7 @@ def test_hf_model_fused_vs_vanilla_matches():
 
     # Wrap models
     inject_prime_lm_head(model_vanilla, chunk_size=None)
-    inject_prime_lm_head(model_fused, chunk_size=512)
+    inject_prime_lm_head(model_fused, chunk_size=32)
 
     # Test data
     batch_size, seq_len = 2, 64

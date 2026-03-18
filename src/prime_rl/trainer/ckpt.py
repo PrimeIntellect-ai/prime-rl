@@ -443,10 +443,11 @@ def setup_ckpt_managers(
 ) -> tuple[CheckpointManager | None, WeightCheckpointManager | None]:
     if ckpt_config is None:
         return None, None
-    ckpt_manager = CheckpointManager(output_dir, ckpt_config)
+    ckpt_output_dir = ckpt_config.output_dir or output_dir
+    ckpt_manager = CheckpointManager(ckpt_output_dir, ckpt_config)
     if ckpt_config.weights:
         weight_ckpt_manager = WeightCheckpointManager(
-            output_dir,
+            ckpt_output_dir,
             ckpt_config.weights,
             lora_config=lora_config,
             keep_last=ckpt_config.keep_last,

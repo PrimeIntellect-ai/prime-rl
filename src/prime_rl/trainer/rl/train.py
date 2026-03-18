@@ -16,7 +16,7 @@ from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
-from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     setup_cp_params,
@@ -44,6 +44,7 @@ from prime_rl.trainer.utils import (
     MemoryProfiler,
     Tensors,
     export_benchmark_json,
+    get_zero_gradient_ratio,
     get_ckpt_disk_metrics,
     setup_torch_distributed,
     print_benchmark,
@@ -55,7 +56,7 @@ from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pydantic_config import parse_argv
+from prime_rl.utils.config import cli
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
@@ -166,9 +167,13 @@ def train(config: TrainerConfig):
 
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
-    # Set up weight broadcast
-    logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-    weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
+    # Set up weight broadcast (skip when using fake data since there's no inference server)
+    if config.data.fake:
+        weight_broadcast = None
+        logger.info("Skipping weight broadcast setup (fake data mode)")
+    else:
+        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
 
     if parallel_dims.cp_enabled:
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
@@ -217,21 +222,24 @@ def train(config: TrainerConfig):
 
         # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
         # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
-        last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
-        if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
-            broadcast_weights_start_time = time.perf_counter()
-            weight_broadcast.broadcast_weights(model, step=progress.step)
-            broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
-            # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-            ckpt_interval = config.ckpt and config.ckpt.interval
-            interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
-            if config.weight_broadcast.type == "filesystem":
-                weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
-        else:
+        if weight_broadcast is None:
             broadcast_weights_time = 0
-            # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
-            for idx in multi_run_manager.used_idxs:
-                multi_run_manager.ready_to_update[idx] = False
+        else:
+            last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
+            if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
+                broadcast_weights_start_time = time.perf_counter()
+                weight_broadcast.broadcast_weights(model, step=progress.step)
+                broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
+                # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
+                ckpt_interval = config.ckpt and config.ckpt.interval
+                interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
+                if config.weight_broadcast.type == "filesystem":
+                    weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
+            else:
+                broadcast_weights_time = 0
+                # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
+                for idx in multi_run_manager.used_idxs:
+                    multi_run_manager.ready_to_update[idx] = False
 
         if (
             ckpt_manager is not None
@@ -294,10 +302,7 @@ def train(config: TrainerConfig):
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        if isinstance(config.loss, DefaultLossConfig) and config.loss.ratio_type == "token":
-            loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        else:
-            loss_scale = batch_size
+        loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
         loss_scale = max(loss_scale, 1)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
@@ -460,6 +465,7 @@ def train(config: TrainerConfig):
         )
         if grad_norm.device.type == "cpu":
             grad_norm = grad_norm.to(torch.device("cuda"))
+        zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
 
         # Update the model parameters
         optimizer.step()
@@ -516,6 +522,7 @@ def train(config: TrainerConfig):
         optim_metrics = {
             "optim/lr": current_lr,
             "optim/grad_norm": grad_norm.item(),
+            "optim/zero_grad_ratio": zero_grad_ratio,
             "step": progress.step,
         }
         monitor.log(optim_metrics, step=progress.step)
@@ -559,6 +566,7 @@ def train(config: TrainerConfig):
                 mfu=mfu,
                 entropy=tensor_stats.get("entropy/mean", 0.0),
                 mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
+                zero_grad_ratio=zero_grad_ratio,
             )
             # Update run/LoRA metrics
             multi_run_manager = get_multi_run_manager()
@@ -633,7 +641,7 @@ def train(config: TrainerConfig):
 def main():
     """Main entry-point for RL trainer. Run using `uv run trainer`"""
 
-    train(parse_argv(TrainerConfig))
+    train(cli(TrainerConfig))
 
 
 if __name__ == "__main__":

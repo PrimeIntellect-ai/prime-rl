@@ -69,29 +69,37 @@ def has_checkpoints(output_dir: Path) -> bool:
     return ckpt_dir.exists() and any(ckpt_dir.iterdir())
 
 
-def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool) -> None:
+def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool, ckpt_output_dir: Path | None = None) -> None:
     """Validate the output directory before training starts.
 
     Raises if the directory contains checkpoints from a previous run, unless
     explicitly resuming or opting into cleaning. Other artifacts (logs,
     rollouts, configs) are fine and don't trigger the error.
+
+    When ckpt_output_dir is set, checkpoints live there instead of under
+    output_dir, so the guard and clean logic check both locations.
     """
-    if not output_dir.exists():
-        return
+    dirs_to_check = [output_dir]
+    if ckpt_output_dir is not None and ckpt_output_dir != output_dir:
+        dirs_to_check.append(ckpt_output_dir)
+
     if resuming:
         return
     if clean:
         logger = get_logger()
-        logger.warning(f"Cleaning existing output directory: {output_dir}")
-        shutil.rmtree(output_dir)
+        for d in dirs_to_check:
+            if d.exists():
+                logger.warning(f"Cleaning existing directory: {d}")
+                shutil.rmtree(d)
         return
-    if has_checkpoints(output_dir):
-        raise FileExistsError(
-            f"Output directory '{output_dir}' already contains checkpoints from a previous run. "
-            f"To resume the latest step of the previous run, set ckpt.resume_step=-1 or --ckpt.resume-step -1 via CLI. "
-            f"To delete the existing directory and start fresh, set clean_output_dir=true or --clean-output-dir via CLI. "
-            f"Otherwise use a unique output_dir for this experiment."
-        )
+    for d in dirs_to_check:
+        if has_checkpoints(d):
+            raise FileExistsError(
+                f"Directory '{d}' already contains checkpoints from a previous run. "
+                f"To resume the latest step of the previous run, set ckpt.resume_step=-1 or --ckpt.resume-step -1 via CLI. "
+                f"To delete the existing directory and start fresh, set clean_output_dir=true or --clean-output-dir via CLI. "
+                f"Otherwise use a unique output_dir for this experiment."
+            )
 
 
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:

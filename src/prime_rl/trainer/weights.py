@@ -33,9 +33,16 @@ def _strip_pytorch_wrapper_prefix(key: str) -> str:
     return key
 
 
-def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.layers.") -> int:
     """Get the maximum number of layers in the model."""
-    return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
+    max_num = -1
+    for key in state_dict:
+        if not key.startswith(layer_prefix):
+            continue
+        layer_num_str = key[len(layer_prefix) :].split(".")[0]
+        if layer_num_str.isdigit():
+            max_num = max(max_num, int(layer_num_str))
+    return max_num + 1
 
 
 def load_state_dict_keys(save_dir: Path) -> list[str]:

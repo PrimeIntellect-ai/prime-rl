@@ -12,10 +12,10 @@ import pynvml
 import tomli_w
 
 from prime_rl.configs.rl import RLConfig
+from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
-from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import (
     get_free_port,
     get_log_dir,
@@ -28,6 +28,15 @@ TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
 TEACHER_INFERENCE_TOML = "teacher_inference.toml"
+
+
+def get_physical_gpu_ids() -> list[int]:
+    """Return physical GPU IDs visible to the launcher."""
+    raw_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw_visible is None:
+        pynvml.nvmlInit()
+        return list(range(pynvml.nvmlDeviceGetCount()))
+    return [int(token.strip()) for token in raw_visible.split(",") if token.strip()]
 
 
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
@@ -95,15 +104,29 @@ def rl_local(config: RLConfig):
         logger.success("Dry run complete. To start an RL run locally, remove --dry-run from your command.")
         return
 
-    # Derive GPU IDs from deployment config
+    # Derive launcher-local GPU IDs from deployment config
     gpu_offset = 0
     num_infer_gpus = config.deployment.num_infer_gpus if config.inference is not None else 0
-    infer_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
+    infer_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
     gpu_offset += num_infer_gpus
-    trainer_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
+    trainer_local_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
     gpu_offset += config.deployment.num_train_gpus
     num_teacher_gpus = config.deployment.num_teacher_gpus or 0
-    teacher_gpu_ids = list(range(gpu_offset, gpu_offset + num_teacher_gpus)) if num_teacher_gpus > 0 else []
+    teacher_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_teacher_gpus)) if num_teacher_gpus > 0 else []
+
+    total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus + num_teacher_gpus
+    physical_gpu_ids = get_physical_gpu_ids()
+    if total_requested_gpus > len(physical_gpu_ids):
+        raise ValueError(
+            f"Requested {total_requested_gpus} GPUs via deployment settings, but only "
+            f"{len(physical_gpu_ids)} physical GPU(s) are available: {physical_gpu_ids}"
+        )
+    physical_gpu_mapping = {local_id: physical_gpu_ids[local_id] for local_id in range(total_requested_gpus)}
+    logger.info(f"Using local->physical GPU mapping: {physical_gpu_mapping}")
+
+    infer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in infer_local_gpu_ids]
+    trainer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in trainer_local_gpu_ids]
+    teacher_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in teacher_local_gpu_ids]
 
     start_command = sys.argv
     logger.info("Starting RL run")
@@ -359,30 +382,25 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
 
     if config.deployment.type == "single_node":
         script = template.render(
+            **config.slurm.template_vars,
             config_path=config_dir / RL_TOML,
-            job_name=config.slurm.job_name,
-            project_dir=config.slurm.project_dir,
-            partition=config.slurm.partition,
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
     else:
-        assert config.inference is not None
-
         script = template.render(
+            **config.slurm.template_vars,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
-            job_name=config.slurm.job_name,
-            project_dir=config.slurm.project_dir,
-            partition=config.slurm.partition,
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.num_infer_nodes,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
-            inference_tp=config.inference.parallel.tp,
-            inference_enable_expert_parallel=config.inference.enable_expert_parallel,
-            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            inference_tp=config.inference.parallel.tp if config.inference else 1,
+            inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
+            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
+            use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -411,12 +429,11 @@ def rl_slurm(config: RLConfig):
         logger.info(f"Wrote subconfigs to {config_dir}")
 
         slurm_log_dir = config.output_dir / "slurm"
-        log_message = (
-            f"Logs:\n"
-            f"  Trainer:       tail -F {slurm_log_dir}/latest_train_node_rank_0.log\n"
-            f"  Orchestrator:  tail -F {slurm_log_dir}/latest_orchestrator.log\n"
-            f"  Inference:     tail -F {slurm_log_dir}/latest_infer_node_rank_0.log"
-        )
+        log_lines = [f"  Trainer:       tail -F {slurm_log_dir}/latest_train_node_rank_0.log"]
+        if config.deployment.num_infer_nodes > 0:
+            log_lines.append(f"  Orchestrator:  tail -F {slurm_log_dir}/latest_orchestrator.log")
+            log_lines.append(f"  Inference:     tail -F {slurm_log_dir}/latest_infer_node_rank_0.log")
+        log_message = "Logs:\n" + "\n".join(log_lines)
 
     script_path = config.output_dir / RL_SBATCH
     write_slurm_script(config, config_dir, script_path)
@@ -438,8 +455,11 @@ def rl_slurm(config: RLConfig):
 def rl(config: RLConfig):
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
-    validate_output_dir(config.output_dir, resuming=resuming, clean=clean)
+    ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
+    validate_output_dir(config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir)
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    if ckpt_output_dir is not None:
+        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
 
     if config.slurm is not None:
         rl_slurm(config)
@@ -448,7 +468,7 @@ def rl(config: RLConfig):
 
 
 def main():
-    rl(parse_argv(RLConfig))
+    rl(cli(RLConfig))
 
 
 if __name__ == "__main__":

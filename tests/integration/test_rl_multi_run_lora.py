@@ -212,8 +212,8 @@ def start_orchestrator(
         "--wandb.name",
         f"{wandb_name}-{proc_name}",
     ]
-    for base_url in INFERENCE_BASE_URLS:
-        cmd.extend(["--client.base-url", base_url])
+    cmd.append("--client.base-url")
+    cmd.extend(INFERENCE_BASE_URLS)
 
     with open(orch_log_dir / "orchestrator.stdout", "w") as f:
         proc = subprocess.Popen(

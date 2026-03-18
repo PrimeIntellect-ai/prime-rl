@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, get_lora_num_tokens, get_multilora_scaling
 from prime_rl.trainer.models.layers.moe import GroupedExperts
@@ -285,6 +286,16 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         detached_w3_lora_a = self.w3_lora_A[idx].detach()
         detached_w3_lora_b = self.w3_lora_B[idx].detach()
 
+        # With EP, LoRA weights are DTensors sharded across expert-parallel ranks.
+        # Gather them before per-expert indexing.
+        if isinstance(detached_w1_lora_a, DTensor):
+            detached_w1_lora_a = detached_w1_lora_a.full_tensor()
+            detached_w1_lora_b = detached_w1_lora_b.full_tensor()
+            detached_w2_lora_a = detached_w2_lora_a.full_tensor()
+            detached_w2_lora_b = detached_w2_lora_b.full_tensor()
+            detached_w3_lora_a = detached_w3_lora_a.full_tensor()
+            detached_w3_lora_b = detached_w3_lora_b.full_tensor()
+
         # The clone is necessary to avoid views that cause giant memory spikes
         # TODO: There's probably a better way to do this
         for expert_id in range(self.num_experts):
@@ -320,6 +331,39 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         base_w2 = self.base_layer.w2  # [num_experts, dim, hidden_dim]
         base_w3 = self.base_layer.w3  # [num_experts, hidden_dim, dim]
 
+        # EP handling: mirror the @expert_parallel decorator — convert DTensors
+        # to local shards and permute tokens by local expert with alignment padding.
+        permuted_indices = None
+        if isinstance(base_w1, DTensor):
+            from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
+            from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+            base_w1 = base_w1.to_local()
+            base_w2 = base_w2.to_local()
+            base_w3 = base_w3.to_local()
+            w1_lora_a = w1_lora_a.to_local()
+            w1_lora_b = w1_lora_b.to_local()
+            w2_lora_a = w2_lora_a.to_local()
+            w2_lora_b = w2_lora_b.to_local()
+            w3_lora_a = w3_lora_a.to_local()
+            w3_lora_b = w3_lora_b.to_local()
+
+            experts_per_ep_rank = base_w1.shape[0]
+            num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
+
+            with torch.no_grad():
+                permuted_indices, num_tokens_per_expert, _ = generate_permute_indices(
+                    num_tokens_per_expert,
+                    experts_per_ep_rank,
+                    num_ep_ranks,
+                    x.shape[0] + experts_per_ep_rank * TOKEN_GROUP_ALIGN_SIZE_M,
+                    TOKEN_GROUP_ALIGN_SIZE_M,
+                )
+
+            x = torch.vstack((x, x.new_zeros((x.shape[-1]))))
+            input_shape = x.shape
+            x = x[permuted_indices, :]
+
         # Compute offsets for grouped_mm
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
 
@@ -345,10 +389,9 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             w2_lora_out = _run_lora_grouped_mm(lora_h, w2_lora_a, w2_lora_b, offsets)
             out = h2_base + scaling * w2_lora_out.bfloat16()
 
-            return out.type_as(x)
+            out = out.type_as(x)
         else:
-            # For-loop fallback for older GPUs
-            return self._forward_for_loop(
+            out = self._forward_for_loop(
                 x,
                 num_tokens_per_expert,
                 w1_lora_a,
@@ -362,6 +405,19 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
                 base_w3,
                 scaling,
             )
+
+        # EP handling: unpermute output back to dispatched token order
+        if permuted_indices is not None:
+            # For-loop may produce fewer rows than permuted input (no padding rows),
+            # pad to match before unpermuting
+            if out.shape[0] < len(permuted_indices):
+                num_padding = len(permuted_indices) - out.shape[0]
+                out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
+            out_unpermuted = out.new_zeros(input_shape)
+            out_unpermuted[permuted_indices, :] = out
+            out = out_unpermuted[:-1]
+
+        return out
 
     def _forward_for_loop(
         self,

@@ -13,7 +13,7 @@ from prime_rl.configs.shared import (
     TransportConfig,
     WandbWithExtrasConfig,
 )
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.utils.config import BaseConfig
 
 
 class OptimizerConfig(BaseConfig):
@@ -287,6 +287,25 @@ class EnvConfig(BaseConfig):
             ),
         ),
     ] = {}
+    max_retries: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum number of times the environment will retry a failed rollout.",
+        ),
+    ] = 0
+
+    @property
+    def resolved_name(self) -> str:
+        return self.name or self.id.split("@")[0]
+
+    @model_validator(mode="after")
+    def validate_env_name(self):
+        if self.resolved_name == "all":
+            raise ValueError(
+                'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
+            )
+        return self
 
 
 class EvalEnvConfig(EnvConfig):
@@ -309,17 +328,6 @@ class EvalEnvConfig(EnvConfig):
         int,
         Field(
             description="Number of examples to skip from the beginning of the dataset.",
-        ),
-    ] = 0
-
-    # TODO: should live on the EnvConfig and also apply to training envs but
-    # this is hard right now because we use the vf.EnvGroup which treats all
-    # envs as one. for now training envs hardcode no retries, but we should
-    # probably treat them like environment groups long-term
-    max_retries: Annotated[
-        int,
-        Field(
-            description="Maximum number of times the environment will try to retry running a rollout.",
         ),
     ] = 0
 
@@ -381,6 +389,14 @@ class EvalConfig(BaseConfig):
             description="Whether to cancel in-flight training rollouts before starting online evals. This is useful to avoid congestion (e.g. do not have training + eval rollouts happening at the same time) but leads to slower training steps as rollouts get cancelled and the pipeline has to fill up after each eval",
         ),
     ] = False
+
+    @model_validator(mode="after")
+    def validate_unique_env_names(self):
+        env_names = [env.resolved_name for env in self.env]
+        duplicates = [n for n in env_names if env_names.count(n) > 1]
+        if duplicates:
+            raise ValueError(f"Duplicate eval environment names: {set(duplicates)}. Each env must have a unique name.")
+        return self
 
 
 class CheckpointConfig(BaseConfig):
@@ -502,17 +518,6 @@ class BufferConfig(BaseConfig):
         ),
     ] = ["task", "prompt"]
 
-    skip_verification: Annotated[
-        bool,
-        Field(
-            description=(
-                "Whether to skip verification of rollouts using the environment's rubric. "
-                "If True, rewards are always set to 0, online_difficulty_filtering is disabled, "
-                "and easy/hard thresholds are not used."
-            ),
-        ),
-    ] = False
-
     @model_validator(mode="after")
     def validate_thresholds(self):
         if self.easy_threshold is not None and self.hard_threshold is not None:
@@ -525,26 +530,19 @@ class BufferConfig(BaseConfig):
             assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
         return self
 
-    @model_validator(mode="after")
-    def validate_skip_verification(self):
-        """Validate that skip_verification is not used with reward-dependent features."""
-        if self.skip_verification:
-            if self.online_difficulty_filtering:
-                raise ValueError(
-                    "skip_verification cannot be True when online_difficulty_filtering is True. "
-                    "These features depend on rewards which are disabled when skip_verification=True."
-                )
-            if self.easy_threshold is not None:
-                raise ValueError(
-                    "skip_verification cannot be True when easy_threshold is set. "
-                    "Easy threshold depends on rewards which are disabled when skip_verification=True."
-                )
-            if self.hard_threshold is not None:
-                raise ValueError(
-                    "skip_verification cannot be True when hard_threshold is set. "
-                    "Hard threshold depends on rewards which are disabled when skip_verification=True."
-                )
-        return self
+
+class VerificationConfig(BaseConfig):
+    """Configures rollout verification and rubric scoring."""
+
+    enabled: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to verify training rollouts using the environment rubric. "
+                "If False, rewards are always set to 0."
+            ),
+        ),
+    ] = True
 
 
 class DefaultAdvantageConfig(BaseModel):
@@ -665,7 +663,7 @@ class TeacherModelConfig(BaseConfig):
     ] = ModelConfig()
 
 
-class OrchestratorConfig(BaseSettings):
+class OrchestratorConfig(BaseConfig):
     """Configures the orchestrator for RL training."""
 
     # The OAI client configuration
@@ -698,6 +696,9 @@ class OrchestratorConfig(BaseSettings):
 
     # Data buffer configuration
     buffer: BufferConfig = BufferConfig()
+
+    # Rollout verification configuration
+    verification: VerificationConfig = VerificationConfig()
 
     # The advantage configuration
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
@@ -909,9 +910,39 @@ class OrchestratorConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_unique_env_names(self):
+        env_names = [env.resolved_name for env in self.env]
+        duplicates = [n for n in env_names if env_names.count(n) > 1]
+        if duplicates:
+            raise ValueError(f"Duplicate environment names: {set(duplicates)}. Each env must have a unique name.")
+        return self
+
+    @model_validator(mode="after")
     def validate_env_ratios(self):
         if self.buffer.env_ratios is not None:
             assert len(self.buffer.env_ratios) == len(self.env), "env_ratios length must match number of environments"
+        return self
+
+    @model_validator(mode="after")
+    def validate_verification_config(self):
+        if self.verification.enabled:
+            return self
+
+        if self.buffer.online_difficulty_filtering:
+            raise ValueError(
+                "verification.enabled cannot be False when buffer.online_difficulty_filtering is True. "
+                "These features depend on rewards which are disabled when verification.enabled=False."
+            )
+        if self.buffer.easy_threshold is not None:
+            raise ValueError(
+                "verification.enabled cannot be False when buffer.easy_threshold is set. "
+                "Easy threshold depends on rewards which are disabled when verification.enabled=False."
+            )
+        if self.buffer.hard_threshold is not None:
+            raise ValueError(
+                "verification.enabled cannot be False when buffer.hard_threshold is set. "
+                "Hard threshold depends on rewards which are disabled when verification.enabled=False."
+            )
         return self
 
     @model_validator(mode="after")
@@ -932,8 +963,8 @@ class OrchestratorConfig(BaseSettings):
     @model_validator(mode="after")
     def resolve_extra_env_kwargs(self):
         train_extra_env_kwargs = dict(
-            seq_len=self.seq_len,
-            score_rollouts=not self.buffer.skip_verification,
+            max_seq_len=self.seq_len,
+            score_rollouts=self.verification.enabled,
         )
         for env in self.env:
             # extra_env_kwargs is not meant to be used by the user, we shamelessly override here

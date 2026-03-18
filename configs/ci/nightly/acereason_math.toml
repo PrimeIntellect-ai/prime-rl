@@ -22,7 +22,7 @@ temperature = 0.6
 max_tokens = 8192
 
 [[orchestrator.env]]
-id = "primeintellect/math-env"
+id = "math-env"
 name = "acereason-math"
 args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem", math_verify_max_workers = 128, math_verify_timeout = 60 }
 

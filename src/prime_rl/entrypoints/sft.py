@@ -9,10 +9,10 @@ from threading import Event, Thread
 import tomli_w
 
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import get_config_dir, get_log_dir, validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
-from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import get_free_port
 
 SFT_TOML = "sft.toml"
@@ -39,22 +39,18 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) 
 
     if config.deployment.type == "single_node":
         script = template.render(
+            **config.slurm.template_vars,
             config_path=config_path,
             output_dir=config.output_dir,
-            job_name=config.slurm.job_name,
-            project_dir=config.slurm.project_dir,
             gpus_per_node=config.deployment.gpus_per_node,
-            partition=config.slurm.partition,
         )
     else:
         script = template.render(
+            **config.slurm.template_vars,
             config_path=config_path,
             output_dir=config.output_dir,
-            job_name=config.slurm.job_name,
-            project_dir=config.slurm.project_dir,
             num_nodes=config.deployment.num_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
-            partition=config.slurm.partition,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -207,7 +203,7 @@ def sft(config: SFTConfig):
 
 
 def main():
-    sft(parse_argv(SFTConfig))
+    sft(cli(SFTConfig))
 
 
 if __name__ == "__main__":

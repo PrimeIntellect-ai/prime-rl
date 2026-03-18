@@ -13,7 +13,7 @@ rollouts_per_example = 16
 max_tokens = 64
 
 [[orchestrator.env]]
-id = "primeintellect/color-codeword"
+id = "color-codeword"
 args = { images_per_turn = 1, max_turns = 3, num_examples = 1000, seed = 42 }
 
 [orchestrator.val]

@@ -19,7 +19,7 @@ from typing import Annotated, Literal
 import torch
 from pydantic import Field
 
-from prime_rl.utils.pydantic_config import BaseSettings, parse_argv
+from prime_rl.utils.config import BaseConfig, cli
 
 MAX_LORAS = 4
 
@@ -46,7 +46,7 @@ def extract_oom_error_reason(output: str) -> str | None:
     return None
 
 
-class BenchmarkConfig(BaseSettings):
+class BenchmarkConfig(BaseConfig):
     """Configuration for running a single benchmark."""
 
     type: Annotated[
@@ -83,9 +83,9 @@ class BenchmarkConfig(BaseSettings):
 
     cp: Annotated[int, Field(ge=1, description="Context parallelism size (1 = no CP)")] = 1
 
-    fused_lm_head_chunk_size: Annotated[
+    fused_lm_head_token_chunk_size: Annotated[
         int | None,
-        Field(description="Fused LM head chunk size (None uses trainer default)"),
+        Field(description="Fused LM head token chunk size (None uses trainer default)"),
     ] = None
 
     docker_image: Annotated[str | None, Field(description="Docker image used for the benchmark")] = None
@@ -158,8 +158,8 @@ def build_command(config: BenchmarkConfig) -> list[str]:
         cmd.extend(["--model.cp", str(config.cp)])
 
     # Fused LM head chunk size
-    if config.fused_lm_head_chunk_size is not None:
-        cmd.extend(["--model.fused-lm-head-chunk-size", str(config.fused_lm_head_chunk_size)])
+    if config.fused_lm_head_token_chunk_size is not None:
+        cmd.extend(["--model.fused-lm-head-token-chunk-size", str(config.fused_lm_head_token_chunk_size)])
 
     # Data configuration differs between RL and SFT
     if config.type.startswith("rl"):
@@ -248,7 +248,7 @@ def run_benchmark(config: BenchmarkConfig) -> None:
 
 
 def main():
-    config = parse_argv(BenchmarkConfig)
+    config = cli(BenchmarkConfig)
     run_benchmark(config)
 
 

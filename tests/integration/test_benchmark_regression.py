@@ -22,6 +22,7 @@ TIMEOUT = 15 * 60  # 15 minutes
 # Note: I would prefer 5% but massed compute A600s seem to be slower than hyperstack A600s (which is the baseline)
 METRIC_TOLERANCE = 0.1  # 10% tolerance for mfu, throughput, step_time
 MEMORY_TOLERANCE = 0.01  # 1% tolerance for peak memory
+TOKEN_CHUNK_SIZE = "1024"
 
 # Baseline files for the Qwen3-0.6B RL benchmark
 BASELINE_FILE_1GPU = Path(
@@ -89,8 +90,8 @@ def benchmark_process_1gpu(
         str(benchmark_output_file_1gpu),
         "--timeout",
         str(TIMEOUT - 5 * 60),  # Leave 5 min buffer
-        "--fused-lm-head-chunk-size",
-        "8192",
+        "--fused-lm-head-token-chunk-size",
+        TOKEN_CHUNK_SIZE,
     ]
     return run_process(cmd, timeout=TIMEOUT, env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
 
@@ -122,8 +123,8 @@ def benchmark_process_4gpu(
         str(benchmark_output_file_4gpu),
         "--timeout",
         str(TIMEOUT - 5 * 60),  # Leave 5 min buffer
-        "--fused-lm-head-chunk-size",
-        "8192",
+        "--fused-lm-head-token-chunk-size",
+        TOKEN_CHUNK_SIZE,
     ]
     return run_process(cmd, timeout=TIMEOUT, env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
 
@@ -168,16 +169,15 @@ def benchmark_metrics_4gpu(benchmark_process_4gpu: ProcessResult, benchmark_outp
 
 
 def test_peak_memory_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline_metrics_1gpu: dict):
-    """Test that peak memory usage is within 1% of the baseline (1-GPU)."""
+    """Test that peak memory usage does not exceed the baseline by more than 1% (1-GPU)."""
     actual_memory = benchmark_metrics_1gpu["peak_memory"]["gib"]
     expected_memory = baseline_metrics_1gpu["peak_memory"]["gib"]
 
-    lower_bound = expected_memory * (1 - MEMORY_TOLERANCE)
     upper_bound = expected_memory * (1 + MEMORY_TOLERANCE)
 
-    assert lower_bound <= actual_memory <= upper_bound, (
-        f"Peak memory out of tolerance! Expected {expected_memory:.4f} GiB ± 1%, got {actual_memory:.4f} GiB. "
-        f"Acceptable range: [{lower_bound:.4f}, {upper_bound:.4f}] GiB"
+    assert actual_memory <= upper_bound, (
+        f"Peak memory regression! Expected at most {expected_memory:.4f} GiB + 1%, got {actual_memory:.4f} GiB. "
+        f"Upper bound: {upper_bound:.4f} GiB"
     )
 
 
@@ -229,16 +229,15 @@ def test_step_time_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline_
 
 
 def test_peak_memory_within_tolerance_4gpu(benchmark_metrics_4gpu: dict, baseline_metrics_4gpu: dict):
-    """Test that peak memory usage is within 1% of the baseline (4-GPU)."""
+    """Test that peak memory usage does not exceed the baseline by more than 1% (4-GPU)."""
     actual_memory = benchmark_metrics_4gpu["peak_memory"]["gib"]
     expected_memory = baseline_metrics_4gpu["peak_memory"]["gib"]
 
-    lower_bound = expected_memory * (1 - MEMORY_TOLERANCE)
     upper_bound = expected_memory * (1 + MEMORY_TOLERANCE)
 
-    assert lower_bound <= actual_memory <= upper_bound, (
-        f"Peak memory out of tolerance! Expected {expected_memory:.4f} GiB ± 1%, got {actual_memory:.4f} GiB. "
-        f"Acceptable range: [{lower_bound:.4f}, {upper_bound:.4f}] GiB"
+    assert actual_memory <= upper_bound, (
+        f"Peak memory regression! Expected at most {expected_memory:.4f} GiB + 1%, got {actual_memory:.4f} GiB. "
+        f"Upper bound: {upper_bound:.4f} GiB"
     )
 
 

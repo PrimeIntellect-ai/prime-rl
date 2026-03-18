@@ -9,6 +9,59 @@ def transformers_v5_compat():
     if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
+    _patch_qwen35_lora()
+
+
+def _patch_qwen35_lora():
+    """Fix Qwen3.5 LoRA: align packed_modules_mapping with output_sizes.
+
+    Qwen3.5's GDN layers use create_qkvz_proj with 4 output_sizes (q, k, v, z)
+    but packed_modules_mapping only lists 2 entries, causing an IndexError
+    during LoRA initialization.
+
+    Also generalizes MergedColumnParallelLinearWithLoRA.can_replace_layer
+    to accept any number of packed modules (not just 2), and generalizes
+    MergedColumnParallelLinearWithShardedLoRA.slice_lora_a to handle N
+    subloras instead of the hardcoded 2 (needed for fully_sharded_loras=True).
+
+    Upstream: https://github.com/vllm-project/vllm/issues/36372
+    """
+    from vllm.lora.layers.column_parallel_linear import (
+        MergedColumnParallelLinearWithLoRA,
+        MergedColumnParallelLinearWithShardedLoRA,
+    )
+    from vllm.model_executor.models.qwen3_5 import (
+        Qwen3_5ForCausalLMBase,
+        Qwen3_5ForConditionalGeneration,
+    )
+
+    qkvz_fix = ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z"]
+
+    Qwen3_5ForCausalLMBase.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
+    Qwen3_5ForConditionalGeneration.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
+
+    from vllm.lora.layers.utils import _not_fully_sharded_can_replace
+
+    @classmethod
+    @_not_fully_sharded_can_replace
+    def can_replace_layer(cls, source_layer, lora_config, packed_modules_list, model_config=None):
+        from vllm.model_executor.layers.linear import MergedColumnParallelLinear
+
+        return type(source_layer) is MergedColumnParallelLinear and len(packed_modules_list) == len(
+            source_layer.output_sizes
+        )
+
+    MergedColumnParallelLinearWithLoRA.can_replace_layer = can_replace_layer
+
+    def slice_lora_a(self, lora_a):
+        output_shard_size = self.lora_a_stacked[0].shape[2]
+        output_start_idx = self.tp_rank * output_shard_size
+        return [
+            a[output_start_idx : output_start_idx + output_shard_size, :] if a is not None else None for a in lora_a
+        ]
+
+    MergedColumnParallelLinearWithShardedLoRA.slice_lora_a = slice_lora_a
+
 
 # Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 def monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode():
@@ -201,8 +254,27 @@ def monkey_patch_tokenize_params_validation():
                 )
         return text
 
+    def _patched_get_encode_kwargs(self):
+        """Use max_total_tokens (max_model_len) instead of max_input_tokens for HF tokenizer truncation.
+
+        The original uses max_input_tokens (= max_model_len - max_tokens) + 1, which causes HuggingFace's
+        tokenizer.encode() to left-truncate prompts before _token_len_check even runs.
+        """
+        max_length = self.truncate_prompt_tokens
+        if max_length is not None and max_length < 0:
+            max_length = self.max_total_tokens
+        elif max_length is None and self.max_total_tokens is not None:
+            max_length = self.max_total_tokens + 1
+
+        return dict(
+            truncation=max_length is not None,
+            max_length=max_length,
+            add_special_tokens=self.add_special_tokens,
+        )
+
     TokenizeParams._token_len_check = _patched_token_len_check
     TokenizeParams._text_len_check = _patched_text_len_check
+    TokenizeParams.get_encode_kwargs = _patched_get_encode_kwargs
 
 
 def monkey_patch_hermes_tool_parser_thread_safety():
@@ -270,6 +342,42 @@ def monkey_patch_hermes_tool_parser_thread_safety():
             }
 
     Hermes2ProToolParser.__init__ = _patched_init
+
+
+def monkey_patch_tokenizer_thread_safety():
+    """Patch HuggingFace tokenizer to make _encode_plus thread-safe.
+
+    Under concurrent request load, vLLM's API server calls _encode_plus from
+    multiple async handlers simultaneously. _encode_plus mutates the Rust
+    tokenizer's internal state via set_truncation_and_padding (enable_truncation/
+    enable_padding) and encode_special_tokens. The Rust backend uses RefCell-style
+    borrow tracking (PyO3), and concurrent mutable borrows cause it to panic
+    with ``RuntimeError: Already borrowed``.
+
+    Fix: wrap the entire _encode_plus method in a per-tokenizer threading lock
+    so that state mutation and the subsequent encode call are atomic.
+    """
+    import threading
+
+    from transformers import PreTrainedTokenizerFast
+
+    _original_encode_plus = PreTrainedTokenizerFast._encode_plus
+    _locks: dict[int, threading.Lock] = {}
+    _meta_lock = threading.Lock()
+
+    def _get_lock(tokenizer_id: int) -> threading.Lock:
+        if tokenizer_id not in _locks:
+            with _meta_lock:
+                if tokenizer_id not in _locks:
+                    _locks[tokenizer_id] = threading.Lock()
+        return _locks[tokenizer_id]
+
+    def _patched_encode_plus(self, *args, **kwargs):
+        lock = _get_lock(id(self._tokenizer))
+        with lock:
+            return _original_encode_plus(self, *args, **kwargs)
+
+    PreTrainedTokenizerFast._encode_plus = _patched_encode_plus
 
 
 def monkey_patch_minimax_m2_for_lora():

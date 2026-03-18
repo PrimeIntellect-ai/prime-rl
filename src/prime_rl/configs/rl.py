@@ -1,4 +1,3 @@
-import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -37,7 +36,8 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
-from prime_rl.utils.pydantic_config import BaseSettings
+from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
     validate_shared_max_async_level,
@@ -49,7 +49,7 @@ from prime_rl.utils.validation import (
 )
 
 
-class SharedLogConfig(BaseSettings):
+class SharedLogConfig(BaseConfig):
     """Configures shared logging."""
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
@@ -62,7 +62,7 @@ class SharedLogConfig(BaseSettings):
     ] = False
 
 
-class SharedWandbConfig(BaseSettings):
+class SharedWandbConfig(BaseConfig):
     """Configures shared W&B configs."""
 
     project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
@@ -72,8 +72,15 @@ class SharedWandbConfig(BaseSettings):
     offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
 
 
-class SharedCheckpointConfig(BaseSettings):
+class SharedCheckpointConfig(BaseConfig):
     """Configures shared checkpoint configs."""
+
+    output_dir: Annotated[
+        Path | None,
+        Field(
+            description="Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer output_dir.",
+        ),
+    ] = None
 
     interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
 
@@ -98,7 +105,7 @@ class SharedCheckpointConfig(BaseSettings):
     ] = None
 
 
-class SharedModelConfig(BaseSettings):
+class SharedModelConfig(BaseConfig):
     """Configures shared model settings."""
 
     name: Annotated[
@@ -107,7 +114,7 @@ class SharedModelConfig(BaseSettings):
     ] = "Qwen/Qwen3-0.6B"
 
 
-class SharedWeightBroadcastConfig(BaseSettings):
+class SharedWeightBroadcastConfig(BaseConfig):
     """Configures shared weight broadcast settings."""
 
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
@@ -152,7 +159,13 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["multi_node"] = "multi_node"
 
     num_train_nodes: Annotated[int, Field(description="Number of training nodes.")]
-    num_infer_nodes: Annotated[int, Field(description="Number of inference nodes.")]
+    num_infer_nodes: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Number of inference nodes. Set to 0 to skip inference and orchestrator (requires fake data).",
+        ),
+    ]
     num_teacher_nodes: Annotated[int | None, Field(description="Number of teacher inference nodes.")] = None
 
     nodes_per_fsdp_group: Annotated[
@@ -174,7 +187,7 @@ DeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class RLConfig(BaseSettings):
+class RLConfig(BaseConfig):
     """Configures an RL training run."""
 
     trainer: TrainerConfig
@@ -291,8 +304,18 @@ class RLConfig(BaseSettings):
         if self.deployment.type == "multi_node":
             if self.slurm is None:
                 raise ValueError("Must use SLURM for multi-node deployment.")
-            if not self.inference:
-                raise ValueError("Must configure inference when using multi-node deployment.")
+            if self.deployment.num_infer_nodes > 0 and not self.inference:
+                raise ValueError("Must configure inference when using multi-node deployment with inference nodes.")
+            if self.deployment.num_infer_nodes == 0 and self.inference:
+                raise ValueError(
+                    "Cannot configure inference with num_infer_nodes = 0. "
+                    "Either set num_infer_nodes > 0 or remove the inference config."
+                )
+            if self.deployment.num_infer_nodes == 0 and not self.trainer.data.fake and not self.bench:
+                raise ValueError(
+                    "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
+                    "since no orchestrator or inference server will be running."
+                )
         return self
 
     # TODO: fix this
@@ -362,6 +385,10 @@ class RLConfig(BaseSettings):
                 self.trainer.ckpt = TrainerCheckpointConfig()
             if self.orchestrator.ckpt is None:
                 self.orchestrator.ckpt = OrchestratorCheckpointConfig()
+
+            # If specified, override checkpoint output directory
+            if self.ckpt.output_dir is not None:
+                self.trainer.ckpt.output_dir = self.ckpt.output_dir
 
             # If specified, use the same ckpt interval
             if self.ckpt.interval is not None:
@@ -564,7 +591,7 @@ class RLConfig(BaseSettings):
                 self.inference.enable_lora = True
                 self.inference.max_lora_rank = self.trainer.model.lora.rank
             else:
-                warnings.warn(
+                get_logger().warning(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
                     "make sure to set --enable_lora and --max-lora-rank."
                 )
@@ -576,12 +603,12 @@ class RLConfig(BaseSettings):
         if self.trainer.enable_router_replay:
             if self.inference is not None:
                 if self.inference.enable_return_routed_experts is False:
-                    warnings.warn(
+                    get_logger().warning(
                         "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True."
                     )
                 self.inference.enable_return_routed_experts = True
             else:
-                warnings.warn(
+                get_logger().warning(
                     "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server."
                 )
         return self
@@ -654,6 +681,20 @@ class RLConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_dp_rank_count(self):
+        """Auto-set orchestrator client dp_rank_count from inference DP size.
+
+        Uses data_parallel_size_local (per-node DP) when set, since each base URL
+        points to a single node whose API server only knows about its local ranks.
+        Falls back to the global parallel.dp for single-node setups.
+        """
+        if self.inference is not None and "dp_rank_count" not in self.orchestrator.client.model_fields_set:
+            self.orchestrator.client.dp_rank_count = (
+                self.inference.data_parallel_size_local or self.inference.parallel.dp
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_teacher_inference(self):
         """Auto-configure teacher inference server and orchestrator teacher_model client."""
         if self.deployment.type != "single_node":
@@ -708,17 +749,3 @@ class RLConfig(BaseSettings):
         return self
 
     ### Warnings
-
-    @model_validator(mode="after")
-    def warn_wandb_resume_id_missing(self):
-        if self.trainer.ckpt is not None and self.trainer.ckpt.resume_step is not None:
-            if self.trainer.wandb and not self.trainer.wandb.id:
-                warnings.warn(
-                    "W&B run ID is not set for trainer even though resuming training. The current run will be created as a new run."
-                )
-        if self.orchestrator.ckpt is not None and self.orchestrator.ckpt.resume_step is not None:
-            if self.orchestrator.wandb and not self.orchestrator.wandb.id:
-                warnings.warn(
-                    "W&B run ID is not set for orchestrator even though resuming training. The current run will be created as a new run."
-                )
-        return self
