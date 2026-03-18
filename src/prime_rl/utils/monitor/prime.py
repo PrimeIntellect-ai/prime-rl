@@ -72,6 +72,8 @@ class PrimeMonitor(Monitor):
         self.output_dir = output_dir
         self._registered = False
         self._finalized = False
+        self._closed = False
+        self._owner_pid = os.getpid()
 
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
         self.enabled = self.config is not None
@@ -496,16 +498,21 @@ class PrimeMonitor(Monitor):
                 "summary": self.history[-1] if self.history else {},
             },
         )
-        self._finalize_run(success=True)
-        self._finalized = True
+        if os.getpid() == self._owner_pid:
+            self._finalize_run(success=True)
+            self._finalized = True
 
     def close(self) -> None:
         """Close the HTTP client and stop the background event loop."""
-        if not hasattr(self, "_client"):
+        if self._closed or not hasattr(self, "_client"):
             return
 
-        if self.is_master and self.enabled and not self._finalized:
+        self._closed = True
+
+        should_finalize = self.is_master and self.enabled and not self._finalized and os.getpid() == self._owner_pid
+        if should_finalize:
             self._finalize_run(success=False)
+            self._finalized = True
 
         self._flush()
 
