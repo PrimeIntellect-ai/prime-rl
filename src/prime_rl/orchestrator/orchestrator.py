@@ -140,11 +140,6 @@ async def orchestrate(config: OrchestratorConfig):
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
         )
 
-    # Build rollout filters
-    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
-    if rollout_filters:
-        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
-
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
     monitor = setup_monitor(
@@ -160,6 +155,11 @@ async def orchestrate(config: OrchestratorConfig):
     if config.heartbeat is not None:
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat.url)
+
+    # Build rollout filters
+    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
+    if rollout_filters:
+        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
 
     # Load environment and extract dataset
     logger.info(
@@ -793,9 +793,6 @@ async def orchestrate(config: OrchestratorConfig):
             },
             step=progress.step,
         )
-
-        # Flush all accumulated metrics for this step
-        monitor.flush(step=progress.step)
 
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)

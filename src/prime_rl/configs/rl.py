@@ -71,6 +71,20 @@ class SharedWandbConfig(BaseConfig):
 
     offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
 
+    shared: Annotated[
+        bool,
+        Field(
+            description="Use shared W&B mode to log trainer and orchestrator metrics to a single run. "
+            "Requires wandb SDK >= 0.19.9. Incompatible with offline mode.",
+        ),
+    ] = True
+
+    @model_validator(mode="after")
+    def validate_shared_not_offline(self):
+        if self.shared and self.offline:
+            raise ValueError("W&B shared mode requires server connectivity and is incompatible with offline mode")
+        return self
+
 
 class SharedCheckpointConfig(BaseConfig):
     """Configures shared checkpoint configs."""
@@ -426,12 +440,15 @@ class RLConfig(BaseConfig):
                 self.trainer.wandb.project = self.wandb.project
                 self.orchestrator.wandb.project = self.wandb.project
 
-            # If specified, automatically use shared W&B name for orchestrator and trainer with suffixes
-            if self.wandb.name:
-                self.trainer.wandb.name = f"{self.wandb.name}-trainer"
-                self.orchestrator.wandb.name = f"{self.wandb.name}-orchestrator"
+            if self.wandb.shared:
+                if self.wandb.name:
+                    self.trainer.wandb.name = self.wandb.name
+                    self.orchestrator.wandb.name = self.wandb.name
+            else:
+                if self.wandb.name:
+                    self.trainer.wandb.name = f"{self.wandb.name}-trainer"
+                    self.orchestrator.wandb.name = f"{self.wandb.name}-orchestrator"
 
-            # If specified, automatically use shared W&B offline mode for orchestrator and trainer
             if self.wandb.offline:
                 self.trainer.wandb.offline = self.wandb.offline
                 self.orchestrator.wandb.offline = self.wandb.offline

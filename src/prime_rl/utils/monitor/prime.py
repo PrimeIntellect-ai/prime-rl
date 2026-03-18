@@ -125,7 +125,7 @@ class PrimeMonitor(Monitor):
             if config.log_extras.distributions:
                 self.last_log_distributions_step = -1
 
-    def _register_run(self, config: PrimeMonitorConfig, run_config: BaseSettings | None) -> str | None:
+    def _register_run(self, config: PrimeMonitorConfig, run_config: BaseConfig | None) -> str | None:
         """Register an external run with the platform. Returns run_id on success, None on failure."""
         registration_api_key = self.api_key
         if not registration_api_key:
@@ -134,8 +134,8 @@ class PrimeMonitor(Monitor):
                 "PrimeMonitor will not be able to register or upload data."
             )
             return None
-        prime_config = PrimeConfig()
 
+        prime_config = PrimeConfig()
         team_id = config.team_id or prime_config.team_id
 
         model = getattr(run_config, "model", None) if run_config else None
@@ -188,7 +188,6 @@ class PrimeMonitor(Monitor):
             return
 
         registration_api_key = self.api_key
-
         payload: dict = {"status": "completed" if success else "failed"}
         status_label = "completed" if success else "failed"
         self.logger.info(f"Finalizing platform run {self.run_id} as {status_label}")
@@ -214,7 +213,7 @@ class PrimeMonitor(Monitor):
             return
         self.logger.info(f"Platform run {self.run_id} marked as {status_label}")
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int) -> None:
         self.history.append(metrics)
         if not self.is_master:
             return
