@@ -51,6 +51,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
             router_port=config.deployment.router_port,
+            data_parallel_rpc_port=config.data_parallel_rpc_port,
         )
 
     script = template.render(**template_vars)

@@ -51,7 +51,7 @@ flash-attn = [
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
 flash-attn-3 = [
-    "flash_attn_3 @ https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl ; platform_machine == 'x86_64'",
+    "flash_attn_3 @ https://github.com/samsja/flash-attn-builds/releases/download/v0.2/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
 flash-attn-cute = [
     "flash-attn-cute",
@@ -126,8 +126,8 @@ color-codeword = { index = "primeintellect" }
 math500 = { index = "primeintellect" }
 aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
-deep-ep = { path = "deps/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }
-nixl-cu12 = { path = "deps/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
+deep-ep = { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }
+nixl-cu12 = { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

@@ -322,8 +322,10 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_disaggregated(self):
-        """Auto-configure inference DP for disaggregated P/D."""
+        """Auto-configure inference for disaggregated P/D: enable EP and compute DP."""
         if self.deployment.type == "disaggregated":
+            self.enable_expert_parallel = True
+            self.enable_eplb = False
             gpus_per_node = self.deployment.gpus_per_node
             tp = self.parallel.tp
             dp_per_node = gpus_per_node // tp
