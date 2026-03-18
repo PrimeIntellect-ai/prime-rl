@@ -2,6 +2,7 @@ import asyncio
 import atexit
 import gc
 import multiprocessing as mp
+import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,7 @@ from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs,
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout, offload_images_to_disk
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
+from prime_rl.utils.usage_reporter import UsageReporter
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
 monkey_patch_oai_iterable_types()
@@ -105,6 +107,10 @@ async def orchestrate(config: OrchestratorConfig):
     for env_id in env_ids_to_install:
         install_env(env_id)
 
+    run_id = os.getenv("RUN_ID", "")
+    if run_id:
+        config.client.headers["X-Run-Id"] = run_id
+
     # Setup inference pool (handles both static and elastic modes)
     client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
     if config.use_token_client:
@@ -154,6 +160,10 @@ async def orchestrate(config: OrchestratorConfig):
         tokenizer=tokenizer,
         run_config=config,
     )
+
+    from prime_rl.utils.usage_reporter import UsageConfig
+
+    usage_reporter = UsageReporter(config.usage or UsageConfig.from_env())
 
     # Setup heartbeat (only on rank 0, orchestrator is single process)
     heart = None
@@ -797,6 +807,14 @@ async def orchestrate(config: OrchestratorConfig):
         # Flush all accumulated metrics for this step
         monitor.flush(step=progress.step)
 
+        if usage_reporter.is_enabled and run_id:
+            usage_reporter.report_inference_usage(
+                run_id=run_id,
+                step=progress.step,
+                input_tokens=num_prefill_tokens,
+                output_tokens=num_decode_tokens,
+            )
+
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
@@ -865,6 +883,8 @@ async def orchestrate(config: OrchestratorConfig):
     # Shutdown env processes (also registered as atexit handler for crash safety)
     atexit.unregister(_cleanup_env_processes)
     _cleanup_env_processes()
+
+    usage_reporter.close()
 
     logger.success("Orchestrator finished.")
 
