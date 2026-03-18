@@ -484,7 +484,6 @@ def monkey_patch_multiproc_executor_init_order():
     if nnodes <= 1:
         return
 
-    import re
     from pathlib import Path
 
     from vllm.v1.executor import multiproc_executor
@@ -759,8 +758,6 @@ def monkey_patch_dcp_cuda_graphs():
 
         if _use_persistent:
             # --- inline cp_lse_ag_out_rs with persistent buffers ---
-            from vllm.v1.attention.backends.utils import cp_lse_ag_out_rs
-
             H_full = context_lse.shape[0]
             ctx_lse_bh = self._dcp_ctx_lse_bh[:B, :H_full]
             ctx_lse_bh.copy_(context_lse.transpose(0, 1))
