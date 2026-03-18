@@ -127,14 +127,14 @@ class PrimeMonitor(Monitor):
 
     def _register_run(self, config: PrimeMonitorConfig, run_config: BaseSettings | None) -> str | None:
         """Register an external run with the platform. Returns run_id on success, None on failure."""
-        prime_config = PrimeConfig()
-        registration_api_key = prime_config.api_key or None
+        registration_api_key = self.api_key
         if not registration_api_key:
             self.logger.warning(
-                "Prime Intellect API key not found. Either set PRIME_API_KEY or run `prime login`. "
+                f"Prime Intellect API key not found. Set {config.api_key_var} environment variable or run `prime login`. "
                 "PrimeMonitor will not be able to register or upload data."
             )
             return None
+        prime_config = PrimeConfig()
 
         team_id = config.team_id or prime_config.team_id
 
@@ -186,10 +186,8 @@ class PrimeMonitor(Monitor):
         """Mark the run as completed or failed on the platform."""
         if not getattr(self, "_registered", False):
             return
-        prime_config = PrimeConfig()
-        registration_api_key = prime_config.api_key or None
-        if not registration_api_key:
-            return
+
+        registration_api_key = self.api_key
 
         payload: dict = {"status": "completed" if success else "failed"}
         status_label = "completed" if success else "failed"
