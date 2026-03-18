@@ -13,12 +13,14 @@ RUN_ID = "test-run-123"
 
 
 async def mock_chat_completions(request: Request) -> JSONResponse:
-    return JSONResponse({
-        "id": "chatcmpl-1",
-        "object": "chat.completion",
-        "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80},
-    })
+    return JSONResponse(
+        {
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80},
+        }
+    )
 
 
 async def mock_health(request: Request) -> JSONResponse:
@@ -26,10 +28,12 @@ async def mock_health(request: Request) -> JSONResponse:
 
 
 def make_app():
-    app = Starlette(routes=[
-        Route("/v1/chat/completions", mock_chat_completions, methods=["POST"]),
-        Route("/health", mock_health, methods=["GET"]),
-    ])
+    app = Starlette(
+        routes=[
+            Route("/v1/chat/completions", mock_chat_completions, methods=["POST"]),
+            Route("/health", mock_health, methods=["GET"]),
+        ]
+    )
     app.add_middleware(UsageSigningMiddleware, secret=SECRET)
     return app
 

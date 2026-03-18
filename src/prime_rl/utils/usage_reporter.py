@@ -26,7 +26,9 @@ except ImportError:
 class UsageConfig(_BaseConfig):
     """Platform usage reporting configuration."""
 
-    base_url: Annotated[str, Field(description="Base URL for the usage API (e.g. https://api.example.com/api/internal/rft).")]
+    base_url: Annotated[
+        str, Field(description="Base URL for the usage API (e.g. https://api.example.com/api/internal/rft).")
+    ]
     api_key_var: Annotated[str, Field(description="Environment variable containing the API key.")] = "PRIME_API_KEY"
 
     @staticmethod

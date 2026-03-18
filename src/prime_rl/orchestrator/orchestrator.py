@@ -162,6 +162,7 @@ async def orchestrate(config: OrchestratorConfig):
     )
 
     from prime_rl.utils.usage_reporter import UsageConfig
+
     usage_reporter = UsageReporter(config.usage or UsageConfig.from_env())
 
     # Setup heartbeat (only on rank 0, orchestrator is single process)
