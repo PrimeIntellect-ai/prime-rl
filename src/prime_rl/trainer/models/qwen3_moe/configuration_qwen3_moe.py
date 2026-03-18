@@ -1,5 +1,4 @@
 from transformers.configuration_utils import PretrainedConfig
-from transformers.modeling_rope_utils import rope_config_validation
 
 
 class Qwen3MoeConfig(PretrainedConfig):
@@ -119,6 +118,7 @@ class Qwen3MoeConfig(PretrainedConfig):
 
     model_type = "qwen3_moe"
     keys_to_ignore_at_inference = ["past_key_values"]
+    attribute_map = {"num_local_experts": "num_experts"}
 
     # Default tensor parallel plan for base model `Qwen3Moe`
     base_model_tp_plan = {
@@ -168,6 +168,8 @@ class Qwen3MoeConfig(PretrainedConfig):
         router_aux_loss_coef=0.001,
         mlp_only_layers=None,
         load_balance_coeff=None,
+        use_grouped_mm=True,
+        pad_token_id=None,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -188,11 +190,7 @@ class Qwen3MoeConfig(PretrainedConfig):
         self.rope_scaling = rope_scaling
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
-        # Validate the correctness of rotary position embeddings parameters
-        # BC: if there is a 'type' field, move it to 'rope_type'.
-        if self.rope_scaling is not None and "type" in self.rope_scaling:
-            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
-        rope_config_validation(self)
+        self.pad_token_id = pad_token_id
 
         # MoE arguments
         self.decoder_sparse_step = decoder_sparse_step
@@ -204,6 +202,7 @@ class Qwen3MoeConfig(PretrainedConfig):
         self.router_aux_loss_coef = router_aux_loss_coef
         self.mlp_only_layers = [] if mlp_only_layers is None else mlp_only_layers
         self.load_balance_coeff = load_balance_coeff
+        self.use_grouped_mm = use_grouped_mm
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,

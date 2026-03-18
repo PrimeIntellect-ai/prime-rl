@@ -1,0 +1,46 @@
+{
+  "config": {
+    "type": "rl",
+    "num_gpus": 1,
+    "model_name": "Qwen/Qwen3-4B-Instruct-2507",
+    "lora_rank": 16,
+    "seq_len": 65536,
+    "ac": "Offload",
+    "attention": "flash_attention_3",
+    "output": "/tmp/benchmark_result.json",
+    "dry_run": false,
+    "timeout": 1500,
+    "micro_batches": 2,
+    "docker_image": "primeintellect/prime-rl-jackmin@sha256:5a146f7dfdcdf6b0e90fd3f1ed0874d22a3a0641378dc8dad46ce213d02fa2e6",
+    "device_name": "NVIDIA H100 80GB HBM3",
+    "commit_sha": "unknown",
+    "timestamp": "2026-01-15T22:41:29.404702+00:00",
+    "success": true,
+    "error_reason": null,
+    "time_taken": 203.20685914300066
+  },
+  "metrics": {
+    "mfu": {
+      "mean": 36.28241994221462,
+      "std": 0.022193678051459942,
+      "min": 36.26066970131873,
+      "max": 36.3050319536981
+    },
+    "throughput": {
+      "mean": 4042.514189268571,
+      "std": 2.4727749300619926,
+      "min": 4040.0908212136933,
+      "max": 4045.0335740674755
+    },
+    "step_time": {
+      "mean": 32.442406444666936,
+      "std": 0.03856478525322434,
+      "min": 32.40275257099984,
+      "max": 32.47978104200047
+    },
+    "peak_memory": {
+      "gib": 31.056640625,
+      "pct": 39.22341293150364
+    }
+  }
+}

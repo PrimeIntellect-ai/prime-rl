@@ -1,8 +1,0 @@
-num_examples = 5
-rollouts_per_example = 3
-
-[sampling]
-max_tokens = 16
-
-[[env]]
-id = "primeintellect/wiki-search"

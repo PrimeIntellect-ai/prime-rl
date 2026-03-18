@@ -1,7 +1,5 @@
-inference_gpu_ids = [0]
-trainer_gpu_ids = [1]
-
 max_steps = 500
+seq_len = 4096
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
@@ -14,9 +12,8 @@ name = "wiki-search-4b"
 lr = 1e-5
 weight_decay = 0.0
 
-[trainer.model.experimental.lora]
+[trainer.model.lora]
 rank = 8
-alpha = 32
 dropout = 0.0
 target_modules = [
     "q_proj",
@@ -31,7 +28,6 @@ target_modules = [
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
-seq_len = 4096
 oversampling_factor = 2.0
 
 [orchestrator.sampling]
@@ -41,8 +37,7 @@ max_tokens = 512
 online_difficulty_filtering = true
 
 [[orchestrator.env]]
-id = "primeintellect/wiki-search"
+id = "wiki-search"
 
 [inference.model]
-enable_auto_tool_choice = true
 tool_call_parser = "hermes"

@@ -1,38 +1,148 @@
+from __future__ import annotations
+
 import asyncio
 import os
+from itertools import cycle
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import httpx
+import verifiers as vf
 from httpx import AsyncClient
-from openai import AsyncOpenAI, NotFoundError
-from prime_evals import AsyncEvalsClient
+from openai import NotFoundError
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from prime_rl.utils.config import ClientConfig
+from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
-def setup_clients(client_config: ClientConfig) -> list[AsyncOpenAI]:
-    def _setup_client(base_url: str) -> AsyncOpenAI:
-        # We use a longer request timeout than default, but if more than 20min, we probably need faster inference deployment
-        timeout = httpx.Timeout(client_config.timeout)
-        # We use as many concurrent connections as possible, but lower than available ports
-        limits = httpx.Limits(
-            max_connections=8192,  # OAI default: 1000
-            max_keepalive_connections=8192,  # OAI default: 100
-        )
-        http_client = httpx.AsyncClient(limits=limits, timeout=timeout, headers=client_config.headers)
-        return AsyncOpenAI(
-            base_url=base_url,
-            api_key=os.getenv(client_config.api_key_var, "EMPTY"),
-            max_retries=10,  # OAI default: 2 (does exponential backoff and reasonable timeout in between retries)
-            http_client=http_client,
-        )
+@runtime_checkable
+class InferencePool(Protocol):
+    """Protocol for inference pools (static or elastic)."""
 
-    return [_setup_client(base_url) for base_url in client_config.base_url]
+    @property
+    def clients(self) -> list[vf.ClientConfig]:
+        """Get inference clients."""
+        ...
+
+    @property
+    def admin_clients(self) -> list[AsyncClient]:
+        """Get admin clients."""
+        ...
+
+    def update_model_name(self, model_name: str) -> None:
+        """Update the model name."""
+        ...
+
+    async def get_next_client(self) -> vf.ClientConfig:
+        """Get next client in round-robin fashion."""
+        ...
+
+    async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
+        """Wait for inference pool to be ready."""
+        ...
+
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        """Update weights on all inference servers."""
+        ...
+
+    def get_metrics(self) -> dict[str, float]:
+        """Get pool metrics."""
+        ...
+
+    async def stop(self) -> None:
+        """Stop the inference pool."""
+        ...
 
 
-def setup_evals_client() -> AsyncEvalsClient:
-    return AsyncEvalsClient()
+class StaticInferencePool:
+    """Static inference pool with fixed client list."""
+
+    def __init__(
+        self, clients: list[vf.ClientConfig], admin_clients: list[AsyncClient], skip_model_check: bool = False
+    ):
+        self._clients = clients
+        self._admin_clients = admin_clients
+        self._skip_model_check = skip_model_check
+        self._idx_to_client = {client.client_idx: client for client in clients}
+        self._client_cycle = cycle(clients)
+        self.model_name = None  # unused
+
+    @property
+    def clients(self) -> list[vf.ClientConfig]:
+        return self._clients
+
+    @property
+    def admin_clients(self) -> list[AsyncClient]:
+        return self._admin_clients
+
+    def update_model_name(self, model_name: str) -> None:
+        self.model_name = model_name
+
+    async def get_next_client(self) -> vf.ClientConfig:
+        return next(self._client_cycle)
+
+    async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
+        await check_health(self._admin_clients, timeout=timeout)
+        await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
+
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+
+    def get_metrics(self) -> dict[str, float]:
+        return {}
+
+    async def stop(self) -> None:
+        pass
+
+
+async def setup_inference_pool(
+    client_config: ClientConfig, model_name: str, client_type: str = "openai_chat_completions"
+) -> InferencePool:
+    """Create an inference pool from config (static or elastic)."""
+    logger = get_logger()
+
+    if client_config.is_elastic:
+        from prime_rl.utils.elastic import ElasticInferencePool
+
+        return await ElasticInferencePool.from_config(client_config, model_name=model_name, client_type=client_type)
+
+    logger.info(
+        f"Initializing static inference pool (base_url={', '.join(client_config.base_url)}, "
+        f"dp_rank_count={client_config.dp_rank_count}, "
+        f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
+    )
+    return StaticInferencePool(
+        clients=setup_clients(client_config, client_type=client_type),
+        admin_clients=setup_admin_clients(client_config),
+        skip_model_check=client_config.skip_model_check,
+    )
+
+
+def setup_clients(client_config: ClientConfig, client_type: str = "openai_chat_completions") -> list[vf.ClientConfig]:
+    clients = []
+    client_idx = 0
+    for base_url in client_config.base_url:
+        for dp_rank in range(client_config.dp_rank_count):
+            headers = client_config.headers.copy()
+            if client_config.dp_rank_count > 1:
+                headers["X-data-parallel-rank"] = str(dp_rank)
+            clients.append(
+                vf.ClientConfig(
+                    client_idx=client_idx,
+                    client_type=client_type,
+                    api_base_url=base_url,
+                    api_key_var=client_config.api_key_var,
+                    timeout=client_config.timeout,
+                    connect_timeout=client_config.connect_timeout,
+                    max_connections=8192,
+                    max_keepalive_connections=8192,
+                    max_retries=10,
+                    extra_headers=headers,
+                )
+            )
+            client_idx += 1
+    return clients
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
@@ -54,20 +164,24 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             base_url=base_url,
             headers=headers,
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
-            timeout=httpx.Timeout(client_config.timeout),
+            timeout=httpx.Timeout(None),
         )
 
     return [_setup_admin_client(base_url) for base_url in client_config.base_url]
 
 
-async def check_has_model(clients: list[AsyncOpenAI], model_name: str) -> None:
+async def maybe_check_has_model(
+    admin_clients: list[AsyncClient], model_name: str, skip_model_check: bool = False
+) -> None:
+    if skip_model_check:
+        return
     logger = get_logger()
     logger.debug(f"Checking if model {model_name} is in the inference pool")
-    results = await asyncio.gather(*[client.models.list() for client in clients])
-    for client, result in zip(clients, results):
-        models = result.data
-        if not any(model.id == model_name for model in models):
-            raise ValueError(f"Model {model_name} was not found in the inference pool on {client.base_url}")
+    results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
+    for admin_client, result in zip(admin_clients, results):
+        models = result.json()["data"]
+        if not any(model["id"] == model_name for model in models):
+            raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 
@@ -101,10 +215,24 @@ async def check_health(
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
+NCCL_READY_MARKER = "NCCL_READY"
+
+
 async def update_weights(
-    admin_clients: list[AsyncClient], weight_dir: Path | None, lora_name: str | None = None
+    admin_clients: list[AsyncClient],
+    weight_dir: Path | None,
+    lora_name: str | None = None,
+    step: int = 0,
 ) -> None:
-    """Make a HTTP post request to the vLLM server to update the weights."""
+    """Update weights on static inference servers.
+
+    Creates a NCCL_READY marker file before calling the update endpoint to signal
+    to the trainer that inference workers are about to enter the receive path.
+    This marker is only used in NCCL broadcast mode but is harmless in filesystem mode.
+
+    Note: The server-side /update_weights endpoint automatically resets the prefix cache
+    to invalidate any cached KV states computed with the old weights.
+    """
     logger = get_logger()
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
@@ -123,41 +251,47 @@ async def update_weights(
                     return
                 raise
 
+        # Create ready marker before servers enter receive path (used by NCCL broadcast)
+        if weight_dir is not None:
+            nccl_ready_file = weight_dir / NCCL_READY_MARKER
+            nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+            nccl_ready_file.touch()
+            logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+
         await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
 
 
-async def reload_weights(admin_clients: list[AsyncClient]) -> None:
-    """Make a HTTP post request to the vLLM server to reload weights (reset to base model)."""
-    logger = get_logger()
-
-    async def _reload_weights(admin_client: AsyncClient) -> None:
-        logger.debug("Sending request to reload weights (reset to base model)")
-        try:
-            response = await admin_client.post("/reload_weights", json={})
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /reload_weights does not exist. Skipping weight reload.")
-                return
-            raise
-
-    await asyncio.gather(*[_reload_weights(admin_client) for admin_client in admin_clients])
+def _is_retryable_lora_error(exception: BaseException) -> bool:
+    """Check if an exception should trigger a retry for LoRA loading."""
+    if isinstance(exception, httpx.HTTPStatusError):
+        # Retry on 404 (adapter not found) or 500 (server error during loading)
+        return exception.response.status_code in (404, 500)
+    return False
 
 
 async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
-    """Make a HTTP post request to the vLLM server to load a LoRA adapter."""
-    logger = get_logger()
+    """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
+    Uses our wrapper endpoint that also resets the prefix cache to invalidate
+    KV states computed with old weights.
+
+    Retries with exponential backoff if the adapter files are not found,
+    which can happen due to NFS propagation delays.
+    """
+    logger = get_logger()
     lora_path_posix = lora_path.as_posix()
 
+    @retry(
+        retry=retry_if_exception(_is_retryable_lora_error),
+        stop=stop_after_attempt(10),
+        wait=wait_exponential(multiplier=1, min=1, max=30),
+        reraise=True,
+    )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
-            "/v1/load_lora_adapter",
-            json={
-                "lora_name": lora_name,
-                "lora_path": lora_path_posix,
-            },
+            "/load_lora_adapter",
+            json={"lora_name": lora_name, "lora_path": lora_path_posix},
         )
         response.raise_for_status()
 

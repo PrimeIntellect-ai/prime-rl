@@ -17,7 +17,7 @@ def check_no_error(process: ProcessResult, output_dir: Path) -> None:
             print(*f.readlines()[-100:], sep="\n")
         print("=== Orchestrator Outputs ===")
         with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
+            print(*f.readlines()[-1000:], sep="\n")
     assert process.returncode == 0, f"Process has non-zero return code ({process})"
 
 
@@ -29,7 +29,7 @@ def check_number_goes_up_or_down(
     go_up: bool = True,
 ):
     """Helper to assert that a number in lines goes up from a specified start to end step"""
-    step_lines = [line for line in lines if "Step" in line]
+    step_lines = [line for line in lines if "SUCCESS" in line and "Step" in line and re.search(pattern, line)]
     assert len(step_lines) > 0, f"No step lines found in output ({lines})"
     try:
         start_step_line = step_lines[start_step]
@@ -63,31 +63,112 @@ def check_number_goes_up_or_down(
         )
 
 
-def check_number_in_range(
+def check_metric_in_range(
+    lines: list[str],
+    metric_name: str,
+    pattern: str,
+    step: int = -1,
+    min_threshold: float | None = None,
+    max_threshold: float | None = None,
+):
+    """Helper to assert that a metric in step logs is within a threshold"""
+    step_lines = [line for line in lines if "SUCCESS" in line and "Step" in line and re.search(pattern, line)]
+    assert len(step_lines) > 0, f"No step lines found in output ({lines})"
+
+    # Search for the specific step number in the lines
+    if step == -1:
+        step_line = step_lines[-1]
+    else:
+        step_pattern = rf"Step {step}\b"
+        matching_lines = [line for line in step_lines if re.search(step_pattern, line)]
+        assert len(matching_lines) > 0, f"Could not find step {step} in output ({step_lines})"
+        step_line = matching_lines[0]
+
+    metric_match = re.search(pattern, step_line)
+    assert metric_match is not None, f"Could not find {metric_name} for step {step}. Line: {step_line} ({lines})"
+    metric_value = float(metric_match.group(1))
+    if min_threshold is not None:
+        assert metric_value >= min_threshold, (
+            f"{metric_name} did not reach minimum threshold. Found {metric_name}={metric_value} < {min_threshold} "
+            f"(line: {step_line}) ({lines})"
+        )
+    if max_threshold is not None:
+        assert metric_value <= max_threshold, (
+            f"{metric_name} exceeded maximum threshold. Found {metric_name}={metric_value} > {max_threshold} "
+            f"(line: {step_line}) ({lines})"
+        )
+
+
+def check_reward_goes_up(lines: list[str]):
+    return check_number_goes_up_or_down(lines, go_up=True, pattern=r"Reward:\s*(\d+\.\d{4})")
+
+
+def check_loss_goes_down(lines: list[str]):
+    return check_number_goes_up_or_down(lines, go_up=False, pattern=r"Loss:\s*(\d+\.\d{4})")
+
+
+def check_reward_in_range(
     lines: list[str],
     step: int = -1,
     min_threshold: float | None = 0.0,
     max_threshold: float | None = None,
-    pattern: str = r"Reward:\s*(\d+\.\d{4})",
 ):
-    """Helper to assert that a number in step logs is within a threshold"""
-    step_lines = [line for line in lines if "Step" in line]
-    assert len(step_lines) > 0, f"No step lines found in output ({lines})"
-    try:
-        step_line = step_lines[step]
-    except IndexError:
-        step_line = ""
-    assert step_line, f"Could not find step {step} in output ({lines})"
-    step_reward = re.search(pattern, step_line)
-    assert step_reward is not None, f"Could not find reward for step {step}. Line: {step_line} ({lines})"
-    step_reward = float(step_reward.group(1))
+    """Helper to assert that reward in step logs is within a threshold"""
+    check_metric_in_range(
+        lines,
+        metric_name="Reward",
+        pattern=r"Reward:\s*(\d+\.\d{4})",
+        step=step,
+        min_threshold=min_threshold,
+        max_threshold=max_threshold,
+    )
+
+
+def check_avg_reward_in_range(
+    lines: list[str],
+    last_n_steps: int,
+    min_threshold: float | None = None,
+    max_threshold: float | None = None,
+):
+    """Helper to assert that the average reward over the last N steps is within a threshold"""
+    pattern = r"Reward:\s*(\d+\.\d{4})"
+    step_lines = [line for line in lines if "SUCCESS" in line and "Step" in line and re.search(pattern, line)]
+    assert len(step_lines) >= last_n_steps, (
+        f"Not enough step lines found. Expected at least {last_n_steps}, got {len(step_lines)}"
+    )
+
+    recent_lines = step_lines[-last_n_steps:]
+    rewards = []
+    for line in recent_lines:
+        match = re.search(pattern, line)
+        assert match is not None, f"Could not find Reward in line: {line}"
+        rewards.append(float(match.group(1)))
+
+    avg_reward = sum(rewards) / len(rewards)
     if min_threshold is not None:
-        assert step_reward >= min_threshold, (
-            f"Reward did not reach minimum threshold. Found reward={step_reward} < {min_threshold} "
-            f"(line: {step_line}) ({lines})"
+        assert avg_reward >= min_threshold, (
+            f"Average reward over last {last_n_steps} steps did not reach minimum threshold. "
+            f"Found avg_reward={avg_reward:.4f} < {min_threshold} (rewards={rewards})"
         )
     if max_threshold is not None:
-        assert step_reward <= max_threshold, (
-            f"Reward did not reach maximum threshold. Found reward={step_reward} > {max_threshold} "
-            f"(line: {step_line}) ({lines})"
+        assert avg_reward <= max_threshold, (
+            f"Average reward over last {last_n_steps} steps exceeded maximum threshold. "
+            f"Found avg_reward={avg_reward:.4f} > {max_threshold} (rewards={rewards})"
         )
+
+
+def check_mismatch_kl_in_range(
+    lines: list[str],
+    step: int = -1,
+    min_threshold: float | None = None,
+    max_threshold: float | None = None,
+):
+    """Helper to assert that mismatch KL in step logs is within a threshold"""
+    check_metric_in_range(
+        lines,
+        metric_name="Mismatch KL",
+        pattern=r"Mismatch KL:\s*(\d+\.\d{4})",
+        step=step,
+        min_threshold=min_threshold,
+        max_threshold=max_threshold,
+    )

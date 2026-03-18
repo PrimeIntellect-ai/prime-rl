@@ -1,19 +1,20 @@
 import pytest
-import torch
 
-from prime_rl.orchestrator.batch import prepare_batch
-from prime_rl.orchestrator.types import TrainingExample
+from prime_rl.trainer.batch import prepare_batch, prepare_sample
+from prime_rl.transport.types import TrainingSample
 
 
 @pytest.fixture
 def make_training_example():
-    def _make_training_example() -> TrainingExample:
-        return TrainingExample(
+    def _make_training_example(temperature: float = 1.0) -> TrainingSample:
+        return TrainingSample(
             prompt_ids=[1, 2],
-            prompt_mask=[0, 0],
+            prompt_mask=[False, False],
             completion_ids=[3, 4],
-            completion_mask=[1, 1],
+            completion_mask=[True, True],
             completion_logprobs=[-0.1, -0.2],
+            completion_temperatures=[temperature, temperature],  # Per-token temperatures
+            teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
         )
 
@@ -30,9 +31,10 @@ def test_prepare_batch_balances_micro_batches_across_workers(
 
     batches_per_gpu = prepare_batch(
         rollouts=examples,
-        temperature=0.5,
         seq_len=4,
         num_train_workers=num_train_workers,
+        idxs=[0] * rollout_count,
+        num_loras=1,
     )
 
     assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)
@@ -44,10 +46,91 @@ def test_prepare_batch_balances_micro_batches_across_workers(
     # Verify real rollouts have expected non-zero advantages and loss mask
     for batch in flat_batches[: len(examples)]:
         print(batch)
-        assert torch.count_nonzero(batch["advantages"]) == 4
-        assert torch.count_nonzero(batch["loss_mask"]) == 2
+        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 4
+        assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 2
 
     # Verify padded batches have zero advantages and loss mask
     for batch in flat_batches[len(examples) :]:
-        assert torch.count_nonzero(batch["advantages"]) == 0
-        assert torch.count_nonzero(batch["loss_mask"]) == 0
+        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 0
+        assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0
+
+
+def test_prepare_batch_packs_different_temperatures(make_training_example):
+    """With per-token temperatures, samples can be packed together regardless of their temperature values."""
+    example1 = make_training_example(temperature=0.7)
+    example2 = make_training_example(temperature=1.1)
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[example1, example2],
+        seq_len=16,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+    )
+
+    flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
+    # With per-token temperatures, samples can now be packed together
+    assert len(flat_batches) == 1
+    # Each sample has 4 tokens (2 prompt + 2 completion), so 8 total tokens
+    assert len(flat_batches[0].temperatures) == 8
+    # First sample (4 tokens): all get temp 0.7
+    assert flat_batches[0].temperatures[:4] == [0.7, 0.7, 0.7, 0.7]
+    # Second sample (4 tokens): all get temp 1.1
+    assert flat_batches[0].temperatures[4:8] == [1.1, 1.1, 1.1, 1.1]
+
+
+def test_prepare_sample_with_routed_experts():
+    """Routed experts are passed through prepare_sample and match input_ids length."""
+    # 2 prompt + 2 completion = 4 tokens, 2 layers, topk=2
+    routed_experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]], [[1, 0], [3, 2]]]
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+        routed_experts=routed_experts,
+    )
+
+    micro_batch = prepare_sample(sample, seq_len=8)
+    assert micro_batch.routed_experts is not None
+    assert len(micro_batch.routed_experts) == 4
+    assert micro_batch.routed_experts == routed_experts
+
+
+def test_prepare_sample_truncates_routed_experts():
+    """Routed experts are truncated to seq_len when input exceeds it."""
+    routed_experts = [[[0, 1]], [[2, 3]], [[4, 5]], [[6, 7]]]
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+        routed_experts=routed_experts,
+    )
+
+    micro_batch = prepare_sample(sample, seq_len=3)
+    assert micro_batch.routed_experts is not None
+    assert len(micro_batch.routed_experts) == 3
+    assert micro_batch.routed_experts == routed_experts[:3]
+
+
+def test_prepare_sample_none_routed_experts():
+    """When routed_experts is None, micro_batch.routed_experts is None."""
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+    )
+
+    micro_batch = prepare_sample(sample, seq_len=8)
+    assert micro_batch.routed_experts is None

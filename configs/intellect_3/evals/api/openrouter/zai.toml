@@ -1,8 +1,0 @@
-max_concurrent = 128
-
-[client]
-base_url = ["https://openrouter.ai/api/v1"]
-api_key_var = "OPENROUTER_API_KEY"
-
-[client.extra_body]
-provider = { order = ["z-ai"], allow_fallbacks = false}

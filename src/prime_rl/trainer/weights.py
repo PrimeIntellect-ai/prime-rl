@@ -33,16 +33,30 @@ def _strip_pytorch_wrapper_prefix(key: str) -> str:
     return key
 
 
-def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.layers.") -> int:
     """Get the maximum number of layers in the model."""
-    return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
+    max_num = -1
+    for key in state_dict:
+        if not key.startswith(layer_prefix):
+            continue
+        layer_num_str = key[len(layer_prefix) :].split(".")[0]
+        if layer_num_str.isdigit():
+            max_num = max(max_num, int(layer_num_str))
+    return max_num + 1
+
+
+def load_state_dict_keys(save_dir: Path) -> list[str]:
+    """Load only the key names from safetensor files without reading tensor data."""
+    keys: list[str] = []
+    for safetensor_path in save_dir.glob("*.safetensors"):
+        with safe_open(safetensor_path, framework="pt", device="cpu") as f:
+            keys.extend(f.keys())
+    return keys
 
 
 def load_state_dict(save_dir: Path) -> dict[str, Tensor]:
     """Load a state dict from a local directory with safetensor files."""
     safetensors_paths = list(save_dir.glob("*.safetensors"))
-    if len(safetensors_paths) > 1:
-        safetensors_paths.sort(key=lambda x: int(x.stem.split("-")[1].split("of")[0]))
     state_dict = {}
     for safetensor_path in safetensors_paths:
         with safe_open(safetensor_path, framework="pt", device="cpu") as f:

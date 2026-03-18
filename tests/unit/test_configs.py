@@ -1,19 +1,27 @@
-import sys
 from pathlib import Path
+from typing import Annotated, Literal
 
 import pytest
-from pydantic import ValidationError
+import tomli_w
+from pydantic import BaseModel, Field, ValidationError
+from pydantic_config import ConfigFileError
 
-from prime_rl.eval.config import OfflineEvalConfig
-from prime_rl.inference.config import InferenceConfig
-from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.rl import RLConfig
-from prime_rl.trainer.rl.config import RLTrainerConfig
-from prime_rl.trainer.sft.config import SFTTrainerConfig
-from prime_rl.utils.pydantic_config import parse_argv
+from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.rl import RLConfig
+from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
+from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.utils.config import BaseConfig, cli
 
 # All config config classes
-CONFIG_CLASSES = [RLConfig, RLTrainerConfig, SFTTrainerConfig, OrchestratorConfig, InferenceConfig, OfflineEvalConfig]
+CONFIG_CLASSES = [
+    RLConfig,
+    TrainerConfig,
+    SFTConfig,
+    OrchestratorConfig,
+    InferenceConfig,
+]
 
 
 def get_config_files() -> list[Path]:
@@ -25,22 +33,124 @@ def get_config_files() -> list[Path]:
 
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
-def test_load_configs(config_file: Path, monkeypatch: pytest.MonkeyPatch):
+def test_load_configs(config_file: Path):
     """Tests that all config files can be loaded by at least one config class."""
-    if "intellect_3/evals" in config_file.as_posix():
-        pytest.skip("Skipped because uses partial configs, which are not supported by this test.")
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["dummy.py", "@", config_file.as_posix()],
-        raising=False,
-    )
     could_parse = []
     for config_cls in CONFIG_CLASSES:
         try:
-            parse_argv(config_cls)
+            cli(config_cls, args=["@", config_file.as_posix()])
             could_parse.append(True)
-        except ValidationError:
+        except (ValidationError, ConfigFileError, SystemExit):
             could_parse.append(False)
     assert any(could_parse), f"No config class could be parsed from {config_file}"
+
+
+class NestedConfig(BaseConfig):
+    lr: float = 1e-4
+    weight_decay: float = 0.01
+    name: str = "default"
+
+
+class VariantA(BaseModel):
+    type: Literal["a"] = "a"
+    alpha: float = 0.1
+    shared: int = 1
+
+
+class VariantB(BaseModel):
+    type: Literal["b"] = "b"
+    beta: float = 0.2
+    shared: int = 1
+
+
+VariantType = Annotated[VariantA | VariantB, Field(discriminator="type")]
+
+
+class DummyConfig(BaseConfig):
+    name: str = "experiment"
+    seed: int = 42
+    nested: NestedConfig = NestedConfig()
+    variant: VariantType = VariantA()
+
+
+def write_toml(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        tomli_w.dump(data, f)
+
+
+def test_defaults():
+    """All defaults are applied when no TOML or CLI args are given."""
+    config = cli(DummyConfig, args=[])
+    assert config.name == "experiment"
+    assert config.seed == 42
+    assert config.nested.lr == 1e-4
+    assert config.nested.weight_decay == 0.01
+    assert config.variant.type == "a"
+    assert config.variant.alpha == 0.1
+
+
+def test_toml_partial_nested_override(tmp_path):
+    """Partially overriding a nested model preserves unset field defaults."""
+    write_toml(tmp_path / "cfg.toml", {"nested": {"lr": 3e-4}})
+    config = cli(DummyConfig, args=["@", str(tmp_path / "cfg.toml")])
+    assert config.nested.lr == 3e-4
+    assert config.nested.weight_decay == 0.01
+    assert config.nested.name == "default"
+
+
+def test_toml_discriminated_union_default_type(tmp_path):
+    """Overriding a discriminated union field without 'type' uses the default variant."""
+    write_toml(tmp_path / "cfg.toml", {"variant": {"alpha": 0.9}})
+    config = cli(DummyConfig, args=["@", str(tmp_path / "cfg.toml")])
+    assert config.variant.type == "a"
+    assert config.variant.alpha == 0.9
+    assert config.variant.shared == 1
+
+
+def test_toml_discriminated_union_switch_variant(tmp_path):
+    """Providing an explicit 'type' switches to that variant."""
+    write_toml(tmp_path / "cfg.toml", {"variant": {"type": "b"}})
+    config = cli(DummyConfig, args=["@", str(tmp_path / "cfg.toml")])
+    assert config.variant.type == "b"
+    assert config.variant.beta == 0.2
+
+
+def test_toml_discriminated_union_override_switch_variant(tmp_path):
+    """Providing an explicit 'type' overrides the default variant."""
+    write_toml(tmp_path / "cfg.toml", {"variant": {"type": "b", "beta": 0.5}})
+    config = cli(DummyConfig, args=["@", str(tmp_path / "cfg.toml")])
+    assert config.variant.type == "b"
+    assert config.variant.beta == 0.5
+
+
+def test_cli_overrides_defaults():
+    """CLI args override defaults."""
+    config = cli(DummyConfig, args=["--name", "my-run", "--seed", "7"])
+    assert config.name == "my-run"
+    assert config.seed == 7
+    assert config.nested.lr == 1e-4
+
+
+def test_toml_overrides_defaults(tmp_path):
+    """TOML overrides defaults."""
+    write_toml(tmp_path / "cfg.toml", {"name": "my-run", "seed": 7, "nested": {"lr": 3e-4}})
+    config = cli(DummyConfig, args=["@", str(tmp_path / "cfg.toml")])
+    assert config.name == "my-run"
+    assert config.seed == 7
+    assert config.nested.lr == 3e-4
+
+
+def test_cli_overrides_toml(tmp_path):
+    """CLI args override TOML."""
+    write_toml(tmp_path / "cfg.toml", {"seed": 1, "nested": {"lr": 3e-4}})
+    config = cli(DummyConfig, args=["@", str(tmp_path / "cfg.toml"), "--seed", "99", "--nested.lr", "5e-5"])
+    assert config.seed == 99
+    assert config.nested.lr == 5e-5
+    # TOML value not overridden by CLI should still be applied (not reverted to class default)
+    assert config.nested.weight_decay == 0.01
+
+
+def test_removed_fused_lm_head_chunk_size_field_is_rejected():
+    with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
+        TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})

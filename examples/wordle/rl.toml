@@ -1,7 +1,9 @@
-inference_gpu_ids = [0,1,2,3,4,5]
-trainer_gpu_ids = [6,7]
-
 max_steps = 200
+seq_len = 8192
+
+[deployment]
+num_train_gpus = 2
+num_infer_gpus = 6
 
 [wandb]
 project = "wordle"
@@ -13,7 +15,6 @@ name = "wordle"
 name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 
 [orchestrator]
-seq_len = 8192
 batch_size = 1024
 rollouts_per_example = 16
 
@@ -27,5 +28,4 @@ max_tokens = 1024
 [trainer] # Default trainer config
 
 [inference.parallel]
-dp = 3
-tp = 2
+dp = 6

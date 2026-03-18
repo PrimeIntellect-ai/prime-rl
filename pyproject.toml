@@ -1,57 +1,80 @@
 [project]
 name = "prime-rl"
-version = "0.1.0"
-description = ""
+version = "0.4.0"
+description = "Async RL Training at Scale"
 readme = "README.md"
 requires-python = "~=3.12.0"
 dependencies = [
     "beartype>=0.21.0",
-    "cydifflib>=1.2.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
     "liger-kernel>=0.5.10",
     "loguru>=0.7.3",
-    "numpy>=2.2.6",
-    "openai>=1.106.1",
+    "pyarrow>=21.0.0",
     "pydantic>=1.10.13",
-    "pydantic-settings>=2.10.1",
-    "pylatexenc>=2.10",
+    "pydantic-config",
     "tomli>=2.2.1",
-    "torch>=2.8.0",
-    "transformers>=4.56.0",
-    "uvloop>=0.21.0",
-    "vllm==0.10.2",
-    "wandb>=0.20.1",
-    "lovely-tensors>=0.1.18",
-    "rich>=14.0.0",
     "tomli-w>=1.2.0",
-    "textarena>=0.6.16",
-    "nltk>=3.9.1",
-    "math-verify>=0.8.0",
+    "numpy>=2.2.6",
+    "torch>=2.9.0",
     "torchdata>=0.11.0",
-    "accelerate>=1.10.1",
-    "blobfile>=3.0.0",
-    "reverse-text>=0.1.4",
+    "transformers",
+    "vllm>=0.17.0",
+    "wandb>=0.24.2",
+    "ring-flash-attn>=0.1.8",
+    "prime>=0.5.37",
+    "pyzmq>=27.1.0",
+    "aiolimiter>=1.2.1",
+    "tenacity>=8.2.0",
+    "openai>=1.106.1",
+    "rich>=14.0.0",
+    "uvloop>=0.21.0",
     "torchtitan",
+    "verifiers",
     "dion",
-    "reverse-text",
-    "verifiers>=0.1.8",
-    "prime-evals>=0.1.5",
-    "prime-sandboxes>=0.2.5",
-    "flash-attn>=2.8.3",
-    "prime>=0.5.0"
+    "tilelang>=0.1.8",
 ]
 
 [project.scripts]
-rl = "prime_rl.rl:main"
+rl = "prime_rl.entrypoints.rl:main"
+sft = "prime_rl.entrypoints.sft:main"
+inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
-inference = "prime_rl.inference.server:main"
-sft = "prime_rl.trainer.sft.train:main"
-eval = "prime_rl.eval.eval:main"
-synthesize = "prime_rl.synthesize.synthesize:main"
+env-server = "prime_rl.orchestrator.env_server.env_server:main"
+
+[project.entry-points."vllm.general_plugins"]
+prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
+
+[project.optional-dependencies]
+flash-attn = [
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
+]
+flash-attn-3 = [
+    "flash_attn_3 @ https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl ; platform_machine == 'x86_64'",
+]
+flash-attn-cute = [
+    "flash-attn-cute",
+]
+envs = [
+    "reverse-text",
+    "alphabet-sort",
+    "wiki-search",
+    "math-python",
+    "math-env",
+    "code-env",
+    "science-env",
+    "logic-env",
+    "color-codeword",
+    "math500",
+    "aime2024",
+    "aime2025",
+]
 
 [dependency-groups]
+fp8-inference = [
+    "deep-gemm @ https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
+]
 dev = [
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.7",
@@ -62,18 +85,45 @@ dev = [
 
 
 [tool.uv]
+preview = true
 no-build-isolation-package = ["flash-attn"]
-prerelease = "allow"
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+# Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
+# See: https://github.com/pytorch/pytorch/issues/166122
+override-dependencies = [
+    "nvidia-cudnn-cu12>=9.15",
+    "nvidia-cutlass-dsl>=4.4.1",
+    "transformers>=5.1.0.dev0",
+    "quack-kernels>=0.2.7",
+]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
-reverse-text = { index = "primeintellect" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "ca6aca7" }
-dion = { git = "https://github.com/samsja/dion.git", rev = "main" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "de2ed50" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
+dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
+transformers = { git = "https://github.com/huggingface/transformers.git", rev = "5c1c72b" }
+flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "e2743ab5" }
+pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
+reverse-text = { index = "primeintellect" }
+alphabet-sort = { index = "primeintellect" }
+wiki-search = { index = "primeintellect" }
+math-python = { index = "primeintellect" }
+math-env = { index = "primeintellect" }
+code-env = { index = "primeintellect" }
+science-env = { index = "primeintellect" }
+logic-env = { index = "primeintellect" }
+color-codeword = { index = "primeintellect" }
+math500 = { index = "primeintellect" }
+aime2024 = { index = "primeintellect" }
+aime2025 = { index = "primeintellect" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
+flash-attn-3 = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
@@ -81,11 +131,13 @@ flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 [[tool.uv.index]]
 name = "primeintellect"
 url = "https://hub.primeintellect.ai/primeintellect/simple/"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/test/cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
 
 [tool.ruff.lint]
 select = ["F", "I"]

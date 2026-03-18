@@ -1,0 +1,5 @@
+# Usage: uv run rl @ examples/alphabet_sort/rl.toml @ examples/alphabet_sort/slurm_rl.toml
+output_dir = "outputs/alphabet-sort"
+
+[slurm]
+job_name = "alphabet-sort"

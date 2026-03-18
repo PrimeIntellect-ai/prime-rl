@@ -1,4 +1,0 @@
-use_tqdm = true
-
-[sampling]
-max_tokens = 16

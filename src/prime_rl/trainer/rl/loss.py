@@ -1,11 +1,41 @@
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import torch
 from beartype import beartype as typechecker
-from jaxtyping import Float, Int, jaxtyped
+from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.trainer.rl.config import LossConfig
+from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
+from prime_rl.utils.utils import import_object
+
+
+@dataclass
+class LossInputs:
+    """Inputs for computing loss on a single sample."""
+
+    trainer_logprobs: Float[Tensor, " seq"]
+    inference_logprobs: Float[Tensor, " seq"]
+    teacher_logprobs: Float[Tensor, " seq"] | None
+    advantages: Float[Tensor, " seq"]
+    loss_mask: Bool[Tensor, " seq"]
+
+
+@dataclass
+class LossOutputs:
+    """Outputs from computing loss on a single sample."""
+
+    loss: Float[Tensor, ""]
+    metrics: dict[str, Tensor]
+
+
+LossFn = Callable[..., LossOutputs]
+"""Type for a per-sample loss function.
+
+Expected signature:
+    def my_loss(inputs: LossInputs, **kwargs) -> LossOutputs:
+        ...
+"""
 
 
 @jaxtyped(typechecker=typechecker)
@@ -27,110 +57,186 @@ def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[T
 
 
 @jaxtyped(typechecker=typechecker)
-def shift_logits(logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq vocab"]:
-    """Removes final token logits and adds a zero logit for the first token."""
+def shift_logits(
+    logits: Float[Tensor, "batch seq vocab"], left_pad_logit: Float[Tensor, "batch 1 vocab"] | None = None
+) -> Float[Tensor, "batch seq vocab"]:
+    """Removes final token logits and adds a left pad logit for the first token."""
     # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
     batch, seq, vocab = logits.shape
     logits = logits[:, :-1, :]  # (batch, seq-1, vocab)
-    zeros = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
-    logits = torch.cat([zeros, logits], dim=1)  # (batch, seq, vocab)
+    if left_pad_logit is None:
+        left_pad_logit = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
+    logits = torch.cat([left_pad_logit, logits], dim=1)  # (batch, seq, vocab)
     return logits
 
 
+def shift_tensor_left(t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch seq"]:
+    """Shifts the tensor one token to the left.
+
+    Used to create labels from input_ids: labels[i] = input_ids[i+1].
+    The last position is padded with 0 (a valid token index) since this value
+    will be shifted off by shift_tensor_right and never used.
+    """
+    return torch.cat([t[:, 1:], torch.full((t.shape[0], 1), 0, device=t.device, dtype=t.dtype)], dim=1)
+
+
+def shift_tensor_right(t: Float[Tensor, "batch seq"], pad_value: float | None = None) -> Float[Tensor, "batch seq"]:
+    """Shifts the tensor one token to the right, prepending a padding value.
+
+    Used to realign logprobs/entropy after computing with shifted labels.
+    After shift: result[i] = t[i-1], result[0] = pad_value.
+    This converts from "predict next token" convention to "probability of current token" convention.
+
+    Args:
+        t: Tensor to shift right
+        pad_value: Value to use for position 0. If None, uses 0.0 for backward compatibility.
+                   For logprobs, should be log(1/vocab_size) to represent uniform distribution.
+                   For entropy, should be log(vocab_size) to represent maximum entropy.
+    """
+    if pad_value is None:
+        pad_value = 0.0
+    return torch.cat([torch.full((t.shape[0], 1), pad_value, device=t.device, dtype=t.dtype), t[:, :-1]], dim=1)
+
+
+def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
+    """Mean of values over a boolean mask; returns 0 when mask is empty."""
+    denom = torch.clamp_min(mask.sum(), 1)
+    return values[mask].sum() / denom
+
+
+def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
+    """
+    We implement IPO (INTELLECT Policy Optimization) loss, which combines:
+    - DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879)
+    - Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)
+
+    Unlike the DPPO-Bin TV mask, we mask independently of the advantage sign.
+    This is, because in Async RL, we do not take multiple steps on the same
+    data, and so policy updates are not well-predicted by the advantage sign.
+    This shift is similar to the shift from GRPO -> CISPO, but with the trust
+    region being approximated by the probability difference instead of ratio.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    teacher_logprobs = inputs.teacher_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    trainer_probs = torch.exp(trainer_logprobs)
+    inference_probs = torch.exp(inference_logprobs)
+    probs_diff = trainer_probs - inference_probs
+    ipo_invalid_mask_high = probs_diff > loss_config.ipo_mask_high
+    ipo_invalid_mask_low = probs_diff < -loss_config.ipo_mask_low
+    ipo_invalid_mask = ipo_invalid_mask_high | ipo_invalid_mask_low
+
+    is_masked = ipo_invalid_mask
+    is_masked_low = ipo_invalid_mask_low
+    is_masked_high = ipo_invalid_mask_high
+    keep_mask = loss_mask & ~is_masked
+
+    log_importance_ratio = trainer_logprobs - inference_logprobs
+    importance_ratio = torch.exp(log_importance_ratio)
+    mismatch_kl = importance_ratio - log_importance_ratio - 1
+
+    advantages = loss_config.adv_tau * advantages
+    if teacher_logprobs is not None:
+        teacher_kl = teacher_logprobs - trainer_logprobs
+        advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
+    else:
+        teacher_kl = None
+
+    pg_loss = keep_mask * advantages * importance_ratio
+    kl_loss = loss_mask * log_importance_ratio**2
+    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
+
+    metrics = {
+        "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),  # all trainable tokens
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+        "is_masked": _safe_mean(is_masked, loss_mask),
+        "is_masked_low": _safe_mean(is_masked_low, loss_mask),
+        "is_masked_high": _safe_mean(is_masked_high, loss_mask),
+    }
+    if teacher_kl is not None:
+        metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
+def setup_loss_fn(loss_config: LossConfig) -> LossFn:
+    """Setup the loss function based on config."""
+    if isinstance(loss_config, CustomLossConfig):
+        custom_fn = import_object(loss_config.import_path)
+        kwargs = loss_config.kwargs
+
+        def loss_fn(inputs: LossInputs) -> LossOutputs:
+            return custom_fn(inputs, **kwargs)
+
+        return loss_fn
+
+    def loss_fn(inputs: LossInputs) -> LossOutputs:
+        return default_loss_fn(inputs, loss_config)
+
+    return loss_fn
+
+
 def compute_loss(
-    trainer_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
-    inference_logprobs: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
-    advantages: Any,  # list of Float[Tensor, "seq_i"] with potentially different seq_i lengths
-    loss_mask: Any,  # list of Bool[Tensor, "seq_i"] with potentially different seq_i lengths
-    loss_config: LossConfig,
+    trainer_logprobs: list[Float[Tensor, " seq_i"]],
+    inference_logprobs: list[Float[Tensor, " seq_i"]],
+    teacher_logprobs: list[Float[Tensor, " seq_i"]] | None,
+    advantages: list[Float[Tensor, " seq_i"]],
+    loss_mask: list[Bool[Tensor, " seq_i"]],
+    loss_fn: LossFn,
     loss_scale: int,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
     Args:
-        trainer_logprobs: Log probabilities tensor for packed sequences
-        inference_logprobs: Old log probabilities tensor for packed sequences
-        advantages: Advantages tensor for packed sequences
-        loss_mask: Loss mask tensor for packed sequences
-        loss_config: Loss configuration object
+        trainer_logprobs: Log probabilities for each sequence
+        inference_logprobs: Reference log probabilities for each sequence
+        teacher_logprobs: Teacher log probabilities for each sequence, or None
+        advantages: Advantages for each sequence
+        loss_mask: Loss mask for each sequence
+        loss_fn: Per-sequence loss function
         loss_scale: Scale factor to normalize the loss
 
     Returns:
-        Tuple of (scaled_loss, aggregated_loss_tensors)
+        Tuple of (scaled_loss, aggregated_metrics)
     """
+    total_loss = 0.0
+    all_metrics: dict[str, list[Tensor]] = {}
 
-    total_loss = 0
-    total_mismatch_kl = []
-    total_masked_mismatch_kl = []
-    total_unmasked_mismatch_kl = []
-    total_is_masked = []
-    total_is_masked_low = []
-    total_is_masked_high = []
-    total_sequence_masked_low = []
+    if teacher_logprobs is None:
+        teacher_logprobs = [None] * len(trainer_logprobs)
 
-    for trainer_logprobs, inference_logprobs, advantages, loss_mask in zip(
-        trainer_logprobs, inference_logprobs, advantages, loss_mask
+    for t_logp, i_logp, teach_logp, adv, mask in zip(
+        trainer_logprobs, inference_logprobs, teacher_logprobs, advantages, loss_mask
     ):
-        log_importance_ratio = trainer_logprobs - inference_logprobs
-
-        # Compute trainer-inference mismatch KL
-        token_mismatch_kl = torch.exp(log_importance_ratio) - log_importance_ratio - 1
-
-        if loss_config.ratio_type == "sequence":
-            seq_log_importance_ratio = (log_importance_ratio[loss_mask]).sum()
-            log_importance_ratio = trainer_logprobs - trainer_logprobs.detach() + seq_log_importance_ratio.detach()
-            log_importance_ratio = torch.clamp(log_importance_ratio, max=10.0)
-
-        importance_ratio = torch.exp(log_importance_ratio)
-        is_masked_low = importance_ratio < loss_config.mask_ratio_low
-        is_masked_high = importance_ratio > loss_config.mask_ratio_high
-        is_masked = is_masked_low | is_masked_high
-        seq_min_ratio = importance_ratio.masked_fill(~loss_mask, torch.inf).min()
-        seq_should_mask = seq_min_ratio < loss_config.sequence_mask_ratio_low
-        is_masked = is_masked | seq_should_mask
-        keep_mask = loss_mask & ~is_masked
-        loss = (-importance_ratio * advantages)[keep_mask].sum()
-        if loss_config.kl_mask_type == "masked":
-            kl_mask = loss_mask & is_masked
-        elif loss_config.kl_mask_type == "unmasked":
-            kl_mask = keep_mask
-        elif loss_config.kl_mask_type == "all":
-            kl_mask = loss_mask
-        else:
-            raise ValueError(f"Invalid KL mask type: {loss_config.kl_mask_type}")
-        loss = loss + loss_config.kl_tau * (log_importance_ratio[kl_mask]).sum()
-
-        # Apply sequence-level normalization if configured
-        if loss_config.ratio_type == "sequence":
-            loss = loss / torch.clamp_min(loss_mask.sum(), 1)
-
-        total_loss = total_loss + loss
-
-        mismatch_kl = token_mismatch_kl[loss_mask].sum() / torch.clamp_min(loss_mask.sum(), 1)
-        masked_mismatch_kl = token_mismatch_kl[loss_mask & is_masked].sum() / torch.clamp_min(
-            (loss_mask & is_masked).sum(), 1
+        inputs = LossInputs(
+            trainer_logprobs=t_logp,
+            inference_logprobs=i_logp,
+            teacher_logprobs=teach_logp,
+            advantages=adv,
+            loss_mask=mask,
         )
-        unmasked_mismatch_kl = token_mismatch_kl[keep_mask].sum() / torch.clamp_min(keep_mask.sum(), 1)
 
-        # Aggregate loss tensors
-        total_mismatch_kl.append(mismatch_kl)
-        total_masked_mismatch_kl.append(masked_mismatch_kl)
-        total_unmasked_mismatch_kl.append(unmasked_mismatch_kl)
-        total_is_masked.append(is_masked[loss_mask].float())
-        total_is_masked_low.append(is_masked_low[loss_mask].float())
-        total_is_masked_high.append(is_masked_high[loss_mask].float())
-        total_sequence_masked_low.append(seq_should_mask.float())
+        result = loss_fn(inputs)
 
-    # Apply loss scaling
+        total_loss = total_loss + result.loss
+
+        for k, v in result.metrics.items():
+            if k not in all_metrics:
+                all_metrics[k] = []
+            all_metrics[k].append(v)
+
     scaled_loss = total_loss / loss_scale
 
-    return scaled_loss, {
-        "mismatch_kl": torch.stack(total_mismatch_kl),
-        "masked_mismatch_kl": torch.stack(total_masked_mismatch_kl),
-        "unmasked_mismatch_kl": torch.stack(total_unmasked_mismatch_kl),
-        "is_masked": torch.cat(total_is_masked),
-        "is_masked_low": torch.cat(total_is_masked_low),
-        "is_masked_high": torch.cat(total_is_masked_high),
-        "sequence_masked_low": torch.stack(total_sequence_masked_low),
-    }
+    aggregated: dict[str, Any] = {}
+    for k, v in all_metrics.items():
+        if v[0].dim() == 0:
+            aggregated[k] = torch.stack(v)
+        else:
+            aggregated[k] = torch.cat(v)
+
+    return scaled_loss, aggregated

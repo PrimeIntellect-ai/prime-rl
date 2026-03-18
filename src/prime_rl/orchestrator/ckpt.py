@@ -4,8 +4,8 @@ from pathlib import Path
 
 import torch
 
+from prime_rl.configs.orchestrator import CheckpointConfig
 from prime_rl.orchestrator.buffer import Buffer
-from prime_rl.orchestrator.config import CheckpointConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_ckpt_dir, get_step_path
 
@@ -29,19 +29,9 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def get_latest_step(self) -> int:
-        step_dirs = list(self.ckpt_dir.glob("step_*"))
-        if len(step_dirs) == 0:
-            raise ValueError(f"No checkpoints found in {self.ckpt_dir}")
-        steps = sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
-        latest_step = steps[-1]
-        self.logger.info(f"Found latest checkpoint in {self.ckpt_dir}: {latest_step}")
-        return latest_step
-
-    def _save_to_path(
+    def save_to_path(
         self,
         ckpt_path: Path,
-        ckpt_step: int,
         progress: Progress,
         buffer: Buffer,
     ):
@@ -57,7 +47,7 @@ class CheckpointManager:
 
         self.logger.debug(f"Orchestrator checkpoint saved in {time.perf_counter() - start_time:.2f} seconds")
 
-    def _load_from_path(self, ckpt_path: Path, progress: Progress, buffer: Buffer) -> None:
+    def load_from_path(self, ckpt_path: Path, progress: Progress, buffer: Buffer) -> None:
         """Loads a checkpoint from a given path in-place."""
         self.logger.debug(f"Loading checkpoint from {ckpt_path}")
         start_time = time.perf_counter()
@@ -83,13 +73,10 @@ class CheckpointManager:
 
     def load(self, progress: Progress, buffer: Buffer, step: int) -> None:
         """Loads a checkpoint from a given path."""
-        if step == -1:
-            step = self.get_latest_step()
-
         ckpt_path = self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
-        self._load_from_path(ckpt_path, progress, buffer)
+        self.load_from_path(ckpt_path, progress, buffer)
 
     def save(
         self,
@@ -100,7 +87,7 @@ class CheckpointManager:
         """Saves the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
-        self._save_to_path(ckpt_path, step, progress, buffer)
+        self.save_to_path(ckpt_path, progress, buffer)
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:

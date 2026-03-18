@@ -1,3 +1,0 @@
-[[env]]
-id = "hle"
-rollouts_per_example = 1 # 2158 examples * 1 rollouts = 2158 rollouts

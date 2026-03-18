@@ -27,7 +27,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-      - name: prime-rl
+      - name: prime-rl-orchestrator
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.orchestrator.autoStart }}
@@ -117,6 +117,7 @@ metadata:
 spec:
   serviceName: {{ .Release.Name }}-inference-headless
   replicas: {{ .Values.inference.replicas }}
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       {{- include "prime-rl.componentLabels" . | nindent 6 }}
@@ -132,7 +133,7 @@ spec:
       runtimeClassName: {{ .Values.inference.runtimeClassName }}
       {{- end }}
       containers:
-      - name: prime-rl
+      - name: prime-rl-inference
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.inference.autoStart }}
@@ -196,6 +197,29 @@ spec:
             memory: {{ .Values.inference.resources.limits.memory }}
             cpu: {{ .Values.inference.resources.limits.cpu }}
             {{- end }}
+        {{- if and .Values.inference.probes .Values.inference.probes.enabled }}
+        startupProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.inference.service.port }}
+          periodSeconds: {{ .Values.inference.probes.startup.periodSeconds }}
+          failureThreshold: {{ .Values.inference.probes.startup.failureThreshold }}
+          timeoutSeconds: {{ .Values.inference.probes.startup.timeoutSeconds }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.inference.service.port }}
+          periodSeconds: {{ .Values.inference.probes.liveness.periodSeconds }}
+          failureThreshold: {{ .Values.inference.probes.liveness.failureThreshold }}
+          timeoutSeconds: {{ .Values.inference.probes.liveness.timeoutSeconds }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.inference.service.port }}
+          periodSeconds: {{ .Values.inference.probes.readiness.periodSeconds }}
+          failureThreshold: {{ .Values.inference.probes.readiness.failureThreshold }}
+          timeoutSeconds: {{ .Values.inference.probes.readiness.timeoutSeconds }}
+        {{- end }}
         {{- if .Values.storage.enabled }}
         volumeMounts:
         - name: shared-data
@@ -222,6 +246,7 @@ metadata:
 spec:
   serviceName: {{ .Release.Name }}-trainer-headless
   replicas: {{ .Values.trainer.replicas }}
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       {{- include "prime-rl.componentLabels" . | nindent 6 }}
@@ -237,7 +262,7 @@ spec:
       runtimeClassName: {{ .Values.trainer.runtimeClassName }}
       {{- end }}
       containers:
-      - name: prime-rl
+      - name: prime-rl-trainer
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.trainer.autoStart }}
@@ -271,6 +296,10 @@ spec:
           value: "{{ .Values.trainer.replicas }}"
         - name: HEADLESS_SERVICE
           value: "{{ .Release.Name }}-trainer-headless.{{ .Values.namespace }}.svc.cluster.local"
+        {{- if .Values.trainer.pytorchCudaAllocConf }}
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: {{ .Values.trainer.pytorchCudaAllocConf | quote }}
+        {{- end }}
         - name: INFERENCE_URL
           {{- $releaseName := .Release.Name }}
           {{- $namespace := .Values.namespace }}
@@ -314,6 +343,29 @@ spec:
             memory: {{ .Values.trainer.resources.limits.memory }}
             cpu: {{ .Values.trainer.resources.limits.cpu }}
             {{- end }}
+        {{- if and .Values.trainer.probes .Values.trainer.probes.enabled }}
+        startupProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.trainer.service.port }}
+          periodSeconds: {{ .Values.trainer.probes.startup.periodSeconds }}
+          failureThreshold: {{ .Values.trainer.probes.startup.failureThreshold }}
+          timeoutSeconds: {{ .Values.trainer.probes.startup.timeoutSeconds }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.trainer.service.port }}
+          periodSeconds: {{ .Values.trainer.probes.liveness.periodSeconds }}
+          failureThreshold: {{ .Values.trainer.probes.liveness.failureThreshold }}
+          timeoutSeconds: {{ .Values.trainer.probes.liveness.timeoutSeconds }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.trainer.service.port }}
+          periodSeconds: {{ .Values.trainer.probes.readiness.periodSeconds }}
+          failureThreshold: {{ .Values.trainer.probes.readiness.failureThreshold }}
+          timeoutSeconds: {{ .Values.trainer.probes.readiness.timeoutSeconds }}
+        {{- end }}
         {{- if .Values.storage.enabled }}
         volumeMounts:
         - name: shared-data

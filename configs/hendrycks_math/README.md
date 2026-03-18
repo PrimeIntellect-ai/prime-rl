@@ -9,13 +9,13 @@ In this example, we demonstrate how to train `Qwen/Qwen3-4B-Instruct-2507` to an
 Install the environment:
 
 ```bash
-prime env install primeintellect/single-turn-math
+prime env install primeintellect/math-env
 ```
 
 Verify installation:
 
 ```bash
-uv run python -c "import single_turn_math"
+uv run python -c "import math_env"
 ```
 
 Start the tmux session:
@@ -37,7 +37,7 @@ Evaluate the base model:
 
 ```bash
 # In the `Trainer` pane
-uv run vf-eval single-turn-math \
+uv run vf-eval math-env \
   -a '{"dataset_name": "PrimeIntellect/Hendrycks-Math", "dataset_subset": "default"}' \
   -m Qwen/Qwen3-4B-Instruct-2507 \
   -b http://localhost:8000/v1 \

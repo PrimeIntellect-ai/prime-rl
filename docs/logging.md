@@ -1,14 +1,86 @@
 # Logging
 
-## Loguru
+prime-rl uses [loguru](https://loguru.readthedocs.io/en/stable/) for logging with a global logger pattern. Logs are written to both console and files under `{output_dir}/logs/`. For RL training, we recommend streaming file logs into tmux panes (as set up by `tmux.sh`).
 
-We log to console and files using `loguru` using a global logger instance. Each entrypoint should call `setup_logger` *exactly once* at the beginning of execution. Afterwards, all components can log using the global logger instance. For more details on loguru, see the [documentation](https://loguru.readthedocs.io/en/stable/). All logs are written into `{output_dir}/logs` and for RL training we recommend viewing logs by streaming the file logs into tmux panes, as set up by the `tmux.sh` script.
+## tmux helper (`scripts/tmux.sh`)
+
+`scripts/tmux.sh` sets up a tmux session for RL runs with **three panes (one per subprocess)**:
+
+- **Trainer**: run `uv run rl ...` here
+- **Orchestrator**: follows `{output_dir}/logs/orchestrator.stdout`
+- **Inference**: follows `{output_dir}/logs/inference.stdout`
+
+## Logger Architecture
+
+### `setup_logger` and `get_logger`
+
+We use a **singleton pattern** with a module-level global logger instance (`_LOGGER`).
+
+```python
+from prime_rl.utils.logger import setup_logger, get_logger
+
+# At entrypoint - call ONCE
+logger = setup_logger("info", log_file=Path("output/logs/my.log"))
+
+# Anywhere else in codebase
+logger = get_logger()
+logger.info("Hello world")
+```
+
+**How it works:**
+
+1. **`setup_logger(log_level, log_file)`** - Initializes the global logger exactly once:
+   - Creates an isolated loguru `Logger` instance (not the default `loguru.logger`) to prevent third-party code from hijacking our logs
+   - Adds a stdout handler with colorized output
+   - Optionally adds a file handler (deletes existing file first)
+   - Raises `RuntimeError` if called twice
+
+2. **`get_logger()`** - Returns the global logger instance:
+   - Raises `RuntimeError` if `setup_logger` hasn't been called yet
+   - Safe to call from any module after initialization
+
+3. **`reset_logger()`** - Resets the global logger to `None`:
+   - Used in subprocesses that inherit parent state (e.g., env workers)
+   - Used in tests between test cases
+
+## RL Log File Structure
+
+For RL training, logs are organized by component:
+
+| Component | Log Path | Description |
+|-----------|----------|-------------|
+| **RL (parent)** | `logs/rl.log` | Main process that spawns subprocesses |
+| **Inference** | `logs/inference.stdout` | vLLM inference server stdout/stderr |
+| **Orchestrator** | `logs/orchestrator.log` | Rollout generation, buffer, scheduling |
+| **Trainer** | `logs/trainer/rank_{N}.log` | Training process (one file per GPU rank) |
+| **Env Workers** | `logs/env_workers/{env_name}/worker_{N}.log` | Per-environment worker logs (optional) |
+
+## Per-Environment Logging
+
+Environment are run via `vf.EnvServer` in separate processes. By default, each environment logs to a file in its run directory under `{output_dir}/run_default/train/{env_name}.log` and `{output_dir}/run_default/eval/{env_name}.log`. The log verbosity can be controlled with `orchestrator.log.vf_level`.
+
+```toml
+[orchestrator.log]
+level = "debug"           # Log level for prime-rl logger
+vf_level = "info"         # Log level for verifiers library
+```
+
+```
+output_dir/
+└── run_default/
+    └── train/
+        ├── {env_name_1}.log
+        ├── {env_name_2}.log
+        └── ...
+    └── eval/
+        ├── {env_name_1}.log
+        ├── {env_name_2}.log
+        └── ...
+```
 
 ## Torchrun
 
-For multi-node training, we use `torchrun` to set up distributed training. Because `torchrun` is SPMD, all ranks are logging to console and file at the same time. To only view the logs from the master rank, you can use the `--local-ranks-filter` flag.
-
-For example, to only view the logs from the master rank when training on a full node
+For multi-node training with `torchrun`, all ranks log simultaneously. To filter to master rank only:
 
 ```bash
 uv run torchrun \
@@ -17,7 +89,7 @@ uv run torchrun \
   ...
 ```
 
-In addition to the loguru file logs you can also use the `--log-dir` and `--redirects` and `--tee` flags to redirect the console logs to files.
+You can also use torchrun's native log redirection:
 
 ```bash
 uv run torchrun \
@@ -29,57 +101,5 @@ uv run torchrun \
   ...
 ```
 
-This will redirect the console logs to `outputs/torchrun/{rdzv_id}/attempt_0/{rank}/{stdout,stderr}.log`.
+This writes to `outputs/torchrun/{rdzv_id}/attempt_0/{rank}/{stdout,stderr}.log`.
 
-## W&B
-
-For most runs we recommend logging to [W&B](https://wandb.ai). Before enabling W&B, make sure that you have an account and are logged in.
-
-```bash
-uv run wandb login
-# Or set `export WANDB_API_KEY=...`
-```
-
-### SFT
-
-Logging to W&B is disabled by default. Enable the default configuration with `--wandb`
-
-```bash
-uv run sft ... --wandb
-```
-
-This will log to the `prime-rl` project with a random run name. You can specify which project and name to log to 
-
-```bash
-uv run sft ... --wandb.project my-project --wandb.name my-run
-```
-
-The same settings also work for multi-node training with `torchrun`. Note, that we only log global metrics from the master rank (e.g. the all-reduced loss)
-
-```bash
-uv run torchrun --nproc-per-node 8 ...  --wandb
-```
-
-### RL
-
-For RL training, both the trainer and orchestrator log to W&B as separate runs. Again, logging to W&B is disabled by default. Enable the default configuration with `--wandb`
-
-```bash
-uv run rl ... --wandb
-```
-
-This will log to the `prime-rl` project with a random run name. The trainer run is suffixed with `-trainer` and the orchestrator run is suffixed with `-orchestrator`. You can specify which project and name to log to using the same flags as for SFT.
-
-```bash
-uv run rl ... --wandb.project my-project --wandb.name my-run
-```
-
-For the RL trainer, we support logging samples (e.g. prompt, completion, reward, advantage for selected rollouts) and distributions (e.g. reward, advantage, entropy distributions) as W&B tables using the `wandb.log-extras` subconfig. If W&B is setup, this is enabled by default and will log for the RL trainer and orchestrator every 10 steps.
-
-You can configure this on the trainer and orchestrator separately. For example, to only log samples on the orchestrator every 50 steps, but not distribution on either
-
-```bash
-uv run rl  ... \
-  --no-trainer.wandb.log-extras.distributions \
-  --orchestrator.wandb.log-extras.interval 50
-```

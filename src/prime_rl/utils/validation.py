@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from prime_rl.inference.config import InferenceConfig
-from prime_rl.orchestrator.config import OrchestratorConfig
-from prime_rl.trainer.rl.config import RLTrainerConfig
+from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.trainer import TrainerConfig
 
 
 def validate_shared_ckpt_config(
-    trainer: RLTrainerConfig,
+    trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
     if trainer.ckpt and not orchestrator.ckpt:
@@ -30,7 +30,7 @@ def validate_shared_ckpt_config(
 
 
 def validate_shared_model_name(
-    trainer: RLTrainerConfig,
+    trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
@@ -48,19 +48,31 @@ def validate_shared_model_name(
 
 
 def validate_shared_output_dir(
-    trainer: RLTrainerConfig,
+    trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.output_dir != orchestrator.output_dir:
+    if trainer.output_dir != orchestrator.output_dir.parent:
         raise ValueError(
-            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory ({orchestrator.output_dir}) are not the same. Please specify the same outputs directory for both."
+            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory parent ({orchestrator.output_dir.parent}) are not the same. Please specify the same outputs directory for both."
         )
 
 
 def validate_shared_wandb_config(
-    trainer: RLTrainerConfig,
+    trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
+    if trainer.wandb and not orchestrator.wandb:
+        raise ValueError(
+            "Trainer W&B config is specified, but orchestrator W&B config is not. "
+            "This means only trainer metrics will be logged. Please specify [orchestrator.wandb] to log orchestrator metrics as well, "
+            "or use [wandb] to configure both at once."
+        )
+    if orchestrator.wandb and not trainer.wandb:
+        raise ValueError(
+            "Orchestrator W&B config is specified, but trainer W&B config is not. "
+            "This means only orchestrator metrics will be logged. Please specify [trainer.wandb] to log trainer metrics as well, "
+            "or use [wandb] to configure both at once."
+        )
     if trainer.wandb and orchestrator.wandb:
         if trainer.wandb.project != orchestrator.wandb.project:
             raise ValueError(
@@ -69,7 +81,7 @@ def validate_shared_wandb_config(
 
 
 def validate_shared_max_steps(
-    trainer: RLTrainerConfig,
+    trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
     if trainer.max_steps != orchestrator.max_steps:
@@ -79,7 +91,7 @@ def validate_shared_max_steps(
 
 
 def validate_shared_max_async_level(
-    trainer: RLTrainerConfig,
+    trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
     if trainer.max_async_level != orchestrator.max_async_level:
@@ -89,7 +101,7 @@ def validate_shared_max_async_level(
 
 
 def validate_shared_weight_broadcast(
-    trainer: RLTrainerConfig,
+    trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:

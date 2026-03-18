@@ -1,3 +1,0 @@
-[[env]]
-id = "gpqa"
-rollouts_per_example = 4 # 198 examples * 4 rollouts = 792 rollouts

@@ -1,11 +1,10 @@
-from functools import partial
 from pathlib import Path
 from typing import Callable
 
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.utils import check_no_error, check_number_goes_up_or_down, check_number_in_range, strip_escape_codes
+from tests.utils import check_no_error, check_reward_goes_up, check_reward_in_range, strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -70,10 +69,6 @@ def rl_resume_process(
     return run_process(cmd, timeout=TIMEOUT)
 
 
-check_reward_goes_up = partial(check_number_goes_up_or_down, go_up=True, pattern=r"Reward:\s*(\d+\.\d{4})")
-check_reward_in_range = partial(check_number_in_range, pattern=r"Reward:\s*(\d+\.\d{4})")
-
-
 @pytest.fixture(scope="module")
 def test_no_error(rl_process: ProcessResult, output_dir: Path):
     """Tests that the RL process does not fail."""
@@ -97,14 +92,7 @@ def test_reward_in_range(rl_process: ProcessResult, test_no_error, output_dir: P
 @pytest.fixture(scope="module")
 def test_no_error_resume(rl_resume_process: ProcessResult, output_dir: Path):
     """Tests that the RL resume process does not fail."""
-    if rl_resume_process.returncode != 0:
-        print("=== Inference Outputs ===")
-        with open(output_dir / "logs" / "inference.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
-        print("=== Orchestrator Outputs ===")
-        with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
-    assert rl_resume_process.returncode == 0, f"Process has non-zero return code ({rl_resume_process})"
+    check_no_error(rl_resume_process, output_dir)
 
 
 def test_reward_in_range_resume(rl_resume_process: ProcessResult, test_no_error_resume, output_dir: Path):

@@ -1,8 +1,8 @@
 import asyncio
 import functools
+import importlib
 import os
 import subprocess
-import time
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,8 +12,32 @@ import torch
 import torch.distributed as dist
 import wandb
 
-from prime_rl.orchestrator.config import EnvConfig, EvalEnvConfig
+from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig
 from prime_rl.utils.logger import get_logger
+
+# TODO: Change all imports to use utils.pathing
+# ruff: noqa: F401
+from prime_rl.utils.pathing import (
+    get_all_ckpt_steps,
+    get_broadcast_dir,
+    get_ckpt_dir,
+    get_eval_dir,
+    get_log_dir,
+    get_rollout_dir,
+    get_stable_ckpt_steps,
+    get_step_path,
+    get_weights_dir,
+    resolve_latest_ckpt_step,
+    sync_wait_for_path,
+    wait_for_path,
+)
+
+
+def import_object(dotted_path: str) -> Any:
+    """Import an object from a dotted path like 'my_module.submodule.MyClass'."""
+    module_path, _, name = dotted_path.rpartition(".")
+    module = importlib.import_module(module_path)
+    return getattr(module, name)
 
 
 def rgetattr(obj: Any, attr_path: str) -> Any:
@@ -106,6 +130,7 @@ def clean_exit(func: Callable) -> Callable:
                 wandb.finish()
                 return ret
             except Exception as e:
+                get_logger().opt(exception=True).error(f"Fatal error in {func.__name__}")
                 wandb.finish(exit_code=1)
                 raise e
             finally:
@@ -122,6 +147,7 @@ def clean_exit(func: Callable) -> Callable:
                 wandb.finish()
                 return ret
             except Exception as e:
+                get_logger().opt(exception=True).error(f"Fatal error in {func.__name__}")
                 wandb.finish(exit_code=1)
                 raise e
             finally:
@@ -129,34 +155,6 @@ def clean_exit(func: Callable) -> Callable:
                     dist.destroy_process_group()
 
         return sync_wrapper
-
-
-def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
-    logger = get_logger()
-    wait_time = 0
-    logger.debug(f"Waiting for path `{path}`")
-    while True:
-        if path.exists():
-            logger.debug(f"Found path `{path}`")
-            break
-        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
-            logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
-        time.sleep(interval)
-        wait_time += interval
-
-
-async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
-    logger = get_logger()
-    wait_time = 0
-    logger.debug(f"Waiting for path `{path}`")
-    while True:
-        if path.exists():
-            logger.debug(f"Found path `{path}`")
-            break
-        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
-            logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
-        await asyncio.sleep(interval)
-        wait_time += interval
 
 
 def to_col_format(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
@@ -262,34 +260,6 @@ def get_cuda_visible_devices() -> list[int]:
     return list(sorted([int(device) for device in cuda_visible.split(",")]))
 
 
-def get_log_dir(output_dir: Path) -> Path:
-    return output_dir / "logs"
-
-
-def get_ckpt_dir(output_dir: Path) -> Path:
-    return output_dir / "checkpoints"
-
-
-def get_weights_dir(output_dir: Path) -> Path:
-    return output_dir / "weights"
-
-
-def get_rollout_dir(output_dir: Path) -> Path:
-    return output_dir / "rollouts"
-
-
-def get_eval_dir(output_dir: Path) -> Path:
-    return output_dir / "evals"
-
-
-def get_broadcast_dir(output_dir: Path) -> Path:
-    return output_dir / "broadcasts"
-
-
-def get_step_path(path: Path, step: int) -> Path:
-    return path / f"step_{step}"
-
-
 def get_latest_ckpt_step(weights_dir: Path) -> int | None:
     step_dirs = list(weights_dir.glob("step_*"))
     if len(step_dirs) == 0:
@@ -301,10 +271,15 @@ def get_latest_ckpt_step(weights_dir: Path) -> int | None:
     return None
 
 
+def mean(values: list[float] | list[int]) -> float:
+    """Compute the mean of a list of values."""
+    return sum(values) / len(values) if values else 0.0
+
+
 def mean_normalize(values: list[float] | list[int]) -> list[float]:
     """Mean-Normalize a list of values to 0-1."""
     sum_values = sum(values)
-    return [value / sum_values if sum_values > 0 else 0 for value in values]
+    return [value / sum_values if sum_values > 0 else 0.0 for value in values]
 
 
 @contextmanager
@@ -317,14 +292,29 @@ def default_dtype(dtype):
         torch.set_default_dtype(prev)
 
 
+def strip_env_version(env_id: str) -> str:
+    """Strip the @version suffix from an environment ID.
+
+    Environment IDs may include a version (e.g. 'd42me/meow@0.1.5') for installation,
+    but the version must be stripped before loading as a Python module.
+    """
+    return env_id.split("@")[0]
+
+
 def install_env(env_id: str) -> None:
     """Install an environment in subprocess."""
     logger = get_logger()
     logger.info(f"Installing environment {env_id}")
     install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
     result = subprocess.run(install_cmd, capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        if line.strip():
+            logger.info(line)
+    for line in result.stderr.splitlines():
+        if line.strip():
+            logger.warning(line)
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to install environment {env_id} (stdout={result.stdout}, stderr={result.stderr})")
+        raise RuntimeError(f"Failed to install environment {env_id} (exit code {result.returncode})")
     logger.info(f"Successfully installed environment {env_id}")
 
 

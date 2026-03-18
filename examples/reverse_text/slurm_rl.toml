@@ -1,0 +1,5 @@
+# Usage: uv run rl @ examples/reverse_text/rl.toml @ examples/reverse_text/slurm_rl.toml
+output_dir = "outputs/reverse-text-rl"
+
+[slurm]
+job_name = "reverse-text-rl"

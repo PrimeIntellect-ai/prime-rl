@@ -1,5 +1,0 @@
-max_concurrent = 128
-
-[client]
-base_url = ["https://api.together.ai/v1"]
-api_key_var = "TOGETHER_API_KEY"

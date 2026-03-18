@@ -10,9 +10,11 @@
                 "environments",
                 "async",
                 "logging",
+                "multi_run_manager",
                 "checkpointing",
                 "benchmarking",
                 "deployment",
+                "kubernetes",
                 "troubleshooting"
             ]
         }

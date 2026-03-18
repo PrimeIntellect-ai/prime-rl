@@ -31,7 +31,7 @@ uv run torchrun \
   src/prime_rl/trainer/sft/train.py ...
 ```
 
-*The `--local-rank-filter` flag is used to only log the logs from the master rank, as detailed in [logs](logs.md).*
+*The `--local-rank-filter` flag is used to only log the logs from the master rank, as detailed in [logging](logging.md).*
 
 ### Multi-Node
 
@@ -83,11 +83,13 @@ uv run torchrun \
 
 ### SLURM
 
-TBD.
+See the dedicated [SLURM guide](slurm.md).
 
 ## Inference
 
-We rely on vLLMs multi-node deployment primitives and load balancing for multi-node deployments. Currently, vLLM supports multi-node data parallel deployment ([docs](https://docs.vllm.ai/en/v0.10.0/serving/data_parallel_deployment.html)).
+For SLURM-based inference deployment, see the [SLURM guide](slurm.md#inference-examples). Each node runs an independent vLLM replica — no manual coordination needed.
+
+For manual multi-node deployment without SLURM, we rely on vLLM's multi-node data parallel deployment primitives ([docs](https://docs.vllm.ai/en/v0.10.0/serving/data_parallel_deployment.html)).
 
 First, decide which node will be your head node and find a reachable private IP address for it. If your nodes are not colocated, you will likely need to setup VPN (e.g. [Tailscale](https://tailscale.com)) for the nodes to reach each other. 
 
@@ -185,7 +187,7 @@ uv run rl \
   --inference @ path/to/infer.toml \
 ```
 
-You can configure to GPU IDs to use for the inference server and the trainer. For example, to run the inference server on GPUs IDs 0-5 with data parallelism and the trainer on GPUs IDs 6-7
+You can configure the GPU IDs to use for the inference server and the trainer. For example, to run the inference server on GPUs IDs 0-5 with data parallelism and the trainer on GPUs IDs 6-7
 
 ```bash
 uv run rl \
@@ -237,9 +239,9 @@ uv run rl \
 
 ### Multi-Node Training
 
-> We currently require shared file system for multi-node RL training.
+> We currently require a shared file system for multi-node RL training.
 
-To faciliate multi-node RL training, ensure that all nodes have access to a shared file system and that the node that will run the inference server is reachable from the orchestrator via a private or public IP address. Then, set the following environment variables on all nodes:
+To facilitate multi-node RL training, ensure that all nodes have access to a shared file system and that the node that will run the inference server is reachable from the orchestrator via a private or public IP address. Then, set the following environment variables on all nodes:
 
 ```bash
 # On all nodes
@@ -281,13 +283,14 @@ Of course, you can further scale up the number of nodes used by the trainer and 
 
 ### SLURM
 
-TBD.
+See the dedicated [SLURM guide](slurm.md).
 
 ## Kubernetes
 
 For deployments on Kubernetes clusters, PRIME-RL provides a Helm chart that manages the entire training infrastructure including orchestrator, trainer, and inference components with automatic pod scheduling, GPU allocation, and shared storage.
 
-See the [Kubernetes deployment guide](../k8s/README.md) for complete documentation including:
+See the dedicated [Kubernetes guide](kubernetes.md) for complete documentation including:
+
 - Prerequisites and setup
 - Quick start examples
 - Component architecture
