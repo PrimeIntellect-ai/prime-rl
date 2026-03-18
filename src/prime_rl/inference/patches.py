@@ -10,8 +10,16 @@ def transformers_v5_compat():
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
     _patch_qwen35_lora()
-    monkey_patch_multiproc_executor_init_order()
-    monkey_patch_parallel_state_same_node()
+
+    try:
+        monkey_patch_multiproc_executor_init_order()
+    except ImportError:
+        pass
+
+    try:
+        monkey_patch_parallel_state_same_node()
+    except ImportError:
+        pass
 
 
 def _patch_qwen35_lora():
@@ -589,11 +597,11 @@ def monkey_patch_dcp_cuda_graphs():
         flash_attn_varlen_func,
         merge_attn_states,
     )
-    from vllm.v1.attention.backends.utils import get_dcp_group, get_dcp_local_seq_lens
+    from vllm.v1.attention.backends.utils import get_dcp_group
 
     logger = logging.getLogger(__name__)
 
-    # --- Patch 1: persistent _dcp_context_kv_lens in MetadataBuilder ---
+    # --- MetadataBuilder.__init__: persistent _dcp_context_kv_lens buffer ---
     _original_mb_init = MetadataBuilder.__init__
 
     def _patched_mb_init(self, *args, **kwargs):
@@ -610,7 +618,7 @@ def monkey_patch_dcp_cuda_graphs():
     MetadataBuilder.__init__ = _patched_mb_init
     logger.warning("PATCHED: MetadataBuilder.__init__ — persistent _dcp_context_kv_lens buffer")
 
-    # --- Patch 2: use persistent buffer in build() ---
+    # --- MetadataBuilder.build: use persistent buffer for dcp_context_kv_lens ---
     _original_build = MetadataBuilder.build
 
     def _patched_build(self, *args, **kwargs):
@@ -639,7 +647,7 @@ def monkey_patch_dcp_cuda_graphs():
     MetadataBuilder.build = _patched_build
     logger.warning("PATCHED: MetadataBuilder.build — uses persistent dcp_context_kv_lens buffer")
 
-    # --- Patch 3: pre-allocate all DCP buffers in FlashAttentionImpl ---
+    # --- FlashAttentionImpl.__init__: pre-allocate all DCP buffers ---
     _original_fa_init = FlashAttentionImpl.__init__
 
     def _patched_fa_init(self, *args, **kwargs):
@@ -672,7 +680,7 @@ def monkey_patch_dcp_cuda_graphs():
     FlashAttentionImpl.__init__ = _patched_fa_init
     logger.warning("PATCHED: FlashAttentionImpl.__init__ — pre-allocated all DCP buffers for FULL CG")
 
-    # --- Patch 6: rewrite _forward_with_dcp for FULL CUDA graph capture ---
+    # --- FlashAttentionImpl._forward_with_dcp: rewrite for FULL CUDA graph capture ---
     def _patched_forward_with_dcp(
         self,
         query: torch.Tensor,
