@@ -2,6 +2,7 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`orchestrator.usage`** and **`trainer.usage`**: Added optional usage reporting config for platform token billing. Reports inference tokens (orchestrator) and training tokens (trainer) per step. Activates when `base_url` is set via config or `PI_USAGE_BASE_URL` env var. Self-hosted users are unaffected (default: None) (2026-03-18)
 - **`prime_monitor.log_extras.sample_ratio`**: Added ratio-based rollout sampling (0.0–1.0, default: None). When set, caps the number of rollouts logged per step to `len(rollouts) * sample_ratio`. `None` preserves current behavior (log all rollouts). Interacts with existing `interval` gate which still runs first. (2026-03-12)
 - **`client.connect_timeout`**: Added configurable TCP connect timeout for inference API requests (default: 30.0s). Previously hardcoded to 5.0s. Helps with vLLM or cluster flakiness (2026-03-11)
 - **`model.fused_lm_head_token_chunk_size`**: Added as the fused LM-head chunking field for the token-chunked implementation. Unlike the removed `model.fused_lm_head_chunk_size`, this chunks over flattened sequence tokens rather than vocabulary rows. `model.fused_lm_head_chunk_size` is no longer accepted; switch configs to `model.fused_lm_head_token_chunk_size` explicitly. (2026-03-09)
