@@ -71,6 +71,8 @@ class WandbMonitor(Monitor):
             settings=settings,
         )
 
+        wandb.define_metric("*", step_metric="step")
+
         # Optionally, initialize sample logging attributes
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
@@ -96,7 +98,9 @@ class WandbMonitor(Monitor):
             return
         if not self.enabled:
             return
-        wandb.log(metrics, step=step)
+        if step is not None:
+            metrics = {**metrics, "step": step}
+        wandb.log(metrics)
 
     def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
         """Logs rollouts to W&B table."""
@@ -141,7 +145,7 @@ class WandbMonitor(Monitor):
             self.samples_table.add_data(*sample.values())
             self.samples.append(sample)
 
-        wandb.log({"samples": self.samples_table}, step=step)
+        wandb.log({"samples": self.samples_table, "step": step})
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
@@ -169,7 +173,7 @@ class WandbMonitor(Monitor):
     def flush(self, step: int) -> None:
         if not self.is_master or not self.enabled:
             return
-        wandb.log({}, step=step, commit=True)
+        wandb.log({"step": step}, commit=True)
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to W&B table."""
