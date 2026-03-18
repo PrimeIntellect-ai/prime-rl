@@ -84,7 +84,15 @@ class PrimeMonitor(Monitor):
         assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
 
-        api_key = os.getenv(config.api_key_var) or PrimeConfig().api_key or None
+        api_key = os.getenv(config.api_key_var)
+        if api_key is None:
+            try:
+                prime_config = PrimeConfig()
+                api_key = prime_config.api_key
+            except Exception as e:
+                self.logger.warning(f"Failed to load Prime CLI config: {e}")
+                api_key = None
+
         if not api_key:
             self.logger.warning(
                 f"API key not found. Set {config.api_key_var} environment variable or run `prime login`. "
@@ -135,8 +143,14 @@ class PrimeMonitor(Monitor):
             )
             return None
 
-        prime_config = PrimeConfig()
-        team_id = config.team_id or prime_config.team_id
+        team_id = config.team_id
+        if team_id is None:
+            try:
+                prime_config = PrimeConfig()
+                team_id = prime_config.team_id
+            except Exception as e:
+                self.logger.warning(f"Failed to load Prime CLI config: {e}")
+                team_id = None
 
         model = getattr(run_config, "model", None) if run_config else None
         environments = getattr(run_config, "env", None) if run_config else None
