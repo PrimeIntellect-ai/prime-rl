@@ -1,7 +1,7 @@
 import pickle
 import time
 from pathlib import Path
-from typing import Callable, Generator, cast
+from typing import Generator, cast
 
 import torch
 import torch.nn as nn
@@ -123,66 +123,33 @@ class NCCLWeightBroadcastSender:
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
-        preprocess_fn = self._get_preprocess_fn(model)
-        self._broadcast_with_preprocess_fn(
-            state_dict=state_dict,
-            num_layers=num_layers,
-            layer_prefix=layer_prefix,
-            preprocess_fn=preprocess_fn,
-        )
+        if self.quantize_in_weight_transfer:
+            preprocess_fn = lambda layer_state, layer_idx: (
+                layer_state
+                if layer_idx < 0
+                else model.convert_layer_to_vllm_kernel(layer_state, layer_idx, quantize_fp8=True)
+            )
+        else:
+
+            def preprocess_fn(layer_state: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+                if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state):
+                    model.convert_layer_to_hf(layer_state, layer_idx)
+                    return layer_state
+                from transformers.core_model_loading import revert_weight_conversion
+
+                return revert_weight_conversion(model, layer_state)
+
+        for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
+            layer_state_dict = self._resolve_dtensors(layer_state_dict)
+            layer_state_dict = preprocess_fn(layer_state_dict, layer_id)
+            if self.world.is_master:
+                broadcast_state_dict(layer_state_dict, self.communicator)
 
     def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         for key, value in list(state_dict.items()):
             if isinstance(value, DTensor):
                 state_dict[key] = cast(DTensor, value.to(self.dtype)).full_tensor()
         return state_dict
-
-    def _get_preprocess_fn(
-        self,
-        model: nn.Module,
-    ) -> Callable[[dict[str, Tensor], int], dict[str, Tensor]]:
-        if self.quantize_in_weight_transfer:
-            if not isinstance(model, PreTrainedModelPrimeRL):
-                raise ValueError(
-                    "quantize_in_weight_transfer requires a custom PrimeRL model implementation "
-                    f"(got {type(model).__name__})."
-                )
-            if model.__class__.convert_layer_to_vllm_kernel is PreTrainedModelPrimeRL.convert_layer_to_vllm_kernel:
-                raise ValueError(
-                    "quantize_in_weight_transfer requires model.convert_layer_to_vllm_kernel to be implemented."
-                )
-
-            def preprocess_kernel(layer_state: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-                if layer_idx < 0:
-                    return layer_state
-                return model.convert_layer_to_vllm_kernel(layer_state, layer_idx, quantize_fp8=True)
-
-            return preprocess_kernel
-
-        def preprocess_checkpoint(layer_state: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state):
-                model.convert_layer_to_hf(layer_state, layer_idx)
-                return layer_state
-            from transformers.core_model_loading import revert_weight_conversion
-
-            return revert_weight_conversion(model, layer_state)
-
-        return preprocess_checkpoint
-
-    def _broadcast_with_preprocess_fn(
-        self,
-        state_dict: dict[str, Tensor],
-        num_layers: int,
-        layer_prefix: str,
-        preprocess_fn: Callable[[dict[str, Tensor], int], dict[str, Tensor]],
-    ) -> None:
-        """Broadcast weights after applying preprocess_fn on each layer state dict."""
-        for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
-            layer_state_dict = self._resolve_dtensors(layer_state_dict)
-            layer_state_dict = preprocess_fn(layer_state_dict, layer_id)
-
-            if self.world.is_master:
-                broadcast_state_dict(layer_state_dict, self.communicator)
 
 
 class NCCLWeightBroadcast(WeightBroadcast):

@@ -211,4 +211,3 @@ def test_rl_quantize_in_weight_transfer_requires_custom_impl():
                 },
             }
         )
-
