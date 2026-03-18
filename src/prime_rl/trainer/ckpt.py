@@ -181,19 +181,7 @@ class CheckpointManager:
         # Load sharded state
         app_state = AppState(model, optimizers, scheduler, progress)
         state_dict = {"app": app_state}
-        try:
-            dcp_load(state_dict=state_dict, checkpoint_id=path)
-        except RuntimeError as e:
-            msg = str(e)
-            if "Missing key in checkpoint state_dict: app.optimizers.state." not in msg:
-                raise
-            self.logger.warning(
-                "Optimizer state in checkpoint is missing keys (e.g. frozen/unused params). "
-                "Retrying checkpoint load without optimizer state."
-            )
-            # Load model/scheduler/progress while keeping freshly initialized optimizer state.
-            state_dict = {"app": AppState(model, [], scheduler, progress)}
-            dcp_load(state_dict=state_dict, checkpoint_id=path)
+        dcp_load(state_dict=state_dict, checkpoint_id=path)
 
         # Load the dataloader
         if dataloader is not None:
