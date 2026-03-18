@@ -413,7 +413,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             if out.shape[0] < len(permuted_indices):
                 num_padding = len(permuted_indices) - out.shape[0]
                 out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
-            out_unpermuted = out.new_empty(input_shape)
+            out_unpermuted = out.new_zeros(input_shape)
             out_unpermuted[permuted_indices, :] = out
             out = out_unpermuted[:-1]
 
