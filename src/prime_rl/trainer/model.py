@@ -170,6 +170,27 @@ def freeze_moe_router(model: nn.Module) -> None:
     logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
+def freeze_sparse_indexer(model: nn.Module) -> None:
+    """Freeze sparse indexer parameters when present."""
+    logger = get_logger()
+    language_model = get_language_model(model)
+    num_frozen = 0
+
+    for layer in language_model.layers:
+        self_attn = getattr(layer, "self_attn", None)
+        if self_attn is None:
+            continue
+        indexer = getattr(self_attn, "indexer", None)
+        if indexer is None:
+            continue
+        for param in indexer.parameters():
+            param.requires_grad = False
+            num_frozen += 1
+
+    if num_frozen > 0:
+        logger.info(f"Froze {num_frozen} sparse indexer parameters")
+
+
 def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
@@ -738,6 +759,10 @@ def setup_model(
     # Apply LoRA before FSDP setup
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
+
+    # Indexer weights are intended to stay fixed; freezing by default keeps
+    # optimizer state consistent across resume boundaries.
+    freeze_sparse_indexer(model)
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
