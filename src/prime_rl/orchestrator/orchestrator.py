@@ -327,8 +327,10 @@ async def orchestrate(config: OrchestratorConfig):
     logger.success("Inference pool ready")
 
     # Start inference metrics collector
-    inference_metrics_collector = InferenceMetricsCollector(inference_pool)
-    await inference_metrics_collector.start()
+    inference_metrics_collector = None
+    if config.client.scrape_metrics:
+        inference_metrics_collector = InferenceMetricsCollector(inference_pool)
+        await inference_metrics_collector.start()
 
     # Check health of teacher inference server if configured
     if config.teacher_model and teacher_inference_pool:
@@ -614,7 +616,8 @@ async def orchestrate(config: OrchestratorConfig):
         step_time = time.perf_counter() - step_start_time
 
         # Snapshot inference server metrics
-        await inference_metrics_collector.collect()
+        if inference_metrics_collector is not None:
+            await inference_metrics_collector.collect()
 
         # Gather metrics in dataframes
         results_df = pd.DataFrame(
@@ -737,7 +740,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Rollout filter metrics
             **filter_metrics,
             # Inference server metrics
-            **inference_metrics_collector.get_metrics(),
+            **(inference_metrics_collector.get_metrics() if inference_metrics_collector is not None else {}),
             # W&B axis
             "step": progress.step,
         }
@@ -870,7 +873,8 @@ async def orchestrate(config: OrchestratorConfig):
     event_loop_lag_monitor_task.cancel()
 
     # Stop inference metrics collector
-    await inference_metrics_collector.stop()
+    if inference_metrics_collector is not None:
+        await inference_metrics_collector.stop()
 
     # Shutdown env processes (also registered as atexit handler for crash safety)
     atexit.unregister(_cleanup_env_processes)

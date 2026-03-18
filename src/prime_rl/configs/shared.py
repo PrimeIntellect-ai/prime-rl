@@ -189,6 +189,13 @@ class ClientConfig(BaseConfig):
         ),
     ] = 1
 
+    scrape_metrics: Annotated[
+        bool,
+        Field(
+            description="Whether to periodically scrape Prometheus /metrics from inference servers and log per-engine statistics (running requests, waiting requests, KV cache usage) to W&B.",
+        ),
+    ] = True
+
     elastic: Annotated[
         ElasticConfig | None,
         Field(
