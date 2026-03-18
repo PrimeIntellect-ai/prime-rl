@@ -9,6 +9,7 @@ import pandas as pd
 import verifiers as vf
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
+from wandb.errors import CommError
 
 from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.config import BaseConfig
@@ -58,18 +59,32 @@ class WandbMonitor(Monitor):
             self.logger.info(f"Using shared W&B mode ({label=}, {primary=})")
         else:
             run_id = None
+            primary = False
             settings = wandb.Settings(
                 mode="offline" if config.offline else "online",
             )
 
-        self.wandb = wandb.init(
-            id=run_id,
-            project=config.project,
-            name=config.name,
-            dir=output_dir,
-            config=run_config.model_dump() if run_config else None,
-            settings=settings,
-        )
+        def init_wandb(max_retries: int):
+            for attempt in range(max_retries):
+                try:
+                    return wandb.init(
+                        id=run_id,
+                        project=config.project,
+                        name=config.name,
+                        dir=output_dir,
+                        config=run_config.model_dump() if run_config else None,
+                        settings=settings,
+                    )
+                except CommError:
+                    if attempt + 1 == max_retries:
+                        raise
+                    self.logger.info(
+                        f"Shared W&B run not yet created by primary, retrying in 10s ({attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(10)
+
+        max_retries = 1 if not shared_mode or primary else 30
+        self.wandb = init_wandb(max_retries)
 
         wandb.define_metric("*", step_metric="step")
 
