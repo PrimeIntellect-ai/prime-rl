@@ -189,13 +189,6 @@ class ClientConfig(BaseConfig):
         ),
     ] = 1
 
-    collect_inference_metrics: Annotated[
-        bool,
-        Field(
-            description="Whether to periodically collect Prometheus /metrics from inference servers and log per-engine statistics (running requests, waiting requests, KV cache usage) to W&B.",
-        ),
-    ] = True
-
     elastic: Annotated[
         ElasticConfig | None,
         Field(

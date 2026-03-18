@@ -328,7 +328,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Start inference metrics collector
     inference_metrics_collector = None
-    if config.client.collect_inference_metrics:
+    if config.collect_inference_metrics:
         inference_metrics_collector = InferenceMetricsCollector(inference_pool)
         await inference_metrics_collector.start()
 
