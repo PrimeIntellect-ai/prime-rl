@@ -1,5 +1,3 @@
-import pytest
-
 from prime_rl.utils.usage_signing import sign_usage, verify_usage
 
 SECRET = "test-secret-key-12345"
