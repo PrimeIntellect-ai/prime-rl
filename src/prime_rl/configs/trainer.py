@@ -519,6 +519,13 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = False
 
+    skip_gather_master_weights: Annotated[
+        bool,
+        Field(
+            description="Whether to skip saving HF-compatible weight checkpoints via gather on master rank.",
+        ),
+    ] = False
+
 
 class DefaultLossConfig(BaseModel):
     """Config for the default loss."""
