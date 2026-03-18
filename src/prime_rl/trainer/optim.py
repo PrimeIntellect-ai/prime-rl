@@ -148,10 +148,11 @@ def _create_optimizer(
     """Create optimizer. If lr is None, uses config.lr."""
     if lr is None:
         lr = config.lr
+    trainable_params = [p for _, p in named_params if p.requires_grad]
     match config.type:
         case "sgd":
             return SGD(
-                params=[p for _, p in named_params],
+                params=trainable_params,
                 lr=lr,
                 weight_decay=config.weight_decay,
                 momentum=config.momentum,
@@ -159,7 +160,7 @@ def _create_optimizer(
             )
         case "adamw":
             return AdamW(
-                params=[p for _, p in named_params],
+                params=trainable_params,
                 lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
