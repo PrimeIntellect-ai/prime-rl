@@ -98,7 +98,8 @@ class InferenceMetricsCollector:
     def get_metrics(self) -> dict[str, float]:
         """Return per-server, per-engine running averages formatted for W&B logging.
 
-        Keys are structured as `inference/<metric_name>/server_<idx>_engine_<idx>`
+        Keys use 2 levels: `inference_<metric_name>/server_<idx>_engine_<idx>` so that
+        all servers and engines appear as lines on the same W&B panel per metric.
         """
         metrics: dict[str, float] = {}
         sorted_urls = sorted(self._active_urls)
@@ -110,7 +111,7 @@ class InferenceMetricsCollector:
             server_idx = url_to_idx[url]
             short_name = metric_name.removeprefix("vllm:")
             avg = sum(values) / len(values)
-            metrics[f"inference/{short_name}/server_{server_idx}_engine_{engine}"] = avg
+            metrics[f"inference_{short_name}/server_{server_idx}_engine_{engine}"] = avg
         return metrics
 
     async def stop(self):
