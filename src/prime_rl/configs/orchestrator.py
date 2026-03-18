@@ -551,17 +551,10 @@ class DefaultAdvantageConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["default"] = "default"
-    length_weighted_mean: bool = False
     length_shaping_alpha: Annotated[
         float | None,
         Field(description="Penalty coefficient for Group Relative Reward Rescaling (GR³). Recommended value: 0.33"),
     ] = None
-
-    @model_validator(mode="after")
-    def validate_length_shaping_alpha(self):
-        if self.length_shaping_alpha is not None and self.length_weighted_mean:
-            raise ValueError("Group Relative Reward scaling cannot be used in conjunction with length weighted mean")
-        return self
 
 
 class CustomAdvantageConfig(BaseModel):
