@@ -552,14 +552,14 @@ class DefaultAdvantageConfig(BaseModel):
 
     type: Literal["default"] = "default"
     length_weighted_mean: bool = False
-    gr3_alpha: Annotated[
+    length_shaping_alpha: Annotated[
         float | None,
-        Field(description="Penalty coefficient for Group Relative Reward Rescaling. Recommended value: 0.33"),
+        Field(description="Penalty coefficient for Group Relative Reward Rescaling (GR³). Recommended value: 0.33"),
     ] = None
 
     @model_validator(mode="after")
-    def validate_gr3_alpha(self):
-        if self.gr3_alpha is not None and self.length_weighted_mean:
+    def validate_length_shaping_alpha(self):
+        if self.length_shaping_alpha is not None and self.length_weighted_mean:
             raise ValueError("Group Relative Reward scaling cannot be used in conjunction with length weighted mean")
         return self
 
@@ -956,10 +956,10 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_gr3_requires_online_difficulty_filtering(self):
-        if isinstance(self.advantage, DefaultAdvantageConfig) and self.advantage.gr3_alpha is not None:
+    def validate_length_shaping_requires_online_difficulty_filtering(self):
+        if isinstance(self.advantage, DefaultAdvantageConfig) and self.advantage.length_shaping_alpha is not None:
             if not self.buffer.online_difficulty_filtering:
-                raise ValueError("Group Relative Reward scaling requires online difficulty filtering")
+                raise ValueError("Group Relative Reward (GR³) scaling requires online difficulty filtering")
         return self
 
     @model_validator(mode="after")
