@@ -484,37 +484,34 @@ def monkey_patch_multiproc_executor_init_order():
     if nnodes <= 1:
         return
 
-    from vllm.v1.executor.multiproc_executor import WorkerProc
+    import re
+    from pathlib import Path
+
+    from vllm.v1.executor import multiproc_executor
 
     logger = logging.getLogger(__name__)
 
-    _original_init = WorkerProc.__init__
+    source_file = Path(multiproc_executor.__file__)
+    source = source_file.read_text()
 
-    def _patched_init(self, *args, **kwargs):
-        # Temporarily replace _init_message_queues with a no-op so the
-        # original __init__ skips it. We'll call it ourselves after init_device().
-        _real_init_mq = self._init_message_queues.__func__ if hasattr(self._init_message_queues, "__func__") else None
+    old = (
+        "        self._init_message_queues(input_shm_handle, vllm_config)\n"
+        "        is_eep_new_worker = envs.VLLM_ELASTIC_EP_SCALE_UP_LAUNCH\n"
+        "        if not is_eep_new_worker:\n"
+        "            self.worker.init_device()"
+    )
+    new = (
+        "        is_eep_new_worker = envs.VLLM_ELASTIC_EP_SCALE_UP_LAUNCH\n"
+        "        if not is_eep_new_worker:\n"
+        "            self.worker.init_device()\n"
+        "        self._init_message_queues(input_shm_handle, vllm_config)"
+    )
 
-        captured_mq_args = []
-
-        def _capture_init_mq(*a, **kw):
-            captured_mq_args.append((a, kw))
-
-        # Use staticmethod to prevent Python's descriptor protocol from
-        # prepending self when called as self._init_message_queues(...)
-        WorkerProc._init_message_queues = staticmethod(_capture_init_mq)
-        try:
-            _original_init(self, *args, **kwargs)
-        finally:
-            if _real_init_mq is not None:
-                WorkerProc._init_message_queues = _real_init_mq
-
-        # Now call _init_message_queues with the captured args (after init_device has run)
-        for a, kw in captured_mq_args:
-            self._init_message_queues(*a, **kw)
-
-    WorkerProc.__init__ = _patched_init
-    logger.warning("PATCHED: WorkerProc.__init__ — swapped init_device/_init_message_queues order")
+    if old in source:
+        source_file.write_text(source.replace(old, new))
+        logger.warning("PATCHED (file): multiproc_executor — swapped init_device/_init_message_queues order")
+    else:
+        logger.warning("multiproc_executor patch: pattern not found (already patched or different version)")
 
 
 def monkey_patch_parallel_state_same_node():
@@ -539,47 +536,52 @@ def monkey_patch_parallel_state_same_node():
     if nnodes <= 1:
         return
 
-    import torch
+    import re
+    from pathlib import Path
+
     import vllm.distributed.parallel_state as ps_module
 
     logger = logging.getLogger(__name__)
 
-    def _patched_in_the_same_node_as(pg, source_rank=0):
-        is_pg = isinstance(pg, torch.distributed.ProcessGroup)
-        ws = torch.distributed.get_world_size(pg) if is_pg else pg.size()
-        rank = torch.distributed.get_rank(pg) if is_pg else pg.rank()
-        local_ws = torch.cuda.device_count()
+    source_file = Path(ps_module.__file__)
+    source = source_file.read_text()
 
-        # Map sub-group ranks to global ranks via get_process_group_ranks
-        pg_ranks = None
-        if is_pg and ws != torch.distributed.get_world_size():
-            try:
-                pg_ranks = torch.distributed.get_process_group_ranks(pg)
-            except Exception:
-                pass
+    marker = "def in_the_same_node_as("
+    if marker not in source:
+        logger.warning("parallel_state patch: function not found (already patched or different version)")
+        return
 
-        def _to_global(r):
-            if pg_ranks and r < len(pg_ranks):
-                return pg_ranks[r]
-            return r
+    replacement = '''\
+def in_the_same_node_as(pg, source_rank=0):
+    """Patched: local computation instead of gloo broadcast (prime-rl)."""
+    import torch
+    is_pg = isinstance(pg, torch.distributed.ProcessGroup)
+    ws = torch.distributed.get_world_size(pg) if is_pg else pg.size()
+    local_ws = torch.cuda.device_count()
+    pg_ranks = None
+    if is_pg and ws != torch.distributed.get_world_size():
+        try:
+            pg_ranks = torch.distributed.get_process_group_ranks(pg)
+        except Exception:
+            pass
 
-        src_global = _to_global(source_rank)
-        src_node = src_global // local_ws
-        result = [(_to_global(r) // local_ws) == src_node for r in range(ws)]
-        logger.warning(
-            "in_the_same_node_as: rank=%d global=%d ws=%d local_ws=%d src_node=%d same=%d pg_ranks=%s",
-            rank,
-            _to_global(rank),
-            ws,
-            local_ws,
-            src_node,
-            sum(result),
-            pg_ranks,
-        )
-        return result
+    def _g(r):
+        return pg_ranks[r] if pg_ranks and r < len(pg_ranks) else r
 
-    ps_module.in_the_same_node_as = _patched_in_the_same_node_as
-    logger.warning("PATCHED: parallel_state.in_the_same_node_as — local computation, no gloo")
+    src_node = _g(source_rank) // local_ws
+    return [(_g(r) // local_ws) == src_node for r in range(ws)]
+
+'''
+
+    source = re.sub(
+        r"def in_the_same_node_as\(.*?(?=\ndef |\nclass |\Z)",
+        replacement,
+        source,
+        count=1,
+        flags=re.DOTALL,
+    )
+    source_file.write_text(source)
+    logger.warning("PATCHED (file): parallel_state.in_the_same_node_as — local computation, no gloo")
 
 
 def monkey_patch_dcp_cuda_graphs():
