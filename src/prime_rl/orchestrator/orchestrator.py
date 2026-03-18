@@ -140,11 +140,6 @@ async def orchestrate(config: OrchestratorConfig):
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
         )
 
-    # Build rollout filters
-    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
-    if rollout_filters:
-        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
-
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
     monitor = setup_monitor(
@@ -160,6 +155,11 @@ async def orchestrate(config: OrchestratorConfig):
     if config.heartbeat is not None:
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat.url)
+
+    # Build rollout filters
+    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
+    if rollout_filters:
+        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
 
     # Load environment and extract dataset
     logger.info(
