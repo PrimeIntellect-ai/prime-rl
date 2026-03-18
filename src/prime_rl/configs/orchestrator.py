@@ -857,6 +857,13 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = True
 
+    collect_inference_metrics: Annotated[
+        bool,
+        Field(
+            description="Whether to periodically collect Prometheus /metrics from inference servers and log per-engine statistics (running requests, waiting requests, KV cache usage) to W&B.",
+        ),
+    ] = True
+
     @model_validator(mode="after")
     def validate_unique_filter_types(self):
         types = [f.type for f in self.filters]

@@ -11,6 +11,7 @@ import tomli_w
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
+from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout, offload_images_to_disk
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
@@ -140,11 +141,6 @@ async def orchestrate(config: OrchestratorConfig):
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
         )
 
-    # Build rollout filters
-    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
-    if rollout_filters:
-        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
-
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
     monitor = setup_monitor(
@@ -160,6 +156,11 @@ async def orchestrate(config: OrchestratorConfig):
     if config.heartbeat is not None:
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat.url)
+
+    # Build rollout filters
+    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
+    if rollout_filters:
+        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
 
     # Load environment and extract dataset
     logger.info(
@@ -324,6 +325,12 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info("Waiting for inference pool to be ready")
     await inference_pool.wait_for_ready(config.model.name)
     logger.success("Inference pool ready")
+
+    # Start inference metrics collector
+    inference_metrics_collector = None
+    if config.collect_inference_metrics:
+        inference_metrics_collector = InferenceMetricsCollector(inference_pool)
+        await inference_metrics_collector.start()
 
     # Check health of teacher inference server if configured
     if config.teacher_model and teacher_inference_pool:
@@ -608,6 +615,10 @@ async def orchestrate(config: OrchestratorConfig):
 
         step_time = time.perf_counter() - step_start_time
 
+        # Snapshot inference server metrics
+        if inference_metrics_collector is not None:
+            await inference_metrics_collector.collect()
+
         # Gather metrics in dataframes
         results_df = pd.DataFrame(
             {
@@ -728,6 +739,8 @@ async def orchestrate(config: OrchestratorConfig):
             **event_loop_lag_monitor.get_metrics(),
             # Rollout filter metrics
             **filter_metrics,
+            # Inference server metrics
+            **(inference_metrics_collector.get_metrics() if inference_metrics_collector is not None else {}),
             # W&B axis
             "step": progress.step,
         }
@@ -794,9 +807,6 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        # Flush all accumulated metrics for this step
-        monitor.flush(step=progress.step)
-
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
@@ -861,6 +871,10 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
+
+    # Stop inference metrics collector
+    if inference_metrics_collector is not None:
+        await inference_metrics_collector.stop()
 
     # Shutdown env processes (also registered as atexit handler for crash safety)
     atexit.unregister(_cleanup_env_processes)
