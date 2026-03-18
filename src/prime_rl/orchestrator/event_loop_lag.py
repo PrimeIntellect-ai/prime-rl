@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 from time import perf_counter
 
 import numpy as np
@@ -25,12 +26,11 @@ class EventLoopLagMonitor:
             and warn_p90_lag_threshold > 0
         )
         self.interval = interval
-        self.max_window_size = max_window_size
         self.warn_max_lag_threshold = warn_max_lag_threshold
         self.warn_med_lag_threshold = warn_med_lag_threshold
         self.warn_p90_lag_threshold = warn_p90_lag_threshold
         self.logger = get_logger()
-        self.lags = []
+        self.lags: deque[float] = deque(maxlen=max_window_size)
 
     async def measure_lag(self):
         """Measures event loop lag by asynchronously sleeping for interval seconds"""
@@ -45,19 +45,16 @@ class EventLoopLagMonitor:
         while True:
             lag = await self.measure_lag()
             self.lags.append(lag)
-            if len(self.lags) > self.max_window_size:
-                self.lags.pop(0)
 
     def reset(self):
         """Reset the list of measured lags."""
-        self.lags = []
+        self.lags.clear()
 
     def get_metrics(self) -> dict[str, float]:
         """Compute metrics for the event loop lag over the last window_size measurements."""
-        window_size = int(min(self.max_window_size, len(self.lags)))
-        if window_size <= 0:
+        if not self.lags:
             return {}
-        last_lags = np.array(self.lags[-window_size:])
+        last_lags = np.array(self.lags)
         mean_lag = float(np.mean(last_lags))
         med_lag = float(np.median(last_lags))
         p90_lag = float(np.percentile(last_lags, 90))

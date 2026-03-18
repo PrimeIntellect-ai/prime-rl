@@ -11,6 +11,7 @@ import tomli_w
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
+from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout, offload_images_to_disk
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
@@ -125,6 +126,10 @@ async def orchestrate(config: OrchestratorConfig):
         )
     else:
         teacher_inference_pool = None
+
+    # Start inference metrics collector
+    inference_metrics_collector = InferenceMetricsCollector(inference_pool)
+    await inference_metrics_collector.start()
 
     # Check if this is a vision-language model (used throughout for VLM-specific paths)
     is_vlm = is_vlm_model(config.model.name)
@@ -608,6 +613,9 @@ async def orchestrate(config: OrchestratorConfig):
 
         step_time = time.perf_counter() - step_start_time
 
+        # Snapshot inference server metrics
+        await inference_metrics_collector.collect()
+
         # Gather metrics in dataframes
         results_df = pd.DataFrame(
             {
@@ -728,6 +736,8 @@ async def orchestrate(config: OrchestratorConfig):
             **event_loop_lag_monitor.get_metrics(),
             # Rollout filter metrics
             **filter_metrics,
+            # Inference server metrics
+            **inference_metrics_collector.get_metrics(),
             # W&B axis
             "step": progress.step,
         }
@@ -858,6 +868,9 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
+
+    # Stop inference metrics collector
+    await inference_metrics_collector.stop()
 
     # Shutdown env processes (also registered as atexit handler for crash safety)
     atexit.unregister(_cleanup_env_processes)
