@@ -92,15 +92,13 @@ class WandbMonitor(Monitor):
             self.logger.debug(f"Found WANDB_ARGS in environment variables {wandb_args}")
             sys.argv = json.loads(wandb_args)
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int) -> None:
         self.history.append(metrics)
         if not self.is_master:
             return
         if not self.enabled:
             return
-        if step is not None:
-            metrics = {**metrics, "step": step}
-        wandb.log(metrics)
+        wandb.log({**metrics, "step": step})
 
     def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
         """Logs rollouts to W&B table."""
@@ -169,11 +167,6 @@ class WandbMonitor(Monitor):
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         """Log distributions (no-op for W&B)."""
         pass
-
-    def flush(self, step: int) -> None:
-        if not self.is_master or not self.enabled:
-            return
-        wandb.log({"step": step}, commit=True)
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to W&B table."""
