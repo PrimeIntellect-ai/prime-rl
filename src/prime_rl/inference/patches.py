@@ -503,7 +503,7 @@ def monkey_patch_multiproc_executor_init_order():
         "        is_eep_new_worker = envs.VLLM_ELASTIC_EP_SCALE_UP_LAUNCH\n"
         "        if not is_eep_new_worker:\n"
         "            self.worker.init_device()\n"
-        "        self._init_message_queues(input_shm_handle, vllm_config)"
+        "            self._init_message_queues(input_shm_handle, vllm_config)"
     )
 
     if old in source:
