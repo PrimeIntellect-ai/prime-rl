@@ -57,6 +57,9 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 
+# W&B shared mode: single run for trainer + orchestrator
+export WANDB_SHARED_MODE=1
+
 # Networking
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$SLURM_JOB_NUM_NODES} )
@@ -155,7 +158,7 @@ else
         ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.base-url $INFER_URLS"
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
-        {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
+        {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log &
     fi
 {%- else %}
@@ -169,7 +172,7 @@ else
 
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log
 
-    uv run torchrun \
+    WANDB_SHARED_LABEL=trainer uv run torchrun \
         --nnodes=$NUM_TRAIN_NODES \
         --nproc-per-node=$GPUS_PER_NODE \
         --node-rank=$TRAIN_NODE_RANK \

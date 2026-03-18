@@ -34,6 +34,10 @@ class WandbMonitor(Monitor):
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
         self.enabled = self.config is not None
         self.is_master = rank == 0
+        self.shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1"
+        self.shared_label = os.environ.get("WANDB_SHARED_LABEL", "unknown")
+        self.shared_primary = self.shared_label == "orchestrator"
+
         if not self.enabled or not self.is_master:
             if not self.is_master:
                 self.logger.warning(f"Skipping {self.__class__.__name__} initialization from non-master rank ({rank})")
@@ -42,14 +46,28 @@ class WandbMonitor(Monitor):
         assert config is not None
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
         self._maybe_overwrite_wandb_command()
+
+        if self.shared_mode:
+            self.logger.info(f"Using shared W&B mode (label={self.shared_label}, primary={self.shared_primary})")
+            settings = wandb.Settings(
+                mode="shared",
+                x_label=self.shared_label,
+                x_primary=self.shared_primary,
+                x_update_finish_state=self.shared_primary,
+            )
+        else:
+            settings = wandb.Settings(
+                mode="offline" if config.offline else "online",
+                resume="allow",
+            )
+
         self.wandb = wandb.init(
             project=config.project,
             name=config.name,
             id=config.id,
             dir=output_dir,
-            resume="allow",
             config=run_config.model_dump() if run_config else None,
-            mode="offline" if config.offline else None,
+            settings=settings,
         )
 
         # Optionally, initialize sample logging attributes

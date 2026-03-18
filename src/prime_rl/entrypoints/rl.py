@@ -132,6 +132,11 @@ def rl_local(config: RLConfig):
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
+    # Build shared W&B env vars for subprocesses
+    wandb_shared_env: dict[str, str] = {}
+    if config.wandb and config.wandb.shared:
+        wandb_shared_env["WANDB_SHARED_MODE"] = "1"
+
     # Check for existing processes on GPUs
     all_gpu_ids = list(set(infer_gpu_ids + trainer_gpu_ids + teacher_gpu_ids))
     check_gpus_available(all_gpu_ids)
@@ -254,6 +259,8 @@ def rl_local(config: RLConfig):
                 stderr=log_file,
                 env={
                     **os.environ,
+                    **wandb_shared_env,
+                    "WANDB_SHARED_LABEL": "orchestrator",
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
                     "WANDB_ARGS": json.dumps(start_command),
@@ -300,6 +307,8 @@ def rl_local(config: RLConfig):
                 trainer_cmd,
                 env={
                     **os.environ,
+                    **wandb_shared_env,
+                    "WANDB_SHARED_LABEL": "trainer",
                     "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
                     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
                     "LOGURU_FORCE_COLORS": "1",
