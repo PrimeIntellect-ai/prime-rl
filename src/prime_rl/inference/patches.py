@@ -609,9 +609,11 @@ def monkey_patch_dcp_cuda_graphs():
     from vllm.v1.attention.backends.flash_attn import (
         FlashAttentionImpl,
         FlashAttentionMetadata,
-        MetadataBuilder,
         flash_attn_varlen_func,
         merge_attn_states,
+    )
+    from vllm.v1.attention.backends.flash_attn import (
+        FlashAttentionMetadataBuilder as MetadataBuilder,
     )
     from vllm.v1.attention.backends.utils import get_dcp_group
 
