@@ -74,7 +74,7 @@ class InferenceMetricsCollector:
                 response.raise_for_status()
                 return url, parse_prometheus_text(response.text, self.METRICS)
             except Exception as e:
-                self.logger.warning(f"Failed to fetch metrics from {url}: {e}")
+                self.logger.debug(f"Failed to fetch metrics from {url}: {e!r}")
                 return url, None
 
         results = await asyncio.gather(*[fetch(client) for client in admin_clients])
