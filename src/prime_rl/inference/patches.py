@@ -500,7 +500,9 @@ def monkey_patch_multiproc_executor_init_order():
         def _capture_init_mq(*a, **kw):
             captured_mq_args.append((a, kw))
 
-        WorkerProc._init_message_queues = _capture_init_mq
+        # Use staticmethod to prevent Python's descriptor protocol from
+        # prepending self when called as self._init_message_queues(...)
+        WorkerProc._init_message_queues = staticmethod(_capture_init_mq)
         try:
             _original_init(self, *args, **kwargs)
         finally:
@@ -683,9 +685,8 @@ def monkey_patch_dcp_cuda_graphs():
             # FA3 output buffers
             self._dcp_context_out = torch.empty(n, H_full, D, dtype=dt, device="cuda")
             self._dcp_query_out = torch.empty(n, H_local, D, dtype=dt, device="cuda")
-            # LSE buffers (FA returns [H, B], we need [B, H] contiguous)
+            # LSE buffer for context attention (FA returns [H, B], we need [B, H] contiguous)
             self._dcp_ctx_lse_bh = torch.empty(n, H_full, dtype=torch.float32, device="cuda")
-            self._dcp_qry_lse_bh = torch.empty(n, H_local, dtype=torch.float32, device="cuda")
             # correct_attn_out output LSE: [B, H_full]
             self._dcp_lse_corrected = torch.empty(n, H_full, dtype=torch.float32, device="cuda")
             # flat buffer for corrected context LSE, reshaped to [H_local, B] per step
@@ -832,6 +833,7 @@ def monkey_patch_dcp_cuda_graphs():
             query_attn_out,
             query_lse,
         )
+        return output
 
     FlashAttentionImpl._forward_with_dcp = _patched_forward_with_dcp
     logger.warning("PATCHED: FlashAttentionImpl._forward_with_dcp — FULL CUDA graph safe")
