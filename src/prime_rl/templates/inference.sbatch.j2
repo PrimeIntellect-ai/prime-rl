@@ -190,7 +190,9 @@ srun bash -c '
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
+            --intra-node-data-parallel-size 1 \
             --worker-startup-timeout-secs 1200 \
+            --log-level debug \
             >> $ROUTER_LOG 2>&1 &
     fi
 
