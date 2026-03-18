@@ -44,9 +44,9 @@ class WandbMonitor(Monitor):
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
         self._maybe_overwrite_wandb_command()
 
-        shared_run_id = os.environ.get("WANDB_SHARED_RUN_ID")
-        if shared_run_id:
-            run_id = shared_run_id
+        shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1"
+        if shared_mode:
+            run_id = os.environ.get("WANDB_SHARED_RUN_ID")
             label = os.environ.get("WANDB_SHARED_LABEL")
             primary = label == "orchestrator"
             settings = wandb.Settings(

@@ -445,7 +445,6 @@ class RLConfig(BaseConfig):
                     self.trainer.wandb.name = self.wandb.name
                     self.orchestrator.wandb.name = self.wandb.name
             else:
-                # Legacy: separate runs with suffixed names
                 if self.wandb.name:
                     self.trainer.wandb.name = f"{self.wandb.name}-trainer"
                     self.orchestrator.wandb.name = f"{self.wandb.name}-orchestrator"

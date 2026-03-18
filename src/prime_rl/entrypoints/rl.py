@@ -135,6 +135,7 @@ def rl_local(config: RLConfig):
     # Build shared W&B env vars for subprocesses
     wandb_shared_env: dict[str, str] = {}
     if config.wandb and config.wandb.shared:
+        wandb_shared_env["WANDB_SHARED_MODE"] = "1"
         wandb_shared_env["WANDB_SHARED_RUN_ID"] = uuid.uuid4().hex
 
     # Check for existing processes on GPUs
@@ -410,6 +411,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+            wandb_shared=config.wandb is not None and config.wandb.shared,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
