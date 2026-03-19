@@ -101,8 +101,6 @@ def _tokenize_step_from_messages(
         prompt,
         add_generation_prompt=prompt_has_assistant_completion,
     )
-    full_ids = _render_messages(tokenizer, all_messages)
-
     full_ids, full_mask = build_incremental_token_mask(
         tokenizer,
         all_messages,
