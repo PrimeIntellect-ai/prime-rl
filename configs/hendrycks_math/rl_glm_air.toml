@@ -31,11 +31,11 @@ max_inflight_activations = 1
 freq = 1
 
 [trainer.optim]
-type = "muon"
+type = "adamw"
 lr = 1e-6
 
 [orchestrator]
-batch_size = 512
+batch_size = 128
 oversampling_factor = 4
 
 [orchestrator.sampling]
