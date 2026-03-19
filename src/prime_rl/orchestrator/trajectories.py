@@ -67,17 +67,20 @@ def _render_messages(
     tokenizer: PreTrainedTokenizer,
     messages: list[dict[str, Any]],
     add_generation_prompt: bool = False,
+    tools: list[dict[str, Any]] | None = None,
 ) -> list[int]:
     return render_messages(
         tokenizer,
         messages,
         add_generation_prompt=add_generation_prompt,
+        tools=tools,
     )
 
 
 def _tokenize_step_from_messages(
     step: vf.TrajectoryStep,
     tokenizer: PreTrainedTokenizer,
+    tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     prompt = _normalize_messages(step.get("prompt"), default_role="user")
     completion = _normalize_messages(step.get("completion"), default_role="assistant")
@@ -91,11 +94,13 @@ def _tokenize_step_from_messages(
         tokenizer,
         prompt,
         add_generation_prompt=prompt_has_assistant_completion,
+        tools=tools,
     )
     full_ids, full_mask = build_incremental_token_mask(
         tokenizer,
         all_messages,
         role_to_mask=lambda message: message.get("role") == "assistant",
+        tools=tools,
     )
 
     split_idx = _common_prefix_len(prompt_ids, full_ids)
@@ -115,18 +120,37 @@ def _tokenize_step_from_messages(
     }
 
 
+def _convert_tools_to_oai_format(tool_defs: list) -> list[dict[str, Any]] | None:
+    """Convert verifiers Tool objects to OAI function-calling format."""
+    if not tool_defs:
+        return None
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+                **({"strict": tool.strict} if tool.strict is not None else {}),
+            },
+        }
+        for tool in tool_defs
+    ]
+
+
 def pretokenize_rollout_trajectory(
     output: vf.RolloutOutput,
     tokenizer: PreTrainedTokenizer,
 ) -> bool:
     """Populate missing step tokens from prompt/completion messages."""
     logger = get_logger()
+    tools = _convert_tools_to_oai_format(output.get("tool_defs", []))
 
     for step_idx, step in enumerate(output["trajectory"]):
         if step["tokens"] is not None:
             continue
 
-        reconstructed = _tokenize_step_from_messages(step, tokenizer)
+        reconstructed = _tokenize_step_from_messages(step, tokenizer, tools=tools)
         if reconstructed["prompt_prefix_len"] < len(reconstructed["prompt_ids"]):
             logger.debug(
                 f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "
