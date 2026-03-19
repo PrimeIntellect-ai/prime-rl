@@ -196,6 +196,13 @@ class ClientConfig(BaseConfig):
         ),
     ] = None
 
+    router_url: Annotated[
+        str | None,
+        Field(
+            description="URL of a vllm-router for load-aware inference routing. When set with elastic mode, inference requests go through the router while admin operations (weight updates, LoRA loading) still go directly to discovered pods.",
+        ),
+    ] = None
+
     @property
     def is_elastic(self) -> bool:
         """Check if elastic mode is enabled."""
