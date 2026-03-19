@@ -97,7 +97,7 @@ def per_token_group_quant_fp8(
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=8, num_stages=3),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 128}, num_warps=8, num_stages=3),
     ],
-    key=["S_K", "N_OUT"],
+    key=["S"],
 )
 @triton.jit
 def _triton_fp8_indexer_kernel(
@@ -108,15 +108,11 @@ def _triton_fp8_indexer_kernel(
     Out,
     KS,
     KE,
-    S_K,
-    N_OUT,
-    K_START,
+    S,
     stride_qh,
     stride_qs,
     stride_ks,
     stride_ws,
-    stride_out_m,
-    stride_out_n,
     H: tl.constexpr,
     D: tl.constexpr,
     BLOCK_M: tl.constexpr,
@@ -129,29 +125,28 @@ def _triton_fp8_indexer_kernel(
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     offs_d = tl.arange(0, D)
 
-    offs_n_global = K_START + offs_n
-    mask_m = offs_m < S_K
-    mask_n = (offs_n < N_OUT) & (offs_n_global < S_K)
+    mask_m = offs_m < S
+    mask_n = offs_n < S
 
-    ks_vals = tl.load(KS + offs_m, mask=mask_m, other=S_K)
+    ks_vals = tl.load(KS + offs_m, mask=mask_m, other=S)
     ke_vals = tl.load(KE + offs_m, mask=mask_m, other=0)
 
     offs_m_64 = offs_m.to(tl.int64)
-    offs_n_local_64 = offs_n.to(tl.int64)
-    out_ptrs = Out + offs_m_64[:, None] * stride_out_m + offs_n_local_64[None, :] * stride_out_n
+    offs_n_64 = offs_n.to(tl.int64)
+    out_ptrs = Out + offs_m_64[:, None] * S + offs_n_64[None, :]
     out_mask = mask_m[:, None] & mask_n[None, :]
 
     ks_min = tl.min(ks_vals)
     ke_max = tl.max(ke_vals)
-    n_lo = K_START + pid_n * BLOCK_N
+    n_lo = pid_n * BLOCK_N
 
     if n_lo >= ke_max or n_lo + BLOCK_N <= ks_min:
         tl.store(out_ptrs, tl.full([BLOCK_M, BLOCK_N], float("-inf"), tl.float32), mask=out_mask)
         return
 
     # Clamp indices for FP8 loads (can't use mask+other with fp8 dtype)
-    offs_n_safe = tl.minimum(offs_n_global, S_K - 1)
-    offs_m_safe = tl.minimum(offs_m, S_K - 1)
+    offs_n_safe = tl.minimum(offs_n, S - 1)
+    offs_m_safe = tl.minimum(offs_m, S - 1)
 
     k_block = tl.load(K_fp8 + offs_n_safe[:, None] * stride_ks + offs_d[None, :])
     k_sc = tl.load(K_scales + offs_n_safe, mask=mask_n, other=0.0).to(tl.float32)
@@ -166,21 +161,32 @@ def _triton_fp8_indexer_kernel(
         scores = tl.maximum(scores, 0.0) * k_sc[None, :]
         acc += scores * w_h[:, None]
 
-    valid = (offs_n_global[None, :] >= ks_vals[:, None]) & (offs_n_global[None, :] < ke_vals[:, None])
+    valid = (offs_n[None, :] >= ks_vals[:, None]) & (offs_n[None, :] < ke_vals[:, None])
     acc = tl.where(valid, acc, float("-inf"))
 
     tl.store(out_ptrs, acc, mask=out_mask)
 
 
-FP8_INDEXER_DEFAULT_CHUNK_SIZE = 1024
-FP8_INDEXER_FULL_FALLBACK_MULTIPLIER = 12
+def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
+    """Triton FP8 indexer: UE8M0 quantization + fused scoring kernel + topk.
 
+    Args:
+        q: [S, H, D] bf16 query vectors per head
+        k: [S, D] bf16 key vectors (shared across heads)
+        w: [S, H] bf16 per-head weights
+        ks: [S] int32 sequence start per token
+        ke: [S] int32 causal end per token (= position + 1)
+        topk: number of top indices to return
+        weight_scale: constant scaling factor for weights
 
-def _prepare_fp8_inputs(q, k, w, weight_scale):
-    # NOTE: We don't use weight scale in this kernel as it produces higher KL mismatch for some reason.
-    # This is not a problem result-wise, as it is a constant multiplier.
+    Returns:
+        [S, topk] int32 selected token indices per query
+    """
+    # NOTE: We don't use weight scale in this kernel as it produces higher KL mismatch for some reason
+    # This is not a problem result-wise, as it is a constant multiplier
     _weight_scale = weight_scale
     S, H, D = q.shape
+    device = q.device
 
     q_flat = q.reshape(S * H, D).contiguous()
     q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True)
@@ -191,129 +197,40 @@ def _prepare_fp8_inputs(q, k, w, weight_scale):
     # Fold q_scale into weights
     q_scales = q_scales.view(S, H)
     w = w * q_scales
-    return q_fp8, k_fp8, k_scales, w
 
+    logits = torch.empty(S, S, dtype=torch.float32, device=device)
 
-def _run_fp8_indexer_kernel(q_fp8, k_fp8, k_scales, w, ks, ke, out, k_start):
-    S_K = q_fp8.shape[1]
-    n_out = out.shape[1]
-
-    grid = lambda meta: (  # noqa: E731
-        triton.cdiv(S_K, meta["BLOCK_M"]),
-        triton.cdiv(n_out, meta["BLOCK_N"]),
+    grid = lambda meta: (
+        triton.cdiv(S, meta["BLOCK_M"]),
+        triton.cdiv(S, meta["BLOCK_N"]),
     )
     _triton_fp8_indexer_kernel[grid](
         q_fp8,
         k_fp8,
         k_scales,
         w,
-        out,
+        logits,
         ks,
         ke,
-        S_K,
-        n_out,
-        k_start,
+        S,
         q_fp8.stride(0),
         q_fp8.stride(1),
         k_fp8.stride(0),
         w.stride(0),
-        out.stride(0),
-        out.stride(1),
-        H=q_fp8.shape[0],
-        D=q_fp8.shape[2],
+        H=H,
+        D=D,
     )
-
-
-def _mask_out_of_range_indices(indices, ks, ke, sentinel):
-    ks_exp = ks.unsqueeze(1).expand_as(indices)
-    ke_exp = ke.unsqueeze(1).expand_as(indices)
-    out_of_range = (indices < ks_exp) | (indices >= ke_exp)
-    return indices.masked_fill(out_of_range, sentinel)
-
-
-def _pad_indices(indices, topk, sentinel):
-    if indices.shape[1] >= topk:
-        return indices
-    padding = torch.full(
-        (indices.shape[0], topk - indices.shape[1]),
-        sentinel,
-        dtype=indices.dtype,
-        device=indices.device,
-    )
-    return torch.cat([indices, padding], dim=-1)
-
-
-def fp8_indexer_full(q, k, w, ks, ke, topk, weight_scale=1.0):
-    """Baseline FP8 indexer that materializes the full [S, S] logits matrix."""
-    S = q.shape[0]
-    device = q.device
-    q_fp8, k_fp8, k_scales, w = _prepare_fp8_inputs(q, k, w, weight_scale)
-
-    logits = torch.empty(S, S, dtype=torch.float32, device=device)
-    _run_fp8_indexer_kernel(q_fp8, k_fp8, k_scales, w, ks, ke, logits, k_start=0)
 
     actual_topk = min(topk, S)
     _, indices = torch.topk(logits, actual_topk, dim=-1)
-    indices = _pad_indices(indices, topk, S)
-    indices = _mask_out_of_range_indices(indices, ks, ke, S)
-    return indices.to(torch.int32)
+    if actual_topk < topk:
+        padding = torch.full((S, topk - actual_topk), S, dtype=indices.dtype, device=device)
+        indices = torch.cat([indices, padding], dim=-1)
 
+    # Replace cross-sequence indices with sentinel S (maps to zero-valued KV)
+    ks_exp = ks.unsqueeze(1).expand_as(indices)
+    ke_exp = ke.unsqueeze(1).expand_as(indices)
+    out_of_range = (indices < ks_exp) | (indices >= ke_exp)
+    indices = indices.masked_fill(out_of_range, S)
 
-def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0, chunk_size=None):
-    """Chunked Triton FP8 indexer that avoids allocating a full [S, S] score matrix.
-
-    Args:
-        q: [S, H, D] bf16 query vectors per head
-        k: [S, D] bf16 key vectors (shared across heads)
-        w: [S, H] bf16 per-head weights
-        ks: [S] int32 sequence start per token
-        ke: [S] int32 causal end per token (= position + 1)
-        topk: number of top indices to return
-        weight_scale: constant scaling factor for weights
-        chunk_size: key-axis chunk size. If None, uses a memory-safe default.
-
-    Returns:
-        [S, topk] int32 selected token indices per query
-    """
-    S = q.shape[0]
-    device = q.device
-    actual_topk = min(topk, S)
-
-    if actual_topk == 0:
-        return torch.empty((S, 0), dtype=torch.int32, device=device)
-
-    if chunk_size is None:
-        if S <= actual_topk * FP8_INDEXER_FULL_FALLBACK_MULTIPLIER:
-            return fp8_indexer_full(q, k, w, ks, ke, topk, weight_scale)
-        chunk_size = min(S, max(actual_topk, FP8_INDEXER_DEFAULT_CHUNK_SIZE))
-    elif chunk_size <= 0:
-        raise ValueError(f"chunk_size must be > 0, got {chunk_size}")
-    else:
-        chunk_size = min(chunk_size, S)
-
-    if chunk_size >= S:
-        return fp8_indexer_full(q, k, w, ks, ke, topk, weight_scale)
-
-    q_fp8, k_fp8, k_scales, w = _prepare_fp8_inputs(q, k, w, weight_scale)
-
-    running_scores = torch.full((S, actual_topk), float("-inf"), dtype=torch.float32, device=device)
-    running_indices = torch.full((S, actual_topk), S, dtype=torch.int32, device=device)
-
-    for chunk_start in range(0, S, chunk_size):
-        curr_chunk = min(chunk_size, S - chunk_start)
-        logits_chunk = torch.empty((S, curr_chunk), dtype=torch.float32, device=device)
-        _run_fp8_indexer_kernel(q_fp8, k_fp8, k_scales, w, ks, ke, logits_chunk, k_start=chunk_start)
-
-        chunk_topk = min(actual_topk, curr_chunk)
-        chunk_scores, chunk_local_indices = torch.topk(logits_chunk, chunk_topk, dim=-1)
-        chunk_indices = (chunk_local_indices + chunk_start).to(torch.int32)
-
-        merged_scores = torch.cat([running_scores, chunk_scores], dim=-1)
-        merged_indices = torch.cat([running_indices, chunk_indices], dim=-1)
-
-        running_scores, selected = torch.topk(merged_scores, actual_topk, dim=-1)
-        running_indices = torch.gather(merged_indices, dim=-1, index=selected)
-
-    indices = _pad_indices(running_indices, topk, S)
-    indices = _mask_out_of_range_indices(indices, ks, ke, S)
     return indices.to(torch.int32)
