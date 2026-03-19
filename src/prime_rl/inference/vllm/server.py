@@ -264,6 +264,24 @@ async def custom_init_app_state(
     # Setup the regular app state first (in-place)
     await init_app_state(engine_client, state, args, supported_tasks)
 
+    # Patch the tokenization handler to use default_chat_template_kwargs.
+    # vLLM's OpenAIServingTokenization hardcodes default_template_kwargs=None
+    # in create_tokenize, so the /tokenize endpoint ignores server-level kwargs
+    # like enable_thinking=false. This causes token mismatches in the TITO flow.
+    if hasattr(args, "default_chat_template_kwargs") and args.default_chat_template_kwargs:
+        tokenization = state.openai_serving_tokenization
+        if tokenization is not None:
+            tokenization._default_chat_template_kwargs = args.default_chat_template_kwargs
+            _orig_create_tokenize = tokenization.create_tokenize
+
+            async def _patched_create_tokenize(request, raw_request):
+                from vllm.entrypoints.serve.tokenize.protocol import TokenizeChatRequest
+                if isinstance(request, TokenizeChatRequest) and not request.chat_template_kwargs:
+                    request.chat_template_kwargs = tokenization._default_chat_template_kwargs
+                return await _orig_create_tokenize(request, raw_request)
+
+            tokenization.create_tokenize = _patched_create_tokenize
+
     # NOTE: Initialize the custom OpenAIServingChatWithTokens state here
     # TODO: Here, we repeat some calls done in init_app_state to be able to
     # correctly set up the OpenAIServingChatWithTokens state, which is a bit
@@ -291,6 +309,8 @@ async def custom_init_app_state(
     )
     if hasattr(args, "log_error_stack"):
         chat_kwargs["log_error_stack"] = args.log_error_stack
+    if hasattr(args, "default_chat_template_kwargs") and args.default_chat_template_kwargs:
+        chat_kwargs["default_chat_template_kwargs"] = args.default_chat_template_kwargs
 
     serving_chat = OpenAIServingChatWithTokens(
         engine_client,
