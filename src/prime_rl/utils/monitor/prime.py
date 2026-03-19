@@ -88,12 +88,8 @@ class PrimeMonitor(Monitor):
 
         api_key = os.getenv(config.api_key_var)
         if api_key is None:
-            try:
-                prime_config = PrimeConfig()
-                api_key = prime_config.api_key
-            except Exception as e:
-                self.logger.warning(f"Failed to load Prime CLI config: {e}")
-                api_key = None
+            prime_config = PrimeConfig()
+            api_key = prime_config.api_key
 
         if not api_key:
             self.logger.warning(
@@ -147,12 +143,8 @@ class PrimeMonitor(Monitor):
 
         team_id = config.team_id
         if team_id is None:
-            try:
-                prime_config = PrimeConfig()
-                team_id = prime_config.team_id
-            except Exception as e:
-                self.logger.warning(f"Failed to load Prime CLI config: {e}")
-                team_id = None
+            prime_config = PrimeConfig()
+            team_id = prime_config.team_id
 
         model = getattr(run_config, "model", None) if run_config else None
         environments = getattr(run_config, "env", None) if run_config else None
