@@ -13,7 +13,6 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.chat_template import (
-    build_incremental_token_mask,
     common_prefix_len,
     deserialize_tool_calls,
     normalize_messages,
@@ -131,6 +130,11 @@ def _tokenize_step_from_messages(
     prompt = _strip_message_content(_deserialize_tool_calls(prompt))
     completion = _strip_message_content(_deserialize_tool_calls(completion))
 
+    assert all(m.get("role") == "assistant" for m in completion), (
+        "Expected all completion messages to be assistant role for SFT distillation, "
+        f"got roles: {[m.get('role') for m in completion]}"
+    )
+
     if processor is not None:
         prompt = _prepare_messages_for_processor(prompt)
         completion = _prepare_messages_for_processor(completion)
@@ -144,19 +148,17 @@ def _tokenize_step_from_messages(
         tools=tools,
         processor=processor,
     )
-    full_ids, full_mask = build_incremental_token_mask(
+    full_ids = _render_messages(
         tokenizer,
         all_messages,
-        role_to_mask=lambda message: message.get("role") == "assistant",
         tools=tools,
-        collapse_consecutive_tool_messages=True,
         processor=processor,
     )
 
     split_idx = _common_prefix_len(prompt_ids, full_ids)
 
     completion_ids = full_ids[split_idx:]
-    completion_mask = full_mask[split_idx:]
+    completion_mask = [True] * len(completion_ids)
     completion_logprobs = [0.0] * len(completion_ids)
 
     return {
