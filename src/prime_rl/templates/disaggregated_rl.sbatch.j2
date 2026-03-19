@@ -134,6 +134,7 @@ srun bash -c '
 if [ "$NODE_RANK" -lt "$TOTAL_INFER_NODES" ]; then
     # ── Inference node (prefill or decode) ──
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
+
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     export GLOO_SOCKET_IFNAME=bond0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200

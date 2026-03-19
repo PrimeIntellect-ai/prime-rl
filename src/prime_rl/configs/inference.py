@@ -276,6 +276,13 @@ class InferenceConfig(BaseConfig):
         ),
     ] = False
 
+    use_deep_gemm: Annotated[
+        bool,
+        Field(
+            description="Force DeepGEMM FP8 kernels via VLLM_USE_DEEP_GEMM=1. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8).",
+        ),
+    ] = False
+
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )

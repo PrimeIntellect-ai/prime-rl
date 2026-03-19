@@ -125,7 +125,7 @@ math500 = { index = "primeintellect" }
 aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
 deep-ep = { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }
-deep-gemm = { url = "https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl" }
+deep-gemm = { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/deep_gemm-2.3.0+477618c-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 
 [tool.uv.extra-build-dependencies]
