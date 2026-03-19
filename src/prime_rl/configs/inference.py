@@ -138,6 +138,9 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 2
 
+    router_port: Annotated[int, Field(description="Port for the vllm-router.")] = 8000
+    backend_port: Annotated[int, Field(description="Port for vLLM backend instances.")] = 8100
+
 
 class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     """Configures a disaggregated prefill/decode inference deployment.

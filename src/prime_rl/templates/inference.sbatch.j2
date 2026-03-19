@@ -32,6 +32,9 @@ export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
 export ROUTER_PORT={{ router_port }}
 export RPC_PORT={{ data_parallel_rpc_port }}
+{%- elif num_nodes > 1 %}
+export ROUTER_PORT={{ router_port }}
+export BACKEND_PORT={{ backend_port }}
 {%- endif %}
 
 # Paths
@@ -79,15 +82,17 @@ for ((r=0; r<NUM_NODES/NODES_PER_REPLICA; r++)); do
 done
 export INFER_URLS
 export ALL_ROUTER_ARGS
-{%- else %}
-INFER_URLS=""
+{%- elif num_nodes > 1 %}
+# Single router on node 0, all nodes as backends
+INFER_URLS="http://${HOSTNAMES[0]}:${ROUTER_PORT}/v1"
+ROUTER_ARGS=""
 for host in ${HOSTNAMES[@]}; do
-    if [ -z "$INFER_URLS" ]; then
-        INFER_URLS="http://$host:{{ port }}/v1"
-    else
-        INFER_URLS="$INFER_URLS,http://$host:{{ port }}/v1"
-    fi
+    ROUTER_ARGS="$ROUTER_ARGS http://${host}:${BACKEND_PORT}"
 done
+export INFER_URLS
+export ROUTER_ARGS
+{%- else %}
+INFER_URLS="http://${HOSTNAMES[0]}:{{ port }}/v1"
 {%- endif %}
 echo "HOSTNAMES=${HOSTNAMES[@]}"
 echo "INFER_URLS=${INFER_URLS}"
@@ -206,6 +211,34 @@ srun bash -c '
         --parallel.dp $EP \
         --data-parallel-rpc-port $RPC_PORT \
         --vllm-extra "$VLLM_EXTRA" \
+        2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
+                      $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+{%- elif num_nodes > 1 %}
+    echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
+        | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
+              $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+
+    # Start router on node 0
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        ROUTER_LOG="$OUTPUT_DIR/slurm/latest_router.log"
+        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
+
+        vllm-router \
+            --policy round_robin \
+            --worker-urls $ROUTER_ARGS \
+            --host 0.0.0.0 \
+            --port $ROUTER_PORT \
+            --worker-startup-timeout-secs 1200 \
+            --log-level debug \
+            >> $ROUTER_LOG 2>&1 &
+    fi
+
+    uv run inference \
+        @ $CONFIG_PATH \
+        --server.host 0.0.0.0 \
+        --server.port $BACKEND_PORT \
         2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
                       $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
 {%- else %}

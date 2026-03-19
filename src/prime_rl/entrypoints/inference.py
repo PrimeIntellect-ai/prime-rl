@@ -44,6 +44,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         disaggregated=is_disaggregated,
     )
 
+    is_multi_node = config.deployment.type == "multi_node"
+
     if is_disaggregated:
         template_vars.update(
             num_prefill_nodes=config.deployment.num_prefill_nodes,
@@ -53,6 +55,11 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             router_port=config.deployment.router_port,
             data_parallel_rpc_port=config.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
+        )
+    elif is_multi_node:
+        template_vars.update(
+            router_port=config.deployment.router_port,
+            backend_port=config.deployment.backend_port,
         )
 
     script = template.render(**template_vars)

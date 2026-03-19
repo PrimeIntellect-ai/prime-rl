@@ -431,6 +431,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_infer_replicas=config.deployment.num_infer_replicas,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
+            router_port=getattr(config.inference.deployment, "router_port", 8000) if config.inference else 8000,
+            backend_port=getattr(config.inference.deployment, "backend_port", 8100) if config.inference else 8100,
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
