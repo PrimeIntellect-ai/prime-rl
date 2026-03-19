@@ -27,25 +27,7 @@ logger = get_logger()
 logger.info("Hello world")
 ```
 
-**How it works:**
-
-1. **`setup_logger(log_level, log_file)`** - Initializes the global logger exactly once:
-   - Creates an isolated loguru `Logger` instance (not the default `loguru.logger`) to prevent third-party code from hijacking our logs
-   - Adds a stdout handler with colorized output
-   - Optionally adds a file handler (deletes existing file first)
-   - Raises `RuntimeError` if called twice
-
-2. **`get_logger()`** - Returns the global logger instance:
-   - Raises `RuntimeError` if `setup_logger` hasn't been called yet
-   - Safe to call from any module after initialization
-
-3. **`reset_logger()`** - Resets the global logger to `None`:
-   - Used in subprocesses that inherit parent state (e.g., env workers)
-   - Used in tests between test cases
-
 ## RL Log File Structure
-
-For RL training, logs are organized by component:
 
 | Component | Log Path | Description |
 |-----------|----------|-------------|
@@ -63,19 +45,6 @@ Environment are run via `vf.EnvServer` in separate processes. By default, each e
 [orchestrator.log]
 level = "debug"           # Log level for prime-rl logger
 vf_level = "info"         # Log level for verifiers library
-```
-
-```
-output_dir/
-└── run_default/
-    └── train/
-        ├── {env_name_1}.log
-        ├── {env_name_2}.log
-        └── ...
-    └── eval/
-        ├── {env_name_1}.log
-        ├── {env_name_2}.log
-        └── ...
 ```
 
 ## Torchrun
@@ -102,4 +71,3 @@ uv run torchrun \
 ```
 
 This writes to `outputs/torchrun/{rdzv_id}/attempt_0/{rank}/{stdout,stderr}.log`.
-

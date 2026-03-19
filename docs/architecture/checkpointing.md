@@ -8,13 +8,13 @@ Checkpointing is non-standard due to trainer/orchestrator separation and natural
 
 The default checkpoint directory is `checkpoints` and each checkpoint step will live in a step subdirectory, i.e. `checkpoints/step_{step}`.
 
-Checkpointing is configured with the config key `--ckpt`. One can specify the interval (`--ckpt.interval`), whether to save checkpoints asynchronoously  (`--ckpt.save-async`), how many recent step checkpoints to keep on disk (`--ckpt.keep-last`), and keep checkpoints at every N steps permanently (`--ckpt.keep-interval`). By default, we do not checkpoint to save disk space. 
+Checkpointing is configured with the config key `--ckpt`. One can specify the interval (`--ckpt.interval`), whether to save checkpoints asynchronously (`--ckpt.save-async`), how many recent step checkpoints to keep on disk (`--ckpt.keep-last`), and keep checkpoints at every N steps permanently (`--ckpt.keep-interval`). By default, we do not checkpoint to save disk space.
 
 ## SFT
 
-Let's split the reverse text training SFT example, which does 40 steps by default, into two runs of 20 steps each. 
+Let's split the reverse text training SFT example, which does 40 steps by default, into two runs of 20 steps each.
 
-First, run the first 20 steps and append  `--ckpt` flag will enable the default checkpoint configuration which will only write the final checkpoint to disk, but no intermediate checkpoints.
+First, run the first 20 steps and append `--ckpt` flag will enable the default checkpoint configuration which will only write the final checkpoint to disk, but no intermediate checkpoints.
 
 ```bash
 uv run sft ... --max-steps 20 --ckpt
@@ -28,7 +28,7 @@ uv run sft ... --max-steps 40 --ckpt.resume-step 20
 
 ## RL
 
-Similarly, let's split the reverse text training RL example, which does 20 steps by default, into two runs of 10 steps each. 
+Similarly, let's split the reverse text training RL example, which does 20 steps by default, into two runs of 10 steps each.
 
 First, start the inference server. It can stay running across restarts as the orchestrator will automatically send the right checkpoint to the inference server when resuming.
 
@@ -36,7 +36,7 @@ First, start the inference server. It can stay running across restarts as the or
 uv run inference ...
 ```
 
-Then, run the first 20 steps and write the final checkpoint to disk
+Then, run the first 10 steps and write the final checkpoint to disk
 
 ```bash
 uv run rl \

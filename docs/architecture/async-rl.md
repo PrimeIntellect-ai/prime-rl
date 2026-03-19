@@ -1,8 +1,8 @@
-# Asynchronous Training
+# Asynchronous RL
 
 PRIME-RL implements asynchronous off-policy training, instead of the traditional synchronous on-policy training. This means that we allow inference to generate rollouts from a stale policy up to $k$ (in the code we call this `max_async_level`) steps ahead of the trainer. With `k=1` and trainer and inference step timings being equal, this allows to run without any idle time on either the trainer or inference. By default, we set `k=2` to allow overlap with a weight broadcast over the Internet, which is needed for decentralized training.
 
-![Two-Step Off-Policy Training](assets/two-step-off-policy.png)
+![Two-Step Off-Policy Training](../assets/two-step-off-policy.png)
 
 ## Loss Objective
 
@@ -17,8 +17,8 @@ Then, the optimization objective is given by
 $$
 \mathcal{J}_{\text{AIPO}}(\theta)
 = \frac{1}{\sum_{j=1}^N \sum_{i=1}^G |y_i^{(j)}|}
-\sum_{j=1}^N 
-\sum_{i=1}^G 
+\sum_{j=1}^N
+\sum_{i=1}^G
 \sum_{t=1}^{|y_i^{(j)}|}
 \min\left(
 \frac{\pi(y^{(j)}_{i,t}\mid x_j, y^{(j)}_{i,<t})}{\mu(y^{(j)}_{i,t}\mid x_j, y^{(j)}_{i,<t})},

@@ -60,8 +60,6 @@ adv_tau = 0.0  # Disable reward-based learning
 enabled = false  # Skip expensive verification
 ```
 
-This runs pure on-policy distillation: the student learns to match the teacher without needing any reward signal.
-
 ## Parameters
 
 | Parameter | Default | Description |
