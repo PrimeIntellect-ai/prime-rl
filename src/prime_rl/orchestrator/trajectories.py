@@ -68,25 +68,72 @@ def _render_messages(
     messages: list[dict[str, Any]],
     add_generation_prompt: bool = False,
     tools: list[dict[str, Any]] | None = None,
+    processor=None,
 ) -> list[int]:
     return render_messages(
         tokenizer,
         messages,
         add_generation_prompt=add_generation_prompt,
         tools=tools,
+        processor=processor,
     )
+
+
+def _prepare_messages_for_processor(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert messages to the format expected by the VLM processor.
+
+    - Converts image_url items to image items with loaded PIL Images
+    - Strips extra fields (e.g. image_url on text items) that confuse the processor
+    - Ensures all message content is in list format (processor requires this)
+    """
+    prepared = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            prepared.append({**msg, "content": [{"type": "text", "text": content}]})
+            continue
+
+        if not isinstance(content, list):
+            prepared.append(msg)
+            continue
+
+        new_content = []
+        for item in content:
+            if item.get("type") == "image_url":
+                url = item.get("image_url", {}).get("url", "")
+                if url.startswith(_FILE_URL_PREFIX):
+                    img = _load_file_image(url)
+                elif url.startswith("data:image"):
+                    b64_data = url.split(",", 1)[1]
+                    img = Image.open(BytesIO(base64.b64decode(b64_data)))
+                else:
+                    new_content.append(item)
+                    continue
+                new_content.append({"type": "image", "image": img})
+            elif item.get("type") == "text":
+                new_content.append({"type": "text", "text": item.get("text", "")})
+            else:
+                new_content.append(item)
+        prepared.append({**msg, "content": new_content})
+
+    return prepared
 
 
 def _tokenize_step_from_messages(
     step: vf.TrajectoryStep,
     tokenizer: PreTrainedTokenizer,
     tools: list[dict[str, Any]] | None = None,
+    processor=None,
 ) -> dict[str, Any]:
     prompt = _normalize_messages(step.get("prompt"), default_role="user")
     completion = _normalize_messages(step.get("completion"), default_role="assistant")
 
     prompt = _strip_message_content(_deserialize_tool_calls(prompt))
     completion = _strip_message_content(_deserialize_tool_calls(completion))
+
+    if processor is not None:
+        prompt = _prepare_messages_for_processor(prompt)
+        completion = _prepare_messages_for_processor(completion)
 
     all_messages = prompt + completion
     prompt_has_assistant_completion = len(completion) > 0 and completion[0].get("role") == "assistant"
@@ -95,6 +142,7 @@ def _tokenize_step_from_messages(
         prompt,
         add_generation_prompt=prompt_has_assistant_completion,
         tools=tools,
+        processor=processor,
     )
     full_ids, full_mask = build_incremental_token_mask(
         tokenizer,
@@ -102,6 +150,7 @@ def _tokenize_step_from_messages(
         role_to_mask=lambda message: message.get("role") == "assistant",
         tools=tools,
         collapse_consecutive_tool_messages=True,
+        processor=processor,
     )
 
     split_idx = _common_prefix_len(prompt_ids, full_ids)
@@ -148,6 +197,7 @@ def _convert_tools_to_oai_format(tool_defs: list) -> list[dict[str, Any]] | None
 def pretokenize_rollout_trajectory(
     output: vf.RolloutOutput,
     tokenizer: PreTrainedTokenizer,
+    processor=None,
 ) -> bool:
     """Populate missing step tokens from prompt/completion messages."""
     logger = get_logger()
@@ -157,7 +207,7 @@ def pretokenize_rollout_trajectory(
         if step["tokens"] is not None:
             continue
 
-        reconstructed = _tokenize_step_from_messages(step, tokenizer, tools=tools)
+        reconstructed = _tokenize_step_from_messages(step, tokenizer, tools=tools, processor=processor)
         if reconstructed["prompt_prefix_len"] < len(reconstructed["prompt_ids"]):
             logger.debug(
                 f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "

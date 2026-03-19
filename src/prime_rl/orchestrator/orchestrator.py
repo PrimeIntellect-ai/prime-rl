@@ -564,6 +564,10 @@ async def orchestrate(config: OrchestratorConfig):
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
+        # Pretokenize before VLM image cache build (which strips image data from messages)
+        for rollout in train_rollouts:
+            pretokenize_rollout_trajectory(rollout, tokenizer, processor=processor)
+
         # VLM: build image cache for efficient batched preprocessing
         if is_vlm:
             vlm_cache = build_vlm_image_cache(train_rollouts, processor)
@@ -577,9 +581,6 @@ async def orchestrate(config: OrchestratorConfig):
         # Process rollouts in parallel
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
             return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
-
-        for rollout in train_rollouts:
-            pretokenize_rollout_trajectory(rollout, tokenizer)
 
         loop = asyncio.get_event_loop()
         futures = [
