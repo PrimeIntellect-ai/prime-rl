@@ -101,6 +101,7 @@ def _tokenize_step_from_messages(
         all_messages,
         role_to_mask=lambda message: message.get("role") == "assistant",
         tools=tools,
+        collapse_consecutive_tool_messages=True,
     )
 
     split_idx = _common_prefix_len(prompt_ids, full_ids)
