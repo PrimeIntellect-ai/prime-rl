@@ -607,7 +607,7 @@ async def orchestrate(config: OrchestratorConfig):
                     idxs = [i for i, a in enumerate(actor_ids) if a == actor_id]
                     actor_r = [rewards[i] for i in idxs]
                     actor_a = [advantages[i] for i in idxs]
-                        adv_mean = sum(actor_a) / len(actor_a) if actor_a else 0.0
+                    adv_mean = sum(actor_a) / len(actor_a) if actor_a else 0.0
                     adv_std = (sum((a - adv_mean) ** 2 for a in actor_a) / len(actor_a)) ** 0.5 if actor_a else 0.0
                     per_actor_summary[actor_id] = f"reward={sum(actor_r)/len(actor_r):.4f}, adv_mean={adv_mean:.4f}, adv_std={adv_std:.4f}, adv_nonzero={sum(1 for a in actor_a if a != 0.0)}/{len(actor_a)}"
                 print(f"[ADVANTAGE PER-ACTOR] {len(advantages)} total, {len(nonzero)} non-zero, {per_actor_summary}")
