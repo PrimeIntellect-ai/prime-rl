@@ -347,6 +347,13 @@ class PrimeMonitorConfig(BaseConfig):
         ),
     ] = None
 
+    frontend_url: Annotated[
+        str | None,
+        Field(
+            description="Frontend base URL used for the dashboard link shown after registration. Defaults to the Prime CLI frontend URL when unset.",
+        ),
+    ] = None
+
 
 class HeartbeatConfig(BaseConfig):
     """Configures the heartbeat for BetterStack."""

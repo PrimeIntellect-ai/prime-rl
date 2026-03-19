@@ -141,10 +141,15 @@ class PrimeMonitor(Monitor):
             )
             return None
 
+        prime_config = None
         team_id = config.team_id
-        if team_id is None:
+        frontend_url = config.frontend_url
+        if team_id is None or frontend_url is None:
             prime_config = PrimeConfig()
+        if team_id is None:
             team_id = prime_config.team_id
+        if frontend_url is None:
+            frontend_url = prime_config.frontend_url
 
         model = getattr(run_config, "model", None) if run_config else None
         environments = getattr(run_config, "env", None) if run_config else None
@@ -185,7 +190,7 @@ class PrimeMonitor(Monitor):
             return None
 
         run_id = response.json()["run"]["id"]
-        dashboard_url = f"{parsed.scheme}://{parsed.netloc}/dashboard/training/{run_id}"
+        dashboard_url = f"{frontend_url.rstrip('/')}/dashboard/training/{run_id}"
         self.logger.success(f"Monitor run at:\n  {dashboard_url}")
         self._registered = True
         return run_id
