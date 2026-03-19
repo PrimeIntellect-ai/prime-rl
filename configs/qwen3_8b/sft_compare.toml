@@ -1,0 +1,24 @@
+# Shared base config for comparing the strongest pre-Triton baseline
+# against the Triton-routed MoE path on Qwen3-30B-A3B.
+#
+# Compose with one of:
+# uv run sft @ configs/qwen3_8b/sft_compare.toml @ configs/qwen3_8b/sft_compare_baseline.toml
+# uv run sft @ configs/qwen3_8b/sft_compare.toml @ configs/qwen3_8b/sft_compare_optimized.toml
+
+[deployment]
+type = "single_node"
+num_gpus = 8
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+impl = "custom"
+attn = "flash_attention_3"
+optim_cpu_offload = false
+moe_use_grouped_mm = true
+
+[model.compile]
+
+[data]
+type = "fake"
+batch_size = 512
+seq_len = 512

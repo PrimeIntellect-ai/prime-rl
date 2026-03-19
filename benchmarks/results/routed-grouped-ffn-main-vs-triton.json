@@ -1,0 +1,68 @@
+{
+  "benchmark": "routed_grouped_ffn",
+  "shape": {
+    "name": "glm4_moe",
+    "token_num": 4096,
+    "hidden_dim": 4096,
+    "ffn_hidden_dim": 1408,
+    "top_k": 8,
+    "num_experts": 128
+  },
+  "config": {
+    "preset": "glm4_moe",
+    "token_num": null,
+    "hidden_dim": null,
+    "ffn_hidden_dim": null,
+    "top_k": null,
+    "num_experts": null,
+    "warmup": 10,
+    "iters": 50,
+    "seed": 0,
+    "check": true,
+    "output_json": "benchmarks/results/routed-grouped-ffn-main-vs-triton.json"
+  },
+  "results": {
+    "baseline": {
+      "fw_ms": 11.011954261921346,
+      "bw_ms": 18.989889938384295,
+      "total_ms": 30.00184420030564,
+      "fw_peak_mb": 58634.0703125,
+      "total_peak_mb": 62054.7724609375
+    },
+    "routing_triton": {
+      "fw_ms": 10.563671961426735,
+      "bw_ms": 18.99403328076005,
+      "total_ms": 29.557705242186785,
+      "fw_peak_mb": 58634.0703125,
+      "total_peak_mb": 62054.7724609375
+    },
+    "scatter_triton": {
+      "fw_ms": 11.135261501185596,
+      "bw_ms": 19.000681159086525,
+      "total_ms": 30.13594266027212,
+      "fw_peak_mb": 58634.0703125,
+      "total_peak_mb": 62055.2724609375
+    },
+    "gather_triton": {
+      "fw_ms": 9.94908703956753,
+      "bw_ms": 17.649698201566935,
+      "total_ms": 27.598785241134465,
+      "fw_peak_mb": 58602.0478515625,
+      "total_peak_mb": 62054.7724609375
+    },
+    "fused": {
+      "fw_ms": 9.978003101423383,
+      "bw_ms": 18.70015406049788,
+      "total_ms": 28.678157161921263,
+      "fw_peak_mb": 58634.0703125,
+      "total_peak_mb": 62055.2724609375
+    },
+    "combined": {
+      "fw_ms": 8.760074060410261,
+      "bw_ms": 17.299632080830634,
+      "total_ms": 26.059706141240895,
+      "fw_peak_mb": 58602.0478515625,
+      "total_peak_mb": 62054.7724609375
+    }
+  }
+}

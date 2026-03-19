@@ -1,0 +1,11 @@
+output_dir = "outputs/qwen30b-a3b-moe-compare-baseline"
+clean_output_dir = true
+
+[bench]
+output_json = "benchmarks/results/qwen30b-a3b-moe-compare-baseline.json"
+
+[model.moe_optim]
+routing = "torch"
+scatter = "torch"
+gather = "torch"
+routed_ffn = "torch"

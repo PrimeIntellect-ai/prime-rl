@@ -1,0 +1,20 @@
+max_steps = 5
+
+[model]
+name = "PrimeIntellect/GLM-0.5B"
+impl = "custom"
+attn = "flash_attention_3"
+ep = 8
+moe_use_grouped_mm = true
+compile = "None"
+
+[model.moe_optim]
+routing = "triton"
+scatter = "triton"
+gather = "triton"
+routed_ffn = "fused"
+
+[data]
+type = "fake"
+batch_size = 8
+seq_len = 1024

@@ -137,6 +137,40 @@ class DebugModelConfig(BaseConfig):
     ] = False
 
 
+class MoEOptimizationConfig(BaseConfig):
+    """Configures optional MoE optimization backends."""
+
+    routing: Annotated[
+        Literal["torch", "triton"],
+        Field(
+            description="Backend for MoE routing helpers such as expert histograms and scatter-index computation.",
+        ),
+    ] = "torch"
+
+    scatter: Annotated[
+        Literal["torch", "triton"],
+        Field(
+            description="Backend for scattering token activations into expert-ordered buffers.",
+        ),
+    ] = "torch"
+
+    gather: Annotated[
+        Literal["torch", "triton"],
+        Field(
+            description="Backend for gathering expert outputs back to token order.",
+        ),
+    ] = "torch"
+
+    routed_ffn: Annotated[
+        Literal["torch", "fused"],
+        Field(
+            description=(
+                "Backend for the routed expert path. 'fused' currently fuses the scatter-index "
+                "computation with token scattering when Triton kernels are available."
+            ),
+        ),
+    ] = "torch"
+
 class ModelConfig(BaseModelConfig):
     """Configures the model for training."""
 
@@ -247,6 +281,13 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = True
 
+    moe_optim: Annotated[
+        MoEOptimizationConfig,
+        Field(
+            description="Optional backend selection for MoE routing, compute, and EP dispatch.",
+        ),
+    ] = MoEOptimizationConfig()
+
     freeze_moe_router: Annotated[
         bool,
         Field(
@@ -327,7 +368,6 @@ class ModelConfig(BaseModelConfig):
         if self.attn == "fa4" and self.impl != "custom":
             raise ValueError("Flash attention 4 is only supported with the custom implementation")
         return self
-
 
 class TokenizerConfig(BaseConfig):
     """Configuration for the tokenizer."""

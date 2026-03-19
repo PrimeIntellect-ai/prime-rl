@@ -1,0 +1,75 @@
+{
+  "benchmark": "routed_grouped_ffn",
+  "shape": {
+    "name": "qwen3_moe",
+    "token_num": 4096,
+    "hidden_dim": 2048,
+    "ffn_hidden_dim": 768,
+    "top_k": 8,
+    "num_experts": 128
+  },
+  "config": {
+    "preset": "qwen3_moe",
+    "token_num": null,
+    "hidden_dim": null,
+    "ffn_hidden_dim": null,
+    "top_k": null,
+    "num_experts": null,
+    "warmup": 10,
+    "iters": 50,
+    "seed": 0,
+    "check": true,
+    "output_json": "benchmarks/results/routed-grouped-ffn-refactor.json"
+  },
+  "results": {
+    "baseline": {
+      "fw_ms": 17.70893109962344,
+      "bw_ms": 308.07970160152763,
+      "total_ms": 325.7886327011511,
+      "fw_peak_mb": 15926.78076171875,
+      "total_peak_mb": 18211.8818359375
+    },
+    "routing_triton": {
+      "fw_ms": 17.198230857029557,
+      "bw_ms": 308.1239419616759,
+      "total_ms": 325.32217281870544,
+      "fw_peak_mb": 15926.78076171875,
+      "total_peak_mb": 18211.8818359375
+    },
+    "scatter_triton": {
+      "fw_ms": 17.71186769939959,
+      "bw_ms": 308.0808139592409,
+      "total_ms": 325.7926816586405,
+      "fw_peak_mb": 15926.78076171875,
+      "total_peak_mb": 18211.8818359375
+    },
+    "gather_triton": {
+      "fw_ms": 17.136569563299417,
+      "bw_ms": 307.34861047472805,
+      "total_ms": 324.48518003802747,
+      "fw_peak_mb": 15914.49267578125,
+      "total_peak_mb": 18211.8818359375
+    },
+    "grouped_mm": {
+      "fw_ms": 4.972863779403269,
+      "bw_ms": 7.504628379829228,
+      "total_ms": 12.477492159232497,
+      "fw_peak_mb": 16887.0625,
+      "total_peak_mb": 17300.7724609375
+    },
+    "fused": {
+      "fw_ms": 17.006400655955076,
+      "bw_ms": 307.8007223829627,
+      "total_ms": 324.8071230389178,
+      "fw_peak_mb": 15926.78076171875,
+      "total_peak_mb": 18211.8818359375
+    },
+    "combined": {
+      "fw_ms": 3.5956310015171766,
+      "bw_ms": 6.600245861336589,
+      "total_ms": 10.195876862853765,
+      "fw_peak_mb": 16871.0400390625,
+      "total_peak_mb": 17300.7724609375
+    }
+  }
+}

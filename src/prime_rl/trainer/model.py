@@ -33,6 +33,7 @@ from prime_rl.trainer.models import (
 )
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.moe_ops import resolve_moe_backend_settings
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -169,6 +170,32 @@ def freeze_moe_router(model: nn.Module) -> None:
         raise ValueError("No MoE router parameters found to freeze. Is this a MoE model?")
 
     logger.info(f"Froze {num_frozen} MoE router parameters")
+
+
+def configure_moe_backends(model: nn.Module, config: ModelConfig) -> None:
+    logger = get_logger()
+    backends = resolve_moe_backend_settings(
+        use_grouped_mm=config.moe_use_grouped_mm,
+        routing=config.moe_optim.routing,
+        scatter=config.moe_optim.scatter,
+        gather=config.moe_optim.gather,
+        routed_ffn=config.moe_optim.routed_ffn,
+    )
+
+    configured_layers = 0
+    language_model = get_language_model(model)
+    for layer in language_model.layers:
+        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        if isinstance(mlp, MoE):
+            mlp.configure_backends(backends)
+            configured_layers += 1
+
+    if configured_layers:
+        logger.info(
+            f"Configured {configured_layers} MoE layers with backends: "
+            f"routing={backends.routing} scatter={backends.scatter} gather={backends.gather} "
+            f"grouped_gemm={backends.grouped_gemm} routed_ffn={backends.routed_ffn}"
+        )
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
@@ -657,11 +684,12 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 
 def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
     language_model = get_language_model(model)
+    ep_mesh = parallel_dims.get_mesh("ep")
     for transformer_block in language_model.layers:
         if isinstance(transformer_block.mlp, MoE):
             parallelize_module(
                 transformer_block.mlp.experts,
-                device_mesh=parallel_dims.get_mesh("ep"),
+                device_mesh=ep_mesh,
                 parallelize_plan=ExpertParallel(),
             )
 
@@ -755,6 +783,8 @@ def setup_model(
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
+
+    configure_moe_backends(model, config)
 
     if parallel_dims.ep_enabled:
         apply_ep(model, parallel_dims)

@@ -179,6 +179,7 @@ Check out the [docs](docs) directory for in-depth guides on how to use PRIME-RL.
 - [**Logging**](docs/logging.md) - Logging with loguru, torchrun, and Weights & Biases
 - [**Checkpointing**](docs/checkpointing.md) - Saving and resuming training from checkpoints
 - [**Benchmarking**](docs/benchmarking.md) - Performance benchmarking and throughput measurement
+- [**Optimized MoE Path**](docs/moe-optimized-path.md) - MoE backend selection, comparison configs, and H200 run procedure
 - [**Deployment**](docs/deployment.md) - Training deployment on single-GPU, multi-GPU, and multi-node clusters
 - [**Troubleshooting**](docs/troubleshooting.md) - Common issues and their solutions
 
