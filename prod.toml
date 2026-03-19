@@ -114,7 +114,7 @@ args = { repl_language="python", expose_message_history=true, root_max_completio
 [[orchestrator.env]]
 id = "mini-swe-agent-plus-rlm"
 name = "mini-swe-agent-plus-rlm-python"
-args = { repl_language="python", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, code_execution_timeout=600, sandbox_command_timeout=90, max_iterations = 20, sandbox_labels = ["rlm-prod-cluster"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", total_timeout_minutes = 360, rollout_timeout_seconds = 20600.0 }
+args = { repl_language="python", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, code_execution_timeout=600, sandbox_command_timeout=90, max_iterations = 20, sandbox_labels = ["rlm-prod-cluster"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", total_timeout_minutes = 360, rollout_timeout_seconds = 20600.0, cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, sandbox_client_max_workers = 512 }
 
 [orchestrator.buffer]
 env_ratios = [
