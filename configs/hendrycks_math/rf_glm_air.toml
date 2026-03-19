@@ -48,3 +48,7 @@ args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "defau
 easy_threshold = 1.0
 hard_threshold = 0.0
 seed = 42
+
+
+[inference.parallel]
+tp = 8
