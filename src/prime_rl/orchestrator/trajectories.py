@@ -122,17 +122,23 @@ def _tokenize_step_from_messages(
 
 
 def _convert_tools_to_oai_format(tool_defs: list) -> list[dict[str, Any]] | None:
-    """Convert verifiers Tool objects to OAI function-calling format."""
+    """Convert verifiers Tool objects or dicts to OAI function-calling format."""
     if not tool_defs:
         return None
+
+    def _get(tool: Any, key: str) -> Any:
+        if isinstance(tool, dict):
+            return tool.get(key)
+        return getattr(tool, key, None)
+
     return [
         {
             "type": "function",
             "function": {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-                **({"strict": tool.strict} if tool.strict is not None else {}),
+                "name": _get(tool, "name"),
+                "description": _get(tool, "description"),
+                "parameters": _get(tool, "parameters"),
+                **({} if _get(tool, "strict") is None else {"strict": _get(tool, "strict")}),
             },
         }
         for tool in tool_defs
