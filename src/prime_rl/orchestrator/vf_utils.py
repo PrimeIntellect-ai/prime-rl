@@ -7,6 +7,7 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.envs.environment import EnvClient
+from verifiers.utils.thread_utils import recommended_max_workers
 from verifiers.utils.worker_utils import get_free_port_pair
 from verifiers.workers import ZMQEnvClient, ZMQEnvServer
 
@@ -15,6 +16,20 @@ from prime_rl.utils.logger import InterceptHandler, ProgressTracker
 DEFAULT_RETRIES = 0
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
 DEFAULT_STATE_COLUMNS = []
+
+
+def resolve_max_workers(configured_max_workers: int | None, concurrency: int | None) -> int:
+    """Resolve max_workers for an environment server.
+
+    If explicitly configured, use that value. Otherwise, use the verifiers
+    recommended_max_workers helper based on the expected concurrency.
+    """
+    if configured_max_workers is not None:
+        return configured_max_workers
+
+    concurrency = concurrency or 64
+    max_workers = recommended_max_workers(concurrency)
+    return max_workers
 
 
 def spawn_env_server(

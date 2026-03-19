@@ -47,6 +47,7 @@ from prime_rl.orchestrator.vf_utils import (
     get_completion_len,
     get_seq_len,
     intercept_vf_logging,
+    resolve_max_workers,
     setup_env_client,
     spawn_env_server,
     task_uses_group_scoring,
@@ -205,7 +206,11 @@ async def orchestrate(config: OrchestratorConfig):
 
     atexit.register(_cleanup_env_processes)
 
+    # TODO: max_inflight_rollouts and batch_size are global while this arg is per-env
+    # in the future, we should make this more consistent but for now we choose a conservative value
+    train_concurrency = config.max_concurrent or config.max_inflight_rollouts or config.batch_size
     for env_id, env, env_name in zip(env_ids, config.env, train_env_names):
+        env.extra_env_kwargs["max_workers"] = resolve_max_workers(env.max_workers, train_concurrency)
         if env.address is None:
             address, process = spawn_env_server(
                 env_id=env_id,
@@ -224,8 +229,11 @@ async def orchestrate(config: OrchestratorConfig):
                     "Ensure that server was started with score_rollouts=False."
                 )
             address = env.address
-        logger.info(f"Connecting train environment {env_name} to server at {address}")
         train_env_addresses.append(address)
+        logger.info(
+            f"Started {env_name} train env server ({address=}, args={env.args}, extra_env_kwargs={env.extra_env_kwargs})"
+        )
+
     train_env_clients = [
         setup_env_client(address=address, name=name) for name, address in zip(train_env_names, train_env_addresses)
     ]
@@ -247,6 +255,10 @@ async def orchestrate(config: OrchestratorConfig):
         eval_env_addresses = []
 
         for env_id, env, eval_env_name in zip(env_ids, config.eval.env, eval_env_names):
+            eval_num_examples = env.num_examples or config.eval.num_examples
+            eval_rollouts_per_example = env.rollouts_per_example or config.eval.rollouts_per_example
+            eval_concurrency = eval_num_examples * eval_rollouts_per_example if eval_num_examples > 0 else None
+            env.extra_env_kwargs["max_workers"] = resolve_max_workers(env.max_workers, eval_concurrency)
             if env.address is None:
                 address, process = spawn_env_server(
                     env_id=env_id,
@@ -260,7 +272,9 @@ async def orchestrate(config: OrchestratorConfig):
                 env_processes.append(process)
             else:
                 address = env.address
-            logger.info(f"Connecting eval environment {eval_env_name} to server at {address}")
+            logger.info(
+                f"Started {eval_env_name} eval env server ({address=}, args={env.args}, extra_env_kwargs={env.extra_env_kwargs})"
+            )
             eval_env_addresses.append(address)
 
         eval_env_clients = [
