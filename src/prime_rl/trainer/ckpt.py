@@ -25,7 +25,6 @@ from prime_rl.trainer.optim import CPUOffloadOptimizer
 from prime_rl.trainer.runs import Progress
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
-    get_adapter_state_dict,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
@@ -342,7 +341,9 @@ class WeightCheckpointManager:
             if self.config.save_adapter_separately and lora_state_dict is not None:
                 adapter_path = path / "lora_adapters"
                 adapter_path.mkdir(parents=True, exist_ok=True)
-                torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
+                save_state_dict(
+                    lora_state_dict, adapter_path, self.config.save_format, save_sharded=False, adapter=True
+                )
                 if self.lora_config:
                     save_lora_config(
                         model,
@@ -377,7 +378,19 @@ class WeightCheckpointManager:
         if has_lora_layers(model):
             self.logger.debug("Getting LoRA state dict on master rank for weight checkpoint")
             start_time = time.perf_counter()
-            lora_state_dict = get_adapter_state_dict(model, self.world.is_master)
+            from torch.distributed.tensor import DTensor
+
+            from prime_rl.trainer.runs import get_multi_run_manager
+
+            multi_run_manager = get_multi_run_manager()
+            run_state_dict = multi_run_manager.get_state_dict_for_run(0)
+            # All ranks must participate in DTensor gathering
+            for key, value in run_state_dict.items():
+                if isinstance(value, DTensor):
+                    value = value.full_tensor()
+                run_state_dict[key] = value.to("cpu", non_blocking=False)
+            torch.distributed.barrier()
+            lora_state_dict = run_state_dict
             self.logger.debug(f"Got LoRA state dict on master rank in {time.perf_counter() - start_time:.2f} seconds")
         else:
             lora_state_dict = None

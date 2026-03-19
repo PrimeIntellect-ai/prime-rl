@@ -1,4 +1,5 @@
 import json
+import re
 import warnings
 from pathlib import Path
 from typing import Literal, cast
@@ -173,6 +174,9 @@ def get_adapter_state_dict(model: nn.Module, is_master: bool) -> dict[str, Tenso
 
             # Add PEFT-expected prefix
             peft_key = f"base_model.model.{clean_key}"
+
+            # Strip multi-adapter index from ParameterList keys (e.g. lora_A.0 -> lora_A)
+            peft_key = re.sub(r"(lora_[AB])\.\d+", r"\1", peft_key)
 
             # Add .weight suffix for LoRA parameters if missing
             if ("lora_A" in peft_key or "lora_B" in peft_key) and not peft_key.endswith(".weight"):
