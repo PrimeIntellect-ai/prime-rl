@@ -641,12 +641,11 @@ async def orchestrate(config: OrchestratorConfig):
             else None
         )
 
-        # Update progress metrics and throughput
+        # Update progress metrics
         num_tokens = int(results_df.seq_len.sum())
         progress.total_tokens += num_tokens
         progress.total_samples += num_rollouts
         progress.total_problems += num_unique_examples
-        throughput = num_tokens / generate_completions_time
 
         def compute_solve_rates(df):
             """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
@@ -702,8 +701,6 @@ async def orchestrate(config: OrchestratorConfig):
             "scoring_ms/all/mean": by_example.scoring_ms.mean().mean(),
             "scoring_ms/all/max": by_example.scoring_ms.mean().max(),
             "scoring_ms/all/min": by_example.scoring_ms.mean().min(),
-            # Performance metrics
-            "perf/throughput": throughput,
             # Train reward
             "reward/all/mean": by_example.reward.mean().mean(),
             "reward/all/max": by_example.reward.mean().max(),
@@ -794,7 +791,7 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
         # Increment step
