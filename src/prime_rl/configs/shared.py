@@ -297,14 +297,6 @@ class WandbConfig(BaseConfig):
 
     offline: Annotated[bool, Field(description="Whether to run W&B in offline mode.")] = False
 
-    # Individual configs (can only be specified on trainer or orchestrator)
-    id: Annotated[
-        str | None,
-        Field(
-            description="The W&B run ID to log to. If None, a random ID will be generated. If you want to resume a run, you can set the ID to the run ID you want to resume.",
-        ),
-    ] = None
-
 
 class WandbWithExtrasConfig(WandbConfig):
     """Configures logging to Weights and Biases with extras."""

@@ -276,20 +276,23 @@ def train(config: SFTConfig):
             and not (is_first_step or is_last_step)
             and progress.step % config.ckpt.interval == 0
         ):
-            # Save full checkpoint
-            logger.info(f"Saving checkpoint at step {progress.step}")
-            save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            save_ckpt_time = 0
 
-            # Maybe clean up old checkpoints
+            if not config.ckpt.weights_only:
+                # Save full checkpoint
+                logger.info(f"Saving checkpoint at step {progress.step}")
+                save_ckpt_start_time = time.perf_counter()
+                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+
             ckpt_manager.maybe_clean()
 
             # Save weight checkpoint
             if weight_ckpt_manager is not None:
                 logger.info(f"Saving weight checkpoint at step {progress.step}")
+                save_ckpt_start_time = time.perf_counter()
                 weight_ckpt_manager.save(progress.step, model, tokenizer)
-                # Maybe clean up old weight checkpoint
+                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
                 weight_ckpt_manager.maybe_clean()
         else:
             save_ckpt_time = 0
@@ -494,8 +497,9 @@ def train(config: SFTConfig):
 
     # Write final checkpoint
     if ckpt_manager is not None:
-        logger.info("Writing final checkpoint")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+        if not (config.ckpt and config.ckpt.weights_only):
+            logger.info("Writing final checkpoint")
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 
     # Write final weight checkpoint

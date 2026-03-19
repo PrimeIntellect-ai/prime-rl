@@ -474,6 +474,13 @@ class CheckpointConfig(BaseConfig):
 
     weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
 
+    weights_only: Annotated[
+        bool,
+        Field(
+            description="When true, only save weight checkpoints (no optimizer/scheduler state). Much faster and smaller than full checkpoints, but cannot resume training.",
+        ),
+    ] = False
+
     resume_step: Annotated[
         int | None,
         Field(

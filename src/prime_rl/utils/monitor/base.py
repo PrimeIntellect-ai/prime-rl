@@ -12,7 +12,7 @@ class Monitor(ABC):
     """
 
     @abstractmethod
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int) -> None:
         pass
 
     @abstractmethod
@@ -31,10 +31,6 @@ class Monitor(ABC):
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         pass
 
-    def flush(self, step: int) -> None:
-        """Commit all accumulated metrics for the given step."""
-        pass
-
     def close(self) -> None:
         """Close any resources held by the monitor. Override in subclasses that need cleanup."""
         pass
@@ -46,7 +42,7 @@ class NoOpMonitor(Monitor):
     def __init__(self):
         self.history: list[dict[str, Any]] = []
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int) -> None:
         self.history.append(metrics)
 
     def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
