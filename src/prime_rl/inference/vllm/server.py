@@ -98,9 +98,25 @@ MODEL_TOOL_CALL_PARSER: dict[str, str] = {
     "Qwen/Qwen3-Coder-Next": "hermes",
     "Qwen/Qwen3-Coder-Next-Base": "hermes",
     "Qwen/Qwen3-Coder-Next-FP8": "hermes",
-    # Qwen3.5
-    "Qwen/Qwen3.5-397B-A17B": "hermes",
-    "Qwen/Qwen3.5-397B-A17B-FP8": "hermes",
+    # Qwen3.5 dense (uses qwen3_coder tool format, not hermes)
+    "Qwen/Qwen3.5-0.8B": "qwen3_coder",
+    "Qwen/Qwen3.5-0.8B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-2B": "qwen3_coder",
+    "Qwen/Qwen3.5-2B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-4B": "qwen3_coder",
+    "Qwen/Qwen3.5-4B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-9B": "qwen3_coder",
+    "Qwen/Qwen3.5-9B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-27B": "qwen3_coder",
+    "Qwen/Qwen3.5-27B-FP8": "qwen3_coder",
+    # Qwen3.5 MoE (uses qwen3_coder tool format, not hermes)
+    "Qwen/Qwen3.5-35B-A3B": "qwen3_coder",
+    "Qwen/Qwen3.5-35B-A3B-Base": "qwen3_coder",
+    "Qwen/Qwen3.5-35B-A3B-FP8": "qwen3_coder",
+    "Qwen/Qwen3.5-122B-A10B": "qwen3_coder",
+    "Qwen/Qwen3.5-122B-A10B-FP8": "qwen3_coder",
+    "Qwen/Qwen3.5-397B-A17B": "qwen3_coder",
+    "Qwen/Qwen3.5-397B-A17B-FP8": "qwen3_coder",
 }
 
 
@@ -117,6 +133,7 @@ from prime_rl.inference.patches import (
     monkey_patch_load_lora_adapter,
     monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
     monkey_patch_tokenize_params_validation,
+    monkey_patch_tokenizer_thread_safety,
 )
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
@@ -131,6 +148,9 @@ monkey_patch_load_lora_adapter()
 monkey_patch_tokenize_params_validation()
 # NOTE: Monkeypatch Hermes tool parser to fix "Already borrowed" RuntimeError under concurrent load
 monkey_patch_hermes_tool_parser_thread_safety()
+# NOTE: Monkeypatch HF tokenizer to fix "Already borrowed" RuntimeError during concurrent chat template processing
+# Can be removed once https://github.com/vllm-project/vllm/pull/36557 is merged and we upgrade vllm
+monkey_patch_tokenizer_thread_safety()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
@@ -255,10 +275,7 @@ async def custom_init_app_state(
 
     resolved_chat_template = load_chat_template(args.chat_template)
 
-    serving_chat = OpenAIServingChatWithTokens(
-        engine_client,
-        state.openai_serving_models,
-        args.response_role,
+    chat_kwargs = dict(
         request_logger=request_logger,
         chat_template=resolved_chat_template,
         chat_template_content_format=args.chat_template_content_format,
@@ -271,7 +288,15 @@ async def custom_init_app_state(
         enable_prompt_tokens_details=args.enable_prompt_tokens_details,
         enable_force_include_usage=args.enable_force_include_usage,
         enable_log_outputs=args.enable_log_outputs,
-        log_error_stack=args.log_error_stack,
+    )
+    if hasattr(args, "log_error_stack"):
+        chat_kwargs["log_error_stack"] = args.log_error_stack
+
+    serving_chat = OpenAIServingChatWithTokens(
+        engine_client,
+        state.openai_serving_models,
+        args.response_role,
+        **chat_kwargs,
     )
     state.openai_serving_chat = serving_chat if "generate" in supported_tasks else None
     state.openai_serving_chat_with_tokens = serving_chat if "generate" in supported_tasks else None

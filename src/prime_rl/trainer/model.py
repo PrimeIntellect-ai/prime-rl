@@ -22,12 +22,13 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
-from prime_rl.trainer.lora import apply_lora_to_model, strip_lora_from_state_dict
+from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    get_custom_vlm_cls,
     supports_custom_impl,
 )
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -40,7 +41,64 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import is_vlm_model
+from prime_rl.utils.vlm import is_vlm_config, is_vlm_model
+
+
+def _patch_qwen3_5_moe_conversion_mapping():
+    """Fix Qwen3.5 MoE conversion mapping incorrectly applying qwen2_moe expert weight splitting.
+
+    Qwen3.5 MoE stores expert weights as fused 3D tensors natively in the checkpoint
+    (e.g. experts.gate_up_proj [num_experts, 2*intermediate, hidden]). The upstream mapping
+    incorrectly maps qwen3_5_moe → qwen2_moe, which assumes per-expert 2D checkpoint weights,
+    causing revert_weight_conversion to produce wrong shapes during weight broadcasting.
+
+    Remove once the pinned transformers commit fixes this.
+    """
+    from transformers.conversion_mapping import (
+        get_checkpoint_conversion_mapping,
+        register_checkpoint_conversion_mapping,
+    )
+
+    # qwen3_5_moe_text: keep only the qwen3_5_text renaming, remove qwen2_moe expert conversion
+    qwen3_5_text_mapping = get_checkpoint_conversion_mapping("qwen3_5_text")
+    if qwen3_5_text_mapping is not None:
+        register_checkpoint_conversion_mapping("qwen3_5_moe_text", qwen3_5_text_mapping, overwrite=True)
+
+    # qwen3_5_moe: remove the qwen2_moe fallback entirely
+    register_checkpoint_conversion_mapping("qwen3_5_moe", [], overwrite=True)
+
+
+def _patch_qwen3_5_text_position_ids():
+    """Fix Qwen3.5 passing 3D MRoPE position_ids to decoder layers instead of 2D text_position_ids.
+
+    Upstream fix: https://github.com/huggingface/transformers/pull/44399
+    Remove once the pinned transformers commit includes this fix.
+    """
+    import inspect
+
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5DecoderLayer, Qwen3_5TextModel
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeDecoderLayer, Qwen3_5MoeTextModel
+
+    for text_model_cls, decoder_layer_cls in [
+        (Qwen3_5TextModel, Qwen3_5DecoderLayer),
+        (Qwen3_5MoeTextModel, Qwen3_5MoeDecoderLayer),
+    ]:
+        source = inspect.getsource(text_model_cls.forward)
+        if "decoder_layer" in source and "position_ids=text_position_ids" in source.split("decoder_layer")[-1]:
+            continue  # already fixed upstream
+
+        _original_forward = decoder_layer_cls.forward
+
+        def _make_patched_forward(original):
+            def _patched_forward(self, hidden_states, position_ids=None, **kwargs):
+                if position_ids is not None and position_ids.ndim == 3:
+                    position_ids = position_ids[0]
+                return original(self, hidden_states, position_ids=position_ids, **kwargs)
+
+            return _patched_forward
+
+        decoder_layer_cls.forward = _make_patched_forward(_original_forward)
+
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
@@ -160,10 +218,12 @@ def get_model(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
-    # Check if this is a vision-language model
+    # Check if this is a vision-language model (by name pattern first)
     is_vlm = is_vlm_model(config.name)
-    if is_vlm:
-        logger.info(f"Detected vision-language model: {config.name}")
+
+    if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
+        _patch_qwen3_5_text_position_ids()
+        _patch_qwen3_5_moe_conversion_mapping()
 
     model_config = cast(
         PretrainedConfig,
@@ -172,6 +232,17 @@ def get_model(
         ),
     )
     model_config.use_cache = False
+
+    # Fallback VLM detection from loaded config (catches local paths)
+    if not is_vlm and is_vlm_config(model_config):
+        is_vlm = True
+    if is_vlm:
+        logger.info(f"Detected vision-language model: {config.name}")
+
+    # Fallback Qwen3.5 patch detection from loaded config model_type
+    if getattr(model_config, "model_type", "").startswith("qwen3_5_moe"):
+        _patch_qwen3_5_text_position_ids()
+        _patch_qwen3_5_moe_conversion_mapping()
     for subconfig_key in getattr(model_config, "sub_configs", {}):
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
@@ -193,6 +264,11 @@ def get_model(
         )
         model_config.pad_token_id = pad_token_id
 
+    # Some HF configs (e.g. Llama 3.2) set pad_token_id to a list, which crashes
+    # transformers' GenerationConfig.validate() when it does `pad_token_id < 0`.
+    if isinstance(getattr(model_config, "pad_token_id", None), list):
+        model_config.pad_token_id = model_config.pad_token_id[0]
+
     # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
     # The model should load in its default dtype (bf16) to match vLLM inference.
     # The FSDP MixedPrecisionPolicy handles compute dtype separately.
@@ -207,25 +283,24 @@ def get_model(
         model_config.num_hidden_layers = num_hidden_layers
 
     # Determine the implementation to use
+    custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm else None
     if config.impl == "auto":
-        impl_to_use = "custom" if supports_custom_impl(model_config) else "hf"
-        logger.info(
-            f"Auto-selected implementation: {impl_to_use} (custom implementation {'supported' if supports_custom_impl(model_config) else 'not supported'})"
-        )
+        if is_vlm:
+            impl_to_use = "custom" if custom_vlm_cls is not None else "hf"
+        else:
+            impl_to_use = "custom" if supports_custom_impl(model_config) else "hf"
+        logger.info(f"Auto-selected implementation: {impl_to_use}")
     else:
         impl_to_use = config.impl
 
-    if is_vlm and impl_to_use != "hf":
-        raise ValueError(
-            f"VLM models only support impl='hf', but got impl='{config.impl}' (resolved to '{impl_to_use}'). "
-            f"Set impl='hf' or impl='auto' in your model config."
-        )
-
     with device:
         if is_vlm:
-            from transformers import AutoModelForImageTextToText
+            if impl_to_use == "custom" and custom_vlm_cls is not None:
+                model_cls = custom_vlm_cls
+            else:
+                from transformers import AutoModelForImageTextToText
 
-            model_cls = AutoModelForImageTextToText
+                model_cls = AutoModelForImageTextToText
         else:
             match impl_to_use:
                 case "hf":
@@ -234,8 +309,9 @@ def get_model(
                     model_cls = AutoModelForCausalLMPrimeRL
 
         load_model_start_time = time.perf_counter()
-        # VLM models use standard HF API which requires torch_dtype, custom models use dtype
-        dtype_kwarg = {"torch_dtype": dtype} if is_vlm else {"dtype": dtype}
+        # HF VLM models require torch_dtype; custom PrimeRL models and text Auto models use dtype
+        use_torch_dtype = is_vlm and model_cls is not custom_vlm_cls
+        dtype_kwarg = {"torch_dtype": dtype} if use_torch_dtype else {"dtype": dtype}
         if device == torch.device("meta"):
             logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
             model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, **dtype_kwarg)
@@ -291,7 +367,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     # For VLM models, shard the frozen vision encoder as a single unit
     # This allows FSDP to manage the memory while keeping it frozen
-    is_vlm = is_vlm_model(config.name)
+    is_vlm = is_vlm_model(config.name) or (hasattr(model, "model") and hasattr(model.model, "visual"))
     if is_vlm:
         if hasattr(model, "model") and hasattr(model.model, "visual"):
             vision_encoder = model.model.visual
@@ -507,6 +583,10 @@ def can_reinit_empty_buffers(model: nn.Module):
     The main issue is with anything that is not in the checkpoint.
     This is usually any non-persistent buffers.
     """
+    # Custom PrimeRL models handle buffer reinit via init_buffers_post_meta
+    if isinstance(model, PreTrainedModelPrimeRL):
+        return True
+
     buffer_names = [name for name, _ in model.named_buffers()]
 
     # TT MoE buffers
@@ -632,7 +712,10 @@ def _register_fa4_attention_interface() -> None:
 
 
 def setup_model(
-    config: ModelConfig, parallel_dims: ParallelDims, loading_from_checkpoint_later: bool = False
+    config: ModelConfig,
+    parallel_dims: ParallelDims,
+    loading_from_checkpoint_later: bool = False,
+    fused_cross_entropy: bool = False,
 ) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
@@ -661,10 +744,10 @@ def setup_model(
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
     lm_head_chunk_size: int | None = None
-    if isinstance(config.fused_lm_head_chunk_size, int):
-        lm_head_chunk_size = config.fused_lm_head_chunk_size
+    if isinstance(config.fused_lm_head_token_chunk_size, int):
+        lm_head_chunk_size = config.fused_lm_head_token_chunk_size
 
-    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
+    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:
@@ -675,6 +758,10 @@ def setup_model(
 
     if parallel_dims.ep_enabled:
         apply_ep(model, parallel_dims)
+        # EP replaces params with DTensors that default to requires_grad=True,
+        # re-freeze base params that LoRA froze earlier.
+        if config.lora is not None:
+            freeze_all_except_lora_and_specified(model, config.lora)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:

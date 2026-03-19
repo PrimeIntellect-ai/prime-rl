@@ -33,16 +33,21 @@ Expected signature:
 """
 
 
-def default_advantage_fn(inputs: AdvantageInputs, length_weighted_mean: bool = False) -> AdvantageOutputs:
+def default_advantage_fn(
+    inputs: AdvantageInputs,
+    length_shaping_alpha: float | None = None,
+) -> AdvantageOutputs:
     """Default GRPO advantage: reward minus per-problem baseline."""
-    if length_weighted_mean:
-        baseline = (inputs.rewards * inputs.completion_lengths).sum(
-            dim=1, keepdim=True
-        ) / inputs.completion_lengths.sum(dim=1, keepdim=True)
-    else:
-        baseline = inputs.rewards.mean(dim=1, keepdim=True)
+    rewards = inputs.rewards
 
-    return AdvantageOutputs(advantages=inputs.rewards - baseline)
+    if length_shaping_alpha is not None:
+        completion_lengths = inputs.completion_lengths.to(dtype=rewards.dtype)
+        lengths_normalized = completion_lengths / completion_lengths.mean(dim=1, keepdim=True)
+        length_shaping = (1 + length_shaping_alpha * lengths_normalized) ** -1
+        rewards = rewards * length_shaping
+    baseline = rewards.mean(dim=1, keepdim=True)
+
+    return AdvantageOutputs(advantages=rewards - baseline)
 
 
 def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
@@ -57,7 +62,10 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
         return advantage_fn
 
     def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
-        return default_advantage_fn(inputs, length_weighted_mean=config.length_weighted_mean)
+        return default_advantage_fn(
+            inputs,
+            length_shaping_alpha=config.length_shaping_alpha,
+        )
 
     return advantage_fn
 

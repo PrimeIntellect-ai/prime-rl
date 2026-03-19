@@ -17,7 +17,7 @@ rollouts_per_example = 8
 max_tokens = 384
 
 [[orchestrator.env]]
-id = "primeintellect/alphabet-sort"
+id = "alphabet-sort"
 name = "alphabet-sort"
 args = { min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_turn = 3, similarity_power = 4, power_per_turn = false }
 

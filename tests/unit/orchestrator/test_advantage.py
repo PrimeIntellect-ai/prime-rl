@@ -15,24 +15,24 @@ def test_default_advantage_fn_simple_mean():
         rewards=torch.tensor([[1.0, 0.5, 0.8], [0.2, 0.9, 0.1]]),
         completion_lengths=torch.tensor([[10, 12, 8], [15, 11, 9]]),
     )
-    result = default_advantage_fn(inputs, length_weighted_mean=False)
+    result = default_advantage_fn(inputs)
 
     assert result.advantages.shape == (2, 3)
     # Check that mean is subtracted per row
     assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
 
 
-def test_default_advantage_fn_length_weighted():
+def test_default_advantage_fn_gr3_length_shaping():
     inputs = AdvantageInputs(
         rewards=torch.tensor([[1.0, 0.5, 0.8]]),
         completion_lengths=torch.tensor([[10, 20, 10]]),
     )
-    result = default_advantage_fn(inputs, length_weighted_mean=True)
 
-    # Length-weighted mean: (1.0*10 + 0.5*20 + 0.8*10) / (10+20+10) = 28/40 = 0.7
-    expected_baseline = 0.7
-    expected = torch.tensor([[1.0 - expected_baseline, 0.5 - expected_baseline, 0.8 - expected_baseline]])
+    result = default_advantage_fn(inputs, length_shaping_alpha=0.33)
+
+    expected = torch.tensor([[0.20915856, -0.25799648, 0.04883792]])
     assert torch.allclose(result.advantages, expected, atol=1e-6)
+    assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(1), atol=1e-6)
 
 
 def test_compute_advantages_with_config():

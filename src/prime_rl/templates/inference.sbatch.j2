@@ -5,6 +5,18 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition={{ partition }}
+{%- if account %}
+#SBATCH --account={{ account }}
+{%- endif %}
+{%- if time %}
+#SBATCH --time={{ time }}
+{%- endif %}
+{%- if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{%- endif %}
+{%- if exclude %}
+#SBATCH --exclude={{ exclude }}
+{%- endif %}
 #SBATCH --exclusive
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
@@ -43,8 +55,10 @@ done
 echo "HOSTNAMES=${HOSTNAMES[@]}"
 echo "INFER_URLS=${INFER_URLS}"
 
-# Cleanup any leftover vLLM processes
-srun bash -c "pkill -9 -f vllm || true"
+{% if pre_run_command %}
+# Pre-run command
+{{ pre_run_command }}
+{% endif %}
 
 # Run inference (each node runs an independent vLLM replica)
 srun bash -c '

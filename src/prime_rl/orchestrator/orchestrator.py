@@ -1,4 +1,6 @@
 import asyncio
+import atexit
+import gc
 import multiprocessing as mp
 import random
 import time
@@ -11,7 +13,12 @@ from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout, pretokenize_rollout_trajectory
+from prime_rl.orchestrator.trajectories import (
+    build_vlm_image_cache,
+    interleave_rollout,
+    offload_images_to_disk,
+    pretokenize_rollout_trajectory,
+)
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
 
@@ -161,11 +168,6 @@ async def orchestrate(config: OrchestratorConfig):
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
         )
 
-    # Build rollout filters
-    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
-    if rollout_filters:
-        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
-
     # Setup monitor
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
     monitor = setup_monitor(
@@ -181,6 +183,11 @@ async def orchestrate(config: OrchestratorConfig):
     if config.heartbeat is not None:
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat.url)
+
+    # Build rollout filters
+    rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
+    if rollout_filters:
+        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
 
     # Load environment and extract dataset
     logger.info(
@@ -215,6 +222,17 @@ async def orchestrate(config: OrchestratorConfig):
 
     train_env_addresses = []
     env_processes: list[mp.Process] = []
+
+    def _cleanup_env_processes():
+        for proc in env_processes:
+            proc.terminate()
+            proc.join(timeout=5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=5)
+
+    atexit.register(_cleanup_env_processes)
+
     for env_id, env, env_name in zip(env_ids, config.env, train_env_names):
         if env.address is None:
             address, process = spawn_env_server(
@@ -399,10 +417,6 @@ async def orchestrate(config: OrchestratorConfig):
     is_first_step = True
     await set_semaphore(config.max_concurrent or -1)
 
-    # Track consecutive empty batches for retry logic
-    empty_batch_retries = 0
-    max_empty_batch_retries = 5
-
     # Persistent ThreadPoolExecutor for parallel rollout processing
     rollout_executor = ThreadPoolExecutor(max_workers=64)
 
@@ -522,6 +536,15 @@ async def orchestrate(config: OrchestratorConfig):
         generate_completions_time = scheduler.last_batch_generation_time
         train_rollouts = train_task.result()
 
+        # VLM: offload base64 images to disk immediately to free memory
+        if is_vlm:
+            offload_start = time.perf_counter()
+            num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
+            if num_offloaded:
+                logger.info(
+                    f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
+                )
+
         # Apply rollout filters (zeros reward/mask for degenerate generations)
         filter_metrics = apply_filters(rollout_filters, train_rollouts)
 
@@ -545,7 +568,8 @@ async def orchestrate(config: OrchestratorConfig):
         if is_vlm:
             vlm_cache = build_vlm_image_cache(train_rollouts, processor)
             logger.info(
-                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s"
+                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
+                f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
             )
         else:
             vlm_cache = None
@@ -617,30 +641,13 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
-        if len(training_batch.examples) == 0:
-            empty_batch_retries += 1
-            if empty_batch_retries >= max_empty_batch_retries:
-                raise RuntimeError(
-                    f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
-                )
-            backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
-            logger.warning(
-                f"Step {progress.step} produced 0 training samples "
-                f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
-            )
-            # Cancel validation task to avoid accumulating background tasks
-            val_task.cancel()
-            await asyncio.sleep(backoff)
-            continue
-
-        # Reset retry counter on successful batch
-        empty_batch_retries = 0
         training_batch_sender.send(training_batch)
 
         # Await and process val results
         await val_task
         val_outputs = val_task.result()
+
+        step_time = time.perf_counter() - step_start_time
 
         # Gather metrics in dataframes
         results_df = pd.DataFrame(
@@ -649,7 +656,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "task": [rollout["task"] for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
                 "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
-                "error": [rollout["error"] for rollout in train_rollouts],
+                "stop_condition": [rollout.get("stop_condition") for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
                 "prefill_len": rollout_prefill_lens,
                 "decode_len": rollout_decode_lens,
@@ -660,7 +667,7 @@ async def orchestrate(config: OrchestratorConfig):
             }
         )
 
-        # Gather individual reward function metrics
+        # Separate DataFrame for env reward function metrics to avoid column name collisions
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
 
         val_results_df = (
@@ -682,14 +689,17 @@ async def orchestrate(config: OrchestratorConfig):
         progress.total_problems += num_unique_examples
         throughput = num_tokens / generate_completions_time
 
-        # Compute solve all and none tensors
-        problem_indices = results_df.index // config.rollouts_per_example
-        reward_sum_per_problem = results_df.groupby(problem_indices).reward.sum()
-        solve_all = (reward_sum_per_problem == config.rollouts_per_example).mean()
-        solve_none = (reward_sum_per_problem == 0).mean()
-        effective_batch_size = 1 - solve_none - solve_all
+        def compute_solve_rates(df):
+            """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
+            reward_per_problem = df.groupby("example_id").reward.sum()
+            solve_none = (reward_per_problem == 0).mean()
+            solve_all = (reward_per_problem == config.rollouts_per_example).mean()
+            return solve_none, solve_all, 1 - solve_none - solve_all
 
-        step_time = time.perf_counter() - step_start_time
+        # Group by example_id to average across rollouts within each problem
+        by_example = results_df.groupby("example_id")
+
+        solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
         to_log = {
             # Progress metrics
             "progress/tokens": num_tokens,
@@ -702,57 +712,49 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_problems": progress.total_problems,
             "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             # Sequence length metrics
-            "seq_len/mean": results_df.groupby("example_id").seq_len.mean().mean(),
-            "seq_len/max": results_df.groupby("example_id").seq_len.mean().max(),
-            "seq_len/min": results_df.groupby("example_id").seq_len.mean().min(),
-            "prefill_len/mean": results_df.groupby("example_id").prefill_len.mean().mean(),
-            "prefill_len/max": results_df.groupby("example_id").prefill_len.mean().max(),
-            "prefill_len/min": results_df.groupby("example_id").prefill_len.mean().min(),
-            "decode_len/mean": results_df.groupby("example_id").decode_len.mean().mean(),
-            "decode_len/max": results_df.groupby("example_id").decode_len.mean().max(),
-            "decode_len/min": results_df.groupby("example_id").decode_len.mean().min(),
-            "is_truncated/mean": results_df.groupby("example_id").is_truncated.mean().mean(),
-            "is_truncated/max": results_df.groupby("example_id").is_truncated.mean().max(),
-            "is_truncated/min": results_df.groupby("example_id").is_truncated.mean().min(),
-            # Seqs per rollout metrics
-            "samples_per_rollout/mean": results_df.groupby("example_id").samples_per_rollout.mean().mean(),
-            "samples_per_rollout/max": results_df.groupby("example_id").samples_per_rollout.mean().max(),
-            "samples_per_rollout/min": results_df.groupby("example_id").samples_per_rollout.mean().min(),
-            # Turn metrics
-            "num_turns/mean": results_df.groupby("example_id").num_turns.mean().mean(),
-            "num_turns/max": results_df.groupby("example_id").num_turns.mean().max(),
-            "num_turns/min": results_df.groupby("example_id").num_turns.mean().min(),
-            # Verifier timing metrics
-            "generation_ms/mean": results_df.groupby("example_id").generation_ms.mean().mean(),
-            "generation_ms/max": results_df.groupby("example_id").generation_ms.mean().max(),
-            "generation_ms/min": results_df.groupby("example_id").generation_ms.mean().min(),
-            "scoring_ms/mean": results_df.groupby("example_id").scoring_ms.mean().mean(),
-            "scoring_ms/max": results_df.groupby("example_id").scoring_ms.mean().max(),
-            "scoring_ms/min": results_df.groupby("example_id").scoring_ms.mean().min(),
+            "seq_len/all/mean": by_example.seq_len.mean().mean(),
+            "seq_len/all/max": by_example.seq_len.mean().max(),
+            "seq_len/all/min": by_example.seq_len.mean().min(),
+            "prefill_len/all/mean": by_example.prefill_len.mean().mean(),
+            "prefill_len/all/max": by_example.prefill_len.mean().max(),
+            "prefill_len/all/min": by_example.prefill_len.mean().min(),
+            "decode_len/all/mean": by_example.decode_len.mean().mean(),
+            "decode_len/all/max": by_example.decode_len.mean().max(),
+            "decode_len/all/min": by_example.decode_len.mean().min(),
+            "is_truncated/all/mean": by_example.is_truncated.mean().mean(),
+            "is_truncated/all/max": by_example.is_truncated.mean().max(),
+            "is_truncated/all/min": by_example.is_truncated.mean().min(),
+            "stop_condition/all/generation_truncated": (
+                results_df.is_truncated & (results_df.stop_condition != "prompt_too_long")
+            ).mean(),
+            **{
+                f"stop_condition/all/{sc}": rate
+                for sc, rate in results_df.stop_condition.dropna().value_counts(normalize=True).items()
+            },
+            "samples_per_rollout/all/mean": by_example.samples_per_rollout.mean().mean(),
+            "samples_per_rollout/all/max": by_example.samples_per_rollout.mean().max(),
+            "samples_per_rollout/all/min": by_example.samples_per_rollout.mean().min(),
+            "num_turns/all/mean": by_example.num_turns.mean().mean(),
+            "num_turns/all/max": by_example.num_turns.mean().max(),
+            "num_turns/all/min": by_example.num_turns.mean().min(),
+            "generation_ms/all/mean": by_example.generation_ms.mean().mean(),
+            "generation_ms/all/max": by_example.generation_ms.mean().max(),
+            "generation_ms/all/min": by_example.generation_ms.mean().min(),
+            "scoring_ms/all/mean": by_example.scoring_ms.mean().mean(),
+            "scoring_ms/all/max": by_example.scoring_ms.mean().max(),
+            "scoring_ms/all/min": by_example.scoring_ms.mean().min(),
             # Performance metrics
             "perf/throughput": throughput,
             # Train reward
-            "reward/mean": results_df.reward.mean(),
-            "reward/std": results_df.reward.std(),
-            "reward/min": results_df.reward.min(),
-            "reward/max": results_df.reward.max(),
-            "reward/median": results_df.reward.median(),
+            "reward/all/mean": by_example.reward.mean().mean(),
+            "reward/all/max": by_example.reward.mean().max(),
+            "reward/all/min": by_example.reward.mean().min(),
             "sampling/temperature": temperature,
-            # Batch metrics
-            "batch/solve_none": solve_none,
-            "batch/solve_all": solve_all,
-            "batch/effective_batch_size": effective_batch_size,
-            # Error metrics
-            "error/mean": (~results_df.error.isna()).mean(),
-            **{
-                f"error/{error}": error_rate
-                for error, error_rate in results_df.error.dropna()
-                .apply(lambda e: e.get("error") if isinstance(e, dict) else e)
-                .value_counts(normalize=True)
-                .items()
-            },
-            # Env metrics
-            **{f"metrics/{metric}": metrics_df[metric].mean() for metric in metrics_df.columns},
+            # Solve / batch metrics
+            "solve_none/all": solve_none,
+            "solve_all/all": solve_all,
+            "effective_batch_size/all": effective_batch_size,
+            **{f"batch/{env}": r for env, r in results_df.task.value_counts(normalize=True).items()},
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
@@ -771,32 +773,51 @@ async def orchestrate(config: OrchestratorConfig):
             "step": progress.step,
         }
 
-        # If more than one env, add per-env metrics
-        if results_df.task.nunique() > 1:
-            per_env_reward = results_df.groupby("task").reward.mean().to_dict()
-            to_log.update({f"reward/{env}": reward for env, reward in per_env_reward.items()})
+        # Per-env metrics
+        per_env_columns = [
+            "seq_len",
+            "prefill_len",
+            "decode_len",
+            "is_truncated",
+            "samples_per_rollout",
+            "num_turns",
+            "generation_ms",
+            "scoring_ms",
+        ]
 
-            per_env_ratio = results_df.task.value_counts(normalize=True).to_dict()
-            to_log.update({f"batch/{env}": ratio for env, ratio in per_env_ratio.items()})
+        for env, env_df in results_df.groupby("task"):
+            env_by_example = env_df.groupby("example_id")
+            for col in per_env_columns:
+                to_log[f"{col}/{env}/mean"] = env_by_example[col].mean().mean()
+                to_log[f"{col}/{env}/max"] = env_by_example[col].mean().max()
+                to_log[f"{col}/{env}/min"] = env_by_example[col].mean().min()
+            to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
+            to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
+            to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
+            solve_none, solve_all, effective_batch_size = compute_solve_rates(env_df)
+            to_log[f"solve_none/{env}"] = solve_none
+            to_log[f"solve_all/{env}"] = solve_all
+            to_log[f"effective_batch_size/{env}"] = effective_batch_size
+            to_log[f"stop_condition/{env}/generation_truncated"] = (
+                env_df.is_truncated & (env_df.stop_condition != "prompt_too_long")
+            ).mean()
+            for sc, rate in env_df.stop_condition.dropna().value_counts(normalize=True).items():
+                to_log[f"stop_condition/{env}/{sc}"] = rate
+            env_metrics_df = metrics_df.loc[env_df.index]
+            for metric in metrics_df.columns:
+                to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["example_id"])[metric].mean().mean()
 
         # Optionally, add val metrics
         if val_results_df is not None:
-            to_log.update(
-                {
-                    "val_reward/mean": val_results_df.reward.mean(),
-                    "val_reward/std": val_results_df.reward.std(),
-                    "val_reward/min": val_results_df.reward.min(),
-                    "val_reward/max": val_results_df.reward.max(),
-                    "val_reward/median": val_results_df.reward.median(),
-                }
-            )
-
-            if val_results_df.task.nunique() > 1:
-                per_env_reward = val_results_df.groupby("task").reward.mean().to_dict()
-                to_log.update({f"val_reward/{env}": reward for env, reward in per_env_reward.items()})
-
-                per_env_ratio = val_results_df.task.value_counts(normalize=True).to_dict()
-                to_log.update({f"val_batch/{env}": ratio for env, ratio in per_env_ratio.items()})
+            val_by_example = val_results_df.groupby("example_id")
+            to_log["val/reward/all/mean"] = val_by_example.reward.mean().mean()
+            to_log["val/reward/all/max"] = val_by_example.reward.mean().max()
+            to_log["val/reward/all/min"] = val_by_example.reward.mean().min()
+            for env, env_df in val_results_df.groupby("task"):
+                env_by_example = env_df.groupby("example_id")
+                to_log[f"val/reward/{env}/mean"] = env_by_example.reward.mean().mean()
+                to_log[f"val/reward/{env}/max"] = env_by_example.reward.mean().max()
+                to_log[f"val/reward/{env}/min"] = env_by_example.reward.mean().min()
 
         # Log metrics to monitor(s)
         monitor.log(to_log, step=progress.step)
@@ -814,15 +835,17 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        # Flush all accumulated metrics for this step
-        monitor.flush(step=progress.step)
-
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Throughput: {throughput:.1f} tokens/s | Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
         # Increment step
         progress.step += 1
         is_first_step = False
+
+        # Free large per-step objects to prevent memory accumulation
+        del train_rollouts, train_examples, training_batch, vlm_cache
+        del results_df, metrics_df, val_results_df
+        gc.collect()
 
         event_loop_lag_monitor.reset()
 
@@ -877,13 +900,9 @@ async def orchestrate(config: OrchestratorConfig):
     # Cancel event loop lag monitor task
     event_loop_lag_monitor_task.cancel()
 
-    # Shutdown env processes
-    for process in env_processes:
-        process.terminate()
-        process.join(timeout=5)
-        if process.is_alive():
-            process.kill()
-            process.join(timeout=5)
+    # Shutdown env processes (also registered as atexit handler for crash safety)
+    atexit.unregister(_cleanup_env_processes)
+    _cleanup_env_processes()
 
     logger.success("Orchestrator finished.")
 

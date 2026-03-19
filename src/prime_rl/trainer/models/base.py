@@ -12,6 +12,11 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     """
 
     @classmethod
+    def from_config(cls, config, **kwargs):
+        """Public from_config that mirrors the Auto class API."""
+        return cls._from_config(config, **kwargs)
+
+    @classmethod
     def _can_set_experts_implementation(cls) -> bool:
         """PrimeRL models use custom MoE implementations and don't support dynamic experts implementation."""
         return False

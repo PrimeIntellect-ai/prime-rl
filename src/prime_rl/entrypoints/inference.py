@@ -33,12 +33,10 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     template = env.get_template(config.slurm.template_path.name)
 
     script = template.render(
+        **config.slurm.template_vars,
         config_path=config_path,
         output_dir=config.output_dir,
-        job_name=config.slurm.job_name,
-        project_dir=config.slurm.project_dir,
         gpus_per_node=config.deployment.gpus_per_node,
-        partition=config.slurm.partition,
         num_nodes=config.deployment.num_nodes if config.deployment.type == "multi_node" else 1,
         port=config.server.port,
     )

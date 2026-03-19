@@ -287,6 +287,25 @@ class EnvConfig(BaseConfig):
             ),
         ),
     ] = {}
+    max_retries: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum number of times the environment will retry a failed rollout.",
+        ),
+    ] = 0
+
+    @property
+    def resolved_name(self) -> str:
+        return self.name or self.id.split("@")[0]
+
+    @model_validator(mode="after")
+    def validate_env_name(self):
+        if self.resolved_name == "all":
+            raise ValueError(
+                'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
+            )
+        return self
 
 
 class EvalEnvConfig(EnvConfig):
@@ -309,17 +328,6 @@ class EvalEnvConfig(EnvConfig):
         int,
         Field(
             description="Number of examples to skip from the beginning of the dataset.",
-        ),
-    ] = 0
-
-    # TODO: should live on the EnvConfig and also apply to training envs but
-    # this is hard right now because we use the vf.EnvGroup which treats all
-    # envs as one. for now training envs hardcode no retries, but we should
-    # probably treat them like environment groups long-term
-    max_retries: Annotated[
-        int,
-        Field(
-            description="Maximum number of times the environment will try to retry running a rollout.",
         ),
     ] = 0
 
@@ -381,6 +389,14 @@ class EvalConfig(BaseConfig):
             description="Whether to cancel in-flight training rollouts before starting online evals. This is useful to avoid congestion (e.g. do not have training + eval rollouts happening at the same time) but leads to slower training steps as rollouts get cancelled and the pipeline has to fill up after each eval",
         ),
     ] = False
+
+    @model_validator(mode="after")
+    def validate_unique_env_names(self):
+        env_names = [env.resolved_name for env in self.env]
+        duplicates = [n for n in env_names if env_names.count(n) > 1]
+        if duplicates:
+            raise ValueError(f"Duplicate eval environment names: {set(duplicates)}. Each env must have a unique name.")
+        return self
 
 
 class CheckpointConfig(BaseConfig):
@@ -535,7 +551,10 @@ class DefaultAdvantageConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["default"] = "default"
-    length_weighted_mean: bool = False
+    length_shaping_alpha: Annotated[
+        float | None,
+        Field(description="Penalty coefficient for Group Relative Reward Rescaling (GR³). Recommended value: 0.33"),
+    ] = None
 
 
 class CustomAdvantageConfig(BaseModel):
@@ -919,6 +938,14 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_unique_env_names(self):
+        env_names = [env.resolved_name for env in self.env]
+        duplicates = [n for n in env_names if env_names.count(n) > 1]
+        if duplicates:
+            raise ValueError(f"Duplicate environment names: {set(duplicates)}. Each env must have a unique name.")
+        return self
+
+    @model_validator(mode="after")
     def validate_env_ratios(self):
         if self.buffer.env_ratios is not None:
             assert len(self.buffer.env_ratios) == len(self.env), "env_ratios length must match number of environments"
@@ -947,6 +974,13 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_length_shaping_requires_online_difficulty_filtering(self):
+        if isinstance(self.advantage, DefaultAdvantageConfig) and self.advantage.length_shaping_alpha is not None:
+            if not self.buffer.online_difficulty_filtering:
+                raise ValueError("Group Relative Reward (GR³) scaling requires online difficulty filtering")
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
@@ -964,7 +998,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_extra_env_kwargs(self):
         train_extra_env_kwargs = dict(
-            seq_len=self.seq_len,
+            max_seq_len=self.seq_len,
             score_rollouts=self.verification.enabled,
         )
         for env in self.env:
