@@ -63,15 +63,6 @@ def _strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any
     return strip_message_content(messages)
 
 
-def _should_add_generation_prompt(messages: list[dict[str, Any]], idx: int) -> bool:
-    role = messages[idx].get("role")
-    if role not in ("user", "tool"):
-        return False
-    if idx + 1 >= len(messages):
-        return False
-    return messages[idx + 1].get("role") == "assistant"
-
-
 def _render_messages(
     tokenizer: PreTrainedTokenizer,
     messages: list[dict[str, Any]],
