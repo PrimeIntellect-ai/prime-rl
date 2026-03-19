@@ -574,7 +574,7 @@ wheels = [
 
 [[package]]
 name = "datasets"
-version = "4.7.0"
+version = "4.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dill" },
@@ -592,9 +592,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1c/9c/ba18de0b70858533e422ed6cfe0e46789473cef7fc7fc3653e23fa494730/datasets-4.7.0.tar.gz", hash = "sha256:4984cdfc65d04464da7f95205a55cb50515fd94ae3176caacb50a1b7273792e2", size = 602008, upload-time = "2026-03-09T19:01:49.298Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/94/eb81c6fe32e9b6ef92223141b5a553aeff2e9456968424a8533cbe88f476/datasets-4.6.1.tar.gz", hash = "sha256:140ce500bc41939ff6ce995702d66b1f4b2ee7f117bb9b07512fab6804d4070a", size = 593865, upload-time = "2026-02-27T23:26:49.482Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/03/c6d9c3119cf712f638fe763e887ecaac6acbb62bf1e2acc3cbde0df340fd/datasets-4.7.0-py3-none-any.whl", hash = "sha256:d5fe3025ec6acc3b5649f10d5576dff5e054134927604e6913c1467a04adc3c2", size = 527530, upload-time = "2026-03-09T19:01:47.443Z" },
+    { url = "https://files.pythonhosted.org/packages/37/f0/99fe6eb530c7ee9ee1faee48059eb8a6437f80c893a496b98a78864e0fc6/datasets-4.6.1-py3-none-any.whl", hash = "sha256:f53228e6dadc9f837037b1bf3051d7d8c054abbb3eb29f1f022926e08090e0da", size = 520667, upload-time = "2026-02-27T23:26:46.855Z" },
 ]
 
 [[package]]
@@ -1768,8 +1768,8 @@ wheels = [
 
 [[package]]
 name = "mini-swe-agent-plus-rlm"
-version = "0.1.3"
-source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmini_swe_agent_plus_rlm&rev=078dc3f#078dc3f23609956aea0949c32d580f38dc4b5de3" }
+version = "0.1.4"
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmini_swe_agent_plus_rlm&rev=cf3bdee#cf3bdee620ea823741fdad9d346266c614e8a2d5" }
 dependencies = [
     { name = "prime-sandboxes" },
     { name = "swebench" },
@@ -2738,7 +2738,7 @@ requires-dist = [
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "math-env", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "mini-swe-agent-plus-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmini_swe_agent_plus_rlm&rev=078dc3f" },
+    { name = "mini-swe-agent-plus-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmini_swe_agent_plus_rlm&rev=cf3bdee" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "oolong-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Foolong_rlm&rev=078dc3f" },
     { name = "openai", specifier = ">=1.106.1" },
@@ -2759,7 +2759,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=609e3d5" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=45fae8d" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0ee0546" },
     { name = "vllm", specifier = "==0.17.0" },
     { name = "wandb", specifier = "==0.24.2" },
 ]
@@ -4215,8 +4215,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.11.dev1"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=45fae8d#45fae8dd7b44043672cc27ee75c0a2741f2d1b97" }
+version = "0.1.11"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0ee0546#0ee0546368497e2f6f34c8b9ef7b38ce1a92abeb" }
 dependencies = [
     { name = "anthropic" },
     { name = "datasets" },
