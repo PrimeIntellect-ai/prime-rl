@@ -168,7 +168,9 @@ class ElasticInferencePool:
         # When a router URL is configured, route inference requests through it
         # instead of directly to discovered pods. Admin operations still use
         # individual pod IPs via admin_clients.
-        if self.router_url:
+        # Only expose the router when backends are actually ready — otherwise
+        # the orchestrator would send requests into a router with no healthy backends.
+        if self.router_url and self.ready_urls:
             urls = [self.router_url]
         else:
             urls = self.ready_urls
