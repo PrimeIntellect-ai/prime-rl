@@ -45,39 +45,6 @@ def _align_routed_experts(
     zero_entry = [[0] * topk for _ in range(num_layers)]
     return routed_experts + [zero_entry for _ in range(deficit)]
 
-
-def _common_prefix_len(a: list[int], b: list[int]) -> int:
-    return common_prefix_len(a, b)
-
-
-def _normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]:
-    return normalize_messages(messages, default_role)
-
-
-def _deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return deserialize_tool_calls(messages)
-
-
-def _strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return strip_message_content(messages)
-
-
-def _render_messages(
-    tokenizer: PreTrainedTokenizer,
-    messages: list[dict[str, Any]],
-    add_generation_prompt: bool = False,
-    tools: list[dict[str, Any]] | None = None,
-    processor=None,
-) -> list[int]:
-    return render_messages(
-        tokenizer,
-        messages,
-        add_generation_prompt=add_generation_prompt,
-        tools=tools,
-        processor=processor,
-    )
-
-
 def _prepare_messages_for_processor(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert messages to the format expected by the VLM processor.
 
@@ -124,11 +91,11 @@ def _tokenize_step_from_messages(
     tools: list[dict[str, Any]] | None = None,
     processor=None,
 ) -> dict[str, Any]:
-    prompt = _normalize_messages(step.get("prompt"), default_role="user")
-    completion = _normalize_messages(step.get("completion"), default_role="assistant")
+    prompt = normalize_messages(step.get("prompt"), default_role="user")
+    completion = normalize_messages(step.get("completion"), default_role="assistant")
 
-    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
-    completion = _strip_message_content(_deserialize_tool_calls(completion))
+    prompt = strip_message_content(deserialize_tool_calls(prompt))
+    completion = strip_message_content(deserialize_tool_calls(completion))
 
     assert all(m.get("role") == "assistant" for m in completion), (
         "Expected all completion messages to be assistant role for SFT distillation, "
@@ -141,21 +108,21 @@ def _tokenize_step_from_messages(
 
     all_messages = prompt + completion
     prompt_has_assistant_completion = len(completion) > 0 and completion[0].get("role") == "assistant"
-    prompt_ids = _render_messages(
+    prompt_ids = render_messages(
         tokenizer,
         prompt,
         add_generation_prompt=prompt_has_assistant_completion,
         tools=tools,
         processor=processor,
     )
-    full_ids = _render_messages(
+    full_ids = render_messages(
         tokenizer,
         all_messages,
         tools=tools,
         processor=processor,
     )
 
-    split_idx = _common_prefix_len(prompt_ids, full_ids)
+    split_idx = common_prefix_len(prompt_ids, full_ids)
 
     completion_ids = full_ids[split_idx:]
     completion_mask = [True] * len(completion_ids)

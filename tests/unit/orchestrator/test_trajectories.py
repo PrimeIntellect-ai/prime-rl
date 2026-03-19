@@ -10,13 +10,13 @@ from PIL import Image
 from prime_rl.orchestrator.trajectories import (
     VLMImageCache,
     _align_routed_experts,
-    _deserialize_tool_calls,
     _extract_images_from_examples,
     _extract_images_from_messages,
     _ImageStore,
     build_vlm_image_cache,
     interleave_rollout,
 )
+from prime_rl.utils.chat_template import deserialize_tool_calls
 
 
 def _pixels(data: list[list[float]]) -> tuple[bytes, list[int]]:
@@ -33,7 +33,7 @@ def _decode_pixels(pixel_bytes: bytes, shape: list[int]) -> list[list[float]]:
 def test_deserialize_tool_calls_does_not_inject_missing_key():
     messages = [{"role": "assistant", "content": "hello"}]
 
-    deserialized = _deserialize_tool_calls(messages)
+    deserialized = deserialize_tool_calls(messages)
 
     assert "tool_calls" not in deserialized[0]
 
@@ -52,7 +52,7 @@ def test_deserialize_tool_calls_parses_arguments_when_present():
         }
     ]
 
-    deserialized = _deserialize_tool_calls(messages)
+    deserialized = deserialize_tool_calls(messages)
 
     assert deserialized[0]["tool_calls"][0]["function"]["arguments"] == {"x": 1}
 
