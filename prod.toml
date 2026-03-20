@@ -74,6 +74,7 @@ rollouts_per_example = 16
 oversampling_factor = 4
 max_off_policy_steps = 16
 use_token_client = false
+tasks_per_minute = 2048
 
 [orchestrator.sampling]
 temperature = 1.0
