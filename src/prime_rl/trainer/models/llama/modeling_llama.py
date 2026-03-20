@@ -84,29 +84,17 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
     ) -> torch.Tensor:
         checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
         checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
-        checkpoint_qk_norm_rope = should_checkpoint(self, "qk_norm_rope")
-        checkpoint_attention_sdpa = should_checkpoint(self, "attention_sdpa")
 
         residual = hidden_states
         hidden_states = run_with_optional_checkpoint(checkpoint_attn_norm, self.input_layernorm, hidden_states)
 
         # Self Attention
-        if checkpoint_qk_norm_rope or checkpoint_attention_sdpa:
-            hidden_states, _ = self.self_attn.forward_selective(
-                hidden_states,
-                position_embeddings=position_embeddings,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
-                checkpoint_qk_norm_rope=checkpoint_qk_norm_rope,
-                checkpoint_attention_sdpa=checkpoint_attention_sdpa,
-            )
-        else:
-            hidden_states, _ = self.self_attn(
-                hidden_states,
-                position_embeddings=position_embeddings,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
-            )
+        hidden_states, _ = self.self_attn.forward_selective(
+            hidden_states,
+            position_embeddings=position_embeddings,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+        )
         hidden_states = residual + hidden_states
 
         # Fully Connected

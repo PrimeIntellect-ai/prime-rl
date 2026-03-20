@@ -23,6 +23,8 @@ _INTERNAL_SELECTIVE_AC_TARGETS = frozenset(
     }
 )
 _SELECTIVE_AC_ATTR = "_prime_rl_selective_ac_targets"
+_SELF_ATTN_SELECTIVE_AC_TARGETS = frozenset({"attn_norm", "qk_norm_rope", "attention_sdpa", "mla_up_proj"})
+_MLP_SELECTIVE_AC_TARGETS = frozenset({"routed_experts"})
 
 T = TypeVar("T")
 
@@ -73,12 +75,20 @@ def _expand_selective_targets(layer: nn.Module, targets: frozenset[str]) -> froz
     return frozenset(expanded_targets)
 
 
+def _set_requested_targets(module: nn.Module | None, targets: frozenset[str]) -> None:
+    if module is not None:
+        setattr(module, _SELECTIVE_AC_ATTR, targets)
+
+
 def set_selective_activation_checkpointing(layer: nn.Module, targets: Iterable[str]) -> None:
     normalized_targets = frozenset(targets)
     invalid_targets = normalized_targets - SELECTIVE_AC_TARGETS
     if invalid_targets:
         raise ValueError(f"Unsupported selective activation checkpoint targets: {sorted(invalid_targets)}")
-    setattr(layer, _SELECTIVE_AC_ATTR, _expand_selective_targets(layer, normalized_targets))
+    expanded_targets = _expand_selective_targets(layer, normalized_targets)
+    _set_requested_targets(layer, expanded_targets)
+    _set_requested_targets(getattr(layer, "self_attn", None), expanded_targets & _SELF_ATTN_SELECTIVE_AC_TARGETS)
+    _set_requested_targets(getattr(layer, "mlp", None), expanded_targets & _MLP_SELECTIVE_AC_TARGETS)
 
 
 def get_requested_targets(layer: nn.Module) -> frozenset[str]:

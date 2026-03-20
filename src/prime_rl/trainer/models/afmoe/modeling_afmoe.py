@@ -338,7 +338,6 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
     ) -> torch.FloatTensor:
         checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
         checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
-        checkpoint_routed_experts = should_checkpoint(self, "routed_experts")
 
         residual = hidden_states
 
@@ -360,7 +359,6 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             hidden_states = self.mlp(
                 hidden_states,
                 routed_experts=routed_experts,
-                checkpoint_routed_experts=checkpoint_routed_experts,
             )
         else:
             hidden_states = self.mlp(hidden_states)

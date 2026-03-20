@@ -542,7 +542,6 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
     ) -> torch.FloatTensor:
         checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
         checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
-        checkpoint_routed_experts = should_checkpoint(self, "routed_experts")
 
         residual = hidden_states
         hidden_states = run_with_optional_checkpoint(checkpoint_attn_norm, self.input_layernorm, hidden_states)
@@ -567,7 +566,6 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         routed_output = self.mlp(
             hidden_states,
             routed_experts=routed_experts,
-            checkpoint_routed_experts=checkpoint_routed_experts,
         )
         shared_output = self._forward_shared_expert(hidden_states)
 

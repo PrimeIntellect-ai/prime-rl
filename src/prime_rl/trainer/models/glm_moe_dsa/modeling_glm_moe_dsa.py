@@ -199,10 +199,15 @@ class GlmMoeDsaAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         ks: torch.Tensor | None = None,
         ke: torch.Tensor | None = None,
-        checkpoint_mla_norm: bool = False,
-        checkpoint_mla_up_proj: bool = False,
+        checkpoint_mla_norm: bool | None = None,
+        checkpoint_mla_up_proj: bool | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         batch_size, total_tokens, _ = hidden_states.shape
+
+        if checkpoint_mla_norm is None:
+            checkpoint_mla_norm = should_checkpoint(self, "attn_norm")
+        if checkpoint_mla_up_proj is None:
+            checkpoint_mla_up_proj = should_checkpoint(self, "mla_up_proj")
 
         q_latent, k_compressed_normed, k_rope = run_with_optional_checkpoint(
             checkpoint_mla_norm,
@@ -276,8 +281,6 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
     ) -> torch.Tensor:
         checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
         checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
-        checkpoint_mla_up_proj = should_checkpoint(self, "mla_up_proj")
-        checkpoint_routed_experts = should_checkpoint(self, "routed_experts")
 
         residual = hidden_states
         hidden_states = run_with_optional_checkpoint(checkpoint_attn_norm, self.input_layernorm, hidden_states)
@@ -286,8 +289,6 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             ks=ks,
             ke=ke,
-            checkpoint_mla_norm=checkpoint_attn_norm,
-            checkpoint_mla_up_proj=checkpoint_mla_up_proj,
         )
         hidden_states = residual + hidden_states
 
@@ -297,7 +298,6 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
             hidden_states = self.mlp(
                 hidden_states,
                 routed_experts=routed_experts,
-                checkpoint_routed_experts=checkpoint_routed_experts,
             )
         else:
             hidden_states = self.mlp(hidden_states)
