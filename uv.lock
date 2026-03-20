@@ -2659,7 +2659,7 @@ requires-dist = [
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0ee0546" },
     { name = "vllm", specifier = ">=0.17.0" },
-    { name = "vllm-router", marker = "extra == 'disagg'", git = "https://github.com/S1ro1/router.git?tag=v0.1.11" },
+    { name = "vllm-router", marker = "extra == 'disagg'", url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/vllm_router-0.1.11-cp38-abi3-linux_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
     { name = "wiki-search", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
 ]
@@ -4025,7 +4025,7 @@ wheels = [
 [[package]]
 name = "vllm-router"
 version = "0.1.11"
-source = { git = "https://github.com/S1ro1/router.git?tag=v0.1.11#9ee041159ffa7ac41a2af074e08ab88189be4560" }
+source = { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/vllm_router-0.1.11-cp38-abi3-linux_x86_64.whl" }
 dependencies = [
     { name = "aiohttp", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "fastapi", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4034,6 +4034,23 @@ dependencies = [
     { name = "setproctitle", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uvicorn", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
+wheels = [
+    { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/vllm_router-0.1.11-cp38-abi3-linux_x86_64.whl", hash = "sha256:c1ee07c7266c60a9b479a7db54f12f8a8630ed692a901828a994d670657d7cd6" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp" },
+    { name = "fastapi" },
+    { name = "orjson" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+    { name = "requests", specifier = ">=2.25.0" },
+    { name = "setproctitle" },
+    { name = "uvicorn" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "wadler-lindig"
