@@ -121,10 +121,10 @@ args = { repl_language="python", expose_message_history=true, root_max_completio
 env_ratios = [
     0.2,  # deepdive (bash)
     0.2,  # oolong (bash)
-    0.3,   # mini-swe (bash)
+    0.2,   # mini-swe (bash)
     0.1,  # deepdive (python)
     0.1,  # oolong (python)
-    0.1   # mini-swe (python)
+    0.2   # mini-swe (python)
 ]
 easy_threshold = 1.0
 hard_threshold = 0.0
