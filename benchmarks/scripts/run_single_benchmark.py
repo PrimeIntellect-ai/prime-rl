@@ -68,7 +68,7 @@ class BenchmarkConfig(BaseConfig):
     ] = "Recompute"
 
     selective_targets: Annotated[
-        list[Literal["norm", "attention_sdpa", "mla_up_proj", "routed_experts"]] | None,
+        list[str] | None,
         Field(description="Selective activation checkpoint targets when ac=Selective"),
     ] = None
 

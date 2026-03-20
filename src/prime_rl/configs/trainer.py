@@ -17,12 +17,6 @@ from prime_rl.utils.config import BaseConfig
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
 AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
-ActivationCheckpointTarget: TypeAlias = Literal[
-    "norm",
-    "attention_sdpa",
-    "mla_up_proj",
-    "routed_experts",
-]
 
 # User-facing name -> internal name. Users set `flash_attention_4` in configs,
 # which gets rewritten to `fa4` before pydantic validation.
@@ -50,7 +44,7 @@ class ActivationCheckpointConfig(BaseConfig):
     ] = 1
 
     targets: Annotated[
-        list[ActivationCheckpointTarget],
+        list[str],
         Field(
             description="Selective checkpoint targets. `norm` checkpoints every norm module executed inside selected layers, including decoder, attention, MLA, and other model-specific norm blocks. `attention_sdpa` checkpoints the attention-kernel stage regardless of backend. `mla_up_proj` checkpoints MLA Q/KV up-projection work where supported, and `routed_experts` checkpoints routed expert compute in MoE layers.",
         ),
