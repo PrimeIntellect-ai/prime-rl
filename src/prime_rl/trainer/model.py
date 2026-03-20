@@ -31,7 +31,11 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
-from prime_rl.trainer.models.layers.checkpointing import get_supported_targets, set_selective_activation_checkpointing
+from prime_rl.trainer.models.layers.checkpointing import (
+    get_supported_targets,
+    set_selective_activation_checkpointing,
+    supports_selective_activation_checkpointing,
+)
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -650,9 +654,7 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         if layer_id % ac_config.freq != 0:
             continue
 
-        if ac_config.mode == "selective" and getattr(
-            transformer_block, "supports_selective_activation_checkpointing", False
-        ):
+        if ac_config.mode == "selective" and supports_selective_activation_checkpointing(transformer_block):
             model_supported_targets.update(get_supported_targets(transformer_block))
             set_selective_activation_checkpointing(transformer_block, ac_config.targets)
             selective_layers += 1

@@ -489,8 +489,6 @@ def _get_gated_attention(config: Qwen3_5MoeConfig) -> nn.Module:
 
 
 class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
-    supports_selective_activation_checkpointing = True
-
     def __init__(self, config: Qwen3_5MoeConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -524,13 +522,6 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         self.input_layernorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-    def _forward_shared_expert(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        bs, slen, dim = hidden_states.shape
-        hidden_flat = hidden_states.reshape(-1, dim)
-        shared_output = self.shared_expert(hidden_flat)
-        shared_output = torch.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
-        return shared_output.reshape(bs, slen, dim)
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -559,11 +550,13 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
 
-        routed_output = self.mlp(
-            hidden_states,
-            routed_experts=routed_experts,
-        )
-        shared_output = self._forward_shared_expert(hidden_states)
+        routed_output = self.mlp(hidden_states, routed_experts=routed_experts)
+
+        bs, slen, dim = hidden_states.shape
+        hidden_flat = hidden_states.view(-1, dim)
+        shared_output = self.shared_expert(hidden_flat)
+        shared_output = F.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
+        shared_output = shared_output.view(bs, slen, dim)
 
         hidden_states = residual + routed_output + shared_output
         return hidden_states

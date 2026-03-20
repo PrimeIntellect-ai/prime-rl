@@ -28,8 +28,6 @@ from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmb
 
 
 class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
-    supports_selective_activation_checkpointing = True
-
     def __init__(self, config: GlmMoeDsaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size

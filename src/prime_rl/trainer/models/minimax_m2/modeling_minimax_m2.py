@@ -27,8 +27,6 @@ logger = logging.get_logger(__name__)
 
 
 class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
-    supports_selective_activation_checkpointing = True
-
     def __init__(self, config: MiniMaxM2Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -73,7 +71,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states, _ = self.self_attn(
-            hidden_states,
+            hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
@@ -82,10 +80,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(
-            hidden_states,
-            routed_experts=routed_experts,
-        )
+        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
         hidden_states = residual + hidden_states
         return hidden_states
 

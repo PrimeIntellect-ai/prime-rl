@@ -287,8 +287,6 @@ def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
 
 
 class AfmoeDecoderLayer(GradientCheckpointingLayer):
-    supports_selective_activation_checkpointing = True
-
     def __init__(self, config: AfmoeConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -338,7 +336,6 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
-
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,

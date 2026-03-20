@@ -49,6 +49,8 @@ class AttentionConfig:
 class FlashAttention(nn.Module):
     """Flash Attention"""
 
+    supports_attention_sdpa_activation_checkpointing = True
+
     _funcs = {
         2: flash_attn_varlen_func,
         3: flash_attn_3_varlen_func,
@@ -163,25 +165,11 @@ class FlashAttention(nn.Module):
         attn_output = self.o_proj(attn_output)
         return attn_output, None
 
-    def forward_selective(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-        checkpoint_attention_sdpa: bool | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        return self.forward(
-            hidden_states,
-            position_embeddings,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=max_seqlen,
-            checkpoint_attention_sdpa=checkpoint_attention_sdpa,
-        )
-
 
 class SDPAAttention(nn.Module):
     """SDPA Attention"""
+
+    supports_attention_sdpa_activation_checkpointing = True
 
     def __init__(self, config: AttentionConfig):
         super().__init__()
@@ -271,22 +259,6 @@ class SDPAAttention(nn.Module):
         )
         attn_output = self.o_proj(attn_output)
         return attn_output, None
-
-    def forward_selective(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-        checkpoint_attention_sdpa: bool | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        return self.forward(
-            hidden_states,
-            position_embeddings,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=max_seqlen,
-            checkpoint_attention_sdpa=checkpoint_attention_sdpa,
-        )
 
 
 ATTN_IMPL2CLASS = {

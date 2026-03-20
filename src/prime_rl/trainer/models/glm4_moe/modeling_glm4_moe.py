@@ -42,8 +42,6 @@ from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmb
 
 
 class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
-    supports_selective_activation_checkpointing = True
-
     def __init__(self, config: Glm4MoeConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -96,10 +94,9 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-
         # Self Attention
         hidden_states, _ = self.self_attn(
-            hidden_states,
+            hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,

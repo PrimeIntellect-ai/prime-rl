@@ -37,7 +37,7 @@ def run_with_optional_checkpoint(enabled: bool, function: Callable[..., T], *arg
 
 
 def _supports_attention_selective(layer: nn.Module) -> bool:
-    return hasattr(getattr(layer, "self_attn", None), "forward_selective")
+    return getattr(getattr(layer, "self_attn", None), "supports_attention_sdpa_activation_checkpointing", False)
 
 
 def _supports_routed_experts(layer: nn.Module) -> bool:
@@ -110,6 +110,10 @@ def set_selective_activation_checkpointing(layer: nn.Module, targets: Iterable[s
     _set_requested_targets(getattr(layer, "self_attn", None), expanded_targets & _SELF_ATTN_SELECTIVE_AC_TARGETS)
     _set_requested_targets(getattr(layer, "mlp", None), expanded_targets & _MLP_SELECTIVE_AC_TARGETS)
     _configure_norm_checkpointing(layer, "norm" in expanded_targets)
+
+
+def supports_selective_activation_checkpointing(layer: nn.Module) -> bool:
+    return type(layer).__module__.startswith("prime_rl.trainer.models.")
 
 
 def get_requested_targets(layer: nn.Module) -> frozenset[str]:
