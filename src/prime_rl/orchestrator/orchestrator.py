@@ -791,7 +791,12 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {results_df.reward.mean():.4f} |{f' Val. Reward: {val_results_df.reward.mean():.4f} |' if val_results_df is not None else ''} Seq. Length: {results_df.groupby('example_id').seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        reward_mean = by_example.reward.mean().mean()
+        val_reward_str = ""
+        if val_results_df is not None:
+            val_reward_mean = val_results_df.groupby("example_id").reward.mean().mean()
+            val_reward_str = f" Val. Reward: {val_reward_mean:.4f} |"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} |{val_reward_str} Seq. Length: {by_example.seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
         # Increment step
