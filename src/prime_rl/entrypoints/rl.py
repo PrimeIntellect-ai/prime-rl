@@ -416,6 +416,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             prefill_port=infer_deploy.prefill_port,
             decode_port=infer_deploy.decode_port,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            inference_tp=config.inference.parallel.tp,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             weight_broadcast_type=config.weight_broadcast.type if config.weight_broadcast else None,
         )
