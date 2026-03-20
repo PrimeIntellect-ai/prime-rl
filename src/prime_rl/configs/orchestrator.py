@@ -287,6 +287,13 @@ class EnvConfig(BaseConfig):
             ),
         ),
     ] = {}
+    max_workers: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Maximum number of thread-pool workers for all default and registered executors on the environment server. If None, scales automatically with expected concurrency.",
+        ),
+    ] = None
     max_retries: Annotated[
         int,
         Field(
