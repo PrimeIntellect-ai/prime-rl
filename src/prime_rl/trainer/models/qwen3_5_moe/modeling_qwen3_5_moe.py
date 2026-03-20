@@ -15,6 +15,7 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, logging
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.checkpointing import run_with_optional_checkpoint, should_checkpoint
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
@@ -489,6 +490,8 @@ def _get_gated_attention(config: Qwen3_5MoeConfig) -> nn.Module:
 
 
 class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
+    supports_selective_activation_checkpointing = True
+
     def __init__(self, config: Qwen3_5MoeConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -522,6 +525,13 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         self.input_layernorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
+    def _forward_shared_expert(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        bs, slen, dim = hidden_states.shape
+        hidden_flat = hidden_states.reshape(-1, dim)
+        shared_output = self.shared_expert(hidden_flat)
+        shared_output = torch.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
+        return shared_output.reshape(bs, slen, dim)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -530,8 +540,12 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         max_seqlen: int | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
+        checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
+        checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
+        checkpoint_routed_experts = should_checkpoint(self, "routed_experts")
+
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = run_with_optional_checkpoint(checkpoint_attn_norm, self.input_layernorm, hidden_states)
 
         # Token mixer
         if self.layer_type == "linear_attention":
@@ -548,17 +562,14 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
 
         # MLP: routed experts + gated shared expert
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = run_with_optional_checkpoint(checkpoint_ffn_norm, self.post_attention_layernorm, hidden_states)
 
-        # Routed experts
-        routed_output = self.mlp(hidden_states, routed_experts=routed_experts)
-
-        # Gated shared expert
-        bs, slen, dim = hidden_states.shape
-        hidden_flat = hidden_states.view(-1, dim)
-        shared_output = self.shared_expert(hidden_flat)
-        shared_output = F.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
-        shared_output = shared_output.view(bs, slen, dim)
+        routed_output = self.mlp(
+            hidden_states,
+            routed_experts=routed_experts,
+            checkpoint_routed_experts=checkpoint_routed_experts,
+        )
+        shared_output = self._forward_shared_expert(hidden_states)
 
         hidden_states = residual + routed_output + shared_output
         return hidden_states

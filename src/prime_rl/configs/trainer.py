@@ -17,6 +17,12 @@ from prime_rl.utils.config import BaseConfig
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
 AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
+ActivationCheckpointTarget: TypeAlias = Literal[
+    "norm",
+    "attention_sdpa",
+    "mla_up_proj",
+    "routed_experts",
+]
 
 # User-facing name -> internal name. Users set `flash_attention_4` in configs,
 # which gets rewritten to `fa4` before pydantic validation.
@@ -28,13 +34,33 @@ _ATTN_ALIASES = {"flash_attention_4": "fa4"}
 class ActivationCheckpointConfig(BaseConfig):
     """Configures activation checkpointing."""
 
+    mode: Annotated[
+        Literal["full", "selective"],
+        Field(
+            description="Whether to checkpoint whole transformer blocks (`full`) or selected subcomponents inside supported custom decoder layers (`selective`).",
+        ),
+    ] = "full"
+
     freq: Annotated[
         int,
         Field(
             ge=1,
-            description="Applies activation checkpointing to every `freq` layers. Defaults to 1, which will is full activation checkpointing.",
+            description="Applies activation checkpointing to every `freq` layers. Defaults to 1.",
         ),
     ] = 1
+
+    targets: Annotated[
+        list[ActivationCheckpointTarget],
+        Field(
+            description="Selective checkpoint targets. `norm` checkpoints decoder RMSNorm stages, MLA latent RMSNorm stages, and folds in QK norm plus RoPE when available. `attention_sdpa` checkpoints the attention-kernel stage regardless of backend. `mla_up_proj` checkpoints MLA Q/KV up-projection work where supported, and `routed_experts` checkpoints routed expert compute in MoE layers.",
+        ),
+    ] = ["norm"]
+
+    @model_validator(mode="after")
+    def validate_selective_targets(self):
+        if self.mode == "selective" and not self.targets:
+            raise ValueError("Selective activation checkpointing requires at least one target.")
+        return self
 
 
 class ActivationOffloadingConfig(BaseConfig):

@@ -19,6 +19,7 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.checkpointing import run_with_optional_checkpoint, should_checkpoint
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -287,6 +288,8 @@ def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
 
 
 class AfmoeDecoderLayer(GradientCheckpointingLayer):
+    supports_selective_activation_checkpointing = True
+
     def __init__(self, config: AfmoeConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -333,9 +336,14 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         max_seqlen: int | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
+        checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
+        checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
+        checkpoint_routed_experts = should_checkpoint(self, "routed_experts")
+
         residual = hidden_states
 
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = run_with_optional_checkpoint(checkpoint_attn_norm, self.input_layernorm, hidden_states)
+
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
@@ -347,8 +355,15 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = self.pre_mlp_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
+        hidden_states = run_with_optional_checkpoint(checkpoint_ffn_norm, self.pre_mlp_layernorm, hidden_states)
+        if isinstance(self.mlp, MoE):
+            hidden_states = self.mlp(
+                hidden_states,
+                routed_experts=routed_experts,
+                checkpoint_routed_experts=checkpoint_routed_experts,
+            )
+        else:
+            hidden_states = self.mlp(hidden_states)
         hidden_states = self.post_mlp_layernorm(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states

@@ -36,6 +36,7 @@ from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.checkpointing import run_with_optional_checkpoint, should_checkpoint
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
@@ -45,6 +46,8 @@ logger = logging.get_logger(__name__)
 
 
 class LlamaDecoderLayer(GradientCheckpointingLayer):
+    supports_selective_activation_checkpointing = True
+
     def __init__(self, config: LlamaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -79,20 +82,28 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
         cu_seqlens: Optional[torch.LongTensor] = None,
         max_seqlen: Optional[int] = None,
     ) -> torch.Tensor:
+        checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
+        checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
+        checkpoint_qk_norm_rope = should_checkpoint(self, "qk_norm_rope")
+        checkpoint_attention_sdpa = should_checkpoint(self, "attention_sdpa")
+
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = run_with_optional_checkpoint(checkpoint_attn_norm, self.input_layernorm, hidden_states)
+
         # Self Attention
-        hidden_states, _ = self.self_attn(
-            hidden_states=hidden_states,
+        hidden_states, _ = self.self_attn.forward_selective(
+            hidden_states,
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            checkpoint_qk_norm_rope=checkpoint_qk_norm_rope,
+            checkpoint_attention_sdpa=checkpoint_attention_sdpa,
         )
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = run_with_optional_checkpoint(checkpoint_ffn_norm, self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states

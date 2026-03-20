@@ -20,6 +20,7 @@ from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
+from prime_rl.trainer.models.layers.checkpointing import run_with_optional_checkpoint, should_checkpoint
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -121,6 +122,8 @@ class Indexer(nn.Module):
 
 
 class GlmMoeDsaAttention(nn.Module):
+    supports_mla_up_proj_activation_checkpointing = True
+
     def __init__(self, config: GlmMoeDsaConfig):
         super().__init__()
         self.config = config
@@ -151,22 +154,24 @@ class GlmMoeDsaAttention(nn.Module):
         self.indexer = Indexer(config)
         self.scaling = self.qk_head_dim ** (-0.5)
 
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        ks: torch.Tensor | None = None,
-        ke: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        batch_size, total_tokens, _ = hidden_states.shape
-
+    def _mla_latents(
+        self, hidden_states: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
-        q_full = self.q_b_proj(q_latent).view(batch_size, total_tokens, self.num_heads, self.qk_head_dim)
-        q_nope, q_rope = q_full.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
-
         compressed_kv = self.kv_a_proj_with_mqa(hidden_states)
         k_compressed, k_rope = compressed_kv.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-        k_compressed_normed = self.kv_a_layernorm(k_compressed)
+        return q_latent, self.kv_a_layernorm(k_compressed), k_rope
+
+    def _mla_up_proj(
+        self,
+        q_latent: torch.Tensor,
+        k_compressed_normed: torch.Tensor,
+        k_rope: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size, total_tokens, _ = q_latent.shape
+        q_full = self.q_b_proj(q_latent).view(batch_size, total_tokens, self.num_heads, self.qk_head_dim)
+        q_nope, q_rope = q_full.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
 
         q_rope_r = q_rope.transpose(1, 2)
         k_rope_r = k_rope.unsqueeze(1)
@@ -175,34 +180,68 @@ class GlmMoeDsaAttention(nn.Module):
         q_rope = q_rope_r.transpose(1, 2)
         k_rope = k_rope_r.squeeze(1)
 
-        indices = self.indexer.compute_sparse_indices(
-            hidden_states, q_latent, ks, ke, self.config.index_topk, position_embeddings
-        )
-
-        # KV absorption
         kv_b_w = self.kv_b_proj.weight.view(self.num_heads, self.qk_nope_head_dim + self.v_head_dim, self.kv_lora_rank)
         w_k_nope = kv_b_w[:, : self.qk_nope_head_dim, :]
         w_v = kv_b_w[:, self.qk_nope_head_dim :, :]
-
         q_absorbed = torch.einsum("bshd,hdk->bshk", q_nope, w_k_nope)
 
         sparse_q = torch.cat([q_absorbed, q_rope], dim=-1)
         sparse_kv = torch.cat([k_compressed_normed, k_rope], dim=-1).unsqueeze(2)
 
-        # Sentinel zero-token so padded indices (= total_tokens) are in-bounds
         sentinel = torch.zeros(batch_size, 1, 1, sparse_kv.shape[-1], dtype=sparse_kv.dtype, device=sparse_kv.device)
         sparse_kv = torch.cat([sparse_kv, sentinel], dim=1)
+        return sparse_q, sparse_kv, w_v
+
+    def _mla_unabsorb(self, out: torch.Tensor, w_v: torch.Tensor) -> torch.Tensor:
+        return torch.einsum("bshk,hdk->bshd", out, w_v)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        ks: torch.Tensor | None = None,
+        ke: torch.Tensor | None = None,
+        checkpoint_mla_norm: bool = False,
+        checkpoint_mla_up_proj: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        batch_size, total_tokens, _ = hidden_states.shape
+
+        q_latent, k_compressed_normed, k_rope = run_with_optional_checkpoint(
+            checkpoint_mla_norm,
+            self._mla_latents,
+            hidden_states,
+        )
+
+        indices = self.indexer.compute_sparse_indices(
+            hidden_states, q_latent, ks, ke, self.config.index_topk, position_embeddings
+        )
+
+        def _run_mla_up_proj(
+            q_latent: torch.Tensor,
+            k_compressed_normed: torch.Tensor,
+            k_rope: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            return self._mla_up_proj(q_latent, k_compressed_normed, k_rope, position_embeddings)
+
+        sparse_q, sparse_kv, w_v = run_with_optional_checkpoint(
+            checkpoint_mla_up_proj,
+            _run_mla_up_proj,
+            q_latent,
+            k_compressed_normed,
+            k_rope,
+        )
 
         out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)
 
-        # Un-absorb
-        out = torch.einsum("bshk,hdk->bshd", out, w_v)
+        out = run_with_optional_checkpoint(checkpoint_mla_up_proj, self._mla_unabsorb, out, w_v)
 
         out = out.reshape(batch_size, total_tokens, -1)
         return self.o_proj(out), None
 
 
 class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
+    supports_selective_activation_checkpointing = True
+
     def __init__(self, config: GlmMoeDsaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -243,19 +282,33 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         ke: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
+        checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
+        checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
+        checkpoint_mla_up_proj = should_checkpoint(self, "mla_up_proj")
+        checkpoint_routed_experts = should_checkpoint(self, "routed_experts")
+
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = run_with_optional_checkpoint(checkpoint_attn_norm, self.input_layernorm, hidden_states)
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             ks=ks,
             ke=ke,
+            checkpoint_mla_norm=checkpoint_attn_norm,
+            checkpoint_mla_up_proj=checkpoint_mla_up_proj,
         )
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
+        hidden_states = run_with_optional_checkpoint(checkpoint_ffn_norm, self.post_attention_layernorm, hidden_states)
+        if isinstance(self.mlp, MoE):
+            hidden_states = self.mlp(
+                hidden_states,
+                routed_experts=routed_experts,
+                checkpoint_routed_experts=checkpoint_routed_experts,
+            )
+        else:
+            hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states
 
