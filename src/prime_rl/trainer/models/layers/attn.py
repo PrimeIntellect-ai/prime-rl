@@ -118,16 +118,16 @@ class FlashAttention(nn.Module):
             value_states.view(hidden_shape),
         )
 
-    def _apply_qk_norm(
-        self, query_states: torch.Tensor, key_states: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def _apply_qk_norm(self, query_states: torch.Tensor, key_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.use_qk_norm:
             return query_states, key_states
         if self.qk_norm_type == "per_layer":
             query_states = self.q_norm(query_states.reshape(query_states.shape[0], query_states.shape[1], -1)).view_as(
                 query_states
             )
-            key_states = self.k_norm(key_states.reshape(key_states.shape[0], key_states.shape[1], -1)).view_as(key_states)
+            key_states = self.k_norm(key_states.reshape(key_states.shape[0], key_states.shape[1], -1)).view_as(
+                key_states
+            )
             return query_states, key_states
         return self.q_norm(query_states), self.k_norm(key_states)
 
@@ -174,7 +174,9 @@ class FlashAttention(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         query_states, key_states, value_states = self._project_qkv(hidden_states)
 
-        def _run_qk_norm_rope(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        def _run_qk_norm_rope(
+            q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             return self._qk_norm_rope(q, k, v, position_embeddings)
 
         query_states, key_states, value_states = run_with_optional_checkpoint(
@@ -259,16 +261,16 @@ class SDPAAttention(nn.Module):
             value_states.view(hidden_shape),
         )
 
-    def _apply_qk_norm(
-        self, query_states: torch.Tensor, key_states: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def _apply_qk_norm(self, query_states: torch.Tensor, key_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.use_qk_norm:
             return query_states, key_states
         if self.qk_norm_type == "per_layer":
             query_states = self.q_norm(query_states.reshape(query_states.shape[0], query_states.shape[1], -1)).view_as(
                 query_states
             )
-            key_states = self.k_norm(key_states.reshape(key_states.shape[0], key_states.shape[1], -1)).view_as(key_states)
+            key_states = self.k_norm(key_states.reshape(key_states.shape[0], key_states.shape[1], -1)).view_as(
+                key_states
+            )
             return query_states, key_states
         return self.q_norm(query_states), self.k_norm(key_states)
 
@@ -314,7 +316,9 @@ class SDPAAttention(nn.Module):
 
         query_states, key_states, value_states = self._project_qkv(hidden_states)
 
-        def _run_qk_norm_rope(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        def _run_qk_norm_rope(
+            q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             return self._qk_norm_rope(q, k, v, position_embeddings)
 
         query_states, key_states, value_states = run_with_optional_checkpoint(

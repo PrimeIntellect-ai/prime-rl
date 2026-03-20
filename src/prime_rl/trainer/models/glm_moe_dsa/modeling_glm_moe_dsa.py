@@ -154,9 +154,7 @@ class GlmMoeDsaAttention(nn.Module):
         self.indexer = Indexer(config)
         self.scaling = self.qk_head_dim ** (-0.5)
 
-    def _mla_latents(
-        self, hidden_states: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _mla_latents(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
         compressed_kv = self.kv_a_proj_with_mqa(hidden_states)
         k_compressed, k_rope = compressed_kv.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)

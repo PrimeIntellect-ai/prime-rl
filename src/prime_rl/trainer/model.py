@@ -651,7 +651,9 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         if layer_id % ac_config.freq != 0:
             continue
 
-        if ac_config.mode == "selective" and getattr(transformer_block, "supports_selective_activation_checkpointing", False):
+        if ac_config.mode == "selective" and getattr(
+            transformer_block, "supports_selective_activation_checkpointing", False
+        ):
             model_supported_targets.update(get_supported_targets(transformer_block))
             set_selective_activation_checkpointing(transformer_block, ac_config.targets)
             selective_layers += 1

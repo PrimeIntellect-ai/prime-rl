@@ -65,7 +65,9 @@ def _expand_selective_targets(layer: nn.Module, targets: frozenset[str]) -> froz
 
     invalid_internal_targets = expanded_targets - _INTERNAL_SELECTIVE_AC_TARGETS
     if invalid_internal_targets:
-        raise ValueError(f"Unsupported internal selective activation checkpoint targets: {sorted(invalid_internal_targets)}")
+        raise ValueError(
+            f"Unsupported internal selective activation checkpoint targets: {sorted(invalid_internal_targets)}"
+        )
     return frozenset(expanded_targets)
 
 
