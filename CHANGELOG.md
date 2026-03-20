@@ -2,6 +2,8 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`model.ac.mode`** and **`model.ac.targets`**: Added selective activation checkpointing controls. `mode` selects `"full"` (whole blocks) vs `"selective"` (subcomponents on supported custom decoder layers). When `"selective"`, `targets` chooses from `["norm", "attention_sdpa", "mla_up_proj", "routed_experts"]`. Defaults: `mode="full"`, `targets=["norm"]`. (2026-03-20)
+
 - **`orchestrator.advantage.length_weighted_mean`**: Removed. The default advantage now always uses the plain per-problem mean baseline unless `orchestrator.advantage.length_shaping_alpha` is set. Existing configs must delete this field. (2026-03-19)
 - **`orchestrator.advantage.length_shaping_alpha`**: Added Group Relative Reward Rescaling coefficient to the default advantage config. When set, applies length-based GR3 shaping during advantage computation and requires `orchestrator.buffer.online_difficulty_filtering = true` (default: `None`) (2026-03-18)
 - **`prime_monitor.log_extras.sample_ratio`**: Added ratio-based rollout sampling (0.0–1.0, default: None). When set, caps the number of rollouts logged per step to `len(rollouts) * sample_ratio`. `None` preserves current behavior (log all rollouts). Interacts with existing `interval` gate which still runs first. (2026-03-12)
