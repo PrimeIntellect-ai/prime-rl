@@ -2,6 +2,66 @@ import copy
 
 from prime_rl.transport.types import MicroBatch, TrainingSample
 
+# Qwen3-VL image placeholder token ID
+_IMAGE_PAD_TOKEN_ID = 151655
+
+
+def _grid_tokens(grid: list[int], merge_size: int = 2) -> int:
+    return grid[0] * grid[1] * grid[2] // (merge_size**2)
+
+
+def _trim_multimodal_to_match(
+    input_ids: list[int],
+    pixel_values: bytes | None,
+    pixel_values_shape: list[int] | None,
+    image_grid_thw: list[list[int]] | None,
+) -> tuple[list[int], list[bool] | None, bytes | None, list[int] | None, list[list[int]] | None]:
+    """Drop images whose placeholder tokens were removed by prompt truncation.
+
+    Returns (input_ids, keep_mask, pixel_values, pixel_values_shape, image_grid_thw).
+    keep_mask is None when no changes were needed; otherwise a bool mask over the
+    original input_ids positions. Callers apply it to parallel arrays.
+    """
+    if pixel_values is None or image_grid_thw is None:
+        return input_ids, None, pixel_values, pixel_values_shape, image_grid_thw
+
+    num_image_tokens = sum(1 for t in input_ids if t == _IMAGE_PAD_TOKEN_ID)
+    expected_tokens = sum(_grid_tokens(g) for g in image_grid_thw)
+
+    if num_image_tokens == expected_tokens:
+        return input_ids, None, pixel_values, pixel_values_shape, image_grid_thw
+
+    # Keep only complete images that fit within the available image tokens
+    kept_grids = []
+    valid_tokens = 0
+    for grid in image_grid_thw:
+        t = _grid_tokens(grid)
+        if valid_tokens + t <= num_image_tokens:
+            kept_grids.append(grid)
+            valid_tokens += t
+        else:
+            break
+
+    # Build keep mask: True for non-image tokens and complete-image tokens, False for orphans
+    keep_mask = []
+    seen = 0
+    for t in input_ids:
+        if t == _IMAGE_PAD_TOKEN_ID:
+            keep_mask.append(seen < valid_tokens)
+            seen += 1
+        else:
+            keep_mask.append(True)
+
+    input_ids = [t for t, k in zip(input_ids, keep_mask) if k]
+
+    if not kept_grids:
+        return input_ids, keep_mask, None, None, None
+
+    patch_dim = pixel_values_shape[1] if pixel_values_shape else 0
+    kept_patches = sum(g[0] * g[1] * g[2] for g in kept_grids)
+    kept_bytes = kept_patches * 4 * patch_dim
+    return input_ids, keep_mask, pixel_values[:kept_bytes], [kept_patches, patch_dim], kept_grids
+
 
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
@@ -24,6 +84,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     teacher_logprobs = training_example.teacher_logprobs
     routed_experts = training_example.routed_experts
 
+    pixel_values = training_example.pixel_values
+    pixel_values_shape = training_example.pixel_values_shape
+    image_grid_thw = training_example.image_grid_thw
+
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]
         loss_mask = loss_mask[:seq_len]
@@ -35,6 +99,24 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             teacher_logprobs = teacher_logprobs[:seq_len]
         if routed_experts is not None:
             routed_experts = routed_experts[:seq_len]
+
+    # VLM: pixel_values/image_grid_thw are computed from the full conversation images,
+    # but input_ids may have fewer image_pad tokens due to vLLM's prompt truncation
+    # (left-truncation to max_model_len) or seq_len truncation above. Drop trailing
+    # images whose placeholder tokens were removed so features match tokens.
+    input_ids, keep_mask, pixel_values, pixel_values_shape, image_grid_thw = _trim_multimodal_to_match(
+        input_ids, pixel_values, pixel_values_shape, image_grid_thw
+    )
+    if keep_mask is not None:
+        loss_mask = [v for v, k in zip(loss_mask, keep_mask) if k]
+        inference_logprobs = [v for v, k in zip(inference_logprobs, keep_mask) if k]
+        position_ids = [v for v, k in zip(position_ids, keep_mask) if k]
+        advantages = [v for v, k in zip(advantages, keep_mask) if k]
+        temperatures = [v for v, k in zip(temperatures, keep_mask) if k]
+        if teacher_logprobs is not None:
+            teacher_logprobs = [v for v, k in zip(teacher_logprobs, keep_mask) if k]
+        if routed_experts is not None:
+            routed_experts = [v for v, k in zip(routed_experts, keep_mask) if k]
 
     assert (
         len(input_ids)
@@ -63,10 +145,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         teacher_logprobs=teacher_logprobs,
         temperatures=temperatures,
         routed_experts=routed_experts,
-        # Multimodal fields (Qwen3-VL) - passed through without modification
-        pixel_values=training_example.pixel_values,
-        pixel_values_shape=training_example.pixel_values_shape,
-        image_grid_thw=training_example.image_grid_thw,
+        pixel_values=pixel_values,
+        pixel_values_shape=pixel_values_shape,
+        image_grid_thw=image_grid_thw,
     )
 
 

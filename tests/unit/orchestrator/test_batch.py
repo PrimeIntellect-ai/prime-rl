@@ -1,6 +1,6 @@
 import pytest
 
-from prime_rl.trainer.batch import prepare_batch, prepare_sample
+from prime_rl.trainer.batch import _IMAGE_PAD_TOKEN_ID, _trim_multimodal_to_match, prepare_batch, prepare_sample
 from prime_rl.transport.types import TrainingSample
 
 
@@ -134,3 +134,122 @@ def test_prepare_sample_none_routed_experts():
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is None
+
+
+IMG = _IMAGE_PAD_TOKEN_ID
+GRID = [1, 48, 64]  # 3072 patches -> 768 tokens
+TOKENS_PER_IMG = 768
+PATCHES_PER_IMG = 3072
+PATCH_DIM = 1176
+
+
+def _make_pixel_values(n):
+    patches = n * PATCHES_PER_IMG
+    return b"\x00" * (patches * 4 * PATCH_DIM), [patches, PATCH_DIM], [GRID] * n
+
+
+def _make_vlm_sample(n_images, text_per_image=50, completion=100):
+    prompt_ids = []
+    for _ in range(n_images):
+        prompt_ids += [100] * text_per_image + [IMG] * TOKENS_PER_IMG
+    prompt_ids += [100] * 50
+    completion_ids = [101] * completion
+    pv, shape, grids = _make_pixel_values(n_images)
+    return TrainingSample(
+        prompt_ids=prompt_ids,
+        prompt_mask=[False] * len(prompt_ids),
+        completion_ids=completion_ids,
+        completion_mask=[True] * len(completion_ids),
+        completion_logprobs=[-0.5] * len(completion_ids),
+        completion_temperatures=[0.7] * len(completion_ids),
+        advantage=1.0,
+        pixel_values=pv,
+        pixel_values_shape=shape,
+        image_grid_thw=grids,
+    )
+
+
+def test_trim_noop_when_tokens_match():
+    input_ids = [100] * 50 + [IMG] * TOKENS_PER_IMG + [100] * 50
+    pv, shape, grids = _make_pixel_values(1)
+    new_ids, keep_mask, *_ = _trim_multimodal_to_match(input_ids, pv, shape, grids)
+    assert keep_mask is None
+    assert new_ids is input_ids
+
+
+def test_trim_noop_for_text_only():
+    input_ids = [100] * 100
+    new_ids, keep_mask, *_ = _trim_multimodal_to_match(input_ids, None, None, None)
+    assert keep_mask is None
+
+
+def test_trim_drops_partial_image():
+    pv, shape, grids = _make_pixel_values(5)
+    partial = 516
+    input_ids = []
+    for _ in range(4):
+        input_ids += [100] * 50 + [IMG] * TOKENS_PER_IMG
+    input_ids += [100] * 50 + [IMG] * partial
+
+    new_ids, keep_mask, _, _, new_grids = _trim_multimodal_to_match(input_ids, pv, shape, grids)
+
+    assert keep_mask is not None
+    assert sum(1 for t in new_ids if t == IMG) == 4 * TOKENS_PER_IMG
+    assert len(new_grids) == 4
+    assert len(new_ids) == len(input_ids) - partial
+
+
+def test_trim_drops_all_images():
+    pv, shape, grids = _make_pixel_values(1)
+    input_ids = [100] * 50 + [IMG] * 100  # partial, no complete image
+
+    new_ids, _, new_pv, _, new_grids = _trim_multimodal_to_match(input_ids, pv, shape, grids)
+
+    assert new_pv is None
+    assert new_grids is None
+    assert sum(1 for t in new_ids if t == IMG) == 0
+
+
+def test_prepare_sample_vlm_seq_len_truncation():
+    sample = _make_vlm_sample(5, text_per_image=200, completion=500)
+    assert len(sample.prompt_ids) + len(sample.completion_ids) > 4096
+
+    mb = prepare_sample(sample, seq_len=4096)
+
+    img_tokens = sum(1 for t in mb.input_ids if t == IMG)
+    features = sum(g[0] * g[1] * g[2] // 4 for g in mb.image_grid_thw)
+    assert img_tokens == features
+    assert len(mb.input_ids) == len(mb.loss_mask) == len(mb.advantages)
+
+
+def test_prepare_sample_vlm_already_truncated_by_vllm():
+    """vLLM left-truncates prompt to max_model_len, losing image tokens,
+    but pixel_values still has all images."""
+    pv, shape, grids = _make_pixel_values(5)
+    partial = 516
+    prompt_ids = [100] * 50 + [IMG] * partial  # truncated first image
+    for _ in range(3):
+        prompt_ids += [100] * 50 + [IMG] * TOKENS_PER_IMG
+    prompt_ids += [100] * 50
+    completion_ids = [101] * (4096 - len(prompt_ids))
+
+    sample = TrainingSample(
+        prompt_ids=prompt_ids,
+        prompt_mask=[False] * len(prompt_ids),
+        completion_ids=completion_ids,
+        completion_mask=[True] * len(completion_ids),
+        completion_logprobs=[-0.5] * len(completion_ids),
+        completion_temperatures=[0.7] * len(completion_ids),
+        advantage=1.0,
+        pixel_values=pv,
+        pixel_values_shape=shape,
+        image_grid_thw=grids,
+    )
+    assert len(sample.prompt_ids) + len(sample.completion_ids) == 4096
+
+    mb = prepare_sample(sample, seq_len=4096)
+
+    img_tokens = sum(1 for t in mb.input_ids if t == IMG)
+    features = sum(g[0] * g[1] * g[2] // 4 for g in mb.image_grid_thw)
+    assert img_tokens == features
+    assert len(mb.input_ids) == len(mb.loss_mask) == len(mb.advantages)
