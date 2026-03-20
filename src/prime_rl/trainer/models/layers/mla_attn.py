@@ -1,0 +1,204 @@
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
+from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.checkpointing import run_with_optional_checkpoint, should_checkpoint
+from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
+from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb_interleave
+
+try:
+    from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_bwd
+    from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla_fwd_interface
+except ImportError:
+    sparse_mla_fwd_interface = None  # type: ignore
+    sparse_mla_bwd = None  # type: ignore
+
+
+class _SparseMLA(torch.autograd.Function):
+    """Autograd wrapper for tilelang sparse MLA forward/backward kernels."""
+
+    @staticmethod
+    def forward(ctx, q, kv, indices, sm_scale):
+        out, lse = sparse_mla_fwd_interface(q, kv, indices, sm_scale=sm_scale)
+        ctx.save_for_backward(q, kv, out, indices, lse)
+        ctx.sm_scale = sm_scale
+        return out
+
+    @staticmethod
+    def backward(ctx, do):
+        q, kv, out, indices, lse = ctx.saved_tensors
+        dq, dkv = sparse_mla_bwd(q, kv, out, do.contiguous(), indices, lse, sm_scale=ctx.sm_scale)
+        return dq, dkv, None, None
+
+
+class LayerNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim, dtype=torch.float32))
+        self.bias = nn.Parameter(torch.zeros(dim, dtype=torch.float32))
+
+    def forward(self, x: torch.Tensor):
+        return F.layer_norm(x.float(), (self.dim,), self.weight.float(), self.bias.float(), self.eps).type_as(x)
+
+
+class Indexer(nn.Module):
+    def __init__(self, config: GlmMoeDsaConfig):
+        super().__init__()
+        if config.q_lora_rank is None:
+            raise ValueError("Sparse indexer requires q_lora_rank to be set")
+
+        self.n_head = config.index_n_heads
+        self.head_dim = config.index_head_dim
+        self.rope_dim = config.qk_rope_head_dim
+        self.wq_b = nn.Linear(config.q_lora_rank, self.n_head * self.head_dim, bias=False)
+        self.wk = nn.Linear(config.hidden_size, self.head_dim, bias=config.attention_bias)
+        self.k_norm = LayerNorm(dim=self.head_dim, eps=1e-6)
+        self.weights_proj = nn.Linear(config.hidden_size, self.n_head, bias=False)
+        self.weight_scale = (self.head_dim**-0.5) * (self.n_head**-0.5)
+
+    @torch.no_grad()
+    def compute_sparse_indices(
+        self,
+        hidden_states: torch.Tensor,
+        q_latent: torch.Tensor,
+        ks: torch.Tensor,
+        ke: torch.Tensor,
+        index_topk: int,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        total_tokens = hidden_states.shape[1]
+        assert index_topk % 64 == 0, f"index_topk must be divisible by 64 (block_I), got {index_topk}"
+
+        q_idx = self.wq_b(q_latent[0]).view(total_tokens, self.n_head, self.head_dim)
+        k_idx = self.k_norm(self.wk(hidden_states[0]))
+        w = self.weights_proj(hidden_states[0])
+
+        q_pe = q_idx[..., : self.rope_dim]
+        q_nope = q_idx[..., self.rope_dim :]
+        k_pe = k_idx[..., : self.rope_dim]
+        k_nope = k_idx[..., self.rope_dim :]
+
+        cos, sin = position_embeddings
+        q_pe = q_pe.unsqueeze(0).transpose(1, 2)
+        k_pe = k_pe.unsqueeze(0).unsqueeze(1)
+        q_pe, k_pe = apply_rotary_pos_emb_interleave(q_pe, k_pe, cos, sin)
+        q_pe = q_pe.transpose(1, 2).squeeze(0)
+        k_pe = k_pe.squeeze(1).squeeze(0)
+
+        q_idx = torch.cat([q_pe, q_nope], dim=-1)
+        k_idx = torch.cat([k_pe, k_nope], dim=-1)
+
+        indices = fp8_indexer(q_idx, k_idx, w, ks, ke, index_topk, self.weight_scale)
+        return indices.view(1, total_tokens, 1, index_topk)
+
+
+class GlmMoeDsaAttention(nn.Module):
+    supports_mla_up_proj_activation_checkpointing = True
+
+    def __init__(self, config: GlmMoeDsaConfig):
+        super().__init__()
+        self.config = config
+        self.num_heads = config.num_attention_heads
+        self.kv_lora_rank = config.kv_lora_rank
+        self.qk_rope_head_dim = config.qk_rope_head_dim
+        self.qk_nope_head_dim = config.qk_nope_head_dim
+        self.qk_head_dim = config.qk_head_dim
+        self.v_head_dim = config.v_head_dim
+
+        self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=config.attention_bias)
+        self.q_a_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.q_lora_rank, eps=config.rms_norm_eps))
+        self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.qk_head_dim, bias=False)
+
+        self.kv_a_proj_with_mqa = nn.Linear(
+            config.hidden_size,
+            self.kv_lora_rank + self.qk_rope_head_dim,
+            bias=config.attention_bias,
+        )
+        self.kv_a_layernorm = RMSNorm(RMSNormConfig(hidden_size=self.kv_lora_rank, eps=config.rms_norm_eps))
+        self.kv_b_proj = nn.Linear(
+            self.kv_lora_rank,
+            self.num_heads * (self.qk_nope_head_dim + self.v_head_dim),
+            bias=False,
+        )
+
+        self.o_proj = nn.Linear(self.num_heads * self.v_head_dim, config.hidden_size, bias=config.attention_bias)
+        self.indexer = Indexer(config)
+        self.scaling = self.qk_head_dim ** (-0.5)
+
+    def _mla_latents(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
+        compressed_kv = self.kv_a_proj_with_mqa(hidden_states)
+        k_compressed, k_rope = compressed_kv.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+        return q_latent, self.kv_a_layernorm(k_compressed), k_rope
+
+    def _mla_up_proj(
+        self,
+        q_latent: torch.Tensor,
+        k_compressed_normed: torch.Tensor,
+        k_rope: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size, total_tokens, _ = q_latent.shape
+        q_full = self.q_b_proj(q_latent).view(batch_size, total_tokens, self.num_heads, self.qk_head_dim)
+        q_nope, q_rope = q_full.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+
+        q_rope_r = q_rope.transpose(1, 2)
+        k_rope_r = k_rope.unsqueeze(1)
+        cos, sin = position_embeddings
+        q_rope_r, k_rope_r = apply_rotary_pos_emb_interleave(q_rope_r, k_rope_r, cos, sin)
+        q_rope = q_rope_r.transpose(1, 2)
+        k_rope = k_rope_r.squeeze(1)
+
+        kv_b_w = self.kv_b_proj.weight.view(self.num_heads, self.qk_nope_head_dim + self.v_head_dim, self.kv_lora_rank)
+        w_k_nope = kv_b_w[:, : self.qk_nope_head_dim, :]
+        w_v = kv_b_w[:, self.qk_nope_head_dim :, :]
+        q_absorbed = torch.einsum("bshd,hdk->bshk", q_nope, w_k_nope)
+
+        sparse_q = torch.cat([q_absorbed, q_rope], dim=-1)
+        sparse_kv = torch.cat([k_compressed_normed, k_rope], dim=-1).unsqueeze(2)
+
+        sentinel = torch.zeros(batch_size, 1, 1, sparse_kv.shape[-1], dtype=sparse_kv.dtype, device=sparse_kv.device)
+        sparse_kv = torch.cat([sparse_kv, sentinel], dim=1)
+        return sparse_q, sparse_kv, w_v
+
+    def _mla_unabsorb(self, out: torch.Tensor, w_v: torch.Tensor) -> torch.Tensor:
+        return torch.einsum("bshk,hdk->bshd", out, w_v)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        ks: torch.Tensor | None = None,
+        ke: torch.Tensor | None = None,
+        checkpoint_mla_up_proj: bool | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        batch_size, total_tokens, _ = hidden_states.shape
+
+        if checkpoint_mla_up_proj is None:
+            checkpoint_mla_up_proj = should_checkpoint(self, "mla_up_proj")
+
+        q_latent, k_compressed_normed, k_rope = self._mla_latents(hidden_states)
+
+        indices = self.indexer.compute_sparse_indices(
+            hidden_states, q_latent, ks, ke, self.config.index_topk, position_embeddings
+        )
+
+        sparse_q, sparse_kv, w_v = run_with_optional_checkpoint(
+            checkpoint_mla_up_proj,
+            self._mla_up_proj,
+            q_latent,
+            k_compressed_normed,
+            k_rope,
+            position_embeddings=position_embeddings,
+        )
+
+        out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)
+
+        out = run_with_optional_checkpoint(checkpoint_mla_up_proj, self._mla_unabsorb, out, w_v)
+
+        out = out.reshape(batch_size, total_tokens, -1)
+        return self.o_proj(out), None

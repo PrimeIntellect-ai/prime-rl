@@ -115,13 +115,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        if isinstance(self.mlp, MoE):
-            hidden_states = self.mlp(
-                hidden_states,
-                routed_experts=routed_experts,
-            )
-        else:
-            hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
         hidden_states = residual + hidden_states
         return hidden_states
 
