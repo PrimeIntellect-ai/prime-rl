@@ -190,8 +190,11 @@ class PrimeMonitor(Monitor):
             return None
 
         run_id = response.json()["run"]["id"]
-        dashboard_url = f"{frontend_url.rstrip('/')}/dashboard/training/{run_id}"
-        self.logger.success(f"Monitor run at:\n  {dashboard_url}")
+        if frontend_url:
+            dashboard_url = f"{frontend_url.rstrip('/')}/dashboard/training/{run_id}"
+            self.logger.success(f"Monitor run at: {dashboard_url}")
+        else:
+            self.logger.success(f"Registered platform run {run_id}")
         self._registered = True
         return run_id
 
