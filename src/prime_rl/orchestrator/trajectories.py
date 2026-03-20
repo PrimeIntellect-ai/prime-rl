@@ -156,6 +156,7 @@ def _tokenize_step_from_messages(
     )
 
     split_idx = _common_prefix_len(prompt_ids, full_ids)
+    original_prompt_len = len(prompt_ids)
 
     prompt_ids = full_ids[:split_idx]
     completion_ids = full_ids[split_idx:]
@@ -170,6 +171,7 @@ def _tokenize_step_from_messages(
         "completion_logprobs": completion_logprobs,
         "routed_experts": None,
         "prompt_prefix_len": split_idx,
+        "original_prompt_len": original_prompt_len,
     }
 
 
@@ -211,13 +213,15 @@ def pretokenize_rollout_trajectory(
             continue
 
         reconstructed = _tokenize_step_from_messages(step, tokenizer, tools=tools, processor=processor)
-        if reconstructed["prompt_prefix_len"] < len(reconstructed["prompt_ids"]):
+        if reconstructed["prompt_prefix_len"] < reconstructed["original_prompt_len"]:
             logger.debug(
                 f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "
-                f"Using longest common prefix length {reconstructed['prompt_prefix_len']}."
+                f"Using longest common prefix length {reconstructed['prompt_prefix_len']} "
+                f"(original prompt had {reconstructed['original_prompt_len']} tokens)."
             )
 
         reconstructed.pop("prompt_prefix_len")
+        reconstructed.pop("original_prompt_len")
         step["tokens"] = reconstructed
 
     return True
