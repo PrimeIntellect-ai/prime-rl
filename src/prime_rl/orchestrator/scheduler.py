@@ -377,6 +377,7 @@ class Scheduler:
             self.update_policy_task = asyncio.create_task(self.update_policy_loop())
         else:
             self.ckpt_step = step
+            self.checkpoint_ready.set()
 
         batch_start_time = time.perf_counter()
 
