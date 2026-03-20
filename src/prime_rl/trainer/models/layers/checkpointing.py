@@ -1,4 +1,5 @@
 from collections.abc import Callable, Iterable
+from functools import partial
 from typing import TypeVar
 
 import torch.nn as nn
@@ -26,10 +27,11 @@ _SELECTIVE_AC_ATTR = "_prime_rl_selective_ac_targets"
 T = TypeVar("T")
 
 
-def run_with_optional_checkpoint(enabled: bool, function: Callable[..., T], *args) -> T:
+def run_with_optional_checkpoint(enabled: bool, function: Callable[..., T], *args, **kwargs) -> T:
+    checkpoint_function = partial(function, **kwargs) if kwargs else function
     if not enabled:
-        return function(*args)
-    return checkpoint(function, *args, use_reentrant=False, preserve_rng_state=False)
+        return checkpoint_function(*args)
+    return checkpoint(checkpoint_function, *args, use_reentrant=False, preserve_rng_state=False)
 
 
 def _supports_attention_selective(layer: nn.Module) -> bool:

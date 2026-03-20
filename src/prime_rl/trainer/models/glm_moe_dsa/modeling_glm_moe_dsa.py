@@ -214,19 +214,13 @@ class GlmMoeDsaAttention(nn.Module):
             hidden_states, q_latent, ks, ke, self.config.index_topk, position_embeddings
         )
 
-        def _run_mla_up_proj(
-            q_latent: torch.Tensor,
-            k_compressed_normed: torch.Tensor,
-            k_rope: torch.Tensor,
-        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            return self._mla_up_proj(q_latent, k_compressed_normed, k_rope, position_embeddings)
-
         sparse_q, sparse_kv, w_v = run_with_optional_checkpoint(
             checkpoint_mla_up_proj,
-            _run_mla_up_proj,
+            self._mla_up_proj,
             q_latent,
             k_compressed_normed,
             k_rope,
+            position_embeddings=position_embeddings,
         )
 
         out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)

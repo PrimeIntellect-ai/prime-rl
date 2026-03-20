@@ -174,28 +174,23 @@ class FlashAttention(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         query_states, key_states, value_states = self._project_qkv(hidden_states)
 
-        def _run_qk_norm_rope(
-            q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
-        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            return self._qk_norm_rope(q, k, v, position_embeddings)
-
         query_states, key_states, value_states = run_with_optional_checkpoint(
             checkpoint_qk_norm_rope,
-            _run_qk_norm_rope,
+            self._qk_norm_rope,
             query_states,
             key_states,
             value_states,
+            position_embeddings=position_embeddings,
         )
-
-        def _run_attention_core(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-            return self._attention_core(q, k, v, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
 
         attn_output = run_with_optional_checkpoint(
             checkpoint_attention_sdpa,
-            _run_attention_core,
+            self._attention_core,
             query_states,
             key_states,
             value_states,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
         )
         attn_output = self.o_proj(attn_output)
         return attn_output, None
@@ -316,17 +311,13 @@ class SDPAAttention(nn.Module):
 
         query_states, key_states, value_states = self._project_qkv(hidden_states)
 
-        def _run_qk_norm_rope(
-            q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
-        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            return self._qk_norm_rope(q, k, v, position_embeddings)
-
         query_states, key_states, value_states = run_with_optional_checkpoint(
             checkpoint_qk_norm_rope,
-            _run_qk_norm_rope,
+            self._qk_norm_rope,
             query_states,
             key_states,
             value_states,
+            position_embeddings=position_embeddings,
         )
         attn_output = run_with_optional_checkpoint(
             checkpoint_attention_sdpa,
