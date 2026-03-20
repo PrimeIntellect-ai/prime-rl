@@ -97,8 +97,6 @@ class Indexer(nn.Module):
 
 
 class GlmMoeDsaAttention(nn.Module):
-    supports_mla_up_proj_activation_checkpointing = True
-
     def __init__(self, config: GlmMoeDsaConfig):
         super().__init__()
         self.config = config

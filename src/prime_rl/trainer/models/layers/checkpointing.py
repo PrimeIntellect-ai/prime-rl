@@ -1,5 +1,6 @@
 from collections.abc import Callable, Iterable
 from functools import partial
+import inspect
 from typing import TypeVar
 
 import torch
@@ -53,10 +54,11 @@ def get_supported_targets(layer: nn.Module) -> frozenset[str]:
     supported_targets = {"norm"}
     self_attn = getattr(layer, "self_attn", None)
     mlp = getattr(layer, "mlp", None)
+    self_attn_forward_params = set(inspect.signature(self_attn.forward).parameters) if self_attn is not None else set()
 
-    if getattr(self_attn, "supports_attention_sdpa_activation_checkpointing", False):
+    if "checkpoint_attention_sdpa" in self_attn_forward_params:
         supported_targets.add("attention_sdpa")
-    if getattr(self_attn, "supports_mla_up_proj_activation_checkpointing", False):
+    if "checkpoint_mla_up_proj" in self_attn_forward_params:
         supported_targets.add("mla_up_proj")
     if hasattr(mlp, "_run_routed_experts"):
         supported_targets.add("routed_experts")

@@ -49,8 +49,6 @@ class AttentionConfig:
 class FlashAttention(nn.Module):
     """Flash Attention"""
 
-    supports_attention_sdpa_activation_checkpointing = True
-
     _funcs = {
         2: flash_attn_varlen_func,
         3: flash_attn_3_varlen_func,
@@ -168,8 +166,6 @@ class FlashAttention(nn.Module):
 
 class SDPAAttention(nn.Module):
     """SDPA Attention"""
-
-    supports_attention_sdpa_activation_checkpointing = True
 
     def __init__(self, config: AttentionConfig):
         super().__init__()
