@@ -811,12 +811,14 @@ def forward(
     # Multimodal fields (Qwen3-VL)
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
     image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
+    token_weight: Tensor | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
         "input_ids": input_ids,
         "labels": labels,
         "temperature": temperature,
+        "token_weight": token_weight,
     }
 
     # For multimodal (VLM), don't pass position_ids - let the model compute MRoPE internally

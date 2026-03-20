@@ -187,26 +187,83 @@ def train(config: SFTConfig):
         case _:
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
+    def _compute_token_weight(
+        loss_mask: torch.Tensor,
+        sample_ids: torch.Tensor | None,
+        num_samples: int,
+        use_cp: bool,
+        cp_group_: dist.ProcessGroup | None,
+    ) -> torch.Tensor:
+        """Compute per-token weight = 1/|O_c| for sample-level normalization.
+
+        Returns a [B, S] tensor where each unmasked token gets weight 1/(number of
+        unmasked tokens in its sample). Masked tokens get weight 0.
+        """
+        B, S = loss_mask.shape
+
+        if config.data.pack_function == "stack":
+            per_row_count = loss_mask.sum(dim=1, keepdim=True).float()
+            token_weight = torch.where(loss_mask & (per_row_count > 0), 1.0 / per_row_count, 0.0)
+            return token_weight
+
+        # cat packing: use sample_ids to group tokens
+        mask = loss_mask[0]
+        per_sample_count = torch.zeros(num_samples, device=mask.device, dtype=torch.float)
+        per_sample_count.scatter_add_(0, sample_ids[mask], torch.ones(mask.sum(), device=mask.device))
+
+        if use_cp and cp_group_ is not None:
+            dist.all_reduce(per_sample_count, op=dist.ReduceOp.SUM, group=cp_group_)
+
+        token_weight = torch.zeros(S, device=mask.device)
+        valid_counts = per_sample_count[sample_ids[mask]]
+        token_weight[mask] = torch.where(valid_counts > 0, 1.0 / valid_counts, 0.0)
+        return token_weight.unsqueeze(0)
+
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+        """Forward pass returning (loss_sum, count).
+        token normalization: (sum of per-token losses, token count)
+        sample normalization: (sum of per-sample mean losses, sample count)
+        """
         input_ids = micro_batch["input_ids"].to("cuda")
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
 
+        # Detect sample boundaries from position_ids resets before CP sharding
+        sample_ids = None
+        num_samples = 0
+        if config.loss_normalization == "sample" and config.data.pack_function == "cat":
+            pos = position_ids[0]
+            is_boundary = torch.zeros_like(pos, dtype=torch.bool)
+            is_boundary[0] = True
+            is_boundary[1:] = pos[1:] <= pos[:-1]
+            sample_ids = is_boundary.cumsum(0) - 1
+            num_samples = sample_ids[-1].item() + 1
+
         if cp_enabled:
             input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+            if sample_ids is not None:
+                sample_ids = shard_for_cp(sample_ids.unsqueeze(0), cp_rank=cp_rank, cp_world_size=cp_size).squeeze(0)
 
         token_count = loss_mask.sum(dtype=torch.int64)
+
+        # Compute per-token sample weights for fused CE with sample normalization.
+        # The fused kernel applies these weights to both loss and gradients internally.
+        token_weight = None
+        if config.loss_impl == "liger_fused" and config.loss_normalization == "sample":
+            token_weight = _compute_token_weight(loss_mask, sample_ids, num_samples, cp_enabled, cp_group)
 
         with maybe_activation_offloading(config.model.ac_offloading):
             if config.loss_impl == "liger_fused":
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FusedCrossEntropyOutputLinear.IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
-                loss_sum = out["loss"] * token_count
+                out = forward(model, input_ids, position_ids, labels=masked_target_ids, token_weight=token_weight)
+                if config.loss_normalization == "token":
+                    loss_sum = out["loss"] * token_count
+                else:
+                    loss_sum = out["loss"]
             else:
                 out = forward(model, input_ids, position_ids)
                 logits = out["logits"]
@@ -216,7 +273,65 @@ def train(config: SFTConfig):
                 del logits
 
         del out
-        return loss_sum, token_count
+
+        if config.loss_normalization == "token":
+            return loss_sum, token_count
+
+        # For liger_fused + sample, the fused kernel already applied per-sample weighting.
+        # loss_sum = Σ (token_weight * per_token_loss) = Σ_c (1/|O_c|) * Σ_{t∈O_c} ℓ_t
+        # Just need to return the sample count.
+        if config.loss_impl == "liger_fused":
+            if config.data.pack_function == "cat":
+                per_sample_token_count = loss_mask.new_zeros(num_samples, dtype=torch.float)
+                per_sample_token_count.scatter_add_(
+                    0, sample_ids[loss_mask[0]], torch.ones(loss_mask[0].sum(), device=loss_mask.device)
+                )
+                if cp_enabled:
+                    global_count = per_sample_token_count.detach().clone()
+                    dist.all_reduce(global_count, op=dist.ReduceOp.SUM, group=cp_group)
+                else:
+                    global_count = per_sample_token_count
+                valid = global_count > 0
+            elif config.data.pack_function == "stack":
+                valid = loss_mask.sum(dim=1) > 0
+            sample_count = (
+                valid.sum(dtype=torch.int64) if cp_rank == 0 else torch.tensor(0, dtype=torch.int64, device="cuda")
+            )
+            return loss_sum, sample_count
+
+        # Per-sample mean loss, then sum across samples (Nemotron Stage 2)
+        if config.data.pack_function == "stack":
+            per_sample_token_count = loss_mask.sum(dim=1).float()
+            valid = per_sample_token_count > 0
+            per_sample_loss = (token_loss * loss_mask).sum(dim=1)
+            per_sample_mean = torch.where(
+                valid, per_sample_loss / per_sample_token_count, per_sample_loss.new_zeros(())
+            )
+            return per_sample_mean.sum(), valid.sum(dtype=torch.int64)
+
+        elif config.data.pack_function == "cat":
+            # Group by sample using position_ids-derived boundaries
+            tl = token_loss[0]
+            mask = loss_mask[0]
+            masked_ids = sample_ids[mask]
+            masked_losses = tl[mask]
+            per_sample_loss = tl.new_zeros(num_samples)
+            per_sample_loss.scatter_add_(0, masked_ids, masked_losses)
+            per_sample_token_count = tl.new_zeros(num_samples)
+            per_sample_token_count.scatter_add_(0, masked_ids, torch.ones_like(masked_losses))
+
+            if cp_enabled:
+                global_token_count = per_sample_token_count.detach().clone()
+                dist.all_reduce(global_token_count, op=dist.ReduceOp.SUM, group=cp_group)
+            else:
+                global_token_count = per_sample_token_count
+
+            valid = global_token_count > 0
+            per_sample_mean = torch.where(valid, per_sample_loss / global_token_count, per_sample_loss.new_zeros(()))
+            sample_count = (
+                valid.sum(dtype=torch.int64) if cp_rank == 0 else torch.tensor(0, dtype=torch.int64, device="cuda")
+            )
+            return per_sample_mean.sum(), sample_count
 
     maybe_record_function = nullcontext
 

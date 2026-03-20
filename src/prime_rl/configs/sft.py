@@ -232,6 +232,15 @@ class SFTConfig(BaseConfig):
         ),
     ] = "torch"
 
+    loss_normalization: Annotated[
+        Literal["token", "sample"],
+        Field(
+            description="Loss normalization mode. "
+            "'token' averages over all output tokens globally. "
+            "'sample' computes per-sample mean loss then averages across samples.",
+        ),
+    ] = "token"
+
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
