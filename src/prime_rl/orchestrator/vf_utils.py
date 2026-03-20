@@ -206,15 +206,13 @@ async def evaluate(
           Instead, we use our generate() wrapper which round-robins clients.
 
     """
-    examples = env.get_eval_inputs(num_examples=num_examples, rollouts_per_example=1)
+    inputs = env._get_eval_inputs(num_examples, 1)
     outputs = await generate(
         env=env,
         clients=clients,
         get_client=get_client,
         model_name=model_name,
-        examples=examples,
-        # Keep one unique input per example here. generate()/run_group() handles
-        # producing grouped rollouts so rubric.score_group() sees the full group.
+        examples=inputs,
         rollouts_per_example=rollouts_per_example,
         sampling_args=sampling_args,
         max_retries=max_retries,
