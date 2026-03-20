@@ -32,7 +32,7 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.moe import LatentMoE, MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -154,8 +154,8 @@ def freeze_moe_router(model: nn.Module) -> None:
         if mlp is None:
             continue
 
-        # Custom implementation: MoE class with router attribute
-        if isinstance(mlp, MoE):
+        # Custom implementation: MoE/LatentMoE class with router attribute
+        if isinstance(mlp, (MoE, LatentMoE)):
             for param in mlp.router.parameters():
                 param.requires_grad = False
                 num_frozen += 1
@@ -394,7 +394,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         transformer_layers = language_model.layers
 
     for transformer_block in transformer_layers:
-        if parallel_dims.ep_enabled and isinstance(transformer_block.mlp, MoE):
+        if parallel_dims.ep_enabled and isinstance(transformer_block.mlp, (MoE, LatentMoE)):
             fully_shard(transformer_block.mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
 
             transformer_block.mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
@@ -447,7 +447,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
-            if isinstance(next_transformer_block.mlp, MoE):
+            if isinstance(next_transformer_block.mlp, (MoE, LatentMoE)):
                 transformer_block.set_modules_to_forward_prefetch(
                     [next_transformer_block, next_transformer_block.mlp.experts]
                 )
@@ -469,7 +469,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
-            if isinstance(prev_transformer_block.mlp, MoE):
+            if isinstance(prev_transformer_block.mlp, (MoE, LatentMoE)):
                 transformer_block.set_modules_to_backward_prefetch(
                     [prev_transformer_block, prev_transformer_block.mlp.experts]
                 )
@@ -658,7 +658,7 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 def apply_ep(model: nn.Module, parallel_dims: ParallelDims):
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
-        if isinstance(transformer_block.mlp, MoE):
+        if isinstance(transformer_block.mlp, (MoE, LatentMoE)):
             parallelize_module(
                 transformer_block.mlp.experts,
                 device_mesh=parallel_dims.get_mesh("ep"),
