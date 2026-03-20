@@ -14,6 +14,12 @@ type = "nccl"
 type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 2
+num_infer_replicas = 2
+
+[inference.deployment]
+type = "disaggregated"
+num_prefill_nodes = 1
+num_decode_nodes = 1
 
 [slurm]
 job_name = "hendrycks-math-rl-glm-air"
@@ -37,6 +43,7 @@ lr = 1e-6
 [orchestrator]
 batch_size = 128
 oversampling_factor = 4
+# use_token_client = false
 
 [orchestrator.sampling]
 max_tokens = 2048
@@ -53,5 +60,8 @@ hard_threshold = 0.0
 seed = 42
 
 
+[inference]
+enable_expert_parallel = true
+
 [inference.parallel]
-tp = 8
+tp = 1

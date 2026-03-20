@@ -113,3 +113,114 @@ def monkey_patch_chat_completion_logprobs():
     # Patch OAI types
     openai.types.chat.chat_completion.Choice = ChoiceAny
     openai.types.chat.chat_completion.ChatCompletion = ModdedChatCompletion
+
+
+def monkey_patch_session_id_header():
+    """Patches verifiers' OpenAI clients to send X-Session-ID as a per-request
+    header derived from the rollout's example_id. This enables sticky routing
+    at the inference router level for KV cache affinity."""
+    from typing import cast
+
+    from openai.types.chat import ChatCompletion
+
+    from verifiers.clients.openai_chat_completions_client import (
+        OpenAIChatCompletionsClient,
+        handle_openai_overlong_prompt,
+    )
+    from verifiers.clients.openai_chat_completions_token_client import (
+        OpenAIChatCompletionsTokenClient,
+        _has_multimodal_content,
+    )
+    from verifiers.types import SamplingArgs, State
+
+    def _get_session_header(state) -> dict[str, str] | None:
+        if state is None:
+            return None
+        example_id = state.get("example_id")
+        if example_id is None:
+            return None
+        return {"X-Session-ID": str(example_id)}
+
+    @handle_openai_overlong_prompt
+    async def patched_chat_get_native_response(self, prompt, model, sampling_args, tools=None, **kwargs):
+        def normalize_sampling_args(sa: SamplingArgs):
+            sa = dict(sa)
+            if "max_tokens" in sa:
+                sa["max_completion_tokens"] = sa.pop("max_tokens")
+            return {k: v for k, v in sa.items() if v is not None}
+
+        extra_headers = _get_session_header(kwargs.get("state"))
+
+        has_audio = False
+        for message in prompt:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                for part in content:
+                    part_type = None
+                    if isinstance(part, dict):
+                        part_type = str(part.get("type", ""))
+                    elif hasattr(part, "type"):
+                        part_type = str(getattr(part, "type"))
+                    if part_type and part_type.startswith("input_audio"):
+                        has_audio = True
+                        break
+                if has_audio:
+                    break
+
+        if has_audio and "modalities" not in sampling_args:
+            sampling_args = {**sampling_args, "modalities": ["text"]}
+
+        if tools:
+            return await self.client.chat.completions.create(
+                model=model, messages=prompt, tools=tools,
+                extra_headers=extra_headers, **normalize_sampling_args(sampling_args),
+            )
+        return await self.client.chat.completions.create(
+            model=model, messages=prompt,
+            extra_headers=extra_headers, **normalize_sampling_args(sampling_args),
+        )
+
+    OpenAIChatCompletionsClient.get_native_response = patched_chat_get_native_response
+
+    @handle_openai_overlong_prompt
+    async def patched_token_get_native_response(self, prompt, model, sampling_args, tools=None, **kwargs):
+        def normalize_sampling_args(sa: SamplingArgs):
+            sa = dict(sa)
+            if "max_tokens" in sa:
+                sa["max_completion_tokens"] = sa.pop("max_tokens")
+            sa["logprobs"] = True
+            extra_body = dict(return_token_ids=True)
+            if "extra_body" in sa:
+                sa["extra_body"] = {**sa["extra_body"], **extra_body}
+            else:
+                sa["extra_body"] = extra_body
+            return {k: v for k, v in sa.items() if v is not None}
+
+        sampling_args = normalize_sampling_args(sampling_args)
+        state = cast(State, kwargs.pop("state"))
+
+        extra_headers = _get_session_header(state)
+
+        has_multimodal = _has_multimodal_content(prompt) or any(
+            _has_multimodal_content(step["prompt"]) for step in state["trajectory"]
+        )
+        if len(state["trajectory"]) == 0 or has_multimodal:
+            return await OpenAIChatCompletionsClient.get_native_response(
+                self, prompt, model, sampling_args, tools, state=state
+            )
+        prompt_ids = await self.get_prompt_ids(state, prompt, tools)
+        if prompt_ids is None:
+            return await OpenAIChatCompletionsClient.get_native_response(
+                self, prompt, model, sampling_args, tools, state=state
+            )
+        extra_body = sampling_args.pop("extra_body", {})
+        body = dict(
+            model=model, messages=prompt, tools=tools, tokens=prompt_ids,
+            **sampling_args, **extra_body,
+        )
+        return await self.client.post(
+            "/chat/completions/tokens", body=body, cast_to=ChatCompletion,
+            extra_headers=extra_headers,
+        )
+
+    OpenAIChatCompletionsTokenClient.get_native_response = patched_token_get_native_response
