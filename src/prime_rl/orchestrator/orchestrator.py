@@ -11,11 +11,7 @@ import tomli_w
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
-from prime_rl.orchestrator.patches import (
-    monkey_patch_chat_completion_logprobs,
-    monkey_patch_oai_iterable_types,
-    monkey_patch_session_id_header,
-)
+from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout, offload_images_to_disk
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
@@ -26,10 +22,6 @@ monkey_patch_oai_iterable_types()
 
 # This monkey patch is necessary to avoid heavy CPU overhead from constructing the OAI ChatCompletion Pydantic model with logprobs, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1189
 monkey_patch_chat_completion_logprobs()
-
-# X-Session-ID header for sticky routing / KV cache affinity in disaggregated P/D inference.
-# Also applied in env server subprocess via vf_utils._run_env_server_with_patches.
-monkey_patch_session_id_header()
 
 # Import environment before any other imports
 
