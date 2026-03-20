@@ -5,7 +5,6 @@ import multiprocessing as mp
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
 
 import tomli_w
 
@@ -47,6 +46,7 @@ from prime_rl.orchestrator.utils import (
     get_weight_dir,
     print_benchmark,
     set_semaphore,
+    setup_external_rollout_model,
 )
 from prime_rl.orchestrator.vf_utils import (
     generate,
@@ -76,24 +76,6 @@ from prime_rl.utils.utils import (
     to_col_format,
 )
 from prime_rl.utils.vlm import is_vlm_model
-
-
-def setup_external_rollout_model(config: OrchestratorConfig, logger) -> tuple[Any, str, bool]:
-    """Resolve rollout client/model and whether policy updates should be enabled."""
-    rollout_client_config = config.client
-    rollout_model_name = config.model.name
-    enable_policy_updates = True
-
-    if config.teacher_rollout_model is not None:
-        rollout_client_config = config.teacher_rollout_model.client
-        rollout_model_name = config.teacher_rollout_model.model.name
-        enable_policy_updates = False
-        logger.info(
-            f"Using external teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, "
-            f"model={rollout_model_name})"
-        )
-
-    return rollout_client_config, rollout_model_name, enable_policy_updates
 
 
 @clean_exit
@@ -373,7 +355,7 @@ async def orchestrate(config: OrchestratorConfig):
                 config.weight_broadcast.timeout,
             )
     else:
-        logger.info("Skipping weight broadcast initialization (external rollout model mode)")
+        logger.info("Skipping weight broadcast initialization (SFT distillation mode)")
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")

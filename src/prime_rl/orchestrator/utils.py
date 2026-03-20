@@ -13,7 +13,7 @@ from rich.table import Table
 from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.client_utils import setup_openai_client
 
-from prime_rl.configs.orchestrator import SamplingConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig, SamplingConfig
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.utils import (
     format_num,
@@ -231,3 +231,21 @@ def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_
         return broadcast_weight_dir
 
     raise FileNotFoundError(f"No weight directory found for checkpoint step {step}")
+
+
+def setup_external_rollout_model(config: OrchestratorConfig, logger) -> tuple[Any, str, bool]:
+    """Resolve rollout client/model and whether policy updates should be enabled."""
+    rollout_client_config = config.client
+    rollout_model_name = config.model.name
+    enable_policy_updates = True
+
+    if config.teacher_rollout_model is not None:
+        rollout_client_config = config.teacher_rollout_model.client
+        rollout_model_name = config.teacher_rollout_model.model.name
+        enable_policy_updates = False
+        logger.info(
+            f"Using external teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, "
+            f"model={rollout_model_name})"
+        )
+
+    return rollout_client_config, rollout_model_name, enable_policy_updates
