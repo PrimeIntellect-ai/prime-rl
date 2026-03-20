@@ -800,8 +800,6 @@ class RLConfig(BaseConfig):
             templates_dir = Path(prime_rl.__file__).parent / "templates"
             if self.deployment.type == "single_node":
                 self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
-            elif self.inference is not None and self.inference.deployment.type == "disaggregated":
-                self.slurm.template_path = templates_dir / "disaggregated_rl.sbatch.j2"
             else:
                 self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
         return self

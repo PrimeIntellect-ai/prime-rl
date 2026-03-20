@@ -404,25 +404,29 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
 
         script = template.render(
             **config.slurm.template_vars,
+            is_disaggregated=True,
             config_dir=config_dir,
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
+            num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
+            nodes_per_infer_replica=infer_deploy.num_nodes,
+            num_infer_replicas=config.deployment.num_infer_replicas,
             num_prefill_nodes=infer_deploy.num_prefill_nodes,
             num_decode_nodes=infer_deploy.num_decode_nodes,
-            num_infer_replicas=config.deployment.num_infer_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
             router_port=infer_deploy.router_port,
             prefill_port=infer_deploy.prefill_port,
             decode_port=infer_deploy.decode_port,
-            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
             inference_tp=config.inference.parallel.tp,
+            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            weight_broadcast_type=config.weight_broadcast.type if config.weight_broadcast else None,
+            wandb_shared=config.wandb is not None and config.wandb.shared,
         )
     else:
         script = template.render(
             **config.slurm.template_vars,
+            is_disaggregated=False,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
