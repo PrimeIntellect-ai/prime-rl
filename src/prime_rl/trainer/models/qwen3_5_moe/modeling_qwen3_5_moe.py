@@ -549,9 +549,9 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         # MLP: routed experts + gated shared expert
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-
+        # Routed experts
         routed_output = self.mlp(hidden_states, routed_experts=routed_experts)
-
+        # Gated shared expert
         bs, slen, dim = hidden_states.shape
         hidden_flat = hidden_states.view(-1, dim)
         shared_output = self.shared_expert(hidden_flat)

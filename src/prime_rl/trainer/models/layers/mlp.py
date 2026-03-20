@@ -25,4 +25,5 @@ class MLP(nn.Module):
         self.gate_act_fn = ACT2FN[config.gate_act]
 
     def forward(self, x, routed_experts: torch.Tensor | None = None):
-        return self.down_proj(self.gate_act_fn(self.gate_proj(x)) * self.up_proj(x))
+        down_proj = self.down_proj(self.gate_act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return down_proj
