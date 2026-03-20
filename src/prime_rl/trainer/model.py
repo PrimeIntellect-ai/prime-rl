@@ -333,7 +333,6 @@ def get_model(
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
     )
-    _reset_runtime_moe_buffers(model)
     return model
 
 

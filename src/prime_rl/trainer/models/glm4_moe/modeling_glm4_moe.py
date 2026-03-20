@@ -34,11 +34,6 @@ from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import (
     convert_tt_to_hf_moe,
 )
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.models.layers.checkpointing import (
-    ATTENTION_SELECTIVE_AC_TARGETS,
-    DEFAULT_SELECTIVE_AC_TARGETS,
-    MOE_SELECTIVE_AC_TARGETS,
-)
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -90,13 +85,6 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
-    @property
-    def supported_selective_activation_checkpoint_targets(self) -> frozenset[str]:
-        targets = DEFAULT_SELECTIVE_AC_TARGETS | ATTENTION_SELECTIVE_AC_TARGETS
-        if isinstance(self.mlp, MoE):
-            return targets | MOE_SELECTIVE_AC_TARGETS
-        return targets
-
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
         self,
@@ -110,7 +98,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        hidden_states, _ = self.self_attn.forward_selective(
+        hidden_states, _ = self.self_attn(
             hidden_states,
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,

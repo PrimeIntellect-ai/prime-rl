@@ -106,18 +106,6 @@ class FlashAttention(nn.Module):
             out = out[0]
         return out
 
-    def _project_qkv(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
-        return (
-            query_states.view(hidden_shape),
-            key_states.view(hidden_shape),
-            value_states.view(hidden_shape),
-        )
-
     def _apply_qk_norm(self, query_states: torch.Tensor, key_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.use_qk_norm:
             return query_states, key_states
@@ -131,13 +119,23 @@ class FlashAttention(nn.Module):
             return query_states, key_states
         return self.q_norm(query_states), self.k_norm(key_states)
 
-    def _qk_norm_rope(
+    def forward(
         self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
+        hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+        checkpoint_attention_sdpa: bool | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if checkpoint_attention_sdpa is None:
+            checkpoint_attention_sdpa = should_checkpoint(self, "attention_sdpa")
+
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
+
+        query_states = self.q_proj(hidden_states).view(hidden_shape)
+        key_states = self.k_proj(hidden_states).view(hidden_shape)
+        value_states = self.v_proj(hidden_states).view(hidden_shape)
         query_states, key_states = self._apply_qk_norm(query_states, key_states)
 
         query_states = query_states.transpose(1, 2)
@@ -150,18 +148,20 @@ class FlashAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-        return query_states, key_states, value_states
 
-    def _attention_core(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> torch.Tensor:
-        out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-        return out.contiguous().view(1, out.shape[0], -1)
+        def _run_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+            out = self._compute_attention(q[0], k[0], v[0], cu_seqlens, max_seqlen)
+            return out.contiguous().view(1, out.shape[0], -1)
+
+        attn_output = run_with_optional_checkpoint(
+            checkpoint_attention_sdpa,
+            _run_attention,
+            query_states,
+            key_states,
+            value_states,
+        )
+        attn_output = self.o_proj(attn_output)
+        return attn_output, None
 
     def forward_selective(
         self,
@@ -171,42 +171,12 @@ class FlashAttention(nn.Module):
         max_seqlen: int | None = None,
         checkpoint_attention_sdpa: bool | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        if checkpoint_attention_sdpa is None:
-            checkpoint_attention_sdpa = should_checkpoint(self, "attention_sdpa")
-
-        query_states, key_states, value_states = self._project_qkv(hidden_states)
-
-        query_states, key_states, value_states = self._qk_norm_rope(
-            query_states,
-            key_states,
-            value_states,
-            position_embeddings=position_embeddings,
-        )
-
-        attn_output = run_with_optional_checkpoint(
-            checkpoint_attention_sdpa,
-            self._attention_core,
-            query_states,
-            key_states,
-            value_states,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=max_seqlen,
-        )
-        attn_output = self.o_proj(attn_output)
-        return attn_output, None
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        return self.forward_selective(
+        return self.forward(
             hidden_states,
             position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            checkpoint_attention_sdpa=checkpoint_attention_sdpa,
         )
 
 
@@ -244,18 +214,6 @@ class SDPAAttention(nn.Module):
                 self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
                 self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
 
-    def _project_qkv(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
-        return (
-            query_states.view(hidden_shape),
-            key_states.view(hidden_shape),
-            value_states.view(hidden_shape),
-        )
-
     def _apply_qk_norm(self, query_states: torch.Tensor, key_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.use_qk_norm:
             return query_states, key_states
@@ -269,36 +227,7 @@ class SDPAAttention(nn.Module):
             return query_states, key_states
         return self.q_norm(query_states), self.k_norm(key_states)
 
-    def _qk_norm_rope(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        query_states, key_states = self._apply_qk_norm(query_states, key_states)
-
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
-        value_states = value_states.transpose(1, 2)
-
-        cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-        return query_states, key_states, value_states
-
-    def _attention_core(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-    ) -> torch.Tensor:
-        key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
-        value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
-        out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
-        out = out.transpose(1, 2).contiguous()
-        return out.view(out.shape[0], out.shape[1], -1)
-
-    def forward_selective(
+    def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
@@ -311,17 +240,31 @@ class SDPAAttention(nn.Module):
         if checkpoint_attention_sdpa is None:
             checkpoint_attention_sdpa = should_checkpoint(self, "attention_sdpa")
 
-        query_states, key_states, value_states = self._project_qkv(hidden_states)
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states, key_states, value_states = self._qk_norm_rope(
-            query_states,
-            key_states,
-            value_states,
-            position_embeddings=position_embeddings,
-        )
+        query_states = self.q_proj(hidden_states).view(hidden_shape)
+        key_states = self.k_proj(hidden_states).view(hidden_shape)
+        value_states = self.v_proj(hidden_states).view(hidden_shape)
+        query_states, key_states = self._apply_qk_norm(query_states, key_states)
+
+        query_states = query_states.transpose(1, 2)
+        key_states = key_states.transpose(1, 2)
+        value_states = value_states.transpose(1, 2)
+
+        cos, sin = position_embeddings
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        def _run_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+            k = k.repeat_interleave(self.num_key_value_groups, dim=1)
+            v = v.repeat_interleave(self.num_key_value_groups, dim=1)
+            out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            out = out.transpose(1, 2).contiguous()
+            return out.view(out.shape[0], out.shape[1], -1)
+
         attn_output = run_with_optional_checkpoint(
             checkpoint_attention_sdpa,
-            self._attention_core,
+            _run_attention,
             query_states,
             key_states,
             value_states,
@@ -329,18 +272,20 @@ class SDPAAttention(nn.Module):
         attn_output = self.o_proj(attn_output)
         return attn_output, None
 
-    def forward(
+    def forward_selective(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        checkpoint_attention_sdpa: bool | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        return self.forward_selective(
+        return self.forward(
             hidden_states,
             position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            checkpoint_attention_sdpa=checkpoint_attention_sdpa,
         )
 
 

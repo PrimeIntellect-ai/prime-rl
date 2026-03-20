@@ -2,6 +2,7 @@ from collections.abc import Callable, Iterable
 from functools import partial
 from typing import TypeVar
 
+import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
@@ -131,4 +132,4 @@ def get_supported_targets(layer: nn.Module) -> frozenset[str]:
 
 
 def should_checkpoint(layer: nn.Module, target: str) -> bool:
-    return layer.training and target in get_requested_targets(layer)
+    return torch.is_grad_enabled() and layer.training and target in get_requested_targets(layer)

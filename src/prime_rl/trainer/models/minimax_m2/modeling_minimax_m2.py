@@ -72,7 +72,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, _ = self.self_attn.forward_selective(
+        hidden_states, _ = self.self_attn(
             hidden_states,
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
