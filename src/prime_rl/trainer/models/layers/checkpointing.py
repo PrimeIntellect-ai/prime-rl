@@ -14,16 +14,15 @@ SELECTIVE_AC_TARGETS = (
 )
 _INTERNAL_SELECTIVE_AC_TARGETS = frozenset(
     {
-        "attn_norm",
-        "ffn_norm",
-        "qk_norm_rope",
+        "norm",
         "attention_sdpa",
         "mla_up_proj",
         "routed_experts",
     }
 )
 _SELECTIVE_AC_ATTR = "_prime_rl_selective_ac_targets"
-_SELF_ATTN_SELECTIVE_AC_TARGETS = frozenset({"attn_norm", "qk_norm_rope", "attention_sdpa", "mla_up_proj"})
+_NORM_PATCH_ATTR = "_prime_rl_norm_forward_patched"
+_SELF_ATTN_SELECTIVE_AC_TARGETS = frozenset({"attention_sdpa", "mla_up_proj"})
 _MLP_SELECTIVE_AC_TARGETS = frozenset({"routed_experts"})
 
 T = TypeVar("T")
@@ -44,22 +43,19 @@ def _supports_routed_experts(layer: nn.Module) -> bool:
     return hasattr(getattr(layer, "mlp", None), "_run_routed_experts")
 
 
-def _supports_qk_norm_rope(layer: nn.Module) -> bool:
-    self_attn = getattr(layer, "self_attn", None)
-    return _supports_attention_selective(layer) and getattr(self_attn, "use_qk_norm", False)
-
-
 def _supports_mla_up_proj(layer: nn.Module) -> bool:
     self_attn = getattr(layer, "self_attn", None)
     return getattr(self_attn, "supports_mla_up_proj_activation_checkpointing", False)
 
 
+def _is_norm_module(module: nn.Module) -> bool:
+    return "norm" in type(module).__name__.lower()
+
+
 def _expand_selective_targets(layer: nn.Module, targets: frozenset[str]) -> frozenset[str]:
     expanded_targets: set[str] = set()
     if "norm" in targets:
-        expanded_targets.update({"attn_norm", "ffn_norm"})
-        if _supports_qk_norm_rope(layer):
-            expanded_targets.add("qk_norm_rope")
+        expanded_targets.add("norm")
     if "attention_sdpa" in targets and _supports_attention_selective(layer):
         expanded_targets.add("attention_sdpa")
     if "mla_up_proj" in targets and _supports_mla_up_proj(layer):
@@ -80,6 +76,29 @@ def _set_requested_targets(module: nn.Module | None, targets: frozenset[str]) ->
         setattr(module, _SELECTIVE_AC_ATTR, targets)
 
 
+def _patch_norm_forward(module: nn.Module) -> None:
+    if getattr(module, _NORM_PATCH_ATTR, False):
+        return
+
+    original_forward = module.forward
+
+    def checkpointed_forward(*args, **kwargs):
+        return run_with_optional_checkpoint(should_checkpoint(module, "norm"), original_forward, *args, **kwargs)
+
+    module.forward = checkpointed_forward  # type: ignore[method-assign]
+    setattr(module, _NORM_PATCH_ATTR, True)
+
+
+def _configure_norm_checkpointing(layer: nn.Module, enabled: bool) -> None:
+    norm_targets = frozenset({"norm"}) if enabled else frozenset()
+    for module in layer.modules():
+        if module is layer or not _is_norm_module(module):
+            continue
+        _set_requested_targets(module, norm_targets)
+        if enabled:
+            _patch_norm_forward(module)
+
+
 def set_selective_activation_checkpointing(layer: nn.Module, targets: Iterable[str]) -> None:
     normalized_targets = frozenset(targets)
     invalid_targets = normalized_targets - SELECTIVE_AC_TARGETS
@@ -89,6 +108,7 @@ def set_selective_activation_checkpointing(layer: nn.Module, targets: Iterable[s
     _set_requested_targets(layer, expanded_targets)
     _set_requested_targets(getattr(layer, "self_attn", None), expanded_targets & _SELF_ATTN_SELECTIVE_AC_TARGETS)
     _set_requested_targets(getattr(layer, "mlp", None), expanded_targets & _MLP_SELECTIVE_AC_TARGETS)
+    _configure_norm_checkpointing(layer, "norm" in expanded_targets)
 
 
 def get_requested_targets(layer: nn.Module) -> frozenset[str]:

@@ -52,7 +52,7 @@ class ActivationCheckpointConfig(BaseConfig):
     targets: Annotated[
         list[ActivationCheckpointTarget],
         Field(
-            description="Selective checkpoint targets. `norm` checkpoints decoder RMSNorm stages, MLA latent RMSNorm stages, and folds in QK norm plus RoPE when available. `attention_sdpa` checkpoints the attention-kernel stage regardless of backend. `mla_up_proj` checkpoints MLA Q/KV up-projection work where supported, and `routed_experts` checkpoints routed expert compute in MoE layers.",
+            description="Selective checkpoint targets. `norm` checkpoints every norm module executed inside selected layers, including decoder, attention, MLA, and other model-specific norm blocks. `attention_sdpa` checkpoints the attention-kernel stage regardless of backend. `mla_up_proj` checkpoints MLA Q/KV up-projection work where supported, and `routed_experts` checkpoints routed expert compute in MoE layers.",
         ),
     ] = ["norm"]
 

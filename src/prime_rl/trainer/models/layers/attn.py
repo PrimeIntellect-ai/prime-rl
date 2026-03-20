@@ -169,19 +169,14 @@ class FlashAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
-        checkpoint_qk_norm_rope: bool | None = None,
         checkpoint_attention_sdpa: bool | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        if checkpoint_qk_norm_rope is None:
-            checkpoint_qk_norm_rope = should_checkpoint(self, "qk_norm_rope")
         if checkpoint_attention_sdpa is None:
             checkpoint_attention_sdpa = should_checkpoint(self, "attention_sdpa")
 
         query_states, key_states, value_states = self._project_qkv(hidden_states)
 
-        query_states, key_states, value_states = run_with_optional_checkpoint(
-            checkpoint_qk_norm_rope,
-            self._qk_norm_rope,
+        query_states, key_states, value_states = self._qk_norm_rope(
             query_states,
             key_states,
             value_states,
@@ -309,21 +304,16 @@ class SDPAAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
-        checkpoint_qk_norm_rope: bool | None = None,
         checkpoint_attention_sdpa: bool | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         del cu_seqlens, max_seqlen
 
-        if checkpoint_qk_norm_rope is None:
-            checkpoint_qk_norm_rope = should_checkpoint(self, "qk_norm_rope")
         if checkpoint_attention_sdpa is None:
             checkpoint_attention_sdpa = should_checkpoint(self, "attention_sdpa")
 
         query_states, key_states, value_states = self._project_qkv(hidden_states)
 
-        query_states, key_states, value_states = run_with_optional_checkpoint(
-            checkpoint_qk_norm_rope,
-            self._qk_norm_rope,
+        query_states, key_states, value_states = self._qk_norm_rope(
             query_states,
             key_states,
             value_states,

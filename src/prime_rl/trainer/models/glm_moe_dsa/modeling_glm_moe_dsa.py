@@ -199,21 +199,14 @@ class GlmMoeDsaAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         ks: torch.Tensor | None = None,
         ke: torch.Tensor | None = None,
-        checkpoint_mla_norm: bool | None = None,
         checkpoint_mla_up_proj: bool | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         batch_size, total_tokens, _ = hidden_states.shape
 
-        if checkpoint_mla_norm is None:
-            checkpoint_mla_norm = should_checkpoint(self, "attn_norm")
         if checkpoint_mla_up_proj is None:
             checkpoint_mla_up_proj = should_checkpoint(self, "mla_up_proj")
 
-        q_latent, k_compressed_normed, k_rope = run_with_optional_checkpoint(
-            checkpoint_mla_norm,
-            self._mla_latents,
-            hidden_states,
-        )
+        q_latent, k_compressed_normed, k_rope = self._mla_latents(hidden_states)
 
         indices = self.indexer.compute_sparse_indices(
             hidden_states, q_latent, ks, ke, self.config.index_topk, position_embeddings
@@ -279,11 +272,8 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         ke: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
-        checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
-        checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
-
         residual = hidden_states
-        hidden_states = run_with_optional_checkpoint(checkpoint_attn_norm, self.input_layernorm, hidden_states)
+        hidden_states = self.input_layernorm(hidden_states)
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
@@ -293,7 +283,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = run_with_optional_checkpoint(checkpoint_ffn_norm, self.post_attention_layernorm, hidden_states)
+        hidden_states = self.post_attention_layernorm(hidden_states)
         if isinstance(self.mlp, MoE):
             hidden_states = self.mlp(
                 hidden_states,

@@ -36,7 +36,6 @@ from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.models.layers.checkpointing import run_with_optional_checkpoint, should_checkpoint
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
@@ -82,11 +81,8 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
         cu_seqlens: Optional[torch.LongTensor] = None,
         max_seqlen: Optional[int] = None,
     ) -> torch.Tensor:
-        checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
-        checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
-
         residual = hidden_states
-        hidden_states = run_with_optional_checkpoint(checkpoint_attn_norm, self.input_layernorm, hidden_states)
+        hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
         hidden_states, _ = self.self_attn.forward_selective(
@@ -99,7 +95,7 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = run_with_optional_checkpoint(checkpoint_ffn_norm, self.post_attention_layernorm, hidden_states)
+        hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states

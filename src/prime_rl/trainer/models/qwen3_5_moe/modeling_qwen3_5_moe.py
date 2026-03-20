@@ -15,7 +15,6 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, logging
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.layers.checkpointing import run_with_optional_checkpoint, should_checkpoint
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
@@ -540,11 +539,8 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         max_seqlen: int | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
-        checkpoint_attn_norm = should_checkpoint(self, "attn_norm")
-        checkpoint_ffn_norm = should_checkpoint(self, "ffn_norm")
-
         residual = hidden_states
-        hidden_states = run_with_optional_checkpoint(checkpoint_attn_norm, self.input_layernorm, hidden_states)
+        hidden_states = self.input_layernorm(hidden_states)
 
         # Token mixer
         if self.layer_type == "linear_attention":
@@ -561,7 +557,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
 
         # MLP: routed experts + gated shared expert
         residual = hidden_states
-        hidden_states = run_with_optional_checkpoint(checkpoint_ffn_norm, self.post_attention_layernorm, hidden_states)
+        hidden_states = self.post_attention_layernorm(hidden_states)
 
         routed_output = self.mlp(
             hidden_states,
