@@ -12,8 +12,6 @@ import torch.nn.functional as F
 from torch import nn
 from torchtitan.distributed.expert_parallel import expert_parallel
 
-from prime_rl.trainer.models.layers.checkpointing import run_with_optional_checkpoint, should_checkpoint
-
 
 @dataclass
 class MoEArgs:
@@ -402,13 +400,11 @@ class MoE(nn.Module):
         self,
         x: torch.Tensor,
         routed_experts: torch.Tensor | None = None,
-        checkpoint_routed_experts: bool | None = None,
     ) -> torch.Tensor:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs, slen, top_k)``.
-            checkpoint_routed_experts (bool | None): Whether to checkpoint only routed expert compute.
 
         Returns:
             out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
@@ -421,9 +417,6 @@ class MoE(nn.Module):
             routed_experts = routed_experts.reshape(
                 -1, top_k
             )  # we have to reshape here because the original is non-contiguous
-
-        if checkpoint_routed_experts is None:
-            checkpoint_routed_experts = should_checkpoint(self, "routed_experts")
 
         # top_scores and selected_experts_indices shape (bs*slen*top_k,)
         # num_tokens_per_expert shape (num_experts,)
@@ -455,9 +448,7 @@ class MoE(nn.Module):
             num_tokens_per_expert,
         ) = self.reorderer(top_scores, selected_experts_indices)
 
-        routed_output = run_with_optional_checkpoint(
-            checkpoint_routed_experts,
-            self._run_routed_experts,
+        routed_output = self._run_routed_experts(
             x,
             token_indices_experts_sorted,
             num_tokens_per_expert,

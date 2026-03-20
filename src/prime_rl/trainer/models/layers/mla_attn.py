@@ -4,7 +4,6 @@ from torch import nn
 
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
-from prime_rl.trainer.models.layers.checkpointing import run_with_optional_checkpoint, should_checkpoint
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb_interleave
 
@@ -172,12 +171,8 @@ class GlmMoeDsaAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         ks: torch.Tensor | None = None,
         ke: torch.Tensor | None = None,
-        checkpoint_mla_up_proj: bool | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         batch_size, total_tokens, _ = hidden_states.shape
-
-        if checkpoint_mla_up_proj is None:
-            checkpoint_mla_up_proj = should_checkpoint(self, "mla_up_proj")
 
         q_latent, k_compressed_normed, k_rope = self._mla_latents(hidden_states)
 
@@ -185,9 +180,7 @@ class GlmMoeDsaAttention(nn.Module):
             hidden_states, q_latent, ks, ke, self.config.index_topk, position_embeddings
         )
 
-        sparse_q, sparse_kv, w_v = run_with_optional_checkpoint(
-            checkpoint_mla_up_proj,
-            self._mla_up_proj,
+        sparse_q, sparse_kv, w_v = self._mla_up_proj(
             q_latent,
             k_compressed_normed,
             k_rope,
@@ -195,8 +188,7 @@ class GlmMoeDsaAttention(nn.Module):
         )
 
         out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)
-
-        out = run_with_optional_checkpoint(checkpoint_mla_up_proj, self._mla_unabsorb, out, w_v)
+        out = self._mla_unabsorb(out, w_v)
 
         out = out.reshape(batch_size, total_tokens, -1)
         return self.o_proj(out), None

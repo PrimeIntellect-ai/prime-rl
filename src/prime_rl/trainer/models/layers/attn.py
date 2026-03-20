@@ -6,7 +6,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .checkpointing import run_with_optional_checkpoint, should_checkpoint
 from .rms_norm import RMSNorm, RMSNormConfig
 from .rotary_emb import apply_rotary_pos_emb
 
@@ -106,17 +105,24 @@ class FlashAttention(nn.Module):
             out = out[0]
         return out
 
+    def _attention_core(
+        self,
+        query_states: torch.Tensor,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> torch.Tensor:
+        out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+        return out.contiguous().view(1, out.shape[0], -1)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
-        checkpoint_attention_sdpa: bool | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        if checkpoint_attention_sdpa is None:
-            checkpoint_attention_sdpa = should_checkpoint(self, "attention_sdpa")
-
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -148,16 +154,12 @@ class FlashAttention(nn.Module):
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
-        def _run_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-            out = self._compute_attention(q[0], k[0], v[0], cu_seqlens, max_seqlen)
-            return out.contiguous().view(1, out.shape[0], -1)
-
-        attn_output = run_with_optional_checkpoint(
-            checkpoint_attention_sdpa,
-            _run_attention,
+        attn_output = self._attention_core(
             query_states,
             key_states,
             value_states,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
         )
         attn_weights = None
         attn_output = self.o_proj(attn_output)
@@ -198,17 +200,25 @@ class SDPAAttention(nn.Module):
                 self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
                 self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
 
+    def _attention_core(
+        self,
+        query_states: torch.Tensor,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+    ) -> torch.Tensor:
+        key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
+        value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
+        out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
+        out = out.transpose(1, 2).contiguous()
+        return out.view(out.shape[0], out.shape[1], -1)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
-        checkpoint_attention_sdpa: bool | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        if checkpoint_attention_sdpa is None:
-            checkpoint_attention_sdpa = should_checkpoint(self, "attention_sdpa")
-
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -235,21 +245,7 @@ class SDPAAttention(nn.Module):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        # TODO: Can we optimize the rotary application instead of double transpose?
-        def _run_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-            k = k.repeat_interleave(self.num_key_value_groups, dim=1)
-            v = v.repeat_interleave(self.num_key_value_groups, dim=1)
-            out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-            out = out.transpose(1, 2).contiguous()
-            return out.view(out.shape[0], out.shape[1], -1)
-
-        attn_output = run_with_optional_checkpoint(
-            checkpoint_attention_sdpa,
-            _run_attention,
-            query_states,
-            key_states,
-            value_states,
-        )
+        attn_output = self._attention_core(query_states, key_states, value_states)
         attn_weights = None
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
