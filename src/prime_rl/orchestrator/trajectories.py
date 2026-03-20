@@ -41,6 +41,7 @@ def interleave_rollout(
     output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
+    mm_token_type_ids_mapping: dict[int, int] | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -94,9 +95,9 @@ def interleave_rollout(
             tokens.get("routed_experts"),
             len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
         )
-
+        prompt_ids = list(tokens["prompt_ids"])
         return TrainingSample(
-            prompt_ids=list(tokens["prompt_ids"]),
+            prompt_ids=prompt_ids,
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
             completion_ids=completion_ids,
             completion_mask=completion_mask,
@@ -105,6 +106,7 @@ def interleave_rollout(
             teacher_logprobs=None,
             advantage=None,
             routed_experts=routed_experts,
+            mm_token_type_ids=None,
         )
 
     def extend_sample(sample: TrainingSample, step: vf.TrajectoryStep, prefix_len: int) -> None:
@@ -142,11 +144,11 @@ def interleave_rollout(
             sample.routed_experts = _align_routed_experts(sample.routed_experts, expected_len)
 
     # Track [prefix_tokens, sample, last_step_idx] per active sample
-    active_samples: list[list] = []
+    active_samples: list[tuple[list[int], TrainingSample, int]] = []
 
     first_tokens = trajectory[0]["tokens"]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    active_samples.append([first_prefix, make_sample(trajectory[0]), 0])
+    active_samples.append((first_prefix, make_sample(trajectory[0]), 0))
 
     for step_idx, step in enumerate(trajectory[1:], start=1):
         tokens = step["tokens"]
@@ -163,8 +165,7 @@ def interleave_rollout(
             # Extension holds - merge into matched sample
             prefix_tokens, sample, _ = active_samples[matched_idx]
             extend_sample(sample, step, len(prefix_tokens))
-            active_samples[matched_idx][0] = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples[matched_idx][2] = step_idx
+            active_samples[matched_idx] = (tokens["prompt_ids"] + tokens["completion_ids"], sample, step_idx)
         else:
             # No prefix matches - start a new sample
             logger.debug(
@@ -172,7 +173,7 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples.append([new_prefix, make_sample(step), step_idx])
+            active_samples.append((new_prefix, make_sample(step), step_idx))
 
     # Attach images once per sample using only the last merged step
     if vlm_cache is not None:
@@ -182,6 +183,10 @@ def interleave_rollout(
             sample.pixel_values = pv
             sample.pixel_values_shape = shape
             sample.image_grid_thw = grids
+            if mm_token_type_ids_mapping is not None:
+                sample.mm_token_type_ids = [
+                    mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids
+                ]
 
     return [sample for _, sample, _ in active_samples]
 

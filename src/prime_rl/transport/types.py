@@ -20,6 +20,8 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     pixel_values_shape: list[int] | None = None  # [num_patches, patch_dim]
     # image_grid_thw: grid dimensions [num_images, 3] where each entry is [temporal, height, width]
     image_grid_thw: list[list[int]] | None = None
+    # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
+    mm_token_type_ids: list[int] | None = None
 
     routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
 
@@ -51,3 +53,5 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     pixel_values_shape: list[int] | None = None  # [num_patches, patch_dim]
     # image_grid_thw: grid dimensions [num_images, 3] where each entry is [temporal, height, width]
     image_grid_thw: list[list[int]] | None = None
+    # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
+    mm_token_type_ids: list[int] | None = None
