@@ -11,6 +11,16 @@ def transformers_v5_compat():
 
     _patch_qwen35_lora()
 
+    try:
+        monkey_patch_multiproc_executor_init_order()
+    except ImportError:
+        pass
+
+    try:
+        monkey_patch_parallel_state_same_node()
+    except ImportError:
+        pass
+
 
 def _patch_qwen35_lora():
     """Fix Qwen3.5 LoRA: align packed_modules_mapping with output_sizes.
@@ -453,3 +463,378 @@ def monkey_patch_minimax_m2_for_lora():
             ".up_proj.": ".w3.",
         },
     )
+
+
+def monkey_patch_multiproc_executor_init_order():
+    """Fix WorkerProc init order: init_device() must run before _init_message_queues().
+
+    In vLLM v0.17.0, WorkerProc.__init__ calls _init_message_queues() before
+    init_device(). But _init_message_queues() needs _INNER_DP_WORLD which is
+    only set during init_device(). This causes cross-node TP via headless
+    multiproc executor to fail.
+
+    Only applied in multi-node setups (NNODES > 1).
+
+    Related: https://github.com/vllm-project/vllm/issues/36389
+    """
+    import logging
+    import os
+
+    nnodes = int(os.environ.get("NNODES", "1"))
+    if nnodes <= 1:
+        return
+
+    from pathlib import Path
+
+    from vllm.v1.executor import multiproc_executor
+
+    logger = logging.getLogger(__name__)
+
+    source_file = Path(multiproc_executor.__file__)
+    source = source_file.read_text()
+
+    old = (
+        "        self._init_message_queues(input_shm_handle, vllm_config)\n"
+        "        is_eep_new_worker = envs.VLLM_ELASTIC_EP_SCALE_UP_LAUNCH\n"
+        "        if not is_eep_new_worker:\n"
+        "            self.worker.init_device()"
+    )
+    new = (
+        "        is_eep_new_worker = envs.VLLM_ELASTIC_EP_SCALE_UP_LAUNCH\n"
+        "        if not is_eep_new_worker:\n"
+        "            self.worker.init_device()\n"
+        "            self._init_message_queues(input_shm_handle, vllm_config)"
+    )
+
+    if old in source:
+        source_file.write_text(source.replace(old, new))
+        logger.warning("PATCHED (file): multiproc_executor — swapped init_device/_init_message_queues order")
+    else:
+        logger.warning("multiproc_executor patch: pattern not found (already patched or different version)")
+
+
+def monkey_patch_parallel_state_same_node():
+    """Replace in_the_same_node_as() with local rank//device_count computation.
+
+    vLLM's in_the_same_node_as() uses gloo all_gather_object to exchange
+    hostnames. When called on DCP sub-groups (where only a subset of ranks
+    participate), gloo deadlocks because non-participating ranks never join.
+
+    Fix: compute same-node membership locally using cuda.device_count() and
+    get_process_group_ranks() for sub-group rank mapping. No network needed.
+
+    Only applied in multi-node setups (NNODES > 1).
+
+    Related: https://github.com/vllm-project/vllm/pull/22553
+    Related: https://github.com/vllm-project/vllm/pull/19112
+    """
+    import logging
+    import os
+
+    nnodes = int(os.environ.get("NNODES", "1"))
+    if nnodes <= 1:
+        return
+
+    import re
+    from pathlib import Path
+
+    import vllm.distributed.parallel_state as ps_module
+
+    logger = logging.getLogger(__name__)
+
+    source_file = Path(ps_module.__file__)
+    source = source_file.read_text()
+
+    marker = "def in_the_same_node_as("
+    if marker not in source:
+        logger.warning("parallel_state patch: function not found (already patched or different version)")
+        return
+
+    replacement = '''\
+def in_the_same_node_as(pg, source_rank=0):
+    """Patched: local computation instead of gloo broadcast (prime-rl)."""
+    import torch
+    is_pg = isinstance(pg, torch.distributed.ProcessGroup)
+    ws = torch.distributed.get_world_size(pg) if is_pg else pg.size()
+    local_ws = torch.cuda.device_count()
+    pg_ranks = None
+    if is_pg and ws != torch.distributed.get_world_size():
+        try:
+            pg_ranks = torch.distributed.get_process_group_ranks(pg)
+        except Exception:
+            pass
+
+    def _g(r):
+        return pg_ranks[r] if pg_ranks and r < len(pg_ranks) else r
+
+    src_node = _g(source_rank) // local_ws
+    return [(_g(r) // local_ws) == src_node for r in range(ws)]
+
+'''
+
+    source = re.sub(
+        r"def in_the_same_node_as\(.*?(?=\ndef |\nclass |\Z)",
+        replacement,
+        source,
+        count=1,
+        flags=re.DOTALL,
+    )
+    source_file.write_text(source)
+    logger.warning("PATCHED (file): parallel_state.in_the_same_node_as — local computation, no gloo")
+
+
+def monkey_patch_dcp_cuda_graphs():
+    """Fix DCP (Decode Context Parallel) for FULL CUDA graph capture.
+
+    vLLM's DCP attention path (_forward_with_dcp) allocates intermediate
+    tensors (dcp_context_kv_lens, LSE buffers, FA3 outputs, Triton context)
+    whose addresses get baked into CUDA graphs and become stale on replay,
+    producing NaN outputs or crashes.
+
+    This patch:
+    1. Adds persistent _dcp_context_kv_lens buffer to MetadataBuilder
+    2. Pre-allocates all DCP buffers (FA3 output, LSE, corrected LSE) in
+       FlashAttentionImpl.__init__
+    3. Rewrites _forward_with_dcp() to inline cp_lse_ag_out_rs with only
+       persistent buffers — NCCL ops captured via custom ops, transposes
+       via .copy_() into pre-allocated buffers
+    4. Calls Triton kernel directly (not via CPTritonContext wrapper)
+    5. Falls back to dynamic allocation during prefill (B > max_num_seqs)
+
+    Upstream: https://github.com/vllm-project/vllm/pull/36070
+    """
+    import logging
+
+    import torch
+    from vllm.config import get_current_vllm_config
+    from vllm.v1.attention.backends.flash_attn import (
+        FlashAttentionImpl,
+        FlashAttentionMetadata,
+        flash_attn_varlen_func,
+        merge_attn_states,
+    )
+    from vllm.v1.attention.backends.flash_attn import (
+        FlashAttentionMetadataBuilder as MetadataBuilder,
+    )
+    from vllm.v1.attention.backends.utils import get_dcp_group
+
+    logger = logging.getLogger(__name__)
+
+    # --- MetadataBuilder.__init__: persistent _dcp_context_kv_lens buffer ---
+    _original_mb_init = MetadataBuilder.__init__
+
+    def _patched_mb_init(self, *args, **kwargs):
+        _original_mb_init(self, *args, **kwargs)
+        if self.dcp_world_size > 1:
+            vllm_config = args[0] if args else kwargs.get("vllm_config")
+            max_num_reqs = vllm_config.scheduler_config.max_num_seqs
+            self._dcp_context_kv_lens = torch.zeros(
+                max_num_reqs,
+                dtype=torch.int32,
+                device=self.device,
+            )
+
+    MetadataBuilder.__init__ = _patched_mb_init
+    logger.warning("PATCHED: MetadataBuilder.__init__ — persistent _dcp_context_kv_lens buffer")
+
+    # --- MetadataBuilder.build: use persistent buffer for dcp_context_kv_lens ---
+    _original_build = MetadataBuilder.build
+
+    def _patched_build(self, *args, **kwargs):
+        if self.dcp_world_size > 1:
+            # Temporarily monkey-patch get_dcp_local_seq_lens to intercept
+            # dcp_context_kv_lens and write into our persistent buffer
+            import vllm.v1.attention.backends.flash_attn as fa_module
+
+            _original_get_dcp = fa_module.get_dcp_local_seq_lens
+            _self_ref = self
+
+            def _intercepted_get_dcp(context_kv_lens, *a, **kw):
+                result = _original_get_dcp(context_kv_lens, *a, **kw)
+                num_reqs = result.shape[0]
+                _self_ref._dcp_context_kv_lens[:num_reqs] = result
+                _self_ref._dcp_context_kv_lens[num_reqs:] = 0
+                return _self_ref._dcp_context_kv_lens[:num_reqs]
+
+            fa_module.get_dcp_local_seq_lens = _intercepted_get_dcp
+            try:
+                return _original_build(self, *args, **kwargs)
+            finally:
+                fa_module.get_dcp_local_seq_lens = _original_get_dcp
+        return _original_build(self, *args, **kwargs)
+
+    MetadataBuilder.build = _patched_build
+    logger.warning("PATCHED: MetadataBuilder.build — uses persistent dcp_context_kv_lens buffer")
+
+    # --- FlashAttentionImpl.__init__: pre-allocate all DCP buffers ---
+    _original_fa_init = FlashAttentionImpl.__init__
+
+    def _patched_fa_init(self, *args, **kwargs):
+        _original_fa_init(self, *args, **kwargs)
+        self._dcp_context_out = None
+        self._dcp_query_out = None
+
+        vllm_config = get_current_vllm_config()
+        if vllm_config is not None and self.dcp_world_size > 1:
+            n = vllm_config.scheduler_config.max_num_seqs
+            dt = vllm_config.model_config.dtype
+            dcp_ws = self.dcp_world_size
+            num_heads = self.num_heads
+            head_size = self.head_size
+            H_full = num_heads * dcp_ws
+            H_local = num_heads
+            D = head_size
+
+            # FA3 output buffers
+            self._dcp_context_out = torch.empty(n, H_full, D, dtype=dt, device="cuda")
+            self._dcp_query_out = torch.empty(n, H_local, D, dtype=dt, device="cuda")
+            # LSE buffer for context attention (FA returns [H, B], we need [B, H] contiguous)
+            self._dcp_ctx_lse_bh = torch.empty(n, H_full, dtype=torch.float32, device="cuda")
+            # correct_attn_out output LSE: [B, H_full]
+            self._dcp_lse_corrected = torch.empty(n, H_full, dtype=torch.float32, device="cuda")
+            # flat buffer for corrected context LSE, reshaped to [H_local, B] per step
+            self._dcp_ctx_lse_cor = torch.empty(H_local * n, dtype=torch.float32, device="cuda")
+
+    FlashAttentionImpl.__init__ = _patched_fa_init
+    logger.warning("PATCHED: FlashAttentionImpl.__init__ — pre-allocated all DCP buffers for FULL CG")
+
+    # --- FlashAttentionImpl._forward_with_dcp: rewrite for FULL CUDA graph capture ---
+    def _patched_forward_with_dcp(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        output: torch.Tensor,
+        attn_metadata: FlashAttentionMetadata,
+        q_descale: torch.Tensor | None = None,
+        k_descale: torch.Tensor | None = None,
+        v_descale: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        # CUDA-graph-safe DCP forward: all intermediate tensors use
+        # pre-allocated persistent buffers (address-stable across replays).
+        # For prefill (B > max_num_seqs), fall back to dynamic allocation.
+        from vllm.v1.attention.ops.common import _correct_attn_cp_out_kernel
+
+        assert self.vllm_flash_attn_version is not None
+        cu_seqlens_q = attn_metadata.query_start_loc
+        max_seqlen_q = attn_metadata.max_query_len
+        block_table = attn_metadata.block_table
+        dcp_group = get_dcp_group()
+        B = query.shape[0]
+        _use_persistent = self._dcp_context_out is not None and B <= self._dcp_context_out.shape[0]
+        sliding_window_size = list(self.sliding_window) if self.sliding_window is not None else None
+
+        # --- all_gather query (captured in CUDA graph via custom op) ---
+        query = query.contiguous()
+        query_across_dcp = dcp_group.all_gather(query, dim=1)
+
+        # --- context attention (over KV cache) ---
+        ctx_out = self._dcp_context_out[:B] if _use_persistent else None
+        context_attn_out, context_lse = flash_attn_varlen_func(
+            q=query_across_dcp,
+            k=key_cache,
+            v=value_cache,
+            out=ctx_out,
+            cu_seqlens_q=cu_seqlens_q,
+            max_seqlen_q=max_seqlen_q,
+            seqused_k=attn_metadata.dcp_context_kv_lens,
+            max_seqlen_k=attn_metadata.max_dcp_context_kv_len,
+            softmax_scale=self.scale,
+            causal=False,
+            alibi_slopes=self.alibi_slopes,
+            window_size=sliding_window_size,
+            block_table=block_table,
+            softcap=self.logits_soft_cap,
+            return_softmax_lse=True,
+            scheduler_metadata=attn_metadata.scheduler_metadata,
+            fa_version=self.vllm_flash_attn_version,
+            q_descale=q_descale,
+            k_descale=k_descale,
+            v_descale=v_descale,
+            num_splits=attn_metadata.max_num_splits,
+        )
+
+        if _use_persistent:
+            # --- inline cp_lse_ag_out_rs with persistent buffers ---
+            H_full = context_lse.shape[0]
+            ctx_lse_bh = self._dcp_ctx_lse_bh[:B, :H_full]
+            ctx_lse_bh.copy_(context_lse.transpose(0, 1))
+            lses_gathered = dcp_group.all_gather(ctx_lse_bh, dim=0)
+            lses_g = lses_gathered.reshape(dcp_group.world_size, B, H_full)
+            H_local = self._dcp_query_out.shape[1]
+            D = context_attn_out.shape[2]
+            lse_cor = self._dcp_lse_corrected[:B]
+            o_sB, o_sH, o_sD = context_attn_out.stride()
+            l_sN, l_sB, l_sH = lses_g.stride()
+            _correct_attn_cp_out_kernel[(B, H_full, 1)](
+                context_attn_out,
+                context_attn_out,
+                lses_g,
+                lse_cor,
+                o_sB,
+                o_sH,
+                o_sD,
+                l_sN,
+                l_sB,
+                l_sH,
+                dcp_group.rank_in_group,
+                HEAD_DIM=D,
+                N_ROUNDED=dcp_group.world_size,
+                IS_BASE_E=True,
+            )
+            rs_out = dcp_group.reduce_scatter(context_attn_out, dim=1)
+            cp_rank = dcp_group.rank_in_group
+            ctx_lse_local = lse_cor[:, H_local * cp_rank : H_local * (cp_rank + 1)]
+            ctx_lse_hb = self._dcp_ctx_lse_cor[: H_local * B].reshape(H_local, B)
+            ctx_lse_hb.copy_(ctx_lse_local.transpose(0, 1))
+        else:
+            # Prefill path: B > max_num_seqs, use dynamic allocation (not in CG)
+            from vllm.v1.attention.backends.utils import cp_lse_ag_out_rs
+
+            context_attn_out_cor, context_lse_cor = cp_lse_ag_out_rs(
+                context_attn_out,
+                context_lse.transpose(0, 1),
+                dcp_group,
+                return_lse=True,
+            )
+            rs_out = context_attn_out_cor
+            ctx_lse_hb = context_lse_cor.transpose(0, 1).contiguous()
+
+        # --- query attention (over new KV) ---
+        qry_out = self._dcp_query_out[:B] if _use_persistent else None
+        query_attn_out, query_lse = flash_attn_varlen_func(
+            q=query,
+            k=key,
+            v=value,
+            out=qry_out,
+            cu_seqlens_q=cu_seqlens_q,
+            max_seqlen_q=max_seqlen_q,
+            cu_seqlens_k=cu_seqlens_q,
+            max_seqlen_k=max_seqlen_q,
+            softmax_scale=self.scale,
+            causal=attn_metadata.causal,
+            alibi_slopes=self.alibi_slopes,
+            window_size=sliding_window_size,
+            softcap=self.logits_soft_cap,
+            return_softmax_lse=True,
+            fa_version=self.vllm_flash_attn_version,
+            q_descale=q_descale,
+            k_descale=k_descale,
+            v_descale=v_descale,
+            num_splits=attn_metadata.max_num_splits,
+        )
+
+        # --- merge context and query attention outputs ---
+        merge_attn_states(
+            output,
+            rs_out,
+            ctx_lse_hb,
+            query_attn_out,
+            query_lse,
+        )
+        return output
+
+    FlashAttentionImpl._forward_with_dcp = _patched_forward_with_dcp
+    logger.warning("PATCHED: FlashAttentionImpl._forward_with_dcp — FULL CUDA graph safe")
