@@ -318,9 +318,9 @@ class WeightCheckpointManager:
         # that must be called by every rank simultaneously under FSDP.
         if self.config.save_adapter_separately and lora_state_dict is not None:
             lora_run_state = {
-                f"base_model.model.{key}": (
-                    value.full_tensor() if isinstance(value, DTensor) else value
-                ).to("cpu", non_blocking=False)
+                f"base_model.model.{key}": (value.full_tensor() if isinstance(value, DTensor) else value).to(
+                    "cpu", non_blocking=False
+                )
                 for key, value in get_multi_run_manager().get_state_dict_for_run(0).items()
             }
         else:
@@ -356,12 +356,12 @@ class WeightCheckpointManager:
                 adapter_path = path / "lora_adapters"
                 adapter_path.mkdir(parents=True, exist_ok=True)
                 lora_state_dict = {
-                    key: value
-                    for key, value in lora_state_dict.items()
-                    if "lora_A" not in key and "lora_B" not in key
+                    key: value for key, value in lora_state_dict.items() if "lora_A" not in key and "lora_B" not in key
                 }
                 lora_state_dict.update(lora_run_state)
-                save_state_dict(lora_state_dict, adapter_path, self.config.save_format, save_sharded=False, adapter=True)
+                save_state_dict(
+                    lora_state_dict, adapter_path, self.config.save_format, save_sharded=False, adapter=True
+                )
                 if self.lora_config:
                     save_lora_config(
                         model,

@@ -59,7 +59,7 @@ def sft_lora_process(
 
 @pytest.fixture(scope="module")
 def sft_lora_resume_process(
-    sft_lora_process,
+    sft_lora_process,  # Resume training can only start when regular SFT LoRA process is finished
     run_process: Callable[..., ProcessResult],
     wandb_project: str,
     wandb_name: str,
