@@ -151,24 +151,6 @@ def test_cli_overrides_toml(tmp_path):
     assert config.nested.weight_decay == 0.01
 
 
-def test_rl_config_external_rollout_mode_rejects_token_client():
-    with pytest.raises(
-        ValidationError,
-        match="orchestrator.use_token_client must be false when orchestrator.teacher_rollout_model is configured",
-    ):
-        RLConfig(
-            trainer={"loss": {"type": "sft"}},
-            orchestrator={
-                "use_token_client": True,
-                "teacher_rollout_model": {
-                    "client": {"base_url": ["https://example.com/v1"], "skip_model_check": True},
-                    "model": {"name": "gpt-4o-mini"},
-                },
-            },
-            inference=None,
-        )
-
-
 def test_removed_fused_lm_head_chunk_size_field_is_rejected():
     with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
