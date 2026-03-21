@@ -598,6 +598,18 @@ wheels = [
 ]
 
 [[package]]
+name = "ddbc-rlm"
+version = "0.1.3"
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fddbc_rlm&rev=70c7b1a#70c7b1af29325537c8439f6ae339a2bda8d1025d" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "datasets" },
+    { name = "diskcache" },
+    { name = "pdfminer-six" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "debugpy"
 version = "1.8.20"
 source = { registry = "https://pypi.org/simple" }
@@ -630,7 +642,7 @@ wheels = [
 [[package]]
 name = "deepdive-rlm"
 version = "0.2.6"
-source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fdeepdive_rlm&rev=078dc3f#078dc3f23609956aea0949c32d580f38dc4b5de3" }
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fdeepdive_rlm&rev=70c7b1a#70c7b1af29325537c8439f6ae339a2bda8d1025d" }
 dependencies = [
     { name = "aiohttp" },
     { name = "datasets" },
@@ -1639,6 +1651,15 @@ wheels = [
 ]
 
 [[package]]
+name = "longbenchpro-rlm"
+version = "0.1.0"
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Flongbenchpro_rlm&rev=70c7b1a#70c7b1af29325537c8439f6ae339a2bda8d1025d" }
+dependencies = [
+    { name = "pytrec-eval-terrier" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "markdown"
 version = "3.10.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1908,6 +1929,14 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e0/47/dd32fa426cc72114383ac549964eecb20ecfd886d1e5ccf5340b55b02f57/mpmath-1.3.0.tar.gz", hash = "sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f", size = 508106, upload-time = "2023-03-07T16:47:11.061Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl", hash = "sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c", size = 536198, upload-time = "2023-03-07T16:47:09.197Z" },
+]
+
+[[package]]
+name = "mrcr-v2-rlm"
+version = "0.1.0"
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmrcr_v2_rlm&rev=70c7b1a#70c7b1af29325537c8439f6ae339a2bda8d1025d" }
+dependencies = [
+    { name = "verifiers" },
 ]
 
 [[package]]
@@ -2273,7 +2302,7 @@ wheels = [
 [[package]]
 name = "oolong-rlm"
 version = "0.1.7"
-source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Foolong_rlm&rev=078dc3f#078dc3f23609956aea0949c32d580f38dc4b5de3" }
+source = { git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Foolong_rlm&rev=70c7b1a#70c7b1af29325537c8439f6ae339a2bda8d1025d" }
 dependencies = [
     { name = "python-dateutil" },
     { name = "verifiers" },
@@ -2669,13 +2698,16 @@ dependencies = [
     { name = "aiolimiter" },
     { name = "beartype" },
     { name = "datasets" },
+    { name = "ddbc-rlm" },
     { name = "deepdive-rlm" },
     { name = "dion" },
     { name = "jaxtyping" },
     { name = "liger-kernel" },
     { name = "loguru" },
+    { name = "longbenchpro-rlm" },
     { name = "math-env" },
     { name = "mini-swe-agent-plus-rlm" },
+    { name = "mrcr-v2-rlm" },
     { name = "numpy" },
     { name = "oolong-rlm" },
     { name = "openai" },
@@ -2729,7 +2761,8 @@ requires-dist = [
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "deepdive-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fdeepdive_rlm&rev=078dc3f" },
+    { name = "ddbc-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fddbc_rlm&rev=70c7b1a" },
+    { name = "deepdive-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fdeepdive_rlm&rev=70c7b1a" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3%2Bcu128torch2.10-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.1/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl" },
@@ -2737,10 +2770,12 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
+    { name = "longbenchpro-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Flongbenchpro_rlm&rev=70c7b1a" },
     { name = "math-env", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "mini-swe-agent-plus-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmini_swe_agent_plus_rlm&rev=cf3bdee" },
+    { name = "mrcr-v2-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Fmrcr_v2_rlm&rev=70c7b1a" },
     { name = "numpy", specifier = ">=2.2.6" },
-    { name = "oolong-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Foolong_rlm&rev=078dc3f" },
+    { name = "oolong-rlm", git = "https://github.com/PrimeIntellect-ai/research-environments.git?subdirectory=environments%2Foolong_rlm&rev=70c7b1a" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "prime", specifier = ">=0.5.37" },
     { name = "pyarrow", specifier = ">=21.0.0" },
@@ -3195,6 +3230,22 @@ wheels = [
 ]
 
 [[package]]
+name = "pytrec-eval-terrier"
+version = "0.5.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/04/96/4925a95e4865a647bc74d3bb052243d12a3c8e8a34909d7d097b5a4d08c5/pytrec_eval_terrier-0.5.10.tar.gz", hash = "sha256:eaaf20580d17b5575a233e04dab8a4cbcc01a7e45be8cf547c07f0a2bb3e7eb9", size = 18634, upload-time = "2025-10-20T16:50:18.098Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d3/ca/f0edd9df08c08c96d2f088c298cfb824c3ee816302ac1f911ecb1bfdd681/pytrec_eval_terrier-0.5.10-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:e28c3c14728713cdbad165964e2d1aba96b0fc7445a5a13168b398e9bd3bbd08", size = 137179, upload-time = "2025-10-20T16:51:07.809Z" },
+    { url = "https://files.pythonhosted.org/packages/73/55/e02a14b0d3ac520849f66391f03c6783b3383fd23a19372d07a2280b815e/pytrec_eval_terrier-0.5.10-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:689ee541d72c27d14ae15cd1f11d2cb86cf9bdc880f5e8af9c5dbbdd47663d4d", size = 304845, upload-time = "2025-10-20T16:54:17.791Z" },
+    { url = "https://files.pythonhosted.org/packages/76/9c/9020b700199b09ebdfc6dbadae81641a49555c4ee21dedbe2aa98af601b5/pytrec_eval_terrier-0.5.10-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:3f02118dadd3c09b71462bb26e405e49bd10fe0c60bcc169fcd31454a4256dc2", size = 1327965, upload-time = "2025-10-20T16:54:18.743Z" },
+    { url = "https://files.pythonhosted.org/packages/39/9e/6e7c2b89f52e1cebeef6c3bb47272f5bd69766ddbc6e9e5445da0c876899/pytrec_eval_terrier-0.5.10-cp312-cp312-win_amd64.whl", hash = "sha256:202e48fe24948453fe45dcd73261f9865f99cb2ff4c8a3255ac2ab4c993a64ba", size = 58641, upload-time = "2025-10-20T16:51:26.148Z" },
+]
+
+[[package]]
 name = "pywin32"
 version = "311"
 source = { registry = "https://pypi.org/simple" }
@@ -3475,6 +3526,27 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/d8/0c8a7dc9b41dcac53c4cbf9df2b9c83e0e0097203de8b37a712b345c0be5/safetensors-0.7.0-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:b0f6d66c1c538d5a94a73aa9ddca8ccc4227e6c9ff555322ea40bdd142391dd4", size = 677368, upload-time = "2025-11-19T15:18:41.627Z" },
     { url = "https://files.pythonhosted.org/packages/05/e5/cb4b713c8a93469e3c5be7c3f8d77d307e65fe89673e731f5c2bfd0a9237/safetensors-0.7.0-cp38-abi3-win32.whl", hash = "sha256:c74af94bf3ac15ac4d0f2a7c7b4663a15f8c2ab15ed0fc7531ca61d0835eccba", size = 326423, upload-time = "2025-11-19T15:18:45.74Z" },
     { url = "https://files.pythonhosted.org/packages/5d/e6/ec8471c8072382cb91233ba7267fd931219753bb43814cbc71757bfd4dab/safetensors-0.7.0-cp38-abi3-win_amd64.whl", hash = "sha256:d1239932053f56f3456f32eb9625590cc7582e905021f94636202a864d470755", size = 341380, upload-time = "2025-11-19T15:18:44.427Z" },
+]
+
+[[package]]
+name = "scipy"
+version = "1.17.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/35/48/b992b488d6f299dbe3f11a20b24d3dda3d46f1a635ede1c46b5b17a7b163/scipy-1.17.1-cp312-cp312-macosx_10_14_x86_64.whl", hash = "sha256:35c3a56d2ef83efc372eaec584314bd0ef2e2f0d2adb21c55e6ad5b344c0dcb8", size = 31610954, upload-time = "2026-02-23T00:17:49.855Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/02/cf107b01494c19dc100f1d0b7ac3cc08666e96ba2d64db7626066cee895e/scipy-1.17.1-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:fcb310ddb270a06114bb64bbe53c94926b943f5b7f0842194d585c65eb4edd76", size = 28172662, upload-time = "2026-02-23T00:18:01.64Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/a9/599c28631bad314d219cf9ffd40e985b24d603fc8a2f4ccc5ae8419a535b/scipy-1.17.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:cc90d2e9c7e5c7f1a482c9875007c095c3194b1cfedca3c2f3291cdc2bc7c086", size = 20344366, upload-time = "2026-02-23T00:18:12.015Z" },
+    { url = "https://files.pythonhosted.org/packages/35/f5/906eda513271c8deb5af284e5ef0206d17a96239af79f9fa0aebfe0e36b4/scipy-1.17.1-cp312-cp312-macosx_14_0_x86_64.whl", hash = "sha256:c80be5ede8f3f8eded4eff73cc99a25c388ce98e555b17d31da05287015ffa5b", size = 22704017, upload-time = "2026-02-23T00:18:21.502Z" },
+    { url = "https://files.pythonhosted.org/packages/da/34/16f10e3042d2f1d6b66e0428308ab52224b6a23049cb2f5c1756f713815f/scipy-1.17.1-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e19ebea31758fac5893a2ac360fedd00116cbb7628e650842a6691ba7ca28a21", size = 32927842, upload-time = "2026-02-23T00:18:35.367Z" },
+    { url = "https://files.pythonhosted.org/packages/01/8e/1e35281b8ab6d5d72ebe9911edcdffa3f36b04ed9d51dec6dd140396e220/scipy-1.17.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:02ae3b274fde71c5e92ac4d54bc06c42d80e399fec704383dcd99b301df37458", size = 35235890, upload-time = "2026-02-23T00:18:49.188Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/5c/9d7f4c88bea6e0d5a4f1bc0506a53a00e9fcb198de372bfe4d3652cef482/scipy-1.17.1-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:8a604bae87c6195d8b1045eddece0514d041604b14f2727bbc2b3020172045eb", size = 35003557, upload-time = "2026-02-23T00:18:54.74Z" },
+    { url = "https://files.pythonhosted.org/packages/65/94/7698add8f276dbab7a9de9fb6b0e02fc13ee61d51c7c3f85ac28b65e1239/scipy-1.17.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:f590cd684941912d10becc07325a3eeb77886fe981415660d9265c4c418d0bea", size = 37625856, upload-time = "2026-02-23T00:19:00.307Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/84/dc08d77fbf3d87d3ee27f6a0c6dcce1de5829a64f2eae85a0ecc1f0daa73/scipy-1.17.1-cp312-cp312-win_amd64.whl", hash = "sha256:41b71f4a3a4cab9d366cd9065b288efc4d4f3c0b37a91a8e0947fb5bd7f31d87", size = 36549682, upload-time = "2026-02-23T00:19:07.67Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/98/fe9ae9ffb3b54b62559f52dedaebe204b408db8109a8c66fdd04869e6424/scipy-1.17.1-cp312-cp312-win_arm64.whl", hash = "sha256:f4115102802df98b2b0db3cce5cb9b92572633a1197c77b7553e5203f284a5b3", size = 24547340, upload-time = "2026-02-23T00:19:12.024Z" },
 ]
 
 [[package]]
