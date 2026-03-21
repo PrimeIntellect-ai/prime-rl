@@ -41,7 +41,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import is_vlm_config, is_vlm_model
+from prime_rl.utils.vlm import is_vlm_config, resolve_is_vlm
 
 
 def _patch_qwen3_5_moe_conversion_mapping():
@@ -218,8 +218,8 @@ def get_model(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
-    # Check if this is a vision-language model (by name pattern first)
-    is_vlm = is_vlm_model(config.name)
+    # Check if this is a vision-language model (explicit config or auto-detect by name)
+    is_vlm = resolve_is_vlm(config.vlm, config.name)
 
     if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
         _patch_qwen3_5_text_position_ids()
@@ -233,8 +233,9 @@ def get_model(
     )
     model_config.use_cache = False
 
-    # Fallback VLM detection from loaded config (catches local paths)
-    if not is_vlm and is_vlm_config(model_config):
+    # Fallback VLM detection from loaded config (catches local paths).
+    # Only applies when vlm was auto-detected (None), not explicitly set.
+    if config.vlm is None and not is_vlm and is_vlm_config(model_config):
         is_vlm = True
     if is_vlm:
         logger.info(f"Detected vision-language model: {config.name}")
@@ -367,7 +368,10 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     # For VLM models, shard the frozen vision encoder as a single unit
     # This allows FSDP to manage the memory while keeping it frozen
-    is_vlm = is_vlm_model(config.name) or (hasattr(model, "model") and hasattr(model.model, "visual"))
+    is_vlm = resolve_is_vlm(config.vlm, config.name)
+    # Structural fallback only when auto-detecting (vlm=None), not when explicitly set
+    if config.vlm is None and not is_vlm:
+        is_vlm = hasattr(model, "model") and hasattr(model.model, "visual")
     if is_vlm:
         if hasattr(model, "model") and hasattr(model.model, "visual"):
             vision_encoder = model.model.visual
