@@ -1,0 +1,38 @@
+# VeriHop: multi-hop procedural visual QA (see environments/verihop/README.md).
+# The `verihop` package is vendored under environments/verihop and wired in pyproject.toml.
+
+max_steps = 20
+seq_len = 8192
+
+[model]
+name = "Qwen/Qwen3-VL-4B-Instruct"
+
+[wandb]
+project = "verihop"
+name = "verihop-rl"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 8
+
+[orchestrator.sampling]
+max_tokens = 1024
+
+[[orchestrator.env]]
+id = "verihop"
+name = "verihop"
+args = { num_samples = 4096, max_hops = 3, seed = 42, use_tools = false, process_weight = 0.4, outcome_weight = 0.6 }
+
+[trainer]
+
+[trainer.model]
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+
+[inference.model]
+tool_call_parser = "hermes"

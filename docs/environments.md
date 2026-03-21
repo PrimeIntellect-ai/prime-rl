@@ -23,6 +23,8 @@ To install a local environment
 uv pip install -e path/to/env
 ```
 
+The **VeriHop** multimodal multi-hop environment is vendored in this repository at `environments/verihop` and is already a dependency of `prime-rl` (see `configs/verihop/rl.toml`).
+
 To verify your installation
 
 ```bash
