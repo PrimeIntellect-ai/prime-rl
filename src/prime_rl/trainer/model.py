@@ -118,6 +118,17 @@ torch._dynamo.config.recompile_limit = 16  # default: 8
 torch._dynamo.config.cache_size_limit = 64  # default: 8
 
 
+def _get_vision_encoder(model: nn.Module) -> nn.Module | None:
+    """Get the vision encoder module for supported VLM architectures."""
+    # Qwen3-VL structure: model.model.visual
+    if hasattr(model, "model") and hasattr(model.model, "visual"):
+        return model.model.visual
+    # Qwen2-VL structure: model.visual
+    if hasattr(model, "visual"):
+        return model.visual
+    return None
+
+
 def freeze_vision_encoder(model: nn.Module) -> None:
     """Freeze the vision encoder parameters for VLM training.
 
@@ -127,13 +138,8 @@ def freeze_vision_encoder(model: nn.Module) -> None:
     """
     logger = get_logger()
 
-    # Qwen3-VL structure: model.model.visual
-    if hasattr(model, "model") and hasattr(model.model, "visual"):
-        vision_encoder = model.model.visual
-    # Qwen2-VL structure: model.visual
-    elif hasattr(model, "visual"):
-        vision_encoder = model.visual
-    else:
+    vision_encoder = _get_vision_encoder(model)
+    if vision_encoder is None:
         raise ValueError("Could not find vision encoder to freeze. Expected model.model.visual or model.visual")
 
     num_frozen = 0
@@ -141,6 +147,20 @@ def freeze_vision_encoder(model: nn.Module) -> None:
         param.requires_grad = False
         num_frozen += 1
     logger.info(f"Froze {num_frozen} parameters in vision encoder")
+
+
+def unfreeze_vision_encoder(model: nn.Module) -> None:
+    """Unfreeze the vision encoder parameters for VLM training with LoRA."""
+    logger = get_logger()
+    vision_encoder = _get_vision_encoder(model)
+    if vision_encoder is None:
+        return
+
+    num_unfrozen = 0
+    for param in vision_encoder.parameters():
+        param.requires_grad = True
+        num_unfrozen += 1
+    logger.info(f"Unfroze {num_unfrozen} parameters in vision encoder")
 
 
 def freeze_moe_router(model: nn.Module) -> None:
@@ -777,6 +797,9 @@ def setup_model(
         # re-freeze base params that LoRA froze earlier.
         if config.lora is not None:
             freeze_all_except_lora_and_specified(model, config.lora)
+    if config.lora is not None and not config.freeze_vision_encoder:
+        # Keep vision encoder trainable when LoRA freezing is enabled.
+        unfreeze_vision_encoder(model)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:

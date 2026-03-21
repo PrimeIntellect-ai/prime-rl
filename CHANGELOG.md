@@ -2,6 +2,7 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`trainer.model.freeze_vision_encoder`**: Added flag to control whether VLM vision encoder parameters are frozen during trainer setup (default: `True`). Set to `false` to keep the vision encoder trainable, including when LoRA is enabled. (2026-03-21)
 - **`orchestrator.advantage.length_weighted_mean`**: Removed. The default advantage now always uses the plain per-problem mean baseline unless `orchestrator.advantage.length_shaping_alpha` is set. Existing configs must delete this field. (2026-03-19)
 - **`orchestrator.advantage.length_shaping_alpha`**: Added Group Relative Reward Rescaling coefficient to the default advantage config. When set, applies length-based GR3 shaping during advantage computation and requires `orchestrator.buffer.online_difficulty_filtering = true` (default: `None`) (2026-03-18)
 - **`prime_monitor.log_extras.sample_ratio`**: Added ratio-based rollout sampling (0.0–1.0, default: None). When set, caps the number of rollouts logged per step to `len(rollouts) * sample_ratio`. `None` preserves current behavior (log all rollouts). Interacts with existing `interval` gate which still runs first. (2026-03-12)
