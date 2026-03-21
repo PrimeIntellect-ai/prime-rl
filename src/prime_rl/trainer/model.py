@@ -41,7 +41,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import is_vlm_config, is_vlm_model
+from prime_rl.utils.vlm import is_vlm_config, is_vlm_model, resolve_is_vlm
 
 
 def _patch_qwen3_5_moe_conversion_mapping():
@@ -218,8 +218,8 @@ def get_model(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
-    # Check if this is a vision-language model (by name pattern first)
-    is_vlm = is_vlm_model(config.name)
+    # Check if this is a vision-language model (explicit config or auto-detect by name)
+    is_vlm = resolve_is_vlm(config.vlm, config.name)
 
     if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
         _patch_qwen3_5_text_position_ids()

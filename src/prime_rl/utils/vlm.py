@@ -61,3 +61,15 @@ def is_vlm_config(model_config: PretrainedConfig) -> bool:
     the hub patterns.
     """
     return getattr(model_config, "model_type", None) in SUPPORTED_VLM_MODEL_TYPES
+
+
+def resolve_is_vlm(vlm_flag: bool | None, model_name: str) -> bool:
+    """Resolve whether the model is a VLM using the explicit config flag or auto-detection.
+
+    Args:
+        vlm_flag: Explicit config value. None means auto-detect.
+        model_name: Model name for auto-detection fallback.
+    """
+    if vlm_flag is not None:
+        return vlm_flag
+    return is_vlm_model(model_name)

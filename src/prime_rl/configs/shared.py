@@ -92,6 +92,18 @@ class BaseModelConfig(BaseConfig):
         ),
     ] = False
 
+    vlm: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "Whether this is a vision-language model. "
+                "None (default) auto-detects from model name and config. "
+                "Set explicitly to True/False to override auto-detection "
+                "(e.g. for local checkpoints whose name doesn't match known patterns)."
+            ),
+        ),
+    ] = None
+
 
 class ElasticConfig(BaseConfig):
     """Configures elastic inference pool with DNS-based service discovery.
