@@ -154,3 +154,14 @@ def test_cli_overrides_toml(tmp_path):
 def test_removed_fused_lm_head_chunk_size_field_is_rejected():
     with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
+
+
+def test_vlm_models_require_bfloat16_dtypes():
+    with pytest.raises(ValidationError, match="optimization_dtype='bfloat16' and reduce_dtype='bfloat16'"):
+        TrainerModelConfig.model_validate(
+            {
+                "name": "Qwen/Qwen3.5-4B",
+                "optimization_dtype": "float32",
+                "reduce_dtype": "float32",
+            }
+        )

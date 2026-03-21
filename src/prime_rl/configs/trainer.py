@@ -13,6 +13,7 @@ from prime_rl.configs.shared import (
     WandbConfig,
 )
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.vlm import is_vlm_model
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
@@ -296,6 +297,17 @@ class ModelConfig(BaseModelConfig):
         if self.trust_remote_code:
             if self.impl not in ("hf", "auto"):
                 raise ValueError("Trust remote code is only supported with the HF implementation or auto mode.")
+        return self
+
+    @model_validator(mode="after")
+    def vlms_require_bfloat16(self):
+        if is_vlm_model(self.name) and (
+            self.optimization_dtype != "bfloat16" or self.reduce_dtype != "bfloat16"
+        ):
+            raise ValueError(
+                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' "
+                "to match vLLM inference."
+            )
         return self
 
     @model_validator(mode="after")
