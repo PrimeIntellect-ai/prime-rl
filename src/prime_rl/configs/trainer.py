@@ -301,12 +301,9 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def vlms_require_bfloat16(self):
-        if is_vlm_model(self.name) and (
-            self.optimization_dtype != "bfloat16" or self.reduce_dtype != "bfloat16"
-        ):
+        if is_vlm_model(self.name) and (self.optimization_dtype != "bfloat16" or self.reduce_dtype != "bfloat16"):
             raise ValueError(
-                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' "
-                "to match vLLM inference."
+                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
         return self
 
