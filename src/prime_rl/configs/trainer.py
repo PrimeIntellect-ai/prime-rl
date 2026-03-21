@@ -505,10 +505,24 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = False
 
+    skip_optimizer: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading optimizer state from checkpoint.",
+        ),
+    ] = False
+
     skip_dataloader: Annotated[
         bool,
         Field(
             description="Whether to skip loading the dataloader from checkpoint.",
+        ),
+    ] = False
+
+    skip_gather_master_weights: Annotated[
+        bool,
+        Field(
+            description="Whether to skip saving HF-compatible weight checkpoints via gather on master rank.",
         ),
     ] = False
 
@@ -577,6 +591,22 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
+
+    use_vllm_format_transfer: Annotated[
+        bool,
+        Field(
+            description="Transfer weights in vLLM kernel format instead of HF checkpoint format. "
+            "Avoids the HF conversion intermediate step and allows direct in-place weight updates."
+        ),
+    ] = False
+
+    quantize_fp8: Annotated[
+        bool,
+        Field(
+            description="Quantize weights to FP8 (e4m3) with block-wise scaling during kernel format transfer. "
+            "Only used when use_vllm_format_transfer is True."
+        ),
+    ] = False
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

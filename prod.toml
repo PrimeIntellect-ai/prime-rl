@@ -1,0 +1,189 @@
+max_steps = 10000000
+seq_len = 32768
+max_async_level = 1
+output_dir = "/data/outputs/glm5-rlm"
+
+[log]
+level = "debug"
+
+[wandb]
+project = "RLM-GLM5"
+name = "RLM-GLM5"
+
+[model]
+name = "zai-org/GLM-5"
+
+[weight_broadcast]
+type = "nccl"
+port = 29502
+timeout = 12000
+use_vllm_format_transfer = true
+quantize_fp8 = true
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 16
+num_infer_nodes = 8
+gpus_per_node = 8
+num_infer_replicas = 3
+
+[inference.deployment]
+type = "disaggregated"
+num_prefill_nodes = 2
+num_prefill_replicas = 2
+num_decode_nodes = 4
+
+[slurm]
+job_name = "RLM-GLM5"
+partition = "cluster"
+
+[ckpt]
+interval = 20
+keep_last = 5
+resume_step = -1
+
+[trainer]
+dist_timeout_seconds = 7200
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_2"
+fused_lm_head_token_chunk_size = 2048
+optim_cpu_offload = true
+ep = 8
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.ckpt]
+skip_gather_master_weights = true
+skip_optimizer = true
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.1
+
+
+[orchestrator]
+batch_size = 2048
+rollouts_per_example = 16
+oversampling_factor = 3
+tasks_per_minute = 3072
+max_off_policy_steps = 16
+use_token_client = false
+
+[orchestrator.sampling]
+temperature = 1.0
+
+[orchestrator.log]
+vf_level = "debug"
+env_worker_logs = true
+
+[orchestrator.wandb.log_extras]
+samples = true
+interval = 1
+
+[[orchestrator.env]]
+id = "deepdive-rlm"
+name = "deepdive-rlm-bash"
+args = { repl_language="bash", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, max_iterations = 20, code_execution_timeout = 600, open_max_workers = 512, cache_dir = "/data/outputs/rlm-prod/deepdive_cache", sandbox_labels = ["rlm-prod-cluster"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 120, sandbox_client_max_workers = 512 }
+
+[[orchestrator.env]]
+id = "oolong-rlm"
+name = "oolong-rlm-bash"
+args = { repl_language="bash", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, subset="real", split="validation", max_iterations = 20, code_execution_timeout = 600, sandbox_labels = ["rlm-prod-cluster"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 60, sandbox_client_max_workers = 512 }
+
+[[orchestrator.env]]
+id = "mini-swe-agent-plus-rlm"
+name = "mini-swe-agent-plus-rlm-bash"
+args = { repl_language="bash", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, code_execution_timeout=600, sandbox_command_timeout=90, max_iterations = 20, sandbox_labels = ["rlm-prod-cluster"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", total_timeout_minutes = 360, rollout_timeout_seconds = 20600.0, cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, sandbox_client_max_workers = 512 }
+
+[[orchestrator.env]]
+id = "deepdive-rlm"
+name = "deepdive-rlm-python"
+args = { repl_language="python", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, max_iterations = 20, code_execution_timeout = 600, open_max_workers = 512, cache_dir = "/data/outputs/rlm-prod/deepdive_cache", sandbox_labels = ["rlm-prod-cluster"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 120, sandbox_client_max_workers = 512 }
+
+[[orchestrator.env]]
+id = "oolong-rlm"
+name = "oolong-rlm-python"
+args = { repl_language="python", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, subset="real", split="validation", max_iterations = 20, code_execution_timeout = 600, sandbox_labels = ["rlm-prod-cluster"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 120, sandbox_client_max_workers = 512 }
+
+[[orchestrator.env]]
+id = "mini-swe-agent-plus-rlm"
+name = "mini-swe-agent-plus-rlm-python"
+args = { repl_language="python", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, code_execution_timeout=600, sandbox_command_timeout=90, max_iterations = 20, sandbox_labels = ["rlm-prod-cluster"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", total_timeout_minutes = 360, rollout_timeout_seconds = 20600.0, cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, sandbox_client_max_workers = 512 }
+
+[orchestrator.eval]
+interval = 10
+# skip_eval_on_resume = true # test online eval once
+skip_eval_on_resume = false
+eval_base_model = false
+
+[[orchestrator.eval.env]]
+id = "oolong-rlm"
+name = "oolong-rlm-bash"
+args = { repl_language="bash", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, context_len=131072, subset="synth", dataset_name="trec_coarse", split="validation", max_iterations = 20, code_execution_timeout = 600, sandbox_labels = ["rlm-prod-cluster-eval"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 60, sandbox_client_max_workers = 512 }
+
+[[orchestrator.eval.env]]
+id = "oolong-rlm"
+name = "oolong-rlm-python"
+args = { repl_language="python", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, context_len=131072, subset="synth", dataset_name="trec_coarse", split="validation", max_iterations = 20, code_execution_timeout = 600, sandbox_labels = ["rlm-prod-cluster-eval"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 60, sandbox_client_max_workers = 512 }
+
+[[orchestrator.eval.env]]
+id = "longbenchpro-rlm"
+name = "longbenchpro-rlm-bash"
+args = { repl_language="bash", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, max_iterations = 20, code_execution_timeout = 600, sandbox_labels = ["rlm-prod-cluster-eval"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 60, sandbox_client_max_workers = 512 }
+
+[[orchestrator.eval.env]]
+id = "longbenchpro-rlm"
+name = "longbenchpro-rlm-python"
+args = { repl_language="python", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, max_iterations = 20, code_execution_timeout = 600, sandbox_labels = ["rlm-prod-cluster-eval"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 60, sandbox_client_max_workers = 512 }
+
+[[orchestrator.eval.env]]
+id = "mrcr-v2-rllm"
+name = "mrcr-v2-rllm-bash"
+args = { repl_language="bash", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, max_iterations = 20, code_execution_timeout = 600, sandbox_labels = ["rlm-prod-cluster-eval"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 60, sandbox_client_max_workers = 512 }
+
+[[orchestrator.eval.env]]
+id = "mrcr-v2-rllm"
+name = "mrcr-v2-rllm-python"
+args = { repl_language="python", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, max_iterations = 20, code_execution_timeout = 600, sandbox_labels = ["rlm-prod-cluster-eval"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 60, sandbox_client_max_workers = 512 }
+
+[[orchestrator.eval.env]]
+id = "ddbc-rllm"
+name = "ddbc-rllm-bash"
+args = { repl_language="bash", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, max_iterations = 20, code_execution_timeout = 600, sandbox_labels = ["rlm-prod-cluster-eval"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 60, sandbox_client_max_workers = 512 }
+
+[[orchestrator.eval.env]]
+id = "ddbc-rllm"
+name = "ddbc-rllm-python"
+args = { repl_language="python", expose_message_history=true, root_max_completion_tokens=4096, sub_max_completion_tokens=10240, max_iterations = 20, code_execution_timeout = 600, sandbox_labels = ["rlm-prod-cluster-eval"], max_sub_llm_parallelism = 5, sub_prompt_verbosity = "light", root_prompt_verbosity = "light", cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, timeout_minutes = 60, sandbox_client_max_workers = 512 }
+
+[orchestrator.buffer]
+env_ratios = [
+    0.2,  # deepdive (bash)
+    0.2,  # oolong (bash)
+    0.2,   # mini-swe (bash)
+    0.1,  # deepdive (python)
+    0.1,  # oolong (python)
+    0.2   # mini-swe (python)
+]
+easy_threshold = 1.0
+hard_threshold = 0.0
+
+[inference]
+enable_expert_parallel = true
+# we need <0.85 bc glm5 layers are too large for 0.85
+gpu_memory_utilization = 0.80
+enable_eplb = false
+
+[inference.model]
+name = "zai-org/GLM-5-FP8"
+max_model_len = 65536
+tool_call_parser = "glm47"

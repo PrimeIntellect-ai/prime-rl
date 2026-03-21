@@ -176,11 +176,22 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
     return request.app.state.openai_serving_chat_with_tokens
 
 
+@router.post("/pause")
+async def pause(request: Request):
+    await engine_client(request).pause_generation(mode="keep", clear_cache=False)
+    return {"status": "paused"}
+
+
+@router.post("/resume")
+async def resume(request: Request):
+    await engine_client(request).resume_generation()
+    return {"status": "resumed"}
+
+
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    # Reset prefix cache to invalidate KV states computed with old weights
     await engine_client(request).reset_prefix_cache()
     return {"status": "ok"}
 
@@ -207,12 +218,14 @@ async def init_broadcaster(request: Request):
     host = data.get("host")
     port = data.get("port")
     timeout = data.get("timeout")
-    # Support both legacy and new field names
-    server_rank = data.get("server_rank")
-    num_inference_server = data.get("num_inference_server")
+    rank_offset = data.get("rank_offset")
+    inference_world_size = data.get("inference_world_size")
+    gpus_per_server = data.get("gpus_per_server")
+    use_vllm_format_transfer = data.get("use_vllm_format_transfer", False)
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, server_rank, num_inference_server, timeout),
+        args=(host, port, rank_offset, inference_world_size, gpus_per_server, timeout),
+        kwargs={"use_vllm_format_transfer": use_vllm_format_transfer},
     )
     return {"status": "ok"}
 

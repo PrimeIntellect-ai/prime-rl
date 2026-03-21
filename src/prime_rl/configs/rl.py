@@ -117,6 +117,22 @@ class SharedWeightBroadcastConfig(BaseConfig):
     port: Annotated[int, Field(description="The port to use for NCCL weight broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
 
+    use_vllm_format_transfer: Annotated[
+        bool,
+        Field(
+            description="Transfer weights in vLLM kernel format instead of HF checkpoint format. "
+            "Avoids the HF conversion intermediate step and allows direct in-place weight updates."
+        ),
+    ] = False
+
+    quantize_fp8: Annotated[
+        bool,
+        Field(
+            description="Quantize weights to FP8 (e4m3) with block-wise scaling during kernel format transfer. "
+            "Only used when use_vllm_format_transfer is True."
+        ),
+    ] = False
+
 
 class BaseDeploymentConfig(BaseModel):
     """Configures a base deployment."""
@@ -152,7 +168,14 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["multi_node"] = "multi_node"
 
     num_train_nodes: Annotated[int, Field(description="Number of training nodes.")]
-    num_infer_nodes: Annotated[int, Field(description="Number of inference nodes.")]
+    num_infer_nodes: Annotated[int, Field(description="Number of inference nodes per replica.")]
+    num_infer_replicas: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of independent inference replicas. Total inference nodes = num_infer_nodes * num_infer_replicas.",
+        ),
+    ] = 1
     num_teacher_nodes: Annotated[int | None, Field(description="Number of teacher inference nodes.")] = None
 
     nodes_per_fsdp_group: Annotated[
@@ -161,6 +184,10 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
             description="Number of training nodes per FSDP island. Auto-sets trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group."
         ),
     ] = None
+
+    @property
+    def total_infer_nodes(self) -> int:
+        return self.num_infer_nodes * self.num_infer_replicas
 
     @model_validator(mode="after")
     def teacher_inference_not_supported(self):
@@ -415,12 +442,26 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_model(self):
-        """Auto-setup shared model config for trainer, orchestrator, and inference."""
+        """Auto-setup shared model config for trainer, orchestrator, and inference.
+
+        model.name propagates to trainer.model.name unconditionally.
+        model.name propagates to inference.model.name only when the user hasn't
+        explicitly set inference.model.name (allowing e.g. an FP8 variant for inference).
+        The orchestrator always uses the inference model name so it queries the
+        correct model on the inference server.
+        """
         if self.model is not None:
             self.trainer.model.name = self.model.name
-            self.orchestrator.model.name = self.model.name
             if self.inference is not None:
-                self.inference.model.name = self.model.name
+                inference_model_explicitly_set = "name" in self.inference.model.model_fields_set
+                if not inference_model_explicitly_set:
+                    self.inference.model.name = self.model.name
+
+            # Orchestrator must use the inference model name so it queries the correct model
+            if self.inference is not None:
+                self.orchestrator.model.name = self.inference.model.name
+            else:
+                self.orchestrator.model.name = self.model.name
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
@@ -480,11 +521,15 @@ class RLConfig(BaseConfig):
                     inference_world_size=inference_world_size,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
+                    use_vllm_format_transfer=self.weight_broadcast.use_vllm_format_transfer,
+                    quantize_fp8=self.weight_broadcast.quantize_fp8,
                 )
                 self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
+                    inference_world_size=inference_world_size,
+                    use_vllm_format_transfer=self.weight_broadcast.use_vllm_format_transfer,
                 )
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
@@ -612,7 +657,7 @@ class RLConfig(BaseConfig):
                     self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
                 )
 
-            if self.inference is not None and self.inference.enable_expert_parallel:
+            if self.inference is not None and self.inference.enable_expert_parallel and self.inference.deployment.type != "disaggregated":
                 inference_tp = self.inference.parallel.tp
                 if self.deployment.gpus_per_node % inference_tp != 0:
                     raise ValueError(
@@ -641,11 +686,39 @@ class RLConfig(BaseConfig):
                     self.inference.api_server_count = inferred_dp_local
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+                total_infer_gpus = self.deployment.gpus_per_node * self.deployment.total_infer_nodes
                 assert self.trainer.weight_broadcast.type == "nccl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
-                self.trainer.weight_broadcast.inference_world_size = (
-                    self.deployment.gpus_per_node * self.deployment.num_infer_nodes
-                )
+                self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
+                assert self.orchestrator.weight_broadcast.type == "nccl"
+                self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_disaggregated_inference(self):
+        """Auto-setup for disaggregated P/D inference within a multi-node deployment."""
+        if self.inference is None or self.inference.deployment.type != "disaggregated":
+            return self
+        if self.deployment.type != "multi_node":
+            return self
+
+        infer_deploy = self.inference.deployment
+        expected_infer_nodes = infer_deploy.total_prefill_nodes + infer_deploy.num_decode_nodes
+        if self.deployment.num_infer_nodes != expected_infer_nodes:
+            raise ValueError(
+                f"deployment.num_infer_nodes ({self.deployment.num_infer_nodes}) must equal "
+                f"inference.deployment.num_prefill_nodes ({infer_deploy.num_prefill_nodes}) * "
+                f"inference.deployment.num_prefill_replicas ({infer_deploy.num_prefill_replicas}) + "
+                f"inference.deployment.num_decode_nodes ({infer_deploy.num_decode_nodes}) = {expected_infer_nodes}"
+            )
+
+        total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
+        if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+            assert self.trainer.weight_broadcast.type == "nccl"
+            self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
+            assert self.orchestrator.weight_broadcast.type == "nccl"
+            self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self
 
@@ -713,6 +786,8 @@ class RLConfig(BaseConfig):
             templates_dir = Path(prime_rl.__file__).parent / "templates"
             if self.deployment.type == "single_node":
                 self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
+            elif self.inference is not None and self.inference.deployment.type == "disaggregated":
+                self.slurm.template_path = templates_dir / "disaggregated_rl.sbatch.j2"
             else:
                 self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
         return self

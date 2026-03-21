@@ -214,7 +214,6 @@ def train(config: TrainerConfig):
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
-
         # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
         # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
         last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level

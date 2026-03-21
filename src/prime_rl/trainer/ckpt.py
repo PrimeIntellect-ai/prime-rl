@@ -179,7 +179,8 @@ class CheckpointManager:
         start_time = time.perf_counter()
 
         # Load sharded state
-        app_state = AppState(model, optimizers, scheduler, progress)
+        load_optimizers = [] if self.config.skip_optimizer else optimizers
+        app_state = AppState(model, load_optimizers, scheduler, progress)
         state_dict = {"app": app_state}
         dcp_load(state_dict=state_dict, checkpoint_id=path)
 
@@ -444,7 +445,7 @@ def setup_ckpt_managers(
     if ckpt_config is None:
         return None, None
     ckpt_manager = CheckpointManager(output_dir, ckpt_config)
-    if ckpt_config.weights:
+    if ckpt_config.weights and not ckpt_config.skip_gather_master_weights:
         weight_ckpt_manager = WeightCheckpointManager(
             output_dir,
             ckpt_config.weights,

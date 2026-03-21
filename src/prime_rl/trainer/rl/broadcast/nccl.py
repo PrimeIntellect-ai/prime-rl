@@ -93,10 +93,14 @@ class NCCLWeightBroadcastSender:
         device: int | str | torch.device,
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
+        use_vllm_format_transfer: bool = False,
+        quantize_fp8: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = dtype
+        self.use_vllm_format_transfer = use_vllm_format_transfer
+        self.quantize_fp8 = quantize_fp8
 
         if self.world.is_master:
             # Trainer is on rank 0 in process group with all inference GPUs
@@ -111,32 +115,81 @@ class NCCLWeightBroadcastSender:
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
+        self.logger.debug(f"Broadcasting weights for step {step}")
         state_dict = model.state_dict()
+        self.logger.debug("Have state dict")
         num_layers = get_max_layer_num(state_dict)
+        self.logger.debug(f"Have {num_layers} layers")
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
 
         if self.world.is_master:
+            self.logger.debug("Broadcasting number of state dicts to send")
             broadcast_integer(num_state_dict_to_send, self.communicator)
+            torch.cuda.current_stream().synchronize()
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
 
-        for layer_id, state_dict in filter_state_dict_by_layers(state_dict, num_layers):
-            for key, value in list(state_dict.items()):
-                if isinstance(value, DTensor):
-                    value = cast(DTensor, value.to(self.dtype)).full_tensor()
-                state_dict[key] = value
+        if self.use_vllm_format_transfer:
+            self._broadcast_kernel_format(model, state_dict, num_layers)
+        else:
+            self._broadcast_checkpoint_format(model, state_dict, num_layers)
 
-            # Convert to HF hub format for this layer if needed
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
-                model.convert_layer_to_hf(state_dict, layer_id)
+    def _resolve_dtensors(self, sd: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Resolve DTensors to full tensors in-place and return the dict."""
+        for key, value in list(sd.items()):
+            if isinstance(value, DTensor):
+                sd[key] = cast(DTensor, value.to(self.dtype)).full_tensor()
+        return sd
+
+    def _broadcast_checkpoint_format(self, model: nn.Module, state_dict: dict[str, Tensor], num_layers: int) -> None:
+        """Broadcast weights in HF checkpoint format (original path)."""
+        for layer_id, layer_sd in filter_state_dict_by_layers(state_dict, num_layers):
+            layer_sd = self._resolve_dtensors(layer_sd)
+
+            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_sd):
+                model.convert_layer_to_hf(layer_sd, layer_id)
             else:
-                # For regular transformers models, revert internal format to original HF hub format
                 from transformers.core_model_loading import revert_weight_conversion
 
-                state_dict = revert_weight_conversion(model, state_dict)
+                layer_sd = revert_weight_conversion(model, layer_sd)
 
             if self.world.is_master:
-                broadcast_state_dict(state_dict, self.communicator)
+                broadcast_state_dict(layer_sd, self.communicator)
+                # Synchronize to ensure the broadcast completes before the next
+                # layer's DTensor resolution launches FSDP all-gathers. Running
+                # two NCCL communicators concurrently on the same GPU deadlocks.
+                torch.cuda.current_stream().synchronize()
+
+    def _broadcast_kernel_format(self, model: nn.Module, state_dict: dict[str, Tensor], num_layers: int) -> None:
+        """Broadcast weights in vLLM kernel format (fused, optionally FP8).
+
+        Converts PrimeRL naming to vLLM kernel naming in-place,
+        so the receiver can use param.copy_() directly.
+        """
+        assert isinstance(model, PreTrainedModelPrimeRL), (
+            f"Kernel format transfer requires a PrimeRL model, got {type(model).__name__}"
+        )
+        quantize_fp8 = self.quantize_fp8
+        self.logger.debug(f"Using kernel weight transfer (quantize_fp8={quantize_fp8})")
+
+        # Non-layer weights (embeddings, norm, lm_head) — resolve DTensors for this slice only
+        non_layer_sd = {k: v for k, v in state_dict.items() if "model.layers" not in k}
+        non_layer_sd = self._resolve_dtensors(non_layer_sd)
+        if self.world.is_master:
+            broadcast_state_dict(non_layer_sd, self.communicator)
+            torch.cuda.current_stream().synchronize()
+        del non_layer_sd
+
+        # Per-layer kernel-format conversion — resolve DTensors per layer to avoid OOM
+        for layer_idx in range(num_layers):
+            layer_sd = {k: v for k, v in state_dict.items() if k.startswith(f"model.layers.{layer_idx}.")}
+            layer_sd = self._resolve_dtensors(layer_sd)
+            kernel_sd = model.convert_layer_to_vllm_kernel(layer_sd, layer_idx, quantize_fp8=quantize_fp8)
+            del layer_sd
+            if self.world.is_master:
+                broadcast_state_dict(kernel_sd, self.communicator)
+                torch.cuda.current_stream().synchronize()
+            del kernel_sd
 
 
 class NCCLWeightBroadcast(WeightBroadcast):
@@ -154,7 +207,15 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
-            config.host, config.port, 0, config.inference_world_size + 1, device, config.timeout, dtype
+            config.host,
+            config.port,
+            0,
+            config.inference_world_size + 1,
+            device,
+            config.timeout,
+            dtype,
+            use_vllm_format_transfer=config.use_vllm_format_transfer,
+            quantize_fp8=config.quantize_fp8,
         )
 
     @torch.no_grad()

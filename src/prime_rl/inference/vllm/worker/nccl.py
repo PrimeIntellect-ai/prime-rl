@@ -86,24 +86,44 @@ class NCCLWeightBroadcastReceiver:
 class NCCLWeightUpdateWorker(Worker):
     """vLLM worker extension for updating weights in-place using NCCL."""
 
-    def init_broadcaster(self, host: str, port: int, server_rank: int, num_inference_server: int, timeout: int) -> None:
-        """Initialize the NCCL broadcast receiver."""
+    def init_broadcaster(
+        self,
+        host: str,
+        port: int,
+        rank_offset: int,
+        inference_world_size: int,
+        gpus_per_server: int,
+        timeout: int,
+        use_vllm_format_transfer: bool = False,
+    ) -> None:
+        """Initialize the NCCL broadcast receiver.
+
+        Args:
+            rank_offset: Starting GPU offset for this server in the global inference group.
+            inference_world_size: Total number of inference GPUs across all servers.
+            gpus_per_server: Number of GPUs managed by this server instance.
+        """
+        self.use_vllm_format_transfer = use_vllm_format_transfer
+
         tp_size = get_tp_group().world_size
         tp_rank = get_tp_group().rank_in_group
-        dp_size = get_dp_group().world_size
         dp_rank = get_dp_group().rank_in_group
-        global_rank_inference = (server_rank * tp_size * dp_size) + (dp_rank * tp_size) + tp_rank
-        global_inference_world_size = num_inference_server * tp_size * dp_size
+        # Use modulo to get the local DP rank within this server (needed when
+        # the DP group spans multiple nodes in distributed EP mode).
+        local_dp_rank = dp_rank % (gpus_per_server // tp_size)
+        local_rank = local_dp_rank * tp_size + tp_rank
+        global_rank_inference = rank_offset + local_rank
 
         logger.info(
-            f"Worker [tp={tp_rank} dp={dp_rank} server_rank={server_rank}] -> [global_rank={global_rank_inference} global_world_size={global_inference_world_size}]"
+            f"Worker [tp={tp_rank} dp={dp_rank} local_dp={local_dp_rank} rank_offset={rank_offset}] "
+            f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
         )
 
         self.nccl_broadcast_receiver = NCCLWeightBroadcastReceiver(
             host=host,
             port=port,
             rank=global_rank_inference + 1,  # +1 as the trainer broadcaster is on rank 0
-            world_size=global_inference_world_size + 1,  # +1 as the trainer broadcaster is on rank 0
+            world_size=inference_world_size + 1,  # +1 as the trainer broadcaster is on rank 0
             device=self.device,
             timeout=timeout,
         )
@@ -111,12 +131,106 @@ class NCCLWeightUpdateWorker(Worker):
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator."""
         model_runner = self.model_runner
-        model = model_runner.model.runnable
+        if hasattr(model_runner.model, "runnable"):
+            model = model_runner.model.runnable
+        else:
+            model = model_runner.model
         assert isinstance(model, Module)
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        model.load_weights(state_iter)  # type: ignore
 
-        # # Process weights after loading (important for some models)
-        device = next(model.parameters()).device
-        process_weights_after_loading(model, self.model_runner.model_config, device)
+        if self.use_vllm_format_transfer:
+            self._load_kernel_format(model, state_iter)
+            self._update_mla_absorbed_weights(model)
+        else:
+            model.load_weights(state_iter)  # type: ignore
+            device = next(model.parameters()).device
+            process_weights_after_loading(model, self.model_runner.model_config, device)
+
+    @torch.no_grad()
+    def _update_mla_absorbed_weights(self, model: Module) -> None:
+        """Recompute MLA absorbed KV weights in-place after kernel weight transfer.
+
+        After updating kv_b_proj via copy_(), we must recompute the absorbed
+        W_UV and W_UK_T matrices. We use copy_() to update them in-place
+        so captured CUDA graphs remain valid.
+        """
+        from vllm.model_executor.layers.quantization.utils.quant_utils import get_and_maybe_dequant_weights
+
+        for name, module in model.named_modules():
+            if not hasattr(module, "W_UV") and not hasattr(module, "W_UK_T"):
+                continue
+            if not hasattr(module, "kv_b_proj"):
+                continue
+
+            act_dtype = module.W_UV.dtype if hasattr(module, "W_UV") else torch.bfloat16
+            kv_b_proj_weight = get_and_maybe_dequant_weights(module.kv_b_proj, out_dtype=act_dtype).T
+            kv_b_proj_weight = kv_b_proj_weight.view(
+                module.kv_lora_rank, module.num_heads, module.qk_nope_head_dim + module.v_head_dim
+            )
+            W_UK, W_UV = kv_b_proj_weight.split([module.qk_nope_head_dim, module.v_head_dim], dim=-1)
+
+            if hasattr(module, "W_UV"):
+                new_W_UV = W_UV.transpose(0, 1)
+                module.W_UV.copy_(new_W_UV)
+            if hasattr(module, "W_UK_T"):
+                new_W_UK_T = W_UK.permute(1, 2, 0)
+                module.W_UK_T.copy_(new_W_UK_T)
+
+            logger.debug(f"Updated MLA absorbed weights in-place for {name}")
+
+    def _build_expert_map(self, model: Module) -> dict[str, torch.Tensor]:
+        """Build a mapping from parameter name prefix to expert global indices.
+
+        For each FusedMoE module, finds which global expert indices are local
+        to this rank, so we can slice received full-expert tensors.
+        """
+        from vllm.model_executor.layers.fused_moe.layer import FusedMoE
+
+        expert_slices: dict[str, torch.Tensor] = {}
+        for module_name, module in model.named_modules():
+            if not isinstance(module, FusedMoE):
+                continue
+            if module._expert_map is None:
+                continue
+            # global indices where expert_map >= 0 (i.e. assigned to this rank)
+            global_indices = torch.where(module._expert_map >= 0)[0]
+            # sort by local index to preserve correct ordering
+            local_indices = module._expert_map[global_indices]
+            global_indices = global_indices[local_indices.argsort()]
+            expert_slices[module_name] = global_indices
+        return expert_slices
+
+    @torch.no_grad()
+    def _load_kernel_format(self, model: Module, state_iter) -> None:
+        """Load kernel-format weights using in-place copy_ (CUDA-graph safe)."""
+        params = dict(model.named_parameters())
+        expert_slices = self._build_expert_map(model)
+        loaded = 0
+        skipped = []
+        shape_mismatches = []
+        for name, tensor in state_iter:
+            if name in params:
+                param = params[name]
+                if param.shape != tensor.shape:
+                    # Check if this is an expert weight that needs EP slicing
+                    sliced = False
+                    for module_name, global_indices in expert_slices.items():
+                        if name.startswith(module_name + "."):
+                            tensor = tensor[global_indices]
+                            sliced = True
+                            break
+                    if not sliced or param.shape != tensor.shape:
+                        shape_mismatches.append(
+                            f"{name}: param={list(param.shape)} != received={list(tensor.shape)}"
+                        )
+                        continue
+                param.copy_(tensor)
+                loaded += 1
+            else:
+                skipped.append(name)
+        if shape_mismatches:
+            logger.error(f"Kernel weight transfer: {len(shape_mismatches)} SHAPE MISMATCHES: {shape_mismatches}")
+        if skipped:
+            logger.warning(f"Kernel weight transfer: {len(skipped)} skipped (not in model): {skipped}")
+        logger.info(f"Kernel weight transfer: copied {loaded} weights in-place")

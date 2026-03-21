@@ -139,8 +139,39 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 2
 
 
+class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
+    """Configures a disaggregated prefill/decode inference deployment.
+
+    Each inference replica is split into separate prefill and decode node groups.
+    Requires NIXL for KV transfer and a vllm-router for request routing.
+    """
+
+    type: Literal["disaggregated"] = "disaggregated"
+
+    num_prefill_nodes: Annotated[int, Field(ge=1, description="Number of prefill nodes per prefill replica.")] = 1
+    num_prefill_replicas: Annotated[
+        int, Field(ge=1, description="Number of prefill replicas per inference replica. All share the same router.")
+    ] = 1
+    num_decode_nodes: Annotated[int, Field(ge=1, description="Number of decode nodes per replica.")] = 1
+
+    router_port: Annotated[int, Field(description="Port for the vllm-router on each replica.")] = 8000
+    prefill_port: Annotated[int, Field(description="Port for prefill vLLM instances.")] = 8100
+    decode_port: Annotated[int, Field(description="Port for decode vLLM instances.")] = 8200
+
+    @property
+    def total_prefill_nodes(self) -> int:
+        return self.num_prefill_nodes * self.num_prefill_replicas
+
+    @property
+    def num_nodes(self) -> int:
+        return self.total_prefill_nodes + self.num_decode_nodes
+
+
 InferenceDeploymentConfig: TypeAlias = Annotated[
-    SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig, Field(discriminator="type")
+    SingleNodeInferenceDeploymentConfig
+    | MultiNodeInferenceDeploymentConfig
+    | DisaggregatedInferenceDeploymentConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -204,8 +235,8 @@ class InferenceConfig(BaseConfig):
     api_server_count: Annotated[
         int,
         Field(
-            ge=1,
-            description="The number of API servers to use. Passed to vLLM as `--api-server-count`",
+            ge=0,
+            description="The number of API servers to use. Passed to vLLM as `--api-server-count`. Set to 0 for headless mode.",
         ),
     ] = 1
 
@@ -258,6 +289,20 @@ class InferenceConfig(BaseConfig):
         WeightBroadcastConfig()
     )
 
+    max_num_seqs: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of sequences per iteration. Passed to vLLM as `--max-num-seqs`.",
+        ),
+    ] = None
+
+    max_num_batched_tokens: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of batched tokens per iteration. Passed to vLLM as `--max-num-batched-tokens`.",
+        ),
+    ] = None
+
     enable_return_routed_experts: Annotated[
         bool,
         Field(
@@ -299,6 +344,21 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_disaggregated(self):
+        """Auto-configure inference for disaggregated P/D: force TP=1, enable EP."""
+        if self.deployment.type == "disaggregated":
+            self.parallel.tp = 1
+            self.enable_expert_parallel = True
+            self.enable_eplb = False
+            if self.data_parallel_size_local is None:
+                self.data_parallel_size_local = self.deployment.gpus_per_node
+            if self.parallel.dp == 1:
+                self.parallel.dp = self.deployment.gpus_per_node
+            if self.api_server_count == 1:
+                self.api_server_count = self.deployment.gpus_per_node
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         if self.slurm is not None and self.slurm.template_path is None:
             import prime_rl
@@ -332,6 +392,10 @@ class InferenceConfig(BaseConfig):
         size. Unless LoRA is enabled, in which case only one API server is
         supported (vLLM limitation).
         """
+        if self.vllm_extra.get("headless", False):
+            self.api_server_count = 0
+            return self
+
         if "api_server_count" not in self.model_fields_set:
             min_api_server_count = self.data_parallel_size_local or self.parallel.dp
             if self.api_server_count < min_api_server_count:
@@ -366,6 +430,8 @@ class InferenceConfig(BaseConfig):
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
+            "max_num_seqs": "max_num_seqs",
+            "max_num_batched_tokens": "max_num_batched_tokens",
             "enable_return_routed_experts": "enable_return_routed_experts",
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
@@ -388,5 +454,11 @@ class InferenceConfig(BaseConfig):
         if hasattr(namespace, "rope_scaling"):
             if namespace.rope_scaling is None:
                 delattr(namespace, "rope_scaling")
+
+        if namespace.max_num_seqs is None:
+            delattr(namespace, "max_num_seqs")
+
+        if namespace.max_num_batched_tokens is None:
+            delattr(namespace, "max_num_batched_tokens")
 
         return namespace
