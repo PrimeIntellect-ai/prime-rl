@@ -825,6 +825,17 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = 8
 
+    max_error_reschedule_attempts: Annotated[
+        int,
+        Field(
+            ge=0,
+            description=(
+                "Maximum number of times an errored rollout slot is rescheduled before the scheduler falls back "
+                "to shrinking non-deferred rollout groups."
+            ),
+        ),
+    ] = 3
+
     max_async_level: Annotated[
         int,
         Field(

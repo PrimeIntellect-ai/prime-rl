@@ -131,6 +131,25 @@ def test_buffer_no_filtering_by_default(dummy_env_group, make_rollouts):
     assert len(buffer.rollout_buffer) == 10
 
 
+def test_buffer_shrunk_group_skips_curriculum_updates(dummy_env_group, make_rollouts):
+    """Fallback-shrunk groups still train but do not drive pool moves or difficulty filtering."""
+    dataset = dummy_env_group.get_dataset()
+    buffer = Buffer(
+        dataset,
+        dummy_env_group.env_names,
+        BufferConfig(easy_threshold=1.0, hard_threshold=0.0, online_difficulty_filtering=True),
+    )
+    rollouts = make_rollouts(dataset.select(range(1)), rewards=[1.0])
+    example_id = dataset[0]["example_id"]
+
+    buffer.update(rollouts, allow_curriculum_updates=False)
+
+    assert len(buffer.easy_examples) == 0
+    assert len(buffer.hard_examples) == 0
+    assert example_id in buffer.example_buffer["env_a"]
+    assert len(buffer.rollout_buffer) == len(rollouts)
+
+
 def test_buffer_save_load_with_conversion(dummy_env_group, make_rollouts, tmp_path):
     """Easy/hard problems are partially converted to normal on load."""
     dataset = dummy_env_group.get_dataset()

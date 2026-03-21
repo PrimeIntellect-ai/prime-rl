@@ -13,15 +13,15 @@ from prime_rl.utils.utils import import_object
 class AdvantageInputs:
     """Inputs for advantage computation."""
 
-    rewards: Float[Tensor, "num_problems rollouts_per_example"]
-    completion_lengths: Int[Tensor, "num_problems rollouts_per_example"]
+    rewards: Float[Tensor, "num_groups group_size"]
+    completion_lengths: Int[Tensor, "num_groups group_size"]
 
 
 @dataclass
 class AdvantageOutputs:
     """Outputs from advantage computation."""
 
-    advantages: Float[Tensor, "num_problems rollouts_per_example"]
+    advantages: Float[Tensor, "num_groups group_size"]
 
 
 AdvantageFn = Callable[..., AdvantageOutputs]
@@ -73,27 +73,37 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
 def compute_advantages(
     rewards: list[float],
     completion_lengths: list[int],
-    samples_per_problem: int,
+    group_sizes: list[int],
     advantage_config: AdvantageConfig | None,
 ) -> list[float]:
     """
-    Computes advantages from a flattened list of rewards, grouped by problem.
+    Computes advantages from a flattened list of rewards, grouped by completed rollout group.
 
     Args:
-        rewards: Flattened list of rewards where first `samples_per_problem` rewards are for the first problem
+        rewards: Flattened rewards in scheduler-emitted group order.
         completion_lengths: List of completion lengths for each reward
-        samples_per_problem: Number of samples (and thus, rewards) per problem
+        group_sizes: Number of accepted rollouts in each completed group
         advantage_config: Configuration for advantage computation (DefaultAdvantageConfig or CustomAdvantageConfig)
     """
     if not advantage_config:
         return rewards
+    if not rewards:
+        return []
+    if sum(group_sizes) != len(rewards) or len(completion_lengths) != len(rewards):
+        raise ValueError("Rewards, completion_lengths, and group_sizes must describe the same flattened groups")
 
     advantage_fn = setup_advantage_fn(advantage_config)
-
-    inputs = AdvantageInputs(
-        rewards=torch.tensor(rewards).view(-1, samples_per_problem),
-        completion_lengths=torch.tensor(completion_lengths).view(-1, samples_per_problem),
-    )
-
-    result = advantage_fn(inputs)
-    return result.advantages.flatten().tolist()
+    advantages: list[float] = []
+    offset = 0
+    for group_size in group_sizes:
+        if group_size <= 0:
+            continue
+        next_offset = offset + group_size
+        inputs = AdvantageInputs(
+            rewards=torch.tensor(rewards[offset:next_offset]).view(1, group_size),
+            completion_lengths=torch.tensor(completion_lengths[offset:next_offset]).view(1, group_size),
+        )
+        result = advantage_fn(inputs)
+        advantages.extend(result.advantages.flatten().tolist())
+        offset = next_offset
+    return advantages

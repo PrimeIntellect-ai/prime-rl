@@ -1,5 +1,7 @@
+import pytest
 import torch
 
+import prime_rl.orchestrator.advantage as advantage_module
 from prime_rl.configs.orchestrator import CustomAdvantageConfig, DefaultAdvantageConfig
 from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
@@ -39,7 +41,7 @@ def test_compute_advantages_with_config():
     rewards = [1.0, 0.5, 0.8, 0.2, 0.9, 0.1]
     lengths = [10, 12, 8, 15, 11, 9]
 
-    result = compute_advantages(rewards, lengths, samples_per_problem=3, advantage_config=DefaultAdvantageConfig())
+    result = compute_advantages(rewards, lengths, group_sizes=[3, 3], advantage_config=DefaultAdvantageConfig())
 
     assert len(result) == 6
     # First 3 should sum to ~0 (mean subtracted)
@@ -52,10 +54,21 @@ def test_compute_advantages_without_config():
     rewards = [1.0, 0.5, 0.8]
     lengths = [10, 12, 8]
 
-    result = compute_advantages(rewards, lengths, samples_per_problem=3, advantage_config=None)
+    result = compute_advantages(rewards, lengths, group_sizes=[3], advantage_config=None)
 
     # Without config, returns raw rewards
     assert result == rewards
+
+
+def test_compute_advantages_with_variable_group_sizes():
+    rewards = [1.0, 0.5, 0.8, 0.2, 0.9]
+    lengths = [10, 12, 8, 15, 11]
+
+    result = compute_advantages(rewards, lengths, group_sizes=[3, 2], advantage_config=DefaultAdvantageConfig())
+
+    assert len(result) == 5
+    assert abs(sum(result[:3])) < 1e-5
+    assert abs(sum(result[3:])) < 1e-5
 
 
 def test_setup_advantage_fn_with_custom_config():
@@ -79,3 +92,25 @@ def test_setup_advantage_fn_with_custom_config():
 def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> AdvantageOutputs:
     """A simple custom advantage for testing."""
     return AdvantageOutputs(advantages=inputs.rewards * scale)
+
+
+def test_compute_advantages_calls_custom_advantage_per_group(monkeypatch):
+    recorded_group_shapes: list[tuple[int, int]] = []
+
+    def recording_advantage(inputs: AdvantageInputs) -> AdvantageOutputs:
+        recorded_group_shapes.append(tuple(inputs.rewards.shape))
+        return AdvantageOutputs(advantages=inputs.rewards)
+
+    monkeypatch.setattr(advantage_module, "import_object", lambda _: recording_advantage)
+
+    result = compute_advantages(
+        rewards=[1.0, 0.5, 0.8, 0.2, 0.9],
+        completion_lengths=[10, 12, 8, 15, 11],
+        group_sizes=[2, 1, 2],
+        advantage_config=CustomAdvantageConfig(
+            import_path="unused.module.path",
+        ),
+    )
+
+    assert result == pytest.approx([1.0, 0.5, 0.8, 0.2, 0.9])
+    assert recorded_group_shapes == [(1, 2), (1, 1), (1, 2)]

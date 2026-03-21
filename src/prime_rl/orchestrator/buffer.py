@@ -207,7 +207,7 @@ class Buffer:
 
         return sampled_examples
 
-    def update(self, rollouts: list[vf.RolloutOutput]):
+    def update(self, rollouts: list[vf.RolloutOutput], *, allow_curriculum_updates: bool = True):
         """Updates the buffer state with completed rollouts."""
 
         rollouts_by_example = defaultdict(list)
@@ -217,6 +217,12 @@ class Buffer:
         for example_id, example_rollouts in rollouts_by_example.items():
             avg_reward = mean([r["reward"] for r in example_rollouts])
             env_name = example_rollouts[0]["task"]
+
+            if not allow_curriculum_updates:
+                self.num_examples_per_step[env_name]["normal"] += 1
+                self.num_rollouts_per_step[env_name]["normal"] += len(example_rollouts)
+                self.rollout_buffer.extend(example_rollouts)
+                continue
 
             if self.config.easy_threshold is not None and avg_reward >= self.config.easy_threshold:
                 pool = "easy"

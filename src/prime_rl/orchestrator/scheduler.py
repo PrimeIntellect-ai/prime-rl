@@ -40,8 +40,38 @@ class GroupState:
 
     example: dict
     rollouts_to_schedule: int
+    target_rollouts: int = 0
     completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
     pinned_client: vf.ClientConfig | None = None
+    error_reschedule_attempts: int = 0
+    was_shrunk: bool = False
+
+
+class GeneratedBatch(NamedTuple):
+    rollouts: list[vf.RolloutOutput]
+    group_sizes: list[int]
+
+
+ERROR_FAMILY_CLASSES = (
+    vf.Error,
+    vf.ModelError,
+    vf.ToolError,
+    vf.InfraError,
+    vf.SandboxError,
+)
+ERROR_FAMILY_NAMES = tuple(f"vf.{cls.__name__}" for cls in ERROR_FAMILY_CLASSES)
+
+
+def get_error_family_names(error_name: str | None) -> tuple[str, ...]:
+    if error_name is None:
+        return ()
+    families = ["vf.Error"]
+    error_cls = getattr(vf, error_name, None)
+    if isinstance(error_cls, type):
+        for family_cls in ERROR_FAMILY_CLASSES[1:]:
+            if issubclass(error_cls, family_cls):
+                families.append(f"vf.{family_cls.__name__}")
+    return tuple(families)
 
 
 class Scheduler:
@@ -80,6 +110,7 @@ class Scheduler:
         self.batch_size = config.batch_size
         self.token_batch_size = config.token_batch_size
         self.rollouts_per_example = config.rollouts_per_example
+        self.max_error_reschedule_attempts = config.max_error_reschedule_attempts
         self.max_inflight_rollouts = max_inflight_rollouts
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
@@ -117,6 +148,9 @@ class Scheduler:
         self.empty_rollouts_by_task: dict[str, int] = defaultdict(int)
         self.errored_rollouts_by_task: dict[str, int] = defaultdict(int)
         self.total_rollouts_by_task: dict[str, int] = defaultdict(int)
+        self.completed_groups_by_task: dict[str, int] = defaultdict(int)
+        self.partial_groups_by_task: dict[str, int] = defaultdict(int)
+        self.error_family_counts: Counter[str] = Counter()
         self.last_batch_generation_time = 0.0
 
     @property
@@ -136,10 +170,15 @@ class Scheduler:
             return sum(get_seq_len(rollout) for rollout in rollouts)
         return len(rollouts)
 
-    def finalize_batch_rollouts(self, rollouts: list[vf.RolloutOutput]) -> list[vf.RolloutOutput]:
-        if self.batch_size is None:
-            return rollouts
-        return rollouts[: self.batch_size]
+    def finalize_batch_rollouts(self, rollout_groups: list[list[vf.RolloutOutput]]) -> GeneratedBatch:
+        flat_rollouts: list[vf.RolloutOutput] = []
+        group_sizes: list[int] = []
+        for group_rollouts in rollout_groups:
+            if not group_rollouts:
+                continue
+            flat_rollouts.extend(group_rollouts)
+            group_sizes.append(len(group_rollouts))
+        return GeneratedBatch(rollouts=flat_rollouts, group_sizes=group_sizes)
 
     def set_sampling_args(self, sampling_args: dict) -> None:
         """Update sampling args for future rollout requests."""
@@ -170,17 +209,20 @@ class Scheduler:
         inflight = Counter(self._client_identity(info.client_config) for info in self.inflight_requests.values())
         return min(clients, key=lambda c: inflight[self._client_identity(c)])
 
-    async def drop_group(self, group_id: int) -> int:
-        """Drop a group and cancel any remaining in-flight rollouts for it."""
+    async def _cancel_group_inflight_tasks(self, group_id: int) -> int:
         tasks_to_cancel = []
         for task, info in list(self.inflight_requests.items()):
             if info.group_id != group_id:
                 continue
             self.inflight_requests.pop(task, None)
             tasks_to_cancel.append(task)
-        self.groups.pop(group_id, None)
         await safe_cancel_all(tasks_to_cancel)
         return len(tasks_to_cancel)
+
+    async def drop_group(self, group_id: int) -> int:
+        """Drop a group and cancel any remaining in-flight rollouts for it."""
+        self.groups.pop(group_id, None)
+        return await self._cancel_group_inflight_tasks(group_id)
 
     async def schedule_rollout(self, group_id: int):
         """Asynchronously schedules a rollout request."""
@@ -233,7 +275,11 @@ class Scheduler:
         example = self.buffer.sample_examples(n=1)[0]
         group_id = self.next_group_id
         self.next_group_id += 1
-        self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.rollouts_per_example)
+        self.groups[group_id] = GroupState(
+            example=example,
+            rollouts_to_schedule=self.rollouts_per_example,
+            target_rollouts=self.rollouts_per_example,
+        )
         await self.schedule_rollout(group_id=group_id)
         return True
 
@@ -353,7 +399,75 @@ class Scheduler:
         await env_for_task.rubric.score_group(cast(list[vf.State], completed_rollouts))
         return completed_rollouts
 
-    async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
+    def _record_error_families(self, error_info: dict | None) -> None:
+        if error_info is None:
+            return
+        for family_name in get_error_family_names(cast(str | None, error_info.get("error"))):
+            self.error_family_counts[family_name] += 1
+
+    async def _finalize_group(self, group_id: int) -> GroupState | None:
+        group = self.groups.pop(group_id, None)
+        if group is None:
+            return None
+        removed = await self._cancel_group_inflight_tasks(group_id)
+        self.cancelled_rollouts_count += removed
+        task = cast(str, group.example["task"])
+        self.completed_groups_by_task[task] += 1
+        if group.was_shrunk:
+            self.partial_groups_by_task[task] += 1
+        return group
+
+    async def _handle_errored_rollout(
+        self,
+        group_id: int,
+        group: GroupState,
+        task: str,
+        error_info: dict,
+    ) -> GroupState | None:
+        self.errored_rollouts_by_task[task] += 1
+        self._record_error_families(error_info)
+        error_repr = error_info.get("error_chain_repr", error_info.get("error", "unknown error"))
+        completed = len(group.completed_rollouts)
+        if group.error_reschedule_attempts < self.max_error_reschedule_attempts:
+            group.error_reschedule_attempts += 1
+            group.rollouts_to_schedule += 1
+            self.logger.warning(
+                f"Rollout error in group {group_id} ({task}), re-scheduling "
+                f"({completed}/{group.target_rollouts} complete, error retry "
+                f"{group.error_reschedule_attempts}/{self.max_error_reschedule_attempts}): {error_repr}"
+            )
+            return None
+
+        if self._should_defer_group_scoring(task):
+            self.logger.warning(
+                f"Rollout error in group {group_id} ({task}), retry budget exhausted. "
+                f"Dropping deferred-scoring group ({completed}/{group.target_rollouts} complete): {error_repr}"
+            )
+            removed = await self.drop_group(group_id)
+            self.cancelled_rollouts_count += removed
+            return None
+
+        group.target_rollouts -= 1
+        group.was_shrunk = True
+        if group.target_rollouts <= 0:
+            self.logger.warning(
+                f"Rollout error in group {group_id} ({task}), retry budget exhausted. "
+                f"Dropping group after all rollout slots were lost: {error_repr}"
+            )
+            removed = await self.drop_group(group_id)
+            self.cancelled_rollouts_count += removed
+            return None
+
+        self.logger.warning(
+            f"Rollout error in group {group_id} ({task}), retry budget exhausted. "
+            f"Shrinking group target to {group.target_rollouts} "
+            f"({completed}/{group.target_rollouts} complete): {error_repr}"
+        )
+        if len(group.completed_rollouts) < group.target_rollouts:
+            return None
+        return await self._finalize_group(group_id)
+
+    async def generate_batch(self, step: int) -> GeneratedBatch:
         """Continuously generates a batch of rollouts."""
         self.step = step
 
@@ -370,7 +484,7 @@ class Scheduler:
 
         self.logger.debug("Starting to generate batch rollouts")
 
-        batch_rollouts: list[vf.RolloutOutput] = []
+        batch_rollout_groups: list[list[vf.RolloutOutput]] = []
         batch_progress = 0
         pbar = ProgressTracker(
             total=self.batch_target, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
@@ -404,31 +518,37 @@ class Scheduler:
 
                     task = rollout_info.task
                     self.total_rollouts_by_task[task] += 1
-                    should_reschedule = False
                     if len(rollout["trajectory"]) == 0:
                         self.empty_rollouts_by_task[task] += 1
-                        should_reschedule = True
+                        group.rollouts_to_schedule += 1
                         self.logger.warning(
                             f"Empty trajectory in group {group_id} ({task}), re-scheduling "
-                            f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
+                            f"({len(group.completed_rollouts)}/{group.target_rollouts} complete)"
                         )
-                    if rollout["error"] is not None:
-                        self.errored_rollouts_by_task[task] += 1
-                        should_reschedule = True
-                        self.logger.warning(
-                            f"Rollout error in group {group_id} ({task}), re-scheduling "
-                            f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
-                            f"{rollout['error']['error_chain_repr']}"
-                        )
-                    if should_reschedule:
-                        group.rollouts_to_schedule += 1
                         continue
 
-                    group.completed_rollouts.append(rollout)
-                    if len(group.completed_rollouts) < self.rollouts_per_example:
-                        continue
-                    completed_rollouts = self.groups.pop(group_id).completed_rollouts
-                    completed_rollouts = await self._score_group_if_deferred(completed_rollouts)
+                    if rollout["error"] is not None:
+                        completed_group = await self._handle_errored_rollout(
+                            group_id=group_id,
+                            group=group,
+                            task=task,
+                            error_info=cast(dict, rollout["error"]),
+                        )
+                        if completed_group is not None:
+                            completed_rollouts = completed_group.completed_rollouts
+                            completed_rollouts = await self._score_group_if_deferred(completed_rollouts)
+                        else:
+                            continue
+
+                    else:
+                        group.completed_rollouts.append(rollout)
+                        if len(group.completed_rollouts) < group.target_rollouts:
+                            continue
+                        completed_group = await self._finalize_group(group_id)
+                        if completed_group is None:
+                            continue
+                        completed_rollouts = completed_group.completed_rollouts
+                        completed_rollouts = await self._score_group_if_deferred(completed_rollouts)
                 except asyncio.CancelledError:
                     if group_id is not None:
                         await self.drop_group(group_id)
@@ -439,20 +559,23 @@ class Scheduler:
                         await self.drop_group(group_id)
                     continue
 
-                self.buffer.update(completed_rollouts)
-                accepted_rollouts = self.buffer.sample_rollouts(n=self.rollouts_per_example)
-
-                batch_rollouts.extend(accepted_rollouts)
+                self.buffer.update(
+                    completed_rollouts,
+                    allow_curriculum_updates=not completed_group.was_shrunk,
+                )
+                accepted_rollouts = self.buffer.sample_rollouts(n=len(completed_rollouts))
+                if accepted_rollouts:
+                    batch_rollout_groups.append(accepted_rollouts)
                 progress_increment = self.get_batch_progress_increment(accepted_rollouts)
                 batch_progress += progress_increment
                 pbar.update(progress_increment)
 
         await self._fill_inflight_requests()
 
-        batch_rollouts = self.finalize_batch_rollouts(batch_rollouts)
+        generated_batch = self.finalize_batch_rollouts(batch_rollout_groups)
         pbar.close()
         self.last_batch_generation_time = time.perf_counter() - batch_start_time
-        return batch_rollouts
+        return generated_batch
 
     async def stop(self) -> None:
         await self.cancel_inflight_rollouts()
@@ -503,12 +626,19 @@ class Scheduler:
             "off_policy_level/all/mean": self.mean_off_policy_level,
             "off_policy_level/all/min": self.min_off_policy_level,
         }
+        total_completed_groups = sum(self.completed_groups_by_task.values())
+        metrics["partial_groups/all"] = sum(self.partial_groups_by_task.values()) / max(total_completed_groups, 1)
+        for family_name in ERROR_FAMILY_NAMES:
+            metrics[f"error/{family_name}"] = self.error_family_counts[family_name] / max(total_rollouts, 1)
         for task, count in self.empty_rollouts_by_task.items():
             task_total = max(self.total_rollouts_by_task[task], 1)
             metrics[f"empty_rollouts/{task}"] = count / task_total
         for task, count in self.errored_rollouts_by_task.items():
             task_total = max(self.total_rollouts_by_task[task], 1)
             metrics[f"errored_rollouts/{task}"] = count / task_total
+        for task, count in self.partial_groups_by_task.items():
+            task_total = max(self.completed_groups_by_task[task], 1)
+            metrics[f"partial_groups/{task}"] = count / task_total
         by_task: dict[str, list[int]] = {}
         for info in self.inflight_requests.values():
             by_task.setdefault(info.task, []).append(info.off_policy_steps)
@@ -520,6 +650,9 @@ class Scheduler:
         self.empty_rollouts_by_task.clear()
         self.errored_rollouts_by_task.clear()
         self.total_rollouts_by_task.clear()
+        self.completed_groups_by_task.clear()
+        self.partial_groups_by_task.clear()
+        self.error_family_counts.clear()
 
         # Add inference pool metrics (e.g. elastic pool server counts)
         metrics.update(self.inference_pool.get_metrics())

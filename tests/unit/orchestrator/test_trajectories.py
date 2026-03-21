@@ -1505,10 +1505,10 @@ def test_interleave_rollout_empty_trajectory():
     assert interleave_rollout(output) is None
 
 
-def test_interleave_rollout_error_masks_all_false():
+def test_interleave_rollout_error_preserves_completion_masks():
     """
-    When rollout output has an error, all completion_mask values should be False
-    across both make_sample (step 0) and extend_sample (step 1).
+    Errored rollouts are filtered in the scheduler, so interleaving should preserve
+    the rollout's native completion_mask values.
     """
     output = vf.RolloutOutput(
         example_id=1,
@@ -1561,9 +1561,8 @@ def test_interleave_rollout_error_masks_all_false():
     assert rollouts is not None
     assert len(rollouts) == 1
     rollout = rollouts[0]
-    # Extension holds so tokens merge, but ALL completion_mask should be False
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
-    assert rollout.completion_mask == [False, False, False, False, False, False]
+    assert rollout.completion_mask == [True, True, False, False, True, True]
     # Logprobs and temperatures still present
     assert rollout.completion_logprobs == [-0.1, -0.2, 0.0, 0.0, -0.3, -0.4]
     assert rollout.completion_temperatures == [0.8] * 6

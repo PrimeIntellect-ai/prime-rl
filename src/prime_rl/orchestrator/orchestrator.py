@@ -496,7 +496,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Await train rollouts, process results and write batch to disk to consume by trainer
         await train_task
         generate_completions_time = scheduler.last_batch_generation_time
-        train_rollouts = train_task.result()
+        generated_batch = train_task.result()
+        train_rollouts = generated_batch.rollouts
+        group_sizes = generated_batch.group_sizes
 
         # VLM: offload base64 images to disk immediately to free memory
         if is_vlm:
@@ -519,7 +521,7 @@ async def orchestrate(config: OrchestratorConfig):
         advantages = compute_advantages(
             rewards,
             completion_lens,
-            config.rollouts_per_example,
+            group_sizes,
             config.advantage,
         )
 

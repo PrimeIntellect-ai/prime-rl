@@ -76,7 +76,6 @@ def interleave_rollout(
         )
         return None
 
-    has_error = output["error"] is not None
     # this field should be guaranteed because we set temperature in get_sampling_args
     temperature = output["sampling_args"]["temperature"]
 
@@ -84,10 +83,6 @@ def interleave_rollout(
         """Create a new TrainingSample from a trajectory step."""
         tokens = step["tokens"]
         assert tokens is not None
-        if has_error:
-            completion_mask = [False] * len(tokens["completion_mask"])
-        else:
-            completion_mask = [bool(i) for i in tokens["completion_mask"]]
         completion_ids = list(tokens["completion_ids"])
 
         routed_experts = _align_routed_experts(
@@ -99,7 +94,7 @@ def interleave_rollout(
             prompt_ids=list(tokens["prompt_ids"]),
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
             completion_ids=completion_ids,
-            completion_mask=completion_mask,
+            completion_mask=[bool(i) for i in tokens["completion_mask"]],
             completion_logprobs=list(tokens["completion_logprobs"]),
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
@@ -122,10 +117,7 @@ def interleave_rollout(
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
         sample.completion_ids.extend(completion_ids)
-        if has_error:
-            sample.completion_mask.extend([False] * len(tokens["completion_mask"]))
-        else:
-            sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
+        sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
