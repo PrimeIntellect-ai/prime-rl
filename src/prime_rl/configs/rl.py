@@ -127,6 +127,27 @@ class SharedModelConfig(BaseConfig):
         Field(description="The name of the model to use."),
     ] = "Qwen/Qwen3-0.6B"
 
+    vlm: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "Whether this is a vision-language model. "
+                "None (default) auto-detects from model name and config. "
+                "Set explicitly to True/False to override auto-detection."
+            ),
+        ),
+    ] = None
+
+    vlm_vision_encoder_attr: Annotated[
+        str | None,
+        Field(description="Dotted attribute path to the vision encoder (e.g. 'model.visual')."),
+    ] = None
+
+    vlm_layer_prefix: Annotated[
+        str | None,
+        Field(description="Key prefix for language model layers (e.g. 'model.language_model.layers.')."),
+    ] = None
+
 
 class SharedWeightBroadcastConfig(BaseConfig):
     """Configures shared weight broadcast settings."""
@@ -469,6 +490,13 @@ class RLConfig(BaseConfig):
             self.orchestrator.model.name = self.model.name
             if self.inference is not None:
                 self.inference.model.name = self.model.name
+            for field in ("vlm", "vlm_vision_encoder_attr", "vlm_layer_prefix"):
+                val = getattr(self.model, field)
+                if val is not None:
+                    setattr(self.trainer.model, field, val)
+                    setattr(self.orchestrator.model, field, val)
+                    if self.inference is not None:
+                        setattr(self.inference.model, field, val)
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
