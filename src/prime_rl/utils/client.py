@@ -139,6 +139,7 @@ def setup_clients(client_config: ClientConfig, client_type: str = "openai_chat_c
                     max_keepalive_connections=8192,
                     max_retries=10,
                     extra_headers=headers,
+                    extra_headers_from_state=client_config.extra_headers_from_state,
                 )
             )
             client_idx += 1

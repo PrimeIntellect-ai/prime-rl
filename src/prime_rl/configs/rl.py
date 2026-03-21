@@ -624,6 +624,13 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_session_headers(self):
+        """Auto-configure X-Session-ID header for sticky routing at the inference router."""
+        if "extra_headers_from_state" not in self.orchestrator.client.model_fields_set:
+            self.orchestrator.client.extra_headers_from_state = {"X-Session-ID": "example_id"}
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_router_replay(self):
         if self.trainer.enable_router_replay:
             if self.inference is not None:

@@ -420,6 +420,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             decode_port=infer_deploy.decode_port,
             inference_tp=config.inference.parallel.tp,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            use_deep_gemm=config.inference.use_deep_gemm,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             wandb_shared=config.wandb is not None and config.wandb.shared,
         )

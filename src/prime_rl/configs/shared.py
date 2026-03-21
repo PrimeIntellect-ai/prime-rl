@@ -166,6 +166,15 @@ class ClientConfig(BaseConfig):
         ),
     ] = {}
 
+    extra_headers_from_state: Annotated[
+        dict[str, str],
+        Field(
+            description="Maps HTTP header names to state field names. For each inference request, "
+            "the header value is dynamically read from the rollout state dict. "
+            'e.g. {"X-Session-ID": "example_id"} enables sticky routing at the inference router.',
+        ),
+    ] = {}
+
     skip_model_check: Annotated[
         bool,
         Field(

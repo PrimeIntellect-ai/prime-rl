@@ -145,7 +145,7 @@ echo "MASTER_PORT=${MASTER_PORT}"
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-uv sync --all-extras --group fp8-inference
+uv sync --all-extras
 
 {% if pre_run_command %}
 # Pre-run command
@@ -186,6 +186,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {% if is_disaggregated -%}
     # PD disaggregated: NIXL KV transfer + role-based inference
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+{%- if use_deep_gemm %}
+    export VLLM_USE_DEEP_GEMM=1
+{%- endif %}
 
     export GLOO_SOCKET_IFNAME=bond0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
@@ -244,6 +247,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
+            --intra-node-data-parallel-size 1 \
             --worker-startup-timeout-secs 1200 \
             --log-level debug \
             >> $ROUTER_LOG 2>&1 &
