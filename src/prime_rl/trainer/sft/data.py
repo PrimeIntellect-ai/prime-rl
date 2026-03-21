@@ -143,24 +143,6 @@ def _extract_images_from_messages(messages: list[dict]) -> list[Image.Image]:
     return images
 
 
-def _messages_to_text_only(messages: list[dict]) -> list[dict]:
-    """Convert multimodal messages to text-only by stripping image items."""
-    result = []
-    for msg in messages:
-        content = msg.get("content")
-        if isinstance(content, list):
-            text_parts = []
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    text_parts.append(item["text"])
-                elif isinstance(item, str):
-                    text_parts.append(item)
-            result.append({**msg, "content": "\n".join(text_parts) if text_parts else ""})
-        else:
-            result.append(msg)
-    return result
-
-
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
@@ -362,9 +344,6 @@ class SFTDataset(StatefulIterableDataset):
             "target_ids": target_ids,
             "loss_mask": loss_mask,
             "position_ids": list(range(len(input_ids))),
-            "pixel_values": None,
-            "pixel_values_shape": None,
-            "image_grid_thw": None,
         }
 
     def _process_multimodal(self, example: dict) -> dict | None:
