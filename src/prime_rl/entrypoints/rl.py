@@ -399,6 +399,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_prefill_nodes=infer_deploy.num_prefill_nodes,
+            num_prefill_replicas=infer_deploy.num_prefill_replicas,
             num_decode_nodes=infer_deploy.num_decode_nodes,
             num_infer_replicas=config.deployment.num_infer_replicas,
             gpus_per_node=config.deployment.gpus_per_node,

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name={{ job_name }}
-#SBATCH --nodes={{ num_train_nodes + (num_prefill_nodes + num_decode_nodes) * num_infer_replicas }}
+#SBATCH --nodes={{ num_train_nodes + (num_prefill_nodes * num_prefill_replicas + num_decode_nodes) * num_infer_replicas }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition={{ partition }}
@@ -23,9 +23,11 @@ set -euo pipefail
 
 # Configs
 export NUM_PREFILL_NODES={{ num_prefill_nodes }}
+export NUM_PREFILL_REPLICAS={{ num_prefill_replicas }}
+export TOTAL_PREFILL_NODES=$((NUM_PREFILL_NODES * NUM_PREFILL_REPLICAS))
 export NUM_DECODE_NODES={{ num_decode_nodes }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
-export NODES_PER_REPLICA=$((NUM_PREFILL_NODES + NUM_DECODE_NODES))
+export NODES_PER_REPLICA=$((TOTAL_PREFILL_NODES + NUM_DECODE_NODES))
 export TOTAL_INFER_NODES=$((NODES_PER_REPLICA * NUM_INFER_REPLICAS))
 export NUM_TRAIN_NODES={{ num_train_nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
@@ -52,7 +54,7 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export VLLM_CACHE_ROOT=/tmp/.vllm_cache
 
-# Node assignment (per replica: prefill nodes first, then decode nodes)
+# Node assignment (per replica: all prefill nodes first, then decode nodes)
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 INFER_HOSTS=( ${HOSTNAMES[@]:0:$TOTAL_INFER_NODES} )
 TRAIN_HOSTS=( ${HOSTNAMES[@]:$TOTAL_INFER_NODES:$NUM_TRAIN_NODES} )
@@ -66,20 +68,20 @@ ALL_ROUTER_ARGS=""
 for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
     replica_base=$((r * NODES_PER_REPLICA))
 
-    # Router runs on the first prefill node of each replica
+    # Router runs on the first prefill node of each inference replica
     router_host="${INFER_HOSTS[$replica_base]}"
     INFER_URLS="${INFER_URLS:+$INFER_URLS }http://${router_host}:${ROUTER_PORT}/v1"
 
-    # Admin URLs: one per node (prefill then decode)
+    # Admin URLs and router args: all prefill nodes (across all prefill replicas), then decode nodes
     REPLICA_ROUTER_ARGS=""
-    for ((p=0; p<NUM_PREFILL_NODES; p++)); do
+    for ((p=0; p<TOTAL_PREFILL_NODES; p++)); do
         node_idx=$((replica_base + p))
         host="${INFER_HOSTS[$node_idx]}"
         ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:${PREFILL_PORT}/v1"
         REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --prefill http://${host}:${PREFILL_PORT}"
     done
     for ((d=0; d<NUM_DECODE_NODES; d++)); do
-        node_idx=$((replica_base + NUM_PREFILL_NODES + d))
+        node_idx=$((replica_base + TOTAL_PREFILL_NODES + d))
         host="${INFER_HOSTS[$node_idx]}"
         ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:${DECODE_PORT}/v1"
         REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --decode http://${host}:${DECODE_PORT}"
@@ -149,19 +151,20 @@ if [ "$NODE_RANK" -lt "$TOTAL_INFER_NODES" ]; then
     KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
     DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
 
-    # Determine replica and role
+    # Determine inference replica and role within it
     REPLICA_IDX=$((NODE_RANK / NODES_PER_REPLICA))
     RANK_IN_REPLICA=$((NODE_RANK % NODES_PER_REPLICA))
 
-    if [ "$RANK_IN_REPLICA" -lt "$NUM_PREFILL_NODES" ]; then
+    if [ "$RANK_IN_REPLICA" -lt "$TOTAL_PREFILL_NODES" ]; then
         # ── Prefill node ──
         ROLE="prefill"
-        ROLE_RANK=$RANK_IN_REPLICA
+        PREFILL_REPLICA=$((RANK_IN_REPLICA / NUM_PREFILL_NODES))
+        ROLE_RANK=$((RANK_IN_REPLICA % NUM_PREFILL_NODES))
         EP=$((NUM_PREFILL_NODES * GPUS_PER_NODE))
         PORT=$PREFILL_PORT
         START_RANK=$((ROLE_RANK * GPUS_PER_NODE))
-        # Head host is the first prefill node of this replica
-        HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_REPLICA))]}"
+        # Head host is the first node of this prefill replica
+        HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_REPLICA + PREFILL_REPLICA * NUM_PREFILL_NODES))]}"
 
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
 
@@ -174,12 +177,12 @@ if [ "$NODE_RANK" -lt "$TOTAL_INFER_NODES" ]; then
         # ── Decode node ──
         export UCX_NET_DEVICES=mlx5_0:1
         ROLE="decode"
-        ROLE_RANK=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
+        ROLE_RANK=$((RANK_IN_REPLICA - TOTAL_PREFILL_NODES))
         EP=$((NUM_DECODE_NODES * GPUS_PER_NODE))
         PORT=$DECODE_PORT
         START_RANK=$((ROLE_RANK * GPUS_PER_NODE))
-        # Head host is the first decode node of this replica
-        HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_REPLICA + NUM_PREFILL_NODES))]}"
+        # Head host is the first decode node of this inference replica
+        HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_REPLICA + TOTAL_PREFILL_NODES))]}"
 
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
 
@@ -190,11 +193,11 @@ if [ "$NODE_RANK" -lt "$TOTAL_INFER_NODES" ]; then
         fi
     fi
 
-    echo "NODE_RANK=$NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX ROLE_RANK=$ROLE_RANK EP=$EP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
+    echo "NODE_RANK=$NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX PREFILL_REPLICA=${PREFILL_REPLICA:-N/A} ROLE_RANK=$ROLE_RANK EP=$EP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${NODE_RANK}.log \
               $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${NODE_RANK}.log
 
-    # Start vllm-router on the first prefill node of each replica (background)
+    # Start vllm-router on the first prefill node of each inference replica (background)
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
         ROUTER_LOG="$OUTPUT_DIR/slurm/latest_router_replica_${REPLICA_IDX}.log"
         echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG

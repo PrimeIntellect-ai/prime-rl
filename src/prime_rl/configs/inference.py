@@ -148,7 +148,10 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     type: Literal["disaggregated"] = "disaggregated"
 
-    num_prefill_nodes: Annotated[int, Field(ge=1, description="Number of prefill nodes per replica.")] = 1
+    num_prefill_nodes: Annotated[int, Field(ge=1, description="Number of prefill nodes per prefill replica.")] = 1
+    num_prefill_replicas: Annotated[
+        int, Field(ge=1, description="Number of prefill replicas per inference replica. All share the same router.")
+    ] = 1
     num_decode_nodes: Annotated[int, Field(ge=1, description="Number of decode nodes per replica.")] = 1
 
     router_port: Annotated[int, Field(description="Port for the vllm-router on each replica.")] = 8000
@@ -156,8 +159,12 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     decode_port: Annotated[int, Field(description="Port for decode vLLM instances.")] = 8200
 
     @property
+    def total_prefill_nodes(self) -> int:
+        return self.num_prefill_nodes * self.num_prefill_replicas
+
+    @property
     def num_nodes(self) -> int:
-        return self.num_prefill_nodes + self.num_decode_nodes
+        return self.total_prefill_nodes + self.num_decode_nodes
 
 
 InferenceDeploymentConfig: TypeAlias = Annotated[
@@ -281,6 +288,20 @@ class InferenceConfig(BaseConfig):
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
+
+    max_num_seqs: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of sequences per iteration. Passed to vLLM as `--max-num-seqs`.",
+        ),
+    ] = None
+
+    max_num_batched_tokens: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of batched tokens per iteration. Passed to vLLM as `--max-num-batched-tokens`.",
+        ),
+    ] = None
 
     enable_return_routed_experts: Annotated[
         bool,
@@ -409,6 +430,8 @@ class InferenceConfig(BaseConfig):
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
+            "max_num_seqs": "max_num_seqs",
+            "max_num_batched_tokens": "max_num_batched_tokens",
             "enable_return_routed_experts": "enable_return_routed_experts",
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
@@ -431,5 +454,11 @@ class InferenceConfig(BaseConfig):
         if hasattr(namespace, "rope_scaling"):
             if namespace.rope_scaling is None:
                 delattr(namespace, "rope_scaling")
+
+        if namespace.max_num_seqs is None:
+            delattr(namespace, "max_num_seqs")
+
+        if namespace.max_num_batched_tokens is None:
+            delattr(namespace, "max_num_batched_tokens")
 
         return namespace

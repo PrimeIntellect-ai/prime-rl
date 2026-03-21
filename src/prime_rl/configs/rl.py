@@ -704,11 +704,12 @@ class RLConfig(BaseConfig):
             return self
 
         infer_deploy = self.inference.deployment
-        expected_infer_nodes = infer_deploy.num_prefill_nodes + infer_deploy.num_decode_nodes
+        expected_infer_nodes = infer_deploy.total_prefill_nodes + infer_deploy.num_decode_nodes
         if self.deployment.num_infer_nodes != expected_infer_nodes:
             raise ValueError(
                 f"deployment.num_infer_nodes ({self.deployment.num_infer_nodes}) must equal "
-                f"inference.deployment.num_prefill_nodes ({infer_deploy.num_prefill_nodes}) + "
+                f"inference.deployment.num_prefill_nodes ({infer_deploy.num_prefill_nodes}) * "
+                f"inference.deployment.num_prefill_replicas ({infer_deploy.num_prefill_replicas}) + "
                 f"inference.deployment.num_decode_nodes ({infer_deploy.num_decode_nodes}) = {expected_infer_nodes}"
             )
 
