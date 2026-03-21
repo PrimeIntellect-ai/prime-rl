@@ -4,7 +4,7 @@ Prime-RL has experimental support for training vision-language models (VLMs) lik
 
 ## Current Limitations
 
-- **No SFT support**: Supervised fine-tuning is not yet supported for VLM models. Only RL training is available.
+- **SFT support**: Multimodal SFT is supported. Use `pack_function = "single"` and `micro_batch_size = 1` in your data config. The processor handles image tokenization and pixel value extraction automatically. Your dataset should use OpenAI-format messages with `image_url` content items.
 
 - **Vision encoder is frozen**: The vision encoder is automatically frozen during training. Only the language model is trained.
 
