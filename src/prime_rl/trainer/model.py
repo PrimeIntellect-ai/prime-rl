@@ -41,7 +41,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import is_vlm_config, is_vlm_model, resolve_is_vlm
+from prime_rl.utils.vlm import is_vlm_config, resolve_is_vlm
 
 
 def _patch_qwen3_5_moe_conversion_mapping():
@@ -234,7 +234,7 @@ def get_model(
     model_config.use_cache = False
 
     # Fallback VLM detection from loaded config (catches local paths)
-    if not is_vlm and is_vlm_config(model_config):
+    if config.vlm is None and not is_vlm and is_vlm_config(model_config):
         is_vlm = True
     if is_vlm:
         logger.info(f"Detected vision-language model: {config.name}")
@@ -367,7 +367,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     # For VLM models, shard the frozen vision encoder as a single unit
     # This allows FSDP to manage the memory while keeping it frozen
-    is_vlm = is_vlm_model(config.name) or (hasattr(model, "model") and hasattr(model.model, "visual"))
+    is_vlm = resolve_is_vlm(config.vlm, config.name) or (hasattr(model, "model") and hasattr(model.model, "visual"))
     if is_vlm:
         if hasattr(model, "model") and hasattr(model.model, "visual"):
             vision_encoder = model.model.visual
