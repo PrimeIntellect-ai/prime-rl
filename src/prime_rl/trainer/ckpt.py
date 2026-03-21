@@ -304,7 +304,7 @@ class WeightCheckpointManager:
             step_path = self.get_step_path(step)
             (step_path / "STABLE").touch()
 
-    def get_adapter_export_state_dict(self) -> dict[str, Tensor]:
+    def get_run_adapter_state_dict(self) -> dict[str, Tensor]:
         lora_state_dict = {
             f"base_model.model.{key}": (value.full_tensor() if isinstance(value, DTensor) else value).to(
                 "cpu", non_blocking=False
@@ -390,10 +390,10 @@ class WeightCheckpointManager:
                 state_dict.pop(key, None)
 
         if has_lora_layers(model) and self.config.save_adapter_separately:
-            self.logger.debug("Getting LoRA state dict on master rank for weight checkpoint")
+            self.logger.debug("Getting run adapter state dict for weight checkpoint")
             start_time = time.perf_counter()
-            lora_state_dict = self.get_adapter_export_state_dict()
-            self.logger.debug(f"Got LoRA state dict on master rank in {time.perf_counter() - start_time:.2f} seconds")
+            lora_state_dict = self.get_run_adapter_state_dict()
+            self.logger.debug(f"Got run adapter state dict in {time.perf_counter() - start_time:.2f} seconds")
         else:
             lora_state_dict = None
 
