@@ -26,7 +26,6 @@ from prime_rl.trainer.optim import CPUOffloadOptimizer
 from prime_rl.trainer.runs import Progress, get_multi_run_manager
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
-    get_adapter_state_dict,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
@@ -305,6 +304,19 @@ class WeightCheckpointManager:
             step_path = self.get_step_path(step)
             (step_path / "STABLE").touch()
 
+    def get_adapter_export_state_dict(self) -> dict[str, Tensor]:
+        lora_state_dict = {
+            f"base_model.model.{key}": (value.full_tensor() if isinstance(value, DTensor) else value).to(
+                "cpu", non_blocking=False
+            )
+            for key, value in get_multi_run_manager().get_state_dict_for_run(0).items()
+        }
+
+        if not lora_state_dict:
+            raise ValueError("The LoRA state dict is empty. Something went wrong.")
+
+        return lora_state_dict
+
     def save_to_path(
         self,
         path: Path,
@@ -314,18 +326,6 @@ class WeightCheckpointManager:
         tokenizer: PreTrainedTokenizer,
     ):
         """Save HF-compatible weight checkpoint to a given path."""
-        # Gather LoRA run state on all ranks: full_tensor() is a collective
-        # that must be called by every rank simultaneously under FSDP.
-        if self.config.save_adapter_separately and lora_state_dict is not None:
-            lora_run_state = {
-                f"base_model.model.{key}": (value.full_tensor() if isinstance(value, DTensor) else value).to(
-                    "cpu", non_blocking=False
-                )
-                for key, value in get_multi_run_manager().get_state_dict_for_run(0).items()
-            }
-        else:
-            lora_run_state = None
-
         if self.world.is_master:
             path.mkdir(parents=True, exist_ok=True)
             start_time = time.perf_counter()
@@ -352,13 +352,9 @@ class WeightCheckpointManager:
                     gen_config.save_pretrained(path)
                 tokenizer.save_pretrained(path)
 
-            if self.config.save_adapter_separately and lora_state_dict is not None:
+            if lora_state_dict is not None:
                 adapter_path = path / "lora_adapters"
                 adapter_path.mkdir(parents=True, exist_ok=True)
-                lora_state_dict = {
-                    key: value for key, value in lora_state_dict.items() if "lora_A" not in key and "lora_B" not in key
-                }
-                lora_state_dict.update(lora_run_state)
                 save_state_dict(
                     lora_state_dict, adapter_path, self.config.save_format, save_sharded=False, adapter=True
                 )
@@ -393,10 +389,10 @@ class WeightCheckpointManager:
             for key in getattr(model, "_tied_weights_keys", []):
                 state_dict.pop(key, None)
 
-        if has_lora_layers(model):
+        if has_lora_layers(model) and self.config.save_adapter_separately:
             self.logger.debug("Getting LoRA state dict on master rank for weight checkpoint")
             start_time = time.perf_counter()
-            lora_state_dict = get_adapter_state_dict(model, self.world.is_master)
+            lora_state_dict = self.get_adapter_export_state_dict()
             self.logger.debug(f"Got LoRA state dict on master rank in {time.perf_counter() - start_time:.2f} seconds")
         else:
             lora_state_dict = None
