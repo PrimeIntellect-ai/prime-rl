@@ -127,6 +127,17 @@ class SharedModelConfig(BaseConfig):
         Field(description="The name of the model to use."),
     ] = "Qwen/Qwen3-0.6B"
 
+    vlm: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "Whether this is a vision-language model. "
+                "None (default) auto-detects from model name and config. "
+                "Set explicitly to True/False to override auto-detection."
+            ),
+        ),
+    ] = None
+
 
 class SharedWeightBroadcastConfig(BaseConfig):
     """Configures shared weight broadcast settings."""
@@ -469,6 +480,9 @@ class RLConfig(BaseConfig):
             self.orchestrator.model.name = self.model.name
             if self.inference is not None:
                 self.inference.model.name = self.model.name
+            if self.model.vlm is not None:
+                self.trainer.model.vlm = self.model.vlm
+                self.orchestrator.model.vlm = self.model.vlm
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
