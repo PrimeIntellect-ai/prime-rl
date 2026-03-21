@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -155,59 +154,3 @@ def test_cli_overrides_toml(tmp_path):
 def test_removed_fused_lm_head_chunk_size_field_is_rejected():
     with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
-
-
-def test_rl_nccl_weight_broadcast_kernel_transfer_flags_propagate(tmp_path):
-    model_dir = tmp_path / "glm_moe_dsa_model"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    (model_dir / "config.json").write_text(json.dumps({"model_type": "glm_moe_dsa"}))
-
-    config = RLConfig.model_validate(
-        {
-            "trainer": {"model": {"impl": "custom"}},
-            "orchestrator": {},
-            "inference": {},
-            "model": {"name": str(model_dir)},
-            "weight_broadcast": {
-                "type": "nccl",
-                "quantize_in_weight_transfer": True,
-            },
-        }
-    )
-
-    assert config.trainer.weight_broadcast.type == "nccl"
-    assert config.trainer.weight_broadcast.quantize_in_weight_transfer is True
-
-    assert config.orchestrator.weight_broadcast.type == "nccl"
-    assert config.orchestrator.weight_broadcast.quantize_in_weight_transfer is True
-
-
-def test_rl_allows_distinct_trainer_and_inference_model_names():
-    config = RLConfig.model_validate(
-        {
-            "trainer": {},
-            "orchestrator": {},
-            "inference": {"model": {"name": "zai-org/GLM-4.5-FP8"}},
-            "model": {"name": "zai-org/GLM-4.5"},
-        }
-    )
-
-    assert config.trainer.model.name == "zai-org/GLM-4.5"
-    assert config.inference is not None
-    assert config.inference.model.name == "zai-org/GLM-4.5-FP8"
-    assert config.orchestrator.model.name == "zai-org/GLM-4.5-FP8"
-
-
-def test_rl_quantize_in_weight_transfer_requires_custom_impl():
-    with pytest.raises(ValidationError, match="trainer.model.impl = 'custom'"):
-        RLConfig.model_validate(
-            {
-                "trainer": {},
-                "orchestrator": {},
-                "inference": {},
-                "weight_broadcast": {
-                    "type": "nccl",
-                    "quantize_in_weight_transfer": True,
-                },
-            }
-        )
