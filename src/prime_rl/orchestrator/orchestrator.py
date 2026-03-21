@@ -513,7 +513,7 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             val_task = asyncio.create_task(asyncio.sleep(0))  # Dummy task
 
-        # Await train rollouts, process results and write batch to disk to consume by trainer
+        # Await train rollouts
         await train_task
         generate_completions_time = scheduler.last_batch_generation_time
         train_rollouts = train_task.result()
@@ -550,9 +550,13 @@ async def orchestrate(config: OrchestratorConfig):
         for rollout in train_rollouts:
             pretokenize_rollout_trajectory(rollout, tokenizer, processor=processor)
 
-        # VLM: build image cache for efficient batched preprocessing
+        # VLM: build image cache in a thread so it doesn't block the event loop.
+        # This lets the scheduler continue servicing inflight rollout requests
+        # and — with max_async_level >= 2 — overlap with the next batch's inference.
         if is_vlm:
-            vlm_cache = build_vlm_image_cache(train_rollouts, processor)
+            vlm_cache = await asyncio.get_event_loop().run_in_executor(
+                rollout_executor, build_vlm_image_cache, train_rollouts, processor
+            )
             logger.info(
                 f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
                 f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
