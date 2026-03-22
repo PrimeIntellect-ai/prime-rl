@@ -1,0 +1,52 @@
+max_steps = 200
+seq_len = 4096
+
+[deployment]
+num_train_gpus = 2
+num_infer_gpus = 6
+
+[model]
+name = "unsloth/gpt-oss-20b-BF16"
+
+[wandb]
+project = "wiki-search"
+name = "gpt-oss-20b-wiki-search"
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+[trainer.model.lora]
+rank = 8
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_up_proj",
+    "down_proj"
+]
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+oversampling_factor = 2.0
+use_token_client = false
+
+[orchestrator.model.lora]
+name = "gpt-oss-20b-wiki-search"
+
+[orchestrator.sampling]
+max_tokens = 4096
+
+[orchestrator.buffer]
+online_difficulty_filtering = true
+
+[[orchestrator.env]]
+id = "primeintellect/wiki-search"
+
+[ckpt] # Checkpoint at the end of training
+
+[inference.model]
+tool_call_parser = "openai"
