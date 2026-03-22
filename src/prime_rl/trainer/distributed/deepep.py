@@ -7,9 +7,7 @@ try:
     from deep_ep import Buffer
     from deep_ep.utils import EventHandle, EventOverlap
 except ImportError as e:
-    raise ImportError(
-        "DeepEP is required for this backend. Install from https://github.com/deepseek-ai/DeepEP."
-    ) from e
+    raise ImportError("DeepEP is required for this backend. Install from https://github.com/deepseek-ai/DeepEP.") from e
 
 
 _buffer: Buffer | None = None
@@ -247,14 +245,16 @@ def dispatch_tokens(
         buffer.get_dispatch_layout(topk_idx=selected_experts_indices, num_experts=num_experts)
     )
 
-    hidden_states, dispatched_indices, dispatched_expert_scores, num_tokens_per_expert, handle_id = torch.ops.deepep.dispatch(
-        hidden_states,
-        selected_experts_indices,
-        top_scores,
-        num_tokens_per_rank,
-        num_tokens_per_rdma_rank,
-        is_token_in_rank,
-        num_tokens_per_expert_dispatch,
+    hidden_states, dispatched_indices, dispatched_expert_scores, num_tokens_per_expert, handle_id = (
+        torch.ops.deepep.dispatch(
+            hidden_states,
+            selected_experts_indices,
+            top_scores,
+            num_tokens_per_rank,
+            num_tokens_per_rdma_rank,
+            is_token_in_rank,
+            num_tokens_per_expert_dispatch,
+        )
     )
 
     num_recv_tokens = hidden_states.shape[0]

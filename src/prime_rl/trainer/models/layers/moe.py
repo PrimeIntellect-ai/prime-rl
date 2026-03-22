@@ -15,6 +15,7 @@ from torchtitan.distributed.expert_parallel import expert_parallel
 
 EPCommBackend = Literal["standard", "deepep"]
 
+
 @dataclass
 class MoEArgs:
     num_experts: int = 8
