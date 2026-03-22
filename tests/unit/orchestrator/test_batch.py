@@ -134,3 +134,59 @@ def test_prepare_sample_none_routed_experts():
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is None
+
+
+def test_prepare_sample_skips_multimodal_exceeding_seq_len():
+    """Multimodal samples that exceed seq_len are skipped (returns None) instead of truncated."""
+    sample = TrainingSample(
+        prompt_ids=[1, 2, 3],
+        prompt_mask=[False, False, False],
+        completion_ids=[4, 5],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+        pixel_values=b"\x00" * 16,
+        pixel_values_shape=[1, 16],
+        image_grid_thw=[[1, 1, 1]],
+    )
+    # 5 tokens total, seq_len=3 would require truncation
+    result = prepare_sample(sample, seq_len=3)
+    assert result is None
+
+
+def test_prepare_sample_keeps_multimodal_within_seq_len():
+    """Multimodal samples within seq_len are kept with pixel_values intact."""
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+        pixel_values=b"\x00" * 16,
+        pixel_values_shape=[1, 16],
+        image_grid_thw=[[1, 1, 1]],
+    )
+    result = prepare_sample(sample, seq_len=8)
+    assert result is not None
+    assert result.pixel_values == b"\x00" * 16
+    assert len(result.input_ids) == 4
+
+
+def test_prepare_sample_still_truncates_text_only():
+    """Text-only samples are still truncated normally."""
+    sample = TrainingSample(
+        prompt_ids=[1, 2, 3],
+        prompt_mask=[False, False, False],
+        completion_ids=[4, 5],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+    )
+    result = prepare_sample(sample, seq_len=3)
+    assert result is not None
+    assert len(result.input_ids) == 3
+    assert result.pixel_values is None
