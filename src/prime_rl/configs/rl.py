@@ -186,9 +186,16 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
         int,
         Field(
             ge=0,
-            description="Number of inference nodes. Set to 0 to skip inference and orchestrator (requires fake data).",
+            description="Number of inference nodes per replica. Set to 0 to skip inference and orchestrator (requires fake data).",
         ),
     ]
+    num_infer_replicas: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of independent inference replicas. Total inference nodes = num_infer_nodes * num_infer_replicas.",
+        ),
+    ] = 1
     num_teacher_nodes: Annotated[int | None, Field(description="Number of teacher inference nodes.")] = None
 
     nodes_per_fsdp_group: Annotated[
@@ -197,6 +204,10 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
             description="Number of training nodes per FSDP island. Auto-sets trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group."
         ),
     ] = None
+
+    @property
+    def total_infer_nodes(self) -> int:
+        return self.num_infer_nodes * self.num_infer_replicas
 
     @model_validator(mode="after")
     def teacher_inference_not_supported(self):
@@ -584,6 +595,7 @@ class RLConfig(BaseConfig):
                     type=self.weight_broadcast.type,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
+                    inference_world_size=inference_world_size,
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
             elif self.weight_broadcast.type == "filesystem":
@@ -668,6 +680,13 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_session_headers(self):
+        """Auto-configure X-Session-ID header for sticky routing at the inference router."""
+        if "extra_headers_from_state" not in self.orchestrator.client.model_fields_set:
+            self.orchestrator.client.extra_headers_from_state = {"X-Session-ID": "example_id"}
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_router_replay(self):
         if self.trainer.enable_router_replay:
             if self.inference is not None:
@@ -712,7 +731,11 @@ class RLConfig(BaseConfig):
                     self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
                 )
 
-            if self.inference is not None and self.inference.enable_expert_parallel:
+            if (
+                self.inference is not None
+                and self.inference.enable_expert_parallel
+                and self.inference.deployment.type != "disaggregated"
+            ):
                 inference_tp = self.inference.parallel.tp
                 if self.deployment.gpus_per_node % inference_tp != 0:
                     raise ValueError(
@@ -741,11 +764,38 @@ class RLConfig(BaseConfig):
                     self.inference.api_server_count = inferred_dp_local
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+                total_infer_gpus = self.deployment.gpus_per_node * self.deployment.total_infer_nodes
                 assert self.trainer.weight_broadcast.type == "nccl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
-                self.trainer.weight_broadcast.inference_world_size = (
-                    self.deployment.gpus_per_node * self.deployment.num_infer_nodes
-                )
+                self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
+                assert self.orchestrator.weight_broadcast.type == "nccl"
+                self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_disaggregated_inference(self):
+        """Auto-setup for disaggregated P/D inference within a multi-node deployment."""
+        if self.inference is None or self.inference.deployment.type != "disaggregated":
+            return self
+        if self.deployment.type != "multi_node":
+            return self
+
+        infer_deploy = self.inference.deployment
+        expected_infer_nodes = infer_deploy.num_prefill_nodes + infer_deploy.num_decode_nodes
+        if self.deployment.num_infer_nodes != expected_infer_nodes:
+            raise ValueError(
+                f"deployment.num_infer_nodes ({self.deployment.num_infer_nodes}) must equal "
+                f"inference.deployment.num_prefill_nodes ({infer_deploy.num_prefill_nodes}) + "
+                f"inference.deployment.num_decode_nodes ({infer_deploy.num_decode_nodes}) = {expected_infer_nodes}"
+            )
+
+        total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
+        if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+            assert self.trainer.weight_broadcast.type == "nccl"
+            self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
+            assert self.orchestrator.weight_broadcast.type == "nccl"
+            self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self
 

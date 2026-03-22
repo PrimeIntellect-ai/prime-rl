@@ -24,6 +24,18 @@
 # Configs
 export NUM_NODES={{ num_nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
+{% if disaggregated -%}
+export NUM_PREFILL_NODES={{ num_prefill_nodes }}
+export NUM_DECODE_NODES={{ num_decode_nodes }}
+export NODES_PER_REPLICA=$((NUM_PREFILL_NODES + NUM_DECODE_NODES))
+export PREFILL_PORT={{ prefill_port }}
+export DECODE_PORT={{ decode_port }}
+export ROUTER_PORT={{ router_port }}
+export RPC_PORT={{ data_parallel_rpc_port }}
+{%- elif num_nodes > 1 %}
+export ROUTER_PORT={{ router_port }}
+export BACKEND_PORT={{ backend_port }}
+{%- endif %}
 
 # Paths
 export PROJECT_DIR={{ project_dir }}
@@ -35,6 +47,7 @@ mkdir -p $OUTPUT_DIR/slurm
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
+export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
 
 # Setup environment
 cd $PROJECT_DIR
@@ -44,14 +57,43 @@ uv sync --all-extras
 
 # Print inference URLs
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+export HOSTNAMES_STR="${HOSTNAMES[*]}"
+{% if disaggregated -%}
+# Build per-replica router URLs
 INFER_URLS=""
-for host in ${HOSTNAMES[@]}; do
-    if [ -z "$INFER_URLS" ]; then
-        INFER_URLS="http://$host:{{ port }}/v1"
-    else
-        INFER_URLS="$INFER_URLS,http://$host:{{ port }}/v1"
-    fi
+ALL_ROUTER_ARGS=""
+for ((r=0; r<NUM_NODES/NODES_PER_REPLICA; r++)); do
+    replica_base=$((r * NODES_PER_REPLICA))
+    router_host="${HOSTNAMES[$replica_base]}"
+    INFER_URLS="${INFER_URLS:+$INFER_URLS,}http://${router_host}:${ROUTER_PORT}/v1"
+
+    REPLICA_ROUTER_ARGS=""
+    for ((p=0; p<NUM_PREFILL_NODES; p++)); do
+        node_idx=$((replica_base + p))
+        host="${HOSTNAMES[$node_idx]}"
+        REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --prefill http://${host}:${PREFILL_PORT}"
+    done
+    for ((d=0; d<NUM_DECODE_NODES; d++)); do
+        node_idx=$((replica_base + NUM_PREFILL_NODES + d))
+        host="${HOSTNAMES[$node_idx]}"
+        REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --decode http://${host}:${DECODE_PORT}"
+    done
+    ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
 done
+export INFER_URLS
+export ALL_ROUTER_ARGS
+{%- elif num_nodes > 1 %}
+# Single router on node 0, all nodes as backends
+INFER_URLS="http://${HOSTNAMES[0]}:${ROUTER_PORT}/v1"
+ROUTER_ARGS=""
+for host in ${HOSTNAMES[@]}; do
+    ROUTER_ARGS="$ROUTER_ARGS http://${host}:${BACKEND_PORT}"
+done
+export INFER_URLS
+export ROUTER_ARGS
+{%- else %}
+INFER_URLS="http://${HOSTNAMES[0]}:{{ port }}/v1"
+{%- endif %}
 echo "HOSTNAMES=${HOSTNAMES[@]}"
 echo "INFER_URLS=${INFER_URLS}"
 
@@ -60,18 +102,146 @@ echo "INFER_URLS=${INFER_URLS}"
 {{ pre_run_command }}
 {% endif %}
 
-# Run inference (each node runs an independent vLLM replica)
+# Run inference
 srun bash -c '
     cd $PROJECT_DIR
     [ -f .env ] && source .env
     source .venv/bin/activate
 
     # Infiniband setup
-    IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
-    export NCCL_IB_HCA=$IB_HCA
+    IB_HCA=$(ibv_devinfo 2>/dev/null | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)
+    [ -n "$IB_HCA" ] && export NCCL_IB_HCA=$IB_HCA
 
     INFER_NODE_RANK=$SLURM_PROCID
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
+
+{% if disaggregated -%}
+    # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
+    if [ ! -d /tmp/deepep_build/nvshmem/lib ] && [ -d "$OUTPUT_DIR/nvshmem/lib" ]; then
+        mkdir -p /tmp/deepep_build/nvshmem
+        ln -sfn "$OUTPUT_DIR/nvshmem/lib" /tmp/deepep_build/nvshmem/lib
+    fi
+
+    # Reconstruct hostnames array
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+
+    export VLLM_WORKER_MULTIPROC_METHOD=spawn
+{%- if use_deep_gemm %}
+    export VLLM_USE_DEEP_GEMM=1
+{%- endif %}
+    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
+    export GLOO_SOCKET_IFNAME=bond0
+    export VLLM_ENGINE_READY_TIMEOUT_S=4200
+    export UCX_TLS=all
+    export UCX_NET_DEVICES=all
+    export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
+
+    export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
+    export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
+
+    KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
+    DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
+
+    # Determine replica and role
+    REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_REPLICA))
+    RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_REPLICA))
+
+    if [ "$RANK_IN_REPLICA" -lt "$NUM_PREFILL_NODES" ]; then
+        # ── Prefill node ──
+        ROLE="prefill"
+        ROLE_RANK=$RANK_IN_REPLICA
+        EP=$((NUM_PREFILL_NODES * GPUS_PER_NODE))
+        PORT=$PREFILL_PORT
+        START_RANK=$((ROLE_RANK * GPUS_PER_NODE))
+        HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_REPLICA))]}"
+
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
+
+        if [ "$ROLE_RANK" -eq 0 ]; then
+            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
+        else
+            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
+        fi
+    else
+        # ── Decode node ──
+        export UCX_NET_DEVICES=mlx5_0:1
+        ROLE="decode"
+        ROLE_RANK=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
+        EP=$((NUM_DECODE_NODES * GPUS_PER_NODE))
+        PORT=$DECODE_PORT
+        START_RANK=$((ROLE_RANK * GPUS_PER_NODE))
+        HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_REPLICA + NUM_PREFILL_NODES))]}"
+
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
+
+        if [ "$ROLE_RANK" -eq 0 ]; then
+            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
+        else
+            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG, $ROLE_EXTRA}"
+        fi
+    fi
+
+    echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX ROLE_RANK=$ROLE_RANK EP=$EP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
+        | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
+              $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+
+    # Start vllm-router on the first prefill node of each replica (background)
+    if [ "$RANK_IN_REPLICA" -eq 0 ]; then
+        ROUTER_LOG="$OUTPUT_DIR/slurm/latest_router_replica_${REPLICA_IDX}.log"
+        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
+
+        REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
+
+        vllm-router \
+            --policy round_robin \
+            --vllm-pd-disaggregation \
+            $REPLICA_ROUTER_ARGS \
+            --host 0.0.0.0 \
+            --port $ROUTER_PORT \
+            --intra-node-data-parallel-size 1 \
+            --worker-startup-timeout-secs 1200 \
+            --log-level debug \
+            >> $ROUTER_LOG 2>&1 &
+    fi
+
+    uv run inference \
+        @ $CONFIG_PATH \
+        --server.host 0.0.0.0 \
+        --server.port $PORT \
+        --parallel.dp $EP \
+        --data-parallel-rpc-port $RPC_PORT \
+        --vllm-extra "$VLLM_EXTRA" \
+        2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
+                      $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+{%- elif num_nodes > 1 %}
+    echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
+        | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
+              $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+
+    # Start router on node 0
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        ROUTER_LOG="$OUTPUT_DIR/slurm/latest_router.log"
+        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
+
+        vllm-router \
+            --policy round_robin \
+            --worker-urls $ROUTER_ARGS \
+            --host 0.0.0.0 \
+            --port $ROUTER_PORT \
+            --worker-startup-timeout-secs 1200 \
+            --log-level debug \
+            >> $ROUTER_LOG 2>&1 &
+    fi
+
+    uv run inference \
+        @ $CONFIG_PATH \
+        --server.host 0.0.0.0 \
+        --server.port $BACKEND_PORT \
+        2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
+                      $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+{%- else %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
 
     # Required for graph compilation to work
@@ -80,4 +250,5 @@ srun bash -c '
     uv run inference \
         @ $CONFIG_PATH \
         2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+{%- endif %}
 '

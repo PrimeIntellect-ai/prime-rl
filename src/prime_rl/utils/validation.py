@@ -34,10 +34,12 @@ def validate_shared_model_name(
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
+    # Orchestrator must match inference (it queries the inference server)
     if inference is not None:
         if inference.model.name != orchestrator.model.name:
             raise ValueError(
-                f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
+                f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. "
+                "The orchestrator queries the inference server and must use the same model name."
             )
         return
 

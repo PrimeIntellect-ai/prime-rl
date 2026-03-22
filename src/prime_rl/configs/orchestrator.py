@@ -650,6 +650,14 @@ class NCCLWeightBroadcastConfig(BaseModel):
         Field(description="Use kernel-format FP8 quantized NCCL transfer for weight updates."),
     ] = False
 
+    inference_world_size: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Total number of inference GPUs across all servers. Used by init_nccl_broadcast to compute per-server rank offsets.",
+        ),
+    ] = 1
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")

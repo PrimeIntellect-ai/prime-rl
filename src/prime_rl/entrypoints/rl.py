@@ -58,8 +58,10 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
 
     if config.inference is not None:
+        # Exclude launcher-only fields that are not needed by the vLLM server
+        exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
         with open(output_dir / INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
+            tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
 
     teacher_inference = getattr(config, "teacher_inference", None)
     if teacher_inference is not None:
@@ -402,16 +404,46 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
+    elif config.inference is not None and config.inference.deployment.type == "disaggregated":
+        infer_deploy = config.inference.deployment
+
+        script = template.render(
+            **config.slurm.template_vars,
+            is_disaggregated=True,
+            config_dir=config_dir,
+            output_dir=config.output_dir,
+            orchestrator_output_dir=config.orchestrator.output_dir,
+            num_train_nodes=config.deployment.num_train_nodes,
+            num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
+            nodes_per_infer_replica=infer_deploy.num_nodes,
+            num_infer_replicas=config.deployment.num_infer_replicas,
+            num_prefill_nodes=infer_deploy.num_prefill_nodes,
+            num_decode_nodes=infer_deploy.num_decode_nodes,
+            gpus_per_node=config.deployment.gpus_per_node,
+            router_port=infer_deploy.router_port,
+            prefill_port=infer_deploy.prefill_port,
+            decode_port=infer_deploy.decode_port,
+            inference_tp=config.inference.parallel.tp,
+            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            use_deep_gemm=config.inference.use_deep_gemm,
+            use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+            wandb_shared=config.wandb is not None and config.wandb.shared,
+        )
     else:
         script = template.render(
             **config.slurm.template_vars,
+            is_disaggregated=False,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
-            num_infer_nodes=config.deployment.num_infer_nodes,
+            num_infer_nodes=config.deployment.total_infer_nodes,
+            nodes_per_infer_replica=config.deployment.num_infer_nodes,
+            num_infer_replicas=config.deployment.num_infer_replicas,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
+            router_port=getattr(config.inference.deployment, "router_port", 8000) if config.inference else 8000,
+            backend_port=getattr(config.inference.deployment, "backend_port", 8100) if config.inference else 8100,
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,

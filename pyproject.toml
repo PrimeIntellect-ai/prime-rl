@@ -70,11 +70,15 @@ envs = [
     "aime2024",
     "aime2025",
 ]
+disagg = [
+    "deep-ep ; platform_machine == 'x86_64'",
+    "deep-gemm ; platform_machine == 'x86_64'",
+    "nixl",
+    "nixl-cu12 ; platform_machine == 'x86_64'",
+    "vllm-router",
+]
 
 [dependency-groups]
-fp8-inference = [
-    "deep-gemm @ https://github.com/hallerite/DeepGEMM/releases/download/v2.3.0-torch2.9/deep_gemm-2.3.0+35c4bc8-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
-]
 dev = [
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.7",
@@ -102,12 +106,13 @@ override-dependencies = [
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "1960e77" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "f5580acd" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "5c1c72b" }
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "e2743ab5" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
+vllm-router = { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/vllm_router-0.1.11-cp38-abi3-linux_x86_64.whl" }
 reverse-text = { index = "primeintellect" }
 alphabet-sort = { index = "primeintellect" }
 wiki-search = { index = "primeintellect" }
@@ -120,6 +125,9 @@ color-codeword = { index = "primeintellect" }
 math500 = { index = "primeintellect" }
 aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
+deep-ep = { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }
+deep-gemm = { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/deep_gemm-2.3.0+477618c-cp312-cp312-linux_x86_64.whl" }
+nixl-cu12 = { url = "https://github.com/samsja/flash-attn-builds/releases/download/v0.2/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

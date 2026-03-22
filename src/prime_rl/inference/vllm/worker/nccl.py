@@ -96,29 +96,39 @@ class NCCLWeightUpdateWorker(Worker):
         self,
         host: str,
         port: int,
-        server_rank: int,
-        num_inference_server: int,
+        rank_offset: int,
+        inference_world_size: int,
+        gpus_per_server: int,
         timeout: int,
         quantize_in_weight_transfer: bool = False,
     ) -> None:
-        """Initialize the NCCL broadcast receiver."""
+        """Initialize the NCCL broadcast receiver.
+
+        Args:
+            rank_offset: Starting GPU offset for this server in the global inference group.
+            inference_world_size: Total number of inference GPUs across all servers.
+            gpus_per_server: Number of GPUs managed by this server instance.
+        """
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
         tp_size = get_tp_group().world_size
         tp_rank = get_tp_group().rank_in_group
-        dp_size = get_dp_group().world_size
         dp_rank = get_dp_group().rank_in_group
-        global_rank_inference = (server_rank * tp_size * dp_size) + (dp_rank * tp_size) + tp_rank
-        global_inference_world_size = num_inference_server * tp_size * dp_size
+        # Use modulo to get the local DP rank within this server (needed when
+        # the DP group spans multiple nodes in distributed EP mode).
+        local_dp_rank = dp_rank % (gpus_per_server // tp_size)
+        local_rank = local_dp_rank * tp_size + tp_rank
+        global_rank_inference = rank_offset + local_rank
 
         logger.info(
-            f"Worker [tp={tp_rank} dp={dp_rank} server_rank={server_rank}] -> [global_rank={global_rank_inference} global_world_size={global_inference_world_size}]"
+            f"Worker [tp={tp_rank} dp={dp_rank} local_dp={local_dp_rank} rank_offset={rank_offset}] "
+            f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
         )
 
         self.nccl_broadcast_receiver = NCCLWeightBroadcastReceiver(
             host=host,
             port=port,
             rank=global_rank_inference + 1,  # +1 as the trainer broadcaster is on rank 0
-            world_size=global_inference_world_size + 1,  # +1 as the trainer broadcaster is on rank 0
+            world_size=inference_world_size + 1,  # +1 as the trainer broadcaster is on rank 0
             device=self.device,
             timeout=timeout,
         )

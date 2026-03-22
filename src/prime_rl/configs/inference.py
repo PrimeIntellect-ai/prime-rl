@@ -138,9 +138,34 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 2
 
+    router_port: Annotated[int, Field(description="Port for the vllm-router.")] = 8000
+    backend_port: Annotated[int, Field(description="Port for vLLM backend instances.")] = 8100
+
+
+class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
+    """Configures a disaggregated prefill/decode inference deployment.
+
+    Each inference replica is split into separate prefill and decode node groups.
+    Requires NIXL for KV transfer and a vllm-router for request routing.
+    """
+
+    type: Literal["disaggregated"] = "disaggregated"
+
+    num_prefill_nodes: Annotated[int, Field(ge=1, description="Number of prefill nodes per replica.")] = 1
+    num_decode_nodes: Annotated[int, Field(ge=1, description="Number of decode nodes per replica.")] = 1
+
+    router_port: Annotated[int, Field(description="Port for the vllm-router on each replica.")] = 8000
+    prefill_port: Annotated[int, Field(description="Port for prefill vLLM instances.")] = 8100
+    decode_port: Annotated[int, Field(description="Port for decode vLLM instances.")] = 8200
+
+    @property
+    def num_nodes(self) -> int:
+        return self.num_prefill_nodes + self.num_decode_nodes
+
 
 InferenceDeploymentConfig: TypeAlias = Annotated[
-    SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig, Field(discriminator="type")
+    SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig | DisaggregatedInferenceDeploymentConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -204,8 +229,8 @@ class InferenceConfig(BaseConfig):
     api_server_count: Annotated[
         int,
         Field(
-            ge=1,
-            description="The number of API servers to use. Passed to vLLM as `--api-server-count`",
+            ge=0,
+            description="The number of API servers to use. Passed to vLLM as `--api-server-count`. Set to 0 for headless mode.",
         ),
     ] = 1
 
@@ -254,6 +279,13 @@ class InferenceConfig(BaseConfig):
         ),
     ] = False
 
+    use_deep_gemm: Annotated[
+        bool,
+        Field(
+            description="Force DeepGEMM FP8 kernels via VLLM_USE_DEEP_GEMM=1. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8).",
+        ),
+    ] = False
+
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
@@ -299,6 +331,25 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_disaggregated(self):
+        """Auto-configure inference for disaggregated P/D: enable EP and compute DP."""
+        if self.deployment.type == "disaggregated":
+            if "enable_expert_parallel" not in self.model_fields_set:
+                self.enable_expert_parallel = True
+            if "enable_eplb" not in self.model_fields_set:
+                self.enable_eplb = False
+            gpus_per_node = self.deployment.gpus_per_node
+            tp = self.parallel.tp
+            dp_per_node = gpus_per_node // tp
+            if self.data_parallel_size_local is None:
+                self.data_parallel_size_local = dp_per_node
+            if self.parallel.dp == 1:
+                self.parallel.dp = dp_per_node
+            if self.api_server_count == 1:
+                self.api_server_count = dp_per_node
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         if self.slurm is not None and self.slurm.template_path is None:
             import prime_rl
@@ -332,6 +383,10 @@ class InferenceConfig(BaseConfig):
         size. Unless LoRA is enabled, in which case only one API server is
         supported (vLLM limitation).
         """
+        if self.vllm_extra.get("headless", False):
+            self.api_server_count = 0
+            return self
+
         if "api_server_count" not in self.model_fields_set:
             min_api_server_count = self.data_parallel_size_local or self.parallel.dp
             if self.api_server_count < min_api_server_count:
