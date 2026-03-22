@@ -52,10 +52,12 @@ class Buffer:
             f"Initialized buffer with {format_num(len(self.dataset), precision=0)} example(s) in {len(self.env_names)} environment(s)"
         )
 
+        self.target_env_probs: dict[str, float] | None = None
         if self.config.env_ratios is not None:
-            # Convert ratios to probabilities
-            env_ratio = mean_normalize(self.config.env_ratios)
-            self.env_probs = {env_name: ratio for env_name, ratio in zip(self.env_names, env_ratio)}
+            self.target_env_probs = {
+                env_name: ratio for env_name, ratio in zip(self.env_names, mean_normalize(self.config.env_ratios))
+            }
+            self.env_probs = self.target_env_probs.copy()
             self.logger.debug(
                 f"Sampling buffer according to provided environment ratios ({', '.join(f'{k}={v:.2f}' for k, v in self.env_probs.items())})"
             )
@@ -206,6 +208,28 @@ class Buffer:
             sampled_examples.append(sampled_example)
 
         return sampled_examples
+
+    def update_env_probs(self, observed_env_ratios: dict[str, float]) -> None:
+        """Adjust sampling probabilities so observed ratios move toward the configured target."""
+        if not self.config.adaptive_env_ratios or not observed_env_ratios:
+            return
+
+        assert self.target_env_probs is not None, "Adaptive env ratios require configured env_ratios."
+
+        updated_probs = []
+        for env_name in self.env_names:
+            current_prob = self.env_probs[env_name]
+            target_prob = self.target_env_probs[env_name]
+            observed_prob = observed_env_ratios.get(env_name, 0.0)
+            error = target_prob - observed_prob
+            updated_probs.append(max(0.0, current_prob + self.config.adaptive_env_ratio_lr * error))
+
+        normalized_probs = mean_normalize(updated_probs)
+        self.env_probs = {env_name: prob for env_name, prob in zip(self.env_names, normalized_probs)}
+
+    def get_env_prob_metrics(self) -> dict[str, float]:
+        """Returns current sampling probabilities."""
+        return {f"sampling/env_prob/{env_name}": prob for env_name, prob in self.env_probs.items()}
 
     def update(self, rollouts: list[vf.RolloutOutput]):
         """Updates the buffer state with completed rollouts."""

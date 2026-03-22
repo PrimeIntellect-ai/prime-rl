@@ -625,6 +625,10 @@ async def orchestrate(config: OrchestratorConfig):
                 "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
             }
         )
+        observed_env_ratios = results_df.task.value_counts(normalize=True).to_dict()
+        buffer.update_env_probs(observed_env_ratios)
+
+        batch_ratio_metrics = {f"batch/{env}": observed_env_ratios.get(env, 0.0) for env in buffer.env_names}
 
         # Separate DataFrame for env reward function metrics to avoid column name collisions
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
@@ -710,7 +714,8 @@ async def orchestrate(config: OrchestratorConfig):
             "solve_none/all": solve_none,
             "solve_all/all": solve_all,
             "effective_batch_size/all": effective_batch_size,
-            **{f"batch/{env}": r for env, r in results_df.task.value_counts(normalize=True).items()},
+            **batch_ratio_metrics,
+            **buffer.get_env_prob_metrics(),
             # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,

@@ -466,10 +466,33 @@ class BufferConfig(BaseConfig):
         Field(
             description=(
                 "Ratios for sampling from each environment. "
+                "When adaptive_env_ratios is enabled, these are treated as the target realized training ratios. "
                 "If None, samples uniformly across all available problems (not environments)."
             ),
         ),
     ] = None
+
+    adaptive_env_ratios: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to adapt sampling probabilities over time so the realized per-step environment mix "
+                "moves toward env_ratios."
+            ),
+        ),
+    ] = False
+
+    adaptive_env_ratio_lr: Annotated[
+        float,
+        Field(
+            gt=0,
+            le=1,
+            description=(
+                "Learning rate for adaptive environment ratio updates. Higher values correct faster but can "
+                "oscillate more."
+            ),
+        ),
+    ] = 0.2
 
     easy_threshold: Annotated[
         float | None,
@@ -528,6 +551,8 @@ class BufferConfig(BaseConfig):
     def validate_env_ratios(self):
         if self.env_ratios is not None:
             assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
+        if self.adaptive_env_ratios:
+            assert self.env_ratios is not None, "adaptive_env_ratios requires env_ratios to be set."
         return self
 
 
