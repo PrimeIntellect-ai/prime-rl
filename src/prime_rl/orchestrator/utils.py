@@ -16,7 +16,6 @@ from verifiers.utils.client_utils import setup_openai_client
 from prime_rl.configs.orchestrator import SamplingConfig
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.utils import (
-    format_num,
     format_time,
     get_broadcast_dir,
     get_ckpt_dir,
@@ -92,9 +91,9 @@ def parse_is_truncated_completions(responses: list[list[ChatCompletion]]) -> lis
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:
     """
-    Print benchmark results as rich table. Shows formatted values for the
-    inference throughput and overall step time. First first N rows show the
-    per-step values, and the last row shows the mean, std, min, and max values.
+    Print benchmark results as rich table. Shows formatted step time values.
+    First N rows show the per-step values, and the last row shows the mean,
+    std, min, and max values.
     """
     history.pop("step")
     assert all(len(v) for v in history.values()), "All metrics must have logged the same number of steps"
@@ -102,7 +101,6 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     # Turn metric history into pd.DataFrame
     df = pd.DataFrame(dict(history.items()))
     columns = {
-        "perf/throughput": "Throughput",
         "time/step": "Step Time",
     }
     df = df.rename(columns=columns)
@@ -121,7 +119,6 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     # Add formatted rows
     formatted_df = pd.DataFrame(columns=df.columns)
     formatted_df["Step Time"] = df["Step Time"].apply(format_time)
-    formatted_df["Throughput"] = df["Throughput"].apply(format_num, precision=2)
     for step, row in formatted_df.iterrows():
         table.add_row(*([str(step)] + [str(x) for x in row]))
 
@@ -133,7 +130,6 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     mean_df = df.describe().loc[["mean", "std", "min", "max"], :]
     formatted_mean_df = pd.DataFrame(columns=mean_df.columns)
     formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
-    formatted_mean_df["Throughput"] = mean_df["Throughput"].apply(format_num, precision=2)
     mean_row = ["Overall"] + formatted_mean_df.T.apply(
         lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
     ).tolist()

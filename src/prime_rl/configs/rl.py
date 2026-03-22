@@ -455,6 +455,10 @@ class RLConfig(BaseConfig):
 
         validate_shared_wandb_config(self.trainer, self.orchestrator)
 
+        if self.orchestrator.prime_monitor is not None and self.orchestrator.prime_monitor.run_name is None:
+            if self.wandb and self.wandb.name:
+                self.orchestrator.prime_monitor.run_name = self.wandb.name
+
         return self
 
     @model_validator(mode="after")
