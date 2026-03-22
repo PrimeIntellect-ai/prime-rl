@@ -254,6 +254,13 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = False
 
+    freeze_vision_encoder: Annotated[
+        bool,
+        Field(
+            description="Whether to freeze the vision encoder for VLM models. When True (default), only the language model is trained. When False, the vision encoder is also trainable.",
+        ),
+    ] = True
+
     lora: Annotated[
         LoRAConfig | None,
         Field(
