@@ -1,6 +1,9 @@
 import time
+from collections.abc import Callable
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any
 
 from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
@@ -52,8 +55,24 @@ from prime_rl.trainer.models.layers.lm_head import FusedCrossEntropyOutputLinear
 from torchtitan.distributed.utils import clip_grad_norm_
 
 
+@dataclass(slots=True)
+class SFTStepHookContext:
+    config: SFTTrainerConfig
+    model: torch.nn.Module
+    monitor: Any
+    progress: Progress
+    ce_loss: CrossEntropyLoss | LigerCrossEntropyLoss
+    cp_enabled: bool
+    cp_rank: int
+    cp_size: int
+    cp_group: dist.ProcessGroup | None
+
+
+SFTStepHook = Callable[[SFTStepHookContext], None]
+
+
 @clean_exit
-def train(config: SFTConfig):
+def train(config: SFTTrainerConfig, step_hook: SFTStepHook | None = None):
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
@@ -491,6 +510,21 @@ def train(config: SFTConfig):
 
         if is_tt_moe_model(model) and batch_max_vio.item() > 0:
             monitor.log({"max_vio/mean": batch_max_vio.item(), "step": progress.step}, step=progress.step)
+
+        if step_hook is not None:
+            step_hook(
+                SFTStepHookContext(
+                    config=config,
+                    model=model,
+                    monitor=monitor,
+                    progress=progress,
+                    ce_loss=ce_loss,
+                    cp_enabled=cp_enabled,
+                    cp_rank=cp_rank,
+                    cp_size=cp_size,
+                    cp_group=cp_group,
+                )
+            )
 
         is_first_step = False
         progress.step += 1
