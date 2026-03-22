@@ -28,6 +28,7 @@ from prime_rl.trainer.model import (
     setup_tokenizer,
     setup_model,
 )
+from prime_rl.utils.vlm import is_vlm_model
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
@@ -132,6 +133,14 @@ def train(config: SFTConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    # Load processor for VLM models (needed for multimodal SFT)
+    processor = None
+    if is_vlm_model(config.model.name):
+        from transformers import AutoProcessor
+
+        logger.info("Loading VLM processor for multimodal SFT")
+        processor = AutoProcessor.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     optimizer = setup_optimizer(
@@ -150,7 +159,7 @@ def train(config: SFTConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp, processor=processor)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
@@ -203,6 +212,13 @@ def train(config: SFTConfig):
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
 
+        # Multimodal fields (None for text-only samples)
+        pixel_values = micro_batch.get("pixel_values")
+        image_grid_thw = micro_batch.get("image_grid_thw")
+        if pixel_values is not None:
+            pixel_values = pixel_values.to("cuda")
+            image_grid_thw = image_grid_thw.to("cuda")
+
         if cp_enabled:
             input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
@@ -217,10 +233,23 @@ def train(config: SFTConfig):
             if config.loss_impl == "liger_fused":
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FusedCrossEntropyOutputLinear.IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    labels=masked_target_ids,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                )
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                )
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
@@ -256,7 +285,12 @@ def train(config: SFTConfig):
 
     def run_validation(step: int) -> None:
         val_dataset = setup_dataset(
-            tokenizer, config.val.data, config.model.cp * config.model.tp, max_epochs=1, raw_dataset=val_raw_dataset
+            tokenizer,
+            config.val.data,
+            config.model.cp * config.model.tp,
+            max_epochs=1,
+            raw_dataset=val_raw_dataset,
+            processor=processor,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
