@@ -337,6 +337,12 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
+    def selective_ac_only_with_custom_impl(self):
+        if self.ac is not None and self.ac.mode == "selective" and self.impl != "custom":
+            raise ValueError("Selective activation checkpointing requires model.impl='custom'")
+        return self
+
+    @model_validator(mode="after")
     def cpu_offload_mutual_exclusion(self):
         if self.fsdp_cpu_offload and self.optim_cpu_offload:
             raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
