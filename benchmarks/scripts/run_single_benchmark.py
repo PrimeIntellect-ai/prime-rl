@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import torch
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from prime_rl.utils.config import BaseConfig, cli
 
@@ -83,9 +83,16 @@ class BenchmarkConfig(BaseConfig):
 
     timeout: Annotated[int, Field(description="Timeout in seconds")] = 3600
 
+    master_port: Annotated[int, Field(ge=1, le=65535, description="Torch distributed rendezvous port")] = 29500
+
     micro_batches: Annotated[int, Field(ge=1, description="Number of micro batches")] = 2
 
     ep: Annotated[int, Field(ge=1, description="Expert parallelism size (1 = no EP)")] = 1
+
+    ep_comm_backend: Annotated[
+        Literal["standard", "deepep"],
+        Field(description="Expert-parallel communication backend"),
+    ] = "standard"
 
     cp: Annotated[int, Field(ge=1, description="Context parallelism size (1 = no CP)")] = 1
 
@@ -114,6 +121,16 @@ class BenchmarkConfig(BaseConfig):
         float | None, Field(description="Time taken in seconds. This is set automatically by the script.")
     ] = None
 
+    @model_validator(mode="after")
+    def validate_ep_comm_backend(self):
+        if self.ep_comm_backend == "standard":
+            return self
+        if self.ep <= 1:
+            raise ValueError("ep_comm_backend='deepep' requires ep > 1.")
+        if self.lora_rank is not None:
+            raise ValueError("ep_comm_backend='deepep' is not currently supported together with LoRA benchmarks.")
+        return self
+
 
 def build_command(config: BenchmarkConfig) -> list[str]:
     """Build the benchmark command from config."""
@@ -130,6 +147,8 @@ def build_command(config: BenchmarkConfig) -> list[str]:
         "run",
         "torchrun",
         f"--nproc-per-node={config.num_gpus}",
+        "--master-port",
+        str(config.master_port),
         script,
         "--model.name",
         config.model_name,
@@ -150,7 +169,8 @@ def build_command(config: BenchmarkConfig) -> list[str]:
     elif config.ac == "Selective":
         cmd.extend(["--model.ac", "--model.ac.mode", "selective"])
         if config.selective_targets:
-            cmd.extend(["--model.ac.targets", json.dumps(config.selective_targets)])
+            for target in config.selective_targets:
+                cmd.extend(["--model.ac.targets", target])
     elif config.ac == "Offload":
         cmd.append("--model.ac-offloading")
 
@@ -162,6 +182,8 @@ def build_command(config: BenchmarkConfig) -> list[str]:
     # Add expert parallelism if enabled
     if config.ep > 1:
         cmd.extend(["--model.ep", str(config.ep)])
+    if config.ep_comm_backend != "standard":
+        cmd.extend(["--model.ep-comm-backend", config.ep_comm_backend])
 
     # Add context parallelism if enabled
     if config.cp > 1:

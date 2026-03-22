@@ -33,6 +33,44 @@ uv sync --group fp8-inference
 
 This installs the pre-built `deep-gemm` wheel. No CUDA build step is needed.
 
+## Trainer DeepEP backend
+
+The trainer-side MoE `deepep` backend is optional and requires a local DeepEP build.
+
+Before installing DeepEP, make sure the CUDA toolkit matches `torch.version.cuda` from the project environment.
+On our H200 nodes that means using `/usr/local/cuda-12.8`, not the newer default CUDA 13.x toolkit.
+
+Example install for the `deepep` backend:
+
+```bash
+NVSHMEM_DIR=$(
+  uv run python - <<'PY'
+import importlib.util
+spec = importlib.util.find_spec("nvidia.nvshmem")
+if not spec or not spec.submodule_search_locations:
+    raise SystemExit("nvidia.nvshmem not found in .venv")
+print(spec.submodule_search_locations[0])
+PY
+)
+
+# Some NVSHMEM wheels only ship libnvshmem_host.so.3; DeepEP expects the unversioned name.
+ln -sf "$NVSHMEM_DIR/lib/libnvshmem_host.so.3" "$NVSHMEM_DIR/lib/libnvshmem_host.so"
+
+CUDA_HOME=/usr/local/cuda-12.8 \
+CUDACXX=/usr/local/cuda-12.8/bin/nvcc \
+NVSHMEM_DIR="$NVSHMEM_DIR" \
+uv pip install --python .venv/bin/python git+https://github.com/deepseek-ai/DeepEP.git --no-build-isolation
+```
+
+Verify the install:
+
+```bash
+uv run python - <<'PY'
+import deep_ep, deep_ep_cpp
+print("deep_ep imports ok")
+PY
+```
+
 ## Dev dependencies
 
 ```bash

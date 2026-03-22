@@ -60,6 +60,29 @@ Use the string `"None"` in TOML to set a field to None:
 max_model_len = "None"
 ```
 
+## MoE EP backends
+
+Trainer configs now support explicit MoE expert-parallel communication backends:
+
+```toml
+[model]
+ep = 8
+ep_comm_backend = "deepep"  # standard | deepep
+```
+
+CLI equivalent:
+
+```bash
+uv run trainer @ trainer.toml --model.ep 8 --model.ep-comm-backend deepep
+```
+
+Important constraints:
+
+- `model.ep_comm_backend != "standard"` requires `model.ep > 1`
+- keep `model.tp = 1` for the current DeepEP path
+- DeepEP is not currently supported together with trainer LoRA
+- selective AC target `routed_experts` is supported and checkpoints only the local expert matmuls
+
 ## SLURM mode
 
 Both `rl` and `sft` commands support SLURM execution via an optional `[slurm]` section. When present, the run is submitted as a SLURM job instead of running locally.

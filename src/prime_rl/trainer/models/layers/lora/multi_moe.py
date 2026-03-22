@@ -309,6 +309,9 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         return state_dict
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        if getattr(self.base_layer, "ep_comm_backend", "standard") != "standard":
+            raise ValueError("MoE LoRA adapters are not currently supported with the DeepEP backend.")
+
         # TODO: We assume theres only one adapter active in a sequence for now
         # Being able to route multi-adapter sequences efficiently requires two things that are tricky
         # 1. We need the tensor to be interleaved [(e0, a0), (e0, a1), (e1, a0), (e1, a1), ...]
