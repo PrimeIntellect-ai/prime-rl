@@ -726,6 +726,17 @@ class OrchestratorConfig(BaseConfig):
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
 
+    multi_agent_lora: Annotated[
+        bool,
+        Field(
+            description=(
+                "Enable per-agent LoRA training for multi-agent environments. "
+                "Each agent trains its own LoRA adapter while sharing the base model. "
+                "Requires the environment to be a MultiAgentEnv with registered agents."
+            ),
+        ),
+    ] = False
+
     rollout_transport: TransportConfig = FileSystemTransportConfig()
 
     output_dir: Annotated[

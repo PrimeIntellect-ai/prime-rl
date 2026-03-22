@@ -8,12 +8,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import tomli_w
 
-from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.advantage import compute_advantages, compute_per_agent_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout, offload_images_to_disk
-from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
+from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender, setup_multi_run_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -302,6 +302,28 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             checkpoint_step = config.ckpt.resume_step
 
+    # Multi-agent LoRA: set up per-agent policy routing
+    actor_lora_mapping: dict[str, str] | None = None
+    if config.multi_agent_lora:
+        agents = train_env_group.envs[0].agents
+        assert len(agents) >= 2, (
+            "multi_agent_lora requires a MultiAgentEnv with at least 2 registered agents"
+        )
+        actor_lora_mapping = {agent_id: f"run_{agent_id}" for agent_id in agents}
+        logger.info(f"Multi-agent LoRA enabled: {actor_lora_mapping}")
+
+        # Create per-actor run directories with minimal orch.toml
+        # Only include model.lora.name and optim.lr — the trainer fills in the rest
+        for run_name in actor_lora_mapping.values():
+            run_config_dir = config.output_dir.parent / run_name / "control"
+            run_config_dir.mkdir(parents=True, exist_ok=True)
+            actor_orch_config = {
+                "model": {"lora": {"name": run_name}},
+                "optim": {"lr": config.optim.lr},
+            }
+            with open(run_config_dir / "orch.toml", "wb") as f:
+                tomli_w.dump(actor_orch_config, f)
+
     scheduler = Scheduler(
         env=train_env_group,
         buffer=buffer,
@@ -314,6 +336,7 @@ async def orchestrate(config: OrchestratorConfig):
         lora_name=config.model.lora.name if config.model.lora else None,
         deferred_group_scoring_tasks=train_env_deferred_group_scoring_tasks,
         config=config,
+        actor_lora_mapping=actor_lora_mapping,
     )
 
     if checkpoint_step is not None and config.model.lora is not None:
@@ -343,7 +366,14 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
-    training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
+    if actor_lora_mapping is not None:
+        multi_run_sender = setup_multi_run_training_batch_sender(
+            config.output_dir.parent, list(actor_lora_mapping.values()), config.rollout_transport
+        )
+        training_batch_sender = multi_run_sender
+    else:
+        multi_run_sender = None
+        training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
     # Track last online eval checkpoint step for this process
     last_eval_step = -1
@@ -458,6 +488,7 @@ async def orchestrate(config: OrchestratorConfig):
                         max_retries=eval_env_config.max_retries,
                         ckpt_step=ckpt_step,
                         step=progress.step,
+                        actor_models=scheduler.actor_model_names or None,
                     )
                     for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
                 ]
@@ -523,6 +554,11 @@ async def orchestrate(config: OrchestratorConfig):
             config.advantage,
         )
 
+        # For multi-agent environments, compute per-agent advantages and set them
+        # on trajectory steps. This overrides the rollout-level advantage for each
+        # agent's steps with an advantage relative to that agent's baseline reward.
+        compute_per_agent_advantages(train_rollouts)
+
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
@@ -537,8 +573,10 @@ async def orchestrate(config: OrchestratorConfig):
             vlm_cache = None
 
         # Process rollouts in parallel
+        split_by_agent = actor_lora_mapping is not None
+
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
-            return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx)
+            return interleave_rollout(rollout, vlm_cache=vlm_cache, cache_key=rollout_idx, split_by_agent=split_by_agent)
 
         loop = asyncio.get_event_loop()
         futures = [
@@ -560,8 +598,11 @@ async def orchestrate(config: OrchestratorConfig):
             if samples is not None:
                 rollout_samples_per_rollout.append(len(samples))
                 for sample in samples:
-                    sample.advantage = advantage
-                    sample.reward = rollout["reward"]
+                    # Use sample-level values if set (multi-agent), else rollout-level
+                    if sample.advantage is None:
+                        sample.advantage = advantage
+                    if sample.reward is None:
+                        sample.reward = rollout["reward"]
                     sample_decode_tokens = sum(sample.completion_mask)
                     sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                     rollout_decode_tokens += sample_decode_tokens
@@ -600,7 +641,39 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        training_batch_sender.send(training_batch)
+        # Multi-agent LoRA: split training samples by actor_id and send to per-agent run dirs
+        if multi_run_sender is not None and actor_lora_mapping is not None:
+            per_actor_examples: dict[str, list[TrainingSample]] = {
+                run_name: [] for run_name in actor_lora_mapping.values()
+            }
+            for sample in train_examples:
+                if sample.actor_id is not None and sample.actor_id in actor_lora_mapping:
+                    per_actor_examples[actor_lora_mapping[sample.actor_id]].append(sample)
+            for run_name, examples in per_actor_examples.items():
+                if examples:
+                    multi_run_sender.send_to_run(run_name, TrainingBatch(examples=examples, step=progress.step))
+
+        # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
+        if len(training_batch.examples) == 0:
+            empty_batch_retries += 1
+            if empty_batch_retries >= max_empty_batch_retries:
+                raise RuntimeError(
+                    f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
+                )
+            backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
+            logger.warning(
+                f"Step {progress.step} produced 0 training samples "
+                f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
+            )
+            # Cancel validation task to avoid accumulating background tasks
+            val_task.cancel()
+            await asyncio.sleep(backoff)
+            continue
+
+        # Reset retry counter on successful batch
+        empty_batch_retries = 0
+        if multi_run_sender is None:
+            training_batch_sender.send(training_batch)
 
         # Await and process val results
         await val_task
@@ -829,6 +902,7 @@ async def orchestrate(config: OrchestratorConfig):
                     max_retries=eval_env_config.max_retries,
                     ckpt_step=ckpt_step,
                     step=progress.step,
+                    actor_models=scheduler.actor_model_names or None,
                 )
                 for eval_env, eval_env_name, eval_env_config in zip(eval_envs, eval_env_names, config.eval.env)
             ]

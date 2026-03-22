@@ -206,6 +206,7 @@ def train(config: TrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
+            pack_full_step=config.pack_full_step,
         )
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")

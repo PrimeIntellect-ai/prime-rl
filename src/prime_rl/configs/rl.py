@@ -369,7 +369,12 @@ class RLConfig(BaseConfig):
     def auto_setup_output_dir(self):
         """Auto-setup shared output directory for trainer and orchestrator."""
         self.trainer.output_dir = self.output_dir
-        self.orchestrator.output_dir = self.output_dir / "run_default"
+        if self.orchestrator.multi_agent_lora:
+            # Multi-agent LoRA: orchestrator writes to the trainer output_dir root,
+            # and per-agent run dirs (run_<agent_id>/) are created alongside it.
+            self.orchestrator.output_dir = self.output_dir / "orchestrator"
+        else:
+            self.orchestrator.output_dir = self.output_dir / "run_default"
 
         validate_shared_output_dir(self.trainer, self.orchestrator)
 
@@ -612,6 +617,31 @@ class RLConfig(BaseConfig):
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
                     "make sure to set --enable_lora and --max-lora-rank."
                 )
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_multi_agent_lora(self):
+        """Auto-configure multi-agent LoRA: ensure LoRA and inference settings are consistent."""
+        if not self.orchestrator.multi_agent_lora:
+            return self
+
+        if self.trainer.model.lora is None:
+            raise ValueError(
+                "multi_agent_lora requires trainer.model.lora to be configured. "
+                "Each agent trains its own LoRA adapter."
+            )
+
+        # Ensure packer waits for all runs to have data before advancing a step
+        self.trainer.pack_full_step = True
+
+        # Need at least 2 LoRA slots for multi-agent training
+        if self.trainer.max_concurrent_runs < 2:
+            self.trainer.max_concurrent_runs = 2
+
+        if self.inference is not None:
+            self.inference.enable_lora = True
+            self.inference.max_lora_rank = self.trainer.model.lora.rank
 
         return self
 
