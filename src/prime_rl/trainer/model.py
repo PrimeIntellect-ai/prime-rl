@@ -325,9 +325,15 @@ def get_model(
             )
         logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
 
-    # For VLM models, freeze the vision encoder
+    # For VLM models, optionally freeze the vision encoder
     if is_vlm:
-        freeze_vision_encoder(model)
+        if not config.freeze_vision_encoder and config.lora is not None:
+            logger.warning(
+                "freeze_vision_encoder=False has no effect with LoRA — "
+                "LoRA freezes all non-adapter parameters including the vision encoder."
+            )
+        if config.freeze_vision_encoder:
+            freeze_vision_encoder(model)
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -365,8 +371,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
         dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
 
-    # For VLM models, shard the frozen vision encoder as a single unit
-    # This allows FSDP to manage the memory while keeping it frozen
+    # For VLM models, shard the vision encoder
     is_vlm = is_vlm_model(config.name) or (hasattr(model, "model") and hasattr(model.model, "visual"))
     if is_vlm:
         if hasattr(model, "model") and hasattr(model.model, "visual"):
@@ -376,12 +381,25 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         else:
             raise ValueError(f"VLM model {config.name} does not have a recognized vision encoder attribute")
 
-        fully_shard(
-            vision_encoder,
-            mesh=hsdp_mesh,
-            **fsdp_config,
-        )
-        get_logger().info("Applied FSDP to frozen vision encoder")
+        if config.freeze_vision_encoder:
+            # Frozen: shard as single unit for memory efficiency
+            fully_shard(
+                vision_encoder,
+                mesh=hsdp_mesh,
+                **fsdp_config,
+            )
+            get_logger().info("Applied FSDP to frozen vision encoder (single unit)")
+        else:
+            # Trainable: shard each block individually for proper gradient flow
+            if hasattr(vision_encoder, "blocks"):
+                for block in vision_encoder.blocks:
+                    fully_shard(block, mesh=hsdp_mesh, **fsdp_config)
+            fully_shard(
+                vision_encoder,
+                mesh=hsdp_mesh,
+                **fsdp_config,
+            )
+            get_logger().info("Applied FSDP to trainable vision encoder")
 
     # Get the language model layers (handle VLM structure)
     # For Qwen3-VL: model.model.language_model contains the transformer layers
