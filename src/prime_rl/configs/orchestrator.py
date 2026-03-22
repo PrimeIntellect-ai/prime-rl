@@ -645,6 +645,10 @@ class NCCLWeightBroadcastConfig(BaseModel):
     host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
     port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
+    quantize_in_weight_transfer: Annotated[
+        bool,
+        Field(description="Use kernel-format FP8 quantized NCCL transfer for weight updates."),
+    ] = False
 
     inference_world_size: Annotated[
         int,
@@ -674,6 +678,20 @@ class TeacherModelConfig(BaseConfig):
     ] = ModelConfig()
 
 
+class TeacherRolloutModelConfig(BaseConfig):
+    """Configures an external teacher model used to generate rollout text."""
+
+    client: Annotated[
+        ClientConfig,
+        Field(description="The OAI client configuration for rollout generation."),
+    ] = ClientConfig()
+
+    model: Annotated[
+        ModelConfig,
+        Field(description="The model configuration for rollout generation."),
+    ] = ModelConfig()
+
+
 class OrchestratorConfig(BaseConfig):
     """Configures the orchestrator for RL training."""
 
@@ -693,6 +711,17 @@ class OrchestratorConfig(BaseConfig):
             description="The teacher model configuration for computing teacher logprobs (e.g. for distillation). "
             "If provided, teacher logprobs will be computed using the specified model. "
             "If None, no teacher model will be used."
+        ),
+    ] = None
+
+    # External teacher rollout model configuration (optional)
+    teacher_rollout_model: Annotated[
+        TeacherRolloutModelConfig | None,
+        Field(
+            description=(
+                "Optional external teacher model used for rollout generation. "
+                "When set, rollouts are generated from this endpoint/model instead of the student inference server."
+            ),
         ),
     ] = None
 

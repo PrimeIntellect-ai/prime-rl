@@ -13,10 +13,9 @@ from rich.table import Table
 from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.client_utils import setup_openai_client
 
-from prime_rl.configs.orchestrator import SamplingConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig, SamplingConfig
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.utils import (
-    format_num,
     format_time,
     get_broadcast_dir,
     get_ckpt_dir,
@@ -37,22 +36,34 @@ async def get_semaphore() -> AsyncContextManager:
     return SEMAPHORE
 
 
-def get_sampling_args(sampling_config: SamplingConfig, temperature: float) -> dict:
+def get_sampling_args(sampling_config: SamplingConfig, temperature: float, use_token_client: bool = True) -> dict:
     # Convert SamplingConfig to vLLM OAI sampling args
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
     sampling_args = dict(sampling_config)
     sampling_args.pop("temp_scheduler", None)
     sampling_args["temperature"] = temperature
     sampling_args["top_p"] = 1.0
+    extra_body = dict(sampling_config.extra_body)
+
+    min_tokens = sampling_args.pop("min_tokens")
+    repetition_penalty = sampling_args.pop("repetition_penalty")
+
+    if min_tokens > 0:
+        extra_body["min_tokens"] = min_tokens
+    if repetition_penalty != 1.0:
+        extra_body["repetition_penalty"] = repetition_penalty
+
+    extra_body["top_k"] = -1
+    extra_body["min_p"] = 0.0
+
     sampling_args["logprobs"] = True
-    sampling_args["extra_body"] = {
-        **sampling_config.extra_body,
-        "return_token_ids": True,  # Always return token IDs
-        "top_k": -1,
-        "min_p": 0.0,
-    }
-    sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
-    sampling_args["extra_body"]["repetition_penalty"] = sampling_args.pop("repetition_penalty")
+
+    if use_token_client:
+        extra_body["return_token_ids"] = True
+
+    if extra_body:
+        sampling_args["extra_body"] = extra_body
+
     return sampling_args
 
 
@@ -92,9 +103,9 @@ def parse_is_truncated_completions(responses: list[list[ChatCompletion]]) -> lis
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:
     """
-    Print benchmark results as rich table. Shows formatted values for the
-    inference throughput and overall step time. First first N rows show the
-    per-step values, and the last row shows the mean, std, min, and max values.
+    Print benchmark results as rich table. Shows formatted step time values.
+    First N rows show the per-step values, and the last row shows the mean,
+    std, min, and max values.
     """
     history.pop("step")
     assert all(len(v) for v in history.values()), "All metrics must have logged the same number of steps"
@@ -102,7 +113,6 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     # Turn metric history into pd.DataFrame
     df = pd.DataFrame(dict(history.items()))
     columns = {
-        "perf/throughput": "Throughput",
         "time/step": "Step Time",
     }
     df = df.rename(columns=columns)
@@ -121,7 +131,6 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     # Add formatted rows
     formatted_df = pd.DataFrame(columns=df.columns)
     formatted_df["Step Time"] = df["Step Time"].apply(format_time)
-    formatted_df["Throughput"] = df["Throughput"].apply(format_num, precision=2)
     for step, row in formatted_df.iterrows():
         table.add_row(*([str(step)] + [str(x) for x in row]))
 
@@ -133,7 +142,6 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     mean_df = df.describe().loc[["mean", "std", "min", "max"], :]
     formatted_mean_df = pd.DataFrame(columns=mean_df.columns)
     formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
-    formatted_mean_df["Throughput"] = mean_df["Throughput"].apply(format_num, precision=2)
     mean_row = ["Overall"] + formatted_mean_df.T.apply(
         lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
     ).tolist()
@@ -219,3 +227,21 @@ def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_
         return broadcast_weight_dir
 
     raise FileNotFoundError(f"No weight directory found for checkpoint step {step}")
+
+
+def setup_external_rollout_model(config: OrchestratorConfig, logger) -> tuple[Any, str, bool]:
+    """Resolve rollout client/model and whether policy updates should be enabled."""
+    rollout_client_config = config.client
+    rollout_model_name = config.model.name
+    enable_policy_updates = True
+
+    if config.teacher_rollout_model is not None:
+        rollout_client_config = config.teacher_rollout_model.client
+        rollout_model_name = config.teacher_rollout_model.model.name
+        enable_policy_updates = False
+        logger.info(
+            f"Using external teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, "
+            f"model={rollout_model_name})"
+        )
+
+    return rollout_client_config, rollout_model_name, enable_policy_updates

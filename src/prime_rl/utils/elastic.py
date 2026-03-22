@@ -108,6 +108,7 @@ class ElasticInferencePool:
         port: int = 8000,
         sync_interval: float = 5.0,
         client_type: str = "openai_chat_completions",
+        router_url: str | None = None,
     ):
         self.logger = get_logger()
         self.hostname = hostname
@@ -117,6 +118,7 @@ class ElasticInferencePool:
         self.port = port
         self.sync_interval = sync_interval
         self.client_type = client_type
+        self.router_url = router_url
 
         self._servers: dict[str, ServerState] = {}
         self._admin_clients: dict[str, AsyncClient] = {}
@@ -143,6 +145,7 @@ class ElasticInferencePool:
             port=config.elastic.port,
             sync_interval=config.elastic.sync_interval,
             client_type=client_type,
+            router_url=config.router_url,
         )
         await pool.start()
         return pool
@@ -162,7 +165,15 @@ class ElasticInferencePool:
 
     @property
     def clients(self) -> list[vf.ClientConfig]:
-        urls = self.ready_urls
+        # When a router URL is configured, route inference requests through it
+        # instead of directly to discovered pods. Admin operations still use
+        # individual pod IPs via admin_clients.
+        # Only expose the router when backends are actually ready — otherwise
+        # the orchestrator would send requests into a router with no healthy backends.
+        if self.router_url and self.ready_urls:
+            urls = [self.router_url]
+        else:
+            urls = self.ready_urls
         if set(urls) != set(self._client_urls):
             self._client_urls = urls
             self._client_index = 0
