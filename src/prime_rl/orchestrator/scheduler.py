@@ -268,6 +268,9 @@ class Scheduler:
         return max(async_away_ckpt_step, latest_ckpt_step)
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
+        if self.actor_lora_mapping is not None:
+            return await self._apply_policy_update_multi_actor(next_ckpt_step)
+
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
         if next_ckpt_step == async_away_ckpt_step:
             self.logger.info(
@@ -318,45 +321,52 @@ class Scheduler:
 
     async def maybe_update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
-        if self.actor_lora_mapping is not None:
-            return await self._update_policy_multi_actor()
-
         while True:
-            next_ckpt_step = self._compute_next_ckpt_step()
+            if self.actor_lora_mapping is not None:
+                next_ckpt_step = self._compute_next_ckpt_step_multi_actor()
+            else:
+                next_ckpt_step = self._compute_next_ckpt_step()
             if next_ckpt_step <= self.ckpt_step:
                 return
 
             task = await self._get_or_start_policy_update_task(next_ckpt_step)
             await asyncio.shield(task)
 
-    async def _update_policy_multi_actor(self):
-        """Update per-actor LoRA adapters from their respective broadcast directories."""
-        # Enforce async level: block until all actors reach the required step
+    def _compute_next_ckpt_step_multi_actor(self) -> int:
+        """Compute next checkpoint step for multi-actor mode (minimum across all actors)."""
+        min_latest = float("inf")
+        for agent_id, run_name in self.actor_lora_mapping.items():
+            broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_name)
+            latest_step = get_latest_ckpt_step(broadcast_dir) or 0
+            min_latest = min(min_latest, latest_step)
+        next_step = int(min_latest) if min_latest != float("inf") else 0
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        if async_away_ckpt_step > self.ckpt_step:
+        if self.strict_async_level:
+            return async_away_ckpt_step
+        return max(async_away_ckpt_step, next_step)
+
+    async def _apply_policy_update_multi_actor(self, next_ckpt_step: int) -> None:
+        """Apply policy update for multi-actor LoRA mode."""
+        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
+        if next_ckpt_step == async_away_ckpt_step:
             self.checkpoint_ready.clear()
             self.logger.info(
-                f"Orchestrator paused: waiting for all actors to reach step {async_away_ckpt_step} "
+                f"Orchestrator paused: waiting for all actors to reach step {next_ckpt_step} "
                 f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
             )
             wait_start = time.perf_counter()
             for agent_id, run_name in self.actor_lora_mapping.items():
                 broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_name)
-                await wait_for_path(get_step_path(broadcast_dir, async_away_ckpt_step) / "STABLE")
+                await wait_for_path(get_step_path(broadcast_dir, next_ckpt_step) / "STABLE")
             self.wait_for_ckpt_time = time.perf_counter() - wait_start
             self.logger.info(
-                f"Orchestrator resumed: all actors reached step {async_away_ckpt_step} "
+                f"Orchestrator resumed: all actors reached step {next_ckpt_step} "
                 f"(after {self.wait_for_ckpt_time:.2f}s)"
             )
-
-        # Load latest available weights for each actor
-        any_updated = False
-        min_actor_step = float("inf")
 
         for agent_id, run_name in self.actor_lora_mapping.items():
             broadcast_dir = get_broadcast_dir(self.config.output_dir.parent / run_name)
             latest_step = get_latest_ckpt_step(broadcast_dir) or 0
-            min_actor_step = min(min_actor_step, latest_step)
 
             if latest_step > self.actor_ckpt_steps[agent_id]:
                 weights_path = get_step_path(broadcast_dir, latest_step)
@@ -368,18 +378,14 @@ class Scheduler:
                 self.actor_ckpt_steps[agent_id] = latest_step
                 self.actor_model_names[agent_id] = lora_name
                 self.inference_pool.update_model_name(lora_name)
-                any_updated = True
                 self.logger.debug(
                     f"Updated actor {agent_id} ({lora_name}) to step {latest_step} "
                     f"in {self.update_weights_time:.2f}s"
                 )
 
-        new_ckpt_step = int(min_actor_step) if min_actor_step != float("inf") else 0
-        if new_ckpt_step > self.ckpt_step:
-            self.ckpt_step = new_ckpt_step
-            await self._update_off_policy()
-
+        self.ckpt_step = next_ckpt_step
         self.checkpoint_ready.set()
+        await self._update_off_policy()
 
     async def _update_off_policy(self) -> None:
         stale_group_ids = {
