@@ -1,0 +1,23 @@
+max_steps = 500
+output_dir = "outputs/sft_color_codeword"
+
+[model]
+name = "Qwen/Qwen3-VL-4B-Instruct"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[data]
+type = "sft"
+name = "data/color_codeword_sft"
+seq_len = 2048
+batch_size = 1
+micro_batch_size = 1
+pack_function = "single"
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[ckpt]
+weights_only = true
+interval = 500

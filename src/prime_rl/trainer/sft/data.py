@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import uuid
 from collections import defaultdict
@@ -5,7 +7,8 @@ from typing import Literal, TypedDict, cast
 
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
-from jaxtyping import Bool, Int
+from jaxtyping import Bool, Float, Int
+from PIL import Image
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset, get_worker_info
@@ -24,6 +27,9 @@ class Sample(TypedDict):
     position_ids: list[int]
     loss_mask: list[bool]
     target_ids: list[int]
+    pixel_values: bytes | None
+    pixel_values_shape: list[int] | None
+    image_grid_thw: list[list[int]] | None
 
 
 class Batch(TypedDict):
@@ -31,6 +37,8 @@ class Batch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
+    pixel_values: Float[Tensor, "num_patches patch_dim"] | None
+    image_grid_thw: Int[Tensor, "num_images 3"] | None
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -106,6 +114,35 @@ class FakeDataset(StatefulIterableDataset):
             yield fake_sample
 
 
+def _extract_images_from_messages(messages: list[dict]) -> list[Image.Image]:
+    """Extract PIL images from OpenAI-format messages with image_url content."""
+    images = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "image_url":
+                url = item["image_url"]["url"]
+                if url.startswith("data:image"):
+                    header, data = url.split(",", 1)
+                    img_bytes = base64.b64decode(data)
+                    images.append(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
+                elif url.startswith("file://"):
+                    images.append(Image.open(url.removeprefix("file://")).convert("RGB"))
+            elif item.get("type") == "image":
+                url = item.get("image", "")
+                if url.startswith("data:image"):
+                    header, data = url.split(",", 1)
+                    img_bytes = base64.b64decode(data)
+                    images.append(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
+                elif url.startswith("file://"):
+                    images.append(Image.open(url.removeprefix("file://")).convert("RGB"))
+    return images
+
+
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt + completion format."""
 
@@ -120,6 +157,7 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
+        processor=None,
     ):
         super().__init__()
         self.logger = get_logger()
@@ -132,6 +170,7 @@ class SFTDataset(StatefulIterableDataset):
         self.loss_mask_config = loss_mask_config
         self.max_examples = max_examples
         self.max_epochs = max_epochs
+        self.processor = processor
 
         if self.tokenizer is None:
             self.logger.warning("No tokenizer provided, will not process examples")
@@ -150,6 +189,13 @@ class SFTDataset(StatefulIterableDataset):
         assert get_world().world_size % non_dp_size == 0, "world_size must be divisible by non_dp_size"
         self.data_rank = get_world().rank // non_dp_size * num_workers + worker_id
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
+
+    @staticmethod
+    def _parse_messages(field) -> list[dict]:
+        """Parse a prompt/completion field that may be a JSON string or a list of dicts."""
+        if isinstance(field, str):
+            return json.loads(field)
+        return field
 
     def _process(self, example: dict) -> dict | None:
         # Skip processing if no tokenizer was provided
@@ -197,8 +243,8 @@ class SFTDataset(StatefulIterableDataset):
 
         # Deserialize tool call arguments from message list, if present - assumes OAI format
         # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
-        prompt = deserialize_tool_calls(example["prompt"])
-        completion = deserialize_tool_calls(example["completion"])
+        prompt = deserialize_tool_calls(self._parse_messages(example["prompt"]))
+        completion = deserialize_tool_calls(self._parse_messages(example["completion"]))
 
         # Strip content from all messages so that incremental tokenization works
         # NOTE: This has the side effect that we do never train on leading or trailing whitespace
@@ -300,6 +346,88 @@ class SFTDataset(StatefulIterableDataset):
             "position_ids": list(range(len(input_ids))),
         }
 
+    def _process_multimodal(self, example: dict) -> dict | None:
+        """Process a multimodal example using the processor for image handling.
+
+        Note: loss_mask_config is not applied here — the loss mask is a simple
+        prompt/completion binary split. Per-role masking would require incremental
+        tokenization with expanded image tokens, which is not yet implemented.
+        """
+        if "prompt" not in example or "completion" not in example:
+            raise ValueError("All examples in the dataset must have a 'prompt' and 'completion' column for SFT")
+
+        prompt = self._parse_messages(example["prompt"])
+        completion = self._parse_messages(example["completion"])
+        all_messages = prompt + completion
+
+        # Extract images from all messages
+        images = _extract_images_from_messages(all_messages)
+        if not images:
+            return self._process(example)
+
+        # Use apply_chat_template with original messages (keeps image markers for token expansion)
+        # Prompt-only: determines loss mask boundary (uses only prompt images)
+        prompt_images = _extract_images_from_messages(prompt)
+        prompt_text = self.processor.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+        prompt_inputs = self.processor(
+            text=[prompt_text], images=prompt_images or None, return_tensors="pt", padding=False
+        )
+        prompt_len = prompt_inputs["input_ids"].shape[1]
+
+        # Full sequence (prompt + completion) with all images
+        full_text = self.processor.apply_chat_template(all_messages, tokenize=False, add_generation_prompt=False)
+        full_inputs = self.processor(text=[full_text], images=images, return_tensors="pt", padding=False)
+        input_ids = full_inputs["input_ids"][0].tolist()
+
+        # Build loss mask: False for prompt, True for completion
+        loss_mask = [False] * min(prompt_len, len(input_ids)) + [True] * max(0, len(input_ids) - prompt_len)
+
+        # Append EOS if missing
+        if self.tokenizer.eos_token_id not in input_ids:
+            self.logger.warning("Appending missing EOS token to multimodal sample")
+            input_ids.append(cast(int, self.tokenizer.eos_token_id))
+            loss_mask.append(True)
+
+        # Prepare inputs (shift for next-token prediction)
+        target_ids = input_ids[1:]
+        loss_mask = loss_mask[1:]
+        input_ids = input_ids[:-1]
+
+        if sum(loss_mask[: self.seq_len]) == 0:
+            self.logger.warning(
+                f"Skipping multimodal example {example.get('__index', '')} because no trainable tokens within seq_len"
+            )
+            return None
+
+        # Extract pixel values and image grid info
+        # pixel_values from the processor has no batch dim: [num_patches, patch_dim]
+        pixel_values = full_inputs["pixel_values"]
+        pv_bytes = pixel_values.to(torch.float32).numpy().tobytes()
+        pv_shape = list(pixel_values.shape)
+        image_grid_thw = full_inputs["image_grid_thw"].tolist()
+
+        return {
+            "input_ids": input_ids,
+            "target_ids": target_ids,
+            "loss_mask": loss_mask,
+            "position_ids": list(range(len(input_ids))),
+            "pixel_values": pv_bytes,
+            "pixel_values_shape": pv_shape,
+            "image_grid_thw": image_grid_thw,
+        }
+
+    def _has_images(self, example: dict) -> bool:
+        """Check if an example contains image content."""
+        for msg in self._parse_messages(example.get("prompt", [])) + self._parse_messages(
+            example.get("completion", [])
+        ):
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") in ("image_url", "image"):
+                        return True
+        return False
+
     def __iter__(self):
         """
         Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
@@ -327,8 +455,12 @@ class SFTDataset(StatefulIterableDataset):
             # Get example
             example = dataset[(self.step - 1) % self.num_examples]
 
-            # Process example
-            processed_example = self._process(cast(dict, example))
+            # Process example — route multimodal samples through processor path
+            example_dict = cast(dict, example)
+            if self.processor is not None and self._has_images(example_dict):
+                processed_example = self._process_multimodal(example_dict)
+            else:
+                processed_example = self._process(example_dict)
 
             # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
             if processed_example is None:
@@ -490,6 +622,45 @@ class StackDataset(StatefulIterableDataset):
                     self.bucket_timers[bucket_idx] = self.step
 
 
+class SingleSampleDataset(StatefulIterableDataset):
+    """Wraps a dataset to pad each sample individually. Used for multimodal SFT where packing is not possible."""
+
+    def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
+        self.dataset = dataset
+        self.seq_len = seq_len
+
+    def state_dict(self) -> dict:
+        return {"dataset": self.dataset.state_dict()}
+
+    def load_state_dict(self, state_dict: dict):
+        self.dataset.load_state_dict(state_dict["dataset"])
+
+    def __iter__(self):
+        for sample in self.dataset:
+            seq_len = self.seq_len
+            is_multimodal = sample.get("pixel_values") is not None
+
+            # Skip multimodal samples that exceed seq_len (truncation would break
+            # the alignment between image_pad tokens and pixel_values)
+            if is_multimodal and len(sample["input_ids"]) > seq_len:
+                get_logger().warning(
+                    f"Skipping multimodal SFT sample that exceeds seq_len ({len(sample['input_ids'])} > {seq_len})"
+                )
+                continue
+
+            # Truncate token fields (text-only samples only at this point)
+            for key in ["input_ids", "target_ids", "position_ids", "loss_mask"]:
+                sample[key] = sample[key][:seq_len]
+            # Pad token fields to seq_len
+            pad_len = seq_len - len(sample["input_ids"])
+            if pad_len > 0:
+                sample["input_ids"] = sample["input_ids"] + [0] * pad_len
+                sample["target_ids"] = sample["target_ids"] + [0] * pad_len
+                sample["position_ids"] = sample["position_ids"] + [0] * pad_len
+                sample["loss_mask"] = sample["loss_mask"] + [False] * pad_len
+            yield sample
+
+
 def stack_collate(samples: list[Sample]) -> Batch:
     return {
         "input_ids": torch.tensor(samples[0]["input_ids"], dtype=torch.long, device="cuda"),
@@ -508,6 +679,27 @@ def cat_collate(samples: list[Sample]) -> Batch:
         "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
         "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
     }
+
+
+def single_collate(samples: list[Sample]) -> Batch:
+    """Collate for single-sample batches (multimodal SFT)."""
+    sample = samples[0]
+    batch: Batch = {
+        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
+        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "pixel_values": None,
+        "image_grid_thw": None,
+    }
+    if sample.get("pixel_values") is not None:
+        batch["pixel_values"] = (
+            torch.frombuffer(bytearray(sample["pixel_values"]), dtype=torch.float32)
+            .reshape(sample["pixel_values_shape"])
+            .to("cuda")
+        )
+        batch["image_grid_thw"] = torch.tensor(sample["image_grid_thw"], dtype=torch.long, device="cuda")
+    return batch
 
 
 def setup_and_interleave_datasets(
@@ -585,6 +777,7 @@ def setup_dataset(
     *,
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
+    processor=None,
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(
@@ -602,13 +795,17 @@ def setup_dataset(
             loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
+            processor=processor,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
-    if config.pack_function == "stack":
+    if config.pack_function == "single":
+        single_dataset = SingleSampleDataset(dataset, config.seq_len)
+        return StatefulDataLoader(single_dataset, batch_size=1, collate_fn=single_collate)
+    elif config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, config.seq_len * config.micro_batch_size)
         return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
     elif config.pack_function == "cat":

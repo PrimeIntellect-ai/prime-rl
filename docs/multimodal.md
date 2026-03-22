@@ -1,35 +1,108 @@
 # Multimodal (VLM) Support
 
-Prime-RL has experimental support for training vision-language models (VLMs) like Qwen3-VL.
+Prime-RL supports training vision-language models (VLMs) like Qwen3-VL via both RL and SFT.
+
+## Quick Start
+
+### RL Training
+```bash
+uv run rl @ configs/multimodal/rl_color_codeword.toml
+```
+
+### SFT Training
+```bash
+# Generate synthetic data (or bring your own)
+uv run python scripts/generate_color_codeword_sft_data.py
+
+# Train
+uv run sft @ configs/multimodal/sft_color_codeword.toml
+```
+
+## Configuration
+
+### VLM Detection
+
+VLMs are auto-detected from the model name (e.g. `Qwen/Qwen3-VL*`). For local checkpoints or custom models, set `vlm = true` explicitly:
+
+```toml
+[model]
+name = "my-local-vlm-checkpoint"
+vlm = true
+```
+
+### Custom VLM Architectures
+
+For models not in the built-in registry, you can specify the vision encoder location and layer prefix:
+
+```toml
+[model]
+name = "my-custom-vlm"
+vlm = true
+vlm_vision_encoder_attr = "model.my_vision_module"    # Dotted path to vision encoder
+vlm_layer_prefix = "model.language_model.layers."      # Weight key prefix for text layers
+```
+
+The built-in registry covers:
+- **Qwen3-VL** (`visual`)
+- **LLaVA** (`vision_tower`)
+- **Idefics3 / SmolVLM** (`vision_model`)
+
+### Vision Encoder Training
+
+By default, the vision encoder is frozen. To make it trainable:
+
+```toml
+[trainer.model]
+freeze_vision_encoder = false
+```
+
+When unfrozen, the vision encoder is FSDP-sharded per-block for proper gradient flow. Note: this has no effect when using LoRA (LoRA freezes all non-adapter parameters).
+
+### SFT Data Format
+
+Your dataset needs `prompt` and `completion` columns with OpenAI-format messages. Images can be included as `image_url` content items:
+
+```json
+{
+  "prompt": [
+    {"role": "system", "content": "You are helpful."},
+    {"role": "user", "content": [
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+      {"type": "text", "text": "What is this?"}
+    ]}
+  ],
+  "completion": [
+    {"role": "assistant", "content": "A red square."}
+  ]
+}
+```
+
+Use `pack_function = "single"` for multimodal SFT — each sample becomes its own micro-batch since image tensor sizes vary.
 
 ## Current Limitations
 
-- **No SFT support**: Supervised fine-tuning is not yet supported for VLM models. Only RL training is available.
+- **Optimization dtype must be bfloat16**: VLM models must load in bfloat16 to match vLLM inference. Set `optimization_dtype = "bfloat16"` and `reduce_dtype = "bfloat16"`.
 
-- **Vision encoder is frozen**: The vision encoder is automatically frozen during training. Only the language model is trained.
+- **Multimodal samples exceeding `seq_len` are skipped**: Truncation would break the alignment between image tokens and pixel values. Ensure `seq_len` covers your longest VLM samples.
 
-- **No multimodal-safe truncation**: Token sequences are truncated to `seq_len`, but `pixel_values` and `image_grid_thw` are passed through unchanged. If a multimodal sample exceeds `seq_len`, image tokens can be dropped while image tensors still describe the full set of images. Ensure `seq_len` covers your longest VLM samples or avoid overlong rollouts.
+- **Per-role loss masking not supported for multimodal SFT**: The multimodal path uses a simple prompt/completion binary loss mask. `loss_mask_config` is only applied for text-only samples.
 
-- **The images that the VLM sees are not logged**
+- **Higher KL mismatch with multi-image inputs**: VLM training exhibits higher KL mismatch compared to text-only, especially with multiple images.
 
-- **Optimization dtype must be bfloat16**: VLM models must load in bfloat16 to match vLLM inference. If the trainer uses a different dtype, the vision encoder produces different `pixel_values`, causing a mismatch between inference and training. A workaround would be to propagate the `pixel_values` computed by vLLM to the trainer, but this is more involved. For now, set `optimization_dtype = "bfloat16"` and `reduce_dtype = "bfloat16"` in your trainer config.
+- **Images are not logged**: The images the VLM sees during training are not logged to monitors.
 
-- **Higher KL mismatch with multi-image inputs**: VLM training exhibits higher KL mismatch between inference and trainer logprobs compared to text-only models, especially with multiple images per sample. We are investigating the root cause. The existing importance ratio masking thresholds should handle reasonable mismatches.
+## How Multi-Turn VLM RL Training Works
 
-## How Multi-Turn VLM Training Works
-
-VLM training uses the same `interleave_rollout` path as text-only models. Multi-turn trajectory steps are merged into a single training sample wherever the extension property holds (consecutive steps share a token prefix). When extension breaks (e.g., due to context compaction), a new sample is started automatically.
+VLM training uses the same `interleave_rollout` path as text-only models. Multi-turn trajectory steps are merged into a single training sample wherever the extension property holds.
 
 Images are handled via a `VLMImageCache` built once per batch:
 
-1. **Extract**: Base64 images are decoded from trajectory step prompts into PIL images. Since prompts are cumulative, only new images per step are extracted.
-2. **Preprocess**: All images are processed in a single batched call through the HuggingFace image processor, producing `pixel_values` (patches) and `image_grid_thw` (grid dimensions).
-3. **Attach**: Each training sample receives the cumulative `pixel_values` up to its last merged step. When steps are merged, the sample's images are updated to include all images seen so far.
-
-This works correctly for all combinations: images in early turns with text-only follow-ups, images appearing mid-conversation, new images accumulating across turns, and interleaved agents with separate image streams.
+1. **Extract**: Base64 images are decoded from trajectory step prompts into PIL images.
+2. **Preprocess**: Images are processed through the HuggingFace image processor (runs in a background thread to avoid blocking the event loop).
+3. **Attach**: Each training sample receives the cumulative `pixel_values` up to its last merged step.
 
 Each multimodal sample becomes its own micro-batch during training (no packing with other samples) since image tensor sizes vary per sample.
 
 ## vLLM Configuration
 
-`VLLM_WORKER_MULTIPROC_METHOD=spawn` is required for VLM inference. This is set automatically in `src/prime_rl/inference/config.py`, so if you use `uv run rl @ ...` it works out of the box, but if you start the vLLM server yourself, make sure this environment variable is set.
+`VLLM_WORKER_MULTIPROC_METHOD=spawn` is required for VLM inference. This is set automatically when using `uv run rl @ ...`, but if you start the vLLM server yourself, make sure this environment variable is set.
