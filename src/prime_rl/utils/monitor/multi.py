@@ -19,7 +19,7 @@ class MultiMonitor(Monitor):
             return []
         return self.monitors[0].history
 
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+    def log(self, metrics: dict[str, Any], step: int) -> None:
         for monitor in self.monitors:
             try:
                 monitor.log(metrics, step=step)
@@ -53,13 +53,6 @@ class MultiMonitor(Monitor):
                 monitor.log_distributions(distributions=distributions, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log distributions to {monitor.__class__.__name__}: {e}")
-
-    def flush(self, step: int) -> None:
-        for monitor in self.monitors:
-            try:
-                monitor.flush(step=step)
-            except Exception as e:
-                self.logger.warning(f"Failed to flush {monitor.__class__.__name__}: {e}")
 
     def close(self) -> None:
         for monitor in self.monitors:
