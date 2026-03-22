@@ -346,6 +346,22 @@ class Qwen3_5MoeGatedAttentionBase(nn.Module):
 class Qwen3_5MoeGatedSDPAAttention(Qwen3_5MoeGatedAttentionBase):
     """Gated softmax attention using PyTorch's scaled_dot_product_attention."""
 
+    def _attention_core(
+        self,
+        query_states: torch.Tensor,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+    ) -> torch.Tensor:
+        key_states = _repeat_kv(key_states, self.num_key_value_groups)
+        value_states = _repeat_kv(value_states, self.num_key_value_groups)
+        return F.scaled_dot_product_attention(
+            query_states,
+            key_states,
+            value_states,
+            is_causal=True,
+            scale=self.scaling,
+        )
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -369,17 +385,7 @@ class Qwen3_5MoeGatedSDPAAttention(Qwen3_5MoeGatedAttentionBase):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        key_states = _repeat_kv(key_states, self.num_key_value_groups)
-        value_states = _repeat_kv(value_states, self.num_key_value_groups)
-
-        attn_output = F.scaled_dot_product_attention(
-            query_states,
-            key_states,
-            value_states,
-            is_causal=True,
-            scale=self.scaling,
-        )
-
+        attn_output = self._attention_core(query_states, key_states, value_states)
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate)
@@ -414,6 +420,16 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
             out = out[0]
         return out
 
+    def _attention_core(
+        self,
+        query_states: torch.Tensor,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> torch.Tensor:
+        return self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -442,9 +458,14 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
 
-        out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-
-        attn_output = out.contiguous().view(*input_shape, -1)
+        attn_output = self._attention_core(
+            query_states,
+            key_states,
+            value_states,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+        )
+        attn_output = attn_output.contiguous().view(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate)
         attn_output = self.o_proj(attn_output)
         return attn_output, None

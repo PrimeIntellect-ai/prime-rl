@@ -2,6 +2,7 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`model.ac.mode`** and **`model.ac.targets`**: Added selective activation checkpointing configuration. `model.ac.mode` accepts `full` (default) or `selective`. When `selective`, `model.ac.targets` selects subcomponents to checkpoint. Supported public targets are currently `norm`, `attention_sdpa`, `mla_up_proj`, and `routed_experts`; runtime validation remains the source of truth. `model.ac.targets` defaults to `["norm"]`, and selective mode requires at least one target. (2026-03-20)
 - **`model.optimization_dtype` / `model.reduce_dtype` (VLM models)**: Added validation that VLM models must use `optimization_dtype='bfloat16'` and `reduce_dtype='bfloat16'` to match vLLM inference. Previously valid configs with `float32` (the default) are now rejected for VLM model names. Set both fields to `"bfloat16"` when training VLMs. (2026-03-21)
 - **`orchestrator.advantage.length_weighted_mean`**: Removed. The default advantage now always uses the plain per-problem mean baseline unless `orchestrator.advantage.length_shaping_alpha` is set. Existing configs must delete this field. (2026-03-19)
 - **`orchestrator.advantage.length_shaping_alpha`**: Added Group Relative Reward Rescaling coefficient to the default advantage config. When set, applies length-based GR3 shaping during advantage computation and requires `orchestrator.buffer.online_difficulty_filtering = true` (default: `None`) (2026-03-18)

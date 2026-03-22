@@ -146,6 +146,24 @@ class AfmoeAttentionBase(nn.Module):
 class AfmoeSDPAAttention(AfmoeAttentionBase):
     """AFMoE attention using PyTorch's scaled_dot_product_attention."""
 
+    def _attention_core(
+        self,
+        query_states: torch.Tensor,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        dropout_p: float = 0.0,
+    ) -> torch.Tensor:
+        return F.scaled_dot_product_attention(
+            query_states,
+            key_states,
+            value_states,
+            attn_mask=attention_mask,
+            dropout_p=dropout_p,
+            is_causal=attention_mask is None,
+            scale=self.scaling,
+        )
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -159,14 +177,12 @@ class AfmoeSDPAAttention(AfmoeAttentionBase):
         )
 
         dropout_p = self.attention_dropout if self.training else 0.0
-        attn_output = F.scaled_dot_product_attention(
+        attn_output = self._attention_core(
             query_states,
             key_states,
             value_states,
-            attn_mask=attention_mask,
+            attention_mask=attention_mask,
             dropout_p=dropout_p,
-            is_causal=attention_mask is None,  # Use causal if no explicit mask
-            scale=self.scaling,
         )
 
         return self._finalize_output(attn_output, gate_states, input_shape)
@@ -202,6 +218,16 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
             out = out[0]
         return out
 
+    def _attention_core(
+        self,
+        query_states: torch.Tensor,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> torch.Tensor:
+        return self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -229,9 +255,14 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
 
-        out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-
-        attn_output = out.contiguous().view(*input_shape, -1)
+        attn_output = self._attention_core(
+            query_states,
+            key_states,
+            value_states,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+        )
+        attn_output = attn_output.contiguous().view(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate_states)
         attn_output = self.o_proj(attn_output)
         return attn_output, None
