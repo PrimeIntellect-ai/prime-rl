@@ -223,6 +223,16 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = 1
 
+    ep_comm_backend: Annotated[
+        Literal["standard", "deepep"],
+        Field(
+            description=(
+                "Communication backend for expert parallelism. "
+                "`standard` uses TorchTitan all-to-all collectives and `deepep` uses DeepEP custom kernels."
+            ),
+        ),
+    ] = "standard"
+
     tp: Annotated[
         int,
         Field(
@@ -361,6 +371,24 @@ class ModelConfig(BaseModelConfig):
     def flash_attention_4_only_with_custom_impl(self):
         if self.attn == "fa4" and self.impl != "custom":
             raise ValueError("Flash attention 4 is only supported with the custom implementation")
+        return self
+
+    @model_validator(mode="after")
+    def validate_ep_comm_backend(self):
+        if self.ep_comm_backend == "standard":
+            return self
+
+        if self.ep <= 1:
+            raise ValueError(f"model.ep_comm_backend='{self.ep_comm_backend}' requires model.ep > 1.")
+        if self.tp != 1:
+            raise ValueError(
+                f"model.ep_comm_backend='{self.ep_comm_backend}' is currently only supported with model.tp=1."
+            )
+        if self.lora is not None:
+            raise ValueError(
+                f"model.ep_comm_backend='{self.ep_comm_backend}' is not currently supported together with LoRA."
+            )
+
         return self
 
 
