@@ -14,7 +14,12 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.chat_template import build_incremental_token_mask, deserialize_tool_calls, strip_message_content
+from prime_rl.utils.chat_template import (
+    build_incremental_token_mask,
+    deserialize_tool_calls,
+    normalize_messages,
+    strip_message_content,
+)
 from prime_rl.utils.logger import get_logger
 
 STACKING_DATASET_BUCKET_TIMEOUT = 10
@@ -108,7 +113,7 @@ class FakeDataset(StatefulIterableDataset):
 
 
 class SFTDataset(StatefulIterableDataset):
-    """A dataset wrapping a HF SFT dataset with prompt + completion format."""
+    """A dataset wrapping a HF SFT dataset with prompt/completion or raw messages format."""
 
     def __init__(
         self,
@@ -157,14 +162,28 @@ class SFTDataset(StatefulIterableDataset):
         if self.tokenizer is None:
             return example
 
-        # Assert that the example has a 'prompt' and 'completion' column
-        if "prompt" not in example or "completion" not in example:
-            raise ValueError("All examples in the dataset must have a 'prompt' and 'completion' column for SFT")
+        def resolve_messages(example: dict) -> tuple[list[dict], list[dict]]:
+            # `messages` takes precedence over explicit split fields and is interpreted
+            # as a whole-chat training sample with an empty prompt.
+            if "messages" in example:
+                return [], normalize_messages(example["messages"], default_role="assistant")
+
+            if "prompt" not in example or "completion" not in example:
+                raise ValueError(
+                    "All examples in the dataset must have either a 'messages' column "
+                    "or both 'prompt' and 'completion' columns for SFT"
+                )
+
+            return (
+                normalize_messages(example["prompt"], default_role="user"),
+                normalize_messages(example["completion"], default_role="assistant"),
+            )
 
         # Deserialize tool call arguments from message list, if present - assumes OAI format
         # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
-        prompt = deserialize_tool_calls(example["prompt"])
-        completion = deserialize_tool_calls(example["completion"])
+        prompt, completion = resolve_messages(example)
+        prompt = deserialize_tool_calls(prompt)
+        completion = deserialize_tool_calls(completion)
 
         # Strip content from all messages so that incremental tokenization works
         # NOTE: This has the side effect that we do never train on leading or trailing whitespace
