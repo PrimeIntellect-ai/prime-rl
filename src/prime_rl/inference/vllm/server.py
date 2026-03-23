@@ -129,7 +129,6 @@ def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> s
 
 logger = get_logger()
 from prime_rl.inference.patches import (
-    monkey_patch_fused_moe_lora_dp,
     monkey_patch_harmony_stop_token_propagation,
     monkey_patch_hermes_tool_parser_thread_safety,
     monkey_patch_load_lora_adapter,
@@ -144,8 +143,6 @@ from prime_rl.inference.vllm.serving_chat_with_tokens import (
 
 # NOTE: Fix harmony stop token propagation for GPT-OSS models (vLLM 0.17.0 bug)
 monkey_patch_harmony_stop_token_propagation()
-# NOTE: Fix LoRA + MoE + DP>1 corrupted output (vLLM 0.17.0 bug)
-monkey_patch_fused_moe_lora_dp()
 # NOTE: Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
 monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
 # NOTE: Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
