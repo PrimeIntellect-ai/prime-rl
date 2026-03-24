@@ -41,7 +41,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import is_vlm_config, is_vlm_model
+from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_config, resolve_is_vlm
 
 
 def _patch_qwen3_5_moe_conversion_mapping():
@@ -118,24 +118,11 @@ torch._dynamo.config.recompile_limit = 16  # default: 8
 torch._dynamo.config.cache_size_limit = 64  # default: 8
 
 
-def freeze_vision_encoder(model: nn.Module) -> None:
-    """Freeze the vision encoder parameters for VLM training.
-
-    For Qwen3-VL, the vision encoder is at model.model.visual.
-    This freezes all parameters in the vision encoder so only the
-    language model (with LoRA) is trained.
-    """
+def freeze_vision_encoder(model: nn.Module, override_attr: str | None = None) -> None:
     logger = get_logger()
-
-    # Qwen3-VL structure: model.model.visual
-    if hasattr(model, "model") and hasattr(model.model, "visual"):
-        vision_encoder = model.model.visual
-    # Qwen2-VL structure: model.visual
-    elif hasattr(model, "visual"):
-        vision_encoder = model.visual
-    else:
-        raise ValueError("Could not find vision encoder to freeze. Expected model.model.visual or model.visual")
-
+    vision_encoder = get_vision_encoder(model, override=override_attr)
+    if vision_encoder is None:
+        raise ValueError("Could not find vision encoder to freeze")
     num_frozen = 0
     for param in vision_encoder.parameters():
         param.requires_grad = False
@@ -175,17 +162,6 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
 
-def get_language_model(model: nn.Module) -> nn.Module:
-    """Get the language model component containing transformer layers.
-
-    For VLM models (Qwen3-VL): model.model.language_model
-    For text-only models: model.model
-    """
-    if hasattr(model.model, "language_model"):
-        return model.model.language_model
-    return model.model
-
-
 def get_load_balance_stats(
     model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
 ) -> dict[str, Tensor | None]:
@@ -218,8 +194,8 @@ def get_model(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
-    # Check if this is a vision-language model (by name pattern first)
-    is_vlm = is_vlm_model(config.name)
+    # Check if this is a vision-language model (explicit flag > name pattern)
+    is_vlm = resolve_is_vlm(config.vlm, config.name)
 
     if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
         _patch_qwen3_5_text_position_ids()
@@ -233,8 +209,8 @@ def get_model(
     )
     model_config.use_cache = False
 
-    # Fallback VLM detection from loaded config (catches local paths)
-    if not is_vlm and is_vlm_config(model_config):
+    # Fallback VLM detection from loaded config (catches local paths, only when not explicitly set)
+    if config.vlm is None and not is_vlm and is_vlm_config(model_config):
         is_vlm = True
     if is_vlm:
         logger.info(f"Detected vision-language model: {config.name}")
@@ -327,7 +303,7 @@ def get_model(
 
     # For VLM models, freeze the vision encoder
     if is_vlm:
-        freeze_vision_encoder(model)
+        freeze_vision_encoder(model, override_attr=config.vlm_vision_encoder_attr)
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -365,33 +341,16 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
         dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
 
-    # For VLM models, shard the frozen vision encoder as a single unit
-    # This allows FSDP to manage the memory while keeping it frozen
-    is_vlm = is_vlm_model(config.name) or (hasattr(model, "model") and hasattr(model.model, "visual"))
+    is_vlm = resolve_is_vlm(config.vlm, config.name)
     if is_vlm:
-        if hasattr(model, "model") and hasattr(model.model, "visual"):
-            vision_encoder = model.model.visual
-        elif hasattr(model, "visual"):
-            vision_encoder = model.visual
-        else:
-            raise ValueError(f"VLM model {config.name} does not have a recognized vision encoder attribute")
-
-        fully_shard(
-            vision_encoder,
-            mesh=hsdp_mesh,
-            **fsdp_config,
-        )
+        vision_encoder = get_vision_encoder(model, override=config.vlm_vision_encoder_attr)
+        if vision_encoder is None:
+            raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
+        fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
         get_logger().info("Applied FSDP to frozen vision encoder")
 
-    # Get the language model layers (handle VLM structure)
-    # For Qwen3-VL: model.model.language_model contains the transformer layers
-    # For text-only models: model.model contains the layers directly
-    if is_vlm:
-        language_model = model.model.language_model
-        transformer_layers = language_model.layers
-    else:
-        language_model = model.model
-        transformer_layers = language_model.layers
+    language_model = get_language_model(model, override=config.vlm_language_model_attr)
+    transformer_layers = language_model.layers
 
     for transformer_block in transformer_layers:
         if parallel_dims.ep_enabled and isinstance(transformer_block.mlp, MoE):

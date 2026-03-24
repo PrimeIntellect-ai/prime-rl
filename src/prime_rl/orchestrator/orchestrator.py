@@ -69,7 +69,7 @@ from prime_rl.utils.utils import (
     strip_env_version,
     to_col_format,
 )
-from prime_rl.utils.vlm import is_vlm_model
+from prime_rl.utils.vlm import resolve_is_vlm
 
 
 @clean_exit
@@ -127,7 +127,7 @@ async def orchestrate(config: OrchestratorConfig):
         teacher_inference_pool = None
 
     # Check if this is a vision-language model (used throughout for VLM-specific paths)
-    is_vlm = is_vlm_model(config.model.name)
+    is_vlm = resolve_is_vlm(config.model.vlm, config.model.name)
 
     # Load tokenizer and processor (processor only for VLM models)
     logger.info(f"Initializing tokenizer for {config.model.name}")

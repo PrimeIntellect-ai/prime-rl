@@ -1,63 +1,150 @@
 """Vision-Language Model (VLM) support utilities.
 
-This module provides a single source of truth for supported VLM models.
+Central registry for VLM model families. All model-specific knowledge
+lives here. Add new VLM families by extending VLM_REGISTRY.
+
+For custom models not in the registry, set overrides in config:
+    [model]
+    vlm = true
+    vlm_vision_encoder_attr = "model.my_vision"
+    vlm_language_model_attr = "model.my_lm"
 """
 
 import fnmatch
+from dataclasses import dataclass
 
+import torch.nn as nn
 from transformers.configuration_utils import PretrainedConfig
 
-# Whitelist of supported VLM model patterns (supports wildcards)
-# Add new patterns here as they are tested and supported
+
+@dataclass(frozen=True)
+class VLMModelInfo:
+    """Per-model-family VLM architecture metadata."""
+
+    vision_encoder_attr: str
+    language_model_attr: str
+
+
+# Central registry: model_type -> architecture info.
+VLM_REGISTRY: dict[str, VLMModelInfo] = {
+    "qwen3_vl": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
+    "qwen3_5": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
+    "qwen3_5_moe": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
+}
+
+SUPPORTED_VLM_MODEL_TYPES = set(VLM_REGISTRY)
+
+# Name patterns for auto-detection by model name
 SUPPORTED_VLM_PATTERNS = [
     "Qwen/Qwen3-VL*",
     "Qwen/Qwen3.5*",
 ]
 
+# Text-only default
 DEFAULT_LAYER_PREFIX = "model.layers."
 
-# Per-VLM registry: model_type -> layer key prefix.
-# VLM models nest the text decoder under a different prefix
-# (e.g. 'model.language_model.layers.' instead of 'model.layers.').
-# Add new VLM model types here — this is the single source of truth.
-VLM_REGISTRY: dict[str, str] = {
-    "qwen3_vl": "model.language_model.layers.",
-    "qwen3_5": "model.language_model.layers.",
-    "qwen3_5_moe": "model.language_model.layers.",
-}
 
-# Derived from the registry — used by is_vlm_config()
-SUPPORTED_VLM_MODEL_TYPES = set(VLM_REGISTRY)
+# ---------------------------------------------------------------------------
+# Model component access
+# ---------------------------------------------------------------------------
 
 
-def get_layer_prefix(model_config: PretrainedConfig) -> str:
-    """Return the layer key prefix for a model config.
+def get_vision_encoder(model: nn.Module, override: str | None = None) -> nn.Module | None:
+    """Get the vision encoder module.
 
-    VLM models nest their text decoder under a different prefix
-    (e.g. 'model.language_model.layers.') while standard decoder
-    models use 'model.layers.'.
+    Checks: config override -> registry. Returns None if not found.
+    Raises ValueError on a bad config override (typo protection).
     """
-    model_type = getattr(model_config, "model_type", None)
-    return VLM_REGISTRY.get(model_type, DEFAULT_LAYER_PREFIX)
+    if override is not None:
+        result = _resolve_attr(model, override)
+        if result is None:
+            raise ValueError(f"vlm_vision_encoder_attr='{override}' does not resolve on this model")
+        return result
+
+    info = _get_model_info(model)
+    if info is not None:
+        return _resolve_attr(model, info.vision_encoder_attr)
+
+    return None
+
+
+def get_language_model(model: nn.Module, override: str | None = None) -> nn.Module:
+    """Get the language model module (the part with transformer layers).
+
+    Checks: config override -> registry -> model.model (text-only default).
+    Raises ValueError on a bad config override (typo protection).
+    """
+    if override is not None:
+        result = _resolve_attr(model, override)
+        if result is None:
+            raise ValueError(f"vlm_language_model_attr='{override}' does not resolve on this model")
+        return result
+
+    info = _get_model_info(model)
+    if info is not None:
+        result = _resolve_attr(model, info.language_model_attr)
+        if result is not None:
+            return result
+
+    # Text-only models: language model is directly at model.model
+    return model.model
+
+
+def get_layer_prefix(model_config: PretrainedConfig, override: str | None = None) -> str:
+    """Return the weight key prefix for language model layers.
+
+    Derived from language_model_attr + '.layers.' for registered VLMs,
+    or 'model.layers.' for text-only / unknown models.
+    """
+    if override is not None:
+        return override
+    info = _get_model_info_from_config(model_config)
+    if info is not None:
+        return info.language_model_attr + ".layers."
+    return DEFAULT_LAYER_PREFIX
+
+
+# ---------------------------------------------------------------------------
+# VLM detection
+# ---------------------------------------------------------------------------
 
 
 def is_vlm_model(model_name: str) -> bool:
-    """Check if a model is a supported vision-language model by name pattern.
-
-    Args:
-        model_name: The model name or path (e.g., "Qwen/Qwen3-VL-4B-Instruct")
-
-    Returns:
-        True if the model matches a supported VLM pattern
-    """
-    model_name_lower = model_name.lower()
-    return any(fnmatch.fnmatch(model_name_lower, pattern.lower()) for pattern in SUPPORTED_VLM_PATTERNS)
+    """Check if a model name matches a known VLM pattern."""
+    return any(fnmatch.fnmatch(model_name.lower(), p.lower()) for p in SUPPORTED_VLM_PATTERNS)
 
 
 def is_vlm_config(model_config: PretrainedConfig) -> bool:
-    """Check if a loaded model config is a VLM by its model_type.
-
-    This catches VLMs loaded from local paths where the name doesn't match
-    the hub patterns.
-    """
+    """Check if a loaded model config is a VLM by its model_type."""
     return getattr(model_config, "model_type", None) in SUPPORTED_VLM_MODEL_TYPES
+
+
+def resolve_is_vlm(vlm_flag: bool | None, model_name: str) -> bool:
+    """Resolve VLM detection: explicit flag takes precedence over auto-detect."""
+    if vlm_flag is not None:
+        return vlm_flag
+    return is_vlm_model(model_name)
+
+
+# ---------------------------------------------------------------------------
+# Internal
+# ---------------------------------------------------------------------------
+
+
+def _get_model_info(model: nn.Module) -> VLMModelInfo | None:
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    return VLM_REGISTRY.get(model_type) if model_type else None
+
+
+def _get_model_info_from_config(model_config: PretrainedConfig) -> VLMModelInfo | None:
+    model_type = getattr(model_config, "model_type", None)
+    return VLM_REGISTRY.get(model_type) if model_type else None
+
+
+def _resolve_attr(obj, dotted_path: str):
+    """Resolve a dotted attribute path like 'model.visual' on an object."""
+    for part in dotted_path.split("."):
+        obj = getattr(obj, part, None)
+        if obj is None:
+            return None
+    return obj
