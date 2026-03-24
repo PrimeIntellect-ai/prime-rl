@@ -14,50 +14,41 @@ The built-in registry supports these model families out of the box:
 | Qwen3.5 | `qwen3_5` | `model.visual` | `model.language_model` |
 | Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
 
-These are auto-detected from the model name. No extra config needed:
+For registered models, just declare the `[model.vlm]` section:
 
 ```toml
 [model]
 name = "Qwen/Qwen3-VL-4B-Instruct"
+
+[model.vlm]
 ```
 
-### Local Checkpoints
-
-For local checkpoints or renamed models whose name doesn't match a known pattern, set `vlm = true`:
-
-```toml
-[model]
-name = "/path/to/my-qwen3-vl-finetune"
-vlm = true
-```
+This works for any model whose `model_type` is in the registry (including local checkpoints of registered families).
 
 ### Custom VLM Architectures
 
-For VLM families **not in the registry**, you must tell prime-rl where the vision encoder and language model live on the model object:
+For VLM families **not in the registry**, specify where the vision encoder and language model live:
 
 ```toml
 [model]
 name = "my-org/my-custom-vlm"
-vlm = true
-vlm_vision_encoder_attr = "model.vision_tower"       # dotted path to vision encoder
-vlm_language_model_attr = "model.language_model"      # dotted path to language model (must have .layers)
+
+[model.vlm]
+vision_encoder_attr = "model.vision_tower"       # dotted path to vision encoder
+language_model_attr = "model.language_model"      # dotted path to language model (must have .layers)
 ```
 
 Both fields accept dotted attribute paths resolved on the loaded model. A bad path (e.g. a typo) raises a `ValueError` immediately — there is no silent fallback.
 
-The weight key prefix for NCCL broadcasting is derived automatically as `{vlm_language_model_attr}.layers.`.
+The weight key prefix for NCCL broadcasting is derived automatically as `{language_model_attr}.layers.`.
 
 To add permanent support for a new model family, add an entry to `VLM_REGISTRY` in `src/prime_rl/utils/vlm.py`.
 
 ### Detection Rules
 
-VLM detection follows this order — first match wins:
+VLM mode is **opt-in**: set `[model.vlm]` in your config. There is no auto-detection.
 
-1. **Explicit `vlm = true/false`** in config — always respected, no auto-detection
-2. **Model name pattern** — checked against `SUPPORTED_VLM_PATTERNS` (e.g. `Qwen/Qwen3-VL*`)
-3. **Otherwise** — treated as text-only
-
-There are no silent fallbacks. If your model is a VLM but isn't detected, set `vlm = true`.
+For registered models in the table above, just declare the section — the registry provides the architecture mapping. For everything else, you must specify the attribute paths.
 
 ## Current Limitations
 

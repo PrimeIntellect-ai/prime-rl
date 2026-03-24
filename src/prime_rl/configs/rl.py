@@ -19,6 +19,7 @@ from prime_rl.configs.orchestrator import (
 )
 from prime_rl.configs.shared import (
     SlurmConfig,
+    VLMConfig,
     WandbConfig,
     WandbWithExtrasConfig,
 )
@@ -128,18 +129,8 @@ class SharedModelConfig(BaseConfig):
     ] = "Qwen/Qwen3-0.6B"
 
     vlm: Annotated[
-        bool | None,
-        Field(description="Whether this is a vision-language model. None = auto-detect."),
-    ] = None
-
-    vlm_vision_encoder_attr: Annotated[
-        str | None,
-        Field(description="Dotted attribute path to the vision encoder (e.g. 'model.visual')."),
-    ] = None
-
-    vlm_language_model_attr: Annotated[
-        str | None,
-        Field(description="Dotted attribute path to the language model (e.g. 'model.language_model')."),
+        "VLMConfig | None",
+        Field(description="VLM configuration. Set to enable vision-language model support."),
     ] = None
 
 
@@ -535,13 +526,11 @@ class RLConfig(BaseConfig):
             else:
                 self.orchestrator.model.name = self.model.name
 
-            for field in ("vlm", "vlm_vision_encoder_attr", "vlm_language_model_attr"):
-                val = getattr(self.model, field)
-                if val is not None:
-                    setattr(self.trainer.model, field, val)
-                    setattr(self.orchestrator.model, field, val)
-                    if self.inference is not None:
-                        setattr(self.inference.model, field, val)
+            if self.model.vlm is not None:
+                self.trainer.model.vlm = self.model.vlm
+                self.orchestrator.model.vlm = self.model.vlm
+                if self.inference is not None:
+                    self.inference.model.vlm = self.model.vlm
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 

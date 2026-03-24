@@ -41,7 +41,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder, resolve_is_vlm
+from prime_rl.utils.vlm import get_language_model, get_vision_encoder
 
 
 def _patch_qwen3_5_moe_conversion_mapping():
@@ -194,8 +194,8 @@ def get_model(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
-    # Check if this is a vision-language model (explicit flag > name pattern)
-    is_vlm = resolve_is_vlm(config.vlm, config.name)
+    # VLM mode is enabled by setting [model.vlm] in config
+    is_vlm = config.vlm is not None
 
     if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
         _patch_qwen3_5_text_position_ids()
@@ -300,7 +300,7 @@ def get_model(
 
     # For VLM models, freeze the vision encoder
     if is_vlm:
-        freeze_vision_encoder(model, override_attr=config.vlm_vision_encoder_attr)
+        freeze_vision_encoder(model, override_attr=config.vlm.vision_encoder_attr)
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -338,15 +338,15 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
         dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
 
-    is_vlm = resolve_is_vlm(config.vlm, config.name)
+    is_vlm = config.vlm is not None
     if is_vlm:
-        vision_encoder = get_vision_encoder(model, override=config.vlm_vision_encoder_attr)
+        vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
         if vision_encoder is None:
             raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
         fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
         get_logger().info("Applied FSDP to frozen vision encoder")
 
-    language_model = get_language_model(model, override=config.vlm_language_model_attr)
+    language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm else None)
     transformer_layers = language_model.layers
 
     for transformer_block in transformer_layers:

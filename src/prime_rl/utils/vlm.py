@@ -4,13 +4,11 @@ Central registry for VLM model families. All model-specific knowledge
 lives here. Add new VLM families by extending VLM_REGISTRY.
 
 For custom models not in the registry, set overrides in config:
-    [model]
-    vlm = true
-    vlm_vision_encoder_attr = "model.my_vision"
-    vlm_language_model_attr = "model.my_lm"
+    [model.vlm]
+    vision_encoder_attr = "model.my_vision"
+    language_model_attr = "model.my_lm"
 """
 
-import fnmatch
 from dataclasses import dataclass
 
 import torch.nn as nn
@@ -34,12 +32,6 @@ VLM_REGISTRY: dict[str, VLMModelInfo] = {
 
 SUPPORTED_VLM_MODEL_TYPES = set(VLM_REGISTRY)
 
-# Name patterns for auto-detection by model name
-SUPPORTED_VLM_PATTERNS = [
-    "Qwen/Qwen3-VL*",
-    "Qwen/Qwen3.5*",
-]
-
 # Text-only default
 DEFAULT_LAYER_PREFIX = "model.layers."
 
@@ -53,12 +45,12 @@ def get_vision_encoder(model: nn.Module, override: str | None = None) -> nn.Modu
     """Get the vision encoder module.
 
     Checks: config override -> registry. Returns None if not found.
-    Raises ValueError on a bad config override (typo protection).
+    Raises ValueError on a bad config override.
     """
     if override is not None:
         result = _resolve_attr(model, override)
         if result is None:
-            raise ValueError(f"vlm_vision_encoder_attr='{override}' does not resolve on this model")
+            raise ValueError(f"vlm.vision_encoder_attr='{override}' does not resolve on this model")
         return result
 
     info = _get_model_info(model)
@@ -72,12 +64,12 @@ def get_language_model(model: nn.Module, override: str | None = None) -> nn.Modu
     """Get the language model module (the part with transformer layers).
 
     Checks: config override -> registry -> model.model (text-only default).
-    Raises ValueError on a bad config override (typo protection).
+    Raises ValueError on a bad config override.
     """
     if override is not None:
         result = _resolve_attr(model, override)
         if result is None:
-            raise ValueError(f"vlm_language_model_attr='{override}' does not resolve on this model")
+            raise ValueError(f"vlm.language_model_attr='{override}' does not resolve on this model")
         return result
 
     info = _get_model_info(model)
@@ -102,28 +94,6 @@ def get_layer_prefix(model_config: PretrainedConfig, override: str | None = None
     if info is not None:
         return info.language_model_attr + ".layers."
     return DEFAULT_LAYER_PREFIX
-
-
-# ---------------------------------------------------------------------------
-# VLM detection
-# ---------------------------------------------------------------------------
-
-
-def is_vlm_model(model_name: str) -> bool:
-    """Check if a model name matches a known VLM pattern."""
-    return any(fnmatch.fnmatch(model_name.lower(), p.lower()) for p in SUPPORTED_VLM_PATTERNS)
-
-
-def is_vlm_config(model_config: PretrainedConfig) -> bool:
-    """Check if a loaded model config is a VLM by its model_type."""
-    return getattr(model_config, "model_type", None) in SUPPORTED_VLM_MODEL_TYPES
-
-
-def resolve_is_vlm(vlm_flag: bool | None, model_name: str) -> bool:
-    """Resolve VLM detection: explicit flag takes precedence over auto-detect."""
-    if vlm_flag is not None:
-        return vlm_flag
-    return is_vlm_model(model_name)
 
 
 # ---------------------------------------------------------------------------

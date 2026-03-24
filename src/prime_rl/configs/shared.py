@@ -80,6 +80,41 @@ class SlurmConfig(BaseConfig):
 ServerType = Literal["vllm", "openai"]
 
 
+class VLMConfig(BaseConfig):
+    """Configures vision-language model support.
+
+    Presence of this config enables VLM mode. For models in the built-in
+    registry (Qwen3-VL, Qwen3.5), no fields need to be set — the registry
+    provides the architecture mapping. For custom VLMs, set the attr fields.
+
+    Usage:
+        [model.vlm]                                    # registered model
+        [model.vlm]
+        vision_encoder_attr = "model.vision_tower"     # custom model
+        language_model_attr = "model.language_model"
+    """
+
+    vision_encoder_attr: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Dotted attribute path to the vision encoder module (e.g. 'model.visual'). "
+                "None uses the built-in registry. Set for custom VLMs."
+            ),
+        ),
+    ] = None
+
+    language_model_attr: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Dotted attribute path to the language model module (e.g. 'model.language_model'). "
+                "None uses the built-in registry."
+            ),
+        ),
+    ] = None
+
+
 class BaseModelConfig(BaseConfig):
     """Configures the model."""
 
@@ -93,35 +128,9 @@ class BaseModelConfig(BaseConfig):
     ] = False
 
     vlm: Annotated[
-        bool | None,
+        "VLMConfig | None",
         Field(
-            description=(
-                "Whether this is a vision-language model. "
-                "None (default) auto-detects from model name and config. "
-                "Set explicitly to True/False to override auto-detection "
-                "(e.g. for local checkpoints whose name doesn't match known patterns)."
-            ),
-        ),
-    ] = None
-
-    vlm_vision_encoder_attr: Annotated[
-        str | None,
-        Field(
-            description=(
-                "Dotted attribute path to the vision encoder module (e.g. 'model.visual'). "
-                "None (default) uses the built-in registry. "
-                "Set this for custom VLMs whose vision encoder isn't at a known location."
-            ),
-        ),
-    ] = None
-
-    vlm_language_model_attr: Annotated[
-        str | None,
-        Field(
-            description=(
-                "Dotted attribute path to the language model module (e.g. 'model.language_model'). "
-                "None (default) uses the built-in registry or auto-detects."
-            ),
+            description="VLM configuration. Set this to enable vision-language model support.",
         ),
     ] = None
 
