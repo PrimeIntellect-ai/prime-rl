@@ -12,7 +12,7 @@ batch_size = 48
 rollouts_per_example = 16
 
 [orchestrator.sampling]
-max_tokens = 8192
+max_tokens = 12288
 temperature = 1.0
 
 [orchestrator.wandb.log_extras]
@@ -34,7 +34,7 @@ interval = 10
 keep_last = 3
 
 [trainer.model]
-seq_len = 12288
+seq_len = 16384
 optimization_dtype = "bfloat16"
 
 [trainer.model.ac]
@@ -54,4 +54,4 @@ num_infer_gpus = 1
 enable_lora = true
 
 [inference.model]
-max_model_len = 12288
+max_model_len = 16384
