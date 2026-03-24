@@ -14,41 +14,24 @@ The built-in registry supports these model families out of the box:
 | Qwen3.5 | `qwen3_5` | `model.visual` | `model.language_model` |
 | Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
 
-For registered models, just declare the `[model.vlm]` section:
+Enable VLM mode by adding a `[model.vlm]` section. Both fields are required — they tell prime-rl where the vision encoder and language model live on the model object:
 
 ```toml
 [model]
 name = "Qwen/Qwen3-VL-4B-Instruct"
 
 [model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
 ```
 
-This works for any model whose `model_type` is in the registry (including local checkpoints of registered families).
+For the registered models in the table above, use the attrs shown there. For custom VLMs, check your model's structure with `model.named_children()`.
 
-### Custom VLM Architectures
-
-For VLM families **not in the registry**, specify where the vision encoder and language model live:
-
-```toml
-[model]
-name = "my-org/my-custom-vlm"
-
-[model.vlm]
-vision_encoder_attr = "model.vision_tower"       # dotted path to vision encoder
-language_model_attr = "model.language_model"      # dotted path to language model (must have .layers)
-```
-
-Both fields accept dotted attribute paths resolved on the loaded model. A bad path (e.g. a typo) raises a `ValueError` immediately — there is no silent fallback.
+Both fields are dotted attribute paths resolved on the loaded model. A bad path raises a `ValueError` immediately — there are no silent fallbacks.
 
 The weight key prefix for NCCL broadcasting is derived automatically as `{language_model_attr}.layers.`.
 
 To add permanent support for a new model family, add an entry to `VLM_REGISTRY` in `src/prime_rl/utils/vlm.py`.
-
-### Detection Rules
-
-VLM mode is **opt-in**: set `[model.vlm]` in your config. There is no auto-detection.
-
-For registered models in the table above, just declare the section — the registry provides the architecture mapping. For everything else, you must specify the attribute paths.
 
 ## Current Limitations
 

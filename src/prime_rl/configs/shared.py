@@ -83,36 +83,24 @@ ServerType = Literal["vllm", "openai"]
 class VLMConfig(BaseConfig):
     """Configures vision-language model support.
 
-    Presence of this config enables VLM mode. For models in the built-in
-    registry (Qwen3-VL, Qwen3.5), no fields need to be set — the registry
-    provides the architecture mapping. For custom VLMs, set the attr fields.
+    Presence of this config enables VLM mode. You must specify where the
+    vision encoder and language model live on the model object.
 
     Usage:
-        [model.vlm]                                    # registered model
         [model.vlm]
-        vision_encoder_attr = "model.vision_tower"     # custom model
+        vision_encoder_attr = "model.visual"
         language_model_attr = "model.language_model"
     """
 
     vision_encoder_attr: Annotated[
-        str | None,
-        Field(
-            description=(
-                "Dotted attribute path to the vision encoder module (e.g. 'model.visual'). "
-                "None uses the built-in registry. Set for custom VLMs."
-            ),
-        ),
-    ] = None
+        str,
+        Field(description="Dotted attribute path to the vision encoder module (e.g. 'model.visual')."),
+    ]
 
     language_model_attr: Annotated[
-        str | None,
-        Field(
-            description=(
-                "Dotted attribute path to the language model module (e.g. 'model.language_model'). "
-                "None uses the built-in registry."
-            ),
-        ),
-    ] = None
+        str,
+        Field(description="Dotted attribute path to the language model module (e.g. 'model.language_model')."),
+    ]
 
 
 class BaseModelConfig(BaseConfig):
