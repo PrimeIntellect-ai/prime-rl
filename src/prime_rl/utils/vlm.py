@@ -30,8 +30,6 @@ VLM_REGISTRY: dict[str, VLMModelInfo] = {
     "qwen3_5_moe": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
 }
 
-SUPPORTED_VLM_MODEL_TYPES = set(VLM_REGISTRY)
-
 # Text-only default
 DEFAULT_LAYER_PREFIX = "model.layers."
 
