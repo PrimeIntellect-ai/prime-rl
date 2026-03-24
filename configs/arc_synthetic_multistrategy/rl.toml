@@ -30,11 +30,13 @@ levels = [2]
 task_types = []
 
 [ckpt]
+resume_step = 50
 interval = 10
 keep_last = 3
 
-[trainer.ckpt]
-resume_step = 50
+[orchestrator.ckpt]
+skip_progress = true
+skip_buffer = true
 
 [trainer.model]
 seq_len = 16384
