@@ -186,8 +186,16 @@ def train(config: TrainerConfig):
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if checkpoint_step is not None:
-        ckpt_manager.load(checkpoint_step, model, [optimizer], scheduler, progress)
+        ckpt_manager.load(
+            checkpoint_step,
+            model,
+            [optimizer],
+            scheduler if not config.ckpt.skip_scheduler else None,
+            progress if not config.ckpt.skip_progress else None,
+        )
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
+        if config.ckpt.skip_scheduler:
+            scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
 
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
