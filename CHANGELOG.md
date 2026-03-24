@@ -2,6 +2,7 @@
 
 Documenting changes which affect configuration usage patterns (added/moved/removed/renamed fields, notable logic changes).
 
+- **`[model.vlm]` (NEW — replaces auto-detection)**: VLM mode is now opt-in via a `[model.vlm]` sub-config with required `vision_encoder_attr` and `language_model_attr` fields. There is no auto-detection — if you train a VLM, you must add `[model.vlm]`. Existing multimodal configs need the new section. See `docs/multimodal.md` for the table of known model attrs. (2026-03-24)
 - **`model.optimization_dtype` / `model.reduce_dtype` (VLM models, RL only)**: VLM dtype validation now only applies to RL training (`TrainerConfig`), not SFT. VLM models used with `sft` no longer require `optimization_dtype='bfloat16'` / `reduce_dtype='bfloat16'`. RL training still enforces both to match vLLM inference. (2026-03-24)
 - **`model.optimization_dtype` / `model.reduce_dtype` (VLM models)**: Added validation that VLM models must use `optimization_dtype='bfloat16'` and `reduce_dtype='bfloat16'` to match vLLM inference. Previously valid configs with `float32` (the default) are now rejected for VLM model names. Set both fields to `"bfloat16"` when training VLMs. (2026-03-21)
 - **`orchestrator.advantage.length_weighted_mean`**: Removed. The default advantage now always uses the plain per-problem mean baseline unless `orchestrator.advantage.length_shaping_alpha` is set. Existing configs must delete this field. (2026-03-19)
