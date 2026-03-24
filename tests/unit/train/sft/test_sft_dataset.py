@@ -21,7 +21,7 @@ def test_init_sft_dataset(build_dummy_dataset):
 
 
 def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
-    """Tests that an error is raised if no prompt and completion are provided but a tokenizer is provided."""
+    """Tests that an error is raised if no supported SFT message fields are provided."""
     dataset = build_dummy_dataset("a", 1)
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
     sft_dataset = SFTDataset(dataset, tokenizer=tokenizer)
@@ -260,3 +260,55 @@ def test_multiturn_loss_mask_with_tools():
     dataset = SFTDataset(dataset, tokenizer=tokenizer, max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
+
+
+def test_messages_rows_are_equivalent_to_empty_prompt_completion():
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant with access to tools."},
+        {"role": "user", "content": "What's the weather in San Francisco?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"location": "San Francisco, CA"}'},
+                }
+            ],
+        },
+        {"role": "tool", "content": '{"temperature": 65, "condition": "Sunny"}', "tool_call_id": "call_1"},
+        {"role": "assistant", "content": "It is 65F and sunny in San Francisco."},
+    ]
+
+    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
+    messages_dataset = SFTDataset(Dataset.from_list([{"messages": messages}]), tokenizer=tokenizer, max_examples=1)
+    split_dataset = SFTDataset(
+        Dataset.from_list([{"prompt": [], "completion": messages}]),
+        tokenizer=tokenizer,
+        max_examples=1,
+    )
+
+    assert next(iter(messages_dataset)) == next(iter(split_dataset))
+
+
+def test_messages_take_precedence_over_prompt_and_completion():
+    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
+    row = {
+        "messages": [
+            {"role": "system", "content": "System from messages"},
+            {"role": "user", "content": "Prompt from messages"},
+            {"role": "assistant", "content": "Completion from messages"},
+        ],
+        "prompt": [{"role": "user", "content": "Ignored prompt"}],
+        "completion": [{"role": "assistant", "content": "Ignored completion"}],
+    }
+
+    messages_dataset = SFTDataset(Dataset.from_list([row]), tokenizer=tokenizer, max_examples=1)
+    expected_dataset = SFTDataset(
+        Dataset.from_list([{"prompt": [], "completion": row["messages"]}]),
+        tokenizer=tokenizer,
+        max_examples=1,
+    )
+
+    assert next(iter(messages_dataset)) == next(iter(expected_dataset))

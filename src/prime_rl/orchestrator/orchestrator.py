@@ -12,7 +12,12 @@ from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout, offload_images_to_disk
+from prime_rl.orchestrator.trajectories import (
+    build_vlm_image_cache,
+    interleave_rollout,
+    offload_images_to_disk,
+    pretokenize_rollout_trajectory,
+)
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
 
@@ -41,6 +46,7 @@ from prime_rl.orchestrator.utils import (
     get_weight_dir,
     print_benchmark,
     set_semaphore,
+    setup_external_rollout_model,
 )
 from prime_rl.orchestrator.vf_utils import (
     generate,
@@ -105,14 +111,18 @@ async def orchestrate(config: OrchestratorConfig):
     for env_id in env_ids_to_install:
         install_env(env_id)
 
-    # Setup inference pool (handles both static and elastic modes)
+    # Setup rollout inference pool (handles both static and elastic modes)
+    rollout_client_config, rollout_model_name, enable_policy_updates = setup_external_rollout_model(config, logger)
+
     client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
     if config.use_token_client:
         logger.warning(
             "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a linear "
             "history and the chat template has the extension property."
         )
-    inference_pool = await setup_inference_pool(config.client, model_name=config.model.name, client_type=client_type)
+    inference_pool = await setup_inference_pool(
+        rollout_client_config, model_name=rollout_model_name, client_type=client_type
+    )
 
     # Setup teacher inference pool if configured
     if config.teacher_model:
@@ -311,18 +321,21 @@ async def orchestrate(config: OrchestratorConfig):
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
         tasks_per_minute=config.tasks_per_minute,
+        enable_policy_updates=enable_policy_updates,
         lora_name=config.model.lora.name if config.model.lora else None,
         deferred_group_scoring_tasks=train_env_deferred_group_scoring_tasks,
         config=config,
     )
+    scheduler.model_name = rollout_model_name
 
-    if checkpoint_step is not None and config.model.lora is not None:
+    if checkpoint_step is not None and config.model.lora is not None and enable_policy_updates:
         assert config.model.lora.name is not None
         scheduler.model_name = config.model.lora.name
 
     # Check health of the inference pool
     logger.info("Waiting for inference pool to be ready")
-    await inference_pool.wait_for_ready(config.model.name)
+    await inference_pool.wait_for_ready(rollout_model_name)
+
     logger.success("Inference pool ready")
 
     # Check health of teacher inference server if configured
@@ -332,14 +345,18 @@ async def orchestrate(config: OrchestratorConfig):
         logger.success("Teacher inference pool ready")
 
     # Set up weight broadcast backend
-    logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-    if config.weight_broadcast.type == "nccl":
-        await init_nccl_broadcast(
-            inference_pool.admin_clients,
-            config.weight_broadcast.host,
-            config.weight_broadcast.port,
-            config.weight_broadcast.timeout,
-        )
+    if enable_policy_updates:
+        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        if config.weight_broadcast.type == "nccl":
+            await init_nccl_broadcast(
+                inference_pool.admin_clients,
+                config.weight_broadcast.host,
+                config.weight_broadcast.port,
+                config.weight_broadcast.timeout,
+                quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
+            )
+    else:
+        logger.info("Skipping weight broadcast initialization (SFT distillation mode)")
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
@@ -365,14 +382,15 @@ async def orchestrate(config: OrchestratorConfig):
             # Allow eval at resumed step by setting prev_ckpt_step one behind
             prev_ckpt_step = scheduler.ckpt_step - 1
 
-        # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
-        check_exists = config.weight_broadcast.type != "nccl"
-        wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
-        weights_path = get_weight_dir(
-            config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
-        )
-        lora_name = config.model.lora.name if config.model.lora else None
-        await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+        if enable_policy_updates:
+            # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
+            check_exists = config.weight_broadcast.type != "nccl"
+            wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
+            weights_path = get_weight_dir(
+                config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
+            )
+            lora_name = config.model.lora.name if config.model.lora else None
+            await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
         logger.info("Training from scratch")
 
@@ -393,7 +411,8 @@ async def orchestrate(config: OrchestratorConfig):
             raise RuntimeError(f"Run evicted by trainer: {reason}")
 
         # Capture ckpt_step once for consistency (it's updated inside the scheduler)
-        ckpt_step = scheduler.ckpt_step
+        ckpt_step = scheduler.ckpt_step if enable_policy_updates else progress.step
+        scheduler.ckpt_step = ckpt_step
 
         # Save checkpoint (if we are at an interval step and not at the first or last step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
@@ -471,7 +490,9 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Schedule generating the training batch
         temperature = compute_temperature(progress.step, config.sampling, config.max_steps)
-        sampling_args = get_sampling_args(config.sampling, temperature=temperature)
+        sampling_args = get_sampling_args(
+            config.sampling, temperature=temperature, use_token_client=config.use_token_client
+        )
         scheduler.set_sampling_args(sampling_args)
         train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
 
@@ -525,6 +546,10 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
+
+        # Pretokenize before VLM image cache build (which strips image data from messages)
+        for rollout in train_rollouts:
+            pretokenize_rollout_trajectory(rollout, tokenizer, processor=processor)
 
         # VLM: build image cache for efficient batched preprocessing
         if is_vlm:

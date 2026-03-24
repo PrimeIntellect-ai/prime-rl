@@ -103,6 +103,23 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         raise NotImplementedError(f"convert_layer_to_prime is not implemented for {cls.__name__}")
 
+    @classmethod
+    def convert_layer_to_vllm_kernel(
+        cls,
+        state_dict: dict[str, Tensor],
+        layer_idx: int,
+        quantize_fp8: bool = False,
+    ) -> dict[str, Tensor]:
+        """
+        Convert a single layer's state dict from PrimeRL format to vLLM kernel format.
+
+        Args:
+            state_dict: Layer weights in PrimeRL format.
+            layer_idx: Layer index to convert.
+            quantize_fp8: Whether to emit FP8 (e4m3) kernel weights with per-block scales.
+        """
+        raise NotImplementedError(f"convert_layer_to_vllm_kernel is not implemented for {cls.__name__}")
+
     def init_buffers_post_meta(self) -> None:
         """
         Initialize buffers that are not in the state dict after loading with meta device.

@@ -1,0 +1,30 @@
+max_steps = 20
+
+[ckpt]
+resume_step = 10
+
+[ckpt.weights]
+save_adapter_separately = true
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[model.lora]
+rank = 8
+target_modules = [
+  "q_proj",
+  "k_proj",
+  "v_proj",
+  "o_proj",
+  "gate_proj",
+  "up_proj",
+  "down_proj",
+]
+
+[data]
+name = "PrimeIntellect/Reverse-Text-SFT"
+batch_size = 4
+seq_len = 1024
+
+[optim]
+lr = 1.5e-5

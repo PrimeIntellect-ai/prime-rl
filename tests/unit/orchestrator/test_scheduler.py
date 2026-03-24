@@ -28,6 +28,7 @@ def make_scheduler() -> Scheduler:
     scheduler.policy_update_lock = asyncio.Lock()
     scheduler.inflight_policy_update_task = None
     scheduler.update_policy_task = None
+    scheduler.enable_policy_updates = True
     return scheduler
 
 

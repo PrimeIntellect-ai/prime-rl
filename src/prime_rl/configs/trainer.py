@@ -13,6 +13,7 @@ from prime_rl.configs.shared import (
     WandbConfig,
 )
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.vlm import is_vlm_model
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
@@ -299,6 +300,14 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
+    def vlms_require_bfloat16(self):
+        if is_vlm_model(self.name) and (self.optimization_dtype != "bfloat16" or self.reduce_dtype != "bfloat16"):
+            raise ValueError(
+                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
+            )
+        return self
+
+    @model_validator(mode="after")
     def cp_only_with_flash_attn(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3"]:
             raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
@@ -539,6 +548,12 @@ class DefaultLossConfig(BaseModel):
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
 
 
+class SFTLossConfig(BaseModel):
+    """Config for SFT-style masked negative log-likelihood loss."""
+
+    type: Literal["sft"] = "sft"
+
+
 class CustomLossConfig(BaseModel):
     """Config for a custom external loss function."""
 
@@ -548,7 +563,7 @@ class CustomLossConfig(BaseModel):
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
 
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[DefaultLossConfig | SFTLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -591,6 +606,15 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
+    quantize_in_weight_transfer: Annotated[
+        bool,
+        Field(
+            description=(
+                "Use kernel-format FP8 quantized NCCL transfer for weight updates. "
+                "When disabled, uses default HF checkpoint-format transfer."
+            ),
+        ),
+    ] = False
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

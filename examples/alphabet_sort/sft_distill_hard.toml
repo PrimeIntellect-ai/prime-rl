@@ -1,0 +1,51 @@
+max_steps = 24
+seq_len = 2048
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_train_gpus = 2
+num_infer_gpus = 0
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "alphabet-sort-sft-distill"
+name = "qwen3-4b-hard-distill"
+
+[ckpt]
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.loss]
+type = "sft"
+
+[trainer.model.lora]
+rank = 16
+alpha = 32
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 4
+use_token_client = false
+
+[orchestrator.sampling]
+max_tokens = 512
+temperature = 0.7
+
+[orchestrator.teacher_rollout_model.client]
+base_url = ["https://api.pinference.ai/api/v1"]
+api_key_var = "PRIME_API_KEY"
+
+[orchestrator.teacher_rollout_model.model]
+name = "qwen/qwen3-235b-a22b-instruct-2507"
+
+[[orchestrator.env]]
+id = "primeintellect/alphabet-sort"
+name = "alphabet-sort"
+args = { min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_turn = 3, similarity_power = 4, power_per_turn = false }

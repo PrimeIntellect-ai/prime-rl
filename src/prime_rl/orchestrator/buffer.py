@@ -261,6 +261,12 @@ class Buffer:
         """Returns the buffer metrics for the current step."""
 
         metrics = {}
+        easy_examples_per_env = defaultdict(int)
+        hard_examples_per_env = defaultdict(int)
+        for example in self.easy_examples:
+            easy_examples_per_env[example["task"]] += 1
+        for example in self.hard_examples:
+            hard_examples_per_env[example["task"]] += 1
 
         # sum over envs (e.g. log globally)
         num_examples_per_step_per_pool = {
@@ -283,6 +289,31 @@ class Buffer:
         pool_ratios = mean_normalize(pool_counts)
         for pool, pool_ratio in zip(self.POOLS, pool_ratios):
             metrics[f"pool/{pool}"] = pool_ratio
+
+        for env in self.env_names:
+            env_num_examples_per_step_per_pool = self.num_examples_per_step[env]
+            env_num_rollouts_per_step_per_pool = self.num_rollouts_per_step[env]
+            env_num_examples_per_step = sum(env_num_examples_per_step_per_pool.values())
+            env_num_rollouts_per_step = sum(env_num_rollouts_per_step_per_pool.values())
+
+            for pool in ["easy", "hard"]:
+                if env_num_examples_per_step:
+                    metrics[f"evicted_examples/{env}/{pool}"] = (
+                        env_num_examples_per_step_per_pool[pool] / env_num_examples_per_step
+                    )
+                if env_num_rollouts_per_step:
+                    metrics[f"filtered_rollouts/{env}/{pool}"] = (
+                        env_num_rollouts_per_step_per_pool[pool] / env_num_rollouts_per_step
+                    )
+
+            env_pool_counts = [
+                easy_examples_per_env[env],
+                len(self.example_buffer[env]),
+                hard_examples_per_env[env],
+            ]
+            env_pool_ratios = mean_normalize(env_pool_counts)
+            for pool, pool_ratio in zip(self.POOLS, env_pool_ratios):
+                metrics[f"pool/{env}/{pool}"] = pool_ratio
 
         self.reset_step_metrics()
 

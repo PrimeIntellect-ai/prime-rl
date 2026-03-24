@@ -311,7 +311,13 @@ async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) 
     await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
 
 
-async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port: int, timeout: int) -> None:
+async def init_nccl_broadcast(
+    admin_clients: list[AsyncClient],
+    host: str,
+    port: int,
+    timeout: int,
+    quantize_in_weight_transfer: bool = False,
+) -> None:
     """Make a HTTP post request to the vLLM server to initialize the NCCL broadcast."""
     logger = get_logger()
 
@@ -327,6 +333,7 @@ async def init_nccl_broadcast(admin_clients: list[AsyncClient], host: str, port:
                     "server_rank": client_num,
                     "num_inference_server": len(admin_clients),
                     "timeout": timeout,
+                    "quantize_in_weight_transfer": quantize_in_weight_transfer,
                 },
             )
             response.raise_for_status()

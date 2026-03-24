@@ -12,6 +12,7 @@ from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_di
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
+from torch.distributed.tensor import DTensor
 from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
@@ -22,10 +23,9 @@ from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpo
 from prime_rl.trainer.lora import has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.optim import CPUOffloadOptimizer
-from prime_rl.trainer.runs import Progress
+from prime_rl.trainer.runs import Progress, get_multi_run_manager
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
-    get_adapter_state_dict,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
@@ -304,6 +304,19 @@ class WeightCheckpointManager:
             step_path = self.get_step_path(step)
             (step_path / "STABLE").touch()
 
+    def get_run_adapter_state_dict(self) -> dict[str, Tensor]:
+        lora_state_dict = {
+            f"base_model.model.{key}": (value.full_tensor() if isinstance(value, DTensor) else value).to(
+                "cpu", non_blocking=False
+            )
+            for key, value in get_multi_run_manager().get_state_dict_for_run(0).items()
+        }
+
+        if not lora_state_dict:
+            raise ValueError("The LoRA state dict is empty. Something went wrong.")
+
+        return lora_state_dict
+
     def save_to_path(
         self,
         path: Path,
@@ -339,10 +352,12 @@ class WeightCheckpointManager:
                     gen_config.save_pretrained(path)
                 tokenizer.save_pretrained(path)
 
-            if self.config.save_adapter_separately and lora_state_dict is not None:
+            if lora_state_dict is not None:
                 adapter_path = path / "lora_adapters"
                 adapter_path.mkdir(parents=True, exist_ok=True)
-                torch.save(lora_state_dict, adapter_path / "adapter_model.bin")
+                save_state_dict(
+                    lora_state_dict, adapter_path, self.config.save_format, save_sharded=False, adapter=True
+                )
                 if self.lora_config:
                     save_lora_config(
                         model,
@@ -374,11 +389,11 @@ class WeightCheckpointManager:
             for key in getattr(model, "_tied_weights_keys", []):
                 state_dict.pop(key, None)
 
-        if has_lora_layers(model):
-            self.logger.debug("Getting LoRA state dict on master rank for weight checkpoint")
+        if has_lora_layers(model) and self.config.save_adapter_separately:
+            self.logger.debug("Getting run adapter state dict for weight checkpoint")
             start_time = time.perf_counter()
-            lora_state_dict = get_adapter_state_dict(model, self.world.is_master)
-            self.logger.debug(f"Got LoRA state dict on master rank in {time.perf_counter() - start_time:.2f} seconds")
+            lora_state_dict = self.get_run_adapter_state_dict()
+            self.logger.debug(f"Got run adapter state dict in {time.perf_counter() - start_time:.2f} seconds")
         else:
             lora_state_dict = None
 
