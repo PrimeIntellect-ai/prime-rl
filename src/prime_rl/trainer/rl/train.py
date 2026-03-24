@@ -195,7 +195,8 @@ def train(config: TrainerConfig):
         )
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         if config.ckpt.skip_scheduler:
-            scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+            remaining_steps = config.max_steps - checkpoint_step if config.max_steps is not None else config.max_steps
+            scheduler = setup_scheduler(optimizer, config.scheduler, remaining_steps, config.optim.lr)
 
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
