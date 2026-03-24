@@ -41,7 +41,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_config, resolve_is_vlm
+from prime_rl.utils.vlm import get_language_model, get_vision_encoder, resolve_is_vlm
 
 
 def _patch_qwen3_5_moe_conversion_mapping():
@@ -209,9 +209,6 @@ def get_model(
     )
     model_config.use_cache = False
 
-    # Fallback VLM detection from loaded config (catches local paths, only when not explicitly set)
-    if config.vlm is None and not is_vlm and is_vlm_config(model_config):
-        is_vlm = True
     if is_vlm:
         logger.info(f"Detected vision-language model: {config.name}")
 
