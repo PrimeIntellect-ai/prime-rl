@@ -1,3 +1,4 @@
+import math
 from argparse import Namespace
 from http import HTTPStatus
 from typing import Any
@@ -183,6 +184,17 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
     return request.app.state.openai_serving_chat_with_tokens
 
 
+def _sanitize_floats(obj: Any) -> Any:
+    """Replace NaN and Inf float values with None for JSON serialization."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
+
+
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
@@ -249,7 +261,7 @@ async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_reques
         return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
 
     elif isinstance(generator, ChatCompletionResponse):
-        return JSONResponse(content=generator.model_dump())
+        return JSONResponse(content=_sanitize_floats(generator.model_dump()))
 
     return StreamingResponse(content=generator, media_type="text/event-stream")
 
