@@ -2,7 +2,7 @@ max_steps = 500
 
 [wandb]
 project = "arc-synthetic-multistrategy"
-name = "arc-synth-4b-lora-l2"
+name = "arc-synth-4b-lora"
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
@@ -24,9 +24,9 @@ id = "arc-synthetic-multistrategy"
 name = "arc_synthetic_multistrategy"
 
 [orchestrator.env.args]
-num_examples = 360
+num_examples = 260
 sort_by_size = true
-levels = [2]
+levels = [1]
 task_types = []
 
 [ckpt]
