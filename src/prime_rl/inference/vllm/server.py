@@ -309,6 +309,7 @@ async def custom_init_app_state(
         enable_prompt_tokens_details=args.enable_prompt_tokens_details,
         enable_force_include_usage=args.enable_force_include_usage,
         enable_log_outputs=args.enable_log_outputs,
+        default_chat_template_kwargs=getattr(args, "default_chat_template_kwargs", None),
     )
     if hasattr(args, "log_error_stack"):
         chat_kwargs["log_error_stack"] = args.log_error_stack
