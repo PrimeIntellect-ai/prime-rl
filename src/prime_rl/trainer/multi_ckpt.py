@@ -180,6 +180,8 @@ class MultiCheckpointManager:
         optimizer: "MultiLoRAOptimizer",
         scheduler: "MultiLoRAScheduler",
     ) -> bool:
+        ckpt_cfg = self.multi_run_manager.config[idx].ckpt if idx in self.multi_run_manager.config else None
+        print(f"[DEBUG load_run] idx={idx}, ckpt={ckpt_cfg}, manager={self.managers[idx] is not None}")
         if (
             self.multi_run_manager.config[idx].ckpt is None
             or self.multi_run_manager.config[idx].ckpt.resume_step is None
