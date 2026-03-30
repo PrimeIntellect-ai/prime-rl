@@ -137,8 +137,15 @@ uv run orchestrator @ configs/debug/orch.toml
 5.2. Check that you can run evals against the inference server
 
 ```bash
-uv run eval @ configs/debug/eval.toml
+uv run vf-eval reverse-text \
+  -m Qwen/Qwen3-0.6B \
+  -b http://localhost:8000/v1 \
+  -n 20 \
+  --max-tokens 1024
 ```
+
+The `-m` value must match the inference server's served model name. If you override
+`--model.name` when starting inference, use that same model name here.
 
 </details>
 
