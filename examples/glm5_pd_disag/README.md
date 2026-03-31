@@ -40,7 +40,7 @@ We recommend using the tmux helper to start the run and look at the logs.
 From your Slurm head node:
 
 ```bash
-bash scripts/slurm_tmux.sh glm5-pd-disag /shared/outputs/glm5-pd-disag
+bash scripts/tmux.sh glm5-pd-disag /shared/outputs/glm5-pd-disag
 ```
 
 You can then attach to it by doing `tmux attach -t glm5-pd-disag`.
@@ -63,9 +63,9 @@ XXX:XX:XX    INFO Submitting: sbatch /shared/outputs/glm5-pd-disag/rl.sbatch [rl
 XXX:XX:XX SUCCESS Submitted batch job YYYY
 
 Logs:
-  Trainer:          tail -F /shared/outputs/glm5-pd-disag/slurm/latest_train_node_rank_0.log
-  Orchestrator:     tail -F /shared/outputs/glm5-pd-disag/slurm/latest_orchestrator.log
-  Inference:        tail -F /shared/outputs/glm5-pd-disag/slurm/latest_infer_node_rank_0.log
+  Trainer:          tail -F /shared/outputs/glm5-pd-disag/logs/trainer.log
+  Orchestrator:     tail -F /shared/outputs/glm5-pd-disag/logs/orchestrator.log
+  Inference:        tail -F /shared/outputs/glm5-pd-disag/logs/inference.log
   Envs:             tail -F /shared/outputs/glm5-pd-disag/logs/envs/*/*/*.log
    Train:           tail -F /shared/outputs/glm5-pd-disag/logs/envs/train/*/*.log
     swe:           tail -F /shared/outputs/glm5-pd-disag/logs/envs/train/swe/*.log 

@@ -1,15 +1,10 @@
 # AGENTS.md
 
-## Code Guidelines
+## Writing code
 
-- Avoid try/except blocks unless it's really necessary.  It's fine that a program fails if something goes wrong as this helps us to catch non-obvious bugs and unforeseen side-effects earlier. You can add try catch on code that explicitly aims to be fault tolerant like adding retry mechanisms or explicit and intentional robustness. 
-
-- Do not add unnecessary comments. Especially do not try to explain code change that reflect your work process, do not refer to old code. "The code used to do that but now we are doing this" is not a pattern we want. Instead prefer to use targeted comments sparingly to explain ambiguous code.
-
-
-## Zen of Python
-remember the zen of python when writing code.
-
+- **Minimal try/except**: let errors propagate — silent failures hide bugs. Only catch exceptions for intentional fault tolerance (retries, robustness).
+- **Targeted comments**: don't explain your work process or reference old code. Use targeted comments sparingly to clarify ambiguous logic.
+- **Zen of Python**: remember the Zen of Python when writing code.
 ```
 Beautiful is better than ugly.
 Explicit is better than implicit.
@@ -34,14 +29,8 @@ Namespaces are one honking great idea -- let's do more of those!
 
 ## Running code
 
-- All code should be runnable with `uv run` or `uv run <command>`.
-- All dependencies should already be installed and pin in the lock file. If not, add it to pyproject.toml and run `uv sync --all-extras` to install it.
-
-## CLI Usage
-
-- Config files use `@` syntax: `uv run sft @ path/to/config.toml`
-- For multi-GPU with torchrun: `uv run torchrun --nproc-per-node 2 src/prime_rl/trainer/sft/train.py @ path/to/config.toml`
-- See the `toml-config` skill in `skills/` for full details on TOML structure, CLI overrides, and available commands.
+- **Always use uv**: run code with `uv run` or `uv run <command>`, never raw `python`.
+- **Adding dependencies**: add to `pyproject.toml` and run `uv sync --all-extras` to install and lock them.
 
 ## Skills
 
@@ -55,18 +44,10 @@ Write tests as plain functions with pytest fixtures. Don't use class-based tests
 
 ## Git
 
-Branch prefixes: `feature/`, `fix/`, `chore/`
+- **Branch prefixes**: use the following prefixes for branches: `feat/`, `fix/`, `chore/`
 
-## Releases
+## GitHub
 
-When preparing release notes:
+- **Draft PRs**: always create PRs as drafts (`gh pr create --draft`) to avoid triggering CI unnecessarily.
+- **Pull requests**: do not include a "test plan" section in PR descriptions unless you actually ran tests to verify the changes or the user explicitly asked for one.
 
-1. **Style reference**: check the previous release (`gh release list --limit 1` then `gh release view <tag>`) to match the tone and formatting.
-2. **Gather changes**: use `git log <last-tag>..origin/main --oneline --no-merges` to list all commits since the last release.
-2. **Check for new commits**: always `git fetch origin main` and re-check right before publishing, since PRs may have been merged while drafting.
-3. **Structure**: organize notes into numbered highlight sections (`# 1.`, `# 2.`, ...), then `# Breaking Changes`, `# Bug Fixes`, and `# Misc`.
-4. **Highlights**: group related PRs under a single highlight. Use `##` subsections when a highlight contains multiple items (e.g. Performance & Parallelism). Keep the top highlights for the most impactful user-facing features.
-5. **Config examples**: when referencing TOML config, verify the exact field names against the actual code or docs — don't guess.
-6. **Links**: use clickable links for docs (`[docs/foo.md](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/foo.md)`) and PR references (`[#1234](https://github.com/PrimeIntellect-ai/prime-rl/pull/1234)`).
-7. **Contributors**: list all contributors ranked by number of commits, using their GitHub `@username`. Get usernames via the GitHub API, not git author names (which can be inconsistent).
-8. **Draft first**: always create releases as `--draft` first, iterate on content, then publish.

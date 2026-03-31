@@ -102,7 +102,7 @@ def start_inference_and_trainer(
     inference_procs: list[subprocess.Popen] = []
     inference_logs: list[Path] = []
     for i, port in enumerate(INFERENCE_PORTS):
-        inference_log = log_dir / f"inference_{i}.stdout"
+        inference_log = log_dir / f"inference_{i}.log"
         inference_logs.append(inference_log)
         with open(inference_log, "w") as f:
             inference_proc = subprocess.Popen(
@@ -122,7 +122,7 @@ def start_inference_and_trainer(
             inference_procs.append(inference_proc)
 
     # Start trainer with 2 GPUs
-    trainer_log = log_dir / "trainer.stdout"
+    trainer_log = log_dir / "trainer.log"
     with open(trainer_log, "w") as f:
         trainer_proc = subprocess.Popen(
             [
@@ -215,7 +215,7 @@ def start_orchestrator(
     cmd.append("--client.base-url")
     cmd.extend(INFERENCE_BASE_URLS)
 
-    with open(orch_log_dir / "orchestrator.stdout", "w") as f:
+    with open(orch_log_dir / "orchestrator.log", "w") as f:
         proc = subprocess.Popen(
             cmd,
             stdout=f,
@@ -255,7 +255,7 @@ def multi_run_result(
     # Kill alpha orchestrator once it is past step 10
     # ------------------------------------------------
     # There is a checkpoint at step 10, so we need to wait for step 11
-    killed_log = output_dir / "run_alpha" / "logs" / "orchestrator.stdout"
+    killed_log = output_dir / "run_alpha" / "logs" / "orchestrator.log"
     wait_for_log(
         killed_log,
         conditions=["Step 11", "Step 12", "Step 13"],
@@ -268,7 +268,7 @@ def multi_run_result(
     wait_for_file(alpha_ckpt_dir / "STABLE", timeout=TIMEOUT)
 
     # Stash alpha checkpoint and logs
-    shutil.copy(output_dir / "run_alpha" / "logs" / "orchestrator.stdout", log_dir / "alpha_orchestrator.stdout")
+    shutil.copy(output_dir / "run_alpha" / "logs" / "orchestrator.log", log_dir / "alpha_orchestrator.log")
     shutil.copytree(alpha_ckpt_dir, tmp_path / "alpha_ckpt_step_10")
     print(f"Copied alpha checkpoint to {tmp_path / 'alpha_ckpt_step_10'}")
 
@@ -292,7 +292,7 @@ def multi_run_result(
     # Clear beta run directory once it saves the final checkpoint
     # ------------------------------------------------------------
     wait_for_log(
-        output_dir / "run_beta" / "logs" / "orchestrator.stdout",
+        output_dir / "run_beta" / "logs" / "orchestrator.log",
         conditions=["Orchestrator finished."],
         proc=orch_procs["beta"],
         poll_interval=1,
@@ -301,7 +301,7 @@ def multi_run_result(
     run_dir = output_dir / "run_beta"
     beta_ckpt_dir = run_dir / "checkpoints" / "step_20"
     wait_for_file(beta_ckpt_dir / "STABLE", timeout=TIMEOUT)
-    shutil.copy(run_dir / "logs" / "orchestrator.stdout", log_dir / "beta_orchestrator.stdout")
+    shutil.copy(run_dir / "logs" / "orchestrator.log", log_dir / "beta_orchestrator.log")
     shutil.copytree(beta_ckpt_dir, tmp_path / "beta_ckpt_step_20")
     print(f"Copied {beta_ckpt_dir} to {tmp_path / 'beta_ckpt_step_20'}")
     shutil.rmtree(run_dir)
@@ -322,12 +322,12 @@ def multi_run_result(
     # Clear gamma run directory once it finishes
     # -------------------------------------------
     wait_for_log(
-        output_dir / "run_gamma" / "logs" / "orchestrator.stdout",
+        output_dir / "run_gamma" / "logs" / "orchestrator.log",
         conditions=["Orchestrator finished."],
         proc=orch_procs["gamma"],
         timeout=TIMEOUT,
     )
-    shutil.copy(output_dir / "run_gamma" / "logs" / "orchestrator.stdout", log_dir / "gamma_orchestrator.stdout")
+    shutil.copy(output_dir / "run_gamma" / "logs" / "orchestrator.log", log_dir / "gamma_orchestrator.log")
     shutil.rmtree(output_dir / "run_gamma")
 
     # ================================================
@@ -340,9 +340,9 @@ def multi_run_result(
             orch_procs[name].terminate()
 
     for name in ["alpha_resume", "beta_resume"]:
-        src_log = output_dir / f"run_{name}" / "logs" / "orchestrator.stdout"
+        src_log = output_dir / f"run_{name}" / "logs" / "orchestrator.log"
         if src_log.exists():
-            shutil.copy(src_log, log_dir / f"{name}_orchestrator.stdout")
+            shutil.copy(src_log, log_dir / f"{name}_orchestrator.log")
 
     # ===============
     # Build results
@@ -374,7 +374,7 @@ def test_remaining_orchestrators_complete(
         if name == "alpha":  # We sigtermed alpha
             continue
         if result.returncode != 0:
-            log_file = log_dir / f"{name}_orchestrator.stdout"
+            log_file = log_dir / f"{name}_orchestrator.log"
             if log_file.exists():
                 print(f"=== {name} Orchestrator Outputs ===")
                 print(log_file.read_text()[-5000:])
@@ -390,7 +390,7 @@ def test_reward_goes_up(multi_run_result: dict[str, ProcessResult], output_dir: 
         # The resumes are close to saturation so might not go up
         if "resume" in name:
             continue
-        log_file = log_dir / f"{name}_orchestrator.stdout"
+        log_file = log_dir / f"{name}_orchestrator.log"
         with open(log_file, "r") as f:
             lines = strip_escape_codes(f.read()).splitlines()
         check_reward_goes_up(lines)
@@ -402,7 +402,7 @@ def test_reward_in_range(multi_run_result: dict[str, ProcessResult], output_dir:
 
     print("Test reward in range", multi_run_result.keys())
     for name in multi_run_result.keys():
-        log_file = log_dir / f"{name}_orchestrator.stdout"
+        log_file = log_dir / f"{name}_orchestrator.log"
         with open(log_file, "r") as f:
             lines = strip_escape_codes(f.read()).splitlines()
         if name in ["beta", "gamma"]:

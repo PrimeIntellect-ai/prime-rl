@@ -29,7 +29,8 @@ export GPUS_PER_NODE={{ gpus_per_node }}
 export PROJECT_DIR={{ project_dir }}
 export CONFIG_PATH={{ config_path }}
 export OUTPUT_DIR={{ output_dir }}
-mkdir -p $OUTPUT_DIR/slurm
+mkdir -p $OUTPUT_DIR/logs/trainer
+ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 
 # General
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -79,18 +80,18 @@ srun bash -c '
     # This is required for compilation to work correctly
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
-    echo $HOSTNAMES | tee $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log
+    echo $HOSTNAMES | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
     uv run torchrun \
         --nnodes=$NUM_NODES \
         --nproc-per-node=$GPUS_PER_NODE \
         --node-rank=$TRAIN_NODE_RANK \
         --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
         --rdzv-id=job_$SLURM_JOB_ID \
-        --log-dir=$OUTPUT_DIR/torchrun \
+        --log-dir=$OUTPUT_DIR/logs/trainer/torchrun \
         --tee=3 \
         --redirects=3 \
-        --local-ranks-filter=$(seq -s, 0 $((GPUS_PER_NODE - 1))) \
+        --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.sft.train \
         @ $CONFIG_PATH \
-        2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${TRAIN_NODE_RANK}.log
+        2>&1 | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 '

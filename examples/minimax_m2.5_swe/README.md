@@ -40,7 +40,7 @@ We recommend using the tmux helper to start the run and look at the logs.
 From your Slurm head node:
 
 ```bash
-bash scripts/slurm_tmux.sh minimax-swe /shared/outputs/minimax-swe
+bash scripts/tmux.sh minimax-swe /shared/outputs/minimax-swe
 ```
 
 You can then attach to it by doing `tmux attach -t minimax-swe`.
@@ -63,9 +63,9 @@ XXX:XX:XX    INFO Submitting: sbatch /shared/outputs/minimax-swe/rl.sbatch [rl.p
 XXX:XX:XX SUCCESS Submitted batch job YYYY
 
 Logs:
-  Trainer:          tail -F /shared/outputs/minimax-swe/slurm/latest_train_node_rank_0.log
-  Orchestrator:     tail -F /shared/outputs/minimax-swe/slurm/latest_orchestrator.log
-  Inference:        tail -F /shared/outputs/minimax-swe/slurm/latest_infer_node_rank_0.log
+  Trainer:          tail -F /shared/outputs/minimax-swe/logs/trainer.log
+  Orchestrator:     tail -F /shared/outputs/minimax-swe/logs/orchestrator.log
+  Inference:        tail -F /shared/outputs/minimax-swe/logs/inference.log
   Envs:             tail -F /shared/outputs/minimax-swe/logs/envs/*/*/*.log
    Train:           tail -F /shared/outputs/minimax-swe/logs/envs/train/*/*.log
     swe:           tail -F /shared/outputs/minimax-swe/logs/envs/train/swe/*.log 

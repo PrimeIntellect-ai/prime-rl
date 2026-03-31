@@ -14,7 +14,7 @@ from wandb.errors import CommError
 from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.monitor.base import Monitor
+from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
 
 
 class WandbMonitor(Monitor):
@@ -137,11 +137,18 @@ class WandbMonitor(Monitor):
             # Do not log samples if not enabled or not log interval step
             return
 
+        rollouts = sample_items_for_logging(
+            rollouts,
+            self.config.log_extras.sample_ratio,
+        )
+        if not rollouts:
+            return
+
         assert self.tokenizer is not None, "Tokenizer is required for sample logging"
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
         assert self.logger is not None, "Logger is required for sample logging"
 
-        self.logger.info(f"Logging samples to W&B table at step {step}")
+        self.logger.info(f"Logging {len(rollouts)} samples to W&B table at step {step}")
         start_time = time.perf_counter()
 
         for rollout in rollouts:

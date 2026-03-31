@@ -10,6 +10,53 @@ def get_log_dir(output_dir: Path) -> Path:
     return output_dir / "logs"
 
 
+def format_log_message(
+    log_dir: Path,
+    trainer: bool = False,
+    orchestrator: bool = False,
+    inference: bool = False,
+    job_log: bool = False,
+    train_env_names: list[str] | None = None,
+    eval_env_names: list[str] | None = None,
+    num_train_nodes: int = 1,
+    num_infer_nodes: int = 0,
+) -> str:
+    """Format a log message showing where to find all log files."""
+    col = 18
+    i1 = " " * 2
+    i2 = " " * 3
+    i3 = " " * 4
+    max_name = col - 4
+
+    log_lines: list[str] = []
+    if job_log:
+        log_lines.append(f"{i1}{'Job:':<{col}}tail -F {log_dir.parent}/job_*.log")
+    if trainer:
+        log_lines.append(f"{i1}{'Trainer:':<{col}}tail -F {log_dir}/trainer.log")
+        if num_train_nodes > 1:
+            log_lines.append(f"{i2}{'All nodes:':<{col - 1}}tail -F {log_dir}/trainer/node_*.log")
+        log_lines.append(f"{i2}{'All ranks:':<{col - 1}}tail -F {log_dir}/trainer/torchrun/*/*/*/*.log")
+    if orchestrator:
+        log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {log_dir}/orchestrator.log")
+    if inference:
+        log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
+        if num_infer_nodes > 1:
+            log_lines.append(f"{i2}{'All nodes:':<{col - 1}}tail -F {log_dir}/inference/node_*.log")
+    if train_env_names:
+        env_log_dir = log_dir / "envs"
+        log_lines.append(f"{i1}{'Envs:':<{col}}tail -F {env_log_dir}/*/*/*.log")
+        log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*/*.log")
+        for name in train_env_names:
+            short = name if len(name) <= max_name else name[: max_name - 3] + "..."
+            log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/train/{name}/*.log")
+        if eval_env_names:
+            log_lines.append(f"{i2}{'Eval:':<{col - 1}}tail -F {env_log_dir}/eval/*/*.log")
+            for name in eval_env_names:
+                short = name if len(name) <= max_name else name[: max_name - 3] + "..."
+                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/eval/{name}/*.log")
+    return "Logs:\n" + "\n".join(log_lines)
+
+
 def get_config_dir(output_dir: Path) -> Path:
     return output_dir / "configs"
 

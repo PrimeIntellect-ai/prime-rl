@@ -2,7 +2,6 @@ import asyncio
 import atexit
 import gc
 import multiprocessing as mp
-import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -83,7 +82,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Initialize the logger
     logger = setup_logger(
         config.log.level,
-        log_file=config.output_dir / "logs" / "orchestrator.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
     intercept_vf_logging(logger="verifiers.serve", level=config.log.vf_level)  # show logs from env clients
@@ -823,9 +821,8 @@ async def orchestrate(config: OrchestratorConfig):
         # Log metrics to monitor(s)
         monitor.log(to_log, step=progress.step)
 
-        # Log samples to monitor(s) if enabled
-        subset_train_rollouts = random.sample(train_rollouts, min(8, len(train_rollouts)))
-        monitor.log_samples(subset_train_rollouts, step=progress.step)
+        # Log samples to monitor(s) if enabled.
+        monitor.log_samples(train_rollouts, step=progress.step)
 
         # Log distributions (rewards, advantages) if enabled
         monitor.log_distributions(

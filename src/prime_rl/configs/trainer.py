@@ -7,8 +7,8 @@ from prime_rl.configs.shared import (
     BaseModelConfig,
     FileSystemTransportConfig,
     HeartbeatConfig,
-    LogConfig,
     MetricsServerConfig,
+    TrainerLogConfig,
     TransportConfig,
     WandbConfig,
 )
@@ -23,6 +23,22 @@ AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_atte
 # We use `fa4` internally because `flash_attention_*` triggers transformers
 # to attempt installing a kernel from hub.
 _ATTN_ALIASES = {"flash_attention_4": "fa4"}
+
+
+class GCConfig(BaseConfig):
+    """Configures deterministic garbage collection to avoid stragglers in distributed training.
+
+    Disables Python's automatic GC and runs manual collections every `freq` steps so all
+    ranks collect simultaneously, preventing one rank from stalling others.
+    """
+
+    interval: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Run garbage collection every `interval` training steps.",
+        ),
+    ] = 50
 
 
 class ActivationCheckpointConfig(BaseConfig):
@@ -676,7 +692,7 @@ class TrainerConfig(BaseConfig):
     rollout_transport: TransportConfig = FileSystemTransportConfig()
 
     # The logging configuration
-    log: LogConfig = LogConfig()
+    log: TrainerLogConfig = TrainerLogConfig()
 
     # The wandb configuration
     wandb: WandbConfig | None = None
@@ -718,6 +734,13 @@ class TrainerConfig(BaseConfig):
             description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 4 and use fake data.",
         ),
     ] = None
+
+    gc: Annotated[
+        GCConfig | None,
+        Field(
+            description="Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior.",
+        ),
+    ] = GCConfig()
 
     trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
 

@@ -55,8 +55,6 @@ class SharedLogConfig(BaseConfig):
 
     level: Annotated[str | None, Field(description="The log level to use.")] = "info"
 
-    file: Annotated[bool | None, Field(description="Whether to log to a file.")] = True
-
     json_logging: Annotated[
         bool,
         Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
@@ -445,9 +443,6 @@ class RLConfig(BaseConfig):
             if self.log.level is not None:
                 self.trainer.log.level = self.log.level
                 self.orchestrator.log.level = self.log.level
-            if self.log.file is not None:
-                self.trainer.log.file = self.log.file
-                self.orchestrator.log.file = self.log.file
             self.trainer.log.json_logging = self.log.json_logging
             self.orchestrator.log.json_logging = self.log.json_logging
 

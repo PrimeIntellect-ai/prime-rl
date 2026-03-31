@@ -11,7 +11,7 @@ import tomli_w
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import get_config_dir, get_log_dir, validate_output_dir
+from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process
 from prime_rl.utils.utils import get_free_port
 
@@ -51,6 +51,7 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) 
             output_dir=config.output_dir,
             num_nodes=config.deployment.num_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
+            ranks_filter=",".join(map(str, config.log.ranks_filter)),
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,10 +78,9 @@ def sft_slurm(config: SFTConfig):
     write_slurm_script(config, config_path, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    if config.deployment.type == "single_node":
-        log_message = f"Logs:\n  Trainer:  tail -F {get_log_dir(config.output_dir)}/trainer/rank_0.log"
-    else:
-        log_message = f"Logs:\n  Trainer:  tail -F {config.output_dir}/slurm/latest_train_node_rank_*.log"
+    log_dir = get_log_dir(config.output_dir)
+    num_nodes = config.deployment.num_nodes if config.deployment.type == "multi_node" else 1
+    log_message = format_log_message(log_dir=log_dir, trainer=True, num_train_nodes=num_nodes)
 
     if config.dry_run:
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
@@ -122,8 +122,8 @@ def sft_local(config: SFTConfig):
         "torchrun",
         f"--rdzv-endpoint=localhost:{get_free_port()}",
         f"--rdzv-id={uuid.uuid4().hex}",
-        f"--log-dir={config.output_dir / 'torchrun'}",
-        "--local-ranks-filter=0",
+        f"--log-dir={config.output_dir / 'logs' / 'trainer' / 'torchrun'}",
+        f"--local-ranks-filter={','.join(map(str, config.log.ranks_filter))}",
         "--redirect=3",
         "--tee=3",
         f"--nproc-per-node={config.deployment.num_gpus}",
@@ -141,7 +141,7 @@ def sft_local(config: SFTConfig):
     error_queue: list[Exception] = []
 
     try:
-        with open(log_dir / "trainer.stdout", "w") as log_file:
+        with open(log_dir / "trainer.log", "w") as log_file:
             trainer_process = Popen(
                 trainer_cmd,
                 env={
@@ -163,7 +163,7 @@ def sft_local(config: SFTConfig):
         monitor_threads.append(monitor_thread)
 
         logger.success("Startup complete. Showing trainer logs...")
-        tail_process = Popen(["tail", "-F", str(log_dir / "trainer.stdout")])
+        tail_process = Popen(["tail", "-F", str(log_dir / "trainer.log")])
         processes.append(tail_process)
 
         stop_event.wait()

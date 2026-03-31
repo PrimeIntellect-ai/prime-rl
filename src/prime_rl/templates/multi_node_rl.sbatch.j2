@@ -35,6 +35,10 @@ export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
 {% if is_disaggregated -%}
 export NUM_PREFILL_NODES={{ num_prefill_nodes }}
 export NUM_DECODE_NODES={{ num_decode_nodes }}
+export NUM_PREFILL_REPLICAS={{ num_prefill_replicas }}
+export NUM_DECODE_REPLICAS={{ num_decode_replicas }}
+export NODES_PER_PREFILL_REPLICA=$((NUM_PREFILL_NODES / NUM_PREFILL_REPLICAS))
+export NODES_PER_DECODE_REPLICA=$((NUM_DECODE_NODES / NUM_DECODE_REPLICAS))
 export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
 {%- else -%}
@@ -54,7 +58,9 @@ export PROJECT_DIR={{ project_dir }}
 export CONFIG_DIR={{ config_dir }}
 export OUTPUT_DIR={{ output_dir }}
 export ORCHESTRATOR_OUTPUT_DIR={{ orchestrator_output_dir }}
-mkdir -p $OUTPUT_DIR/slurm
+mkdir -p $OUTPUT_DIR/logs/trainer $OUTPUT_DIR/logs/inference
+ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
+ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 
 # Clear previous rollouts and broadcast flags from ALL runs (not just the current one)
 # to prevent the trainer from training on stale data from old run_* directories.
@@ -180,8 +186,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_INFER_REPLICA))
 
     echo "INFER_NODE_RANK=$INFER_NODE_RANK REPLICA=$REPLICA_IDX RANK_IN_REPLICA=$RANK_IN_REPLICA LOCAL_IP=$LOCAL_IP" \
-        | tee $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
-              $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+        | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
 {% if is_disaggregated -%}
     # PD disaggregated: NIXL KV transfer + role-based inference
@@ -201,28 +206,38 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
     DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
 
+    REPLICA_BASE=$((REPLICA_IDX * NODES_PER_INFER_REPLICA))
+
     if [ "$RANK_IN_REPLICA" -lt "$NUM_PREFILL_NODES" ]; then
         ROLE="prefill"
-        ROLE_RANK=$RANK_IN_REPLICA
-        DP=$((NUM_PREFILL_NODES * INFERENCE_DP_LOCAL))
+        SUB_REPLICA=$((RANK_IN_REPLICA / NODES_PER_PREFILL_REPLICA))
+        ROLE_RANK=$((RANK_IN_REPLICA % NODES_PER_PREFILL_REPLICA))
+        DP=$((NODES_PER_PREFILL_REPLICA * INFERENCE_DP_LOCAL))
         PORT=$PREFILL_PORT
         START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
-        HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA))]}"
+        HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
+{% for key, value in prefill_env_overrides.items() %}
+        export {{ key }}="{{ value }}"
+{% endfor %}
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
     else
         export UCX_NET_DEVICES=mlx5_0:1
         ROLE="decode"
-        ROLE_RANK=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
-        DP=$((NUM_DECODE_NODES * INFERENCE_DP_LOCAL))
+        RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
+        SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
+        ROLE_RANK=$((RANK_IN_DECODE % NODES_PER_DECODE_REPLICA))
+        DP=$((NODES_PER_DECODE_REPLICA * INFERENCE_DP_LOCAL))
         PORT=$DECODE_PORT
         START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
-        HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA + NUM_PREFILL_NODES))]}"
+        HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + NUM_PREFILL_NODES + SUB_REPLICA * NODES_PER_DECODE_REPLICA))]}"
+{% for key, value in decode_env_overrides.items() %}
+        export {{ key }}="{{ value }}"
+{% endfor %}
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
     fi
 
-    echo "ROLE=$ROLE REPLICA=$REPLICA_IDX ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
-        | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
-                 $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+    echo "ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
+        | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
     if [ "$DP" -gt 1 ]; then
         if [ "$ROLE_RANK" -eq 0 ]; then
@@ -236,7 +251,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
     # Start vllm-router on the first node of each replica (PD mode)
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        ROUTER_LOG="$OUTPUT_DIR/slurm/latest_router_replica_${REPLICA_IDX}.log"
+        ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
         echo "Starting vllm-router (PD) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
 
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
@@ -259,12 +274,11 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         --parallel.dp $DP \
         --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
         --vllm-extra "$VLLM_EXTRA" \
-        2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
-                      $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 {%- else -%}
     # Start vllm-router on the first node of each replica
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        ROUTER_LOG="$OUTPUT_DIR/slurm/latest_router_replica_${REPLICA_IDX}.log"
+        ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
         echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
 
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
@@ -295,15 +309,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --server.port $BACKEND_PORT \
             --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
             --vllm-extra "$VLLM_EXTRA" \
-            2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
-                          $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+            2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
     else
         uv run inference \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
-            2>&1 | tee -a $OUTPUT_DIR/slurm/latest_infer_node_rank_${INFER_NODE_RANK}.log \
-                          $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_infer_node_rank_${INFER_NODE_RANK}.log
+            2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
     fi
 {%- endif %}
 
@@ -316,7 +328,7 @@ else
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.admin-base-url $ADMIN_URLS"
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% endif %}{% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
-            2>&1 | tee $OUTPUT_DIR/slurm/latest_orchestrator.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_orchestrator.log &
+            2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
     fi
 {%- else %}
     TRAIN_NODE_RANK=$SLURM_PROCID
@@ -327,7 +339,7 @@ else
     # This is required for compilation to work correctly
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
-    echo $HOSTNAMES_STR | tee $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log
+    echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
     {% if wandb_shared %}WANDB_SHARED_LABEL=trainer {% endif %}uv run torchrun \
         --nnodes=$NUM_TRAIN_NODES \
@@ -335,12 +347,12 @@ else
         --node-rank=$TRAIN_NODE_RANK \
         --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
         --rdzv-id=job_$SLURM_JOB_ID \
-        --log-dir=$OUTPUT_DIR/torchrun \
+        --log-dir=$OUTPUT_DIR/logs/trainer/torchrun \
         --tee=3 \
         --redirects=3 \
-        --local-ranks-filter=$(seq -s, 0 $((GPUS_PER_NODE - 1))) \
+        --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.toml \
-        2>&1 | tee -a $OUTPUT_DIR/slurm/latest_train_node_rank_${TRAIN_NODE_RANK}.log $OUTPUT_DIR/slurm/job_${SLURM_JOB_ID}_train_node_rank_${TRAIN_NODE_RANK}.log
+        2>&1 | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 '

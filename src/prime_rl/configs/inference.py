@@ -147,20 +147,63 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     Each inference replica is split into separate prefill and decode node groups.
     Requires NIXL for KV transfer and a vllm-router for request routing.
+
+    Multi-replica support: set ``num_prefill_replicas`` / ``num_decode_replicas``
+    to run multiple independent vLLM instances within the prefill / decode node
+    groups.  For example, ``num_prefill_nodes=4, num_prefill_replicas=2`` creates
+    two prefill vLLM instances each spanning 2 nodes (EP16 with 8 GPUs/node).
     """
 
     type: Literal["disaggregated"] = "disaggregated"
 
-    num_prefill_nodes: Annotated[int, Field(ge=1, description="Number of prefill nodes per replica.")] = 1
-    num_decode_nodes: Annotated[int, Field(ge=1, description="Number of decode nodes per replica.")] = 1
+    num_prefill_nodes: Annotated[int, Field(ge=1, description="Total number of prefill nodes.")] = 1
+    num_decode_nodes: Annotated[int, Field(ge=1, description="Total number of decode nodes.")] = 1
+
+    num_prefill_replicas: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of independent prefill vLLM instances. Must evenly divide num_prefill_nodes.",
+        ),
+    ] = 1
+    num_decode_replicas: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of independent decode vLLM instances. Must evenly divide num_decode_nodes.",
+        ),
+    ] = 1
 
     router_port: Annotated[int, Field(description="Port for the vllm-router on each replica.")] = 8000
     prefill_port: Annotated[int, Field(description="Port for prefill vLLM instances.")] = 8100
     decode_port: Annotated[int, Field(description="Port for decode vLLM instances.")] = 8200
 
+    prefill_env_overrides: Annotated[
+        dict[str, str],
+        Field(description="Extra environment variables exported only on prefill nodes."),
+    ] = {}
+    decode_env_overrides: Annotated[
+        dict[str, str],
+        Field(description="Extra environment variables exported only on decode nodes."),
+    ] = {}
+
     @property
     def num_nodes(self) -> int:
         return self.num_prefill_nodes + self.num_decode_nodes
+
+    @model_validator(mode="after")
+    def validate_replicas_divide_nodes(self):
+        if self.num_prefill_nodes % self.num_prefill_replicas != 0:
+            raise ValueError(
+                f"num_prefill_replicas ({self.num_prefill_replicas}) must evenly divide "
+                f"num_prefill_nodes ({self.num_prefill_nodes})"
+            )
+        if self.num_decode_nodes % self.num_decode_replicas != 0:
+            raise ValueError(
+                f"num_decode_replicas ({self.num_decode_replicas}) must evenly divide "
+                f"num_decode_nodes ({self.num_decode_nodes})"
+            )
+        return self
 
 
 InferenceDeploymentConfig: TypeAlias = Annotated[

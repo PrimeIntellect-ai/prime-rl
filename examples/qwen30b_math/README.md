@@ -32,7 +32,7 @@ We recommend using the tmux helper to start the run and look at the logs.
 From your Slurm head node:
 
 ```bash
-bash scripts/slurm_tmux.sh qwen30b-math /shared/outputs/qwen30b-math
+bash scripts/tmux.sh qwen30b-math /shared/outputs/qwen30b-math
 ```
 
 You can then attach to it by doing `tmux attach -t qwen30b-math`.
@@ -55,9 +55,9 @@ XXX:XX:XX    INFO Submitting: sbatch /shared/outputs/qwen30b-math/rl.sbatch [rl.
 XXX:XX:XX SUCCESS Submitted batch job YYYY
 
 Logs:
-  Trainer:          tail -F /shared/outputs/qwen30b-math/slurm/latest_train_node_rank_0.log
-  Orchestrator:     tail -F /shared/outputs/qwen30b-math/slurm/latest_orchestrator.log
-  Inference:        tail -F /shared/outputs/qwen30b-math/slurm/latest_infer_node_rank_0.log
+  Trainer:          tail -F /shared/outputs/qwen30b-math/logs/trainer.log
+  Orchestrator:     tail -F /shared/outputs/qwen30b-math/logs/orchestrator.log
+  Inference:        tail -F /shared/outputs/qwen30b-math/logs/inference.log
   Envs:             tail -F /shared/outputs/qwen30b-math/logs/envs/*/*/*.log
    Train:           tail -F /shared/outputs/qwen30b-math/logs/envs/train/*/*.log
     math:           tail -F /shared/outputs/qwen30b-math/logs/envs/train/math/*.log 

@@ -7,7 +7,6 @@ configs/endpoints.py
 **/slurm
 !src/prime_rl/slurm
 !examples/slurm
-!scripts/slurm_tmux.sh
 !docs/slurm.md
 **/torchrun
 **/weights

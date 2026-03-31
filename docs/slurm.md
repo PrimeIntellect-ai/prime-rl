@@ -278,20 +278,21 @@ See [`src/prime_rl/templates/`](../src/prime_rl/templates/) for the default temp
 After submission, logs are available at:
 
 ```bash
-# Single-node
-tail -F {output_dir}/logs/trainer/rank_0.log
+# All deployment types (trainer.log and inference.log are symlinks for multi-node)
+tail -F {output_dir}/logs/trainer.log
+tail -F {output_dir}/logs/orchestrator.log
+tail -F {output_dir}/logs/inference.log
 
-# Multi-node RL
-tail -F {output_dir}/slurm/latest_train_node_rank_0.log
-tail -F {output_dir}/slurm/latest_infer_node_rank_0.log
-tail -F {output_dir}/slurm/latest_orchestrator.log
+# Multi-node: per-node logs
+tail -F {output_dir}/logs/trainer/node_*.log
+tail -F {output_dir}/logs/inference/node_*.log
 
-# Inference (single or multi-node)
-tail -F {output_dir}/slurm/latest_infer_node_rank_0.log
+# Multi-node inference: per-replica router logs
+tail -F {output_dir}/logs/inference/router_*.log
 ```
 
 For convenience, a tmux launcher sets up a session with all log streams:
 
 ```bash
-bash scripts/slurm_tmux.sh my-rl-job /shared/outputs/my-rl-job
+bash scripts/tmux.sh my-rl-job /shared/outputs/my-rl-job
 ```

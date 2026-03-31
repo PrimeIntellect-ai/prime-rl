@@ -44,7 +44,7 @@ We recommend using the tmux helper to start the run and look at the logs.
 From your Slurm head node:
 
 ```bash
-bash scripts/slurm_tmux.sh intellect-3.1 /shared/outputs/intellect-3.1
+bash scripts/tmux.sh intellect-3.1 /shared/outputs/intellect-3.1
 ```
 
 You can then attach to it by doing `tmux attach -t intellect-3.1`.
@@ -67,9 +67,9 @@ XXX:XX:XX    INFO Submitting: sbatch /shared/outputs/intellect-3.1/rl.sbatch [rl
 XXX:XX:XX SUCCESS Submitted batch job YYYY
 
 Logs:
-  Trainer:          tail -F /shared/outputs/intellect-3.1/slurm/latest_train_node_rank_0.log
-  Orchestrator:     tail -F /shared/outputs/intellect-3.1/slurm/latest_orchestrator.log
-  Inference:        tail -F /shared/outputs/intellect-3.1/slurm/latest_infer_node_rank_0.log
+  Trainer:          tail -F /shared/outputs/intellect-3.1/logs/trainer.log
+  Orchestrator:     tail -F /shared/outputs/intellect-3.1/logs/orchestrator.log
+  Inference:        tail -F /shared/outputs/intellect-3.1/logs/inference.log
   Envs:             tail -F /shared/outputs/intellect-3.1/logs/envs/*/*/*.log
    Train:           tail -F /shared/outputs/intellect-3.1/logs/envs/train/*/*.log
     swe:           tail -F /shared/outputs/intellect-3.1/logs/envs/train/swe/*.log 

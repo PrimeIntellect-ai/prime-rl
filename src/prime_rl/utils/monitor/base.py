@@ -1,7 +1,30 @@
+import random
 from abc import ABC, abstractmethod
 from typing import Any
 
 import verifiers as vf
+
+
+def sample_items_for_logging(items: list[Any], sample_ratio: float | None) -> list[Any]:
+    """Apply monitor sample_ratio semantics to a batch of items.
+
+    - ``None`` keeps the full batch.
+    - ``<= 0`` logs nothing.
+    - ``0 < ratio < 1`` logs a random subset with a minimum of 1 item.
+    - ``>= 1`` keeps the full batch.
+    """
+    if sample_ratio is None:
+        return items
+    if sample_ratio <= 0.0:
+        return []
+    if sample_ratio >= 1.0 or len(items) <= 1:
+        return items
+
+    max_samples = max(1, int(len(items) * sample_ratio))
+    if len(items) <= max_samples:
+        return items
+
+    return random.sample(items, max_samples)
 
 
 class Monitor(ABC):

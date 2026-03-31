@@ -1,3 +1,4 @@
+import gc
 import json
 import pickle
 import shutil
@@ -25,6 +26,33 @@ from prime_rl.utils.pathing import get_ckpt_dir
 from prime_rl.utils.utils import format_num, format_time, get_step_path
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
+
+
+class GarbageCollection:
+    """Controls Python garbage collection to avoid stragglers in distributed training.
+
+    In multi-GPU training, Python's automatic GC can trigger unpredictably on one rank
+    while others wait at a synchronization point, stalling the entire step. This class
+    disables automatic GC and runs deterministic collections every `interval` steps so
+    all ranks collect simultaneously.
+
+    Based on the approach from torchtitan (https://arxiv.org/abs/2505.05713).
+    """
+
+    def __init__(self, interval: int = 50):
+        assert interval > 0, "gc interval must be a positive integer"
+        self.interval = interval
+        gc.disable()
+        self._collect()
+
+    def run(self, step: int):
+        if step > 0 and step % self.interval == 0:
+            self._collect()
+
+    def _collect(self, generation: int = 1):
+        begin = time.monotonic()
+        gc.collect(generation)
+        get_logger().info(f"[GC] collection took {time.monotonic() - begin:.2f}s")
 
 
 def _to_local_tensor(tensor: Tensor | DTensor) -> Tensor:

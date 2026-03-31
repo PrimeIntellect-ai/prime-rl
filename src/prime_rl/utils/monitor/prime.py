@@ -2,7 +2,6 @@ import asyncio
 import io
 import json
 import os
-import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +19,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.monitor.base import Monitor
+from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
 
 
 def _json(val: Any) -> str:
@@ -257,14 +256,12 @@ class PrimeMonitor(Monitor):
         ):
             return
 
-        ratio = self.config.log_extras.sample_ratio
-        if ratio is not None:
-            if ratio <= 0.0:
-                return
-            if ratio < 1.0:
-                max_samples = max(1, int(len(rollouts) * ratio))
-                if len(rollouts) > max_samples:
-                    rollouts = random.sample(rollouts, max_samples)
+        rollouts = sample_items_for_logging(
+            rollouts,
+            self.config.log_extras.sample_ratio,
+        )
+        if not rollouts:
+            return
 
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
         assert step not in self._pending_sample_steps, f"Step {step} upload already in progress"
@@ -293,12 +290,18 @@ class PrimeMonitor(Monitor):
         now = datetime.now(timezone.utc)
         rows = []
 
-        for rollout in rollouts:
+        for sample_id, rollout in enumerate(rollouts):
             prompt = rollout.get("prompt")
             completion = rollout.get("completion")
             trajectory = rollout.get("trajectory") or []
             if prompt is None or completion is None or not trajectory:
                 continue
+
+            example_id = rollout.get("example_id")
+            try:
+                problem_id = int(example_id) if example_id is not None else sample_id
+            except (TypeError, ValueError):
+                problem_id = sample_id
 
             trajectory_data = [
                 {
@@ -318,8 +321,8 @@ class PrimeMonitor(Monitor):
                     "run_id": self.run_id,
                     "step": step,
                     "tag": "",
-                    "problem_id": 0,
-                    "sample_id": 0,
+                    "problem_id": problem_id,
+                    "sample_id": sample_id,
                     "prompt": json.dumps(prompt),
                     "completion": json.dumps(completion),
                     "trajectory": json.dumps(trajectory_data),

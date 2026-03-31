@@ -5,8 +5,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from prime_rl.configs.shared import (
     HeartbeatConfig,
-    LogConfig,
     SlurmConfig,
+    TrainerLogConfig,
     WandbConfig,
 )
 from prime_rl.configs.trainer import (
@@ -14,6 +14,7 @@ from prime_rl.configs.trainer import (
     BenchConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
+    GCConfig,
     ModelConfig,
     OptimizerConfig,
     SchedulerConfig,
@@ -182,7 +183,7 @@ class SFTConfig(BaseConfig):
     ckpt: CheckpointConfig | None = None
 
     # The logging configuration
-    log: LogConfig = LogConfig()
+    log: TrainerLogConfig = TrainerLogConfig()
 
     # The wandb configuration
     wandb: WandbConfig | None = None
@@ -214,6 +215,13 @@ class SFTConfig(BaseConfig):
             description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 4 and use fake data.",
         ),
     ] = None
+
+    gc: Annotated[
+        GCConfig | None,
+        Field(
+            description="Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior.",
+        ),
+    ] = GCConfig()
 
     trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
 

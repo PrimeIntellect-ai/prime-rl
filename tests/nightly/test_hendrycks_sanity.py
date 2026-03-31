@@ -59,20 +59,20 @@ def test_no_error(rl_process: ProcessResult, output_dir: Path):
 
 def test_reward_goes_up(rl_process: ProcessResult, test_no_error, output_dir: Path):
     """Tests that the train reward goes up during training"""
-    with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
+    with open(output_dir / "logs" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_reward_goes_up(orchestrator_stdout)
 
 
 def test_reward_reaches_threshold(rl_process: ProcessResult, test_no_error, output_dir: Path):
     """Tests that the train reward reaches a minimum threshold"""
-    with open(output_dir / "logs" / "orchestrator.stdout", "r") as f:
+    with open(output_dir / "logs" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_reward_in_range(orchestrator_stdout, min_threshold=MIN_TRAIN_REWARD)
 
 
 def test_mismatch_kl_in_band(rl_process: ProcessResult, test_no_error, output_dir: Path):
     """Tests that mismatch KL stays within the expected band."""
-    with open(output_dir / "logs" / "trainer.stdout", "r") as f:
+    with open(output_dir / "logs" / "trainer.log", "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_mismatch_kl_in_range(trainer_stdout, min_threshold=MISMATCH_KL_MIN, max_threshold=MISMATCH_KL_MAX)

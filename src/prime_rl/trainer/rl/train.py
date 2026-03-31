@@ -41,6 +41,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
+    GarbageCollection,
     MemoryProfiler,
     Tensors,
     export_benchmark_json,
@@ -68,7 +69,6 @@ def train(config: TrainerConfig):
     world = get_world()
     logger = setup_logger(
         config.log.level,
-        log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
@@ -209,6 +209,8 @@ def train(config: TrainerConfig):
             config.rollout_transport,
         )
 
+    gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
+
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
     maybe_record_function = nullcontext
@@ -219,6 +221,8 @@ def train(config: TrainerConfig):
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
+        if gc_handler is not None:
+            gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
         # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)

@@ -35,7 +35,7 @@ To add permanent support for a new model family, add an entry to `VLM_REGISTRY` 
 
 ## Current Limitations
 
-- **Vision encoder is frozen by default**: The vision encoder is frozen during training by default. Set `freeze_vision_encoder = false` in `[trainer.model]` to make it trainable. When unfrozen, the vision encoder is FSDP-sharded per-block for proper gradient flow. Note: this has no effect when using LoRA.
+- **Vision encoder is frozen by default**: The vision encoder is frozen during training by default. Set `freeze_vision_encoder = false` in `[model.vlm]` to make it trainable. When unfrozen, the vision encoder is FSDP-sharded per-block for proper gradient flow. Note: this has no effect when using LoRA.
 
 - **No multimodal-safe truncation**: Token sequences are truncated to `seq_len`, but `pixel_values` and `image_grid_thw` are passed through unchanged. If a multimodal sample exceeds `seq_len`, image tokens can be dropped while image tensors still describe the full set of images. Ensure `seq_len` covers your longest VLM samples.
 

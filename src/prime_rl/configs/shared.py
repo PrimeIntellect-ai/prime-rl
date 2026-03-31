@@ -279,17 +279,10 @@ class LogConfig(BaseConfig):
         Field(description="Logging level for the verifiers package. Will determine the logging verbosity and format."),
     ] = "info"
 
-    file: Annotated[
+    json_logging: Annotated[
         bool,
         Field(
-            description="Whether to log to a file. If True, will log to a file in the output directory.",
-        ),
-    ] = True
-
-    env_worker_logs: Annotated[
-        bool,
-        Field(
-            description="Whether env workers log to files. If True, workers write to logs/env_workers/{env_name}.log.",
+            description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.).",
         ),
     ] = False
 
@@ -300,12 +293,14 @@ class LogConfig(BaseConfig):
         ),
     ] = False
 
-    json_logging: Annotated[
-        bool,
-        Field(
-            description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.).",
-        ),
-    ] = False
+
+class TrainerLogConfig(LogConfig):
+    """Trainer-specific log config."""
+
+    ranks_filter: Annotated[
+        list[int],
+        Field(description="Which trainer ranks to show in console output. Passed to torchrun's --local-ranks-filter."),
+    ] = [0]
 
 
 class LogExtrasConfig(BaseConfig):

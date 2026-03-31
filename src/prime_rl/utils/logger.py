@@ -1,9 +1,7 @@
-import atexit
 import json as json_module
 import logging
 import sys
 import traceback
-from pathlib import Path
 from typing import Any
 
 # Global logger instance
@@ -61,24 +59,6 @@ def json_sink(message) -> None:
     sys.stdout.flush()
 
 
-class JsonFileSink:
-    """File sink that keeps the handle open and writes flat JSON lines."""
-
-    def __init__(self, log_file: Path):
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        self._file = open(log_file, "a")
-        atexit.register(self._close)
-
-    def _close(self):
-        if self._file and not self._file.closed:
-            self._file.close()
-
-    def write(self, message) -> None:
-        log_entry = build_log_entry(message.record)
-        self._file.write(json_module.dumps(log_entry) + "\n")
-        self._file.flush()
-
-
 class InterceptHandler(logging.Handler):
     """Intercept standard logging library and routes to our prime-rl logger with specified prefix."""
 
@@ -106,8 +86,6 @@ class InterceptHandler(logging.Handler):
 
 def setup_logger(
     log_level: str = "info",
-    log_file: Path | None = None,
-    append: bool = False,
     tag: str | None = None,
     json_logging: bool = False,
 ):
@@ -162,16 +140,6 @@ def setup_logger(
         logger.add(json_sink, level=log_level.upper(), enqueue=True)
     else:
         logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
-
-    # If specified, install file handler
-    if log_file is not None:
-        if not append and log_file.exists():
-            log_file.unlink()
-        if json_logging:
-            file_sink = JsonFileSink(log_file)
-            logger.add(file_sink.write, level=log_level.upper(), enqueue=True)
-        else:
-            logger.add(log_file, format=format, level=log_level.upper(), colorize=True)
 
     # Disable critical logging
     logger.critical = lambda _: None

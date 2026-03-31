@@ -1,14 +1,6 @@
 # Logging
 
-prime-rl uses [loguru](https://loguru.readthedocs.io/en/stable/) for logging with a global logger pattern. Logs are written to both console and files under `{output_dir}/logs/`. For RL training, we recommend streaming file logs into tmux panes (as set up by `tmux.sh`).
-
-## tmux helper (`scripts/tmux.sh`)
-
-`scripts/tmux.sh` sets up a tmux session for RL runs with **three panes (one per subprocess)**:
-
-- **Trainer**: run `uv run rl ...` here
-- **Orchestrator**: follows `{output_dir}/logs/orchestrator.stdout`
-- **Inference**: follows `{output_dir}/logs/inference.stdout`
+prime-rl uses [loguru](https://loguru.readthedocs.io/en/stable/) for logging with a global logger pattern. All logs are captured at the deployment level (stdout/stderr redirection for local, `tee` for SLURM) under `{output_dir}/logs/`. For RL training, we recommend streaming logs into tmux panes (as set up by `tmux.sh`).
 
 ## Logger Architecture
 
@@ -20,7 +12,7 @@ We use a **singleton pattern** with a module-level global logger instance (`_LOG
 from prime_rl.utils.logger import setup_logger, get_logger
 
 # At entrypoint - call ONCE
-logger = setup_logger("info", log_file=Path("output/logs/my.log"))
+logger = setup_logger("info")
 
 # Anywhere else in codebase
 logger = get_logger()
@@ -29,77 +21,66 @@ logger.info("Hello world")
 
 **How it works:**
 
-1. **`setup_logger(log_level, log_file)`** - Initializes the global logger exactly once:
-   - Creates an isolated loguru `Logger` instance (not the default `loguru.logger`) to prevent third-party code from hijacking our logs
-   - Adds a stdout handler with colorized output
-   - Optionally adds a file handler (deletes existing file first)
-   - Raises `RuntimeError` if called twice
+1. **`get_logger()`** - Returns the global logger instance. Always works — if `setup_logger` hasn't been called yet, it initializes a default logger automatically. Safe to call from any module at any time.
 
-2. **`get_logger()`** - Returns the global logger instance:
-   - Raises `RuntimeError` if `setup_logger` hasn't been called yet
-   - Safe to call from any module after initialization
+2. **`setup_logger(log_level)`** - Configures (or reconfigures) the global logger:
+   - Creates an isolated loguru `Logger` instance (not the default `loguru.logger`) to prevent third-party code from hijacking our logs
+   - Adds a stdout handler with colorized output (or JSON output if `json_logging=True`)
+   - Can be called multiple times — cleans up the previous logger before creating a new one
 
 3. **`reset_logger()`** - Resets the global logger to `None`:
    - Used in subprocesses that inherit parent state (e.g., env workers)
    - Used in tests between test cases
 
-## RL Log File Structure
+## Log File Structure
 
-For RL training, logs are organized by component:
+Logs are captured at the deployment level — the entrypoint redirects subprocess stdout/stderr to files (local) or `tee` captures them (SLURM). The structure is consistent across deployment types: `logs/trainer.log` and `logs/inference.log` always exist, regardless of whether the run is local or multi-node SLURM.
 
-| Component | Log Path | Description |
-|-----------|----------|-------------|
-| **RL (parent)** | `logs/rl.log` | Main process that spawns subprocesses |
-| **Inference** | `logs/inference.stdout` | vLLM inference server stdout/stderr |
-| **Orchestrator** | `logs/orchestrator.log` | Rollout generation, buffer, scheduling |
-| **Trainer** | `logs/trainer/rank_{N}.log` | Training process (one file per GPU rank) |
-| **Env Workers** | `logs/env_workers/{env_name}/worker_{N}.log` | Per-environment worker logs (optional) |
-
-## Per-Environment Logging
-
-Environment are run via `vf.EnvServer` in separate processes. By default, each environment logs to a file in its run directory under `{output_dir}/run_default/train/{env_name}.log` and `{output_dir}/run_default/eval/{env_name}.log`. The log verbosity can be controlled with `orchestrator.log.vf_level`.
-
-```toml
-[orchestrator.log]
-level = "debug"           # Log level for prime-rl logger
-vf_level = "info"         # Log level for verifiers library
-```
+### Local (single node)
 
 ```
-output_dir/
-└── run_default/
-    └── train/
-        ├── {env_name_1}.log
-        ├── {env_name_2}.log
-        └── ...
-    └── eval/
-        ├── {env_name_1}.log
-        ├── {env_name_2}.log
+{output_dir}/logs/
+├── trainer.log                  # trainer stdout (rank 0 only)
+├── orchestrator.log             # orchestrator stdout
+├── inference.log                # vLLM inference server stdout
+├── trainer/
+│   └── torchrun/                # per-rank stdout/stderr (all ranks)
+└── envs/
+    ├── train/{env_name}/
+    │   ├── env_server.log
+    │   └── env_worker_{id}.log
+    └── eval/{env_name}/
         └── ...
 ```
 
-## Torchrun
+### SLURM multi-node
 
-For multi-node training with `torchrun`, all ranks log simultaneously. To filter to master rank only:
-
-```bash
-uv run torchrun \
-  --local-ranks-filter 0 \
-  --nproc-per-node 8 \
-  ...
+```
+{output_dir}/logs/
+├── trainer.log                  -> trainer/node_0.log (symlink)
+├── inference.log                -> inference/node_0.log (symlink)
+├── orchestrator.log             # orchestrator stdout
+├── trainer/
+│   ├── node_0.log               # per-node trainer output (rank 0 only)
+│   ├── node_1.log
+│   └── torchrun/                # per-rank stdout/stderr (all ranks)
+├── inference/
+│   ├── node_0.log               # per-node inference output
+│   ├── node_1.log
+│   └── router_0.log             # vllm-router per replica
+└── envs/
+    └── ...
 ```
 
-You can also use torchrun's native log redirection:
+Environment logs live under `logs/envs/train/{env_name}/` and `logs/envs/eval/{env_name}/`. Env log verbosity is controlled by `orchestrator.log.vf_level`.
 
-```bash
-uv run torchrun \
-  --local-ranks-filter 0 \
-  --nproc-per-node 8 \
-  --log-dir outputs/torchrun \
-  --redirects 3 \
-  --tee 3 \
-  ...
-```
+Only rank 0 output is shown in `trainer.log`. Per-rank logs from all ranks are available under `logs/trainer/torchrun/{rdzv_id}/attempt_0/{rank}/{stdout,stderr}.log`, written by torchrun's `--log-dir`.
 
-This writes to `outputs/torchrun/{rdzv_id}/attempt_0/{rank}/{stdout,stderr}.log`.
+## tmux helper (`scripts/tmux.sh`)
 
+`scripts/tmux.sh` sets up a tmux session for RL runs with **four panes**:
+
+- **Trainer**: follows `{output_dir}/logs/trainer.log`
+- **Orchestrator**: follows `{output_dir}/logs/orchestrator.log`
+- **Envs**: follows `{output_dir}/logs/envs/*/*/*.log`
+- **Inference**: follows `{output_dir}/logs/inference.log`

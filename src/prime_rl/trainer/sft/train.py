@@ -32,6 +32,7 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
+    GarbageCollection,
     MemoryProfiler,
     export_benchmark_json,
     get_zero_gradient_ratio,
@@ -58,7 +59,6 @@ def train(config: SFTConfig):
     world = get_world()
     logger = setup_logger(
         config.log.level,
-        log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting SFT trainer in {world}")
@@ -271,6 +271,8 @@ def train(config: SFTConfig):
             logger.success(f"Validation | Step {step} | Loss: {mean_loss:.4f}")
         monitor.log({"val/loss": mean_loss, "step": step}, step=step)
 
+    gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
+
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
@@ -281,6 +283,8 @@ def train(config: SFTConfig):
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
+        if gc_handler is not None:
+            gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
         if (

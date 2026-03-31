@@ -7,7 +7,7 @@ import tomli_w
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import get_config_dir
+from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir
 
 INFERENCE_TOML = "inference.toml"
 INFERENCE_SBATCH = "inference.sbatch"
@@ -50,11 +50,15 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         template_vars.update(
             num_prefill_nodes=config.deployment.num_prefill_nodes,
             num_decode_nodes=config.deployment.num_decode_nodes,
+            num_prefill_replicas=config.deployment.num_prefill_replicas,
+            num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
             router_port=config.deployment.router_port,
             data_parallel_rpc_port=config.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
+            prefill_env_overrides=config.deployment.prefill_env_overrides,
+            decode_env_overrides=config.deployment.decode_env_overrides,
         )
     elif is_multi_node:
         template_vars.update(
@@ -87,11 +91,9 @@ def inference_slurm(config: InferenceConfig):
     write_slurm_script(config, config_path, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    log_message = (
-        f"Logs:\n"
-        f"  Job:        tail -F {config.output_dir}/job_*.log\n"
-        f"  Inference:  tail -F {config.output_dir}/slurm/latest_infer_node_rank_*.log\n"
-    )
+    log_dir = get_log_dir(config.output_dir)
+    num_nodes = getattr(config.deployment, "num_nodes", 1)
+    log_message = format_log_message(log_dir=log_dir, inference=True, job_log=True, num_infer_nodes=num_nodes)
 
     if config.dry_run:
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
