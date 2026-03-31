@@ -1,0 +1,93 @@
+seq_len = 131072
+
+[log]
+level = "debug"
+
+[model]
+name = "PrimeIntellect/INTELLECT-3-Base"
+
+[weight_broadcast]
+type = "nccl"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 12
+
+[slurm]
+job_name = "swe-qwen30b"
+
+[ckpt]
+interval = 100
+
+[wandb]
+project = "intellect-3.1"
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+ep = 8
+cp = 2
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+type = "muon"
+lr = 1e-6
+weight_decay = 0.01
+
+[orchestrator]
+batch_size = 2048
+oversampling_factor = 2
+
+[[orchestrator.env]]
+id = "mini-swe-agent-plus"
+name = "swe"
+args = { max_turns = 200, cpu_cores = 2,  memory_gb = 4, disk_size_gb = 4, labels = ["mini-swe-agent-plus"], total_timeout_minutes = 720, sandbox_client_max_workers = 256, max_command_timeouts = 3, sandbox_command_timeout = 30}
+
+[[orchestrator.env]]
+id = "deepdive"
+name = "deepdive"
+args = { finish_with_tool = true, open_max_workers = 128, cache_dir = "/tmp/i3_deepdive_cache_train" }
+
+[[orchestrator.env]]
+id = "math-env"
+name = "math"
+args = { min_avg_reward = 0.0, max_avg_reward = 0.874}
+
+[[orchestrator.env]]
+id = "logic-env"
+args = { min_avg_reward = 0.0, max_avg_reward = 0.874 }
+name = "logic"
+
+[[orchestrator.env]]
+id = "code-env"
+name = "code"
+args = { pool_size = 512 }
+
+[orchestrator.buffer]
+env_ratios = [0.3, 0.2, 0.3, 0.2, 0.2]
+easy_threshold = 1.0
+online_difficulty_filtering = true
+seed = 42
+
+[orchestrator.eval]
+interval = 25
+
+[[orchestrator.eval.env]]
+id = "mini-swe-agent-plus"
+name = "swe-bench-verified-quick"
+args = { dataset_name="PrimeIntellect/SWE-Bench-Verified-Quick", max_turns = 200, cpu_cores = 2,  memory_gb = 4, disk_size_gb = 4, labels = ["mini-swe-agent-plus"], total_timeout_minutes = 720, sandbox_client_max_workers = 256, max_command_timeouts = 3, sandbox_command_timeout = 30}
+
+[[orchestrator.eval.env]]
+id = "aime2025"
+
+[inference.parallel]
+tp = 8

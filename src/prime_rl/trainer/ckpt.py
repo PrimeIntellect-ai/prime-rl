@@ -196,7 +196,7 @@ class CheckpointManager:
                     raise RuntimeError(
                         f"Couldn't fallback to using the master rank's dataloader checkpoint, because dataloder checkpoint was not found at path {dataloader_path}. Cannot resume training."
                     )
-            dataloader.load_state_dict(torch.load(dataloader_path))
+            dataloader.load_state_dict(torch.load(dataloader_path, weights_only=False))
 
         self.logger.debug(f"Training checkpoint loaded in {time.perf_counter() - start_time:.2f} seconds")
 
@@ -461,7 +461,7 @@ def setup_ckpt_managers(
         return None, None
     ckpt_output_dir = ckpt_config.output_dir or output_dir
     ckpt_manager = CheckpointManager(ckpt_output_dir, ckpt_config)
-    if ckpt_config.weights:
+    if ckpt_config.weights and not ckpt_config.skip_gather_master_weights:
         weight_ckpt_manager = WeightCheckpointManager(
             ckpt_output_dir,
             ckpt_config.weights,

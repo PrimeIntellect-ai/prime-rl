@@ -170,10 +170,13 @@ class NemotronHConfig(PretrainedConfig):
         self.mamba_proj_bias = mamba_proj_bias
         self.chunk_size = mamba_chunk_size
 
-        # Zamba2MambaMixer compat aliases (read by parent __init__ before NemotronHMamba2Mixer overrides)
+        # Zamba2MambaMixer compat aliases (read by parent __init__ before NemotronHMamba2Mixer overrides).
+        # mamba_expand must give the correct intermediate_size = mamba_num_heads * mamba_head_dim
+        # when Zamba2 computes int(mamba_expand * hidden_size); the config's raw "expand" field
+        # does not satisfy this for all model sizes (e.g. Nemotron-3-Nano-30B).
         self.mamba_d_state = ssm_state_size
         self.mamba_d_conv = mamba_d_conv
-        self.mamba_expand = mamba_expand
+        self.mamba_expand = (mamba_num_heads * mamba_head_dim) / hidden_size
         self.mamba_ngroups = mamba_n_groups
         self.mamba_headdim = mamba_head_dim
         self.n_mamba_heads = mamba_num_heads

@@ -33,6 +33,13 @@ class MultiMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to log samples to {monitor.__class__.__name__}: {e}")
 
+    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
+        for monitor in self.monitors:
+            try:
+                monitor.log_eval_samples(rollouts=rollouts, env_name=env_name, step=step)
+            except Exception as e:
+                self.logger.warning(f"Failed to log eval samples to {monitor.__class__.__name__}: {e}")
+
     def log_final_samples(self) -> None:
         for monitor in self.monitors:
             try:

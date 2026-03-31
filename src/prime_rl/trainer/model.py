@@ -31,6 +31,11 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.layers.checkpointing import (
+    get_supported_targets,
+    set_selective_activation_checkpointing,
+    supports_selective_activation_checkpointing,
+)
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -41,7 +46,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder
+from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 
 
 def _patch_qwen3_5_moe_conversion_mapping():
@@ -193,8 +198,7 @@ def get_model(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
-    # VLM mode is enabled by setting [model.vlm] in config
-    is_vlm = config.vlm is not None
+    is_vlm_training = config.vlm is not None
 
     if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
         _patch_qwen3_5_text_position_ids()
@@ -207,8 +211,9 @@ def get_model(
         ),
     )
     model_config.use_cache = False
+    is_vlm_arch = is_vlm_architecture(model_config)
 
-    if is_vlm:
+    if is_vlm_training:
         logger.info(f"Detected vision-language model: {config.name}")
         if config.optimization_dtype != "bfloat16" or config.reduce_dtype != "bfloat16":
             raise ValueError(
@@ -261,9 +266,9 @@ def get_model(
         target_config.num_hidden_layers = num_hidden_layers
 
     # Determine the implementation to use
-    custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm else None
+    custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm_arch else None
     if config.impl == "auto":
-        if is_vlm:
+        if is_vlm_arch:
             impl_to_use = "custom" if custom_vlm_cls is not None else "hf"
         else:
             impl_to_use = "custom" if supports_custom_impl(model_config) else "hf"
@@ -272,13 +277,12 @@ def get_model(
         impl_to_use = config.impl
 
     with device:
-        if is_vlm:
-            if impl_to_use == "custom" and custom_vlm_cls is not None:
-                model_cls = custom_vlm_cls
-            else:
-                from transformers import AutoModelForImageTextToText
+        if impl_to_use == "custom" and custom_vlm_cls is not None:
+            model_cls = custom_vlm_cls
+        elif is_vlm_arch:
+            from transformers import AutoModelForImageTextToText
 
-                model_cls = AutoModelForImageTextToText
+            model_cls = AutoModelForImageTextToText
         else:
             match impl_to_use:
                 case "hf":
@@ -288,7 +292,7 @@ def get_model(
 
         load_model_start_time = time.perf_counter()
         # HF VLM models require torch_dtype; custom PrimeRL models and text Auto models use dtype
-        use_torch_dtype = is_vlm and model_cls is not custom_vlm_cls
+        use_torch_dtype = is_vlm_arch and model_cls is not custom_vlm_cls
         dtype_kwarg = {"torch_dtype": dtype} if use_torch_dtype else {"dtype": dtype}
         if device == torch.device("meta"):
             logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
@@ -304,7 +308,7 @@ def get_model(
         logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
 
     # For VLM models, optionally freeze the vision encoder
-    if is_vlm and config.vlm.freeze_vision_encoder:
+    if is_vlm_training and config.vlm.freeze_vision_encoder:
         freeze_vision_encoder(model, override_attr=config.vlm.vision_encoder_attr)
 
     assert model.lm_head.weight.dtype == dtype, (
@@ -343,8 +347,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
         dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
 
-    is_vlm = config.vlm is not None
-    if is_vlm:
+    is_vlm_training = config.vlm is not None
+    if is_vlm_training:
         vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
         if vision_encoder is None:
             raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
@@ -359,7 +363,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
             get_logger().info("Applied FSDP to trainable vision encoder")
 
-    language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm else None)
+    language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
 
     for transformer_block in transformer_layers:
@@ -609,12 +613,50 @@ def reshard_module(model: nn.Module):
 
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
+    logger = get_logger()
     language_model = get_language_model(model)
+    target_list = sorted(frozenset(ac_config.targets))
+    selective_layers = 0
+    full_layers = 0
+    fallback_layer_types: set[str] = set()
+    model_supported_targets: set[str] = set()
+
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
-        if layer_id % ac_config.freq == 0:
+        if layer_id % ac_config.freq != 0:
+            continue
+
+        if ac_config.mode == "selective" and supports_selective_activation_checkpointing(transformer_block):
+            model_supported_targets.update(get_supported_targets(transformer_block))
+            set_selective_activation_checkpointing(transformer_block, target_list)
+            selective_layers += 1
+        else:
+            if ac_config.mode == "selective":
+                fallback_layer_types.add(type(transformer_block).__name__)
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
+            full_layers += 1
+
         language_model.layers.register_module(layer_name, transformer_block)
-    get_logger().info(f"Applied activation checkpointing (freq={ac_config.freq})")
+
+    if ac_config.mode == "selective":
+        unsupported_targets = frozenset(target_list) - model_supported_targets
+        if unsupported_targets:
+            raise ValueError(
+                f"Selective activation checkpoint targets {sorted(unsupported_targets)} are not supported "
+                f"by the selected model layers. Supported targets across the model: {sorted(model_supported_targets)}"
+            )
+        if fallback_layer_types:
+            logger.warning(
+                "Selective activation checkpointing is not supported for layer types "
+                f"{sorted(fallback_layer_types)}; falling back to full checkpointing for those layers."
+            )
+        logger.info(
+            "Applied selective activation checkpointing "
+            f"(freq={ac_config.freq}, targets={target_list}, selective_layers={selective_layers}, "
+            f"full_fallback_layers={full_layers})"
+        )
+        return
+
+    logger.info(f"Applied activation checkpointing (freq={ac_config.freq})")
 
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
@@ -645,6 +687,12 @@ def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
     for _, buffer in model.named_buffers():
         if buffer.device.type == "cpu":
             buffer.data = buffer.data.to("cuda")
+
+
+def _reset_runtime_moe_buffers(model: nn.Module) -> None:
+    for module in model.modules():
+        if isinstance(module, (MoE, LatentMoE)) and module.tokens_per_expert.device.type != "meta":
+            module.tokens_per_expert.zero_()
 
 
 def _validate_flash_attn_4_installed() -> None:
@@ -687,7 +735,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
-    fused_cross_entropy: bool = False,
+    fused_cross_entropy: bool | str = False,
 ) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
@@ -769,6 +817,7 @@ def setup_model(
         else:
             load_dcp_from_hf(model, config, parallel_dims)
 
+    _reset_runtime_moe_buffers(model)
     return model
 
 

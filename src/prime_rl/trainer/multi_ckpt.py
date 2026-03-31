@@ -209,7 +209,7 @@ class MultiCheckpointManager:
             if not ckpt_path.exists():
                 raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
             self.logger.info(f"Loading checkpoint from {ckpt_path}")
-            state_dict = torch.load(ckpt_path / f"rank_{self.world.rank}.pt")
+            state_dict = torch.load(ckpt_path / f"rank_{self.world.rank}.pt", weights_only=False)
             run_state.load_state_dict(state_dict)
 
             self.logger.info(f"Resumed run {self.multi_run_manager.idx_2_id[idx]} from step {step}")

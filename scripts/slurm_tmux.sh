@@ -21,16 +21,18 @@ echo "Creating tmux session: $SESSION_NAME"
 # Window 0: Terminal
 tmux new-session -d -s "$SESSION_NAME" -n "Terminal"
 
-# Window 1: Logs - 3 vertical panes
+# Window 1: Logs - 4 vertical panes
 tmux new-window -t "$SESSION_NAME" -n "Logs"
 
 tmux split-window -v -t "$SESSION_NAME:Logs.0"
 tmux split-window -v -t "$SESSION_NAME:Logs.1"
+tmux split-window -v -t "$SESSION_NAME:Logs.2"
 tmux select-layout -t "$SESSION_NAME:Logs" even-vertical
 
 tmux select-pane -t "$SESSION_NAME:Logs.0" -T "Trainer"
 tmux select-pane -t "$SESSION_NAME:Logs.1" -T "Orchestrator"
-tmux select-pane -t "$SESSION_NAME:Logs.2" -T "Inference"
+tmux select-pane -t "$SESSION_NAME:Logs.2" -T "Envs"
+tmux select-pane -t "$SESSION_NAME:Logs.3" -T "Inference"
 
 tmux send-keys -t "$SESSION_NAME:Logs.0" \
   "tail -F ${SLURM_LOG_DIR}/latest_train_node_rank_*.log 2>/dev/null" C-m
@@ -38,7 +40,11 @@ tmux send-keys -t "$SESSION_NAME:Logs.0" \
 tmux send-keys -t "$SESSION_NAME:Logs.1" \
   "tail -F ${SLURM_LOG_DIR}/latest_orchestrator.log 2>/dev/null" C-m
 
+ENV_LOG_DIR="${OUTPUT_DIR}/logs/envs"
 tmux send-keys -t "$SESSION_NAME:Logs.2" \
+  "tail -F ${ENV_LOG_DIR}/*/*/*.log 2>/dev/null" C-m
+
+tmux send-keys -t "$SESSION_NAME:Logs.3" \
   "tail -F ${SLURM_LOG_DIR}/latest_infer_node_rank_*.log 2>/dev/null" C-m
 
 # Pane title styling

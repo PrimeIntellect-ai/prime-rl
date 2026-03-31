@@ -375,7 +375,32 @@ class MoE(nn.Module):
             persistent=False,
         )
 
-    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
+    def _run_routed_experts(
+        self,
+        x: torch.Tensor,
+        token_indices_experts_sorted: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        top_scores_experts_sorted: torch.Tensor,
+    ) -> torch.Tensor:
+        dim = x.shape[-1]
+        routed_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
+        routed_input = torch.gather(x, dim=0, index=routed_indices)
+
+        if self.score_before_experts:
+            routed_input = (routed_input.to(torch.float32) * top_scores_experts_sorted.reshape(-1, 1)).to(x.dtype)
+
+        routed_output = self.experts(routed_input, num_tokens_per_expert)
+
+        if not self.score_before_experts:
+            routed_output = (routed_output.to(torch.float32) * top_scores_experts_sorted.reshape(-1, 1)).to(x.dtype)
+
+        return routed_output
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        routed_experts: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
@@ -403,9 +428,9 @@ class MoE(nn.Module):
 
         # tokens_per_expert will be used to update the expert bias for load balancing.
         # and also to count the expert usage
-        # TODO: Activation Checkpointing has the side effect of double counting tokens_per_expert --
-        #       first in the forward pass, and then in the backward pass. However, this has no
-        #       effect on the expert bias update thanks to the torch.sign() operator.
+        # Full block checkpointing can double count tokens_per_expert because it reruns the router
+        # in backward. The selective MoE path avoids that by checkpointing only the
+        # routed expert compute below.
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
 
@@ -423,28 +448,19 @@ class MoE(nn.Module):
             num_tokens_per_expert,
         ) = self.reorderer(top_scores, selected_experts_indices)
 
-        # shape (bs*slen*top_k, dim)
-        token_indices_experts_sorted = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
-
-        # shape (bs*slen*top_k, dim)
-        routed_input = torch.gather(x, dim=0, index=token_indices_experts_sorted)
-
-        if self.score_before_experts:
-            routed_input = (routed_input.to(torch.float32) * top_scores_experts_sorted.reshape(-1, 1)).to(x.dtype)
-
-        # shape (bs*slen*top_k, dim)
-        routed_output = self.experts(routed_input, num_tokens_per_expert)
-
-        if not self.score_before_experts:
-            routed_output = (routed_output.to(torch.float32) * top_scores_experts_sorted.reshape(-1, 1)).to(x.dtype)
-
-        # shared expert
+        routed_output = self._run_routed_experts(
+            x,
+            token_indices_experts_sorted,
+            num_tokens_per_expert,
+            top_scores_experts_sorted,
+        )
         if self.shared_expert is not None:
             out = self.shared_expert(x)
         else:
             out = torch.zeros_like(x)
 
-        out = out.scatter_add(dim=0, index=token_indices_experts_sorted, src=routed_output)
+        routed_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
+        out = out.scatter_add(dim=0, index=routed_indices, src=routed_output)
         out = out.reshape(bs, slen, dim)
         return out
 
@@ -693,6 +709,26 @@ class LatentMoE(nn.Module):
             persistent=False,
         )
 
+    def _run_routed_experts(
+        self,
+        x: torch.Tensor,
+        token_indices_experts_sorted: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        top_scores_experts_sorted: torch.Tensor,
+    ) -> torch.Tensor:
+        dim = x.shape[-1]
+        token_indices_expanded = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
+        routed_input = torch.gather(x, dim=0, index=token_indices_expanded)
+
+        routed_input = self.fc1_latent_proj(routed_input)
+        routed_output = self.experts(routed_input, num_tokens_per_expert)
+
+        routed_output = (routed_output.float() * top_scores_experts_sorted.reshape(-1, 1)).to(routed_output.dtype)
+        routed_output = routed_output * self.routed_scaling_factor
+
+        routed_output = self.fc2_latent_proj(routed_output)
+        return routed_output
+
     def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
         bs, slen, dim = x.shape
         x_flat = x.view(-1, dim)
@@ -708,24 +744,13 @@ class LatentMoE(nn.Module):
             num_tokens_per_expert,
         ) = self.reorderer(top_scores, selected_experts_indices)
 
-        token_indices_expanded = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
-        routed_input = torch.gather(x_flat, dim=0, index=token_indices_expanded)
+        routed_output = self._run_routed_experts(
+            x_flat,
+            token_indices_experts_sorted,
+            num_tokens_per_expert,
+            top_scores_experts_sorted,
+        )
 
-        # Apply latent projection before expert computation
-        routed_input = self.fc1_latent_proj(routed_input)
-
-        routed_output = self.experts(routed_input, num_tokens_per_expert)
-
-        # Apply scores after expert computation (matches vLLM's fused kernel behavior)
-        routed_output = (routed_output.float() * top_scores_experts_sorted.reshape(-1, 1)).to(routed_output.dtype)
-
-        # Apply routed_scaling_factor after expert output
-        routed_output = routed_output * self.routed_scaling_factor
-
-        # Project back from latent space
-        routed_output = self.fc2_latent_proj(routed_output)
-
-        # Shared expert
         out = self.shared_expert(x_flat)
 
         token_indices_full = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)

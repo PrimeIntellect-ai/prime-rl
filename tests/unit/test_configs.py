@@ -154,3 +154,8 @@ def test_cli_overrides_toml(tmp_path):
 def test_removed_fused_lm_head_chunk_size_field_is_rejected():
     with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
+
+
+def test_selective_activation_checkpointing_requires_custom_impl():
+    with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
+        TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})

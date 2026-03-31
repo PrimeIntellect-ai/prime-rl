@@ -80,6 +80,11 @@ def get_language_model(model: nn.Module, override: str | None = None) -> nn.Modu
     return model.model
 
 
+def is_vlm_architecture(model_config: PretrainedConfig) -> bool:
+    """Check if the model config belongs to a known VLM architecture."""
+    return _get_model_info_from_config(model_config) is not None
+
+
 def get_layer_prefix(model_config: PretrainedConfig, override: str | None = None) -> str:
     """Return the weight key prefix for language model layers.
 

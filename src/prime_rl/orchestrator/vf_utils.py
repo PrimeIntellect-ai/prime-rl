@@ -1,14 +1,14 @@
 import asyncio
 import logging
+import math
 import multiprocessing as mp
 from collections.abc import Awaitable, Callable
 from itertools import cycle
 from typing import Any
 
 import verifiers as vf
-from verifiers.envs.environment import EnvClient
-from verifiers.utils.worker_utils import get_free_port_pair
-from verifiers.workers import ZMQEnvClient, ZMQEnvServer
+from verifiers.serve import EnvClient, ZMQEnvClient, ZMQEnvServer
+from verifiers.utils.serve_utils import get_free_port
 
 from prime_rl.utils.logger import InterceptHandler, ProgressTracker, get_logger
 
@@ -17,15 +17,30 @@ REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
 DEFAULT_STATE_COLUMNS = []
 
 
+WORKERS_PER_CONCURRENCY = 256
+
+
+def resolve_num_workers(num_workers: int | str, max_concurrent: int | None = None) -> int:
+    """Resolve num_workers from config value.
+
+    When set to ``"auto"``, scales based on max_concurrent using the same
+    heuristic as verifiers' eval_utils: 1 worker per 256 concurrent rollouts.
+    """
+    if num_workers == "auto":
+        assert max_concurrent is not None, "max_concurrent must be set when num_workers='auto'"
+        return max(1, math.ceil(max_concurrent / WORKERS_PER_CONCURRENCY))
+    return int(num_workers)
+
+
 def spawn_env_server(
     env_id: str,
     env_args: dict[str, Any],
     extra_env_kwargs: dict[str, Any],
     address: str | None = None,
+    num_workers: int = 1,
     # logging configs
     log_level: str | None = None,
-    log_file: str | None = None,
-    log_file_level: str | None = None,
+    log_dir: str | None = None,
     json_logging: bool = False,
 ) -> tuple[str, mp.Process]:
     """
@@ -33,7 +48,7 @@ def spawn_env_server(
 
     Mirrors vf.Environment.start_server().
     """
-    address = address or f"tcp://127.0.0.1:{get_free_port_pair()}"
+    address = address or f"tcp://127.0.0.1:{get_free_port()}"
     # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
     # the parent process, which has caused hangs when multiple env server
     # subprocesses share the same fds.
@@ -44,10 +59,14 @@ def spawn_env_server(
             env_args,
             extra_env_kwargs,
             log_level,
-            log_file,
-            log_file_level,
+            log_dir,
         ),
-        kwargs=dict(address=address, json_logging=json_logging),
+        kwargs=dict(
+            address=address,
+            json_logging=json_logging,
+            console_logging=False,
+            num_workers=num_workers,
+        ),
         daemon=False,  # cannot run daemon because env server uses subprocesses
     )
     process.start()
@@ -188,6 +207,10 @@ async def generate(
     finally:
         pbar.close()
 
+    failed_groups = sum(1 for g in group_outputs_list if g is None)
+    if failed_groups:
+        get_logger().warning(f"{failed_groups}/{len(group_outputs_list)} groups failed")
+
     return [output for group_outputs in group_outputs_list if group_outputs is not None for output in group_outputs]
 
 
@@ -210,7 +233,7 @@ async def evaluate(
 
     """
     inputs = env._get_eval_inputs(num_examples, rollouts_per_example)
-    outputs = await generate(
+    return await generate(
         env=env,
         clients=clients,
         get_client=get_client,
@@ -225,7 +248,6 @@ async def evaluate(
         max_retries=max_retries,
         state_columns=state_columns,
     )
-    return outputs
 
 
 # TODO: remove once usage is tracked by verifiers

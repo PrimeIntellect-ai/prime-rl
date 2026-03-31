@@ -47,7 +47,7 @@ from prime_rl.utils.config import cli
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
-from prime_rl.trainer.models.layers.lm_head import FusedCrossEntropyOutputLinear
+from prime_rl.trainer.models.layers.lm_head import FUSED_CE_IGNORE_INDEX
 
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -89,10 +89,10 @@ def train(config: SFTConfig):
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
 
-    total_micro_batches = config.data.batch_size * config.model.cp * config.model.tp
+    total_micro_batches = config.data.batch_size * config.model.cp
     micro_batches_per_step = world.world_size * config.data.micro_batch_size
     assert total_micro_batches % micro_batches_per_step == 0, (
-        f"batch_size * cp * tp ({total_micro_batches}) must be divisible by "
+        f"batch_size * cp ({total_micro_batches}) must be divisible by "
         f"world_size * micro_batch_size ({micro_batches_per_step})"
     )
     grad_accum_steps = total_micro_batches // micro_batches_per_step
@@ -104,8 +104,6 @@ def train(config: SFTConfig):
         substitute_hf_flash_attn(cp_group, heads_k_stride=1)
         substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
         from prime_rl.utils.cp import setup_hybrid_cp
-
-        setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -121,9 +119,11 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
-    model = setup_model(
-        config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=config.loss_impl == "liger_fused"
-    )
+    fused_cross_entropy: bool | str = {"liger_fused": "liger", "quack_fused": "quack"}.get(config.loss_impl, False)
+    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=fused_cross_entropy)
+
+    if parallel_dims.cp_enabled:
+        setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     if config.model.lora is not None:
         multi_run_manager = get_multi_run_manager()
@@ -151,7 +151,7 @@ def train(config: SFTConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
@@ -192,7 +192,7 @@ def train(config: SFTConfig):
             ce_loss = LigerCrossEntropyLoss(reduction="none")
         case "torch":
             ce_loss = CrossEntropyLoss(reduction="none")
-        case "liger_fused":
+        case "liger_fused" | "quack_fused":
             pass  # loss is computed inside the fused lm_head
         case _:
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
@@ -215,9 +215,9 @@ def train(config: SFTConfig):
         token_count = loss_mask.sum(dtype=torch.int64)
 
         with maybe_activation_offloading(config.model.ac_offloading):
-            if config.loss_impl == "liger_fused":
+            if config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
-                masked_target_ids[~loss_mask] = FusedCrossEntropyOutputLinear.IGNORE_INDEX
+                masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
                 out = forward(model, input_ids, position_ids, labels=masked_target_ids)
                 loss_sum = out["loss"] * token_count
             else:
@@ -257,7 +257,7 @@ def train(config: SFTConfig):
 
     def run_validation(step: int) -> None:
         val_dataset = setup_dataset(
-            tokenizer, config.val.data, config.model.cp * config.model.tp, max_epochs=1, raw_dataset=val_raw_dataset
+            tokenizer, config.val.data, config.model.cp, max_epochs=1, raw_dataset=val_raw_dataset
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
@@ -409,8 +409,8 @@ def train(config: SFTConfig):
             memory_profiler.step()
 
         # Compute step metrics
-        # Divide by CP and TP since those ranks process the same data
-        num_tokens = config.data.batch_size * config.data.seq_len // (config.model.cp * config.model.tp)
+        # Divide by CP since those ranks process the same data
+        num_tokens = config.data.batch_size * config.data.seq_len // config.model.cp
         progress.total_tokens += num_tokens
         progress.total_samples = dataset.step
         perf_counter = get_perf_counter(model, config.data.seq_len)

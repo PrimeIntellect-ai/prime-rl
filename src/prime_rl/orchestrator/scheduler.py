@@ -88,9 +88,8 @@ class Scheduler:
         self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
         initial_temp = compute_temperature(step=0, sampling_config=config.sampling, max_steps=config.max_steps)
-        self.sampling_args = get_sampling_args(
-            config.sampling, temperature=initial_temp, use_token_client=config.use_token_client
-        )
+        is_vllm = config.teacher_rollout_model is None
+        self.sampling_args = get_sampling_args(config.sampling, temperature=initial_temp, is_vllm=is_vllm)
         self.model_name = self.config.model.name
         self.json_logging = config.log.json_logging
 

@@ -9,6 +9,8 @@ from torch import Tensor
 
 from prime_rl.utils.logger import get_logger
 
+FUSED_CE_IGNORE_INDEX = -100
+
 
 class PrimeLmOutput(TypedDict, total=False):
     """Output from LM head - a TypedDict so pytree can find tensors for FSDP2 hooks."""
@@ -79,7 +81,7 @@ class FusedCrossEntropyOutputLinear(torch.nn.Linear):
     projection with the cross-entropy loss computation.
     """
 
-    IGNORE_INDEX = -100
+    IGNORE_INDEX = FUSED_CE_IGNORE_INDEX
 
     def __init__(self, in_features: int, out_features: int, softcap: float | None = None):
         super().__init__(in_features, out_features, bias=False)
@@ -102,6 +104,45 @@ class FusedCrossEntropyOutputLinear(torch.nn.Linear):
         hidden_flat = hidden_states.reshape(b * s, h).contiguous()
         labels_flat = labels.reshape(b * s).contiguous()
         loss = self.fused_ce(self.weight, hidden_flat, labels_flat)
+        return PrimeLmOutput(loss=loss)
+
+
+class QuackFusedCrossEntropyOutputLinear(torch.nn.Linear):
+    """Fused lm_head + cross-entropy loss using quack-kernels.
+
+    Chunks the linear projection and cross-entropy computation to avoid
+    materializing the full [N, V] logits tensor, using quack's optimized
+    CuTe DSL kernels for CE and GEMM.
+    """
+
+    IGNORE_INDEX = FUSED_CE_IGNORE_INDEX
+
+    def __init__(self, in_features: int, out_features: int, chunk_size: int = 4096):
+        super().__init__(in_features, out_features, bias=False)
+        self.chunk_size = chunk_size
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        labels: torch.Tensor | None = None,
+        temperature: Tensor | None = None,
+    ) -> PrimeLmOutput:
+        if labels is None:
+            return PrimeLmOutput(logits=super().forward(hidden_states))
+
+        from quack.linear_cross_entropy import chunked_linear_cross_entropy
+
+        b, s, h = hidden_states.shape
+        hidden_flat = hidden_states.reshape(b * s, h).contiguous()
+        labels_flat = labels.reshape(b * s).contiguous()
+        loss = chunked_linear_cross_entropy(
+            hidden_flat,
+            self.weight,
+            labels_flat,
+            chunk_size=self.chunk_size,
+            ignore_index=self.IGNORE_INDEX,
+            reduction="mean",
+        )
         return PrimeLmOutput(loss=loss)
 
 
@@ -227,7 +268,11 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         return grad_hidden, grad_weight, None, None, None
 
 
-def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None, fused_cross_entropy: bool = False) -> None:
+def inject_prime_lm_head(
+    model: nn.Module,
+    chunk_size: int | None = None,
+    fused_cross_entropy: bool | str = False,
+) -> None:
     """
     Inject a PrimeRL LM head into a model.
 
@@ -238,8 +283,10 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None, fused_
         model: The model to wrap.
         chunk_size: When set to an int, uses FusedOutputLinear with sequence-token chunked
             logprob/entropy computation (for RL).
-        fused_cross_entropy: When True, uses FusedCrossEntropyOutputLinear which fuses the lm_head
-            projection with cross-entropy loss to avoid materializing full logits (for SFT).
+        fused_cross_entropy: Controls fused lm_head + CE loss. Accepts:
+            - False: no fusion
+            - True or "liger": Liger kernel fusion
+            - "quack": quack-kernels fusion (chunked linear + CE with CuTe DSL kernels)
     """
     # Guards so we have nicer error messages when a non-standard model is used
     assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
@@ -254,15 +301,27 @@ def inject_prime_lm_head(model: nn.Module, chunk_size: int | None = None, fused_
 
     # Check for Gemma-style softcapping - dispatch to specialized implementation
     final_logit_softcapping = getattr(model.config, "final_logit_softcapping", None)
-    if final_logit_softcapping and not fused_cross_entropy:
-        from prime_rl.trainer.models.layers.lm_head_gemma import inject_gemma_lm_head
+    if final_logit_softcapping:
+        if fused_cross_entropy == "quack":
+            raise ValueError(
+                "quack_fused does not support Gemma logit softcapping. "
+                "Use loss_impl='liger_fused' or loss_impl='torch' instead."
+            )
+        if not fused_cross_entropy:
+            from prime_rl.trainer.models.layers.lm_head_gemma import inject_gemma_lm_head
 
-        inject_gemma_lm_head(model, chunk_size, final_logit_softcapping)
-        return
+            inject_gemma_lm_head(model, chunk_size, final_logit_softcapping)
+            return
 
     # Replace the lm_head with the appropriate wrapper
     old_lm_head = model.lm_head
-    if fused_cross_entropy:
+    if fused_cross_entropy == "quack":
+        logger.info("Injecting fused cross-entropy LM head (quack-kernels)")
+        model.lm_head = QuackFusedCrossEntropyOutputLinear(
+            in_features=old_lm_head.in_features,
+            out_features=old_lm_head.out_features,
+        )
+    elif fused_cross_entropy:
         logger.info("Injecting fused cross-entropy LM head (Liger kernel)")
         model.lm_head = FusedCrossEntropyOutputLinear(
             in_features=old_lm_head.in_features,

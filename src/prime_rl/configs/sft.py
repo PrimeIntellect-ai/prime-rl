@@ -225,10 +225,11 @@ class SFTConfig(BaseConfig):
     ] = 600
 
     loss_impl: Annotated[
-        Literal["liger", "torch", "liger_fused"],
+        Literal["liger", "torch", "liger_fused", "quack_fused"],
         Field(
             description="Implementation of the cross entropy loss function to use. "
-            "'liger_fused' fuses the lm_head projection with the CE loss to avoid materializing full logits."
+            "'liger_fused' fuses the lm_head projection with the CE loss to avoid materializing full logits. "
+            "'quack_fused' uses quack-kernels for chunked linear + CE with CuTe DSL CUDA kernels."
         ),
     ] = "torch"
 

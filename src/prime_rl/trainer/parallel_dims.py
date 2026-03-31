@@ -37,7 +37,6 @@ class ParallelDims:
     dp_replicate: int
     dp_shard: int
     cp: int
-    tp: int
     pp: int
     ep: int
     world_size: int
@@ -50,25 +49,24 @@ class ParallelDims:
         self._validate()
 
     def _validate(self):
-        dp_replicate, dp_shard, cp, tp, pp, ep = (
+        dp_replicate, dp_shard, cp, pp, ep = (
             self.dp_replicate,
             self.dp_shard,
             self.cp,
-            self.tp,
             self.pp,
             self.ep,
         )
-        for d in (dp_replicate, cp, tp, pp, ep):
+        for d in (dp_replicate, cp, pp, ep):
             assert d >= 1, "Parallelism degree should be >= 1, except for dp_shard"
 
         assert dp_shard == -1 or dp_shard >= 1, " dp_shard must -1 or >=1."
         if dp_shard < 0:
-            self.dp_shard = dp_shard = self.world_size // (dp_replicate * cp * tp * pp)
+            self.dp_shard = dp_shard = self.world_size // (dp_replicate * cp * pp)
         assert dp_shard >= 1
 
-        assert dp_replicate * dp_shard * cp * tp * pp == self.world_size, (
+        assert dp_replicate * dp_shard * cp * pp == self.world_size, (
             f"Invalid parallel dims: dp_replicate({dp_replicate}) * dp_shard({dp_shard}) * "
-            f"cp({cp}) * tp({tp}) * pp({pp}) != WORLD_SIZE({self.world_size})"
+            f"cp({cp}) * pp({pp}) != WORLD_SIZE({self.world_size})"
         )
 
         if ep > 1:
@@ -97,9 +95,8 @@ class ParallelDims:
                 dp_shard_mod_ep,
                 dp_shard_in_ep,
                 self.cp,
-                self.tp,
             ],
-            ["pp", "dp_replicate", "dp_shard_mod_ep", "dp_shard_in_ep", "cp", "tp"],
+            ["pp", "dp_replicate", "dp_shard_mod_ep", "dp_shard_in_ep", "cp"],
         ):
             # dp_shard_mod_ep is needed even if it's 1, whose FSDP wrapping
             # helps the MoE layers do mixed precision training
@@ -158,8 +155,8 @@ class ParallelDims:
         dims = []
         names = []
         for d, name in zip(
-            [self.pp, self.dp_replicate, self.dp_shard, self.cp, self.tp],
-            ["pp", "dp_replicate", "dp_shard", "cp", "tp"],
+            [self.pp, self.dp_replicate, self.dp_shard, self.cp],
+            ["pp", "dp_replicate", "dp_shard", "cp"],
         ):
             if d > 1 or name == "dp_shard":
                 dims.append(d)
@@ -246,10 +243,6 @@ class ParallelDims:
         return self.dp_shard_enabled or self.cp_enabled
 
     @property
-    def tp_enabled(self):
-        return self.tp > 1
-
-    @property
     def pp_enabled(self):
         return self.pp > 1
 
@@ -263,17 +256,14 @@ class ParallelDims:
 
     @cached_property
     def non_data_parallel_size(self):
-        return self.cp * self.tp * self.pp
+        return self.cp * self.pp
 
     @cached_property
     def seq_len_divisor(self):
-        # Sequence Parallel requires that seq_len be divisible by TP degree.
-        # https://github.com/pytorch/torchtitan/pull/640#discussion_r1849481001
-
         # Context Parallel requires that seq_len be divisible by 2 * CP degree,
         # when load balancing is enabled (by default).
         # https://github.com/pytorch/pytorch/blob/4f62dcc/torch/distributed/tensor/experimental/_attention.py#L1246
-        return self.tp * (self.cp * 2)
+        return self.cp * 2
 
     @cached_property
     def logger(self):
@@ -286,7 +276,6 @@ def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> Parall
         dp_replicate=config.dp_replicate,
         dp_shard=-1,
         cp=config.cp,
-        tp=config.tp,
         pp=1,
         ep=config.ep,
         world_size=dist.get_world_size(),
@@ -297,8 +286,7 @@ def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> Parall
         raise ValueError(
             f"Sequence length ({seq_len}) must be divisible by "
             f"seq_len_divisor ({parallel_dims.seq_len_divisor}) for the given parallel dimensions. "
-            f"This requirement comes from context parallel (CP={config.cp}) and "
-            f"tensor parallel (TP={config.tp}) configurations."
+            f"This requirement comes from context parallel (CP={config.cp})."
         )
 
     return parallel_dims

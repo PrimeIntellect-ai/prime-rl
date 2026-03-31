@@ -102,6 +102,11 @@ class WandbMonitor(Monitor):
                 )
                 self.tokenizer = tokenizer
                 self.samples = []
+                self.eval_samples_cols = ["step", "env", "task", "example_id", "completion", "reward"]
+                self.eval_samples_table = wandb.Table(
+                    columns=self.eval_samples_cols,
+                    log_mode="INCREMENTAL",
+                )
 
     def _maybe_overwrite_wandb_command(self) -> None:
         """Overwrites sys.argv with the start command if it is set in the environment variables."""
@@ -164,6 +169,36 @@ class WandbMonitor(Monitor):
         wandb.log({"samples": self.samples_table, "step": step})
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
+
+    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
+        """Logs eval rollouts to a separate W&B table."""
+        if not self.is_master:
+            return
+        if (
+            not self.config
+            or not isinstance(self.config, WandbWithExtrasConfig)
+            or not self.config.log_extras
+            or not self.config.log_extras.samples
+        ):
+            return
+
+        for rollout in rollouts:
+            completion = rollout.get("completion")
+            if not completion:
+                continue
+            if isinstance(completion, list):
+                completion = self.tokenizer.apply_chat_template(completion, tokenize=False)
+            sample = {
+                "step": step,
+                "env": env_name,
+                "task": rollout.get("task"),
+                "example_id": rollout["example_id"],
+                "completion": completion,
+                "reward": rollout["reward"],
+            }
+            self.eval_samples_table.add_data(*sample.values())
+
+        wandb.log({"eval/samples": self.eval_samples_table, "step": step})
 
     def log_final_samples(self) -> None:
         """Log final samples to W&B table."""

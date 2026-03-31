@@ -1,0 +1,67 @@
+seq_len = 32768
+
+[log]
+level = "debug"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[weight_broadcast]
+type = "nccl"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 2
+
+[slurm]
+job_name = "math-qwen30b"
+
+[ckpt]
+interval = 100
+
+[wandb]
+project = "qwen30b-math"
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+ep = 8
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+[orchestrator]
+batch_size = 512
+oversampling_factor = 2
+max_off_policy_steps = 8
+
+[orchestrator.sampling]
+max_tokens = 32768
+
+[[orchestrator.env]]
+id = "math-env"
+name = "math"
+
+[orchestrator.eval]
+interval = 25
+
+[[orchestrator.eval.env]]
+id = "aime2025"
+
+[orchestrator.buffer]
+easy_threshold = 1.0
+hard_threshold = 0.0
+seed = 42
+
+[inference.parallel]
+tp = 8

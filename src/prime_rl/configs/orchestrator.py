@@ -287,6 +287,17 @@ class EnvConfig(BaseConfig):
             ),
         ),
     ] = {}
+    num_workers: Annotated[
+        int | Literal["auto"],
+        Field(
+            description=(
+                "Number of env server worker processes. "
+                "Set to 'auto' to scale based on the env's concurrency (1 worker per 256 concurrent rollouts). "
+                "When setting manually, we recommend sizing so that each worker handles at most 256 concurrent rollouts. "
+                "Only used when the orchestrator spawns the env server (i.e. address is None)."
+            ),
+        ),
+    ] = "auto"
     max_retries: Annotated[
         int,
         Field(
@@ -649,6 +660,14 @@ class NCCLWeightBroadcastConfig(BaseModel):
         bool,
         Field(description="Use kernel-format FP8 quantized NCCL transfer for weight updates."),
     ] = False
+
+    inference_world_size: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Total number of inference GPUs across all servers. Used by init_nccl_broadcast to compute per-server rank offsets.",
+        ),
+    ] = 1
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

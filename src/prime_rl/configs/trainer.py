@@ -28,13 +28,34 @@ _ATTN_ALIASES = {"flash_attention_4": "fa4"}
 class ActivationCheckpointConfig(BaseConfig):
     """Configures activation checkpointing."""
 
+    mode: Annotated[
+        Literal["full", "selective"],
+        Field(
+            description="Whether to checkpoint whole transformer blocks (`full`) or selected subcomponents inside supported custom decoder layers (`selective`).",
+        ),
+    ] = "full"
+
     freq: Annotated[
         int,
         Field(
             ge=1,
-            description="Applies activation checkpointing to every `freq` layers. Defaults to 1, which will is full activation checkpointing.",
+            description="Applies activation checkpointing to every `freq` layers. Defaults to 1.",
         ),
     ] = 1
+
+    targets: Annotated[
+        list[str],
+        Field(
+            description="Selective checkpoint targets. `norm` checkpoints every norm module inside selected layers (decoder, attention, MLA, etc.). `attn_proj` checkpoints projection-side attention work outside the kernel, including input/output projections, attention-local norms, RoPE, gating, and model-specific MLA projection helpers where exposed. `mlp` checkpoints the entire dense MLP forward (not applicable to MoE layers). `mla_up_proj` checkpoints MLA Q/KV up-projection work where supported. `routed_experts` checkpoints routed expert compute in MoE layers (including LatentMoE). `linear_attn` checkpoints supported token mixers outside the standard softmax-attention path, including NemotronH Mamba layers, Qwen3.5-MoE GatedDeltaNet layers, and AFMoE sliding-window attention layers.",
+        ),
+    ] = ["norm"]
+
+    @model_validator(mode="after")
+    def validate_selective_targets(self):
+        self.targets = list(dict.fromkeys(self.targets))
+        if self.mode == "selective" and not self.targets:
+            raise ValueError("Selective activation checkpointing requires at least one target.")
+        return self
 
 
 class ActivationOffloadingConfig(BaseConfig):
@@ -202,13 +223,6 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = 1
 
-    tp: Annotated[
-        int,
-        Field(
-            description="The tensor parallelism size to use. If 1, then no TP will be used.",
-        ),
-    ] = 1
-
     cp: Annotated[
         int,
         Field(
@@ -314,6 +328,12 @@ class ModelConfig(BaseModelConfig):
         """Automatically enable activation checkpointing when activation offloading is enabled."""
         if self.ac_offloading is not None and self.ac is None:
             self.ac = ActivationCheckpointConfig()
+        return self
+
+    @model_validator(mode="after")
+    def selective_ac_only_with_custom_impl(self):
+        if self.ac is not None and self.ac.mode == "selective" and self.impl not in ("custom", "auto"):
+            raise ValueError("Selective activation checkpointing requires model.impl='custom' or 'auto'")
         return self
 
     @model_validator(mode="after")
@@ -473,6 +493,13 @@ class CheckpointConfig(BaseConfig):
     ] = None
 
     weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
+
+    skip_gather_master_weights: Annotated[
+        bool,
+        Field(
+            description="When true, skip gathering and saving HF-compatible weight checkpoints. Useful for large models where the gather is expensive and only DCP checkpoints are needed.",
+        ),
+    ] = False
 
     weights_only: Annotated[
         bool,

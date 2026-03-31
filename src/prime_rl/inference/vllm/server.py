@@ -39,6 +39,9 @@ MODEL_TOOL_CALL_PARSER: dict[str, str] = {
     "zai-org/GLM-4.7": "glm47",
     "zai-org/GLM-4.7-FP8": "glm47",
     "zai-org/GLM-4.7-Flash": "glm47",
+    # GLM-5
+    "zai-org/GLM-5": "glm47",
+    "zai-org/GLM-5-FP8": "glm47",
     # MiniMax M2
     "MiniMaxAI/MiniMax-M2": "minimax_m2",
     "MiniMaxAI/MiniMax-M2.1": "minimax_m2",
@@ -186,11 +189,22 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
     return request.app.state.openai_serving_chat_with_tokens
 
 
+@router.post("/pause")
+async def pause(request: Request):
+    await engine_client(request).pause_generation(mode="keep", clear_cache=False)
+    return {"status": "paused"}
+
+
+@router.post("/resume")
+async def resume(request: Request):
+    await engine_client(request).resume_generation()
+    return {"status": "resumed"}
+
+
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    # Reset prefix cache to invalidate KV states computed with old weights
     await engine_client(request).reset_prefix_cache()
     return {"status": "ok"}
 
@@ -217,13 +231,13 @@ async def init_broadcaster(request: Request):
     host = data.get("host")
     port = data.get("port")
     timeout = data.get("timeout")
+    rank_offset = data.get("rank_offset")
+    inference_world_size = data.get("inference_world_size")
+    gpus_per_server = data.get("gpus_per_server")
     quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
-    # Support both legacy and new field names
-    server_rank = data.get("server_rank")
-    num_inference_server = data.get("num_inference_server")
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, server_rank, num_inference_server, timeout, quantize_in_weight_transfer),
+        args=(host, port, rank_offset, inference_world_size, gpus_per_server, timeout, quantize_in_weight_transfer),
     )
     return {"status": "ok"}
 

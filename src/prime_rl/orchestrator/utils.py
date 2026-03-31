@@ -36,13 +36,14 @@ async def get_semaphore() -> AsyncContextManager:
     return SEMAPHORE
 
 
-def get_sampling_args(sampling_config: SamplingConfig, temperature: float, use_token_client: bool = True) -> dict:
+def get_sampling_args(sampling_config: SamplingConfig, temperature: float, is_vllm: bool = True) -> dict:
     # Convert SamplingConfig to vLLM OAI sampling args
     # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters_2
     sampling_args = dict(sampling_config)
     sampling_args.pop("temp_scheduler", None)
     sampling_args["temperature"] = temperature
     sampling_args["top_p"] = 1.0
+    sampling_args["logprobs"] = True
     extra_body = dict(sampling_config.extra_body)
 
     min_tokens = sampling_args.pop("min_tokens")
@@ -53,12 +54,9 @@ def get_sampling_args(sampling_config: SamplingConfig, temperature: float, use_t
     if repetition_penalty != 1.0:
         extra_body["repetition_penalty"] = repetition_penalty
 
-    extra_body["top_k"] = -1
-    extra_body["min_p"] = 0.0
-
-    sampling_args["logprobs"] = True
-
-    if use_token_client:
+    if is_vllm:
+        extra_body["top_k"] = -1
+        extra_body["min_p"] = 0.0
         extra_body["return_token_ids"] = True
 
     if extra_body:

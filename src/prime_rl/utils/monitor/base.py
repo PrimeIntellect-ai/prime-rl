@@ -20,6 +20,10 @@ class Monitor(ABC):
         pass
 
     @abstractmethod
+    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
+        pass
+
+    @abstractmethod
     def log_final_samples(self) -> None:
         pass
 
@@ -46,6 +50,9 @@ class NoOpMonitor(Monitor):
         self.history.append(metrics)
 
     def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
+        pass
+
+    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
         pass
 
     def log_final_samples(self) -> None:

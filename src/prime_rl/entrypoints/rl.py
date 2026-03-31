@@ -58,8 +58,10 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
 
     if config.inference is not None:
+        # Exclude launcher-only fields that are not needed by the vLLM server
+        exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
         with open(output_dir / INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(config.inference.model_dump(exclude_none=True, mode="json"), f)
+            tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
 
     teacher_inference = getattr(config, "teacher_inference", None)
     if teacher_inference is not None:
@@ -402,16 +404,46 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
+    elif config.inference is not None and config.inference.deployment.type == "disaggregated":
+        infer_deploy = config.inference.deployment
+
+        script = template.render(
+            **config.slurm.template_vars,
+            is_disaggregated=True,
+            config_dir=config_dir,
+            output_dir=config.output_dir,
+            orchestrator_output_dir=config.orchestrator.output_dir,
+            num_train_nodes=config.deployment.num_train_nodes,
+            num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
+            nodes_per_infer_replica=infer_deploy.num_nodes,
+            num_infer_replicas=config.deployment.num_infer_replicas,
+            num_prefill_nodes=infer_deploy.num_prefill_nodes,
+            num_decode_nodes=infer_deploy.num_decode_nodes,
+            gpus_per_node=config.deployment.gpus_per_node,
+            router_port=infer_deploy.router_port,
+            prefill_port=infer_deploy.prefill_port,
+            decode_port=infer_deploy.decode_port,
+            inference_tp=config.inference.parallel.tp,
+            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            use_deep_gemm=config.inference.use_deep_gemm,
+            use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+            wandb_shared=config.wandb is not None and config.wandb.shared,
+        )
     else:
         script = template.render(
             **config.slurm.template_vars,
+            is_disaggregated=False,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
-            num_infer_nodes=config.deployment.num_infer_nodes,
+            num_infer_nodes=config.deployment.total_infer_nodes,
+            nodes_per_infer_replica=config.deployment.num_infer_nodes,
+            num_infer_replicas=config.deployment.num_infer_replicas,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
+            router_port=getattr(config.inference.deployment, "router_port", 8000) if config.inference else 8000,
+            backend_port=getattr(config.inference.deployment, "backend_port", 8100) if config.inference else 8100,
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
@@ -421,6 +453,38 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
+
+
+def format_log_message(
+    trainer_log: str,
+    orchestrator_log: str | None,
+    inference_log: str | None,
+    env_log_dir: Path,
+    train_env_names: list[str],
+    eval_env_names: list[str],
+) -> str:
+    col = 18
+    i1 = " " * 2
+    i2 = " " * 3
+    i3 = " " * 4
+    max_name = col - 4
+
+    log_lines = [f"{i1}{'Trainer:':<{col}}tail -F {trainer_log}"]
+    if orchestrator_log:
+        log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {orchestrator_log}")
+    if inference_log:
+        log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {inference_log}")
+    log_lines.append(f"{i1}{'Envs:':<{col}}tail -F {env_log_dir}/*/*/*.log")
+    log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*/*.log")
+    for name in train_env_names:
+        short = name if len(name) <= max_name else name[: max_name - 3] + "..."
+        log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/train/{name}/*.log")
+    if eval_env_names:
+        log_lines.append(f"{i2}{'Eval:':<{col - 1}}tail -F {env_log_dir}/eval/*/*.log")
+        for name in eval_env_names:
+            short = name if len(name) <= max_name else name[: max_name - 3] + "..."
+            log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/eval/{name}/*.log")
+    return "Logs:\n" + "\n".join(log_lines)
 
 
 def rl_slurm(config: RLConfig):
@@ -434,22 +498,36 @@ def rl_slurm(config: RLConfig):
         logger.info(f"Wrote config to {config_dir / RL_TOML}")
 
         log_dir = get_log_dir(config.output_dir)
-        log_message = (
-            f"Logs:\n"
-            f"  Trainer:       tail -F {log_dir}/trainer.stdout\n"
-            f"  Orchestrator:  tail -F {log_dir}/orchestrator.stdout\n"
-            f"  Inference:     tail -F {log_dir}/inference.stdout"
+        env_log_dir = get_log_dir(config.output_dir) / "envs"
+        train_env_names = [env.resolved_name for env in config.orchestrator.env]
+        eval_env_names = [env.resolved_name for env in config.orchestrator.eval.env] if config.orchestrator.eval else []
+
+        log_message = format_log_message(
+            trainer_log=f"{log_dir}/trainer.stdout",
+            orchestrator_log=f"{log_dir}/orchestrator.stdout",
+            inference_log=f"{log_dir}/inference.stdout",
+            env_log_dir=env_log_dir,
+            train_env_names=train_env_names,
+            eval_env_names=eval_env_names,
         )
     else:
         write_subconfigs(config, config_dir)
         logger.info(f"Wrote subconfigs to {config_dir}")
 
         slurm_log_dir = config.output_dir / "slurm"
-        log_lines = [f"  Trainer:       tail -F {slurm_log_dir}/latest_train_node_rank_0.log"]
-        if config.deployment.num_infer_nodes > 0:
-            log_lines.append(f"  Orchestrator:  tail -F {slurm_log_dir}/latest_orchestrator.log")
-            log_lines.append(f"  Inference:     tail -F {slurm_log_dir}/latest_infer_node_rank_0.log")
-        log_message = "Logs:\n" + "\n".join(log_lines)
+        env_log_dir = get_log_dir(config.output_dir) / "envs"
+        train_env_names = [env.resolved_name for env in config.orchestrator.env]
+        eval_env_names = [env.resolved_name for env in config.orchestrator.eval.env] if config.orchestrator.eval else []
+
+        has_infer = config.deployment.num_infer_nodes > 0
+        log_message = format_log_message(
+            trainer_log=f"{slurm_log_dir}/latest_train_node_rank_0.log",
+            orchestrator_log=f"{slurm_log_dir}/latest_orchestrator.log" if has_infer else None,
+            inference_log=f"{slurm_log_dir}/latest_infer_node_rank_0.log" if has_infer else None,
+            env_log_dir=env_log_dir,
+            train_env_names=train_env_names,
+            eval_env_names=eval_env_names,
+        )
 
     script_path = config.output_dir / RL_SBATCH
     write_slurm_script(config, config_dir, script_path)
