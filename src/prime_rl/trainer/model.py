@@ -360,8 +360,15 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             if hasattr(vision_encoder, "blocks"):
                 for block in vision_encoder.blocks:
                     fully_shard(block, mesh=hsdp_mesh, **fsdp_config)
+                get_logger().info(
+                    f"Applied per-block FSDP to trainable vision encoder ({len(vision_encoder.blocks)} blocks)"
+                )
+            else:
+                get_logger().warning(
+                    "Vision encoder has no 'blocks' attribute — applying single-module FSDP. "
+                    "Gradient flow may be suboptimal for large vision encoders."
+                )
             fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
-            get_logger().info("Applied FSDP to trainable vision encoder")
 
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
