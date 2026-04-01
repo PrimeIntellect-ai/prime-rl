@@ -1,4 +1,4 @@
-max_steps = 200
+max_steps = 100
 
 [ckpt]
 
@@ -22,7 +22,7 @@ target_modules = [
 
 [data]
 name = "PrimeIntellect/Reverse-Text-SFT"
-batch_size = 4
+batch_size = 16
 seq_len = 1024
 
 [optim]

@@ -18,7 +18,7 @@ pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
 TIMEOUT = 600
-SFT_STEP = 200
+SFT_STEP = 100
 RL_STEP = 20
 
 

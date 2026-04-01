@@ -7,7 +7,7 @@ seq_len = 2048
 name = "PrimeIntellect/Qwen3-0.6B"
 
 [trainer.optim]
-lr = 5e-5
+lr = 2e-5
 
 [trainer.model.lora]
 rank = 8
@@ -16,7 +16,7 @@ rank = 8
 save_adapter_separately = true
 
 [orchestrator]
-batch_size = 128
+batch_size = 64
 rollouts_per_example = 16
 
 [orchestrator.model.lora]
