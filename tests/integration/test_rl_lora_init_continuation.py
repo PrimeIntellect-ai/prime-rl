@@ -53,7 +53,7 @@ def sft_output_dir(output_dir: Path) -> Path:
 
 @pytest.fixture(scope="module")
 def rl_output_dir(output_dir: Path) -> Path:
-    path = output_dir / "rl_lora_init_continuation"
+    path = output_dir / "rl_lora_init"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -70,7 +70,7 @@ def sft_lora_process(
         "run",
         "sft",
         "@",
-        "configs/ci/integration/sft_lora_init_continuation/start.toml",
+        "configs/ci/integration/rl_lora_init/sft.toml",
         "--deployment.num-gpus",
         "2",
         "--clean-output-dir",
@@ -105,7 +105,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/rl_lora_init_continuation/start.toml",
+        "configs/ci/integration/rl_lora_init/start.toml",
         "--trainer.model.lora.init_adapter_path",
         init_adapter_dir.as_posix(),
         "--wandb.project",
@@ -133,7 +133,7 @@ def rl_resume_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/rl_lora_init_continuation/resume.toml",
+        "configs/ci/integration/rl_lora_init/resume.toml",
         "--trainer.model.lora.init_adapter_path",
         init_adapter_dir.as_posix(),
         "--wandb.project",
