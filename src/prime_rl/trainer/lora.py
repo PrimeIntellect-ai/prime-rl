@@ -16,6 +16,11 @@ from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger
 
 
+_MOE_LORA_KEY_RE = re.compile(
+    r"(?P<prefix>.*\.experts)\.(?P<eid>\d+)\.(?P<proj>gate_proj|down_proj|up_proj)\.(?P<ab>lora_[AB])(?:\.(?:default|\d+))?(?:\.weight)?"
+)
+
+
 def strip_lora_from_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     """Strip LoRA from the state dict."""
     new_state_dict = {}
@@ -341,10 +346,7 @@ def _normalize_lora_key(key: str) -> str:
 def _parse_moe_lora_key(key: str) -> tuple[str, int] | None:
     if key.startswith("base_model.model."):
         key = key[len("base_model.model.") :]
-    m = re.match(
-        r"^(?P<prefix>.*\.experts)\.(?P<eid>\d+)\.(?P<proj>gate_proj|down_proj|up_proj)\.(?P<ab>lora_[AB])(?:\.(?:default|\d+))?(?:\.weight)?$",
-        key,
-    )
+    m = _MOE_LORA_KEY_RE.fullmatch(key)
     if m is None:
         return None
     proj_map = {"gate_proj": "w1", "down_proj": "w2", "up_proj": "w3"}
@@ -358,6 +360,7 @@ def _set_adapter_idx_suffix(key: str, adapter_idx: int) -> str:
 
 
 def _is_model_lora_key_for_adapter(key: str, adapter_idx: int) -> bool:
+    # Support the current standard LoRA and grouped-expert adapter suffixes.
     suffixes = (
         f"lora_A.{adapter_idx}",
         f"lora_B.{adapter_idx}",
@@ -374,7 +377,6 @@ def _is_model_lora_key_for_adapter(key: str, adapter_idx: int) -> bool:
 def load_init_adapter_weights(
     model: nn.Module, init_adapter_path: Path, lora_config: LoRAConfig, adapter_idx: int = 0
 ) -> None:
-    logger = get_logger()
     adapter_dir = resolve_adapter_dir(init_adapter_path)
     _load_adapter_config(adapter_dir, lora_config)
     weights_path = _resolve_adapter_weights(adapter_dir)
@@ -386,27 +388,19 @@ def load_init_adapter_weights(
 
     mapped: dict[str, torch.Tensor] = {}
     moe_parts: dict[str, dict[int, torch.Tensor]] = {}
-    raw_lora_keys = 0
-    raw_prefixed_lora_keys = 0
-    raw_unprefixed_lora_keys = 0
-    normal_lora_keys = 0
-    moe_lora_keys = 0
+    saw_normal_lora = False
+    saw_moe_lora = False
     for key, value in raw.items():
         if "lora_A" not in key and "lora_B" not in key:
             continue
-        raw_lora_keys += 1
-        if key.startswith("base_model.model."):
-            raw_prefixed_lora_keys += 1
-        else:
-            raw_unprefixed_lora_keys += 1
         moe = _parse_moe_lora_key(key)
         if moe is not None:
-            moe_lora_keys += 1
+            saw_moe_lora = True
             target_key, expert_id = moe
             target_key = _set_adapter_idx_suffix(target_key, adapter_idx)
             moe_parts.setdefault(target_key, {})[expert_id] = value
         else:
-            normal_lora_keys += 1
+            saw_normal_lora = True
             mapped[_set_adapter_idx_suffix(_normalize_lora_key(key), adapter_idx)] = value
 
     for target_key, parts in moe_parts.items():
@@ -425,17 +419,15 @@ def load_init_adapter_weights(
         unexpected = sorted(set(mapped) - model_lora_keys)
         matched = len(set(mapped) & model_lora_keys)
         load_path = "mixed"
-        if normal_lora_keys and not moe_lora_keys:
+        if saw_normal_lora and not saw_moe_lora:
             load_path = "normal"
-        elif moe_lora_keys and not normal_lora_keys:
+        elif saw_moe_lora and not saw_normal_lora:
             load_path = "moe"
         context = (
             f"adapter_path={init_adapter_path}, adapter_idx={adapter_idx}, load_path={load_path}, "
-            f"loaded_keys={len(mapped)}/{raw_lora_keys}, matched_model_keys={matched}/{len(model_lora_keys)}, "
-            f"missing_sample={missing[:5]}, unexpected_sample={unexpected[:5]}, "
-            f"raw_prefixed_keys={raw_prefixed_lora_keys}, raw_unprefixed_keys={raw_unprefixed_lora_keys}"
+            f"loaded_keys={len(mapped)}, matched_model_keys={matched}/{len(model_lora_keys)}, "
+            f"missing_sample={missing[:5]}, unexpected_sample={unexpected[:5]}"
         )
-        logger.error(f"LoRA key mismatch while loading init adapter: {context}")
         raise ValueError(f"LoRA key mismatch. {context}")
 
     aligned = {}
