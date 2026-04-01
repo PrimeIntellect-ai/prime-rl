@@ -164,11 +164,11 @@ def test_init_adapter_checkpoint_written(init_adapter_dir: Path):
 
 
 @pytest.fixture(scope="module")
-def test_no_error(rl_process: ProcessResult, rl_output_dir: Path):
+def rl_no_error(rl_process: ProcessResult, rl_output_dir: Path):
     check_no_error(rl_process, rl_output_dir)
 
 
-def test_reward_goes_up(rl_process: ProcessResult, test_no_error, rl_output_dir: Path):
+def test_reward_goes_up(rl_process: ProcessResult, rl_no_error, rl_output_dir: Path):
     orchestrator_stdout = read_log_lines(
         rl_output_dir / "logs" / "orchestrator.log",
         rl_output_dir / "logs" / "orchestrator.stdout",
@@ -176,7 +176,7 @@ def test_reward_goes_up(rl_process: ProcessResult, test_no_error, rl_output_dir:
     check_reward_goes_up(orchestrator_stdout)
 
 
-def test_reward_in_range(rl_process: ProcessResult, test_no_error, rl_output_dir: Path):
+def test_reward_in_range(rl_process: ProcessResult, rl_no_error, rl_output_dir: Path):
     orchestrator_stdout = read_log_lines(
         rl_output_dir / "logs" / "orchestrator.log",
         rl_output_dir / "logs" / "orchestrator.stdout",
@@ -184,17 +184,17 @@ def test_reward_in_range(rl_process: ProcessResult, test_no_error, rl_output_dir
     check_reward_in_range(orchestrator_stdout, min_threshold=0.65)
 
 
-def test_rl_adapter_checkpoint_written(rl_process: ProcessResult, test_no_error, rl_output_dir: Path):
+def test_rl_adapter_checkpoint_written(rl_process: ProcessResult, rl_no_error, rl_output_dir: Path):
     adapter_dir = rl_output_dir / "weights" / f"step_{RL_STEP}" / "lora_adapters"
     assert_adapter_checkpoint(adapter_dir)
 
 
 @pytest.fixture(scope="module")
-def test_no_error_resume(rl_resume_process: ProcessResult, rl_output_dir: Path):
+def rl_resume_no_error(rl_resume_process: ProcessResult, rl_output_dir: Path):
     check_no_error(rl_resume_process, rl_output_dir)
 
 
-def test_reward_in_range_resume(rl_resume_process: ProcessResult, test_no_error_resume, rl_output_dir: Path):
+def test_reward_in_range_resume(rl_resume_process: ProcessResult, rl_resume_no_error, rl_output_dir: Path):
     orchestrator_stdout = read_log_lines(
         rl_output_dir / "logs" / "orchestrator.log",
         rl_output_dir / "logs" / "orchestrator.stdout",
