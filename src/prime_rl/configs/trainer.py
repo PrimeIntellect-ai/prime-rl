@@ -158,6 +158,13 @@ class LoRAConfig(BaseConfig):
         ),
     ] = []
 
+    init_adapter_path: Annotated[
+        Path | None,
+        Field(
+            description="Optional adapter path to warm-start training. Loaded into the created adapter slot before RL updates.",
+        ),
+    ] = None
+
 
 class DebugModelConfig(BaseConfig):
     """Debugging feature around model and distributed training."""

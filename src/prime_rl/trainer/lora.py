@@ -1,8 +1,12 @@
+import json
 import re
+from pathlib import Path
 from typing import Dict, List
 
 import torch
 import torch.nn as nn
+from safetensors.torch import load_file
+from torch.distributed.tensor import DTensor, distribute_tensor
 
 from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
@@ -160,7 +164,6 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     for module_name in target_modules:
         base_module = _get_module_by_name(model, module_name)
 
-        # Handle Linear layers
         if isinstance(base_module, nn.Linear):
             lora_module = MultiLoRALinear(
                 base_layer=base_module,
@@ -279,3 +282,189 @@ def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropo
     config_path = save_path / "adapter_config.json"
     with open(config_path, "w") as f:
         json.dump(adapter_config, f, indent=2)
+
+
+def resolve_adapter_dir(init_adapter_path: Path) -> Path:
+    """Resolve init_adapter_path to the adapter directory containing adapter_config.json."""
+    if init_adapter_path.is_file():
+        if init_adapter_path.name not in {"adapter_model.safetensors", "adapter_model.bin"}:
+            raise ValueError(
+                f"init_adapter_path file must be adapter_model.safetensors or adapter_model.bin, got {init_adapter_path}"
+            )
+        adapter_dir = init_adapter_path.parent
+    elif init_adapter_path.is_dir():
+        adapter_dir = init_adapter_path
+    else:
+        raise ValueError(f"init_adapter_path does not exist: {init_adapter_path}")
+    if not (adapter_dir / "adapter_config.json").exists():
+        raise ValueError(f"Adapter directory is missing adapter_config.json: {adapter_dir}")
+    return adapter_dir
+
+
+def _resolve_adapter_weights(adapter_dir: Path) -> Path:
+    for name in ("adapter_model.safetensors", "adapter_model.bin"):
+        candidate = adapter_dir / name
+        if candidate.exists():
+            return candidate
+    raise ValueError(f"No adapter_model.safetensors or adapter_model.bin found in {adapter_dir}")
+
+
+def _load_adapter_config(adapter_dir: Path, lora_config: LoRAConfig) -> dict:
+    with open(adapter_dir / "adapter_config.json") as f:
+        adapter_config = json.load(f)
+    if adapter_config.get("peft_type") != "LORA":
+        raise ValueError(
+            f"init_adapter_path only supports LoRA adapters, got peft_type={adapter_config.get('peft_type')}"
+        )
+    if adapter_config.get("r") != lora_config.rank:
+        raise ValueError(f"init_adapter_path rank mismatch: expected {lora_config.rank}, got {adapter_config.get('r')}")
+    if adapter_config.get("lora_alpha") != lora_config.alpha:
+        raise ValueError(
+            f"init_adapter_path alpha mismatch: expected {lora_config.alpha}, got {adapter_config.get('lora_alpha')}"
+        )
+    modules_to_save = adapter_config.get("modules_to_save")
+    if modules_to_save not in (None, []):
+        raise ValueError("init_adapter_path does not support adapters with modules_to_save")
+    return adapter_config
+
+
+def _normalize_lora_key(key: str) -> str:
+    if key.startswith("base_model.model."):
+        key = key[len("base_model.model.") :]
+    if key.endswith(".weight"):
+        key = key[: -len(".weight")]
+    key = re.sub(r"\.(lora_[AB])\.(default|\d+)", r".\1.0", key)
+    key = re.sub(r"\.(lora_[AB])$", r".\1.0", key)
+    return key
+
+
+def _parse_moe_lora_key(key: str) -> tuple[str, int] | None:
+    if key.startswith("base_model.model."):
+        key = key[len("base_model.model.") :]
+    m = re.match(
+        r"^(?P<prefix>.*\.experts)\.(?P<eid>\d+)\.(?P<proj>gate_proj|down_proj|up_proj)\.(?P<ab>lora_[AB])(?:\.(?:default|\d+))?(?:\.weight)?$",
+        key,
+    )
+    if m is None:
+        return None
+    proj_map = {"gate_proj": "w1", "down_proj": "w2", "up_proj": "w3"}
+    return f"{m.group('prefix')}.{proj_map[m.group('proj')]}_{m.group('ab')}.0", int(m.group("eid"))
+
+
+def _set_adapter_idx_suffix(key: str, adapter_idx: int) -> str:
+    if not key.endswith(".0"):
+        raise ValueError(f"Expected adapter-slot suffix '.0' in key: {key}")
+    return f"{key[:-2]}.{adapter_idx}"
+
+
+def _is_model_lora_key_for_adapter(key: str, adapter_idx: int) -> bool:
+    suffixes = (
+        f"lora_A.{adapter_idx}",
+        f"lora_B.{adapter_idx}",
+        f"w1_lora_A.{adapter_idx}",
+        f"w1_lora_B.{adapter_idx}",
+        f"w2_lora_A.{adapter_idx}",
+        f"w2_lora_B.{adapter_idx}",
+        f"w3_lora_A.{adapter_idx}",
+        f"w3_lora_B.{adapter_idx}",
+    )
+    return key.endswith(suffixes)
+
+
+def load_init_adapter_weights(
+    model: nn.Module, init_adapter_path: Path, lora_config: LoRAConfig, adapter_idx: int = 0
+) -> None:
+    logger = get_logger()
+    adapter_dir = resolve_adapter_dir(init_adapter_path)
+    _load_adapter_config(adapter_dir, lora_config)
+    weights_path = _resolve_adapter_weights(adapter_dir)
+    raw = (
+        load_file(str(weights_path), device="cpu")
+        if weights_path.suffix == ".safetensors"
+        else torch.load(weights_path, map_location="cpu", weights_only=True)
+    )
+
+    mapped: dict[str, torch.Tensor] = {}
+    moe_parts: dict[str, dict[int, torch.Tensor]] = {}
+    raw_lora_keys = 0
+    raw_prefixed_lora_keys = 0
+    raw_unprefixed_lora_keys = 0
+    normal_lora_keys = 0
+    moe_lora_keys = 0
+    for key, value in raw.items():
+        if "lora_A" not in key and "lora_B" not in key:
+            continue
+        raw_lora_keys += 1
+        if key.startswith("base_model.model."):
+            raw_prefixed_lora_keys += 1
+        else:
+            raw_unprefixed_lora_keys += 1
+        moe = _parse_moe_lora_key(key)
+        if moe is not None:
+            moe_lora_keys += 1
+            target_key, expert_id = moe
+            target_key = _set_adapter_idx_suffix(target_key, adapter_idx)
+            moe_parts.setdefault(target_key, {})[expert_id] = value
+        else:
+            normal_lora_keys += 1
+            mapped[_set_adapter_idx_suffix(_normalize_lora_key(key), adapter_idx)] = value
+
+    for target_key, parts in moe_parts.items():
+        count = len(parts)
+        if set(parts) != set(range(count)):
+            raise ValueError(f"Missing MoE expert slices for {target_key}")
+        mapped[target_key] = torch.stack([parts[i] for i in range(count)], dim=0)
+
+    if not mapped:
+        raise ValueError("No LoRA tensors found in init adapter")
+
+    model_state = model.state_dict()
+    model_lora_keys = {k for k in model_state if _is_model_lora_key_for_adapter(k, adapter_idx)}
+    if set(mapped) != model_lora_keys:
+        missing = sorted(model_lora_keys - set(mapped))
+        unexpected = sorted(set(mapped) - model_lora_keys)
+        matched = len(set(mapped) & model_lora_keys)
+        load_path = "mixed"
+        if normal_lora_keys and not moe_lora_keys:
+            load_path = "normal"
+        elif moe_lora_keys and not normal_lora_keys:
+            load_path = "moe"
+        context = (
+            f"adapter_path={init_adapter_path}, adapter_idx={adapter_idx}, load_path={load_path}, "
+            f"loaded_keys={len(mapped)}/{raw_lora_keys}, matched_model_keys={matched}/{len(model_lora_keys)}, "
+            f"missing_sample={missing[:5]}, unexpected_sample={unexpected[:5]}, "
+            f"raw_prefixed_keys={raw_prefixed_lora_keys}, raw_unprefixed_keys={raw_unprefixed_lora_keys}"
+        )
+        logger.error(f"LoRA key mismatch while loading init adapter: {context}")
+        raise ValueError(f"LoRA key mismatch. {context}")
+
+    aligned = {}
+    for key, value in mapped.items():
+        if value.shape != model_state[key].shape:
+            raise ValueError(
+                f"LoRA tensor shape mismatch for {key}: expected {model_state[key].shape}, got {value.shape}"
+            )
+        target = model_state[key]
+        value = value.to(dtype=target.dtype)
+        if isinstance(target, DTensor):
+            aligned[key] = distribute_tensor(
+                value.to(device=target.device),
+                target.device_mesh,
+                target.placements,
+            )
+        else:
+            aligned[key] = value
+    model.load_state_dict(aligned, strict=False)
+
+
+def register_init_adapter_reload_hook(model: nn.Module, lora_config: LoRAConfig) -> None:
+    if lora_config.init_adapter_path is None:
+        return
+    if getattr(model, "_prime_init_adapter_reload_hook_registered", False):
+        return
+
+    def _reload_init_adapter(idx: int, _run_id: str) -> None:
+        load_init_adapter_weights(model, lora_config.init_adapter_path, lora_config, adapter_idx=idx)
+
+    get_multi_run_manager().register_creation_hook(_reload_init_adapter)
+    setattr(model, "_prime_init_adapter_reload_hook_registered", True)

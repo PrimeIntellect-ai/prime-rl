@@ -307,7 +307,9 @@ class WeightCheckpointManager:
 
     def get_run_adapter_state_dict(self) -> dict[str, Tensor]:
         lora_state_dict = {
-            f"base_model.model.{key}": (value.full_tensor() if isinstance(value, DTensor) else value).to(
+            (key if key.startswith("base_model.model.") else f"base_model.model.{key}"): (
+                value.full_tensor() if isinstance(value, DTensor) else value
+            ).to(
                 "cpu", non_blocking=False
             )
             for key, value in get_multi_run_manager().get_state_dict_for_run(0).items()

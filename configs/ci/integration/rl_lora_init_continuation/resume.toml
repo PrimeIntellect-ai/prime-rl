@@ -1,0 +1,34 @@
+max_steps = 25
+seq_len = 2048
+
+[ckpt]
+resume_step = 20
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[trainer.optim]
+lr = 5e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.model.lora]
+name = "r8-init-cont"
+
+[orchestrator.sampling]
+max_tokens = 128
+
+[[orchestrator.env]]
+id = "reverse-text"
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7

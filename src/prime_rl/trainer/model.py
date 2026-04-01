@@ -23,7 +23,13 @@ from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.distributed import DeepEPExpertParallel
-from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
+from prime_rl.trainer.lora import (
+    apply_lora_to_model,
+    freeze_all_except_lora_and_specified,
+    load_init_adapter_weights,
+    register_init_adapter_reload_hook,
+    strip_lora_from_state_dict,
+)
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PreTrainedModelPrimeRL,
@@ -766,6 +772,9 @@ def setup_model(
 
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
+    if config.lora is not None and config.lora.init_adapter_path is not None:
+        possible_to_load_to_meta = False
+
     if config.debug.random_init and not possible_to_load_to_meta:
         raise ValueError(
             "It's not possible to load to meta device and random initialize is enabled. Please disable random initialize or use a different model."
@@ -786,6 +795,9 @@ def setup_model(
     # Apply LoRA before FSDP setup
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
+        if config.lora.init_adapter_path is not None:
+            load_init_adapter_weights(model, config.lora.init_adapter_path, config.lora)
+            register_init_adapter_reload_hook(model, config.lora)
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
