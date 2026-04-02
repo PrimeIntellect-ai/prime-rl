@@ -121,6 +121,7 @@ def packed_samples_into_micro_bs(
                         bin_content.routed_experts = []
                     bin_content.routed_experts.extend(sample.routed_experts)
                 bin_content.position_ids.extend(sample.position_ids)
+                bin_content.sample_count += sample.sample_count
                 bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break
         else:
@@ -168,6 +169,7 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
     dummy.loss_mask = [False] * len(dummy.input_ids)
+    dummy.sample_count = 0
     return dummy
 
 
@@ -186,11 +188,13 @@ def prepare_batch(
     num_train_workers: int,
     idxs: list[int],
     num_loras: int,
+    micro_batch_max_tokens: int | None = None,
     pad_to_multiple_of: int = 1,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
-    Each micro batch is shape [1, seq_len], the number of samples is not fixed per micro batch.
+    Each micro batch is shape [1, <= micro_batch_max_tokens], and each individual sample is
+    truncated to seq_len before packing.
 
     FSDP requires all ranks to execute the same operations at each step. If one rank
     processes a multimodal batch (triggering the vision encoder) while another processes
@@ -199,7 +203,8 @@ def prepare_batch(
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
-    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
+    max_micro_batch_tokens = micro_batch_max_tokens or seq_len
+    micro_batches = packed_samples_into_micro_bs(all_samples, max_micro_batch_tokens, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
     # Separate by modality so each step index has uniform modality across all ranks

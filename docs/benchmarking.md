@@ -47,10 +47,13 @@ uv run trainer ... --data.fake --bench
 Benchmark different batch configurations, i.e. the (micro) batch size and sequence length
 
 ```bash
-uv run trainer ... --model.seq-len 4096 --data.fake.batch-size 64 --data.fake.micro-batch-size 2 --bench
+uv run trainer ... --model.seq-len 4096 --data.fake.batch-size 64 --bench
 ```
 
 *Note, that it is not yet possible to benchmark the RL trainer against real data when benchmarking the RL trainer in isolation.*
+
+When training the real RL path against orchestrator-produced batches, use `--micro-batch-max-tokens` to cap the
+number of tokens packed into each local trainer micro batch. This knob does not apply to the fake RL benchmark path.
 
 ### Inference
 

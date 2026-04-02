@@ -75,6 +75,7 @@ def train(config: TrainerConfig):
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
+    effective_micro_batch_max_tokens = config.micro_batch_max_tokens or config.model.seq_len
 
     # Print warning if running in benchmark mode
     if config.bench is not None:
@@ -201,13 +202,19 @@ def train(config: TrainerConfig):
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     if config.data.fake:
+        logger.info("Using fake RL data loader; each local micro batch uses model.seq_len tokens")
         dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
     else:
+        logger.info(
+            "Using RL micro batch cap of "
+            f"{effective_micro_batch_max_tokens} tokens (model.seq_len={config.model.seq_len})"
+        )
         dataloader = DataLoader(
             config.output_dir,
             progress.step,
             parallel_dims.get_mesh("dp").size(),
             config.model.seq_len,
+            effective_micro_batch_max_tokens,
             config.model.cp,
             tokenizer,
             config.rollout_transport,
@@ -304,19 +311,21 @@ def train(config: TrainerConfig):
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
-        batch_size = len(micro_batches)
+        num_local_micro_batches = len(micro_batches)
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
         forward_backward_start_time = time.perf_counter()
-        seq_len = micro_batches[0]["input_ids"].shape[1]
+        max_local_micro_batch_tokens = max(micro_batch["input_ids"].shape[1] for micro_batch in micro_batches)
+        num_local_tokens = sum(micro_batch["input_ids"].numel() for micro_batch in micro_batches)
+        num_local_loss_tokens = sum(int(micro_batch["loss_mask"].sum().item()) for micro_batch in micro_batches)
+        num_local_samples = sum(micro_batch["sample_count"] for micro_batch in micro_batches)
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        loss_scale = max(loss_scale, 1)
+        loss_scale = max(num_local_loss_tokens, 1)
 
-        logger.debug(f"Starting forward and backward pass ({batch_size=})")
+        logger.debug(f"Starting forward and backward pass ({num_local_micro_batches=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
@@ -455,7 +464,11 @@ def train(config: TrainerConfig):
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f}"
+            micro_step_message = (
+                f"Micro Step {micro_step + 1}/{num_local_micro_batches} | "
+                f"Loss: {tensors['loss'][-1].mean().item():.4f} | "
+                f"Entropy: {tensors['entropy'][-1].mean().item():.4f}"
+            )
             if "mismatch_kl" in tensors:
                 micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
@@ -492,22 +505,37 @@ def train(config: TrainerConfig):
         tensor_stats = tensors.compute_stats()
 
         # Compute step metrics
-        num_local_tokens = seq_len * batch_size
         num_tokens = parallel_dims.get_mesh("dp").size() * num_local_tokens
         progress.total_tokens += num_tokens
-        progress.total_samples += batch_size
-        perf_counter = get_perf_counter(model, seq_len)
+        progress.total_samples += num_local_samples
+        perf_counter = get_perf_counter(model, effective_micro_batch_max_tokens)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+
+        progress_metrics = {
+            "progress/total_tokens": progress.total_tokens,
+            "progress/total_samples": progress.total_samples,
+            "batch/local_tokens": num_local_tokens,
+            "batch/local_loss_tokens": num_local_loss_tokens,
+            "batch/local_samples": num_local_samples,
+            "batch/local_micro_batches": num_local_micro_batches,
+            "batch/local_micro_batch_tokens_max": max_local_micro_batch_tokens,
+            "batch/micro_batch_max_tokens": effective_micro_batch_max_tokens,
+            "step": progress.step,
+        }
+        monitor.log(progress_metrics, step=progress.step)
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f}"
         if "mismatch_kl/mean" in tensor_stats:
             step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f}"
-        step_message += f" | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
+        step_message += (
+            f" | Micro Batches: {num_local_micro_batches} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e}"
+            f" | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
+        )
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)

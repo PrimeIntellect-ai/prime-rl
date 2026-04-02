@@ -12,10 +12,10 @@ ulimit -n 32000
 
 Assuming this is happening on the RL or SFT trainer, you can try the following:
 - Use full activation checkpointing (`--model.ac`)
-- Reduce the the micro batch size (`--data.micro-batch-size`) and sequence length (`--data.seq-len`)
+- Reduce the sequence length (`--data.seq-len` for SFT, `--model.seq-len` for RL)
+- Reduce the trainer micro batch size (`--data.micro-batch-size` for SFT, `--micro-batch-max-tokens` for RL)
 - (*Experimental*) Use context parallelism with `--model.cp`
 
 > I cannot pass my TOML config file
 
 Check that you *did* leave a whitespace between the `@` and the config file (e.g. `uv run ... @ path/to/config.toml` instead of `uv run ... @path/to/config.toml`). Also, make sure that your TOML config matches the configuration schema. If not, the Pydantic error message (which arguably is quite ugly) will hopefully point you in the right direction.
-

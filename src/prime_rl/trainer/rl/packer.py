@@ -29,6 +29,7 @@ class BasePacker(ABC):
         self,
         dp_world_size: int,
         seq_len: int,
+        micro_batch_max_tokens: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
@@ -38,6 +39,7 @@ class BasePacker(ABC):
         self.multi_run_manager = get_multi_run_manager()
         self.dp_world_size = dp_world_size
         self.seq_len = seq_len
+        self.micro_batch_max_tokens = micro_batch_max_tokens
         self.pad_to_multiple_of = pad_to_multiple_of
         self.tokenizer = tokenizer
         self.receiver = setup_training_batch_receiver(config)
@@ -81,12 +83,21 @@ class SinglePacker(BasePacker):
         self,
         dp_world_size: int,
         seq_len: int,
+        micro_batch_max_tokens: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
         start_step: int = 0,
     ):
-        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
+        super().__init__(
+            dp_world_size,
+            seq_len,
+            micro_batch_max_tokens,
+            pad_to_multiple_of,
+            tokenizer,
+            config,
+            start_step,
+        )
         assert self.multi_run_manager.max_runs == 1, "SinglePacker only supports one run"
 
     def pack(self):
@@ -106,6 +117,7 @@ class SinglePacker(BasePacker):
         micro_batch_grid = prepare_batch(
             rollouts=batch.examples,
             seq_len=self.seq_len,
+            micro_batch_max_tokens=self.micro_batch_max_tokens,
             pad_to_multiple_of=self.pad_to_multiple_of,
             num_train_workers=self.dp_world_size,
             idxs=[0] * len(batch.examples),
@@ -120,12 +132,21 @@ class MultiPacker(BasePacker):
         self,
         dp_world_size: int,
         seq_len: int,
+        micro_batch_max_tokens: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
         start_step: int = 0,
     ):
-        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
+        super().__init__(
+            dp_world_size,
+            seq_len,
+            micro_batch_max_tokens,
+            pad_to_multiple_of,
+            tokenizer,
+            config,
+            start_step,
+        )
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -323,6 +344,7 @@ class MultiPacker(BasePacker):
             run_micro_batch_grid = prepare_batch(
                 rollouts=run_samples,
                 seq_len=self.seq_len,
+                micro_batch_max_tokens=self.micro_batch_max_tokens,
                 pad_to_multiple_of=self.pad_to_multiple_of,
                 num_train_workers=self.dp_world_size,
                 idxs=[run_idx] * len(run_samples),
@@ -338,6 +360,7 @@ class MultiPacker(BasePacker):
 def setup_packer(
     dp_world_size: int,
     seq_len: int,
+    micro_batch_max_tokens: int,
     pad_to_multiple_of: int,
     tokenizer: PreTrainedTokenizer,
     transport_config: TransportConfig,
@@ -345,6 +368,22 @@ def setup_packer(
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
-        return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return SinglePacker(
+            dp_world_size,
+            seq_len,
+            micro_batch_max_tokens,
+            pad_to_multiple_of,
+            tokenizer,
+            transport_config,
+            start_step,
+        )
     else:
-        return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return MultiPacker(
+            dp_world_size,
+            seq_len,
+            micro_batch_max_tokens,
+            pad_to_multiple_of,
+            tokenizer,
+            transport_config,
+            start_step,
+        )

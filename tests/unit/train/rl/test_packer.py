@@ -88,6 +88,7 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     packer = MultiPacker(
         dp_world_size=1,
         seq_len=4,
+        micro_batch_max_tokens=4,
         pad_to_multiple_of=1,
         tokenizer=None,
         config=FileSystemTransportConfig(),
@@ -107,3 +108,66 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     sender = sender_holder["sender"]
     assert len(sender.sent) == 1
     assert len(sender.sent[0][0]) == 1
+
+
+def test_packer_respects_micro_batch_max_tokens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_world()
+    runs._MULTI_RUN_MANAGER = None
+    manager = setup_multi_run_manager(output_dir=tmp_path, max_runs=1, device=torch.device("cpu"))
+
+    create_run_with_config(tmp_path, "run_test123")
+    manager.discover_runs()
+    run_idx = manager.id_2_idx["run_test123"]
+
+    class DummyReceiver:
+        def receive(self):
+            return []
+
+        def reset_run(self, idx: int) -> None:
+            pass
+
+    class DummySender:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, micro_batch_grid):
+            self.sent.append(micro_batch_grid)
+
+    sender_holder: dict[str, DummySender] = {}
+
+    def fake_receiver(_config):
+        return DummyReceiver()
+
+    def fake_sender(_output_dir, _data_world_size, _current_step, _config):
+        sender = DummySender()
+        sender_holder["sender"] = sender
+        return sender
+
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_training_batch_receiver", fake_receiver)
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_micro_batch_sender", fake_sender)
+
+    packer = MultiPacker(
+        dp_world_size=1,
+        seq_len=4,
+        micro_batch_max_tokens=2,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        config=FileSystemTransportConfig(),
+        start_step=0,
+    )
+
+    packer.buffers[run_idx].append((make_training_sample(), 0))
+    packer.buffers[run_idx].append((make_training_sample(), 0))
+
+    packer.pack()
+
+    progress = manager.progress[run_idx]
+    assert progress.total_samples == 2
+    assert progress.total_tokens == 4
+    assert progress.step == 1
+
+    sender = sender_holder["sender"]
+    assert len(sender.sent) == 1
+    assert len(sender.sent[0][0]) == 2
+    assert [micro_batch.sample_count for micro_batch in sender.sent[0][0]] == [1, 1]
+    assert [len(micro_batch.input_ids) for micro_batch in sender.sent[0][0]] == [2, 2]

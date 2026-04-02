@@ -63,6 +63,20 @@ To enable it, use:
 fused_lm_head_token_chunk_size = auto
 ```
 
+## RL micro batch cap
+
+RL already performs gradient accumulation implicitly by packing multiple local micro batches into each optimizer step.
+If you need lower trainer memory usage without changing trainer-step semantics, cap the number of tokens in each local
+RL micro batch:
+
+```toml
+[trainer]
+micro_batch_max_tokens = 4096
+```
+
+This only applies to real RL batches from the orchestrator. Lower values increase the number of local micro batches
+per trainer step while keeping one optimizer step per trainer step.
+
 
 ## Expert parallelism
 
@@ -129,4 +143,3 @@ LoRA training significantly reduces the memory usage of the trainer at the cost 
 [trainer.model.lora]
 rank = 8
 ```
-

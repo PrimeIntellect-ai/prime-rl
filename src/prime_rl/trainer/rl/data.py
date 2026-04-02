@@ -27,6 +27,7 @@ class TensorMicroBatch(TypedDict):
 
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
+    sample_count: int
 
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
@@ -73,6 +74,7 @@ class FakeDataLoader:
 
     def _get_sample_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
         total_seq_len = 0
+        sample_count = 0
         input_ids = []
         position_ids = []
 
@@ -87,6 +89,7 @@ class FakeDataLoader:
 
             input_ids.append(tmp_input_ids)
             position_ids.append(tmp_position_ids)
+            sample_count += 1
 
         input_ids = torch.cat(input_ids, dim=0)
         position_ids = torch.cat(position_ids, dim=0)
@@ -105,6 +108,7 @@ class FakeDataLoader:
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "sample_count": sample_count,
             "routed_experts": None,
             "pixel_values": None,
             "image_grid_thw": None,
@@ -130,6 +134,7 @@ class FakeDataLoader:
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "sample_count": 1,
             "routed_experts": None,
             "pixel_values": None,
             "image_grid_thw": None,
@@ -145,6 +150,7 @@ class DataLoader:
         start_step: int,
         dp_world_size: int,
         seq_len: int,
+        micro_batch_max_tokens: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
@@ -155,6 +161,7 @@ class DataLoader:
             self.packer: BasePacker = setup_packer(
                 dp_world_size=dp_world_size,
                 seq_len=seq_len,
+                micro_batch_max_tokens=micro_batch_max_tokens,
                 tokenizer=tokenizer,
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
@@ -197,6 +204,7 @@ class DataLoader:
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
+            sample_count=micro_batch.sample_count,
             # Multimodal fields - no batch dimension for these as they are variable-sized
             pixel_values=torch.frombuffer(bytearray(micro_batch.pixel_values), dtype=torch.float32).reshape(
                 micro_batch.pixel_values_shape

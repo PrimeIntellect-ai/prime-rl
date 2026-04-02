@@ -728,6 +728,19 @@ class TrainerConfig(BaseConfig):
     # The data configuration
     data: DataLoaderConfig = DataLoaderConfig()
 
+    micro_batch_max_tokens: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description=(
+                "Maximum number of text tokens to pack into each local RL micro batch. "
+                "Defaults to model.seq_len, which preserves the current behavior. "
+                "Lower values increase the number of local micro batches per trainer step without changing "
+                "optimizer-step or checkpoint semantics."
+            ),
+        ),
+    ] = None
+
     # The loss configuration
     loss: LossConfig = DefaultLossConfig()
 
@@ -848,6 +861,22 @@ class TrainerConfig(BaseConfig):
                 self.data.fake = FakeDataLoaderConfig()
             if self.ckpt:  # Do not checkpoint
                 self.ckpt = None
+        return self
+
+    @model_validator(mode="after")
+    def validate_micro_batch_max_tokens(self):
+        if self.micro_batch_max_tokens is None:
+            return self
+
+        if self.micro_batch_max_tokens > self.model.seq_len:
+            raise ValueError("micro_batch_max_tokens must be less than or equal to model.seq_len")
+
+        if self.data.fake is not None:
+            raise ValueError(
+                "micro_batch_max_tokens is only supported for real RL batches. "
+                "Fake RL data already uses data.fake.batch_size to control local micro batches."
+            )
+
         return self
 
     @model_validator(mode="after")

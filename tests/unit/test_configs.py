@@ -159,3 +159,19 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_rl_micro_batch_max_tokens_must_not_exceed_seq_len():
+    with pytest.raises(ValidationError, match="micro_batch_max_tokens must be less than or equal to model.seq_len"):
+        TrainerConfig.model_validate({"model": {"seq_len": 1024}, "micro_batch_max_tokens": 2048})
+
+
+def test_rl_micro_batch_max_tokens_is_rejected_for_fake_data():
+    with pytest.raises(ValidationError, match="micro_batch_max_tokens is only supported for real RL batches"):
+        TrainerConfig.model_validate(
+            {
+                "model": {"seq_len": 1024},
+                "micro_batch_max_tokens": 512,
+                "data": {"fake": {"batch_size": 8}},
+            }
+        )
