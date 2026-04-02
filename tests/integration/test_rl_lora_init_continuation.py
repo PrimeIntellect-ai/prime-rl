@@ -200,3 +200,13 @@ def test_reward_in_range_resume(rl_resume_process: ProcessResult, rl_resume_no_e
         rl_output_dir / "logs" / "orchestrator.stdout",
     )
     check_reward_in_range(orchestrator_stdout, min_threshold=0.65)
+
+
+def test_resume_restores_training_progress(rl_resume_process: ProcessResult, rl_resume_no_error, rl_output_dir: Path):
+    trainer_stdout = read_log_lines(
+        rl_output_dir / "logs" / "trainer.log",
+        rl_output_dir / "logs" / "trainer" / "rank_0.log",
+    )
+
+    assert any(f"Resuming training from checkpoint step {RL_STEP}" in line for line in trainer_stdout)
+    assert any(f"Starting from step {RL_STEP}" in line for line in trainer_stdout)

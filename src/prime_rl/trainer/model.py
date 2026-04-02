@@ -26,8 +26,7 @@ from prime_rl.trainer.distributed import DeepEPExpertParallel
 from prime_rl.trainer.lora import (
     apply_lora_to_model,
     freeze_all_except_lora_and_specified,
-    load_init_adapter_weights,
-    register_init_adapter_reload_hook,
+    prepare_init_adapter,
     strip_lora_from_state_dict,
 )
 from prime_rl.trainer.models import (
@@ -772,9 +771,6 @@ def setup_model(
 
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
-    if config.lora is not None and config.lora.init_adapter_path is not None:
-        possible_to_load_to_meta = False
-
     if config.debug.random_init and not possible_to_load_to_meta:
         raise ValueError(
             "It's not possible to load to meta device and random initialize is enabled. Please disable random initialize or use a different model."
@@ -795,9 +791,6 @@ def setup_model(
     # Apply LoRA before FSDP setup
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
-        if config.lora.init_adapter_path is not None:
-            load_init_adapter_weights(model, config.lora.init_adapter_path, config.lora)
-            register_init_adapter_reload_hook(model, config.lora)
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
@@ -842,6 +835,15 @@ def setup_model(
         # - or load from HF with dcp
         else:
             load_dcp_from_hf(model, config, parallel_dims)
+
+    prepared_init_adapter = None
+    if config.lora is not None and config.lora.init_adapter_path is not None:
+        prepared_init_adapter = prepare_init_adapter(model, config.lora.init_adapter_path, config.lora)
+
+    if prepared_init_adapter is not None:
+        if not loading_from_checkpoint_later:
+            prepared_init_adapter.apply_to_model(model)
+        prepared_init_adapter.register_creation_hook(model)
 
     _reset_runtime_moe_buffers(model)
     return model

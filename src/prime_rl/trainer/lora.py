@@ -1,5 +1,6 @@
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
@@ -14,7 +15,6 @@ from prime_rl.trainer.models.layers.lora.multi_moe import MultiLoRAGroupedExpert
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger
-
 
 _MOE_LORA_KEY_RE = re.compile(
     r"(?P<prefix>.*\.experts)\.(?P<eid>\d+)\.(?P<proj>gate_proj|down_proj|up_proj)\.(?P<ab>lora_[AB])(?:\.(?:default|\d+))?(?:\.weight)?"
@@ -381,9 +381,93 @@ def _is_model_lora_key_for_adapter(key: str, adapter_idx: int) -> bool:
     return key.endswith(suffixes)
 
 
-def load_init_adapter_weights(
-    model: nn.Module, init_adapter_path: Path, lora_config: LoRAConfig, adapter_idx: int = 0
+def _get_model_lora_state_keys(model_state: dict[str, torch.Tensor], adapter_idx: int) -> set[str]:
+    return {key for key in model_state if _is_model_lora_key_for_adapter(key, adapter_idx)}
+
+
+def _get_load_path_label(mapped_keys: dict[str, torch.Tensor]) -> str:
+    has_moe = any(".experts." in key for key in mapped_keys)
+    has_dense = any(".lora_" in key and ".experts." not in key for key in mapped_keys)
+    if has_dense and has_moe:
+        return "mixed"
+    if has_moe:
+        return "moe"
+    return "normal"
+
+
+def _raise_lora_key_mismatch(
+    *,
+    init_adapter_path: Path,
+    adapter_idx: int,
+    expected_keys: set[str],
+    actual_keys: set[str],
+    load_path: str,
 ) -> None:
+    missing = sorted(expected_keys - actual_keys)
+    unexpected = sorted(actual_keys - expected_keys)
+    matched = len(expected_keys & actual_keys)
+    raise ValueError(
+        "LoRA key mismatch. "
+        f"adapter_path={init_adapter_path}, adapter_idx={adapter_idx}, load_path={load_path}, "
+        f"loaded_keys={len(actual_keys)}, matched_model_keys={matched}/{len(expected_keys)}, "
+        f"missing_sample={missing[:5]}, unexpected_sample={unexpected[:5]}"
+    )
+
+
+@dataclass(frozen=True)
+class PreparedInitAdapter:
+    init_adapter_path: Path
+    slot0_tensors: dict[str, torch.Tensor]
+    load_path: str
+
+    def apply_to_model(self, model: nn.Module, adapter_idx: int = 0) -> None:
+        model_state = model.state_dict()
+        expected_keys = _get_model_lora_state_keys(model_state, adapter_idx)
+        mapped = {
+            _set_adapter_idx_suffix(key, adapter_idx): value
+            for key, value in self.slot0_tensors.items()
+        }
+
+        if set(mapped) != expected_keys:
+            _raise_lora_key_mismatch(
+                init_adapter_path=self.init_adapter_path,
+                adapter_idx=adapter_idx,
+                expected_keys=expected_keys,
+                actual_keys=set(mapped),
+                load_path=self.load_path,
+            )
+
+        aligned = {}
+        for key, value in mapped.items():
+            target = model_state[key]
+            if value.shape != target.shape:
+                raise ValueError(
+                    f"LoRA tensor shape mismatch for {key}: expected {target.shape}, got {value.shape}"
+                )
+            value = value.to(dtype=target.dtype)
+            if isinstance(target, DTensor):
+                aligned[key] = distribute_tensor(
+                    value.to(device=target.device),
+                    target.device_mesh,
+                    target.placements,
+                )
+            else:
+                aligned[key] = value.to(device=target.device)
+
+        model.load_state_dict(aligned, strict=False)
+
+    def register_creation_hook(self, model: nn.Module) -> None:
+        if getattr(model, "_prime_init_adapter_creation_hook_registered", False):
+            return
+
+        def _apply_prepared_init_adapter(idx: int, _run_id: str) -> None:
+            self.apply_to_model(model, adapter_idx=idx)
+
+        get_multi_run_manager().register_creation_hook(_apply_prepared_init_adapter)
+        setattr(model, "_prime_init_adapter_creation_hook_registered", True)
+
+
+def prepare_init_adapter(model: nn.Module, init_adapter_path: Path, lora_config: LoRAConfig) -> PreparedInitAdapter:
     adapter_dir = resolve_adapter_dir(init_adapter_path)
     _load_adapter_config(adapter_dir, lora_config)
     weights_path = _resolve_adapter_weights(adapter_dir)
@@ -395,20 +479,15 @@ def load_init_adapter_weights(
 
     mapped: dict[str, torch.Tensor] = {}
     moe_parts: dict[str, dict[int, torch.Tensor]] = {}
-    saw_normal_lora = False
-    saw_moe_lora = False
     for key, value in raw.items():
         if "lora_A" not in key and "lora_B" not in key:
             continue
         moe = _parse_moe_lora_key(key)
         if moe is not None:
-            saw_moe_lora = True
             target_key, expert_id = moe
-            target_key = _set_adapter_idx_suffix(target_key, adapter_idx)
             moe_parts.setdefault(target_key, {})[expert_id] = value
         else:
-            saw_normal_lora = True
-            mapped[_set_adapter_idx_suffix(_normalize_lora_key(key), adapter_idx)] = value
+            mapped[_normalize_lora_key(key)] = value
 
     for target_key, parts in moe_parts.items():
         count = len(parts)
@@ -420,50 +499,24 @@ def load_init_adapter_weights(
         raise ValueError("No LoRA tensors found in init adapter")
 
     model_state = model.state_dict()
-    model_lora_keys = {k for k in model_state if _is_model_lora_key_for_adapter(k, adapter_idx)}
-    if set(mapped) != model_lora_keys:
-        missing = sorted(model_lora_keys - set(mapped))
-        unexpected = sorted(set(mapped) - model_lora_keys)
-        matched = len(set(mapped) & model_lora_keys)
-        load_path = "mixed"
-        if saw_normal_lora and not saw_moe_lora:
-            load_path = "normal"
-        elif saw_moe_lora and not saw_normal_lora:
-            load_path = "moe"
-        context = (
-            f"adapter_path={init_adapter_path}, adapter_idx={adapter_idx}, load_path={load_path}, "
-            f"loaded_keys={len(mapped)}, matched_model_keys={matched}/{len(model_lora_keys)}, "
-            f"missing_sample={missing[:5]}, unexpected_sample={unexpected[:5]}"
+    expected_keys = _get_model_lora_state_keys(model_state, 0)
+    load_path = _get_load_path_label(mapped)
+    if set(mapped) != expected_keys:
+        _raise_lora_key_mismatch(
+            init_adapter_path=init_adapter_path,
+            adapter_idx=0,
+            expected_keys=expected_keys,
+            actual_keys=set(mapped),
+            load_path=load_path,
         )
-        raise ValueError(f"LoRA key mismatch. {context}")
 
-    aligned = {}
     for key, value in mapped.items():
-        if value.shape != model_state[key].shape:
-            raise ValueError(
-                f"LoRA tensor shape mismatch for {key}: expected {model_state[key].shape}, got {value.shape}"
-            )
         target = model_state[key]
-        value = value.to(dtype=target.dtype)
-        if isinstance(target, DTensor):
-            aligned[key] = distribute_tensor(
-                value.to(device=target.device),
-                target.device_mesh,
-                target.placements,
-            )
-        else:
-            aligned[key] = value
-    model.load_state_dict(aligned, strict=False)
+        if value.shape != target.shape:
+            raise ValueError(f"LoRA tensor shape mismatch for {key}: expected {target.shape}, got {value.shape}")
 
-
-def register_init_adapter_reload_hook(model: nn.Module, lora_config: LoRAConfig) -> None:
-    if lora_config.init_adapter_path is None:
-        return
-    if getattr(model, "_prime_init_adapter_reload_hook_registered", False):
-        return
-
-    def _reload_init_adapter(idx: int, _run_id: str) -> None:
-        load_init_adapter_weights(model, lora_config.init_adapter_path, lora_config, adapter_idx=idx)
-
-    get_multi_run_manager().register_creation_hook(_reload_init_adapter)
-    setattr(model, "_prime_init_adapter_reload_hook_registered", True)
+    return PreparedInitAdapter(
+        init_adapter_path=init_adapter_path,
+        slot0_tensors={key: value.detach().to("cpu", non_blocking=False) for key, value in mapped.items()},
+        load_path=load_path,
+    )
