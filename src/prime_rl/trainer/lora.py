@@ -217,6 +217,91 @@ def has_lora_layers(model: nn.Module) -> bool:
     return False
 
 
+def _module_key(prefix: str, suffix: str) -> str:
+    return f"{prefix}.{suffix}" if prefix else suffix
+
+
+def _get_lora_scaling(module: MultiLoRAModule, run_idx: int) -> float:
+    return float(module._scaling_factors[run_idx].item())
+
+
+def _compute_lora_delta(
+    lora_a: torch.Tensor,
+    lora_b: torch.Tensor,
+    scaling: float,
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
+    matmul_dtype = torch.float32 if output_dtype in {torch.float16, torch.bfloat16} else output_dtype
+    delta = torch.matmul(lora_b.to(dtype=matmul_dtype), lora_a.to(dtype=matmul_dtype))
+    return (delta * scaling).to(dtype=output_dtype)
+
+
+def _merge_multilora_linear(
+    state_dict: dict[str, torch.Tensor],
+    prefix: str,
+    module: MultiLoRALinear,
+    run_idx: int,
+) -> None:
+    base_key = _module_key(prefix, "base_layer.weight")
+    lora_a_key = _module_key(prefix, f"lora_A.{run_idx}")
+    lora_b_key = _module_key(prefix, f"lora_B.{run_idx}")
+
+    base_weight = state_dict[base_key]
+    delta = _compute_lora_delta(
+        state_dict[lora_a_key],
+        state_dict[lora_b_key],
+        scaling=_get_lora_scaling(module, run_idx),
+        output_dtype=base_weight.dtype,
+    )
+    state_dict[base_key] = base_weight + delta
+
+
+def _merge_multilora_grouped_experts(
+    state_dict: dict[str, torch.Tensor],
+    prefix: str,
+    module: MultiLoRAGroupedExperts,
+    run_idx: int,
+) -> None:
+    scaling = _get_lora_scaling(module, run_idx)
+    weight_specs = (
+        ("w1", "w1_lora_A", "w1_lora_B"),
+        ("w2", "w2_lora_A", "w2_lora_B"),
+        ("w3", "w3_lora_A", "w3_lora_B"),
+    )
+    for base_name, lora_a_name, lora_b_name in weight_specs:
+        base_key = _module_key(prefix, f"base_layer.{base_name}")
+        lora_a_key = _module_key(prefix, f"{lora_a_name}.{run_idx}")
+        lora_b_key = _module_key(prefix, f"{lora_b_name}.{run_idx}")
+
+        base_weight = state_dict[base_key]
+        delta = _compute_lora_delta(
+            state_dict[lora_a_key],
+            state_dict[lora_b_key],
+            scaling=scaling,
+            output_dtype=base_weight.dtype,
+        )
+        state_dict[base_key] = base_weight + delta
+
+
+def merge_lora_state_dict(
+    model: nn.Module,
+    state_dict: dict[str, torch.Tensor],
+    run_idx: int = 0,
+) -> dict[str, torch.Tensor]:
+    """Merge a run's LoRA weights into gathered full-model weights."""
+    if not state_dict:
+        return state_dict
+
+    merged_state_dict = dict(state_dict)
+    for name, module in model.named_modules():
+        if isinstance(module, MultiLoRALinear):
+            _merge_multilora_linear(merged_state_dict, name, module, run_idx)
+        elif isinstance(module, MultiLoRAGroupedExperts):
+            _merge_multilora_grouped_experts(merged_state_dict, name, module, run_idx)
+
+    return clean_lora_state_dict(merged_state_dict)
+
+
 def clean_lora_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """Remove LoRA parameters and fix LoRA base layer key names for HF compatibility."""
     clean_state_dict = {}

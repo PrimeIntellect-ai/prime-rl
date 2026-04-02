@@ -20,7 +20,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
-from prime_rl.trainer.lora import has_lora_layers, save_lora_config
+from prime_rl.trainer.lora import has_lora_layers, merge_lora_state_dict, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.optim import CPUOffloadOptimizer
 from prime_rl.trainer.runs import Progress, get_multi_run_manager
@@ -385,12 +385,19 @@ class WeightCheckpointManager:
         state_dict = gather_weights_on_master(model, self.world.is_master, dtype=torch.bfloat16)
         self.logger.debug(f"Gathered weights on master rank in {time.perf_counter() - start_time:.2f} seconds")
 
+        lora_enabled = has_lora_layers(model)
+        if lora_enabled:
+            self.logger.debug("Merging LoRA weights into full weight checkpoint")
+            start_time = time.perf_counter()
+            state_dict = merge_lora_state_dict(model, state_dict)
+            self.logger.debug(f"Merged LoRA weights in {time.perf_counter() - start_time:.2f} seconds")
+
         # Remove tied weight keys to match original model format
         if getattr(model.config, "tie_word_embeddings", False):
             for key in getattr(model, "_tied_weights_keys", []):
                 state_dict.pop(key, None)
 
-        if has_lora_layers(model) and self.config.save_adapter_separately:
+        if lora_enabled and self.config.save_adapter_separately:
             self.logger.debug("Getting run adapter state dict for weight checkpoint")
             start_time = time.perf_counter()
             lora_state_dict = self.get_run_adapter_state_dict()

@@ -19,9 +19,6 @@ from transformers.utils import (
     WEIGHTS_NAME,
 )
 
-from prime_rl.trainer.lora import (
-    clean_lora_state_dict,
-)
 from prime_rl.utils.logger import get_logger
 
 PYTORCH_WRAPPER_PREFIXES = ["_fsdp_wrapped_module.", "_orig_module.", "_checkpoint_wrapped_module."]
@@ -146,10 +143,6 @@ def gather_weights_on_master(
                 # TODO(Sami) Blocking to avoid race condition, should make non-blocking long-term tho
                 cpu_state[key] = value.to("cpu", non_blocking=False)
         torch.distributed.barrier()
-
-    # Always clean up the state dict for HF compatibility
-    if any(".base_layer." in key or "lora_A" in key or "lora_B" in key for key in cpu_state.keys()):
-        cpu_state = clean_lora_state_dict(cpu_state)
 
     return cpu_state
 

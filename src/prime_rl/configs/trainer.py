@@ -538,7 +538,7 @@ class WeightCheckpointConfig(BaseConfig):
     save_adapter_separately: Annotated[
         bool,
         Field(
-            description="Whether to save LoRA adapters separately before merging into full model weights.",
+            description="Whether to also save LoRA adapters separately in addition to merged full model weights.",
         ),
     ] = False
 

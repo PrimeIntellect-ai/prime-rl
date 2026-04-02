@@ -21,6 +21,14 @@ def assert_adapter_checkpoint(adapter_dir: Path) -> None:
     assert all(key.startswith("base_model.model.") for key in state_dict)
 
 
+def assert_full_checkpoint(weights_dir: Path) -> None:
+    state_dict = load_state_dict(weights_dir)
+    assert state_dict
+    assert all("lora_A" not in key and "lora_B" not in key for key in state_dict)
+    assert all(".base_layer." not in key for key in state_dict)
+    assert all(not key.startswith("base_model.model.") for key in state_dict)
+
+
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for SFT LoRA CI integration tests."""
@@ -104,6 +112,12 @@ def test_adapter_checkpoint_written(sft_lora_process: ProcessResult, output_dir:
     assert_adapter_checkpoint(adapter_dir)
 
 
+def test_full_checkpoint_written(sft_lora_process: ProcessResult, output_dir: Path):
+    """Tests that the full checkpoint stays HF-compatible when adapters are also exported."""
+    weights_dir = output_dir / "weights" / "step_10"
+    assert_full_checkpoint(weights_dir)
+
+
 def test_no_error_resume(sft_lora_resume_process: ProcessResult):
     """Tests that the SFT LoRA resume process does not fail."""
     assert sft_lora_resume_process.returncode == 0, f"Process has non-zero return code ({sft_lora_resume_process})"
@@ -122,3 +136,9 @@ def test_adapter_checkpoint_written_resume(sft_lora_resume_process: ProcessResul
     """Tests that the adapter checkpoint is written after resuming with valid PEFT-compatible keys."""
     adapter_dir = output_dir / "weights" / "step_20" / "lora_adapters"
     assert_adapter_checkpoint(adapter_dir)
+
+
+def test_full_checkpoint_written_resume(sft_lora_resume_process: ProcessResult, output_dir: Path):
+    """Tests that the resumed full checkpoint stays HF-compatible when adapters are also exported."""
+    weights_dir = output_dir / "weights" / "step_20"
+    assert_full_checkpoint(weights_dir)

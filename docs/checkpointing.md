@@ -10,6 +10,8 @@ The default checkpoint directory is `checkpoints` and each checkpoint step will 
 
 Checkpointing is configured with the config key `--ckpt`. One can specify the interval (`--ckpt.interval`), whether to save checkpoints asynchronoously  (`--ckpt.save-async`), how many recent step checkpoints to keep on disk (`--ckpt.keep-last`), and keep checkpoints at every N steps permanently (`--ckpt.keep-interval`). By default, we do not checkpoint to save disk space. 
 
+When weight export is enabled under `ckpt.weights`, `weights/step_<N>` is intended to be a standalone Hugging Face-compatible checkpoint. If LoRA is enabled, the full checkpoint remains merged and `save_adapter_separately=true` additionally writes an adapter-only export under `weights/step_<N>/lora_adapters`.
+
 ## SFT
 
 Let's split the reverse text training SFT example, which does 40 steps by default, into two runs of 20 steps each. 
