@@ -507,12 +507,10 @@ class Scheduler:
             "off_policy_level/all/max": self.max_off_policy_level,
             "off_policy_level/all/mean": self.mean_off_policy_level,
         }
-        for task, count in self.empty_rollouts_by_task.items():
+        for task in self.total_rollouts_by_task:
             task_total = max(self.total_rollouts_by_task[task], 1)
-            metrics[f"empty_rollouts/{task}"] = count / task_total
-        for task, count in self.errored_rollouts_by_task.items():
-            task_total = max(self.total_rollouts_by_task[task], 1)
-            metrics[f"errored_rollouts/{task}"] = count / task_total
+            metrics[f"empty_rollouts/{task}"] = self.empty_rollouts_by_task.get(task, 0) / task_total
+            metrics[f"errored_rollouts/{task}"] = self.errored_rollouts_by_task.get(task, 0) / task_total
         by_task: dict[str, list[int]] = {}
         for info in self.inflight_requests.values():
             by_task.setdefault(info.task, []).append(info.off_policy_steps)
