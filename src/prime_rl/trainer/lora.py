@@ -19,6 +19,8 @@ from prime_rl.utils.logger import get_logger
 _MOE_LORA_KEY_RE = re.compile(
     r"(?P<prefix>.*\.experts)\.(?P<eid>\d+)\.(?P<proj>gate_proj|down_proj|up_proj)\.(?P<ab>lora_[AB])(?:\.(?:default|\d+))?(?:\.weight)?"
 )
+ADAPTER_CONFIG_NAME = "adapter_config.json"
+ADAPTER_WEIGHT_FILENAMES = ("adapter_model.safetensors", "adapter_model.bin")
 
 
 def strip_lora_from_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -29,6 +31,13 @@ def strip_lora_from_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str,
             continue
         new_state_dict[key] = value
     return new_state_dict
+
+
+def _strip_adapter_export_prefix(key: str) -> str:
+    prefix = "base_model.model."
+    if key.startswith(prefix):
+        return key[len(prefix) :]
+    return key
 
 
 def _get_module_by_name(model: nn.Module, module_name: str) -> nn.Module:
@@ -284,7 +293,7 @@ def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropo
         "modules_to_save": sorted(list(modules_to_save)) if modules_to_save else None,
     }
 
-    config_path = save_path / "adapter_config.json"
+    config_path = save_path / ADAPTER_CONFIG_NAME
     with open(config_path, "w") as f:
         json.dump(adapter_config, f, indent=2)
 
@@ -292,30 +301,30 @@ def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropo
 def resolve_adapter_dir(init_adapter_path: Path) -> Path:
     """Resolve init_adapter_path to the adapter directory containing adapter_config.json."""
     if init_adapter_path.is_file():
-        if init_adapter_path.name not in {"adapter_model.safetensors", "adapter_model.bin"}:
+        if init_adapter_path.name not in ADAPTER_WEIGHT_FILENAMES:
             raise ValueError(
-                f"init_adapter_path file must be adapter_model.safetensors or adapter_model.bin, got {init_adapter_path}"
+                f"init_adapter_path file must be one of {ADAPTER_WEIGHT_FILENAMES}, got {init_adapter_path}"
             )
         adapter_dir = init_adapter_path.parent
     elif init_adapter_path.is_dir():
         adapter_dir = init_adapter_path
     else:
         raise ValueError(f"init_adapter_path does not exist: {init_adapter_path}")
-    if not (adapter_dir / "adapter_config.json").exists():
-        raise ValueError(f"Adapter directory is missing adapter_config.json: {adapter_dir}")
+    if not (adapter_dir / ADAPTER_CONFIG_NAME).exists():
+        raise ValueError(f"Adapter directory is missing {ADAPTER_CONFIG_NAME}: {adapter_dir}")
     return adapter_dir
 
 
 def _resolve_adapter_weights(adapter_dir: Path) -> Path:
-    for name in ("adapter_model.safetensors", "adapter_model.bin"):
+    for name in ADAPTER_WEIGHT_FILENAMES:
         candidate = adapter_dir / name
         if candidate.exists():
             return candidate
-    raise ValueError(f"No adapter_model.safetensors or adapter_model.bin found in {adapter_dir}")
+    raise ValueError(f"No {ADAPTER_WEIGHT_FILENAMES} found in {adapter_dir}")
 
 
 def _load_adapter_config(adapter_dir: Path, lora_config: LoRAConfig) -> dict:
-    with open(adapter_dir / "adapter_config.json") as f:
+    with open(adapter_dir / ADAPTER_CONFIG_NAME) as f:
         adapter_config = json.load(f)
     if adapter_config.get("peft_type") != "LORA":
         raise ValueError(
@@ -334,8 +343,7 @@ def _load_adapter_config(adapter_dir: Path, lora_config: LoRAConfig) -> dict:
 
 
 def _normalize_lora_key(key: str) -> str:
-    if key.startswith("base_model.model."):
-        key = key[len("base_model.model.") :]
+    key = _strip_adapter_export_prefix(key)
     if key.endswith(".weight"):
         key = key[: -len(".weight")]
     key = re.sub(r"\.(lora_[AB])\.(default|\d+)", r".\1.0", key)
@@ -344,8 +352,7 @@ def _normalize_lora_key(key: str) -> str:
 
 
 def _parse_moe_lora_key(key: str) -> tuple[str, int] | None:
-    if key.startswith("base_model.model."):
-        key = key[len("base_model.model.") :]
+    key = _strip_adapter_export_prefix(key)
     m = _MOE_LORA_KEY_RE.fullmatch(key)
     if m is None:
         return None
