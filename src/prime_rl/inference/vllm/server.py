@@ -7,9 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
-from vllm.entrypoints.chat_utils import load_chat_template
-from vllm.entrypoints.cli.serve import run_api_server_worker_proc
-from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.api_server import init_app_state
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionResponse
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
@@ -136,30 +133,23 @@ def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> s
 logger = get_logger()
 from prime_rl.inference.patches import (
     monkey_patch_harmony_stop_token_propagation,
-    monkey_patch_hermes_tool_parser_thread_safety,
     monkey_patch_load_lora_adapter,
-    monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode,
     monkey_patch_tokenize_params_validation,
-    monkey_patch_tokenizer_thread_safety,
 )
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
     OpenAIServingChatWithTokens,
 )
 
-# NOTE: Fix harmony stop token propagation for GPT-OSS models (vLLM 0.17.0 bug)
+# NOTE: Fix harmony stop token propagation for GPT-OSS models
+# Upstream issue still open: https://github.com/vllm-project/vllm/issues/22519
 monkey_patch_harmony_stop_token_propagation()
-# NOTE: Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
-monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode()
 # NOTE: Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
+# May be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
 monkey_patch_load_lora_adapter()
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
+# Still needed in vLLM 0.19 — upstream rejects prompt_len > max_model_len - max_tokens
 monkey_patch_tokenize_params_validation()
-# NOTE: Monkeypatch Hermes tool parser to fix "Already borrowed" RuntimeError under concurrent load
-monkey_patch_hermes_tool_parser_thread_safety()
-# NOTE: Monkeypatch HF tokenizer to fix "Already borrowed" RuntimeError during concurrent chat template processing
-# Can be removed once https://github.com/vllm-project/vllm/pull/36557 is merged and we upgrade vllm
-monkey_patch_tokenizer_thread_safety()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
@@ -279,82 +269,36 @@ async def custom_init_app_state(
 ):
     """
     Modifies init_app_state:
-    1. Set up the custom OpenAIServingChatWithTokens state.
-    2. Monkey-patch to allow updating lora adapters in-place.
+    1. Call the original init_app_state to set up standard state.
+    2. Replace the serving_chat with our OpenAIServingChatWithTokens wrapper.
     """
-    # Setup the regular app state first (in-place)
     await init_app_state(engine_client, state, args, supported_tasks)
 
-    # NOTE: Initialize the custom OpenAIServingChatWithTokens state here
-    # TODO: Here, we repeat some calls done in init_app_state to be able to
-    # correctly set up the OpenAIServingChatWithTokens state, which is a bit
-    # brittle, and could probably be made nicer
-    if args.enable_log_requests:
-        request_logger = RequestLogger(max_log_len=args.max_log_len)
+    if "generate" in supported_tasks and state.openai_serving_chat is not None:
+        original_chat = state.openai_serving_chat
+        serving_chat = object.__new__(OpenAIServingChatWithTokens)
+        serving_chat.__dict__.update(original_chat.__dict__)
+        state.openai_serving_chat = serving_chat
+        state.openai_serving_chat_with_tokens = serving_chat
     else:
-        request_logger = None
-
-    resolved_chat_template = load_chat_template(args.chat_template)
-
-    chat_kwargs = dict(
-        request_logger=request_logger,
-        chat_template=resolved_chat_template,
-        chat_template_content_format=args.chat_template_content_format,
-        trust_request_chat_template=args.trust_request_chat_template,
-        return_tokens_as_token_ids=args.return_tokens_as_token_ids,
-        enable_auto_tools=args.enable_auto_tool_choice,
-        exclude_tools_when_tool_choice_none=args.exclude_tools_when_tool_choice_none,
-        tool_parser=args.tool_call_parser,
-        reasoning_parser=args.structured_outputs_config.reasoning_parser,
-        enable_prompt_tokens_details=args.enable_prompt_tokens_details,
-        enable_force_include_usage=args.enable_force_include_usage,
-        enable_log_outputs=args.enable_log_outputs,
-    )
-    if hasattr(args, "log_error_stack"):
-        chat_kwargs["log_error_stack"] = args.log_error_stack
-
-    serving_chat = OpenAIServingChatWithTokens(
-        engine_client,
-        state.openai_serving_models,
-        args.response_role,
-        **chat_kwargs,
-    )
-    state.openai_serving_chat = serving_chat if "generate" in supported_tasks else None
-    state.openai_serving_chat_with_tokens = serving_chat if "generate" in supported_tasks else None
+        state.openai_serving_chat_with_tokens = None
 
 
-def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
-    """
-    Modifies run_api_server_worker_proc:
-    1. Re-import our module to ensure monkey patches are applied in child processes
-    """
-    # NOTE: This hack ensures that monkey patches are applied in child processes
-    # to make our custom routes work in multi-API-server settings.
-    import prime_rl.inference.vllm.server  # noqa: F401
-
-    run_api_server_worker_proc(listen_address, sock, args, client_config, **uvicorn_kwargs)
-
-
-import vllm.entrypoints.cli.serve
 import vllm.entrypoints.openai.api_server
 from vllm.entrypoints.openai.api_server import build_app as _original_build_app
 
 
-def custom_build_app(args: Namespace, supported_tasks: tuple):
+def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None):
     """
     Wrap build_app to include our custom router.
     """
-    app = _original_build_app(args, supported_tasks)
+    app = _original_build_app(args, supported_tasks, model_config)
     app.include_router(router)
     return app
 
 
-# Also monkey patch run_api_server_worker_proc for multi-api-server mode
-# This is needed because worker processes spawned by run_multi_api_server
-# re-import modules and would otherwise use the original run_server_worker
 vllm.entrypoints.openai.api_server.init_app_state = custom_init_app_state
 vllm.entrypoints.openai.api_server.build_app = custom_build_app
-vllm.entrypoints.cli.serve.run_api_server_worker_proc = custom_run_api_server_worker_proc
 
 
 # Adapted from vllm/entrypoints/cli/serve.py

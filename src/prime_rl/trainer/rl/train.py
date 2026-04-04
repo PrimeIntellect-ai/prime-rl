@@ -1,3 +1,5 @@
+import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
+
 from contextlib import nullcontext
 import time
 from datetime import timedelta

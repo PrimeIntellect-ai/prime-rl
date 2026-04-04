@@ -64,41 +64,8 @@ def _patch_qwen35_lora():
     MergedColumnParallelLinearWithShardedLoRA.slice_lora_a = slice_lora_a
 
 
-# Monkeypatch PrometheusStatLogger to avoid NotImplementedError for LoRA in DP mode
-def monkey_patch_prometheus_stat_logger_for_lora_in_dp_mode():
-    from vllm.v1.metrics import loggers as vllm_metrics_loggers
-
-    _original_prometheus_stat_logger_init = vllm_metrics_loggers.PrometheusStatLogger.__init__
-
-    def _patched_prometheus_stat_logger_init(self, vllm_config, engine_indexes=None):
-        """Patched init that temporarily disables lora_config to skip the DP mode check."""
-        original_lora_config = vllm_config.lora_config
-        vllm_config.lora_config = None
-        try:
-            _original_prometheus_stat_logger_init(self, vllm_config, engine_indexes)
-        finally:
-            vllm_config.lora_config = original_lora_config
-        # Re-initialize LoRA metrics if needed (after the DP check is bypassed)
-        if original_lora_config is not None:
-            self.labelname_max_lora = "max_lora"
-            self.labelname_waiting_lora_adapters = "waiting_lora_adapters"
-            self.labelname_running_lora_adapters = "running_lora_adapters"
-            self.max_lora = original_lora_config.max_loras
-            self.gauge_lora_info = vllm_metrics_loggers.PrometheusStatLogger._gauge_cls(
-                name="vllm:lora_requests_info",
-                documentation="Running stats on lora requests.",
-                multiprocess_mode="sum",
-                labelnames=[
-                    self.labelname_max_lora,
-                    self.labelname_waiting_lora_adapters,
-                    self.labelname_running_lora_adapters,
-                ],
-            )
-
-    vllm_metrics_loggers.PrometheusStatLogger.__init__ = _patched_prometheus_stat_logger_init
-
-
 # Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
+# TODO: may be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
 def monkey_patch_load_lora_adapter():
     from http import HTTPStatus
 
@@ -153,6 +120,7 @@ def monkey_patch_load_lora_adapter():
 
 
 # Monkeypatch LRUCacheWorkerLoRAManager to allow loading adapter inplace without doing it every request
+# TODO: may be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
 def monkey_patch_LRUCacheWorkerLoRAManager():
     from vllm.lora.worker_manager import LoRARequest, LRUCacheLoRAModelManager, LRUCacheWorkerLoRAManager
 
@@ -278,109 +246,6 @@ def monkey_patch_tokenize_params_validation():
     TokenizeParams.get_encode_kwargs = _patched_get_encode_kwargs
 
 
-def monkey_patch_hermes_tool_parser_thread_safety():
-    """Patch Hermes2ProToolParser to cache tokenizer encode/decode results.
-
-    The original __init__ calls tokenizer.encode() and tokenizer.decode() on
-    every instantiation. Under concurrent load, the shared HuggingFace tokenizer's
-    Rust backend panics with ``RuntimeError: Already borrowed`` because multiple
-    threads mutably borrow the same internal state simultaneously.
-
-    Fix: run the first __init__ (which calls encode/decode) under a lock, cache
-    the results, and reuse them for all subsequent instantiations without ever
-    touching the tokenizer again.
-    """
-    import threading
-
-    import regex as re
-    from vllm.tool_parsers.abstract_tool_parser import ToolParser
-    from vllm.tool_parsers.hermes_tool_parser import Hermes2ProToolParser
-
-    _original_init = Hermes2ProToolParser.__init__
-    _cache: dict[int, dict] = {}
-    _lock = threading.Lock()
-
-    def _patched_init(self, tokenizer):
-        from vllm.tokenizers.mistral import MistralTokenizer
-
-        # Resolve the actual tokenizer that __init__ will use for encode/decode
-        actual_tokenizer = tokenizer.tokenizer if isinstance(tokenizer, MistralTokenizer) else tokenizer
-        key = id(actual_tokenizer)
-
-        if key in _cache:
-            # Fast path: skip encode/decode entirely, set up instance from cache
-            ToolParser.__init__(self, tokenizer)
-            if isinstance(tokenizer, MistralTokenizer):
-                self.model_tokenizer = tokenizer.tokenizer
-            self.current_tool_name_sent = False
-            self.prev_tool_call_arr = []
-            self.current_tool_id = -1
-            self.streamed_args_for_tool = []
-            self.tool_call_start_token = "<tool_call>"
-            self.tool_call_end_token = "</tool_call>"
-            self.tool_call_regex = re.compile(r"<tool_call>(.*?)</tool_call>|<tool_call>(.*)", re.DOTALL)
-            self.scratch_pad_regex = re.compile(r"<scratch_pad>(.*?)</scratch_pad>", re.DOTALL)
-            cached = _cache[key]
-            self.tool_call_start_token_ids = cached["start_ids"]
-            self.tool_call_end_token_ids = cached["end_ids"]
-            self.tool_call_start_token_array = cached["start_array"]
-            self.tool_call_end_token_array = cached["end_array"]
-            self.buffered_delta_text = ""
-            return
-
-        # Slow path: first instantiation for this tokenizer, run under lock
-        with _lock:
-            if key in _cache:
-                # Another thread populated it while we waited
-                _patched_init(self, tokenizer)
-                return
-            _original_init(self, tokenizer)
-            _cache[key] = {
-                "start_ids": self.tool_call_start_token_ids,
-                "end_ids": self.tool_call_end_token_ids,
-                "start_array": self.tool_call_start_token_array,
-                "end_array": self.tool_call_end_token_array,
-            }
-
-    Hermes2ProToolParser.__init__ = _patched_init
-
-
-def monkey_patch_tokenizer_thread_safety():
-    """Patch HuggingFace tokenizer to make _encode_plus thread-safe.
-
-    Under concurrent request load, vLLM's API server calls _encode_plus from
-    multiple async handlers simultaneously. _encode_plus mutates the Rust
-    tokenizer's internal state via set_truncation_and_padding (enable_truncation/
-    enable_padding) and encode_special_tokens. The Rust backend uses RefCell-style
-    borrow tracking (PyO3), and concurrent mutable borrows cause it to panic
-    with ``RuntimeError: Already borrowed``.
-
-    Fix: wrap the entire _encode_plus method in a per-tokenizer threading lock
-    so that state mutation and the subsequent encode call are atomic.
-    """
-    import threading
-
-    from transformers import PreTrainedTokenizerFast
-
-    _original_encode_plus = PreTrainedTokenizerFast._encode_plus
-    _locks: dict[int, threading.Lock] = {}
-    _meta_lock = threading.Lock()
-
-    def _get_lock(tokenizer_id: int) -> threading.Lock:
-        if tokenizer_id not in _locks:
-            with _meta_lock:
-                if tokenizer_id not in _locks:
-                    _locks[tokenizer_id] = threading.Lock()
-        return _locks[tokenizer_id]
-
-    def _patched_encode_plus(self, *args, **kwargs):
-        lock = _get_lock(id(self._tokenizer))
-        with lock:
-            return _original_encode_plus(self, *args, **kwargs)
-
-    PreTrainedTokenizerFast._encode_plus = _patched_encode_plus
-
-
 def monkey_patch_minimax_m2_for_lora():
     """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
 
@@ -457,7 +322,7 @@ def monkey_patch_minimax_m2_for_lora():
 
 
 def monkey_patch_harmony_stop_token_propagation():
-    """Fix: vLLM 0.17.0 doesn't merge harmony stop tokens into per-request SamplingParams.
+    """Fix: vLLM doesn't merge harmony stop tokens into per-request SamplingParams.
 
     The harmony mode sets stop_token_ids (including <|call|> and <|return|>) in
     default_sampling_params at server init, but ChatCompletionRequest.to_sampling_params()

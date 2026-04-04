@@ -21,6 +21,7 @@ def _tiny_vlm_config():
     tc.vocab_size = 256
     tc.hidden_size = 256
     tc.num_hidden_layers = 2
+    tc.layer_types = ["linear_attention", "full_attention"]
     tc.num_attention_heads = 4
     tc.num_key_value_heads = 2
     tc.head_dim = 64

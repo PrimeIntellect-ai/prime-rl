@@ -19,7 +19,7 @@ dependencies = [
     "torch>=2.9.0",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.17.0",
+    "vllm>=0.19.0",
     "wandb>=0.24.2",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.37",
@@ -123,7 +123,7 @@ torch = { index = "pytorch-cu128" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "d3c830c" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
-transformers = { git = "https://github.com/huggingface/transformers.git", rev = "5c1c72b" }
+transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "abd9943b" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.14/vllm_router-0.1.14-cp38-abi3-linux_x86_64.whl" }

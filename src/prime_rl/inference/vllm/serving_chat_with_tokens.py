@@ -250,7 +250,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 request_metadata,
                 reasoning_parser,
             )
-        except GenerationError as e:
-            return self._convert_generation_error_to_response(e)
+        except GenerationError:
+            raise  # Let FastAPI's global generation_error_handler handle it
         except ValueError as e:
             return self.create_error_response(e)

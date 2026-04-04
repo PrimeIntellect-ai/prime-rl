@@ -1,5 +1,4 @@
 from transformers.configuration_utils import PretrainedConfig
-from transformers.modeling_rope_utils import rope_config_validation
 
 
 class MiniMaxM2Config(PretrainedConfig):
@@ -124,7 +123,7 @@ class MiniMaxM2Config(PretrainedConfig):
 
         if self.rope_scaling is not None and "type" in self.rope_scaling:
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
-        rope_config_validation(self)
+        self.standardize_rope_params()
 
         # MoE arguments
         self.num_local_experts = num_local_experts
