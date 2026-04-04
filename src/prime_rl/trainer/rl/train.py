@@ -41,6 +41,7 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
+from prime_rl.trainer.rl.stats import aggregate_dp_count, get_local_batch_stats
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -311,16 +312,17 @@ def train(config: TrainerConfig):
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
-        num_local_micro_batches = len(micro_batches)
+        batch_stats = get_local_batch_stats(micro_batches)
+        num_local_micro_batches = batch_stats.num_micro_batches
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
         forward_backward_start_time = time.perf_counter()
-        max_local_micro_batch_tokens = max(micro_batch["input_ids"].shape[1] for micro_batch in micro_batches)
-        num_local_tokens = sum(micro_batch["input_ids"].numel() for micro_batch in micro_batches)
-        num_local_loss_tokens = sum(int(micro_batch["loss_mask"].sum().item()) for micro_batch in micro_batches)
-        num_local_samples = sum(micro_batch["sample_count"] for micro_batch in micro_batches)
+        max_local_micro_batch_tokens = batch_stats.max_micro_batch_tokens
+        num_local_tokens = batch_stats.num_tokens
+        num_local_loss_tokens = batch_stats.num_loss_tokens
+        num_local_samples = batch_stats.num_samples
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
         loss_scale = max(num_local_loss_tokens, 1)
@@ -505,9 +507,22 @@ def train(config: TrainerConfig):
         tensor_stats = tensors.compute_stats()
 
         # Compute step metrics
-        num_tokens = parallel_dims.get_mesh("dp").size() * num_local_tokens
+        dp_mesh = parallel_dims.get_mesh("dp")
+        reduction_device = torch.device("cuda", torch.cuda.current_device())
+        num_tokens = aggregate_dp_count(
+            num_local_tokens,
+            dp_world_size=dp_mesh.size(),
+            dp_group=dp_mesh.get_group(),
+            device=reduction_device,
+        )
+        num_samples = aggregate_dp_count(
+            num_local_samples,
+            dp_world_size=dp_mesh.size(),
+            dp_group=dp_mesh.get_group(),
+            device=reduction_device,
+        )
         progress.total_tokens += num_tokens
-        progress.total_samples += num_local_samples
+        progress.total_samples += num_samples
         perf_counter = get_perf_counter(model, effective_micro_batch_max_tokens)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
