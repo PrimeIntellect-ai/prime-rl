@@ -16,4 +16,6 @@ Remove this shim once ring_flash_attn ships a fixed version.
 import transformers.modeling_flash_attention_utils as _mfau
 
 if not hasattr(_mfau, "is_flash_attn_greater_or_equal_2_10"):
-    _mfau.is_flash_attn_greater_or_equal_2_10 = True
+    # ring_flash_attn uses this as a bare value (if x:), but other code may
+    # call it as a function (if x():). Use a callable that is also truthy.
+    _mfau.is_flash_attn_greater_or_equal_2_10 = lambda: True
