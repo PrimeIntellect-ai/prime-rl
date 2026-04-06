@@ -270,7 +270,7 @@ class PrimeMonitor(Monitor):
         self.logger.info(f"Logging {len(rollouts)} samples to Prime Intellect API at step {step}")
         start_time = time.perf_counter()
 
-        parquet_bytes = self._rollouts_to_parquet_bytes(rollouts, step)
+        parquet_bytes = self._rollouts_to_parquet_bytes_eval(rollouts, None, step)
 
         if not parquet_bytes:
             self.logger.warning(f"No samples to log at step {step}")
@@ -282,15 +282,16 @@ class PrimeMonitor(Monitor):
         self._upload_samples_via_presigned_url(parquet_bytes, step)
 
         self.logger.debug(
-            f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
+            f"Initiated eval samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
     def _rollouts_to_parquet_bytes_eval(
-        self, rollouts: list[vf.RolloutOutput], env_name: str, step: int
+        self, rollouts: list[vf.RolloutOutput], env_name: str | None, step: int
     ) -> bytes | None:
-        """Convert eval rollouts directly to Parquet bytes for upload."""
+        """Convert rollouts to Parquet bytes for upload. If env_name is provided, it's eval samples; otherwise training samples."""
         now = datetime.now(timezone.utc)
         rows = []
+        tag = f"eval/{env_name}" if env_name else "train"
 
         for sample_id, rollout in enumerate(rollouts):
             prompt = rollout.get("prompt")
@@ -322,14 +323,14 @@ class PrimeMonitor(Monitor):
                 {
                     "run_id": self.run_id,
                     "step": step,
-                    "tag": f"eval/{env_name}",
+                    "tag": tag,
                     "problem_id": problem_id,
                     "sample_id": sample_id,
                     "prompt": json.dumps(prompt),
                     "completion": json.dumps(completion),
                     "trajectory": json.dumps(trajectory_data),
                     "answer": rollout.get("answer") or "",
-                    "task": rollout.get("task") or env_name,
+                    "task": rollout.get("task") or (env_name or ""),
                     "info": _json(rollout.get("info")),
                     "reward": rollout.get("reward"),
                     "advantage": rollout.get("advantage"),
@@ -465,7 +466,6 @@ class PrimeMonitor(Monitor):
         if not rollouts:
             return
 
-        assert step not in self._pending_sample_steps, f"Step {step} upload already in progress"
         assert self.logger is not None, "Logger is required for sample logging"
 
         self.logger.info(f"Logging {len(rollouts)} eval samples for {env_name} to Prime Intellect API at step {step}")

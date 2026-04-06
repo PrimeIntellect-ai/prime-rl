@@ -38,11 +38,12 @@ def test_rollouts_to_parquet_bytes_preserves_all_rollouts_and_ids():
     monitor = PrimeMonitor.__new__(PrimeMonitor)
     monitor.run_id = "run-123"
 
-    parquet_bytes = monitor._rollouts_to_parquet_bytes(
+    parquet_bytes = monitor._rollouts_to_parquet_bytes_eval(
         [
             _build_rollout(example_id=101, reward=1.0, task="task-a"),
             _build_rollout(example_id=202, reward=0.0, task="task-b"),
         ],
+        None,
         step=7,
     )
 
@@ -64,7 +65,7 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     monitor = PrimeMonitor.__new__(PrimeMonitor)
     monitor.run_id = "run-456"
 
-    parquet_bytes = monitor._rollouts_to_parquet_bytes(
+    parquet_bytes = monitor._rollouts_to_parquet_bytes_eval(
         [
             _build_rollout(example_id=1, reward=1.0, task="task-a"),
             {
@@ -74,6 +75,7 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
                 "trajectory": [],
             },
         ],
+        None,
         step=3,
     )
 
