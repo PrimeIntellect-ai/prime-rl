@@ -401,6 +401,13 @@ class EvalConfig(BaseConfig):
         ),
     ] = False
 
+    log_samples: Annotated[
+        bool,
+        Field(
+            description="Whether to log individual eval samples to monitors that support it.",
+        ),
+    ] = True
+
     @model_validator(mode="after")
     def validate_unique_env_names(self):
         env_names = [env.resolved_name for env in self.env]
