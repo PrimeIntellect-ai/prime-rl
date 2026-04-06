@@ -285,8 +285,10 @@ class PrimeMonitor(Monitor):
             f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _rollouts_to_parquet_bytes(self, rollouts: list[vf.RolloutOutput], step: int) -> bytes | None:
-        """Convert rollouts directly to Parquet bytes for upload."""
+    def _rollouts_to_parquet_bytes_eval(
+        self, rollouts: list[vf.RolloutOutput], env_name: str, step: int
+    ) -> bytes | None:
+        """Convert eval rollouts directly to Parquet bytes for upload."""
         now = datetime.now(timezone.utc)
         rows = []
 
@@ -320,14 +322,14 @@ class PrimeMonitor(Monitor):
                 {
                     "run_id": self.run_id,
                     "step": step,
-                    "tag": "",
+                    "tag": f"eval/{env_name}",
                     "problem_id": problem_id,
                     "sample_id": sample_id,
                     "prompt": json.dumps(prompt),
                     "completion": json.dumps(completion),
                     "trajectory": json.dumps(trajectory_data),
                     "answer": rollout.get("answer") or "",
-                    "task": rollout.get("task") or "",
+                    "task": rollout.get("task") or env_name,
                     "info": _json(rollout.get("info")),
                     "reward": rollout.get("reward"),
                     "advantage": rollout.get("advantage"),
@@ -450,7 +452,39 @@ class PrimeMonitor(Monitor):
         return False
 
     def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
-        pass
+        """Logs eval rollouts to Prime Intellect API using presigned URLs for direct R2 upload."""
+        if not self.is_master:
+            return
+        if not self.enabled:
+            return
+        if not self.config or not self.config.log_extras or not self.config.log_extras.samples:
+            return
+
+        # For eval, log all samples since eval sets are small
+        rollouts = sample_items_for_logging(rollouts, None)  # None means log all
+        if not rollouts:
+            return
+
+        assert step not in self._pending_sample_steps, f"Step {step} upload already in progress"
+        assert self.logger is not None, "Logger is required for sample logging"
+
+        self.logger.info(f"Logging {len(rollouts)} eval samples for {env_name} to Prime Intellect API at step {step}")
+        start_time = time.perf_counter()
+
+        parquet_bytes = self._rollouts_to_parquet_bytes_eval(rollouts, env_name, step)
+
+        if not parquet_bytes:
+            self.logger.warning(f"No eval samples to log at step {step}")
+            return
+
+        self._pending_sample_steps.add(step)
+
+        # Use presigned URL flow for uploading samples
+        self._upload_samples_via_presigned_url(parquet_bytes, step)
+
+        self.logger.debug(
+            f"Initiated eval samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
+        )
 
     def log_final_samples(self) -> None:
         """Log final samples (no-op - samples are logged per-step only)."""

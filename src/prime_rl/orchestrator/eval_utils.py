@@ -99,6 +99,7 @@ async def evaluate_env(
     ckpt_step: int,
     step: int,
     get_client: Callable[[], Awaitable[vf.ClientConfig]],
+    log_samples: bool = True,
 ):
     logger = get_logger()
     logger.info(f"Evaluating {env_name} ({num_examples=}, {rollouts_per_example=})")
@@ -183,4 +184,5 @@ async def evaluate_env(
     eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
     monitor = get_monitor()
     monitor.log(eval_metrics, step=step)
-    monitor.log_eval_samples(outputs, env_name=env_name, step=step)
+    if log_samples:
+        monitor.log_eval_samples(outputs, env_name=env_name, step=step)
