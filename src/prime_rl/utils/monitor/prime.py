@@ -59,6 +59,14 @@ _SAMPLE_SCHEMA = pa.schema(
 class PrimeMonitor(Monitor):
     """Logs to Prime Intellect API."""
 
+    def _api_headers(self) -> dict[str, str]:
+        """Return auth headers accepted by Prime's monitoring API."""
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "x-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+
     def __init__(
         self,
         config: PrimeMonitorConfig | None,
@@ -133,8 +141,7 @@ class PrimeMonitor(Monitor):
 
     def _register_run(self, config: PrimeMonitorConfig, run_config: BaseConfig | None) -> str | None:
         """Register an external run with the platform. Returns run_id on success, None on failure."""
-        registration_api_key = self.api_key
-        if not registration_api_key:
+        if not self.api_key:
             self.logger.warning(
                 f"Prime Intellect API key not found. Set {config.api_key_var} environment variable or run `prime login`. "
                 "PrimeMonitor will not be able to register or upload data."
@@ -174,7 +181,7 @@ class PrimeMonitor(Monitor):
         try:
             response = httpx.post(
                 f"{api_base}/external-runs",
-                headers={"Authorization": f"Bearer {registration_api_key}"},
+                headers=self._api_headers(),
                 json=payload,
                 timeout=30,
             )
@@ -203,7 +210,6 @@ class PrimeMonitor(Monitor):
         if not getattr(self, "_registered", False):
             return
 
-        registration_api_key = self.api_key
         payload: dict = {"status": "completed" if success else "failed"}
         status_label = "completed" if success else "failed"
         self.logger.info(f"Finalizing platform run {self.run_id} as {status_label}")
@@ -214,7 +220,7 @@ class PrimeMonitor(Monitor):
         try:
             response = httpx.put(
                 finalize_url,
-                headers={"Authorization": f"Bearer {registration_api_key}"},
+                headers=self._api_headers(),
                 json=payload,
                 timeout=30,
             )
@@ -398,11 +404,10 @@ class PrimeMonitor(Monitor):
 
     async def _request_presigned_url(self, step: int) -> dict[str, Any] | None:
         """Request a presigned URL from the backend."""
-        headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
         try:
             response = await self._client.post(
                 f"{self.base_url}/samples/presign",
-                headers=headers,
+                headers=self._api_headers(),
                 json={"run_id": self.run_id, "step": step},
             )
             response.raise_for_status()
@@ -430,12 +435,11 @@ class PrimeMonitor(Monitor):
 
     async def _confirm_samples_upload(self, step: int, s3_key: str, max_retries: int = 3) -> bool:
         """Confirm samples upload with the backend. Returns True on success."""
-        headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
         for attempt in range(max_retries):
             try:
                 response = await self._client.post(
                     f"{self.base_url}/samples/confirm",
-                    headers=headers,
+                    headers=self._api_headers(),
                     json={"run_id": self.run_id, "step": step, "s3_key": s3_key},
                 )
                 response.raise_for_status()
@@ -580,17 +584,13 @@ class PrimeMonitor(Monitor):
 
     async def _make_request_async(self, endpoint: str, data: dict[str, Any], max_retries: int = 3) -> None:
         """Make an async POST request to the Prime Intellect API with retries."""
-        headers = {
-            "x-api-key": self.api_key,
-            "Content-Type": "application/json",
-        }
         full_endpoint = f"{self.base_url}/{endpoint}"
 
         for attempt in range(max_retries):
             try:
                 response = await self._client.post(
                     full_endpoint,
-                    headers=headers,
+                    headers=self._api_headers(),
                     json=data,
                 )
                 response.raise_for_status()
