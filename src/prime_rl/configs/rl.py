@@ -724,6 +724,12 @@ class RLConfig(BaseConfig):
                         "Number of inference GPUs must be divisible by the tensor parallel size"
                     )
                     self.inference.parallel.dp = num_infer_gpus // self.inference.parallel.tp
+                # Ensure api_server_count matches DP so all workers are created.
+                # Without this, the NCCL broadcast group expects dp*tp workers
+                # but only api_server_count*tp exist, causing a deadlock.
+                dp = self.inference.parallel.dp
+                if self.inference.api_server_count < dp and not self.inference.enable_lora:
+                    self.inference.api_server_count = dp
 
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node
