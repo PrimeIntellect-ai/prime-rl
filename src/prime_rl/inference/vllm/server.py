@@ -284,8 +284,10 @@ async def custom_init_app_state(
         state.openai_serving_chat_with_tokens = None
 
 
+import vllm.v1.utils
 import vllm.entrypoints.openai.api_server
 from vllm.entrypoints.openai.api_server import build_app as _original_build_app
+from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server_worker_proc
 
 
 def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None):
@@ -297,8 +299,19 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     return app
 
 
+def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=None, **uvicorn_kwargs) -> None:
+    """
+    Re-import our module in child processes so monkey patches (custom routes,
+    custom init_app_state) are applied in multi-API-server mode.
+    """
+    import prime_rl.inference.vllm.server  # noqa: F401
+
+    _original_run_api_server_worker_proc(listen_address, sock, args, client_config, **uvicorn_kwargs)
+
+
 vllm.entrypoints.openai.api_server.init_app_state = custom_init_app_state
 vllm.entrypoints.openai.api_server.build_app = custom_build_app
+vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 
 
 # Adapted from vllm/entrypoints/cli/serve.py
