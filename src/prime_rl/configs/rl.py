@@ -770,13 +770,34 @@ class RLConfig(BaseConfig):
                 if not self.inference.enable_lora and self.inference.api_server_count == self.inference.parallel.dp:
                     self.inference.api_server_count = inferred_dp_local
 
+            # Auto-infer DP and api_server_count for standard multi-node inference.
+            # Without EP, vLLM only creates api_server_count * tp workers per node,
+            # not gpus_per_node workers. If DP isn't set, the broadcast group expects
+            # more workers than exist, deadlocking NCCL init.
+            if (
+                self.inference is not None
+                and not self.inference.enable_expert_parallel
+                and self.inference.deployment.type != "disaggregated"
+            ):
+                dp_per_node = self.deployment.gpus_per_node // self.inference.parallel.tp
+                if self.inference.parallel.dp == 1 and dp_per_node > 1:
+                    self.inference.parallel.dp = dp_per_node
+                if self.inference.data_parallel_size_local is None and dp_per_node > 1:
+                    self.inference.data_parallel_size_local = dp_per_node
+                if self.inference.api_server_count == 1 and dp_per_node > 1:
+                    self.inference.api_server_count = dp_per_node
+
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
-                total_infer_gpus = self.deployment.gpus_per_node * self.deployment.total_infer_nodes
+                # Compute inference_world_size from actual worker count per server:
+                # each api_server runs tp workers that participate in collective_rpc.
+                api_server_count = self.inference.api_server_count if self.inference else 1
+                tp = self.inference.parallel.tp if self.inference else 1
+                total_infer_workers = self.deployment.total_infer_nodes * api_server_count * tp
                 assert self.trainer.weight_broadcast.type == "nccl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
-                self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
+                self.trainer.weight_broadcast.inference_world_size = total_infer_workers
                 assert self.orchestrator.weight_broadcast.type == "nccl"
-                self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
+                self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
         return self
 
