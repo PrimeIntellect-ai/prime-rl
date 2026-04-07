@@ -284,8 +284,8 @@ async def custom_init_app_state(
         state.openai_serving_chat_with_tokens = None
 
 
-import vllm.v1.utils
 import vllm.entrypoints.openai.api_server
+import vllm.v1.utils
 from vllm.entrypoints.openai.api_server import build_app as _original_build_app
 from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server_worker_proc
 
