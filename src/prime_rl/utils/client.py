@@ -395,7 +395,6 @@ async def init_nccl_broadcast(
                     "port": port,
                     "rank_offset": rank_offset,
                     "inference_world_size": inference_world_size,
-                    "gpus_per_server": gpus_per_server,
                     "timeout": timeout,
                     "quantize_in_weight_transfer": quantize_in_weight_transfer,
                 },

@@ -97,7 +97,6 @@ class NCCLWeightUpdateWorker(Worker):
         port: int,
         rank_offset: int,
         inference_world_size: int,
-        gpus_per_server: int,
         timeout: int,
         quantize_in_weight_transfer: bool = False,
     ) -> None:
@@ -106,7 +105,6 @@ class NCCLWeightUpdateWorker(Worker):
         Args:
             rank_offset: Starting GPU offset for this server in the global inference group.
             inference_world_size: Total number of inference GPUs across all servers.
-            gpus_per_server: Number of GPUs managed by this server instance.
         """
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
         # Use the worker's device index directly as the local rank.
