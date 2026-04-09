@@ -760,6 +760,19 @@ class TrainerConfig(BaseConfig):
         ),
     ] = Path("outputs")
 
+    matmul_precision: Annotated[
+        Literal["highest", "high", "medium"],
+        Field(
+            description=(
+                "Precision for float32 matrix multiplications. "
+                "Use 'highest' for full FP32 (required on ROCm/AMD GPUs to avoid "
+                "catastrophic precision loss in softmax over large vocabularies). "
+                "Use 'high' to enable TF32 on NVIDIA GPUs for a speedup with minor "
+                "precision tradeoff. See torch.set_float32_matmul_precision docs."
+            ),
+        ),
+    ] = "high"
+
     max_steps: Annotated[
         int | None,
         Field(
