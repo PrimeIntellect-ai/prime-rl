@@ -17,6 +17,7 @@ from prime_rl.orchestrator.trajectories import (
     build_vlm_image_cache,
     interleave_rollout,
 )
+from prime_rl.utils.chat_template import MessagePayloadError, prepare_messages_for_rendering
 
 
 def _pixels(data: list[list[float]]) -> tuple[bytes, list[int]]:
@@ -55,6 +56,32 @@ def test_deserialize_tool_calls_parses_arguments_when_present():
     deserialized = _deserialize_tool_calls(messages)
 
     assert deserialized[0]["tool_calls"][0]["function"]["arguments"] == {"x": 1}
+
+
+def test_deserialize_tool_calls_raises_on_invalid_json_string():
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"x": 1'},
+                }
+            ],
+        }
+    ]
+
+    with pytest.raises(MessagePayloadError, match="invalid JSON arguments"):
+        _deserialize_tool_calls(messages)
+
+
+def test_prepare_messages_for_rendering_raises_on_non_list_tool_calls():
+    with pytest.raises(MessagePayloadError, match="tool_calls must be a list"):
+        prepare_messages_for_rendering(
+            [{"role": "assistant", "content": None, "tool_calls": {"id": "call_1"}}],
+            default_role="assistant",
+        )
 
 
 @pytest.fixture

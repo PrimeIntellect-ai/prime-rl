@@ -138,3 +138,70 @@ def test_pretokenize_rollout_trajectory_for_sft():
         [True] * len(step1_completion_ids) + [False] * len(step2_new_prompt_ids) + [True] * len(step2_completion_ids)
     )
     assert rollout.completion_logprobs == [0.0] * len(rollout.completion_ids)
+
+
+def test_pretokenize_rollout_trajectory_invalid_completion_roles_returns_false():
+    tokenizer = SimpleChatTokenizer()
+    output = vf.RolloutOutput(
+        example_id=7,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "U1"}],
+                completion=[
+                    {"role": "assistant", "content": "A1"},
+                    {"role": "tool", "content": "tool-output", "tool_call_id": "call_1"},
+                ],
+                response=MagicMock(),
+                tokens=None,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            )
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    assert pretokenize_rollout_trajectory(output, tokenizer) is False
+    assert output["trajectory"][0]["tokens"] is None
+    assert interleave_rollout(output) is None
+
+
+def test_pretokenize_rollout_trajectory_invalid_tool_call_json_returns_false():
+    tokenizer = SimpleChatTokenizer()
+    output = vf.RolloutOutput(
+        example_id=8,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "Check the weather"}],
+                completion=[
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": '{"location": "Paris"'},
+                            }
+                        ],
+                    }
+                ],
+                response=MagicMock(),
+                tokens=None,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            )
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    assert pretokenize_rollout_trajectory(output, tokenizer) is False
+    assert output["trajectory"][0]["tokens"] is None
+    assert interleave_rollout(output) is None

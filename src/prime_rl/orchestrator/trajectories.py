@@ -13,9 +13,11 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.chat_template import (
+    MessagePayloadError,
     common_prefix_len,
     deserialize_tool_calls,
     normalize_messages,
+    prepare_messages_for_rendering,
     render_messages,
     strip_message_content,
 )
@@ -124,16 +126,15 @@ def _tokenize_step_from_messages(
     tools: list[dict[str, Any]] | None = None,
     processor=None,
 ) -> dict[str, Any]:
-    prompt = _normalize_messages(step.get("prompt"), default_role="user")
-    completion = _normalize_messages(step.get("completion"), default_role="assistant")
+    prompt = prepare_messages_for_rendering(step.get("prompt"), default_role="user")
+    completion = prepare_messages_for_rendering(step.get("completion"), default_role="assistant")
 
-    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
-    completion = _strip_message_content(_deserialize_tool_calls(completion))
-
-    assert all(m.get("role") == "assistant" for m in completion), (
-        "Expected all completion messages to be assistant role for SFT distillation, "
-        f"got roles: {[m.get('role') for m in completion]}"
-    )
+    invalid_roles = [m.get("role") for m in completion if m.get("role") != "assistant"]
+    if invalid_roles:
+        raise MessagePayloadError(
+            "Expected all completion messages to be assistant role for SFT distillation, "
+            f"got roles: {invalid_roles}"
+        )
 
     if processor is not None:
         prompt = _prepare_messages_for_processor(prompt)
@@ -212,7 +213,13 @@ def pretokenize_rollout_trajectory(
         if step["tokens"] is not None:
             continue
 
-        reconstructed = _tokenize_step_from_messages(step, tokenizer, tools=tools, processor=processor)
+        try:
+            reconstructed = _tokenize_step_from_messages(step, tokenizer, tools=tools, processor=processor)
+        except MessagePayloadError as e:
+            logger.warning(
+                f"Failed to pretokenize rollout example {output['example_id']} step {step_idx}: {e}. Skipping rollout."
+            )
+            return False
         if reconstructed["prompt_prefix_len"] < reconstructed["original_prompt_len"]:
             logger.debug(
                 f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "

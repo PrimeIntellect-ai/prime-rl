@@ -15,10 +15,9 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import (
+    MessagePayloadError,
     build_incremental_token_mask,
-    deserialize_tool_calls,
-    normalize_messages,
-    strip_message_content,
+    prepare_messages_for_rendering,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -166,26 +165,29 @@ class SFTDataset(StatefulIterableDataset):
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt.
             if "messages" in example:
-                messages = normalize_messages(example["messages"], default_role="assistant")
+                return prepare_messages_for_rendering(example["messages"], default_role="assistant")
             elif "prompt" in example and "completion" in example:
-                messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
+                return prepare_messages_for_rendering(
+                    example["prompt"], default_role="user"
+                ) + prepare_messages_for_rendering(
                     example["completion"], default_role="assistant"
                 )
-            else:
-                raise ValueError(
-                    "All examples in the dataset must have either a 'messages' column "
-                    "or both 'prompt' and 'completion' columns for SFT"
-                )
+            raise ValueError(
+                "All examples in the dataset must have either a 'messages' column "
+                "or both 'prompt' and 'completion' columns for SFT"
+            )
 
-            # Deserialize tool call arguments from message list, if present - assumes OAI format
-            # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
-            messages = deserialize_tool_calls(messages)
-
-            # Strip content from all messages so that incremental tokenization works
-            # NOTE: This has the side effect that we do never train on leading or trailing whitespace
-            return strip_message_content(messages)
-
-        messages = resolve_messages(example)
+        try:
+            messages = resolve_messages(example)
+        except MessagePayloadError as e:
+            self.logger.warning(
+                f"Skipping example {example.get('__index', '')} because message preprocessing failed: {e}"
+            )
+            return None
+        except ValueError as e:
+            if "must have either a 'messages' column" in str(e):
+                raise
+            raise
 
         # Parse available tools, if present - assumes OAI format
         # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
@@ -203,16 +205,22 @@ class SFTDataset(StatefulIterableDataset):
                 case "tool":
                     return True if self.loss_mask_config.tool else False
                 case _:
-                    raise ValueError(f"Invalid message role: {message['role']}")
+                    raise MessagePayloadError(f"Invalid message role: {message['role']}")
 
-        input_ids, loss_mask = build_incremental_token_mask(
-            self.tokenizer,
-            messages,
-            role_to_mask=should_mask,
-            tools=tools,
-            chat_template_kwargs=example.get("chat_template_kwargs", {}),
-            collapse_consecutive_tool_messages=True,
-        )
+        try:
+            input_ids, loss_mask = build_incremental_token_mask(
+                self.tokenizer,
+                messages,
+                role_to_mask=should_mask,
+                tools=tools,
+                chat_template_kwargs=example.get("chat_template_kwargs", {}),
+                collapse_consecutive_tool_messages=True,
+            )
+        except MessagePayloadError as e:
+            self.logger.warning(
+                f"Skipping example {example.get('__index', '')} because tokenization failed: {e}"
+            )
+            return None
 
         # If EOS token is not found, manually append it
         if not self.tokenizer.eos_token_id in input_ids:

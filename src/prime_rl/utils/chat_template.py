@@ -4,6 +4,10 @@ from typing import Any, Callable
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 
+class MessagePayloadError(ValueError):
+    """Raised when external message payloads are structurally invalid."""
+
+
 def common_prefix_len(a: list[int], b: list[int]) -> int:
     max_len = min(len(a), len(b))
     for idx in range(max_len):
@@ -27,37 +31,100 @@ def normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]
             elif isinstance(message, dict):
                 normalized.append(dict(message))
             else:
-                raise TypeError(f"Unsupported message type: {type(message)}")
+                raise MessagePayloadError(f"Unsupported message type: {type(message)}")
         return normalized
-    raise TypeError(f"Unsupported messages container type: {type(messages)}")
+    raise MessagePayloadError(f"Unsupported messages container type: {type(messages)}")
+
+
+def validate_messages_for_rendering(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for message_idx, message in enumerate(messages):
+        role = message.get("role")
+        if not isinstance(role, str):
+            raise MessagePayloadError(f"Message {message_idx} is missing a string role")
+
+        content = message.get("content")
+        if content is not None and not isinstance(content, (str, list)):
+            raise MessagePayloadError(
+                f"Message {message_idx} has unsupported content type for chat template rendering: {type(content)}"
+            )
+
+        if "tool_calls" not in message:
+            continue
+
+        tool_calls = message.get("tool_calls")
+        if tool_calls is None:
+            continue
+        if not isinstance(tool_calls, list):
+            raise MessagePayloadError(f"Message {message_idx} tool_calls must be a list, got {type(tool_calls)}")
+
+        for tool_call_idx, tool_call in enumerate(tool_calls):
+            if not isinstance(tool_call, dict):
+                raise MessagePayloadError(
+                    f"Message {message_idx} has non-dict tool call at index {tool_call_idx}: {type(tool_call)}"
+                )
+
+            function = tool_call.get("function")
+            if function is not None and not isinstance(function, dict):
+                raise MessagePayloadError(
+                    f"Message {message_idx} tool call {tool_call_idx} has non-dict function payload: {type(function)}"
+                )
+
+    return messages
 
 
 def deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def _deserialize_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
+    def _deserialize_tool_call(tool_call: Any, *, message_idx: int, tool_call_idx: int) -> dict[str, Any]:
+        if not isinstance(tool_call, dict):
+            raise MessagePayloadError(
+                f"Message {message_idx} has non-dict tool call at index {tool_call_idx}: {type(tool_call)}"
+            )
         function = tool_call.get("function", {})
+        if function is None:
+            function = {}
+        if not isinstance(function, dict):
+            raise MessagePayloadError(
+                f"Message {message_idx} tool call {tool_call_idx} has non-dict function payload: {type(function)}"
+            )
         arguments = function.get("arguments")
         if isinstance(arguments, str):
-            arguments = json.loads(arguments)
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError as e:
+                raise MessagePayloadError(
+                    f"Message {message_idx} tool call {tool_call_idx} has invalid JSON arguments"
+                ) from e
         return {
             **tool_call,
             "function": {**function, "arguments": arguments},
         }
 
     deserialized_messages: list[dict[str, Any]] = []
-    for message in messages:
+    for message_idx, message in enumerate(messages):
         if "tool_calls" not in message:
             deserialized_messages.append(dict(message))
             continue
 
         tool_calls = message.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            raise MessagePayloadError(f"Message {message_idx} tool_calls must be a list, got {type(tool_calls)}")
         deserialized_messages.append(
             {
                 **message,
-                "tool_calls": [_deserialize_tool_call(tc) for tc in tool_calls],
+                "tool_calls": [
+                    _deserialize_tool_call(tc, message_idx=message_idx, tool_call_idx=tool_call_idx)
+                    for tool_call_idx, tc in enumerate(tool_calls)
+                ],
             }
         )
 
     return deserialized_messages
+
+
+def prepare_messages_for_rendering(messages: Any, default_role: str) -> list[dict[str, Any]]:
+    normalized_messages = normalize_messages(messages, default_role)
+    validated_messages = validate_messages_for_rendering(normalized_messages)
+    deserialized_messages = deserialize_tool_calls(validated_messages)
+    return strip_message_content(deserialized_messages)
 
 
 def strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -130,7 +197,8 @@ def build_incremental_token_mask(
             processor=processor,
         )
 
-        assert prev_ids == cur_ids[:prev_len], "Mismatch in incremental tokenization with chat template."
+        if prev_ids != cur_ids[:prev_len]:
+            raise ValueError("Mismatch in incremental tokenization with chat template.")
 
         token_mask.extend([role_to_mask(message)] * (len(cur_ids) - prev_len))
         prev_ids = cur_ids
