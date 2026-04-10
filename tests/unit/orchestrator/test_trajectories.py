@@ -1078,7 +1078,9 @@ def test_interleave_rollout_with_vlm_cache():
         error=None,
     )
 
-    rollouts = interleave_rollout(output, vlm_cache=cache)
+    # Token 2 is an image token, token 5 is a video token
+    mm_mapping = {2: 1, 5: 2}
+    rollouts = interleave_rollout(output, vlm_cache=cache, mm_token_type_ids_mapping=mm_mapping)
 
     # Extension holds (step 1 prompt [1,2,3,4,5] extends prefix [1,2,3,4])
     # so both steps merge into a single sample with cumulative images from step 1
@@ -1092,6 +1094,8 @@ def test_interleave_rollout_with_vlm_cache():
     # Images: cumulative from last merged step (step 1 has 2 images)
     assert _decode_pixels(rollout.pixel_values, rollout.pixel_values_shape) == [[1.0], [2.0]]
     assert rollout.image_grid_thw == [[1, 2, 3], [1, 4, 4]]
+    # mm_token_type_ids: full sequence [1,2,3,4,5,6,7] → [0,1,0,0,2,0,0]
+    assert rollout.mm_token_type_ids == [0, 1, 0, 0, 2, 0, 0]
 
 
 def test_interleave_rollout_uses_cache_key_override():
