@@ -442,7 +442,7 @@ async def orchestrate(config: OrchestratorConfig):
                 mm_token_type_ids_mapping[processor.image_token_id] = 1
             if hasattr(processor, "video_token_id") and processor.video_token_id is not None:
                 mm_token_type_ids_mapping[processor.video_token_id] = 2
-                
+
             logger.info(
                 f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
                 f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
