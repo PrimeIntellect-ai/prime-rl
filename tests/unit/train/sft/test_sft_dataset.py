@@ -11,8 +11,9 @@ from prime_rl.trainer.utils import print_sample
 class NonIncrementalChatTokenizer:
     eos_token_id = 999
 
-    def apply_chat_template(self, messages, add_generation_prompt=False, return_dict=False):
+    def apply_chat_template(self, messages, add_generation_prompt=False, return_dict=False, tools=None):
         del return_dict
+        del tools
         ids = [len(messages)]
         for message in reversed(messages):
             ids.append(len(str(message.get("content", ""))))
@@ -34,8 +35,9 @@ class StructuredChatTokenizer:
             self._next_id += 1
         return self._token_to_id[token]
 
-    def apply_chat_template(self, messages, add_generation_prompt=False, return_dict=False):
+    def apply_chat_template(self, messages, add_generation_prompt=False, return_dict=False, tools=None):
         del return_dict
+        del tools
         ids = []
         for message in messages:
             ids.append(self._id(f"role:{message.get('role', 'unknown')}"))
