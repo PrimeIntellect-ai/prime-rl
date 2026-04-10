@@ -2,7 +2,6 @@ import asyncio
 import gc
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 import tomli_w
 
@@ -17,7 +16,7 @@ from prime_rl.orchestrator.trajectories import (
     pretokenize_rollout_trajectory,
 )
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
-from prime_rl.utils.pathing import get_log_dir
+from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
 from prime_rl.utils.usage_reporter import UsageReporter
 
 # This monkey patch is necessary to avoid Pydantic validating fields using typing.Iterable (e.g. in multimodal or tool call messages) lazily which leads to tokenization errors, for more info see https://github.com/PrimeIntellect-ai/prime-rl/pull/1249
@@ -36,19 +35,20 @@ from transformers import AutoProcessor, AutoTokenizer
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
-from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
+from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     get_weight_dir,
     print_benchmark,
+    set_default_executor,
     setup_external_rollout_model,
 )
 from prime_rl.orchestrator.vf_utils import (
-    get_completion_len,
     get_seq_len,
     intercept_vf_logging,
+    save_rollouts,
 )
 from prime_rl.utils.client import (
     init_nccl_broadcast,
@@ -84,6 +84,7 @@ async def orchestrate(config: OrchestratorConfig):
     )
     intercept_vf_logging(logger="verifiers.serve", level="WARN")  # show logs from env clients
     logger.info("Starting orchestrator")
+    set_default_executor()
 
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor_task = asyncio.create_task(event_loop_lag_monitor.run())
@@ -110,14 +111,12 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup rollout inference pool (handles both static and elastic modes)
     rollout_client_config, rollout_model_name, enable_policy_updates = setup_external_rollout_model(config, logger)
 
-    client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
-    if config.use_token_client:
-        logger.warning(
-            "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a linear "
-            "history and the chat template has the extension property."
-        )
+    train_client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
     inference_pool = await setup_inference_pool(
-        rollout_client_config, model_name=rollout_model_name, client_type=client_type
+        rollout_client_config,
+        model_name=rollout_model_name,
+        train_client_type=train_client_type,
+        eval_client_type="openai_chat_completions",
     )
 
     # Setup teacher inference pool if configured
@@ -127,7 +126,9 @@ async def orchestrate(config: OrchestratorConfig):
             f"model={config.teacher_model.model.name})"
         )
         teacher_inference_pool = await setup_inference_pool(
-            config.teacher_model.client, model_name=config.teacher_model.model.name
+            config.teacher_model.client,
+            model_name=config.teacher_model.model.name,
+            train_client_type="openai_chat_completions",
         )
     else:
         teacher_inference_pool = None
@@ -180,8 +181,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Build rollout filters
     rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
-    if rollout_filters:
-        logger.info(f"Initialized {len(rollout_filters)} rollout filter(s): {[f.name for f in rollout_filters]}")
 
     # Load environments
     logger.info("Loading training environments")
@@ -273,8 +272,8 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
-    # Track last online eval checkpoint step for this process
-    last_eval_step = -1
+    # Track last online eval checkpoint step per eval env
+    last_eval_steps: dict[str, int] = {env.name: -1 for env in eval_envs} if eval_envs else {}
     # Track previous ckpt_step to detect when ckpt_step jumps over eval interval boundaries
     prev_ckpt_step = -1
 
@@ -287,7 +286,7 @@ async def orchestrate(config: OrchestratorConfig):
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
         if config.eval and config.eval.skip_eval_on_resume:
             prev_ckpt_step = scheduler.ckpt_step
-            last_eval_step = scheduler.ckpt_step
+            last_eval_steps = {name: scheduler.ckpt_step for name in last_eval_steps}
             logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
         else:
             # Allow eval at resumed step by setting prev_ckpt_step one behind
@@ -308,9 +307,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Iterate over dataset in batches
     logger.info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
-
-    # Persistent ThreadPoolExecutor for parallel rollout processing
-    rollout_executor = ThreadPoolExecutor(max_workers=64)
 
     while True:
         # Check if this run has been evicted by the trainer
@@ -346,24 +342,25 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Run evals BEFORE training (blocking). Weight updates are paused via
         # scheduler.checkpoint_ready during eval to ensure consistent weights.
-        # Use range check to handle ckpt_step jumping over interval boundaries.
-        eval_ckpt_step = None
+        # Each eval env has its own interval, so we check each independently.
+        envs_to_eval: list[EvalEnv] = []
         if config.eval:
             assert eval_envs is not None
-            eval_ckpt_step = compute_eval_ckpt_step(
-                ckpt_step=ckpt_step,
-                prev_ckpt_step=prev_ckpt_step,
-                last_eval_step=last_eval_step,
-                interval=config.eval.interval,
-                eval_base_model=config.eval.eval_base_model,
-            )
+            for eval_env in eval_envs:
+                eval_ckpt_step = compute_eval_ckpt_step(
+                    ckpt_step=ckpt_step,
+                    prev_ckpt_step=prev_ckpt_step,
+                    last_eval_step=last_eval_steps[eval_env.name],
+                    interval=eval_env.config.interval,
+                    eval_base_model=config.eval.eval_base_model,
+                )
+                if eval_ckpt_step is not None:
+                    last_eval_steps[eval_env.name] = ckpt_step
+                    envs_to_eval.append(eval_env)
 
-        if eval_ckpt_step is not None:
-            last_eval_step = ckpt_step
-            if eval_ckpt_step != ckpt_step:
-                logger.info(f"Running evals for interval step {eval_ckpt_step} (current ckpt_step={ckpt_step})")
-            else:
-                logger.info(f"Running evals for checkpoint step {ckpt_step}")
+        if envs_to_eval:
+            env_names = ", ".join(e.name for e in envs_to_eval)
+            logger.info(f"Running evals at {ckpt_step=} for {env_names}")
 
             # Pause weight updates and re-scheduling of training rollouts during eval
             # to avoid evaluating across different checkpoints and avoid congestion
@@ -374,17 +371,23 @@ async def orchestrate(config: OrchestratorConfig):
                 logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
                 await scheduler.cancel_inflight_rollouts()
 
-            await asyncio.gather(
+            eval_results = await asyncio.gather(
                 *[
                     eval_env.evaluate(
                         model_name=scheduler.model_name,
-                        get_client=inference_pool.get_next_client,
+                        get_client=inference_pool.get_eval_client,
                         ckpt_step=ckpt_step,
                         step=progress.step,
                     )
-                    for eval_env in eval_envs
+                    for eval_env in envs_to_eval
                 ]
             )
+
+            # Save eval rollouts to disk (fire-and-forget background thread)
+            eval_rollouts = [o for outputs in eval_results for o in outputs]
+            if eval_rollouts:
+                step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
+                await asyncio.to_thread(save_rollouts, eval_rollouts, step_path / "eval_rollouts.jsonl")
 
             # Resume weight updates
             scheduler.checkpoint_ready.set()
@@ -400,6 +403,10 @@ async def orchestrate(config: OrchestratorConfig):
         generate_completions_time = scheduler.last_batch_generation_time
         train_rollouts = train_task.result()
 
+        # Save train rollouts to disk (fire-and-forget background thread)
+        step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
+        await asyncio.to_thread(save_rollouts, train_rollouts, step_path / "train_rollouts.jsonl")
+
         # VLM: offload base64 images to disk immediately to free memory
         if is_vlm:
             offload_start = time.perf_counter()
@@ -409,21 +416,14 @@ async def orchestrate(config: OrchestratorConfig):
                     f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
                 )
 
-        # Apply rollout filters (zeros reward/mask for degenerate generations)
-        filter_metrics = apply_filters(rollout_filters, train_rollouts)
-
-        # Compute advantages
+        # Compute advantages (in-place)
         example_ids = [r["example_id"] for r in train_rollouts]
         num_rollouts = len(train_rollouts)
         num_unique_examples = len(set(example_ids))
-        rewards = [r["reward"] for r in train_rollouts]
-        completion_lens = [get_completion_len(r) for r in train_rollouts]
-        advantages = compute_advantages(
-            rewards,
-            completion_lens,
-            config.rollouts_per_example,
-            config.advantage,
-        )
+        compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
+
+        # Apply rollout filters (zeros reward/mask for degenerate generations)
+        filter_metrics = apply_filters(rollout_filters, train_rollouts)
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
@@ -436,14 +436,13 @@ async def orchestrate(config: OrchestratorConfig):
         # This lets the scheduler continue servicing inflight rollout requests
         # and — with max_async_level >= 2 — overlap with the next batch's inference.
         if is_vlm:
-            vlm_cache = await asyncio.get_event_loop().run_in_executor(
-                rollout_executor, build_vlm_image_cache, train_rollouts, processor
-            )
+            vlm_cache = await asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor)
             mm_token_type_ids_mapping = {}
             if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
                 mm_token_type_ids_mapping[processor.image_token_id] = 1
             if hasattr(processor, "video_token_id") and processor.video_token_id is not None:
                 mm_token_type_ids_mapping[processor.video_token_id] = 2
+                
             logger.info(
                 f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
                 f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
@@ -458,12 +457,9 @@ async def orchestrate(config: OrchestratorConfig):
                 rollout, vlm_cache=vlm_cache, cache_key=rollout_idx, mm_token_type_ids_mapping=mm_token_type_ids_mapping
             )
 
-        loop = asyncio.get_event_loop()
-        futures = [
-            loop.run_in_executor(rollout_executor, process_rollout, r, rollout_idx)
-            for rollout_idx, r in enumerate(train_rollouts)
-        ]
-        results = await asyncio.gather(*futures)
+        results = await asyncio.gather(
+            *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(train_rollouts))
+        )
 
         # Collect results and assign advantages
         train_examples: list[TrainingSample] = []
@@ -472,13 +468,13 @@ async def orchestrate(config: OrchestratorConfig):
         rollout_samples_per_rollout: list[int] = []
         num_prefill_tokens = 0
         num_decode_tokens = 0
-        for rollout, advantage, samples in zip(train_rollouts, advantages, results):
+        for rollout, samples in zip(train_rollouts, results):
             rollout_prefill_tokens = 0
             rollout_decode_tokens = 0
             if samples is not None:
                 rollout_samples_per_rollout.append(len(samples))
                 for sample in samples:
-                    sample.advantage = advantage
+                    sample.advantage = rollout["advantage"]
                     sample.reward = rollout["reward"]
                     sample_decode_tokens = sum(sample.completion_mask)
                     sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
@@ -504,7 +500,7 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
             teacher_logprobs_start_time = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs(
-                clients=teacher_inference_pool.clients,
+                clients=teacher_inference_pool.train_clients,
                 model_name=config.teacher_model.model.name,
                 samples=train_examples,
             )
@@ -673,8 +669,8 @@ async def orchestrate(config: OrchestratorConfig):
         # Log distributions (rewards, advantages) if enabled
         monitor.log_distributions(
             distributions={
-                "rewards": rewards,
-                "advantages": advantages,
+                "rewards": [r["reward"] for r in train_rollouts],
+                "advantages": [r["advantage"] for r in train_rollouts],
             },
             step=progress.step,
         )
@@ -707,17 +703,23 @@ async def orchestrate(config: OrchestratorConfig):
 
     if config.eval and eval_envs is not None:
         logger.info("Running final evals")
-        await asyncio.gather(
+        eval_results = await asyncio.gather(
             *[
                 eval_env.evaluate(
                     model_name=scheduler.model_name,
-                    get_client=inference_pool.get_next_client,
+                    get_client=inference_pool.get_eval_client,
                     ckpt_step=ckpt_step,
                     step=progress.step,
                 )
                 for eval_env in eval_envs
             ]
         )
+
+        # Save final eval rollouts to disk
+        eval_rollouts = [o for outputs in eval_results for o in outputs]
+        if eval_rollouts:
+            step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
+            await asyncio.to_thread(save_rollouts, eval_rollouts, step_path / "eval_rollouts.jsonl")
 
     # Log final (immutable) samples and distributions to monitor(s)
     monitor.log_final_samples()
@@ -737,7 +739,6 @@ async def orchestrate(config: OrchestratorConfig):
     # failure mode we're guarding against.
     async def _graceful_shutdown() -> None:
         training_batch_sender.close()
-        rollout_executor.shutdown(wait=False)
         await scheduler.stop()
         await inference_pool.stop()
         if teacher_inference_pool is not None:

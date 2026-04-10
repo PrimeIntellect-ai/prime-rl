@@ -95,6 +95,24 @@ class RepetitionFilter:
         return FilterResult(detected=False)
 
 
+@dataclass
+class ZeroAdvantageFilter:
+    """Flags rollouts with zero advantage.
+
+    This filter is applied after advantages are computed and checks if the
+    rollout's advantage field is zero.
+    """
+
+    name: str
+    enforce: bool = True
+
+    def check(self, rollout: vf.RolloutOutput) -> FilterResult:
+        advantage = rollout.get("advantage")
+        if advantage is not None and advantage == 0.0:
+            return FilterResult(detected=True)
+        return FilterResult(detected=False)
+
+
 def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:
     """Create a RolloutFilter from a filter config."""
     if config.type == "gibberish":
@@ -111,12 +129,24 @@ def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:
             logprob_threshold=math.log(config.prob_threshold),
             enforce=config.enforce,
         )
+    elif config.type == "zero_advantage":
+        return ZeroAdvantageFilter(
+            name="zero_advantage",
+            enforce=config.enforce,
+        )
     raise ValueError(f"Unknown filter type: {config.type}")
 
 
 def setup_filters(configs: list[FilterConfig], vocab_size: int) -> list[RolloutFilter]:
     """Create RolloutFilters from a list of filter configs."""
-    return [setup_filter(config, vocab_size) for config in configs]
+    filters = [setup_filter(config, vocab_size) for config in configs]
+    if filters:
+        get_logger().info(f"Configured {len(filters)} rollout filter(s):")
+        for config, filt in zip(configs, filters):
+            mode = "Enforcing" if filt.enforce else "Monitoring"
+            params = ", ".join(f"{k}={v}" for k, v in config.model_dump().items())
+            get_logger().info(f"  {mode} {filt.name} filter ({params})")
+    return filters
 
 
 def apply_filters(

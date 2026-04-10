@@ -81,6 +81,9 @@ disagg = [
     "nixl-cu12 ; platform_machine == 'x86_64'",
     "vllm-router ; platform_machine == 'x86_64'",
 ]
+gpt-oss = [
+    "kernels",
+]
 quack = [
     "quack-kernels>=0.3.3",
 ]

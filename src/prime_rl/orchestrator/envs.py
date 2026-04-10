@@ -171,7 +171,7 @@ class EvalEnv(Env):
         get_client: Callable[[], Awaitable[vf.ClientConfig]],
         ckpt_step: int,
         step: int,
-    ) -> None:
+    ) -> list[vf.RolloutOutput]:
         num_examples = len(self.examples)
         rollouts_per_example = self.config.rollouts_per_example
         get_logger().info(f"Evaluating {self.name} ({num_examples=}, {rollouts_per_example=})")
@@ -240,7 +240,7 @@ class EvalEnv(Env):
                 },
                 step=step,
             )
-            return
+            return []
 
         # Log metrics
         monitor = get_monitor()
@@ -303,6 +303,8 @@ class EvalEnv(Env):
         eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
         monitor.log(eval_metrics, step=step)
         monitor.log_eval_samples(successful_outputs, env_name=self.name, step=step)
+
+        return successful_outputs
 
 
 EnvT = TypeVar("EnvT", bound=Env)

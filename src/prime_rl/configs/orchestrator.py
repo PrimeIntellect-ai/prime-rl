@@ -382,6 +382,14 @@ class EvalEnvConfig(EnvConfig):
         ),
     ] = 1
 
+    interval: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Per-env eval interval. If unset, inherits from the group-level eval interval.",
+        ),
+    ] = 100
+
 
 class TrainConfig(BaseConfig):
     """Configures training environments and their shared sampling settings."""
@@ -390,17 +398,32 @@ class TrainConfig(BaseConfig):
 
     sampling: TrainSamplingConfig = TrainSamplingConfig()
 
+    num_workers: Annotated[
+        int | Literal["auto"],
+        Field(
+            description="Default number of worker processes for env servers. Can be overridden per env.",
+        ),
+    ] = "auto"
+
+    max_retries: Annotated[
+        int,
+        Field(ge=0, description="Default number of retries for failed rollouts. Can be overridden per env."),
+    ] = 0
+
     @model_validator(mode="after")
-    def resolve_sampling(self):
-        """Resolve each env's sampling by merging group defaults with per-env overrides."""
-        group = self.sampling.model_dump()
+    def resolve_env_defaults(self):
+        """Resolve per-env overrides: inherit group-level sampling, num_workers, and max_retries."""
+        group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
-                env.sampling = TrainSamplingConfig(**group)
+                env.sampling = TrainSamplingConfig(**group_sampling)
             else:
-                merged = group.copy()
-                merged.update(env.sampling.model_dump(exclude_unset=True))
+                merged = group_sampling | env.sampling.model_dump(exclude_unset=True)
                 env.sampling = TrainSamplingConfig(**merged)
+            if "num_workers" not in env.model_fields_set:
+                env.num_workers = self.num_workers
+            if "max_retries" not in env.model_fields_set:
+                env.max_retries = self.max_retries
         return self
 
     @model_validator(mode="after")
@@ -445,6 +468,18 @@ class EvalConfig(BaseConfig):
         Field(ge=1, description="Default number of rollouts per example. Can be overridden per env."),
     ] = 1
 
+    num_workers: Annotated[
+        int | Literal["auto"],
+        Field(
+            description="Default number of worker processes for env servers. Can be overridden per env.",
+        ),
+    ] = "auto"
+
+    max_retries: Annotated[
+        int,
+        Field(ge=0, description="Default number of retries for failed rollouts. Can be overridden per env."),
+    ] = 0
+
     interval: Annotated[
         int,
         Field(
@@ -454,27 +489,26 @@ class EvalConfig(BaseConfig):
     ] = 100
 
     @model_validator(mode="after")
-    def resolve_sampling(self):
-        """Resolve each env's sampling by merging group defaults with per-env overrides."""
-        group = self.sampling.model_dump()
+    def resolve_env_defaults(self):
+        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, rollouts_per_example, and interval. Then resolve auto num_workers."""
+        group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
-                env.sampling = EvalSamplingConfig(**group)
+                env.sampling = EvalSamplingConfig(**group_sampling)
             else:
-                merged = group.copy()
-                merged.update(env.sampling.model_dump(exclude_unset=True))
+                merged = group_sampling | env.sampling.model_dump(exclude_unset=True)
                 env.sampling = EvalSamplingConfig(**merged)
-        return self
-
-    @model_validator(mode="after")
-    def resolve_env_defaults(self):
-        """Fill per-env num_examples and rollouts_per_example from group defaults, then resolve num_workers."""
-        for env in self.env:
             if "num_examples" not in env.model_fields_set:
                 env.num_examples = self.num_examples
             if "rollouts_per_example" not in env.model_fields_set:
                 env.rollouts_per_example = self.rollouts_per_example
-            # Resolve num_workers now that num_examples and rollouts_per_example are set
+            if "interval" not in env.model_fields_set:
+                env.interval = self.interval
+            if "num_workers" not in env.model_fields_set:
+                env.num_workers = self.num_workers
+            if "max_retries" not in env.model_fields_set:
+                env.max_retries = self.max_retries
+            # Resolve auto num_workers now that num_examples and rollouts_per_example are set
             if env.num_workers == "auto":
                 if env.num_examples == -1:
                     env.num_workers = 4
@@ -715,8 +749,22 @@ class RepetitionFilterConfig(BaseModel):
     ] = 0.99
 
 
+class ZeroAdvantageFilterConfig(BaseModel):
+    """Flags rollouts with zero advantage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["zero_advantage"] = "zero_advantage"
+    enforce: Annotated[
+        bool,
+        Field(
+            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+        ),
+    ] = True
+
+
 FilterConfig: TypeAlias = Annotated[
-    GibberishFilterConfig | RepetitionFilterConfig,
+    GibberishFilterConfig | RepetitionFilterConfig | ZeroAdvantageFilterConfig,
     Field(discriminator="type"),
 ]
 
@@ -828,7 +876,7 @@ class OrchestratorConfig(BaseConfig):
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
     # Rollout filters (monitor by default, enforce optionally)
-    filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig()]
+    filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()]
 
     # The logging configuration
     log: LogConfig = LogConfig()

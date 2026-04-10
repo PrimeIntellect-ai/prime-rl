@@ -2,10 +2,12 @@ from dataclasses import dataclass
 from typing import Callable
 
 import torch
+import verifiers as vf
 from jaxtyping import Float, Int
 from torch import Tensor
 
 from prime_rl.configs.orchestrator import AdvantageConfig, CustomAdvantageConfig
+from prime_rl.orchestrator.vf_utils import get_completion_len
 from prime_rl.utils.utils import import_object
 
 
@@ -71,24 +73,28 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
 
 
 def compute_advantages(
-    rewards: list[float],
-    completion_lengths: list[int],
+    rollouts: list[vf.RolloutOutput],
     samples_per_problem: int,
     advantage_config: AdvantageConfig | None,
-) -> list[float]:
+) -> None:
     """
-    Computes advantages from a flattened list of rewards, grouped by problem.
+    Computes advantages from rollouts, grouped by problem.
+    Stores advantages in-place on the rollouts.
 
     Args:
-        rewards: Flattened list of rewards where first `samples_per_problem` rewards are for the first problem
-        completion_lengths: List of completion lengths for each reward
+        rollouts: List of rollouts to store advantages on
         samples_per_problem: Number of samples (and thus, rewards) per problem
         advantage_config: Configuration for advantage computation (DefaultAdvantageConfig or CustomAdvantageConfig)
     """
+    rewards = [r["reward"] for r in rollouts]
+
     if not advantage_config:
-        return rewards
+        for rollout, reward in zip(rollouts, rewards):
+            rollout["advantage"] = reward
+        return
 
     advantage_fn = setup_advantage_fn(advantage_config)
+    completion_lengths = [get_completion_len(r) for r in rollouts]
 
     inputs = AdvantageInputs(
         rewards=torch.tensor(rewards).view(-1, samples_per_problem),
@@ -96,4 +102,7 @@ def compute_advantages(
     )
 
     result = advantage_fn(inputs)
-    return result.advantages.flatten().tolist()
+    advantages = result.advantages.flatten().tolist()
+
+    for rollout, advantage in zip(rollouts, advantages):
+        rollout["advantage"] = advantage

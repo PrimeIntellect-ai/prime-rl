@@ -1,5 +1,6 @@
 import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor
 from itertools import cycle
 from pathlib import Path
 from typing import Any
@@ -13,12 +14,19 @@ from verifiers.utils.client_utils import setup_openai_client
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.transport import TrainingSample
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import (
     format_time,
     get_broadcast_dir,
     get_ckpt_dir,
     get_step_path,
 )
+
+
+def set_default_executor(max_workers: int = 64) -> None:
+    """Scale the default asyncio thread pool so asyncio.to_thread has enough capacity."""
+    get_logger().info(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
+    asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
 
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:

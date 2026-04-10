@@ -17,7 +17,7 @@ from prime_rl.utils.config import BaseConfig
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
+AttnImplementation: TypeAlias = Literal["eager", "sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
 EPCommBackend: TypeAlias = Literal["torch", "deepep"]
 
 # User-facing name -> internal name. Users set `flash_attention_4` in configs,
@@ -759,6 +759,19 @@ class TrainerConfig(BaseConfig):
             description="Directory to write outputs to. Will be populated with checkpoints, weights, rollouts and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
         ),
     ] = Path("outputs")
+
+    matmul_precision: Annotated[
+        Literal["highest", "high", "medium"],
+        Field(
+            description=(
+                "Precision for float32 matrix multiplications. "
+                "Use 'highest' for full FP32 (required on ROCm/AMD GPUs to avoid "
+                "catastrophic precision loss in softmax over large vocabularies). "
+                "Use 'high' to enable TF32 on NVIDIA GPUs for a speedup with minor "
+                "precision tradeoff. See torch.set_float32_matmul_precision docs."
+            ),
+        ),
+    ] = "high"
 
     max_steps: Annotated[
         int | None,

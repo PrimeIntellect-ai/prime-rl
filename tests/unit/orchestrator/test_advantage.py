@@ -35,27 +35,39 @@ def test_default_advantage_fn_gr3_length_shaping():
     assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(1), atol=1e-6)
 
 
+def _make_rollout(reward: float, completion_len: int) -> dict:
+    """Create a minimal rollout dict for advantage testing."""
+    return {
+        "reward": reward,
+        "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(completion_len))}}],
+    }
+
+
 def test_compute_advantages_with_config():
     rewards = [1.0, 0.5, 0.8, 0.2, 0.9, 0.1]
     lengths = [10, 12, 8, 15, 11, 9]
+    rollouts = [_make_rollout(r, l) for r, l in zip(rewards, lengths)]
 
-    result = compute_advantages(rewards, lengths, samples_per_problem=3, advantage_config=DefaultAdvantageConfig())
+    compute_advantages(rollouts, samples_per_problem=3, advantage_config=DefaultAdvantageConfig())
 
-    assert len(result) == 6
+    advantages = [r["advantage"] for r in rollouts]
+    assert len(advantages) == 6
     # First 3 should sum to ~0 (mean subtracted)
-    assert abs(sum(result[:3])) < 1e-5
+    assert abs(sum(advantages[:3])) < 1e-5
     # Last 3 should sum to ~0
-    assert abs(sum(result[3:])) < 1e-5
+    assert abs(sum(advantages[3:])) < 1e-5
 
 
 def test_compute_advantages_without_config():
     rewards = [1.0, 0.5, 0.8]
     lengths = [10, 12, 8]
+    rollouts = [_make_rollout(r, l) for r, l in zip(rewards, lengths)]
 
-    result = compute_advantages(rewards, lengths, samples_per_problem=3, advantage_config=None)
+    compute_advantages(rollouts, samples_per_problem=3, advantage_config=None)
 
     # Without config, returns raw rewards
-    assert result == rewards
+    advantages = [r["advantage"] for r in rollouts]
+    assert advantages == rewards
 
 
 def test_setup_advantage_fn_with_custom_config():

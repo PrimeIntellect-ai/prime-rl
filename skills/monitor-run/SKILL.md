@@ -195,6 +195,31 @@ Key vLLM metrics to watch:
 - `vllm:num_requests_waiting` — requests queued waiting for KV cache space
 - `vllm:gpu_cache_usage_perc` — KV cache pressure (approaching 1.0 = requests will queue)
 
+### Rollouts
+
+Plain-text rollouts (`verifiers` format) are saved every step alongside the binary training batch inside the run directory. For single-run (local) runs this is typically `{output_dir}/run_default`.
+
+```
+{output_dir}/{run_dir}/rollouts/
+└── step_{N}/
+    ├── train_rollouts.jsonl   # all train rollouts
+    ├── eval_rollouts.jsonl    # all eval rollouts (only present when eval ran)
+    └── train_rollouts.bin     # binary-encoded training batch (consumed by the trainer)
+```
+
+Each line in the `.jsonl` files is a JSON-serialized `vf.RolloutOutput` dict with fields like `example_id`, `task`, `prompt`, `completion`, `reward`, `trajectory`, `metrics`, etc. To inspect rollouts for a given step:
+
+```bash
+# Count rollouts at a step
+wc -l {output_dir}/{run_dir}/rollouts/step_42/train_rollouts.jsonl
+
+# Preview first rollout (pretty-printed)
+head -1 {output_dir}/{run_dir}/rollouts/step_42/train_rollouts.jsonl | python -m json.tool
+
+# Extract rewards
+jq '.reward' {output_dir}/{run_dir}/rollouts/step_42/train_rollouts.jsonl
+```
+
 ### Errors and warnings
 
 As part of every check-in, grep all logs for `WARNING` and `ERROR` level messages. Pay special attention to env server and env worker logs — these are the most common source of issues since they run user-provided code.

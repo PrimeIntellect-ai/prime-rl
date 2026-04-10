@@ -156,10 +156,10 @@ class Scheduler:
         Uses (api_base_url, dp_rank) as identity rather than client_idx so that
         load tracking survives elastic pool refreshes (which reassign indices).
         """
-        clients = self.inference_pool.clients
+        clients = self.inference_pool.train_clients
         while not clients:
             await asyncio.sleep(1)
-            clients = self.inference_pool.clients
+            clients = self.inference_pool.train_clients
         inflight = Counter(self._client_identity(info.client_config) for info in self.inflight_requests.values())
         return min(clients, key=lambda c: inflight[self._client_identity(c)])
 

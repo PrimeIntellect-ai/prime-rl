@@ -1,6 +1,9 @@
+import json
 import logging
+from pathlib import Path
 
 import verifiers as vf
+from verifiers.utils.save_utils import make_serializable
 
 from prime_rl.utils.logger import InterceptHandler
 
@@ -45,6 +48,15 @@ def get_completion_len(output: vf.RolloutOutput) -> int:
     tokens.
     """
     return get_seq_len(output) - get_prompt_len(output)
+
+
+def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path) -> None:
+    """Save rollouts to a JSONL file using verifiers serialization."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        for rollout in rollouts:
+            json.dump(rollout, f, default=make_serializable)
+            f.write("\n")
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):

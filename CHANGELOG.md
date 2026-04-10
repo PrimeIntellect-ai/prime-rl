@@ -2,6 +2,7 @@
 
 Documenting **breaking** configuration changes — renamed, removed, or moved fields that require users to update existing configs.
 
+- **`model.attn = "eager"` (NEW option)**: Added `eager` as a valid value for the `model.attn` field. Required for GPT-OSS models on non-Hopper GPUs, since the only flash attention kernel GPT-OSS supports (`kernels-community/vllm-flash-attn3`) is Hopper-only. A clear error message is raised at model load time if GPT-OSS is used without `eager` on unsupported hardware. Also added `kernels` as a core dependency. (2026-04-05)
 - **`[[orchestrator.env]]` → `[[orchestrator.train.env]]`**: Training environments and sampling are now configured under `[orchestrator.train]`. The old `[[orchestrator.env]]` and `[orchestrator.sampling]` paths are auto-translated with a deprecation warning and will be removed in a future release. (2026-04-09)
 - **Per-env sampling overrides (NEW)**: Both `TrainEnvConfig` and `EvalEnvConfig` now accept a `[sampling]` section for per-env overrides. Unset fields inherit from the group-level sampling config (`[orchestrator.train.sampling]` or `[orchestrator.eval.sampling]`). (2026-04-09)
 - **Per-env eval sampling overrides**: `EvalEnvConfig` now accepts a `[sampling]` section. Unset fields inherit from `[orchestrator.eval.sampling]`. All `EvalSamplingConfig` fields remain nullable (None = defer to inference server default). (2026-04-09)
