@@ -431,7 +431,7 @@ class TokenizerConfig(BaseConfig):
     chat_template: Annotated[
         str | None,
         Field(
-            description="The chat template to use for the tokenizer. If None, will use the tokenizer's default chat template."
+            description="The chat template to use for the tokenizer. Can be a Jinja2 template string or a path to a template file. If None, will use the tokenizer's default chat template."
         ),
     ] = None
 

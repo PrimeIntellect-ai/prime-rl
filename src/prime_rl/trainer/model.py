@@ -363,7 +363,8 @@ def get_model(
 def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     if config.chat_template is not None:
-        tokenizer.chat_template = config.chat_template
+        path = Path(config.chat_template)
+        tokenizer.chat_template = path.read_text() if path.is_file() else config.chat_template
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
     return tokenizer
