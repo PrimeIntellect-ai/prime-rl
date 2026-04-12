@@ -8,6 +8,49 @@ from prime_rl.trainer.sft.data import SFTDataset
 from prime_rl.trainer.utils import print_sample
 
 
+class NonIncrementalChatTokenizer:
+    eos_token_id = 999
+
+    def apply_chat_template(self, messages, add_generation_prompt=False, return_dict=False, tools=None):
+        del return_dict
+        del tools
+        ids = [len(messages)]
+        for message in reversed(messages):
+            ids.append(len(str(message.get("content", ""))))
+        if add_generation_prompt:
+            ids.append(self.eos_token_id)
+        return ids
+
+
+class StructuredChatTokenizer:
+    eos_token_id = 999
+
+    def __init__(self):
+        self._token_to_id: dict[str, int] = {}
+        self._next_id = 1
+
+    def _id(self, token: str) -> int:
+        if token not in self._token_to_id:
+            self._token_to_id[token] = self._next_id
+            self._next_id += 1
+        return self._token_to_id[token]
+
+    def apply_chat_template(self, messages, add_generation_prompt=False, return_dict=False, tools=None):
+        del return_dict
+        del tools
+        ids = []
+        for message in messages:
+            ids.append(self._id(f"role:{message.get('role', 'unknown')}"))
+            ids.append(self._id(f"content:{message.get('content')!r}"))
+            for tool_call in message.get("tool_calls") or []:
+                function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+                ids.append(self._id(f"tool:{function.get('name', '')}"))
+                ids.append(self._id(f"arguments:{function.get('arguments')!r}"))
+        if add_generation_prompt:
+            ids.append(self._id("role:assistant"))
+        return ids
+
+
 @pytest.fixture(scope="module")
 def build_dummy_dataset():
     return lambda letter, num_examples: Dataset.from_list([{"text": f"{letter}{i}"} for i in range(num_examples)])
@@ -26,6 +69,48 @@ def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
     sft_dataset = SFTDataset(dataset, tokenizer=tokenizer)
     with pytest.raises(ValueError):
+        next(iter(sft_dataset))
+
+
+def test_sft_dataset_skips_non_incremental_chat_template():
+    dataset = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "user", "content": "Prompt 0"}],
+                "completion": [{"role": "assistant", "content": "Completion 0"}],
+            }
+        ]
+    )
+    sft_dataset = SFTDataset(dataset, tokenizer=NonIncrementalChatTokenizer(), shuffle=False, max_epochs=1)
+
+    with pytest.raises(ValueError, match="Mismatch in incremental tokenization with chat template."):
+        next(iter(sft_dataset))
+
+
+def test_sft_dataset_skips_invalid_tool_call_json_string():
+    dataset = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "user", "content": "What's the weather?"}],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": '{"location": "Paris"'},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+    sft_dataset = SFTDataset(dataset, tokenizer=StructuredChatTokenizer(), shuffle=False, max_epochs=1)
+
+    with pytest.raises(StopIteration):
         next(iter(sft_dataset))
 
 
