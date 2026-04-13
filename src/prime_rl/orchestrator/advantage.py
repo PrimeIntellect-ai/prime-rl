@@ -54,14 +54,14 @@ def _efficiency_length_shaping(
     rewards: Float[Tensor, "num_problems rollouts_per_example"],
     completion_lengths: Float[Tensor, "num_problems rollouts_per_example"],
 ) -> Float[Tensor, "num_problems rollouts_per_example"]:
-    """Correctness-gated length shaping.
+    """Correctness-gated length shaping with bounded advantages.
 
     Mixed groups (some correct, some incorrect):
-        A_i = (R_i - mean(R)) * w_i, where w_i = mean_correct_len / len_i for correct, 1 for incorrect.
-        Preserves positive advantage for all correct rollouts.
+        Correct rollouts get standard GRPO advantage amplified by up to 2x based on relative brevity.
+        Incorrect rollouts are untouched. All correct rollouts keep positive advantage.
 
     All-correct groups:
-        A_i = w_i - mean(w), giving length differentiation when correctness is saturated.
+        Below-average-length rollouts get positive advantage in [0, 1]; others get 0.
     """
     max_reward = rewards.max(dim=1, keepdim=True).values
     correct_mask = rewards >= max_reward
@@ -75,19 +75,17 @@ def _efficiency_length_shaping(
     correct_lengths = completion_lengths * correct_mask
     mean_correct_len = correct_lengths.sum(dim=1, keepdim=True) / num_correct.clamp(min=1)
 
-    # Efficiency weight: mean_correct_len / len for correct, 1 for incorrect
-    w = torch.where(correct_mask, mean_correct_len / completion_lengths, torch.ones_like(completion_lengths))
+    # Length bonus: bounded [0, 1], positive for below-average, zero for above-average
+    bonus = (1 - completion_lengths / mean_correct_len).clamp(0, 1)
 
     all_correct = num_correct == G
     baseline = rewards.mean(dim=1, keepdim=True)
 
-    # Mixed: advantage-level shaping (preserves signs)
-    mixed = (rewards - baseline) * w
+    # Mixed groups: standard advantage with bounded amplification for correct rollouts
+    mixed = (rewards - baseline) * (1 + bonus * correct_mask)
 
-    # All-correct: reward-level shaping (provides length signal)
-    all_correct_adv = w - w.mean(dim=1, keepdim=True)
-
-    shaped = torch.where(all_correct, all_correct_adv, mixed)
+    # All-correct groups: length-only signal, bounded [0, 1]
+    shaped = torch.where(all_correct, bonus, mixed)
     unshaped = rewards - baseline
     return torch.where(has_correct, shaped, unshaped)
 

@@ -23,7 +23,7 @@ def test_default_advantage_fn_simple_mean():
 
 
 def test_efficiency_mixed_group():
-    """Mixed group: correct rollouts weighted by relative efficiency, incorrect unchanged."""
+    """Mixed group: bounded amplification for short correct rollouts, others unchanged."""
     inputs = AdvantageInputs(
         rewards=torch.tensor([[1.0, 1.0, 0.0, 1.0]]),
         completion_lengths=torch.tensor([[10, 30, 20, 20]]),
@@ -31,10 +31,11 @@ def test_efficiency_mixed_group():
     result = default_advantage_fn(inputs, length_shaping=True)
 
     # mean_correct_len = (10+30+20)/3 = 20
-    # w = [20/10, 20/30, 1, 20/20] = [2.0, 2/3, 1.0, 1.0]
+    # bonus = clamp(1 - [10,30,20,20]/20, 0, 1) = [0.5, 0, 0, 0]
     # baseline = 0.75
-    # A = (R - 0.75) * w
-    expected = torch.tensor([[0.25 * 2.0, 0.25 * (2.0 / 3.0), -0.75, 0.25 * 1.0]])
+    # A = (R - 0.75) * (1 + bonus * correct_mask)
+    #   = [0.25, 0.25, -0.75, 0.25] * [1.5, 1, 1, 1]
+    expected = torch.tensor([[0.375, 0.25, -0.75, 0.25]])
     assert torch.allclose(result.advantages, expected, atol=1e-6)
 
     # All correct rollouts have positive advantage
@@ -43,22 +44,25 @@ def test_efficiency_mixed_group():
 
 
 def test_efficiency_all_correct_group():
-    """All-correct group: w_i - mean(w) for length differentiation."""
+    """All-correct group: bounded [0, 1] advantages, zero for above-average length."""
     inputs = AdvantageInputs(
         rewards=torch.tensor([[1.0, 1.0, 1.0]]),
         completion_lengths=torch.tensor([[10, 20, 40]]),
     )
     result = default_advantage_fn(inputs, length_shaping=True)
 
-    # mean_correct_len = 70/3
-    # w = [70/30, 70/60, 70/120] = [7/3, 7/6, 7/12]
-    # A = w - mean(w)
-    mean_len = 70.0 / 3.0
-    w = torch.tensor([mean_len / 10, mean_len / 20, mean_len / 40])
-    expected = (w - w.mean()).unsqueeze(0)
-
+    # mean_len = 70/3 ≈ 23.33
+    # bonus = clamp(1 - [10, 20, 40] / (70/3), 0, 1) = [4/7, 1/7, 0]
+    expected = torch.tensor([[4.0 / 7, 1.0 / 7, 0.0]])
     assert torch.allclose(result.advantages, expected, atol=1e-6)
+
+    # Shortest has highest advantage, longest gets zero
     assert result.advantages[0, 0] > result.advantages[0, 1] > result.advantages[0, 2]
+    assert result.advantages[0, 2] == 0.0
+
+    # All advantages bounded in [0, 1]
+    assert (result.advantages >= 0).all()
+    assert (result.advantages <= 1).all()
 
 
 def test_efficiency_all_zero_rewards():
@@ -111,6 +115,18 @@ def test_efficiency_incorrect_unchanged():
     assert torch.allclose(result_eff.advantages[0, 2:], result_std.advantages[0, 2:], atol=1e-6)
 
 
+def test_efficiency_amplification_bounded():
+    """Even with extreme length outliers, amplification is capped at 2x."""
+    inputs = AdvantageInputs(
+        rewards=torch.tensor([[1.0, 1.0, 0.0]]),
+        completion_lengths=torch.tensor([[1, 10000, 5000]]),
+    )
+    result = default_advantage_fn(inputs, length_shaping=True)
+
+    # Standard advantage for correct = 1 - 2/3 = 1/3, max amplified = 1/3 * 2 = 2/3
+    assert result.advantages[0, 0] < 2.0 / 3 + 1e-6
+
+
 def test_efficiency_multiple_problems():
     """Handles multiple problems independently."""
     inputs = AdvantageInputs(
@@ -134,8 +150,11 @@ def test_efficiency_multiple_problems():
     assert (result.advantages[0, :2] > 0).all()
     assert result.advantages[0, 2] < 0
 
-    # Row 1: all-correct group
+    # Row 1: all-correct group — bounded [0, 1], longest gets 0
     assert result.advantages[1, 0] > result.advantages[1, 1] > result.advantages[1, 2]
+    assert result.advantages[1, 2] == 0.0
+    assert (result.advantages[1] >= 0).all()
+    assert (result.advantages[1] <= 1).all()
 
 
 def _make_rollout(reward: float, completion_len: int) -> dict:

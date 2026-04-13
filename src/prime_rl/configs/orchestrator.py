@@ -679,10 +679,9 @@ class DefaultAdvantageConfig(BaseModel):
         bool,
         Field(
             description=(
-                "Enable correctness-gated length shaping. In mixed groups, correct rollouts are weighted by "
-                "mean_correct_len / len_i — shorter correct rollouts get higher advantage. "
-                "In all-correct groups, advantages are w_i - mean(w) for length differentiation. "
-                "Incorrect rollouts are untouched."
+                "Enable correctness-gated length shaping. In mixed groups, shorter correct rollouts get "
+                "amplified advantage (up to 2x), longer correct rollouts are unchanged, incorrect untouched. "
+                "In all-correct groups, below-average-length rollouts get advantage in [0, 1], others get 0."
             )
         ),
     ] = False
