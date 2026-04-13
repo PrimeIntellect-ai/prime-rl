@@ -23,7 +23,7 @@ def test_default_advantage_fn_simple_mean():
 
 
 def test_efficiency_mixed_group():
-    """Mixed group: bounded amplification for short correct rollouts, others unchanged."""
+    """Mixed group: reward shaping preserves zero-mean, shorter correct gets higher advantage."""
     inputs = AdvantageInputs(
         rewards=torch.tensor([[1.0, 1.0, 0.0, 1.0]]),
         completion_lengths=torch.tensor([[10, 30, 20, 20]]),
@@ -32,11 +32,14 @@ def test_efficiency_mixed_group():
 
     # mean_correct_len = (10+30+20)/3 = 20
     # bonus = clamp(1 - [10,30,20,20]/20, 0, 1) = [0.5, 0, 0, 0]
-    # baseline = 0.75
-    # A = (R - 0.75) * (1 + bonus * correct_mask)
-    #   = [0.25, 0.25, -0.75, 0.25] * [1.5, 1, 1, 1]
-    expected = torch.tensor([[0.375, 0.25, -0.75, 0.25]])
+    # shaped_rewards = R * (1 + bonus * correct_mask) = [1.5, 1, 0, 1]
+    # baseline = mean(shaped_rewards) = 0.875
+    # A = shaped_rewards - baseline = [0.625, 0.125, -0.875, 0.125]
+    expected = torch.tensor([[0.625, 0.125, -0.875, 0.125]])
     assert torch.allclose(result.advantages, expected, atol=1e-6)
+
+    # Zero-mean per group
+    assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(1), atol=1e-6)
 
     # All correct rollouts have positive advantage
     correct_mask = inputs.rewards[0] >= 1.0
@@ -44,7 +47,7 @@ def test_efficiency_mixed_group():
 
 
 def test_efficiency_all_correct_group():
-    """All-correct group: bounded [0, 1] advantages, zero for above-average length."""
+    """All-correct group: zero-mean, shorter gets higher advantage."""
     inputs = AdvantageInputs(
         rewards=torch.tensor([[1.0, 1.0, 1.0]]),
         completion_lengths=torch.tensor([[10, 20, 40]]),
@@ -53,16 +56,19 @@ def test_efficiency_all_correct_group():
 
     # mean_len = 70/3 ≈ 23.33
     # bonus = clamp(1 - [10, 20, 40] / (70/3), 0, 1) = [4/7, 1/7, 0]
-    expected = torch.tensor([[4.0 / 7, 1.0 / 7, 0.0]])
+    # shaped_rewards = [1+4/7, 1+1/7, 1] = [11/7, 8/7, 1]
+    # baseline = mean = (11/7 + 8/7 + 1) / 3 = (11+8+7)/(7*3) = 26/21
+    # A = shaped - baseline
+    shaped = torch.tensor([[11.0 / 7, 8.0 / 7, 1.0]])
+    baseline = shaped.mean(dim=1, keepdim=True)
+    expected = shaped - baseline
     assert torch.allclose(result.advantages, expected, atol=1e-6)
 
-    # Shortest has highest advantage, longest gets zero
-    assert result.advantages[0, 0] > result.advantages[0, 1] > result.advantages[0, 2]
-    assert result.advantages[0, 2] == 0.0
+    # Zero-mean
+    assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(1), atol=1e-6)
 
-    # All advantages bounded in [0, 1]
-    assert (result.advantages >= 0).all()
-    assert (result.advantages <= 1).all()
+    # Shortest has highest advantage
+    assert result.advantages[0, 0] > result.advantages[0, 1] > result.advantages[0, 2]
 
 
 def test_efficiency_all_zero_rewards():
@@ -78,7 +84,7 @@ def test_efficiency_all_zero_rewards():
 
 
 def test_efficiency_single_correct():
-    """Single correct rollout: w=1, no length differentiation, same as standard GRPO."""
+    """Single correct rollout: bonus=0 (at its own mean), same as standard GRPO."""
     inputs = AdvantageInputs(
         rewards=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
         completion_lengths=torch.tensor([[100, 50, 200, 150]]),
@@ -103,28 +109,39 @@ def test_efficiency_shorter_correct_higher_advantage():
     assert (advs[3:] < 0).all()
 
 
-def test_efficiency_incorrect_unchanged():
-    """Incorrect rollouts get exactly the same advantage as standard GRPO."""
+def test_efficiency_zero_mean_per_group():
+    """Reward shaping preserves zero-mean advantages per group."""
     inputs = AdvantageInputs(
-        rewards=torch.tensor([[1.0, 1.0, 0.0, 0.0]]),
-        completion_lengths=torch.tensor([[10, 30, 20, 40]]),
+        rewards=torch.tensor(
+            [
+                [1.0, 1.0, 0.0, 1.0],  # mixed
+                [1.0, 1.0, 1.0, 1.0],  # all correct
+            ]
+        ),
+        completion_lengths=torch.tensor(
+            [
+                [10, 30, 20, 20],
+                [10, 20, 40, 80],
+            ]
+        ),
     )
-    result_eff = default_advantage_fn(inputs, length_shaping=True)
-    result_std = default_advantage_fn(inputs)
+    result = default_advantage_fn(inputs, length_shaping=True)
 
-    assert torch.allclose(result_eff.advantages[0, 2:], result_std.advantages[0, 2:], atol=1e-6)
+    assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
 
 
 def test_efficiency_amplification_bounded():
-    """Even with extreme length outliers, amplification is capped at 2x."""
+    """Even with extreme length outliers, reward amplification is capped at 2x."""
     inputs = AdvantageInputs(
         rewards=torch.tensor([[1.0, 1.0, 0.0]]),
         completion_lengths=torch.tensor([[1, 10000, 5000]]),
     )
     result = default_advantage_fn(inputs, length_shaping=True)
 
-    # Standard advantage for correct = 1 - 2/3 = 1/3, max amplified = 1/3 * 2 = 2/3
-    assert result.advantages[0, 0] < 2.0 / 3 + 1e-6
+    # Shortest correct gets bonus ≈ 1, so shaped_reward ≈ 2
+    # Standard reward = 1, so amplification ≈ 2x
+    # shaped_rewards ≈ [2, 1, 0], baseline ≈ 1, max advantage ≈ 1
+    assert result.advantages[0, 0] < 1.0 + 1e-3
 
 
 def test_efficiency_multiple_problems():
@@ -145,16 +162,16 @@ def test_efficiency_multiple_problems():
     )
     result = default_advantage_fn(inputs, length_shaping=True)
 
-    # Row 0: mixed group
+    # Row 0: mixed group — shorter correct > longer correct
     assert result.advantages[0, 0] > result.advantages[0, 1]
     assert (result.advantages[0, :2] > 0).all()
     assert result.advantages[0, 2] < 0
 
-    # Row 1: all-correct group — bounded [0, 1], longest gets 0
+    # Row 1: all-correct group — shorter gets higher advantage
     assert result.advantages[1, 0] > result.advantages[1, 1] > result.advantages[1, 2]
-    assert result.advantages[1, 2] == 0.0
-    assert (result.advantages[1] >= 0).all()
-    assert (result.advantages[1] <= 1).all()
+
+    # Both rows have zero-mean
+    assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
 
 
 def _make_rollout(reward: float, completion_len: int) -> dict:

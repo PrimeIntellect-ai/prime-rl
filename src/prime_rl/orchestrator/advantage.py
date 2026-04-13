@@ -56,17 +56,15 @@ def _efficiency_length_shaping(
 ) -> Float[Tensor, "num_problems rollouts_per_example"]:
     """Correctness-gated length shaping with bounded advantages.
 
-    Mixed groups (some correct, some incorrect):
-        Correct rollouts get standard GRPO advantage amplified by up to 2x based on relative brevity.
-        Incorrect rollouts are untouched. All correct rollouts keep positive advantage.
+    Shapes rewards with a bounded brevity bonus before standard GRPO subtraction,
+    preserving zero-mean advantages per group.
 
-    All-correct groups:
-        Below-average-length rollouts get positive advantage in [0, 1]; others get 0.
+    Correct rollouts get reward amplified by up to 2x based on relative brevity.
+    Incorrect rollouts are untouched. Shorter correct rollouts get higher advantage.
     """
     max_reward = rewards.max(dim=1, keepdim=True).values
     correct_mask = rewards >= max_reward
     num_correct = correct_mask.sum(dim=1, keepdim=True)
-    G = rewards.shape[1]
 
     # No shaping when max reward is 0 — no correct rollouts to differentiate
     has_correct = max_reward > 0
@@ -75,18 +73,15 @@ def _efficiency_length_shaping(
     correct_lengths = completion_lengths * correct_mask
     mean_correct_len = correct_lengths.sum(dim=1, keepdim=True) / num_correct.clamp(min=1)
 
-    # Length bonus: bounded [0, 1], positive for below-average, zero for above-average
+    # Bounded brevity bonus: [0, 1], positive for below-average length, zero for above
     bonus = (1 - completion_lengths / mean_correct_len).clamp(0, 1)
 
-    all_correct = num_correct == G
-    baseline = rewards.mean(dim=1, keepdim=True)
+    # Shape rewards: correct rollouts amplified by up to 2x, incorrect untouched
+    shaped_rewards = rewards * (1 + bonus * correct_mask)
+    baseline = shaped_rewards.mean(dim=1, keepdim=True)
 
-    # Mixed groups: standard advantage with bounded amplification for correct rollouts
-    mixed = (rewards - baseline) * (1 + bonus * correct_mask)
-
-    # All-correct groups: length-only signal, bounded [0, 1]
-    shaped = torch.where(all_correct, bonus, mixed)
-    unshaped = rewards - baseline
+    shaped = shaped_rewards - baseline
+    unshaped = rewards - rewards.mean(dim=1, keepdim=True)
     return torch.where(has_correct, shaped, unshaped)
 
 
