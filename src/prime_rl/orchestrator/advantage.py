@@ -37,19 +37,59 @@ Expected signature:
 
 def default_advantage_fn(
     inputs: AdvantageInputs,
-    length_shaping_alpha: float | None = None,
+    length_shaping: bool = False,
 ) -> AdvantageOutputs:
     """Default GRPO advantage: reward minus per-problem baseline."""
     rewards = inputs.rewards
 
-    if length_shaping_alpha is not None:
+    if length_shaping:
         completion_lengths = inputs.completion_lengths.to(dtype=rewards.dtype)
-        lengths_normalized = completion_lengths / completion_lengths.mean(dim=1, keepdim=True)
-        length_shaping = (1 + length_shaping_alpha * lengths_normalized) ** -1
-        rewards = rewards * length_shaping
+        return AdvantageOutputs(advantages=_efficiency_length_shaping(rewards, completion_lengths))
+
+    baseline = rewards.mean(dim=1, keepdim=True)
+    return AdvantageOutputs(advantages=rewards - baseline)
+
+
+def _efficiency_length_shaping(
+    rewards: Float[Tensor, "num_problems rollouts_per_example"],
+    completion_lengths: Float[Tensor, "num_problems rollouts_per_example"],
+) -> Float[Tensor, "num_problems rollouts_per_example"]:
+    """Correctness-gated length shaping.
+
+    Mixed groups (some correct, some incorrect):
+        A_i = (R_i - mean(R)) * w_i, where w_i = mean_correct_len / len_i for correct, 1 for incorrect.
+        Preserves positive advantage for all correct rollouts.
+
+    All-correct groups:
+        A_i = w_i - mean(w), giving length differentiation when correctness is saturated.
+    """
+    max_reward = rewards.max(dim=1, keepdim=True).values
+    correct_mask = rewards >= max_reward
+    num_correct = correct_mask.sum(dim=1, keepdim=True)
+    G = rewards.shape[1]
+
+    # No shaping when max reward is 0 — no correct rollouts to differentiate
+    has_correct = max_reward > 0
+
+    # Mean length of correct rollouts per problem
+    correct_lengths = completion_lengths * correct_mask
+    mean_correct_len = correct_lengths.sum(dim=1, keepdim=True) / num_correct.clamp(min=1)
+
+    # Efficiency weight: mean_correct_len / len for correct, 1 for incorrect
+    w = torch.where(correct_mask, mean_correct_len / completion_lengths, torch.ones_like(completion_lengths))
+
+    all_correct = num_correct == G
     baseline = rewards.mean(dim=1, keepdim=True)
 
-    return AdvantageOutputs(advantages=rewards - baseline)
+    # Mixed: advantage-level shaping (preserves signs)
+    mixed = (rewards - baseline) * w
+
+    # All-correct: reward-level shaping (provides length signal)
+    all_correct_adv = w - w.mean(dim=1, keepdim=True)
+
+    shaped = torch.where(all_correct, all_correct_adv, mixed)
+    unshaped = rewards - baseline
+    return torch.where(has_correct, shaped, unshaped)
 
 
 def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
@@ -66,7 +106,7 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
     def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
         return default_advantage_fn(
             inputs,
-            length_shaping_alpha=config.length_shaping_alpha,
+            length_shaping=config.length_shaping,
         )
 
     return advantage_fn
