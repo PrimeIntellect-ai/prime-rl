@@ -7,7 +7,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from prime_rl.configs.orchestrator import AdvantageConfig, CustomAdvantageConfig
-from prime_rl.orchestrator.vf_utils import get_completion_len
+from prime_rl.orchestrator.vf_utils import get_model_completion_len
 from prime_rl.utils.utils import import_object
 
 
@@ -132,7 +132,7 @@ def compute_advantages(
         return
 
     advantage_fn = setup_advantage_fn(advantage_config)
-    completion_lengths = [get_completion_len(r) for r in rollouts]
+    completion_lengths = [get_model_completion_len(r) for r in rollouts]
 
     inputs = AdvantageInputs(
         rewards=torch.tensor(rewards).view(-1, samples_per_problem),

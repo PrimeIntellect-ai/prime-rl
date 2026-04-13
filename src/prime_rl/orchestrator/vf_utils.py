@@ -50,6 +50,15 @@ def get_completion_len(output: vf.RolloutOutput) -> int:
     return get_seq_len(output) - get_prompt_len(output)
 
 
+def get_model_completion_len(output: vf.RolloutOutput) -> int:
+    """
+    Computes the number of model-generated completion tokens across all turns.
+    Unlike get_completion_len, this excludes environment responses injected
+    between turns in multi-turn rollouts.
+    """
+    return sum(len(step["tokens"]["completion_ids"]) for step in output["trajectory"] if step.get("tokens"))
+
+
 def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path) -> None:
     """Save rollouts to a JSONL file using verifiers serialization."""
     path.parent.mkdir(parents=True, exist_ok=True)
