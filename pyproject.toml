@@ -36,6 +36,7 @@ dependencies = [
     "tilelang>=0.1.8",
     "flash-linear-attention",
     "nvidia-ml-py>=12.575.51",
+    "tensorboard>=2.18.0",
 ]
 
 [project.scripts]
