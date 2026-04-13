@@ -7,12 +7,15 @@ import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import pandas as pd
 import verifiers as vf
 from verifiers.serve import ZMQEnvClient, ZMQEnvServer
 from verifiers.utils.serve_utils import get_free_port
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.concurrency import RolloutLimiter
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
@@ -171,6 +174,7 @@ class EvalEnv(Env):
         get_client: Callable[[], Awaitable[vf.ClientConfig]],
         ckpt_step: int,
         step: int,
+        limiter: RolloutLimiter,
     ) -> list[vf.RolloutOutput]:
         num_examples = len(self.examples)
         rollouts_per_example = self.config.rollouts_per_example
@@ -180,9 +184,11 @@ class EvalEnv(Env):
         eval_start = time.perf_counter()
 
         if self.requires_group_scoring:
+            cost = rollouts_per_example
 
             async def run_with_progress(example: dict) -> list[vf.RolloutOutput] | None:
                 """Run rollouts_per_example rollouts as a scored group for one example."""
+                await limiter.acquire(cost)
                 try:
                     client = await get_client()
                     outputs = await self.run_group(
@@ -197,6 +203,8 @@ class EvalEnv(Env):
                     get_logger().warning(f"Group failed: {e}")
                     pbar.update(rollouts_per_example)
                     return None
+                finally:
+                    limiter.release(cost)
 
             coros = [run_with_progress(example) for example in self.examples]
 
@@ -204,6 +212,7 @@ class EvalEnv(Env):
 
             async def run_with_progress(example: dict) -> list[vf.RolloutOutput] | None:
                 """Run a single rollout for one example."""
+                await limiter.acquire(1)
                 try:
                     client = await get_client()
                     output = await self.run_rollout(client=client, example=example, model_name=model_name)
@@ -213,6 +222,8 @@ class EvalEnv(Env):
                     get_logger().warning(f"Rollout failed: {e}")
                     pbar.update(1)
                     return None
+                finally:
+                    limiter.release(1)
 
             coros = [run_with_progress(example) for example in self.examples for _ in range(rollouts_per_example)]
 

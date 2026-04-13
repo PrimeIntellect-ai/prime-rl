@@ -3,12 +3,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from prime_rl.orchestrator.concurrency import RolloutLimiter
 from prime_rl.orchestrator.scheduler import InflightRequest, Scheduler
 from prime_rl.utils.async_utils import safe_cancel
 
 
 def make_scheduler() -> Scheduler:
     scheduler = Scheduler.__new__(Scheduler)
+    scheduler.limiter = RolloutLimiter()
     scheduler.max_async_level = 1
     scheduler.strict_async_level = False
     scheduler.step = 9

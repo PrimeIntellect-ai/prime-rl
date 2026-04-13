@@ -145,7 +145,6 @@ class TrainSamplingConfig(BaseConfig):
         return args
 
     @model_validator(mode="before")
-    @classmethod
     def _deprecate_max_tokens(cls, data: Any) -> Any:
         if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
             get_logger().warning(
@@ -244,7 +243,6 @@ class EvalSamplingConfig(BaseConfig):
         return args
 
     @model_validator(mode="before")
-    @classmethod
     def _deprecate_max_tokens(cls, data: Any) -> Any:
         if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
             get_logger().warning(
@@ -905,11 +903,24 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = Path("outputs/run_default")
 
-    tasks_per_minute: Annotated[
+    max_inflight_rollouts: Annotated[
         int | None,
         Field(
             ge=1,
-            description="Rate limit for tasks per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. When set to None, no rate limiting is applied. Note: with multiple workers, the effective total rate equals workers × this value.",
+            description=(
+                "Maximum number of concurrent train and eval rollouts. Required for token-based batching. "
+                "If batch_size is set and this is unset, defaults to batch_size * oversampling_factor "
+                "(or batch_size when oversampling_factor is unset)."
+            ),
+        ),
+    ] = None
+
+    max_rollouts_per_minute: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            validation_alias=AliasChoices("max_rollouts_per_minute", "tasks_per_minute"),
+            description="Rate limit for train and eval rollouts per minute. Recommended if rollouts are attached to sensitive infrastructure (e.g. sandbox-backed environments to prevent load peaks). When set to None, no rate limiting is applied.",
         ),
     ] = None
 
@@ -936,18 +947,6 @@ class OrchestratorConfig(BaseConfig):
             description=(
                 "Rollout-mode batching only. Multiplier used to derive max_inflight_rollouts from batch_size "
                 "when max_inflight_rollouts is unset."
-            ),
-        ),
-    ] = None
-
-    max_inflight_rollouts: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description=(
-                "Maximum number of rollouts to keep in-flight. Required for token-based batching. "
-                "If batch_size is set and this is unset, defaults to batch_size * oversampling_factor "
-                "(or batch_size when oversampling_factor is unset)."
             ),
         ),
     ] = None
@@ -1024,7 +1023,15 @@ class OrchestratorConfig(BaseConfig):
     ] = True
 
     @model_validator(mode="before")
-    @classmethod
+    def _deprecate_tasks_per_minute(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "tasks_per_minute" in data and "max_rollouts_per_minute" not in data:
+            get_logger().warning(
+                "'tasks_per_minute' is deprecated, use 'max_rollouts_per_minute' instead. "
+                "Auto-translating for now, but this will be removed in a future release."
+            )
+        return data
+
+    @model_validator(mode="before")
     def _env_to_train(cls, data: Any) -> Any:
         """Allow [[env]] and [sampling] as shorthand for [train] with [[train.env]] and [train.sampling]."""
         if not isinstance(data, dict):
@@ -1096,8 +1103,17 @@ class OrchestratorConfig(BaseConfig):
                 oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
                 self.max_inflight_rollouts = int(self.batch_size * oversampling_factor)
 
-        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
-            raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
+        if self.max_inflight_rollouts is not None:
+            if self.max_inflight_rollouts < self.rollouts_per_example:
+                raise ValueError("max_inflight_rollouts must be at least rollouts_per_example (train)")
+            if self.eval is not None:
+                for env_cfg in self.eval.env:
+                    if env_cfg.rollouts_per_example > self.max_inflight_rollouts:
+                        raise ValueError(
+                            f"max_inflight_rollouts ({self.max_inflight_rollouts}) must be at least "
+                            f"rollouts_per_example ({env_cfg.rollouts_per_example}) of eval env '{env_cfg.name}', "
+                            f"otherwise group-scoring evals will deadlock"
+                        )
 
         # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:

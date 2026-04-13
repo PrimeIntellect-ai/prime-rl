@@ -35,6 +35,7 @@ from transformers import AutoProcessor
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
+from prime_rl.orchestrator.concurrency import RolloutLimiter
 from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
@@ -223,15 +224,19 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             checkpoint_step = config.ckpt.resume_step
 
+    rollout_limiter = RolloutLimiter(
+        max_concurrent_rollouts=config.max_inflight_rollouts,
+        max_rollouts_per_minute=config.max_rollouts_per_minute,
+    )
+
     scheduler = Scheduler(
         train_envs=train_envs,
         buffer=buffer,
         inference_pool=inference_pool,
-        max_inflight_rollouts=config.max_inflight_rollouts,
+        limiter=rollout_limiter,
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
-        tasks_per_minute=config.tasks_per_minute,
         enable_policy_updates=enable_policy_updates,
         lora_name=config.model.lora.name if config.model.lora else None,
         config=config,
@@ -379,6 +384,7 @@ async def orchestrate(config: OrchestratorConfig):
                         get_client=inference_pool.get_eval_client,
                         ckpt_step=ckpt_step,
                         step=progress.step,
+                        limiter=rollout_limiter,
                     )
                     for eval_env in envs_to_eval
                 ]
@@ -703,6 +709,7 @@ async def orchestrate(config: OrchestratorConfig):
             heart.beat()
 
     if config.eval and eval_envs is not None:
+        await scheduler.cancel_inflight_rollouts()
         logger.info("Running final evals")
         eval_results = await asyncio.gather(
             *[
@@ -711,6 +718,7 @@ async def orchestrate(config: OrchestratorConfig):
                     get_client=inference_pool.get_eval_client,
                     ckpt_step=ckpt_step,
                     step=progress.step,
+                    limiter=rollout_limiter,
                 )
                 for eval_env in eval_envs
             ]
