@@ -715,7 +715,7 @@ class GibberishFilterConfig(BaseModel):
     enforce: Annotated[
         bool,
         Field(
-            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+            description="If True, skip detected rollouts entirely so they are not sent to the trainer. If False, only track detection metrics."
         ),
     ] = False
     token_id_threshold: Annotated[
@@ -739,7 +739,7 @@ class RepetitionFilterConfig(BaseModel):
     enforce: Annotated[
         bool,
         Field(
-            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+            description="If True, skip detected rollouts entirely so they are not sent to the trainer. If False, only track detection metrics."
         ),
     ] = False
     window: Annotated[
@@ -765,7 +765,7 @@ class ZeroAdvantageFilterConfig(BaseModel):
     enforce: Annotated[
         bool,
         Field(
-            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+            description="If True, skip detected rollouts entirely so they are not sent to the trainer. If False, only track detection metrics."
         ),
     ] = True
 

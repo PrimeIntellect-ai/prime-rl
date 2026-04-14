@@ -311,222 +311,248 @@ def train(config: TrainerConfig):
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
         batch_size = len(micro_batches)
-        memory_profiler = None
-        if config.memory_profiler_path is not None:
-            memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
+        if batch_size == 0 and config.max_concurrent_runs > 1:
+            raise ValueError("Empty training batch reached the multi-run trainer unexpectedly")
+        is_phantom_step = batch_size == 0
 
-        forward_backward_start_time = time.perf_counter()
-        seq_len = micro_batches[0]["input_ids"].shape[1]
-
-        # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        loss_scale = max(loss_scale, 1)
-
-        logger.debug(f"Starting forward and backward pass ({batch_size=})")
-        tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
-        cp_enabled = parallel_dims.cp_enabled
-        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
-        cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
-        cp_size = parallel_dims.cp
-
-        for micro_step, micro_batch in enumerate(micro_batches):
-            input_ids = micro_batch["input_ids"].to("cuda")
-            position_ids = micro_batch["position_ids"].to("cuda")
-            advantages = micro_batch["advantages"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
-            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-            teacher_logprobs = (
-                micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
-            )
-            routed_experts = (
-                micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
-            )
-
-            if routed_experts is None and config.enable_router_replay:
-                raise ValueError(
-                    "You must set `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server to use router replay."
-                )
-
-            if routed_experts is not None and not config.enable_router_replay:
-                # we could've gotten routed experts from the inference server, but we didn't enable router replay
-                routed_experts = None
-
-            # Multimodal fields (Qwen3-VL) - only present for VLM training
-            pixel_values = (
-                micro_batch["pixel_values"].to("cuda") if micro_batch.get("pixel_values") is not None else None
-            )
-            image_grid_thw = (
-                micro_batch["image_grid_thw"].to("cuda") if micro_batch.get("image_grid_thw") is not None else None
-            )
-            mm_token_type_ids = (
-                micro_batch["mm_token_type_ids"].to("cuda")
-                if micro_batch.get("mm_token_type_ids") is not None
-                else None
-            )
-
-            labels = shift_tensor_left(input_ids)
-
-            # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
-            if cp_enabled and pixel_values is not None:
-                raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
-
-            if cp_enabled:
-                input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
-                labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-                if routed_experts is not None:
-                    routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
-            else:
-                forward_position_ids = position_ids
-
-            if config.model.lora:
-                lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
-                if cp_enabled:
-                    chunk_size = input_ids.shape[1]
-                    # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
-                    cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
-                    adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
-                    lora_num_tokens = torch.diff(
-                        adjusted_cu, prepend=torch.tensor([0], device=adjusted_cu.device, dtype=adjusted_cu.dtype)
-                    )
-                set_lora_num_tokens(lora_num_tokens)
-
-            temperatures = micro_batch["temperatures"].to("cuda")
-
-            # Shard temperatures for context parallelism if enabled
-            if cp_enabled:
-                temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
-
-            # Forward pass with per-token temperatures
-            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                out = forward(
-                    model,
-                    input_ids,
-                    forward_position_ids,
-                    labels=labels,
-                    temperature=temperatures,
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
-                    mm_token_type_ids=mm_token_type_ids,
-                    routed_experts=routed_experts,
-                )
-
-            if out.get("logprobs") is None:
-                # VanillaOutputLinear was used - need to compute logprobs externally with per-token temps
-                assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
-                logits = out["logits"]
-                # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
-                scaled_logits = logits / temperatures.unsqueeze(-1)
-                out["logprobs"] = selective_log_softmax(scaled_logits, labels)
-                out["entropy"] = compute_entropy(scaled_logits)
-            # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
-
-            if cp_enabled:
-                out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
-                out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
-
-            vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
-            # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
-            out["logprobs"] = shift_tensor_right(
-                out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()
-            )
-            out["entropy"] = shift_tensor_right(
-                out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
-            )
-
-            # Compute loss
-            response_lengths = get_response_lengths(position_ids)
-            loss, loss_tensors = compute_loss(
-                trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
-                if teacher_logprobs is not None
-                else None,
-                advantages=advantages.squeeze().split(response_lengths),
-                loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_fn=loss_fn,
-                loss_scale=loss_scale,
-            )
-
-            # Backward pass
-            with maybe_record_function("backward"):
-                loss.backward()
-
-            # Add relevant tensors to tensor dict for logging purposes
-            tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
-            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
-
-            if is_tt_moe_model(model):
-                load_balance_stats = get_load_balance_stats(model)
-                for k, v in load_balance_stats.items():
-                    if v is not None:
-                        tensors[k].append(v)
-
-            # Add loss tensors to tensor dict for logging purposes
-            for key, loss_tensor in loss_tensors.items():
-                loss_tensor = loss_tensor.detach().to("cpu")
-                tensors[key].append(loss_tensor)
-
-            # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f}"
-            if "mismatch_kl" in tensors:
-                micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
-            if "max_vio" in tensors:
-                micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
-            logger.debug(micro_step_message)
-
-        # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
-        if config.optim.max_norm is not None:
-            grad_norm = clip_grad_norm_(
-                model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
-            )
-            if grad_norm.device.type == "cpu":
-                grad_norm = grad_norm.to(torch.device("cuda"))
+        if is_phantom_step:
+            seq_len = 0
+            optimizer.zero_grad()
+            zero_grad_ratio = 1.0
+            tensor_stats = {"loss/mean": 0.0, "entropy/mean": 0.0}
+            forward_backward_time = 0.0
+        else:
+            memory_profiler = None
+            if config.memory_profiler_path is not None:
+                memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
-        zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
+            forward_backward_start_time = time.perf_counter()
 
-        # Update the model parameters
-        optimizer.step()
-        optimizer.zero_grad()
+            seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Update learning rate scheduler
-        scheduler.step()
+            # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
+            loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
+            loss_scale = max(loss_scale, 1)
+
+            logger.debug(f"Starting forward and backward pass ({batch_size=})")
+            tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
+            cp_enabled = parallel_dims.cp_enabled
+            cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
+            cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
+            cp_size = parallel_dims.cp
+
+            for micro_step, micro_batch in enumerate(micro_batches):
+                input_ids = micro_batch["input_ids"].to("cuda")
+                position_ids = micro_batch["position_ids"].to("cuda")
+                advantages = micro_batch["advantages"].to("cuda")
+                loss_mask = micro_batch["loss_mask"].to("cuda")
+                inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
+                teacher_logprobs = (
+                    micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
+                )
+                routed_experts = (
+                    micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
+                )
+
+                if routed_experts is None and config.enable_router_replay:
+                    raise ValueError(
+                        "You must set `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server to use router replay."
+                    )
+
+                if routed_experts is not None and not config.enable_router_replay:
+                    # we could've gotten routed experts from the inference server, but we didn't enable router replay
+                    routed_experts = None
+
+                # Multimodal fields (Qwen3-VL) - only present for VLM training
+                pixel_values = (
+                    micro_batch["pixel_values"].to("cuda") if micro_batch.get("pixel_values") is not None else None
+                )
+                image_grid_thw = (
+                    micro_batch["image_grid_thw"].to("cuda") if micro_batch.get("image_grid_thw") is not None else None
+                )
+                mm_token_type_ids = (
+                    micro_batch["mm_token_type_ids"].to("cuda")
+                    if micro_batch.get("mm_token_type_ids") is not None
+                    else None
+                )
+
+                labels = shift_tensor_left(input_ids)
+
+                # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
+                if cp_enabled and pixel_values is not None:
+                    raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
+
+                if cp_enabled:
+                    input_ids, forward_position_ids = setup_cp_params(
+                        input_ids, position_ids, cp_rank, cp_size, cp_group
+                    )
+                    labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
+                    if routed_experts is not None:
+                        routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
+                else:
+                    forward_position_ids = position_ids
+
+                if config.model.lora:
+                    lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
+                    if cp_enabled:
+                        chunk_size = input_ids.shape[1]
+                        # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
+                        cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
+                        adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
+                        lora_num_tokens = torch.diff(
+                            adjusted_cu,
+                            prepend=torch.tensor([0], device=adjusted_cu.device, dtype=adjusted_cu.dtype),
+                        )
+                    set_lora_num_tokens(lora_num_tokens)
+
+                temperatures = micro_batch["temperatures"].to("cuda")
+
+                # Shard temperatures for context parallelism if enabled
+                if cp_enabled:
+                    temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
+
+                # Forward pass with per-token temperatures
+                with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+                    out = forward(
+                        model,
+                        input_ids,
+                        forward_position_ids,
+                        labels=labels,
+                        temperature=temperatures,
+                        pixel_values=pixel_values,
+                        image_grid_thw=image_grid_thw,
+                        mm_token_type_ids=mm_token_type_ids,
+                        routed_experts=routed_experts,
+                    )
+
+                if out.get("logprobs") is None:
+                    # VanillaOutputLinear was used - need to compute logprobs externally with per-token temps
+                    assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
+                    logits = out["logits"]
+                    # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
+                    scaled_logits = logits / temperatures.unsqueeze(-1)
+                    out["logprobs"] = selective_log_softmax(scaled_logits, labels)
+                    out["entropy"] = compute_entropy(scaled_logits)
+                # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
+
+                if cp_enabled:
+                    out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
+                    out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
+
+                vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
+                # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
+                out["logprobs"] = shift_tensor_right(
+                    out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()
+                )
+                out["entropy"] = shift_tensor_right(
+                    out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
+                )
+
+                # Compute loss
+                response_lengths = get_response_lengths(position_ids)
+                loss, loss_tensors = compute_loss(
+                    trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
+                    inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
+                    teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
+                    if teacher_logprobs is not None
+                    else None,
+                    advantages=advantages.squeeze().split(response_lengths),
+                    loss_mask=loss_mask.squeeze().split(response_lengths),
+                    loss_fn=loss_fn,
+                    loss_scale=loss_scale,
+                )
+
+                # Backward pass
+                with maybe_record_function("backward"):
+                    loss.backward()
+
+                # Add relevant tensors to tensor dict for logging purposes
+                tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
+                tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+
+                if is_tt_moe_model(model):
+                    load_balance_stats = get_load_balance_stats(model)
+                    for k, v in load_balance_stats.items():
+                        if v is not None:
+                            tensors[k].append(v)
+
+                # Add loss tensors to tensor dict for logging purposes
+                for key, loss_tensor in loss_tensors.items():
+                    loss_tensor = loss_tensor.detach().to("cpu")
+                    tensors[key].append(loss_tensor)
+
+                # Debug log with *local, micro step* stats
+                micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f}"
+                if "mismatch_kl" in tensors:
+                    micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
+                if "max_vio" in tensors:
+                    micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+                logger.debug(micro_step_message)
+
+            # Optionally, clip the gradients
+            if config.optim.max_norm is not None:
+                grad_norm = clip_grad_norm_(
+                    model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
+                )
+                if grad_norm.device.type == "cpu":
+                    grad_norm = grad_norm.to(torch.device("cuda"))
+
+            zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
+
+            # Update the model parameters
+            optimizer.step()
+            optimizer.zero_grad()
+
+            # Update learning rate scheduler
+            scheduler.step()
+
+            forward_backward_time = time.perf_counter() - forward_backward_start_time
+
+            # Synchronize the tensor metrics across all steps and ranks
+            tensor_stats = tensors.compute_stats()
 
         if config.max_concurrent_runs == 1:
             current_lr = optimizer.param_groups[0]["lr"]
         else:
             current_lr = optimizer.get_current_lr()
-        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
-
-        # Synchronize the tensor metrics across all steps and ranks
-        tensor_stats = tensors.compute_stats()
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
         num_tokens = parallel_dims.get_mesh("dp").size() * num_local_tokens
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
-        perf_counter = get_perf_counter(model, seq_len)
-        perf_counter.count_tokens(num_tokens)
-        throughput = perf_counter.get_tokens_per_second() or 0
-        mfu = perf_counter.get_mfu() or 0
+        if is_phantom_step:
+            throughput = 0.0
+            mfu = 0.0
+        else:
+            perf_counter = get_perf_counter(model, seq_len)
+            perf_counter.count_tokens(num_tokens)
+            throughput = perf_counter.get_tokens_per_second() or 0
+            mfu = perf_counter.get_mfu() or 0
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f}"
-        if "mismatch_kl/mean" in tensor_stats:
-            step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f}"
-        if grad_norm is not None:
-            step_message += f" | Grad. Norm: {grad_norm:.4f}"
+        if is_phantom_step:
+            step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Empty batch, skipping optimizer step"
+        else:
+            step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f}"
+            if "mismatch_kl/mean" in tensor_stats:
+                step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f}"
+            if grad_norm is not None:
+                step_message += f" | Grad. Norm: {grad_norm:.4f}"
         step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
-        if "max_vio/mean" in tensor_stats:
+        if not is_phantom_step and "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
-        logger.success(step_message)
+        if is_phantom_step:
+            logger.warning(step_message)
+        else:
+            logger.success(step_message)
 
         # Log performance metrics
         perf_metrics = {
@@ -547,6 +573,8 @@ def train(config: TrainerConfig):
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
         monitor.log(optim_metrics, step=progress.step)
+
+        monitor.log({"data/is_empty_batch": float(is_phantom_step), "step": progress.step}, step=progress.step)
 
         # Compute derived metrics
         entropy_mean = tensor_stats.get("entropy/mean", 0.0)

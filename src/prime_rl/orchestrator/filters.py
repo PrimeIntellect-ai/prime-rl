@@ -2,9 +2,8 @@
 
 Filters run after rollouts complete, inspecting token IDs and logprobs to
 detect gibberish or repetition. Detection metrics are always tracked.
-When enforce=True, detected rollouts get their completion mask cleared so
-they don't contribute to training. Reward is kept as-is for baseline
-calculation.
+When enforce=True, detected rollouts are skipped entirely during training and
+are not sent to the trainer. Reward is kept as-is for baseline calculation.
 """
 
 import math
@@ -152,27 +151,28 @@ def setup_filters(configs: list[FilterConfig], vocab_size: int) -> list[RolloutF
 def apply_filters(
     filters: list[RolloutFilter],
     rollouts: list[vf.RolloutOutput],
-) -> dict[str, float]:
+) -> tuple[dict[str, float], list[vf.RolloutOutput]]:
     """Apply filters to rollouts. Detection metrics are always tracked.
 
-    When a filter has enforce=True, detected rollouts get their completion
-    mask cleared and stop_condition set. Reward is kept as-is for baseline
-    calculation.
+    When a filter has enforce=True, detected rollouts are skipped entirely
+    during training. Reward is kept as-is for baseline calculation.
 
     First matching filter wins per rollout (no double-counting).
 
-    Returns aggregate metrics dict for logging.
+    Returns aggregate metrics and the rollouts that should be sent to the trainer.
     """
     if not filters:
-        return {}
+        return {}, rollouts
 
     counts: dict[str, int] = {f.name: 0 for f in filters}
     total_detected = 0
     total_enforced = 0
+    filtered_rollouts: list[vf.RolloutOutput] = []
 
     for rollout in rollouts:
         if rollout.get("metrics") is None:
             rollout["metrics"] = {}
+        rollout["metrics"].setdefault("filter/enforced", 0.0)
         for filt in filters:
             rollout["metrics"].setdefault(f"filter/{filt.name}", 0.0)
 
@@ -184,14 +184,14 @@ def apply_filters(
                 rollout["metrics"][f"filter/{filt.name}"] = 1.0
 
                 if filt.enforce:
-                    for step in rollout["trajectory"]:
-                        tokens = step["tokens"]
-                        if tokens is not None:
-                            tokens["completion_mask"] = [0] * len(tokens["completion_mask"])
-                    rollout["stop_condition"] = filt.name
+                    rollout["metrics"]["filter/enforced"] = 1.0
                     total_enforced += 1
+                else:
+                    filtered_rollouts.append(rollout)
 
                 break
+        else:
+            filtered_rollouts.append(rollout)
 
     n = len(rollouts)
     metrics: dict[str, float] = {}
@@ -208,4 +208,4 @@ def apply_filters(
             f"({', '.join(f'{name}={c}' for name, c in counts.items() if c > 0)})" + enforced_msg
         )
 
-    return metrics
+    return metrics, filtered_rollouts
