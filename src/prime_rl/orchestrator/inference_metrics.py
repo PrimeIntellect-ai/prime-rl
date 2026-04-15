@@ -4,10 +4,10 @@ import asyncio
 import time
 from collections import deque
 
-import wandb
 from httpx import AsyncClient
 from prometheus_client.parser import text_string_to_metric_families
 
+import wandb
 from prime_rl.utils.logger import get_logger
 
 POLL_INTERVAL = 5.0
@@ -225,7 +225,7 @@ class InferenceMetricsCollector:
 
         if metrics:
             metrics["_timestamp"] = time.time()
-            wandb.log(metrics, commit=False)
+            wandb.log(metrics)
 
     async def stop(self):
         if self._task is not None:
