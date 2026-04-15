@@ -1,4 +1,4 @@
-# Qwen 3 32B SWE
+# Qwen 3 30B - A3B SWE
 
 This example guides you through RL training [Qwen3-30B-A3B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-30B-A3B-Thinking-2507) on agentic SWE tasks.
 

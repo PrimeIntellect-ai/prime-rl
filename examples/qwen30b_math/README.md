@@ -1,4 +1,4 @@
-# Qwen 3 30B Math
+# Qwen 3 30B - A3B Math
 
 This example guides you through RL training [Qwen3-30B-A3B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-30B-A3B-Thinking-2507) on math tasks.
 
