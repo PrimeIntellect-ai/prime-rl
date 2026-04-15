@@ -85,7 +85,7 @@ class ModelConfig(BaseModelConfig):
             description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`. "
             'Set to "auto" to infer from the model name.',
         ),
-    ] = None
+    ] = "auto"
 
     reasoning_parser: Annotated[
         str | None,
