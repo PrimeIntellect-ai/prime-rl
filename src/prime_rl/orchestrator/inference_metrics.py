@@ -101,6 +101,7 @@ class InferenceMetricsCollector:
         self._task: asyncio.Task | None = None
 
     async def start(self):
+        wandb.define_metric("_timestamp", hidden=True)
         wandb.define_metric("inference/*", step_metric="_timestamp")
 
         async def poll_loop():
@@ -224,7 +225,7 @@ class InferenceMetricsCollector:
 
         if metrics:
             metrics["_timestamp"] = time.time()
-            wandb.log(metrics)
+            wandb.log(metrics, commit=False)
 
     async def stop(self):
         if self._task is not None:
