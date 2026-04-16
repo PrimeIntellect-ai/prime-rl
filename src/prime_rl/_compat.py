@@ -46,7 +46,8 @@ if _hub_kernels is not None:
             return _original_lazy_load_kernel(kernel_name, mapping)
         except ConnectionError:
             # OfflineModeIsEnabled is a ConnectionError subclass.
-            # Treat it like FileNotFoundError: kernel unavailable, use slow path.
+            # Return None so NemotronH skips hub kernels; prime-rl's
+            # _patch_mamba2_use_triton_ssd() uses mamba_ssm directly.
             mapping[kernel_name] = None
             return None
 
