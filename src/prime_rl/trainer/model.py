@@ -376,6 +376,15 @@ def get_model(
 
 def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     logger = get_logger()
+    # Defensive check: tokenizer name should have been auto-set by config validator
+    if config.name is None:
+        logger.error("Tokenizer name is None! This should have been auto-set by TrainerConfig.auto_setup_tokenizer validator.")
+        logger.error(f"Tokenizer config: {config}")
+        raise ValueError(
+            "Tokenizer name must be set. This usually means the config validation failed. "
+            "Check that model.name is properly configured."
+        )
+    logger.info(f"Loading tokenizer from: {config.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     if config.chat_template is not None:
         path = Path(config.chat_template)

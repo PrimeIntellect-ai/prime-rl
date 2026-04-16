@@ -935,6 +935,7 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
+        """Auto-set tokenizer name from model name if not explicitly configured."""
         if self.tokenizer.name is None:
             self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
