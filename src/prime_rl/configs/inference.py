@@ -572,12 +572,12 @@ class InferenceConfig(BaseConfig):
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
 
-        # Parsers are already resolved by ModelConfig.auto_resolve_parsers —
-        # clean up None values that vLLM doesn't accept
+        # Remove tool_call_parser if not set (vLLM doesn't accept None)
         if namespace.tool_call_parser is None:
             delattr(namespace, "tool_call_parser")
         namespace.enable_auto_tool_choice = hasattr(namespace, "tool_call_parser")
 
+        # Remove reasoning_parser if not set (vLLM doesn't accept None)
         if namespace.reasoning_parser is None:
             delattr(namespace, "reasoning_parser")
 
