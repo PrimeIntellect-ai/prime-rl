@@ -97,6 +97,22 @@ def check_gpus_available(gpu_ids: list[int]) -> None:
         raise RuntimeError(msg)
 
 
+def _log_resolved_parsers(config: RLConfig):
+    """Log auto-resolved parser values for inference model config."""
+    if config.inference is None:
+        return
+    model = config.inference.model
+    logger = get_logger()
+    if model.tool_call_parser:
+        logger.info(f"Auto-resolved tool_call_parser='{model.tool_call_parser}' for model '{model.name}'")
+    else:
+        logger.warning(f"No tool_call_parser found for model '{model.name}' — tool calling disabled")
+    if model.reasoning_parser:
+        logger.info(f"Auto-resolved reasoning_parser='{model.reasoning_parser}' for model '{model.name}'")
+    else:
+        logger.warning(f"No reasoning_parser found for model '{model.name}' — reasoning parsing disabled")
+
+
 def rl_local(config: RLConfig):
     assert config.deployment.type == "single_node"
 
@@ -104,6 +120,7 @@ def rl_local(config: RLConfig):
         config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
         json_logging=config.log.json_logging,
     )
+    _log_resolved_parsers(config)
 
     config_dir = config.output_dir / "configs"
     write_subconfigs(config, config_dir)
@@ -484,6 +501,7 @@ def rl_slurm(config: RLConfig):
     logger = setup_logger(
         config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"), json_logging=config.log.json_logging
     )
+    _log_resolved_parsers(config)
 
     config_dir = config.output_dir / "configs"
     log_dir = get_log_dir(config.output_dir)

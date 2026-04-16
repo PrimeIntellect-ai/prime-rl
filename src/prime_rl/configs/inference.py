@@ -6,7 +6,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
-from prime_rl.utils.logger import get_logger
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 from prime_rl.utils.utils import rgetattr, rsetattr
 
@@ -111,21 +110,9 @@ class ModelConfig(BaseModelConfig):
     def auto_resolve_parsers(self):
         """Resolve "auto" parser values to concrete parser names from model name."""
         if self.tool_call_parser == "auto":
-            resolved = resolve_tool_call_parser(self.name)
-            if resolved:
-                get_logger().info(f"Auto-resolved tool_call_parser='{resolved}' for model '{self.name}'")
-            else:
-                get_logger().warning(f"No tool_call_parser found for model '{self.name}' — tool calling disabled")
-            self.tool_call_parser = resolved
-
+            self.tool_call_parser = resolve_tool_call_parser(self.name)
         if self.reasoning_parser == "auto":
-            resolved = resolve_reasoning_parser(self.name)
-            if resolved:
-                get_logger().info(f"Auto-resolved reasoning_parser='{resolved}' for model '{self.name}'")
-            else:
-                get_logger().warning(f"No reasoning_parser found for model '{self.name}' — reasoning parsing disabled")
-            self.reasoning_parser = resolved
-
+            self.reasoning_parser = resolve_reasoning_parser(self.name)
         return self
 
 
