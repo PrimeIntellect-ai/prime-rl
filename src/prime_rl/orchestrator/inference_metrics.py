@@ -101,9 +101,6 @@ class InferenceMetricsCollector:
         self._task: asyncio.Task | None = None
 
     async def start(self):
-        wandb.define_metric("inference_wall_time", hidden=True)
-        wandb.define_metric("inference/*", step_metric="inference_wall_time")
-
         async def poll_loop():
             while True:
                 try:
@@ -224,8 +221,7 @@ class InferenceMetricsCollector:
                 metrics[f"inference/{rate_name}"] = sum(values) / len(values)
 
         if metrics:
-            metrics["inference_wall_time"] = time.time()
-            wandb.log(metrics)
+            wandb.log(metrics, commit=False)
 
     async def stop(self):
         if self._task is not None:

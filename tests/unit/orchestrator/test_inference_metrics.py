@@ -261,8 +261,8 @@ def test_collect_noop_when_all_servers_fail():
     assert len(collector._gauge_history) == 0
 
 
-def test_collect_logs_to_wandb_with_timestamp():
-    """Metrics are logged to wandb with an inference_wall_time key."""
+def test_collect_logs_to_wandb():
+    """Metrics are logged to wandb with commit=False."""
     clients = [_make_mock_client(PROMETHEUS_TEXT_SERVER_1), _make_mock_client(PROMETHEUS_TEXT_SERVER_2)]
     collector = InferenceMetricsCollector(clients)
 
@@ -275,10 +275,11 @@ def test_collect_logs_to_wandb_with_timestamp():
 
     mock_wandb.log.assert_called_once()
     logged = mock_wandb.log.call_args[0][0]
-    assert "inference_wall_time" in logged
     assert "inference/num_requests_running" in logged
     assert "inference/gpu_cache_usage_perc_max" in logged
     assert "inference/gpu_cache_usage_perc_mean" in logged
+    # commit=False so metrics piggyback on the next training step commit
+    assert mock_wandb.log.call_args[1] == {"commit": False}
 
 
 def test_sliding_window_smoothing():
