@@ -876,16 +876,16 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = None
 
-    # Loss type for training (per-run override for hosted multi-tenant training)
-    loss_type: Annotated[
-        Literal["rl", "sft"],
+    # When True, trainer uses SFT loss instead of RL loss (per-run override for hosted multi-tenant training)
+    need_sft_loss: Annotated[
+        bool,
         Field(
             description=(
-                "Loss type for this run. 'rl' uses the trainer's configured RL loss (default). "
-                "'sft' uses SFT masked NLL loss and requires a teacher_rollout_model to be configured."
+                "When True, use SFT masked NLL loss instead of the trainer's configured RL loss. "
+                "Requires a teacher_rollout_model to be configured."
             ),
         ),
-    ] = "rl"
+    ] = False
 
     # The evaluation configuration
     eval: EvalConfig | None = None

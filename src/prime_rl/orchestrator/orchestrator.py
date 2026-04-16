@@ -477,7 +477,7 @@ async def orchestrate(config: OrchestratorConfig):
                 for sample in samples:
                     sample.advantage = rollout["advantage"]
                     sample.reward = rollout["reward"]
-                    if config.loss_type == "sft":
+                    if config.need_sft_loss:
                         sample.sft_loss = True
                     sample_decode_tokens = sum(sample.completion_mask)
                     sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens

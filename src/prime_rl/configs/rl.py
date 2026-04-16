@@ -420,10 +420,10 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_loss_type(self):
-        if self.orchestrator.loss_type == "sft":
+        if self.orchestrator.need_sft_loss:
             if self.orchestrator.teacher_rollout_model is None:
                 raise ValueError(
-                    'orchestrator.loss_type = "sft" requires orchestrator.teacher_rollout_model to be configured.'
+                    "orchestrator.sft_loss = true requires orchestrator.teacher_rollout_model to be configured."
                 )
 
         if self.orchestrator.teacher_rollout_model is not None:
