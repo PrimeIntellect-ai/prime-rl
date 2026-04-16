@@ -4,10 +4,10 @@ import asyncio
 import time
 from collections import deque
 
+import wandb
 from httpx import AsyncClient
 from prometheus_client.parser import text_string_to_metric_families
 
-import wandb
 from prime_rl.utils.logger import get_logger
 
 POLL_INTERVAL = 5.0
@@ -101,8 +101,8 @@ class InferenceMetricsCollector:
         self._task: asyncio.Task | None = None
 
     async def start(self):
-        wandb.define_metric("_timestamp", hidden=True)
-        wandb.define_metric("inference/*", step_metric="_timestamp")
+        wandb.define_metric("inference_wall_time", hidden=True)
+        wandb.define_metric("inference/*", step_metric="inference_wall_time")
 
         async def poll_loop():
             while True:
@@ -224,7 +224,7 @@ class InferenceMetricsCollector:
                 metrics[f"inference/{rate_name}"] = sum(values) / len(values)
 
         if metrics:
-            metrics["_timestamp"] = time.time()
+            metrics["inference_wall_time"] = time.time()
             wandb.log(metrics)
 
     async def stop(self):

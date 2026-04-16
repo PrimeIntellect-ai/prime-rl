@@ -262,7 +262,7 @@ def test_collect_noop_when_all_servers_fail():
 
 
 def test_collect_logs_to_wandb_with_timestamp():
-    """Metrics are logged to wandb with a _timestamp key."""
+    """Metrics are logged to wandb with an inference_wall_time key."""
     clients = [_make_mock_client(PROMETHEUS_TEXT_SERVER_1), _make_mock_client(PROMETHEUS_TEXT_SERVER_2)]
     collector = InferenceMetricsCollector(clients)
 
@@ -275,7 +275,7 @@ def test_collect_logs_to_wandb_with_timestamp():
 
     mock_wandb.log.assert_called_once()
     logged = mock_wandb.log.call_args[0][0]
-    assert "_timestamp" in logged
+    assert "inference_wall_time" in logged
     assert "inference/num_requests_running" in logged
     assert "inference/gpu_cache_usage_perc_max" in logged
     assert "inference/gpu_cache_usage_perc_mean" in logged
