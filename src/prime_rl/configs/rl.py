@@ -423,10 +423,12 @@ class RLConfig(BaseConfig):
         if self.orchestrator.need_sft_loss:
             if self.orchestrator.teacher_rollout_model is None:
                 raise ValueError(
-                    "orchestrator.sft_loss = true requires orchestrator.teacher_rollout_model to be configured."
+                    "orchestrator.need_sft_loss = true requires orchestrator.teacher_rollout_model to be configured."
                 )
 
         if self.orchestrator.teacher_rollout_model is not None:
+            if not self.orchestrator.need_sft_loss:
+                raise ValueError("orchestrator.teacher_rollout_model requires orchestrator.need_sft_loss = true.")
             if self.inference is not None:
                 raise ValueError(
                     "inference must be omitted when orchestrator.teacher_rollout_model is configured. "

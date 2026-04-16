@@ -116,7 +116,10 @@ def packed_samples_into_micro_bs(
             if _is_multimodal_sample(bin_content):
                 continue
             # Check if sequence fits in this bin
-            if len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len:
+            if (
+                len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
+                and bin_content.sft_loss == sample.sft_loss
+            ):
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
