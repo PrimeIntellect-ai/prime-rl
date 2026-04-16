@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 from prime_rl.utils.utils import rgetattr, rsetattr
 
@@ -546,11 +547,14 @@ class InferenceConfig(BaseConfig):
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
 
         # Auto-resolve tool_call_parser from model name when set to "auto"
+        model_name = namespace.model
         if namespace.tool_call_parser == "auto":
-            resolved = resolve_tool_call_parser(namespace.model)
+            resolved = resolve_tool_call_parser(model_name)
             if resolved:
+                get_logger().info(f"Auto-resolved tool_call_parser='{resolved}' for model '{model_name}'")
                 namespace.tool_call_parser = resolved
             else:
+                get_logger().warning(f"No tool_call_parser found for model '{model_name}' — tool calling disabled")
                 delattr(namespace, "tool_call_parser")
         elif namespace.tool_call_parser is None:
             delattr(namespace, "tool_call_parser")
@@ -558,10 +562,12 @@ class InferenceConfig(BaseConfig):
 
         # Auto-resolve reasoning_parser from model name when set to "auto"
         if namespace.reasoning_parser == "auto":
-            resolved = resolve_reasoning_parser(namespace.model)
+            resolved = resolve_reasoning_parser(model_name)
             if resolved:
+                get_logger().info(f"Auto-resolved reasoning_parser='{resolved}' for model '{model_name}'")
                 namespace.reasoning_parser = resolved
             else:
+                get_logger().warning(f"No reasoning_parser found for model '{model_name}' — reasoning parsing disabled")
                 delattr(namespace, "reasoning_parser")
         elif namespace.reasoning_parser is None:
             delattr(namespace, "reasoning_parser")
