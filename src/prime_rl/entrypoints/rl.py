@@ -13,6 +13,7 @@ import pynvml
 import tomli_w
 
 from prime_rl.configs.rl import RLConfig
+from prime_rl.trainer.model import pre_download_model
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
@@ -558,8 +559,6 @@ def rl(config: RLConfig):
             clean_future_steps(config.output_dir, resume_step)
 
     if not config.dry_run:
-        from prime_rl.trainer.model import pre_download_model
-
         pre_download_model(config.trainer.model.name)
 
     if config.slurm is not None:
