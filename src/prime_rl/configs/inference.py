@@ -83,16 +83,16 @@ class ModelConfig(BaseModelConfig):
     tool_call_parser: Annotated[
         str | None,
         Field(
-            description="The tool call parser to use. Auto-detected from the model name if not set.",
+            description='The tool call parser to use. Set to "auto" (default) to detect from the model name, or None to disable.',
         ),
-    ] = None
+    ] = "auto"
 
     reasoning_parser: Annotated[
         str | None,
         Field(
-            description="Parser for extracting reasoning content from model outputs. Passed to vLLM as `--reasoning-parser`. Setting this enables reasoning mode.",
+            description='Parser for extracting reasoning content from model outputs. Set to "auto" (default) to detect from the model name, or None to disable.',
         ),
-    ] = None
+    ] = "auto"
 
     rope_scaling: Annotated[
         dict[str, Any] | str | None,
@@ -545,8 +545,8 @@ class InferenceConfig(BaseConfig):
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
 
-        # Auto-resolve tool_call_parser from model name if not explicitly set
-        if "tool_call_parser" not in self.model.model_fields_set:
+        # Auto-resolve tool_call_parser from model name when set to "auto"
+        if namespace.tool_call_parser == "auto":
             resolved = resolve_tool_call_parser(namespace.model)
             if resolved:
                 namespace.tool_call_parser = resolved
@@ -556,14 +556,14 @@ class InferenceConfig(BaseConfig):
             delattr(namespace, "tool_call_parser")
         namespace.enable_auto_tool_choice = hasattr(namespace, "tool_call_parser")
 
-        # Auto-resolve reasoning_parser from model name if not explicitly set
-        if "reasoning_parser" not in self.model.model_fields_set:
+        # Auto-resolve reasoning_parser from model name when set to "auto"
+        if namespace.reasoning_parser == "auto":
             resolved = resolve_reasoning_parser(namespace.model)
             if resolved:
                 namespace.reasoning_parser = resolved
-
-        # Remove reasoning_parser if not set (vLLM doesn't accept None)
-        if namespace.reasoning_parser is None:
+            else:
+                delattr(namespace, "reasoning_parser")
+        elif namespace.reasoning_parser is None:
             delattr(namespace, "reasoning_parser")
 
         # Remove chat_template if not set (vLLM doesn't accept None)

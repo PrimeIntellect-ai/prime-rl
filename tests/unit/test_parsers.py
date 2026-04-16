@@ -109,6 +109,17 @@ def test_to_vllm_explicit_parser_not_overridden():
     assert ns.tool_call_parser == "my_parser"
 
 
+def test_to_vllm_none_disables_parser():
+    """Setting parser to None disables auto-resolution."""
+    from prime_rl.configs.inference import InferenceConfig
+
+    config = InferenceConfig(model={"name": "Qwen/Qwen3-4B", "tool_call_parser": None, "reasoning_parser": None})
+    ns = config.to_vllm()
+    assert not hasattr(ns, "tool_call_parser")
+    assert not hasattr(ns, "reasoning_parser")
+    assert ns.enable_auto_tool_choice is False
+
+
 def test_to_vllm_unknown_model_disables_auto_tool_choice():
     """Unknown models should have auto tool choice disabled."""
     from prime_rl.configs.inference import InferenceConfig
