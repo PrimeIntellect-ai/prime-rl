@@ -54,7 +54,7 @@ def setup_nemotron_h_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: 
     if count > 0:
         from prime_rl.utils.logger import get_logger
 
-        get_logger().info(f"Configured NemotronH CP on {count} Mamba layers (gather/scatter)")
+        get_logger().info(f"Configured NemotronH CP on {count} Mamba layers (all-to-all head partitioning)")
 
 
 def setup_sparse_mla_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:

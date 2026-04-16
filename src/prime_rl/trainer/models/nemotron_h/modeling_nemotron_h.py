@@ -19,6 +19,7 @@ from transformers.utils import auto_docstring, logging
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.cp_mamba import mamba_cp_forward
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import LatentMoE, NemotronHRouter, NonGatedGroupedExperts
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
@@ -29,7 +30,6 @@ from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
     convert_prime_layer_to_hf,
     convert_prime_to_hf,
 )
-from prime_rl.utils.cp import gather_for_cp, shard_for_cp
 
 logger = logging.get_logger(__name__)
 
@@ -117,9 +117,9 @@ def _ensure_zamba2_compat(config: NemotronHConfig):
 class NemotronHMambaLayer(GradientCheckpointingLayer):
     """Mamba-2 SSM layer: norm -> NemotronHMamba2Mixer -> residual.
 
-    With context parallelism, gathers the full sequence before the Mamba kernel
-    (which has sequential dependencies via SSM recurrence and causal conv1d)
-    and shards back after.
+    With context parallelism, uses all-to-all head partitioning: transposes
+    from sequence-parallel to head-parallel before the SSM, so each CP rank
+    processes the full sequence on a subset of heads, then transposes back.
     """
 
     def __init__(self, config: NemotronHConfig, layer_idx: int):
@@ -131,6 +131,12 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
         self.mlp = None  # No MoE in this layer type
 
     def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        assert self.mamba.num_heads % cp_world_size == 0, (
+            f"num_heads ({self.mamba.num_heads}) must be divisible by cp_world_size ({cp_world_size})"
+        )
+        assert self.mamba.n_groups % cp_world_size == 0, (
+            f"n_groups ({self.mamba.n_groups}) must be divisible by cp_world_size ({cp_world_size})"
+        )
         self._cp_group = cp_group
         self._cp_rank = cp_rank
         self._cp_world_size = cp_world_size
@@ -149,10 +155,11 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
         if self.cp_enabled:
-            hidden_states = gather_for_cp(hidden_states, self._cp_group)
-        hidden_states = self.mamba(hidden_states)
-        if self.cp_enabled:
-            hidden_states = shard_for_cp(hidden_states, self._cp_rank, self._cp_world_size)
+            hidden_states = mamba_cp_forward(
+                self.mamba, hidden_states, self._cp_group, self._cp_rank, self._cp_world_size
+            )
+        else:
+            hidden_states = self.mamba(hidden_states)
         return residual + hidden_states
 
 
