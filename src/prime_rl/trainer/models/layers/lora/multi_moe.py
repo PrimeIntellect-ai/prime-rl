@@ -6,7 +6,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, get_lora_num_tokens, get_multilora_scaling
-from prime_rl.trainer.models.layers.moe import GroupedExperts
+from prime_rl.trainer.models.layers.moe import GroupedExperts, NonGatedGroupedExperts, relu2
 
 
 def _run_lora_grouped_mm(
@@ -470,6 +470,281 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             w2_lora_tmp = torch.matmul(h_lora, w2_lora_a[expert_idx].transpose(-2, -1))
             w2_lora_out = torch.matmul(w2_lora_tmp, w2_lora_b[expert_idx].transpose(-2, -1))
             out = h2_base + scaling * w2_lora_out
+
+            out_splits.append(out)
+            start = end
+
+        return torch.cat(out_splits, dim=0)
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, "
+            f"n_adapters={self.n_adapters}, num_experts={self.num_experts}, "
+            f"alpha={self.alpha}, dropout={self.lora_dropout}, "
+            f"use_grouped_mm={self.use_grouped_mm})"
+        )
+
+
+class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
+    """
+    NonGatedGroupedExperts + multi-LoRA with grouped GEMM.
+    Adapts the two projections (w1: up, w2: down) of NemotronH-style relu2 experts.
+    """
+
+    def __init__(
+        self,
+        base_layer: NonGatedGroupedExperts,
+        rank: int,
+        n_adapters: int,
+        alpha: float = 32.0,
+        dropout: float = 0.0,
+        use_grouped_mm: bool = True,
+    ):
+        super().__init__(base_layer)
+        if rank <= 0 or n_adapters <= 0:
+            raise ValueError("rank and n_adapters must be > 0")
+
+        self.num_experts = base_layer.num_experts
+        # w1 shape: [num_experts, intermediate_dim, input_dim]
+        self.hidden_dim = base_layer.w1.shape[1]
+        self.dim = base_layer.w1.shape[2]
+
+        if rank % 8 != 0 or self.dim % 8 != 0 or self.hidden_dim % 8 != 0:
+            use_grouped_mm = False
+
+        self.rank = rank
+        self.n_adapters = n_adapters
+        self.alpha = alpha
+        self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+        self.use_grouped_mm = use_grouped_mm
+
+        self._lora_num_tokens = get_lora_num_tokens()
+        self._scaling_factors = get_multilora_scaling()
+
+        # w1 (up: dim -> hidden_dim)
+        self.w1_lora_A = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        rank,
+                        self.dim,
+                        device=base_layer.w1.device,
+                        dtype=base_layer.w1.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+        self.w1_lora_B = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        self.hidden_dim,
+                        rank,
+                        device=base_layer.w1.device,
+                        dtype=base_layer.w1.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+
+        # w2 (down: hidden_dim -> dim)
+        self.w2_lora_A = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        rank,
+                        self.hidden_dim,
+                        device=base_layer.w2.device,
+                        dtype=base_layer.w2.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+        self.w2_lora_B = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        self.dim,
+                        rank,
+                        device=base_layer.w2.device,
+                        dtype=base_layer.w2.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+
+        self.reset_parameters()
+
+    def reset_parameters(self, index: int | None = None) -> None:
+        if index is None:
+            for i in range(self.n_adapters):
+                self.reset_parameters(i)
+        else:
+            nn.init.kaiming_uniform_(self.w1_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.w1_lora_B[index])
+            nn.init.kaiming_uniform_(self.w2_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.w2_lora_B[index])
+
+    def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
+        return [
+            ("w1_lora_A", self.w1_lora_A[idx]),
+            ("w1_lora_B", self.w1_lora_B[idx]),
+            ("w2_lora_A", self.w2_lora_A[idx]),
+            ("w2_lora_B", self.w2_lora_B[idx]),
+        ]
+
+    def get_lora_param_counts(self) -> tuple[int, int]:
+        adapter_params = (
+            self.w1_lora_A[0].numel()
+            + self.w1_lora_B[0].numel()
+            + self.w2_lora_A[0].numel()
+            + self.w2_lora_B[0].numel()
+        )
+        adapted_params = self.base_layer.w1.numel() + self.base_layer.w2.numel()
+        return adapter_params, adapted_params
+
+    def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
+        state_dict = {}
+
+        detached_w1_lora_a = self.w1_lora_A[idx].detach()
+        detached_w1_lora_b = self.w1_lora_B[idx].detach()
+        detached_w2_lora_a = self.w2_lora_A[idx].detach()
+        detached_w2_lora_b = self.w2_lora_B[idx].detach()
+
+        if isinstance(detached_w1_lora_a, DTensor):
+            detached_w1_lora_a = detached_w1_lora_a.full_tensor()
+            detached_w1_lora_b = detached_w1_lora_b.full_tensor()
+            detached_w2_lora_a = detached_w2_lora_a.full_tensor()
+            detached_w2_lora_b = detached_w2_lora_b.full_tensor()
+
+        for expert_id in range(self.num_experts):
+            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = detached_w1_lora_a[expert_id].clone()
+            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = detached_w1_lora_b[expert_id].clone()
+            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = detached_w2_lora_a[expert_id].clone()
+            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = detached_w2_lora_b[expert_id].clone()
+
+        return state_dict
+
+    def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        adapter_idx = self._lora_num_tokens.argmax().item()
+        w1_lora_a = self.w1_lora_A[adapter_idx]
+        w1_lora_b = self.w1_lora_B[adapter_idx]
+        w2_lora_a = self.w2_lora_A[adapter_idx]
+        w2_lora_b = self.w2_lora_B[adapter_idx]
+
+        scaling = self._scaling_factors[adapter_idx].item()
+
+        base_w1 = self.base_layer.w1
+        base_w2 = self.base_layer.w2
+
+        permuted_indices = None
+        if isinstance(base_w1, DTensor):
+            base_w1 = base_w1.to_local()
+            base_w2 = base_w2.to_local()
+            w1_lora_a = w1_lora_a.to_local()
+            w1_lora_b = w1_lora_b.to_local()
+            w2_lora_a = w2_lora_a.to_local()
+            w2_lora_b = w2_lora_b.to_local()
+
+            if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
+                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
+                from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+                experts_per_ep_rank = base_w1.shape[0]
+                num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
+
+                with torch.no_grad():
+                    permuted_indices, num_tokens_per_expert, _ = generate_permute_indices(
+                        num_tokens_per_expert,
+                        experts_per_ep_rank,
+                        num_ep_ranks,
+                        x.shape[0] + experts_per_ep_rank * TOKEN_GROUP_ALIGN_SIZE_M,
+                        TOKEN_GROUP_ALIGN_SIZE_M,
+                    )
+
+                x = torch.vstack((x, x.new_zeros((x.shape[-1]))))
+                input_shape = x.shape
+                x = x[permuted_indices, :]
+
+        offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
+        lora_x = self.lora_dropout(x)
+
+        if self.use_grouped_mm:
+            # Up (w1)
+            h_base = torch._grouped_mm(x.bfloat16(), base_w1.bfloat16().transpose(-2, -1), offs=offsets)
+            w1_lora_out = _run_lora_grouped_mm(lora_x, w1_lora_a, w1_lora_b, offsets)
+            h = relu2(h_base + scaling * w1_lora_out.bfloat16())
+
+            # Down (w2)
+            lora_h = self.lora_dropout(h)
+            out_base = torch._grouped_mm(h, base_w2.bfloat16().transpose(-2, -1), offs=offsets)
+            w2_lora_out = _run_lora_grouped_mm(lora_h, w2_lora_a, w2_lora_b, offsets)
+            out = out_base + scaling * w2_lora_out.bfloat16()
+            out = out.type_as(x)
+        else:
+            out = self._forward_for_loop(
+                x,
+                num_tokens_per_expert,
+                w1_lora_a,
+                w1_lora_b,
+                w2_lora_a,
+                w2_lora_b,
+                base_w1,
+                base_w2,
+                scaling,
+            )
+
+        if permuted_indices is not None:
+            if out.shape[0] < len(permuted_indices):
+                num_padding = len(permuted_indices) - out.shape[0]
+                out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
+            out_unpermuted = out.new_zeros(input_shape)
+            out_unpermuted[permuted_indices, :] = out
+            out = out_unpermuted[:-1]
+
+        return out
+
+    def _forward_for_loop(
+        self,
+        x: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        w1_lora_a: torch.Tensor,
+        w1_lora_b: torch.Tensor,
+        w2_lora_a: torch.Tensor,
+        w2_lora_b: torch.Tensor,
+        base_w1: torch.Tensor,
+        base_w2: torch.Tensor,
+        scaling: float,
+    ) -> torch.Tensor:
+        num_tokens_per_expert_list = num_tokens_per_expert.tolist()
+        out_splits = []
+
+        start = 0
+        for expert_idx, num_tokens in enumerate(num_tokens_per_expert_list):
+            if num_tokens == 0:
+                continue
+            end = start + num_tokens
+            x_expert = x[start:end]
+            x_expert_lora = self.lora_dropout(x_expert)
+
+            h_base = torch.matmul(x_expert, base_w1[expert_idx].transpose(-2, -1))
+            w1_lora_tmp = torch.matmul(x_expert_lora, w1_lora_a[expert_idx].transpose(-2, -1))
+            w1_lora_out = torch.matmul(w1_lora_tmp, w1_lora_b[expert_idx].transpose(-2, -1))
+            h = relu2(h_base + scaling * w1_lora_out)
+
+            h_lora = self.lora_dropout(h)
+            out_base = torch.matmul(h, base_w2[expert_idx].transpose(-2, -1))
+            w2_lora_tmp = torch.matmul(h_lora, w2_lora_a[expert_idx].transpose(-2, -1))
+            w2_lora_out = torch.matmul(w2_lora_tmp, w2_lora_b[expert_idx].transpose(-2, -1))
+            out = out_base + scaling * w2_lora_out
 
             out_splits.append(out)
             start = end

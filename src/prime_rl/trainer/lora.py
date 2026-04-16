@@ -6,8 +6,8 @@ import torch.nn as nn
 
 from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
-from prime_rl.trainer.models.layers.lora.multi_moe import MultiLoRAGroupedExperts
-from prime_rl.trainer.models.layers.moe import GroupedExperts
+from prime_rl.trainer.models.layers.lora.multi_moe import MultiLoRAGroupedExperts, MultiLoRANonGatedGroupedExperts
+from prime_rl.trainer.models.layers.moe import GroupedExperts, NonGatedGroupedExperts
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger
 
@@ -74,8 +74,8 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
     target_modules = []
 
     for name, module in model.named_modules():
-        # Check if module is Linear or GroupedExperts
-        if not (isinstance(module, nn.Linear) or isinstance(module, GroupedExperts)):
+        # Check if module is Linear or (NonGated)GroupedExperts
+        if not isinstance(module, (nn.Linear, GroupedExperts, NonGatedGroupedExperts)):
             continue
 
         for pattern in target_patterns:
@@ -178,10 +178,19 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
                 alpha=config.alpha,
                 dropout=config.dropout,
             )
+        # Handle NonGatedGroupedExperts (relu2 experts used by NemotronH's LatentMoE)
+        elif isinstance(base_module, NonGatedGroupedExperts):
+            lora_module = MultiLoRANonGatedGroupedExperts(
+                base_layer=base_module,
+                rank=config.rank,
+                n_adapters=n_loras,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
         else:
             logger.warning(
                 f"Module {module_name} is type {type(base_module).__name__}, "
-                f"expected nn.Linear or GroupedExperts. Skipping."
+                f"expected nn.Linear, GroupedExperts, or NonGatedGroupedExperts. Skipping."
             )
             continue
 
