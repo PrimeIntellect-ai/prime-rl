@@ -43,7 +43,12 @@ class ParallelConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
-    """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html)."""
+    """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html).
+
+    Parser fields (tool_call_parser, reasoning_parser) default to "auto",
+    which resolves to a concrete parser name at validation time based on
+    the model name.  Set to None to disable.
+    """
 
     dtype: Annotated[
         Literal["auto", "float16", "bfloat16", "float32"],
@@ -101,6 +106,27 @@ class ModelConfig(BaseModelConfig):
             description='RoPE scaling configuration as a dict. For YaRN, use: {rope_type="yarn", factor=4.0, original_max_position_embeddings=32768} or. Passed to vLLM as `--rope-scaling`.',
         ),
     ] = None
+
+    @model_validator(mode="after")
+    def auto_resolve_parsers(self):
+        """Resolve "auto" parser values to concrete parser names from model name."""
+        if self.tool_call_parser == "auto":
+            resolved = resolve_tool_call_parser(self.name)
+            if resolved:
+                get_logger().info(f"Auto-resolved tool_call_parser='{resolved}' for model '{self.name}'")
+            else:
+                get_logger().warning(f"No tool_call_parser found for model '{self.name}' — tool calling disabled")
+            self.tool_call_parser = resolved
+
+        if self.reasoning_parser == "auto":
+            resolved = resolve_reasoning_parser(self.name)
+            if resolved:
+                get_logger().info(f"Auto-resolved reasoning_parser='{resolved}' for model '{self.name}'")
+            else:
+                get_logger().warning(f"No reasoning_parser found for model '{self.name}' — reasoning parsing disabled")
+            self.reasoning_parser = resolved
+
+        return self
 
 
 class WeightBroadcastConfig(BaseConfig):
@@ -546,30 +572,13 @@ class InferenceConfig(BaseConfig):
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
 
-        # Auto-resolve tool_call_parser from model name when set to "auto"
-        model_name = namespace.model
-        if namespace.tool_call_parser == "auto":
-            resolved = resolve_tool_call_parser(model_name)
-            if resolved:
-                get_logger().info(f"Auto-resolved tool_call_parser='{resolved}' for model '{model_name}'")
-                namespace.tool_call_parser = resolved
-            else:
-                get_logger().warning(f"No tool_call_parser found for model '{model_name}' — tool calling disabled")
-                delattr(namespace, "tool_call_parser")
-        elif namespace.tool_call_parser is None:
+        # Parsers are already resolved by ModelConfig.auto_resolve_parsers —
+        # clean up None values that vLLM doesn't accept
+        if namespace.tool_call_parser is None:
             delattr(namespace, "tool_call_parser")
         namespace.enable_auto_tool_choice = hasattr(namespace, "tool_call_parser")
 
-        # Auto-resolve reasoning_parser from model name when set to "auto"
-        if namespace.reasoning_parser == "auto":
-            resolved = resolve_reasoning_parser(model_name)
-            if resolved:
-                get_logger().info(f"Auto-resolved reasoning_parser='{resolved}' for model '{model_name}'")
-                namespace.reasoning_parser = resolved
-            else:
-                get_logger().warning(f"No reasoning_parser found for model '{model_name}' — reasoning parsing disabled")
-                delattr(namespace, "reasoning_parser")
-        elif namespace.reasoning_parser is None:
+        if namespace.reasoning_parser is None:
             delattr(namespace, "reasoning_parser")
 
         # Remove chat_template if not set (vLLM doesn't accept None)
