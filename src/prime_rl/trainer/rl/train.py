@@ -444,7 +444,7 @@ def train(config: TrainerConfig):
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_fn=loss_fn,
                 loss_scale=loss_scale,
-                sft_loss=micro_batch.get("sft_loss", False),
+                sft_loss=micro_batch["sft_loss"],
             )
 
             # Backward pass
