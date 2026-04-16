@@ -39,13 +39,14 @@ except ImportError:
     _hub_kernels = None  # transformers < 5.5, no patch needed
 
 if _hub_kernels is not None:
+    from huggingface_hub.errors import OfflineModeIsEnabled
+
     _original_lazy_load_kernel = _hub_kernels.lazy_load_kernel
 
     def _patched_lazy_load_kernel(kernel_name, mapping=_hub_kernels._KERNEL_MODULE_MAPPING):
         try:
             return _original_lazy_load_kernel(kernel_name, mapping)
-        except ConnectionError:
-            # OfflineModeIsEnabled is a ConnectionError subclass.
+        except OfflineModeIsEnabled:
             # Return None so NemotronH skips hub kernels; prime-rl's
             # _patch_mamba2_use_triton_ssd() uses mamba_ssm directly.
             mapping[kernel_name] = None
