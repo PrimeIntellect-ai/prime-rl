@@ -90,7 +90,10 @@ class WandbMonitor(Monitor):
         max_retries = 1 if not shared_mode or primary else 30
         self.wandb = init_wandb(max_retries)
 
-        wandb.define_metric("*", step_metric="step")
+        # NOTE: we intentionally do NOT set a wildcard define_metric("*", step_metric="step")
+        # here. Training metrics already include "step" in the wandb.log() call, so wandb
+        # uses it as x-axis automatically. A wildcard would override more specific patterns
+        # like define_metric("inference/*", step_metric="_timestamp").
 
         # Optionally, initialize sample logging attributes
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
