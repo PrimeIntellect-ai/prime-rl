@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -448,6 +448,77 @@ class RLConfig(BaseConfig):
 
         return self
 
+    ### Propagate shared configs (before sub-config construction)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _propagate_shared_config(cls, data: Any) -> Any:
+        """Propagate shared top-level config values into sub-config dicts.
+
+        Runs before sub-configs are constructed so their validators see
+        the final values (e.g. parser auto-resolution needs the model name).
+        Only sets values that the user didn't explicitly provide.
+        """
+        if not isinstance(data, dict):
+            return data
+        import copy
+
+        data = copy.deepcopy(data)
+
+        def propagate(target_path: str, value: Any) -> None:
+            """Set a dotted path (e.g. 'trainer.model.name') in data if not already present.
+
+            Only creates intermediate dicts for nested keys (e.g. 'model' in
+            'trainer.model.name'), never for the top-level sub-config itself.
+            """
+            parts = target_path.split(".")
+            # Don't create the top-level sub-config if it doesn't exist
+            if parts[0] not in data or not isinstance(data[parts[0]], dict):
+                return
+            node = data
+            for part in parts[:-1]:
+                if not isinstance(node, dict):
+                    return
+                node = node.setdefault(part, {})
+            if isinstance(node, dict) and parts[-1] not in node:
+                node[parts[-1]] = value
+
+        # [model] → sub-config model dicts
+        shared_model = data.get("model")
+        if isinstance(shared_model, dict):
+            model_name = shared_model.get("name")
+            model_vlm = shared_model.get("vlm")
+
+            if model_name:
+                propagate("trainer.model.name", model_name)
+                propagate("inference.model.name", model_name)
+                # Orchestrator follows inference model name (which may differ from shared)
+                inf_model = (
+                    data.get("inference", {}).get("model", {}) if isinstance(data.get("inference"), dict) else {}
+                )
+                propagate("orchestrator.model.name", inf_model.get("name", model_name))
+            if model_vlm is not None:
+                for target in ("trainer.model.vlm", "inference.model.vlm", "orchestrator.model.vlm"):
+                    propagate(target, model_vlm)
+
+        # [log] → trainer/orchestrator log dicts
+        shared_log = data.get("log")
+        if isinstance(shared_log, dict):
+            for key in ("level", "json_logging"):
+                value = shared_log.get(key)
+                if value is not None:
+                    propagate(f"trainer.log.{key}", value)
+                    propagate(f"orchestrator.log.{key}", value)
+
+        # Scalar shared fields → trainer/orchestrator
+        for field in ("max_steps", "max_async_level"):
+            value = data.get(field)
+            if value is not None:
+                propagate(f"trainer.{field}", value)
+                propagate(f"orchestrator.{field}", value)
+
+        return data
+
     ### Auto-setup and validate shared configs
 
     @model_validator(mode="after")
@@ -457,18 +528,6 @@ class RLConfig(BaseConfig):
         self.orchestrator.output_dir = self.output_dir / "run_default"
 
         validate_shared_output_dir(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_logs(self):
-        """Auto-setup shared log config for trainer and orchestrator."""
-        if self.log is not None:
-            if self.log.level is not None:
-                self.trainer.log.level = self.log.level
-                self.orchestrator.log.level = self.log.level
-            self.trainer.log.json_logging = self.log.json_logging
-            self.orchestrator.log.json_logging = self.log.json_logging
 
         return self
 
@@ -544,26 +603,9 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_model(self):
-        """Auto-setup shared model config for trainer, orchestrator, and inference."""
-        if self.model is not None:
-            self.trainer.model.name = self.model.name
-            if self.inference is not None:
-                inference_model_explicitly_set = "name" in self.inference.model.model_fields_set
-                if not inference_model_explicitly_set:
-                    self.inference.model.name = self.model.name
-                self.orchestrator.model.name = self.inference.model.name
-            else:
-                self.orchestrator.model.name = self.model.name
-
-            if self.model.vlm is not None:
-                self.trainer.model.vlm = self.model.vlm
-                self.orchestrator.model.vlm = self.model.vlm
-                if self.inference is not None:
-                    self.inference.model.vlm = self.model.vlm
-
+    def validate_model(self):
+        """Validate shared model config across trainer, orchestrator, and inference."""
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
-
         return self
 
     @model_validator(mode="after")
@@ -597,25 +639,15 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_max_steps(self):
-        """Auto-setup shared max steps for trainer and orchestrator."""
-        if self.max_steps is not None:
-            self.trainer.max_steps = self.max_steps
-            self.orchestrator.max_steps = self.max_steps
-
+    def validate_max_steps(self):
+        """Validate shared max steps across trainer and orchestrator."""
         validate_shared_max_steps(self.trainer, self.orchestrator)
-
         return self
 
     @model_validator(mode="after")
-    def auto_setup_async_level(self):
-        """Auto-setup shared async level for trainer and orchestrator."""
-        if self.max_async_level is not None:
-            self.trainer.max_async_level = self.max_async_level
-            self.orchestrator.max_async_level = self.max_async_level
-
+    def validate_async_level(self):
+        """Validate shared async level across trainer and orchestrator."""
         validate_shared_max_async_level(self.trainer, self.orchestrator)
-
         return self
 
     @model_validator(mode="after")
