@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
+from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 from prime_rl.utils.utils import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
@@ -82,10 +83,9 @@ class ModelConfig(BaseModelConfig):
     tool_call_parser: Annotated[
         str | None,
         Field(
-            description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`. "
-            'Set to "auto" to infer from the model name.',
+            description="The tool call parser to use. Auto-detected from the model name if not set.",
         ),
-    ] = "auto"
+    ] = None
 
     reasoning_parser: Annotated[
         str | None,
@@ -545,13 +545,30 @@ class InferenceConfig(BaseConfig):
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
 
-        # Remove chat_template if not set (vLLM doesn't accept None)
-        if namespace.chat_template is None:
-            delattr(namespace, "chat_template")
+        # Auto-resolve tool_call_parser from model name if not explicitly set
+        if "tool_call_parser" not in self.model.model_fields_set:
+            resolved = resolve_tool_call_parser(namespace.model)
+            if resolved:
+                namespace.tool_call_parser = resolved
+            else:
+                delattr(namespace, "tool_call_parser")
+        elif namespace.tool_call_parser is None:
+            delattr(namespace, "tool_call_parser")
+        namespace.enable_auto_tool_choice = hasattr(namespace, "tool_call_parser")
+
+        # Auto-resolve reasoning_parser from model name if not explicitly set
+        if "reasoning_parser" not in self.model.model_fields_set:
+            resolved = resolve_reasoning_parser(namespace.model)
+            if resolved:
+                namespace.reasoning_parser = resolved
 
         # Remove reasoning_parser if not set (vLLM doesn't accept None)
         if namespace.reasoning_parser is None:
             delattr(namespace, "reasoning_parser")
+
+        # Remove chat_template if not set (vLLM doesn't accept None)
+        if namespace.chat_template is None:
+            delattr(namespace, "chat_template")
 
         # Remove lora_target_modules if not set (vLLM doesn't accept None)
         if hasattr(namespace, "lora_target_modules") and namespace.lora_target_modules is None:
