@@ -62,6 +62,12 @@ def pre_download_model(model_name: str) -> None:
     if Path(model_name).exists():
         get_logger().info(f"Model {model_name} found at local path, skipping download")
         return
+    from huggingface_hub import try_to_load_from_cache
+
+    cached = try_to_load_from_cache(model_name, "config.json")
+    if isinstance(cached, str):
+        get_logger().info(f"Model {model_name} found in cache at {Path(cached).parent}")
+        return
     get_logger().info(f"Pre-downloading model {model_name}")
     t0 = time.perf_counter()
     path = snapshot_download(repo_id=model_name, repo_type="model")
