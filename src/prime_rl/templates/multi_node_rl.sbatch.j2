@@ -349,6 +349,8 @@ else
     TRAIN_NODE_RANK=$SLURM_PROCID
 {%- endif %}
 
+    export HF_HUB_OFFLINE=1
+
     # This is required for compilation to work correctly
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
