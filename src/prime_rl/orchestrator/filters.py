@@ -148,14 +148,11 @@ def setup_filters(configs: list[FilterConfig], vocab_size: int) -> list[RolloutF
     return filters
 
 
-def apply_filters(
-    filters: list[RolloutFilter],
-    rollouts: list[vf.RolloutOutput],
-) -> dict[str, float]:
-    """Apply filters to rollouts in-place and return aggregate metrics.
+def apply_filters(filters: list[RolloutFilter], rollouts: list[vf.RolloutOutput]) -> None:
+    """Flag rollouts in-place with per-filter detection and drop decision.
 
-    Each rollout gets a `filter` dict with per-filter detection flags and an
-    `is_filtered` bool that is True iff an enforcing filter detected it.
+    Each rollout gets a `filter` dict with per-filter detection booleans and
+    an `is_filtered` bool that is True iff an enforcing filter detected it.
     First matching filter wins per rollout (no double-counting). Reward and
     trajectory tokens are left untouched so the rollout can still contribute
     to baseline calculations and metric aggregation.
@@ -165,7 +162,7 @@ def apply_filters(
         rollout["is_filtered"] = False
 
     if not filters:
-        return {}
+        return
 
     counts: dict[str, int] = {f.name: 0 for f in filters}
     total_detected = 0
@@ -183,19 +180,9 @@ def apply_filters(
                     total_enforced += 1
                 break
 
-    n = len(rollouts)
-    metrics: dict[str, float] = {}
-    for f in filters:
-        metrics[f"filter/{f.name}_count"] = float(counts[f.name])
-        metrics[f"filter/{f.name}_rate"] = counts[f.name] / n if n > 0 else 0.0
-    metrics["filter/detected_rate"] = total_detected / n if n > 0 else 0.0
-    metrics["filter/is_filtered_rate"] = total_enforced / n if n > 0 else 0.0
-
     if total_detected > 0:
         enforced_msg = f", enforced {total_enforced}" if total_enforced > 0 else ""
         get_logger().info(
-            f"Detected {total_detected}/{n} rollouts "
+            f"Detected {total_detected}/{len(rollouts)} rollouts "
             f"({', '.join(f'{name}={c}' for name, c in counts.items() if c > 0)})" + enforced_msg
         )
-
-    return metrics

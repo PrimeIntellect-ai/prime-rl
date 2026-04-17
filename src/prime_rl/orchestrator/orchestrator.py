@@ -417,7 +417,6 @@ async def orchestrate(config: OrchestratorConfig):
         # batches so the trainer never receives an empty batch.
         generate_completions_time = 0.0
         train_rollouts: list[vf.RolloutOutput] = []
-        filter_metrics: dict[str, float] = {}
         num_rollouts = 0
         num_unique_examples = 0
         n_trainable = 0
@@ -431,7 +430,7 @@ async def orchestrate(config: OrchestratorConfig):
             compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
 
             # Apply rollout filters — sets rollout["filter"] and rollout["is_filtered"]
-            filter_metrics = apply_filters(rollout_filters, train_rollouts)
+            apply_filters(rollout_filters, train_rollouts)
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
             if n_trainable > 0:
@@ -576,6 +575,7 @@ async def orchestrate(config: OrchestratorConfig):
                 "env_name": [rollout["env_name"] for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
                 "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
+                "is_filtered": [rollout["is_filtered"] for rollout in train_rollouts],
                 "stop_condition": [rollout.get("stop_condition") for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
                 "prefill_len": rollout_prefill_lens,
@@ -587,11 +587,9 @@ async def orchestrate(config: OrchestratorConfig):
             }
         )
 
-        # Separate DataFrame for env reward function metrics to avoid column name collisions
+        # Separate DataFrames for env reward function metrics and filter flags to avoid column name collisions
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
-        filter_df = pd.DataFrame(
-            [{**rollout["filter"], "is_filtered": rollout["is_filtered"]} for rollout in train_rollouts]
-        )
+        filter_df = pd.DataFrame([rollout["filter"] for rollout in train_rollouts])
 
         # Update progress metrics
         num_tokens = int(results_df.seq_len.sum())
@@ -673,8 +671,9 @@ async def orchestrate(config: OrchestratorConfig):
             **buffer.get_metrics(),
             # Event loop lag metrics
             **event_loop_lag_monitor.get_metrics(),
-            # Rollout filter metrics
-            **filter_metrics,
+            # Rollout filter metrics (detection rate per filter + overall drop rate)
+            "filter/all/is_filtered": results_df.is_filtered.astype(float).mean(),
+            **{f"filter/all/{name}": filter_df[name].astype(float).mean() for name in filter_df.columns},
             # W&B axis
             "step": progress.step,
         }
@@ -713,9 +712,10 @@ async def orchestrate(config: OrchestratorConfig):
             env_metrics_df = metrics_df.loc[env_df.index]
             for metric in metrics_df.columns:
                 to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["example_id"])[metric].mean().mean()
+            to_log[f"filter/{env}/is_filtered"] = env_df.is_filtered.astype(float).mean()
             env_filter_df = filter_df.loc[env_df.index]
-            for flag in filter_df.columns:
-                to_log[f"filter/{env}/{flag}_rate"] = env_filter_df[flag].astype(float).mean()
+            for name in filter_df.columns:
+                to_log[f"filter/{env}/{name}"] = env_filter_df[name].astype(float).mean()
 
         # Log metrics to monitor(s)
         monitor.log(to_log, step=progress.step)
