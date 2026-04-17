@@ -151,14 +151,14 @@ def setup_filters(configs: list[FilterConfig], vocab_size: int) -> list[RolloutF
 def apply_filters(filters: list[RolloutFilter], rollouts: list[vf.RolloutOutput]) -> None:
     """Flag rollouts in-place with per-filter detection and drop decision.
 
-    Each rollout gets a `filter` dict with per-filter detection booleans and
+    Each rollout gets a `filters` dict with per-filter detection booleans and
     an `is_filtered` bool that is True iff an enforcing filter detected it.
     First matching filter wins per rollout (no double-counting). Reward and
     trajectory tokens are left untouched so the rollout can still contribute
     to baseline calculations and metric aggregation.
     """
     for rollout in rollouts:
-        rollout["filter"] = {f.name: False for f in filters}
+        rollout["filters"] = {f.name: False for f in filters}
         rollout["is_filtered"] = False
 
     if not filters:
@@ -174,7 +174,7 @@ def apply_filters(filters: list[RolloutFilter], rollouts: list[vf.RolloutOutput]
             if result.detected:
                 counts[filt.name] += 1
                 total_detected += 1
-                rollout["filter"][filt.name] = True
+                rollout["filters"][filt.name] = True
                 if filt.enforce:
                     rollout["is_filtered"] = True
                     total_enforced += 1

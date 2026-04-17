@@ -429,7 +429,7 @@ async def orchestrate(config: OrchestratorConfig):
             num_unique_examples = len({r["example_id"] for r in train_rollouts})
             compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
 
-            # Apply rollout filters — sets rollout["filter"] and rollout["is_filtered"]
+            # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
             apply_filters(rollout_filters, train_rollouts)
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
@@ -589,7 +589,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Separate DataFrames for env reward function metrics and filter flags to avoid column name collisions
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
-        filter_df = pd.DataFrame([rollout["filter"] for rollout in train_rollouts])
+        filter_df = pd.DataFrame([rollout["filters"] for rollout in train_rollouts])
 
         # Update progress metrics
         num_tokens = int(results_df.seq_len.sum())
@@ -672,8 +672,8 @@ async def orchestrate(config: OrchestratorConfig):
             # Event loop lag metrics
             **event_loop_lag_monitor.get_metrics(),
             # Rollout filter metrics (detection rate per filter + overall drop rate)
-            "filter/all/is_filtered": results_df.is_filtered.astype(float).mean(),
-            **{f"filter/all/{name}": filter_df[name].astype(float).mean() for name in filter_df.columns},
+            "filters/all/is_filtered": results_df.is_filtered.astype(float).mean(),
+            **{f"filters/all/{name}": filter_df[name].astype(float).mean() for name in filter_df.columns},
             # W&B axis
             "step": progress.step,
         }
@@ -712,10 +712,10 @@ async def orchestrate(config: OrchestratorConfig):
             env_metrics_df = metrics_df.loc[env_df.index]
             for metric in metrics_df.columns:
                 to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["example_id"])[metric].mean().mean()
-            to_log[f"filter/{env}/is_filtered"] = env_df.is_filtered.astype(float).mean()
+            to_log[f"filters/{env}/is_filtered"] = env_df.is_filtered.astype(float).mean()
             env_filter_df = filter_df.loc[env_df.index]
             for name in filter_df.columns:
-                to_log[f"filter/{env}/{name}"] = env_filter_df[name].astype(float).mean()
+                to_log[f"filters/{env}/{name}"] = env_filter_df[name].astype(float).mean()
 
         # Log metrics to monitor(s)
         monitor.log(to_log, step=progress.step)
