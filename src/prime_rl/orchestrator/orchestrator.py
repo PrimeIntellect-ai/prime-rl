@@ -403,13 +403,47 @@ async def orchestrate(config: OrchestratorConfig):
         # Update prev_ckpt_step for next iteration
         prev_ckpt_step = ckpt_step
 
-        # Schedule generating the training batch
-        train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
+        # Schedule generating the training batch. Retry on empty-after-filter
+        # batches so the trainer never receives an empty batch.
+        MAX_EMPTY_BATCH_RETRIES = 3
+        generate_completions_time = 0.0
+        for attempt in range(MAX_EMPTY_BATCH_RETRIES + 1):
+            train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
+            await train_task
+            generate_completions_time += scheduler.last_batch_generation_time
+            train_rollouts = train_task.result()
 
-        # Await train rollouts
-        await train_task
-        generate_completions_time = scheduler.last_batch_generation_time
-        train_rollouts = train_task.result()
+            # Compute advantages (in-place)
+            example_ids = [r["example_id"] for r in train_rollouts]
+            num_rollouts = len(train_rollouts)
+            num_unique_examples = len(set(example_ids))
+            compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
+
+            # Apply rollout filters and keep only trainable rollouts
+            filter_metrics, filtered_rollouts = apply_filters(rollout_filters, train_rollouts)
+
+            if len(filtered_rollouts) > 0:
+                break
+
+            if attempt == MAX_EMPTY_BATCH_RETRIES:
+                raise RuntimeError(
+                    f"All {num_rollouts} rollouts were filtered out on "
+                    f"{MAX_EMPTY_BATCH_RETRIES + 1} consecutive attempts at step {progress.step}; "
+                    "crashing orchestrator."
+                )
+
+            logger.warning(
+                f"All {num_rollouts} rollouts at step {progress.step} were filtered out; "
+                f"retrying batch generation (attempt {attempt + 2}/{MAX_EMPTY_BATCH_RETRIES + 1})."
+            )
+
+        if num_rollouts > 0:
+            trainable_ratio = len(filtered_rollouts) / num_rollouts
+            if trainable_ratio <= 0.1:
+                logger.warning(
+                    f"Only {len(filtered_rollouts)}/{num_rollouts} rollouts in the batch are trainable "
+                    f"({trainable_ratio:.1%})"
+                )
 
         # Save train rollouts to disk (fire-and-forget background thread)
         step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
@@ -422,22 +456,6 @@ async def orchestrate(config: OrchestratorConfig):
             if num_offloaded:
                 logger.info(
                     f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
-                )
-
-        # Compute advantages (in-place)
-        example_ids = [r["example_id"] for r in train_rollouts]
-        num_rollouts = len(train_rollouts)
-        num_unique_examples = len(set(example_ids))
-        compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
-
-        # Apply rollout filters and keep only trainable rollouts
-        filter_metrics, filtered_rollouts = apply_filters(rollout_filters, train_rollouts)
-        if num_rollouts > 0:
-            trainable_ratio = len(filtered_rollouts) / num_rollouts
-            if trainable_ratio < 0.1:
-                logger.warning(
-                    f"Only {len(filtered_rollouts)}/{num_rollouts} rollouts in the batch are trainable "
-                    f"({trainable_ratio:.1%})"
                 )
 
         # Convert rollouts to training samples
