@@ -442,13 +442,12 @@ async def orchestrate(config: OrchestratorConfig):
                 f"retrying batch generation (attempt {attempt + 2}/{MAX_EMPTY_BATCH_RETRIES + 1})."
             )
 
-        if num_rollouts > 0:
-            trainable_ratio = len(filtered_rollouts) / num_rollouts
-            if trainable_ratio <= 0.1:
-                logger.warning(
-                    f"Only {len(filtered_rollouts)}/{num_rollouts} rollouts in the batch are trainable "
-                    f"({trainable_ratio:.1%})"
-                )
+        trainable_ratio = len(filtered_rollouts) / num_rollouts
+        if trainable_ratio <= 0.1:
+            logger.warning(
+                f"Only {len(filtered_rollouts)}/{num_rollouts} rollouts in the batch are trainable "
+                f"({trainable_ratio:.1%})"
+            )
 
         # Save train rollouts to disk (fire-and-forget background thread)
         step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
