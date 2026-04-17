@@ -446,7 +446,8 @@ async def orchestrate(config: OrchestratorConfig):
         if trainable_ratio <= 0.1:
             logger.warning(
                 f"Only {len(filtered_rollouts)}/{num_rollouts} rollouts in the batch are trainable "
-                f"({trainable_ratio:.1%})"
+                f"({trainable_ratio:.1%}). This can mean the tasks are too easy or too hard for the "
+                "model — consider reviewing the environment."
             )
 
         # Save train rollouts to disk (fire-and-forget background thread)
