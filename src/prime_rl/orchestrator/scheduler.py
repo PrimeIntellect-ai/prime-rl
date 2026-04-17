@@ -434,20 +434,20 @@ class Scheduler:
                     valid_rollouts = []
                     has_failures = False
                     for rollout in rollouts:
-                        if len(rollout["trajectory"]) == 0:
-                            self.empty_rollouts_by_env[env_name] += 1
-                            has_failures = True
-                            self.logger.warning(
-                                f"Empty trajectory in group {group_id} ({env_name}), re-scheduling "
-                                f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
-                            )
-                        elif rollout["error"] is not None:
+                        if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
                             has_failures = True
                             self.logger.warning(
                                 f"Rollout error in group {group_id} ({env_name}), re-scheduling "
                                 f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
                                 f"{rollout['error']['error_chain_repr']}"
+                            )
+                        elif len(rollout["trajectory"]) == 0:
+                            self.empty_rollouts_by_env[env_name] += 1
+                            has_failures = True
+                            self.logger.warning(
+                                f"Empty trajectory in group {group_id} ({env_name}), re-scheduling "
+                                f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
                             )
                         else:
                             rollout["env_name"] = env_name
