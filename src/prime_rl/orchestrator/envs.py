@@ -352,10 +352,13 @@ class Envs(Generic[EnvT]):
         log_level: str | None = None,
         json_logging: bool = False,
     ) -> None:
-        """Spawn env servers (where needed) and connect all env clients in parallel."""
-        await asyncio.gather(
-            *(env.start(log_dir=log_dir, log_level=log_level, json_logging=json_logging) for env in self)
-        )
+        """Spawn env servers (where needed) and connect env clients one at a time.
+
+        Serialized to avoid a TOCTOU port race: get_free_port() only holds the port
+        until it returns, so parallel spawns can hand the same port to two children.
+        """
+        for env in self:
+            await env.start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
         atexit.register(self.shutdown)
 
     def shutdown(self) -> None:
