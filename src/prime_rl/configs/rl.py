@@ -6,9 +6,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.orchestrator import (
-    CheckpointConfig as OrchestratorCheckpointConfig,
-)
-from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
 )
 from prime_rl.configs.orchestrator import (
@@ -20,17 +17,12 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.shared import (
     SlurmConfig,
     VLMConfig,
-    WandbConfig,
-    WandbWithExtrasConfig,
 )
 from prime_rl.configs.trainer import (
     BenchConfig,
     FakeDataLoaderConfig,
     TokenizerConfig,
     TrainerConfig,
-)
-from prime_rl.configs.trainer import (
-    CheckpointConfig as TrainerCheckpointConfig,
 )
 from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
@@ -448,16 +440,37 @@ class RLConfig(BaseConfig):
 
         return self
 
-    ### Propagate shared configs (before sub-config construction)
+    ### Auto-setup shared configs (before sub-config construction)
 
     @model_validator(mode="before")
     @classmethod
-    def _propagate_shared_config(cls, data: Any) -> Any:
+    def auto_setup_shared_configs(cls, data: Any) -> Any:
         """Propagate shared top-level config values into sub-config dicts.
 
-        Runs before sub-configs are constructed so their validators see
-        the final values (e.g. parser auto-resolution needs the model name).
-        Only sets values that the user didn't explicitly provide.
+        Runs before sub-configs are constructed so their own validators see the
+        final values — e.g. a ModelConfig validator that auto-resolves the parser
+        from the model name needs the propagated name at construction time, not
+        after.
+
+        Shared configs handled here (fill-if-absent: sub-configs win):
+          - `model.name`, `model.vlm`        → trainer / orchestrator / inference
+          - `log.level`, `log.json_logging`  → trainer / orchestrator
+          - `max_steps`, `max_async_level`   → trainer / orchestrator
+          - `output_dir`                     → trainer (verbatim) / orchestrator (`/run_default`)
+          - `[ckpt]` fields                  → trainer / orchestrator (presence enables both)
+          - `[wandb]` fields + shared/-suffix → trainer / orchestrator (presence enables both)
+          - `[tokenizer]` fields             → trainer / orchestrator (+ chat_template to inference)
+          - `seq_len`                        → trainer.model / orchestrator
+
+        Sub-config values always take precedence; any mismatch between shared
+        and sub-config, or between sub-configs themselves, is caught by
+        `validate_shared_configs` (after-validator) which runs the full suite
+        of `validate_shared_*` checks post-construction.
+
+        To add a new shared field, typically you only need a `propagate(...)`
+        call here plus a `validate_shared_*` call in `validate_shared_configs`.
+        If the field drives arithmetic or reads computed values from other
+        sub-configs, keep its auto-setup in an after-validator instead.
         """
         if not isinstance(data, dict):
             return data
@@ -465,13 +478,27 @@ class RLConfig(BaseConfig):
 
         data = copy.deepcopy(data)
 
-        def propagate(target_path: str, value: Any) -> None:
-            """Set a dotted path (e.g. 'trainer.model.name') in data if not already present.
+        def read(path: str) -> Any | None:
+            """Read a dotted path from data, returning None if any intermediate is missing or not a dict."""
+            node: Any = data
+            for part in path.split("."):
+                if not isinstance(node, dict) or part not in node:
+                    return None
+                node = node[part]
+            return node
 
+        def propagate(path: str, value: Any) -> None:
+            """Set a value (e.g. 'trainer.model.name') in raw, if not already present.
+
+            No-op if value is None (i.e. source field was unset).
+            Sub-config values take precedence; mismatches are caught by the
+            corresponding validate_shared_* after-validator.
             Only creates intermediate dicts for nested keys (e.g. 'model' in
             'trainer.model.name'), never for the top-level sub-config itself.
             """
-            parts = target_path.split(".")
+            if value is None:
+                return
+            parts = path.split(".")
             # Don't create the top-level sub-config if it doesn't exist
             if parts[0] not in data or not isinstance(data[parts[0]], dict):
                 return
@@ -484,191 +511,95 @@ class RLConfig(BaseConfig):
                 node[parts[-1]] = value
 
         # [model] → sub-config model dicts
-        shared_model = data.get("model")
-        if isinstance(shared_model, dict):
-            model_name = shared_model.get("name")
-            model_vlm = shared_model.get("vlm")
-
-            if model_name:
-                propagate("trainer.model.name", model_name)
-                propagate("inference.model.name", model_name)
-                # Orchestrator follows inference model name (which may differ from shared)
-                inf_model = (
-                    data.get("inference", {}).get("model", {}) if isinstance(data.get("inference"), dict) else {}
-                )
-                propagate("orchestrator.model.name", inf_model.get("name", model_name))
-            if model_vlm is not None:
-                for target in ("trainer.model.vlm", "inference.model.vlm", "orchestrator.model.vlm"):
-                    propagate(target, model_vlm)
+        model_name = read("model.name")
+        propagate("trainer.model.name", model_name)
+        propagate("inference.model.name", model_name)
+        # Orchestrator follows inference model name (which may differ from shared)
+        propagate("orchestrator.model.name", read("inference.model.name") or model_name)
+        for target in ("trainer.model.vlm", "inference.model.vlm", "orchestrator.model.vlm"):
+            propagate(target, read("model.vlm"))
 
         # [log] → trainer/orchestrator log dicts
-        shared_log = data.get("log")
-        if isinstance(shared_log, dict):
-            for key in ("level", "json_logging"):
-                value = shared_log.get(key)
-                if value is not None:
-                    propagate(f"trainer.log.{key}", value)
-                    propagate(f"orchestrator.log.{key}", value)
+        for key in ("level", "json_logging"):
+            propagate(f"trainer.log.{key}", read(f"log.{key}"))
+            propagate(f"orchestrator.log.{key}", read(f"log.{key}"))
 
         # Scalar shared fields → trainer/orchestrator
         for field in ("max_steps", "max_async_level"):
-            value = data.get(field)
-            if value is not None:
-                propagate(f"trainer.{field}", value)
-                propagate(f"orchestrator.{field}", value)
+            propagate(f"trainer.{field}", read(field))
+            propagate(f"orchestrator.{field}", read(field))
+
+        # [output_dir] → trainer/orchestrator (orchestrator derives a "run_default" subdir)
+        output_dir = read("output_dir")
+        propagate("trainer.output_dir", output_dir)
+        propagate("orchestrator.output_dir", f"{output_dir}/run_default" if output_dir is not None else None)
+
+        # [ckpt] → trainer/orchestrator ckpt dicts (output_dir is trainer-only).
+        # Presence of shared [ckpt] (even empty) enables ckpt on both sub-configs.
+        if read("ckpt") is not None:
+            propagate("trainer.ckpt", {})
+            propagate("orchestrator.ckpt", {})
+        propagate("trainer.ckpt.output_dir", read("ckpt.output_dir"))
+        for field in ("interval", "resume_step", "keep_last", "keep_interval"):
+            propagate(f"trainer.ckpt.{field}", read(f"ckpt.{field}"))
+            propagate(f"orchestrator.ckpt.{field}", read(f"ckpt.{field}"))
+
+        # [wandb] → trainer/orchestrator wandb dicts.
+        # Presence of shared [wandb] (even empty) enables wandb on both sub-configs.
+        if read("wandb") is not None:
+            propagate("trainer.wandb", {})
+            propagate("orchestrator.wandb", {})
+        for field in ("project", "offline"):
+            propagate(f"trainer.wandb.{field}", read(f"wandb.{field}"))
+            propagate(f"orchestrator.wandb.{field}", read(f"wandb.{field}"))
+
+        # W&B name: in shared mode (the default), both sub-configs use the same
+        # name. In non-shared mode (wandb.shared = false), suffix with -trainer/
+        # -orchestrator so the runs are distinguishable.
+        wandb_name = read("wandb.name")
+        if wandb_name:
+            non_shared = read("wandb.shared") is False
+            propagate("trainer.wandb.name", f"{wandb_name}-trainer" if non_shared else wandb_name)
+            propagate("orchestrator.wandb.name", f"{wandb_name}-orchestrator" if non_shared else wandb_name)
+
+        # wandb.name → orchestrator.prime_monitor.run_name, but only when
+        # prime_monitor is already enabled (don't fabricate it).
+        if read("orchestrator.prime_monitor") is not None:
+            propagate("orchestrator.prime_monitor.run_name", wandb_name)
+
+        # [tokenizer] → trainer/orchestrator tokenizer dicts (fill-if-absent).
+        # If tokenizer.name is left absent here, each sub-config's own
+        # auto_setup_tokenizer fills it from model.name during construction.
+        for field in ("name", "trust_remote_code", "chat_template"):
+            propagate(f"trainer.tokenizer.{field}", read(f"tokenizer.{field}"))
+            propagate(f"orchestrator.tokenizer.{field}", read(f"tokenizer.{field}"))
+        # chat_template flows trainer.tokenizer → inference.model (vLLM --chat-template).
+        # Read after the propagation above so we pick up shared → trainer flow.
+        propagate("inference.model.chat_template", read("trainer.tokenizer.chat_template"))
+
+        # [seq_len] → trainer.model.seq_len and orchestrator.seq_len (fill-if-absent)
+        propagate("trainer.model.seq_len", read("seq_len"))
+        propagate("orchestrator.seq_len", read("seq_len"))
 
         return data
 
-    ### Auto-setup and validate shared configs
+    ### Validate shared configs (after sub-config construction)
 
     @model_validator(mode="after")
-    def auto_setup_output_dir(self):
-        """Auto-setup shared output directory for trainer and orchestrator."""
-        self.trainer.output_dir = self.output_dir
-        self.orchestrator.output_dir = self.output_dir / "run_default"
-
+    def validate_shared_configs(self):
+        """Validate consistency of shared configs across trainer, orchestrator, and inference."""
         validate_shared_output_dir(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_ckpt(self):
-        """Auto-setup shared checkpoint config for trainer and orchestrator."""
-        if self.ckpt is not None:
-            # Create checkpoint configs if not specified
-            if self.trainer.ckpt is None:
-                self.trainer.ckpt = TrainerCheckpointConfig()
-            if self.orchestrator.ckpt is None:
-                self.orchestrator.ckpt = OrchestratorCheckpointConfig()
-
-            # If specified, override checkpoint output directory
-            if self.ckpt.output_dir is not None:
-                self.trainer.ckpt.output_dir = self.ckpt.output_dir
-
-            # If specified, use the same ckpt interval
-            if self.ckpt.interval is not None:
-                self.trainer.ckpt.interval = self.ckpt.interval
-                self.orchestrator.ckpt.interval = self.ckpt.interval
-
-            # If resuming training, ensure orchestrator resume from the same step
-            if self.ckpt.resume_step is not None:
-                self.trainer.ckpt.resume_step = self.ckpt.resume_step
-                self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
-
-            # If specified, propagate keep policy
-            if self.ckpt.keep_last is not None:
-                self.trainer.ckpt.keep_last = self.ckpt.keep_last
-                self.orchestrator.ckpt.keep_last = self.ckpt.keep_last
-
-            if self.ckpt.keep_interval is not None:
-                self.trainer.ckpt.keep_interval = self.ckpt.keep_interval
-                self.orchestrator.ckpt.keep_interval = self.ckpt.keep_interval
-
         validate_shared_ckpt_config(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_wandb(self):
-        """Auto-setup shared W&B config for trainer and orchestrator."""
-        if self.wandb is not None:
-            if not self.trainer.wandb:
-                self.trainer.wandb = WandbConfig()
-            if not self.orchestrator.wandb:
-                self.orchestrator.wandb = WandbWithExtrasConfig()
-
-            if self.wandb.project:
-                self.trainer.wandb.project = self.wandb.project
-                self.orchestrator.wandb.project = self.wandb.project
-
-            if self.wandb.shared:
-                if self.wandb.name:
-                    self.trainer.wandb.name = self.wandb.name
-                    self.orchestrator.wandb.name = self.wandb.name
-            else:
-                if self.wandb.name:
-                    self.trainer.wandb.name = f"{self.wandb.name}-trainer"
-                    self.orchestrator.wandb.name = f"{self.wandb.name}-orchestrator"
-
-            if self.wandb.offline:
-                self.trainer.wandb.offline = self.wandb.offline
-                self.orchestrator.wandb.offline = self.wandb.offline
-
         validate_shared_wandb_config(self.trainer, self.orchestrator)
-
-        if self.orchestrator.prime_monitor is not None and self.orchestrator.prime_monitor.run_name is None:
-            if self.wandb and self.wandb.name:
-                self.orchestrator.prime_monitor.run_name = self.wandb.name
-
-        return self
-
-    @model_validator(mode="after")
-    def validate_model(self):
-        """Validate shared model config across trainer, orchestrator, and inference."""
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_tokenizer(self):
-        """Auto-setup shared tokenizer config for trainer, orchestrator, and inference."""
-        if self.tokenizer is not None:
-            # Shared tokenizer config: propagate to all components, then fill
-            # in name/trust_remote_code from model config where still unset.
-            self.trainer.tokenizer = self.tokenizer.model_copy()
-            self.orchestrator.tokenizer = self.tokenizer.model_copy()
-            for component in (self.trainer, self.orchestrator):
-                if component.tokenizer.name is None:
-                    component.tokenizer.name = component.model.name
-                if component.tokenizer.trust_remote_code is None:
-                    component.tokenizer.trust_remote_code = component.model.trust_remote_code
-        else:
-            # No shared tokenizer: re-derive from (now-correct) model names,
-            # since auto_setup_tokenizer on sub-configs already ran with defaults.
-            for component in (self.trainer, self.orchestrator):
-                component.tokenizer.name = component.model.name
-                component.tokenizer.trust_remote_code = component.model.trust_remote_code
-
-        # Propagate chat_template to inference (vLLM --chat-template)
-        if self.inference is not None:
-            chat_template = self.trainer.tokenizer.chat_template
-            if chat_template is not None and self.inference.model.chat_template is None:
-                self.inference.model.chat_template = chat_template
-
         validate_shared_tokenizer(self.trainer, self.orchestrator, self.inference)
-
-        return self
-
-    @model_validator(mode="after")
-    def validate_max_steps(self):
-        """Validate shared max steps across trainer and orchestrator."""
         validate_shared_max_steps(self.trainer, self.orchestrator)
-        return self
-
-    @model_validator(mode="after")
-    def validate_async_level(self):
-        """Validate shared async level across trainer and orchestrator."""
         validate_shared_max_async_level(self.trainer, self.orchestrator)
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_seq_len(self):
-        """Auto-setup shared seq_len for trainer and orchestrator.
-
-        Only propagates to components that weren't explicitly set in the config.
-        Uses model_fields_set to detect explicit assignment.
-        """
-        if self.seq_len is not None:
-            if "seq_len" not in self.trainer.model.model_fields_set:
-                self.trainer.model.seq_len = self.seq_len
-            if "seq_len" not in self.orchestrator.model_fields_set:
-                self.orchestrator.seq_len = self.seq_len
-
         if self.trainer.model.seq_len < self.orchestrator.seq_len:
             raise ValueError(
                 f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
                 f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
             )
-
         return self
 
     @model_validator(mode="after")
@@ -770,12 +701,6 @@ class RLConfig(BaseConfig):
                     "make sure to set --enable_lora and --max-lora-rank."
                 )
 
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_session_headers(self):
-        """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
-        self.orchestrator.client.extra_headers_from_state.setdefault("X-Session-ID", "example_id")
         return self
 
     @model_validator(mode="after")
@@ -985,5 +910,3 @@ class RLConfig(BaseConfig):
             else:
                 self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
         return self
-
-    ### Warnings

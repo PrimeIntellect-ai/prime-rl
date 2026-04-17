@@ -177,3 +177,79 @@ def test_shared_model_name_propagates_to_subconfigs():
     assert config.inference is not None and config.inference.model.name == model_name
     assert config.trainer.tokenizer.name == model_name
     assert config.orchestrator.tokenizer.name == model_name
+
+
+def test_shared_tokenizer_propagates_when_subconfigs_unset():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "tokenizer": {"name": "my-tokenizer"},
+            "trainer": {},
+            "orchestrator": {},
+        }
+    )
+    assert config.trainer.tokenizer.name == "my-tokenizer"
+    assert config.orchestrator.tokenizer.name == "my-tokenizer"
+
+
+def test_subconfig_tokenizer_wins_over_shared():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "tokenizer": {"name": "shared-tok"},
+            "trainer": {"tokenizer": {"name": "trainer-tok"}},
+            "orchestrator": {},
+        }
+    )
+    assert config.trainer.tokenizer.name == "trainer-tok"
+    assert config.orchestrator.tokenizer.name == "shared-tok"
+
+
+def test_tokenizer_name_falls_back_to_model_name_when_unset():
+    """When shared tokenizer omits name and sub-configs don't set it, sub-config auto-setup fills it from model.name."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "tokenizer": {"trust_remote_code": True},
+            "trainer": {},
+            "orchestrator": {},
+        }
+    )
+    assert config.trainer.tokenizer.name == "my-model"
+    assert config.orchestrator.tokenizer.name == "my-model"
+    assert config.trainer.tokenizer.trust_remote_code is True
+    assert config.orchestrator.tokenizer.trust_remote_code is True
+
+
+def test_tokenizer_chat_template_mismatch_raises():
+    with pytest.raises(ValidationError, match="chat_template"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"tokenizer": {"chat_template": "A"}},
+                "orchestrator": {"tokenizer": {"chat_template": "B"}},
+            }
+        )
+
+
+def test_shared_seq_len_propagates_to_subconfigs():
+    config = RLConfig.model_validate(
+        {
+            "seq_len": 4096,
+            "trainer": {},
+            "orchestrator": {},
+        }
+    )
+    assert config.trainer.model.seq_len == 4096
+    assert config.orchestrator.seq_len == 4096
+
+
+def test_subconfig_seq_len_wins_over_shared():
+    config = RLConfig.model_validate(
+        {
+            "seq_len": 4096,
+            "trainer": {"model": {"seq_len": 8192}},
+            "orchestrator": {},
+        }
+    )
+    assert config.trainer.model.seq_len == 8192
+    assert config.orchestrator.seq_len == 4096
