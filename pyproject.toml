@@ -129,7 +129,7 @@ dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "abd9943b" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
-vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.20/vllm_router-0.1.20-cp38-abi3-manylinux_2_28_x86_64.whl" }
+vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" }
 reverse-text = { index = "primeintellect" }
 alphabet-sort = { index = "primeintellect" }
 wiki-search = { index = "primeintellect" }
