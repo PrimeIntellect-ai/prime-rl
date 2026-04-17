@@ -417,10 +417,8 @@ async def orchestrate(config: OrchestratorConfig):
         # batches so the trainer never receives an empty batch.
         generate_completions_time = 0.0
         for retry in range(MAX_EMPTY_BATCH_RETRIES + 1):
-            train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
-            await train_task
+            train_rollouts = await scheduler.generate_batch(step=progress.step)
             generate_completions_time += scheduler.last_batch_generation_time
-            train_rollouts = train_task.result()
 
             # Compute advantages (in-place)
             example_ids = [r["example_id"] for r in train_rollouts]
@@ -473,14 +471,14 @@ async def orchestrate(config: OrchestratorConfig):
         parallel_preprocess_start = time.perf_counter()
 
         # Pretokenize before VLM image cache build (which strips image data from messages)
-        for rollout in filtered_rollouts:
+        for rollout in train_rollouts:
             pretokenize_rollout_trajectory(rollout, tokenizer, processor=processor)
 
         # VLM: build image cache in a thread so it doesn't block the event loop.
         # This lets the scheduler continue servicing inflight rollout requests
         # and — with max_async_level >= 2 — overlap with the next batch's inference.
         if is_vlm:
-            vlm_cache = await asyncio.to_thread(build_vlm_image_cache, filtered_rollouts, processor)
+            vlm_cache = await asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor)
             mm_token_type_ids_mapping = {}
             if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
                 mm_token_type_ids_mapping[processor.image_token_id] = 1
@@ -501,23 +499,26 @@ async def orchestrate(config: OrchestratorConfig):
                 rollout, vlm_cache=vlm_cache, cache_key=rollout_idx, mm_token_type_ids_mapping=mm_token_type_ids_mapping
             )
 
-        filtered_results = await asyncio.gather(
-            *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(filtered_rollouts))
+        results = await asyncio.gather(
+            *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(train_rollouts))
         )
 
-        # Collect results and assign advantages
+        # Collect results and assign advantages. Metrics are computed over all
+        # rollouts; only non-filtered samples are sent to the trainer.
+        keep_rollout_ids = {id(r) for r in filtered_rollouts}
         train_examples: list[TrainingSample] = []
-        filtered_rollout_prefill_lens: list[int] = []
-        filtered_rollout_decode_lens: list[int] = []
-        filtered_rollout_samples_per_rollout: list[int] = []
+        rollout_prefill_lens: list[int] = []
+        rollout_decode_lens: list[int] = []
+        rollout_samples_per_rollout: list[int] = []
         num_prefill_tokens = 0
         num_decode_tokens = 0
-        for rollout, samples in zip(filtered_rollouts, filtered_results):
+        for rollout, samples in zip(train_rollouts, results):
             rollout_prefill_tokens = 0
             rollout_decode_tokens = 0
             if samples is None:
                 samples = []
-            filtered_rollout_samples_per_rollout.append(len(samples))
+            rollout_samples_per_rollout.append(len(samples))
+            keep = id(rollout) in keep_rollout_ids
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
@@ -525,9 +526,10 @@ async def orchestrate(config: OrchestratorConfig):
                 sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                 rollout_decode_tokens += sample_decode_tokens
                 rollout_prefill_tokens += sample_prefill_tokens
-                train_examples.append(sample)
-            filtered_rollout_prefill_lens.append(rollout_prefill_tokens)
-            filtered_rollout_decode_lens.append(rollout_decode_tokens)
+                if keep:
+                    train_examples.append(sample)
+            rollout_prefill_lens.append(rollout_prefill_tokens)
+            rollout_decode_lens.append(rollout_decode_tokens)
             num_prefill_tokens += rollout_prefill_tokens
             num_decode_tokens += rollout_decode_tokens
 
@@ -570,18 +572,12 @@ async def orchestrate(config: OrchestratorConfig):
                 "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
                 "stop_condition": [rollout.get("stop_condition") for rollout in train_rollouts],
                 "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
+                "prefill_len": rollout_prefill_lens,
+                "decode_len": rollout_decode_lens,
+                "samples_per_rollout": rollout_samples_per_rollout,
                 "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
                 "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
                 "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
-            }
-        )
-        filtered_results_df = pd.DataFrame(
-            {
-                "example_id": [rollout["example_id"] for rollout in filtered_rollouts],
-                "env_name": [rollout["env_name"] for rollout in filtered_rollouts],
-                "prefill_len": filtered_rollout_prefill_lens,
-                "decode_len": filtered_rollout_decode_lens,
-                "samples_per_rollout": filtered_rollout_samples_per_rollout,
             }
         )
 
@@ -603,7 +599,6 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Group by example_id to average across rollouts within each problem
         by_example = results_df.groupby("example_id")
-        filtered_by_example = filtered_results_df.groupby("example_id")
 
         solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
         to_log = {
@@ -621,12 +616,12 @@ async def orchestrate(config: OrchestratorConfig):
             "seq_len/all/mean": by_example.seq_len.mean().mean(),
             "seq_len/all/max": by_example.seq_len.mean().max(),
             "seq_len/all/min": by_example.seq_len.mean().min(),
-            "prefill_len/all/mean": filtered_by_example.prefill_len.mean().mean(),
-            "prefill_len/all/max": filtered_by_example.prefill_len.mean().max(),
-            "prefill_len/all/min": filtered_by_example.prefill_len.mean().min(),
-            "decode_len/all/mean": filtered_by_example.decode_len.mean().mean(),
-            "decode_len/all/max": filtered_by_example.decode_len.mean().max(),
-            "decode_len/all/min": filtered_by_example.decode_len.mean().min(),
+            "prefill_len/all/mean": by_example.prefill_len.mean().mean(),
+            "prefill_len/all/max": by_example.prefill_len.mean().max(),
+            "prefill_len/all/min": by_example.prefill_len.mean().min(),
+            "decode_len/all/mean": by_example.decode_len.mean().mean(),
+            "decode_len/all/max": by_example.decode_len.mean().max(),
+            "decode_len/all/min": by_example.decode_len.mean().min(),
             "is_truncated/all/mean": by_example.is_truncated.mean().mean(),
             "is_truncated/all/max": by_example.is_truncated.mean().max(),
             "stop_condition/all/generation_truncated": (
@@ -636,9 +631,9 @@ async def orchestrate(config: OrchestratorConfig):
                 f"stop_condition/all/{sc}": rate
                 for sc, rate in results_df.stop_condition.dropna().value_counts(normalize=True).items()
             },
-            "samples_per_rollout/all/mean": filtered_by_example.samples_per_rollout.mean().mean(),
-            "samples_per_rollout/all/max": filtered_by_example.samples_per_rollout.mean().max(),
-            "samples_per_rollout/all/min": filtered_by_example.samples_per_rollout.mean().min(),
+            "samples_per_rollout/all/mean": by_example.samples_per_rollout.mean().mean(),
+            "samples_per_rollout/all/max": by_example.samples_per_rollout.mean().max(),
+            "samples_per_rollout/all/min": by_example.samples_per_rollout.mean().min(),
             "num_turns/all/mean": by_example.num_turns.mean().mean(),
             "num_turns/all/max": by_example.num_turns.mean().max(),
             "num_turns/all/min": by_example.num_turns.mean().min(),
@@ -676,36 +671,24 @@ async def orchestrate(config: OrchestratorConfig):
         }
 
         # Per-env metrics
-        per_env_rollout_columns = ["seq_len", "is_truncated", "num_turns", "generation_ms", "scoring_ms"]
-        per_env_filtered_columns = ["prefill_len", "decode_len", "samples_per_rollout"]
+        per_env_columns = [
+            "seq_len",
+            "prefill_len",
+            "decode_len",
+            "is_truncated",
+            "samples_per_rollout",
+            "num_turns",
+            "generation_ms",
+            "scoring_ms",
+        ]
 
         for env, env_df in results_df.groupby("env_name"):
             env_by_example = env_df.groupby("example_id")
-            for col in per_env_rollout_columns:
+            for col in per_env_columns:
                 to_log[f"{col}/{env}/mean"] = env_by_example[col].mean().mean()
                 to_log[f"{col}/{env}/max"] = env_by_example[col].mean().max()
                 if col != "is_truncated":
                     to_log[f"{col}/{env}/min"] = env_by_example[col].mean().min()
-            filtered_env_df = filtered_results_df[filtered_results_df.env_name == env]
-            if filtered_env_df.empty:
-                for col in per_env_filtered_columns:
-                    to_log[f"{col}/{env}/mean"] = 0.0
-                    to_log[f"{col}/{env}/max"] = 0.0
-                    to_log[f"{col}/{env}/min"] = 0.0
-            else:
-                filtered_env_by_example = filtered_env_df.groupby("example_id")
-                prefill_by_example = filtered_env_by_example.prefill_len.mean()
-                to_log[f"prefill_len/{env}/mean"] = prefill_by_example.mean()
-                to_log[f"prefill_len/{env}/max"] = prefill_by_example.max()
-                to_log[f"prefill_len/{env}/min"] = prefill_by_example.min()
-                decode_by_example = filtered_env_by_example.decode_len.mean()
-                to_log[f"decode_len/{env}/mean"] = decode_by_example.mean()
-                to_log[f"decode_len/{env}/max"] = decode_by_example.max()
-                to_log[f"decode_len/{env}/min"] = decode_by_example.min()
-                samples_per_rollout_by_example = filtered_env_by_example.samples_per_rollout.mean()
-                to_log[f"samples_per_rollout/{env}/mean"] = samples_per_rollout_by_example.mean()
-                to_log[f"samples_per_rollout/{env}/max"] = samples_per_rollout_by_example.max()
-                to_log[f"samples_per_rollout/{env}/min"] = samples_per_rollout_by_example.min()
             to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
