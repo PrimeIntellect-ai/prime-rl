@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -307,13 +308,6 @@ class RLConfig(BaseConfig):
         ),
     ] = None
 
-    max_model_len: Annotated[
-        int | None,
-        Field(
-            description="The maximum model length to use. If None, will fallback to the max model length specified on submodule configs."
-        ),
-    ] = None
-
     seq_len: Annotated[
         int | None,
         Field(
@@ -454,29 +448,29 @@ class RLConfig(BaseConfig):
         after.
 
         Shared configs handled here (fill-if-absent: sub-configs win):
-          - `[model]` fields                 → trainer / orchestrator / inference
-          - `[log]` fields                   → trainer / orchestrator
-          - `[ckpt]` fields                  → trainer / orchestrator
+          - `[model]` fields                  → trainer / orchestrator / inference
+          - `[log]` fields                    → trainer / orchestrator
+          - `[ckpt]` fields                   → trainer / orchestrator
           - `[wandb]` fields + shared/-suffix → trainer / orchestrator
-          - `[tokenizer]` fields             → trainer / orchestrator (+ chat_template to inference)
-          - `max_steps`                      → trainer / orchestrator
-          - `max_async_level`                → trainer / orchestrator
-          - `output_dir`                     → trainer / orchestrator (orchestrator derives a "run_default" subdir)
-          - `seq_len`                        → trainer.model / orchestrator
+          - `[tokenizer]` fields              → trainer / orchestrator (+ chat_template to inference)
+          - `max_steps`                       → trainer / orchestrator
+          - `max_async_level`                 → trainer / orchestrator
+          - `output_dir`                      → trainer / orchestrator (orchestrator derives a "run_default" subdir)
+          - `seq_len`                         → trainer.model / orchestrator
 
-        Sub-config values always take precedence; any mismatch between shared
-        and sub-config, or between sub-configs themselves, is caught by
-        `validate_shared_configs` (after-validator) which runs the full suite
-        of `validate_shared_*` checks post-construction.
+        Sub-config values always take precedence; any mismatch between
+        sub-configs themselves, is caught by `validate_shared_configs`
+        (after-validator) which runs the full suite of `validate_shared_*`
+        checks post-construction.
         """
         if not isinstance(data, dict):
             return data
-        import copy
 
-        data = copy.deepcopy(data)
+        data = deepcopy(data)
 
-        def read(path: str) -> Any | None:
-            """Read a dotted path from data, returning None if any intermediate is missing or not a dict."""
+        def get(path: str) -> Any | None:
+            """Read a dotted path (e.g. `model.name`) from raw config data. Returns
+            None if any intermediate key is missing or not a dict."""
             node: Any = data
             for part in path.split("."):
                 if not isinstance(node, dict) or part not in node:
@@ -484,14 +478,11 @@ class RLConfig(BaseConfig):
                 node = node[part]
             return node
 
-        def propagate(path: str, value: Any) -> None:
-            """Set a value (e.g. 'trainer.model.name') in raw, if not already present.
+        def fill(path: str, value: Any) -> None:
+            """Fill a value at dotted path in raw data, only if the slot is empty.
 
-            Caller is responsible for only calling with non-None values.
-            Sub-config values take precedence; mismatches are caught by
-            validate_shared_configs after-validator.
             Only creates intermediate dicts for nested keys (e.g. 'model' in
-            'trainer.model.name'), never for the top-level sub-config itself.
+            'trainer.model.name' but not 'trainer').
             """
             parts = path.split(".")
             # Don't create the top-level sub-config if it doesn't exist
@@ -506,100 +497,100 @@ class RLConfig(BaseConfig):
                 node[parts[-1]] = value
 
         # [model] → sub-config model dicts
-        model_name = read("model.name")
+        model_name = get("model.name")
         if model_name is not None:
-            propagate("trainer.model.name", model_name)
-            propagate("inference.model.name", model_name)
+            fill("trainer.model.name", model_name)
+            fill("inference.model.name", model_name)
             # Orchestrator follows inference model name (which may differ from shared)
-            propagate("orchestrator.model.name", read("inference.model.name") or model_name)
-        model_vlm = read("model.vlm")
+            fill("orchestrator.model.name", get("inference.model.name") or model_name)
+        model_vlm = get("model.vlm")
         if model_vlm is not None:
             for target in ("trainer.model.vlm", "inference.model.vlm", "orchestrator.model.vlm"):
-                propagate(target, model_vlm)
+                fill(target, model_vlm)
 
         # [log] → trainer/orchestrator log dicts
         for key in ("level", "json_logging"):
-            val = read(f"log.{key}")
+            val = get(f"log.{key}")
             if val is not None:
-                propagate(f"trainer.log.{key}", val)
-                propagate(f"orchestrator.log.{key}", val)
+                fill(f"trainer.log.{key}", val)
+                fill(f"orchestrator.log.{key}", val)
 
         # [ckpt] → trainer/orchestrator ckpt dicts (output_dir is trainer-only).
         # Presence of shared [ckpt] (even empty) enables ckpt on both sub-configs.
-        if read("ckpt") is not None:
-            propagate("trainer.ckpt", {})
-            propagate("orchestrator.ckpt", {})
-        ckpt_output_dir = read("ckpt.output_dir")
+        if get("ckpt") is not None:
+            fill("trainer.ckpt", {})
+            fill("orchestrator.ckpt", {})
+        ckpt_output_dir = get("ckpt.output_dir")
         if ckpt_output_dir is not None:
-            propagate("trainer.ckpt.output_dir", ckpt_output_dir)
+            fill("trainer.ckpt.output_dir", ckpt_output_dir)
         for field in ("interval", "resume_step", "keep_last", "keep_interval"):
-            val = read(f"ckpt.{field}")
+            val = get(f"ckpt.{field}")
             if val is not None:
-                propagate(f"trainer.ckpt.{field}", val)
-                propagate(f"orchestrator.ckpt.{field}", val)
+                fill(f"trainer.ckpt.{field}", val)
+                fill(f"orchestrator.ckpt.{field}", val)
 
         # [wandb] → trainer/orchestrator wandb dicts.
         # Presence of shared [wandb] (even empty) enables wandb on both sub-configs.
-        if read("wandb") is not None:
-            propagate("trainer.wandb", {})
-            propagate("orchestrator.wandb", {})
+        if get("wandb") is not None:
+            fill("trainer.wandb", {})
+            fill("orchestrator.wandb", {})
         for field in ("project", "offline"):
-            val = read(f"wandb.{field}")
+            val = get(f"wandb.{field}")
             if val is not None:
-                propagate(f"trainer.wandb.{field}", val)
-                propagate(f"orchestrator.wandb.{field}", val)
+                fill(f"trainer.wandb.{field}", val)
+                fill(f"orchestrator.wandb.{field}", val)
 
         # W&B name: in shared mode (the default), both sub-configs use the same
         # name. In non-shared mode (wandb.shared = false), suffix with -trainer/
         # -orchestrator so the runs are distinguishable.
-        wandb_name = read("wandb.name")
+        wandb_name = get("wandb.name")
         if wandb_name:
-            non_shared = read("wandb.shared") is False
-            propagate("trainer.wandb.name", f"{wandb_name}-trainer" if non_shared else wandb_name)
-            propagate("orchestrator.wandb.name", f"{wandb_name}-orchestrator" if non_shared else wandb_name)
+            non_shared = get("wandb.shared") is False
+            fill("trainer.wandb.name", f"{wandb_name}-trainer" if non_shared else wandb_name)
+            fill("orchestrator.wandb.name", f"{wandb_name}-orchestrator" if non_shared else wandb_name)
 
         # wandb.name → orchestrator.prime_monitor.run_name, but only when
         # prime_monitor is already enabled (don't fabricate it).
-        if wandb_name and read("orchestrator.prime_monitor") is not None:
-            propagate("orchestrator.prime_monitor.run_name", wandb_name)
+        if wandb_name and get("orchestrator.prime_monitor") is not None:
+            fill("orchestrator.prime_monitor.run_name", wandb_name)
 
         # [tokenizer] → trainer/orchestrator tokenizer dicts (fill-if-absent).
         # If tokenizer.name is left absent here, each sub-config's own
         # auto_setup_tokenizer fills it from model.name during construction.
         for field in ("name", "trust_remote_code", "chat_template"):
-            val = read(f"tokenizer.{field}")
+            val = get(f"tokenizer.{field}")
             if val is not None:
-                propagate(f"trainer.tokenizer.{field}", val)
-                propagate(f"orchestrator.tokenizer.{field}", val)
+                fill(f"trainer.tokenizer.{field}", val)
+                fill(f"orchestrator.tokenizer.{field}", val)
         # chat_template flows trainer.tokenizer → inference.model (vLLM --chat-template).
         # Read after the propagation above so we pick up shared → trainer flow.
-        chat_template = read("trainer.tokenizer.chat_template")
+        chat_template = get("trainer.tokenizer.chat_template")
         if chat_template is not None:
-            propagate("inference.model.chat_template", chat_template)
+            fill("inference.model.chat_template", chat_template)
 
         # max_steps → trainer/orchestrator
-        max_steps = read("max_steps")
+        max_steps = get("max_steps")
         if max_steps is not None:
-            propagate("trainer.max_steps", max_steps)
-            propagate("orchestrator.max_steps", max_steps)
+            fill("trainer.max_steps", max_steps)
+            fill("orchestrator.max_steps", max_steps)
 
         # max_async_level → trainer/orchestrator
-        max_async_level = read("max_async_level")
+        max_async_level = get("max_async_level")
         if max_async_level is not None:
-            propagate("trainer.max_async_level", max_async_level)
-            propagate("orchestrator.max_async_level", max_async_level)
+            fill("trainer.max_async_level", max_async_level)
+            fill("orchestrator.max_async_level", max_async_level)
 
         # output_dir → trainer/orchestrator (orchestrator derives a "run_default" subdir)
-        output_dir = read("output_dir")
+        output_dir = get("output_dir")
         if output_dir is not None:
-            propagate("trainer.output_dir", output_dir)
-            propagate("orchestrator.output_dir", f"{output_dir}/run_default")
+            fill("trainer.output_dir", output_dir)
+            fill("orchestrator.output_dir", f"{output_dir}/run_default")
 
         # seq_len → trainer.model.seq_len and orchestrator.seq_len (fill-if-absent)
-        seq_len = read("seq_len")
+        seq_len = get("seq_len")
         if seq_len is not None:
-            propagate("trainer.model.seq_len", seq_len)
-            propagate("orchestrator.seq_len", seq_len)
+            fill("trainer.model.seq_len", seq_len)
+            fill("orchestrator.seq_len", seq_len)
 
         return data
 
