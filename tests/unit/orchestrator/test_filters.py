@@ -237,8 +237,8 @@ def test_apply_filters_enforced_flags_rollout():
     assert rollout["is_filtered"] is True
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/gibberish_rate"] == 1.0
-    assert metrics["filter/total_detected_rate"] == 1.0
-    assert metrics["filter/total_enforced_rate"] == 1.0
+    assert metrics["filter/detected_rate"] == 1.0
+    assert metrics["filter/is_filtered_rate"] == 1.0
 
 
 def test_apply_filters_preserves_clean_rollouts():
@@ -259,8 +259,8 @@ def test_apply_filters_preserves_clean_rollouts():
     assert rollout["filter"] == {"gibberish": False}
     assert rollout["is_filtered"] is False
     assert metrics["filter/gibberish_count"] == 0.0
-    assert metrics["filter/total_detected_rate"] == 0.0
-    assert metrics["filter/total_enforced_rate"] == 0.0
+    assert metrics["filter/detected_rate"] == 0.0
+    assert metrics["filter/is_filtered_rate"] == 0.0
 
 
 def test_apply_filters_first_filter_wins():
@@ -280,8 +280,8 @@ def test_apply_filters_first_filter_wins():
     assert rollout["is_filtered"] is True
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/repetition_count"] == 0.0
-    assert metrics["filter/total_detected_rate"] == 1.0
-    assert metrics["filter/total_enforced_rate"] == 1.0
+    assert metrics["filter/detected_rate"] == 1.0
+    assert metrics["filter/is_filtered_rate"] == 1.0
 
 
 def test_apply_filters_empty_list():
@@ -312,8 +312,8 @@ def test_apply_filters_mixed_batch():
     assert dirty["is_filtered"] is True
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/gibberish_rate"] == 0.5
-    assert metrics["filter/total_detected_rate"] == 0.5
-    assert metrics["filter/total_enforced_rate"] == 0.5
+    assert metrics["filter/detected_rate"] == 0.5
+    assert metrics["filter/is_filtered_rate"] == 0.5
 
 
 def test_apply_filters_enforced_preserves_rollout_tokens():
@@ -374,8 +374,8 @@ def test_apply_filters_monitor_only_tracks_detection():
     assert rollout["is_filtered"] is False
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/gibberish_rate"] == 1.0
-    assert metrics["filter/total_detected_rate"] == 1.0
-    assert metrics["filter/total_enforced_rate"] == 0.0
+    assert metrics["filter/detected_rate"] == 1.0
+    assert metrics["filter/is_filtered_rate"] == 0.0
 
 
 def test_apply_filters_monitor_only_mixed_batch():
@@ -393,5 +393,5 @@ def test_apply_filters_monitor_only_mixed_batch():
     assert clean["is_filtered"] is False
     assert dirty["is_filtered"] is False
     assert metrics["filter/gibberish_rate"] == 0.5
-    assert metrics["filter/total_detected_rate"] == 0.5
-    assert metrics["filter/total_enforced_rate"] == 0.0
+    assert metrics["filter/detected_rate"] == 0.5
+    assert metrics["filter/is_filtered_rate"] == 0.0

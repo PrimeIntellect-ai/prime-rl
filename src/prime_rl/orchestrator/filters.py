@@ -188,8 +188,8 @@ def apply_filters(
     for f in filters:
         metrics[f"filter/{f.name}_count"] = float(counts[f.name])
         metrics[f"filter/{f.name}_rate"] = counts[f.name] / n if n > 0 else 0.0
-    metrics["filter/total_detected_rate"] = total_detected / n if n > 0 else 0.0
-    metrics["filter/total_enforced_rate"] = total_enforced / n if n > 0 else 0.0
+    metrics["filter/detected_rate"] = total_detected / n if n > 0 else 0.0
+    metrics["filter/is_filtered_rate"] = total_enforced / n if n > 0 else 0.0
 
     if total_detected > 0:
         enforced_msg = f", enforced {total_enforced}" if total_enforced > 0 else ""
