@@ -309,10 +309,7 @@ def _patch_lora_key_prefix():
                 if ".experts" in module_name:
                     expert_suffix = module_name.split(".")[-1]
                     experts_qualified = "experts" + module_name.split(".experts", 1)[-1]
-                    if (
-                        expert_suffix not in expected_lora_modules
-                        and experts_qualified not in expected_lora_modules
-                    ):
+                    if expert_suffix not in expected_lora_modules and experts_qualified not in expected_lora_modules:
                         unexpected_modules.append(module_name)
 
                 elif module_name.rsplit(".", 1)[-1] not in expected_lora_modules:
