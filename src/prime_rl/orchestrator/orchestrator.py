@@ -442,16 +442,16 @@ async def orchestrate(config: OrchestratorConfig):
                 )
 
             logger.warning(
-                f"All {num_rollouts} rollouts at step {progress.step} were filtered out; "
-                f"retrying batch generation (retry {retry + 1}/{MAX_EMPTY_BATCH_RETRIES})."
+                f"All {num_rollouts} rollouts at step {progress.step} were filtered out - "
+                f"retrying batch generation (retry {retry + 1}/{MAX_EMPTY_BATCH_RETRIES})"
             )
 
         trainable_ratio = len(filtered_rollouts) / num_rollouts
         if trainable_ratio <= 0.1:
             logger.warning(
                 f"Only {len(filtered_rollouts)}/{num_rollouts} rollouts in the batch are trainable "
-                f"({trainable_ratio:.1%}). This can mean the tasks are too easy or too hard for the "
-                "model — consider reviewing the environment."
+                f"({trainable_ratio:.1%}) - this can mean the tasks are too easy or too hard for the "
+                "model, consider reviewing the environment"
             )
 
         # Save train rollouts to disk (fire-and-forget background thread)
