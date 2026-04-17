@@ -38,6 +38,7 @@ from prime_rl.utils.validation import (
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
+    validate_shared_seq_len,
     validate_shared_tokenizer,
     validate_shared_wandb_config,
     validate_shared_weight_broadcast,
@@ -453,24 +454,20 @@ class RLConfig(BaseConfig):
         after.
 
         Shared configs handled here (fill-if-absent: sub-configs win):
-          - `model.name`, `model.vlm`        → trainer / orchestrator / inference
-          - `log.level`, `log.json_logging`  → trainer / orchestrator
-          - `max_steps`, `max_async_level`   → trainer / orchestrator
-          - `output_dir`                     → trainer (verbatim) / orchestrator (`/run_default`)
-          - `[ckpt]` fields                  → trainer / orchestrator (presence enables both)
-          - `[wandb]` fields + shared/-suffix → trainer / orchestrator (presence enables both)
+          - `[model]` fields                 → trainer / orchestrator / inference
+          - `[log]` fields                   → trainer / orchestrator
+          - `[ckpt]` fields                  → trainer / orchestrator
+          - `[wandb]` fields + shared/-suffix → trainer / orchestrator
           - `[tokenizer]` fields             → trainer / orchestrator (+ chat_template to inference)
+          - `max_steps`                      → trainer / orchestrator
+          - `max_async_level`                → trainer / orchestrator
+          - `output_dir`                     → trainer / orchestrator (orchestrator derives a "run_default" subdir)
           - `seq_len`                        → trainer.model / orchestrator
 
         Sub-config values always take precedence; any mismatch between shared
         and sub-config, or between sub-configs themselves, is caught by
         `validate_shared_configs` (after-validator) which runs the full suite
         of `validate_shared_*` checks post-construction.
-
-        To add a new shared field, typically you only need a `propagate(...)`
-        call here plus a `validate_shared_*` call in `validate_shared_configs`.
-        If the field drives arithmetic or reads computed values from other
-        sub-configs, keep its auto-setup in an after-validator instead.
         """
         if not isinstance(data, dict):
             return data
@@ -490,14 +487,12 @@ class RLConfig(BaseConfig):
         def propagate(path: str, value: Any) -> None:
             """Set a value (e.g. 'trainer.model.name') in raw, if not already present.
 
-            No-op if value is None (i.e. source field was unset).
-            Sub-config values take precedence; mismatches are caught by the
-            corresponding validate_shared_* after-validator.
+            Caller is responsible for only calling with non-None values.
+            Sub-config values take precedence; mismatches are caught by
+            validate_shared_configs after-validator.
             Only creates intermediate dicts for nested keys (e.g. 'model' in
             'trainer.model.name'), never for the top-level sub-config itself.
             """
-            if value is None:
-                return
             parts = path.split(".")
             # Don't create the top-level sub-config if it doesn't exist
             if parts[0] not in data or not isinstance(data[parts[0]], dict):
@@ -512,37 +507,36 @@ class RLConfig(BaseConfig):
 
         # [model] → sub-config model dicts
         model_name = read("model.name")
-        propagate("trainer.model.name", model_name)
-        propagate("inference.model.name", model_name)
-        # Orchestrator follows inference model name (which may differ from shared)
-        propagate("orchestrator.model.name", read("inference.model.name") or model_name)
-        for target in ("trainer.model.vlm", "inference.model.vlm", "orchestrator.model.vlm"):
-            propagate(target, read("model.vlm"))
+        if model_name is not None:
+            propagate("trainer.model.name", model_name)
+            propagate("inference.model.name", model_name)
+            # Orchestrator follows inference model name (which may differ from shared)
+            propagate("orchestrator.model.name", read("inference.model.name") or model_name)
+        model_vlm = read("model.vlm")
+        if model_vlm is not None:
+            for target in ("trainer.model.vlm", "inference.model.vlm", "orchestrator.model.vlm"):
+                propagate(target, model_vlm)
 
         # [log] → trainer/orchestrator log dicts
         for key in ("level", "json_logging"):
-            propagate(f"trainer.log.{key}", read(f"log.{key}"))
-            propagate(f"orchestrator.log.{key}", read(f"log.{key}"))
-
-        # Scalar shared fields → trainer/orchestrator
-        for field in ("max_steps", "max_async_level"):
-            propagate(f"trainer.{field}", read(field))
-            propagate(f"orchestrator.{field}", read(field))
-
-        # [output_dir] → trainer/orchestrator (orchestrator derives a "run_default" subdir)
-        output_dir = read("output_dir")
-        propagate("trainer.output_dir", output_dir)
-        propagate("orchestrator.output_dir", f"{output_dir}/run_default" if output_dir is not None else None)
+            val = read(f"log.{key}")
+            if val is not None:
+                propagate(f"trainer.log.{key}", val)
+                propagate(f"orchestrator.log.{key}", val)
 
         # [ckpt] → trainer/orchestrator ckpt dicts (output_dir is trainer-only).
         # Presence of shared [ckpt] (even empty) enables ckpt on both sub-configs.
         if read("ckpt") is not None:
             propagate("trainer.ckpt", {})
             propagate("orchestrator.ckpt", {})
-        propagate("trainer.ckpt.output_dir", read("ckpt.output_dir"))
+        ckpt_output_dir = read("ckpt.output_dir")
+        if ckpt_output_dir is not None:
+            propagate("trainer.ckpt.output_dir", ckpt_output_dir)
         for field in ("interval", "resume_step", "keep_last", "keep_interval"):
-            propagate(f"trainer.ckpt.{field}", read(f"ckpt.{field}"))
-            propagate(f"orchestrator.ckpt.{field}", read(f"ckpt.{field}"))
+            val = read(f"ckpt.{field}")
+            if val is not None:
+                propagate(f"trainer.ckpt.{field}", val)
+                propagate(f"orchestrator.ckpt.{field}", val)
 
         # [wandb] → trainer/orchestrator wandb dicts.
         # Presence of shared [wandb] (even empty) enables wandb on both sub-configs.
@@ -550,8 +544,10 @@ class RLConfig(BaseConfig):
             propagate("trainer.wandb", {})
             propagate("orchestrator.wandb", {})
         for field in ("project", "offline"):
-            propagate(f"trainer.wandb.{field}", read(f"wandb.{field}"))
-            propagate(f"orchestrator.wandb.{field}", read(f"wandb.{field}"))
+            val = read(f"wandb.{field}")
+            if val is not None:
+                propagate(f"trainer.wandb.{field}", val)
+                propagate(f"orchestrator.wandb.{field}", val)
 
         # W&B name: in shared mode (the default), both sub-configs use the same
         # name. In non-shared mode (wandb.shared = false), suffix with -trainer/
@@ -564,22 +560,46 @@ class RLConfig(BaseConfig):
 
         # wandb.name → orchestrator.prime_monitor.run_name, but only when
         # prime_monitor is already enabled (don't fabricate it).
-        if read("orchestrator.prime_monitor") is not None:
+        if wandb_name and read("orchestrator.prime_monitor") is not None:
             propagate("orchestrator.prime_monitor.run_name", wandb_name)
 
         # [tokenizer] → trainer/orchestrator tokenizer dicts (fill-if-absent).
         # If tokenizer.name is left absent here, each sub-config's own
         # auto_setup_tokenizer fills it from model.name during construction.
         for field in ("name", "trust_remote_code", "chat_template"):
-            propagate(f"trainer.tokenizer.{field}", read(f"tokenizer.{field}"))
-            propagate(f"orchestrator.tokenizer.{field}", read(f"tokenizer.{field}"))
+            val = read(f"tokenizer.{field}")
+            if val is not None:
+                propagate(f"trainer.tokenizer.{field}", val)
+                propagate(f"orchestrator.tokenizer.{field}", val)
         # chat_template flows trainer.tokenizer → inference.model (vLLM --chat-template).
         # Read after the propagation above so we pick up shared → trainer flow.
-        propagate("inference.model.chat_template", read("trainer.tokenizer.chat_template"))
+        chat_template = read("trainer.tokenizer.chat_template")
+        if chat_template is not None:
+            propagate("inference.model.chat_template", chat_template)
 
-        # [seq_len] → trainer.model.seq_len and orchestrator.seq_len (fill-if-absent)
-        propagate("trainer.model.seq_len", read("seq_len"))
-        propagate("orchestrator.seq_len", read("seq_len"))
+        # max_steps → trainer/orchestrator
+        max_steps = read("max_steps")
+        if max_steps is not None:
+            propagate("trainer.max_steps", max_steps)
+            propagate("orchestrator.max_steps", max_steps)
+
+        # max_async_level → trainer/orchestrator
+        max_async_level = read("max_async_level")
+        if max_async_level is not None:
+            propagate("trainer.max_async_level", max_async_level)
+            propagate("orchestrator.max_async_level", max_async_level)
+
+        # output_dir → trainer/orchestrator (orchestrator derives a "run_default" subdir)
+        output_dir = read("output_dir")
+        if output_dir is not None:
+            propagate("trainer.output_dir", output_dir)
+            propagate("orchestrator.output_dir", f"{output_dir}/run_default")
+
+        # seq_len → trainer.model.seq_len and orchestrator.seq_len (fill-if-absent)
+        seq_len = read("seq_len")
+        if seq_len is not None:
+            propagate("trainer.model.seq_len", seq_len)
+            propagate("orchestrator.seq_len", seq_len)
 
         return data
 
@@ -595,11 +615,7 @@ class RLConfig(BaseConfig):
         validate_shared_tokenizer(self.trainer, self.orchestrator, self.inference)
         validate_shared_max_steps(self.trainer, self.orchestrator)
         validate_shared_max_async_level(self.trainer, self.orchestrator)
-        if self.trainer.model.seq_len < self.orchestrator.seq_len:
-            raise ValueError(
-                f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
-                f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
-            )
+        validate_shared_seq_len(self.trainer, self.orchestrator)
         return self
 
     @model_validator(mode="after")
