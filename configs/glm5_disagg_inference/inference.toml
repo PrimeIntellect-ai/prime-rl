@@ -5,6 +5,8 @@ gpu_memory_utilization = 0.85
 
 [model]
 name = "zai-org/GLM-5-FP8"
+tool_call_parser = "auto"
+reasoning_parser = "glm45"
 
 [deployment]
 type = "disaggregated"
