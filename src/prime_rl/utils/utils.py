@@ -206,27 +206,32 @@ def to_row_format(dict_of_lists: dict[str, list[Any]]) -> list[dict[str, Any]]:
     return [dict(zip(dict_of_lists.keys(), values)) for values in zip(*dict_of_lists.values())]
 
 
-def format_time(time_in_seconds: float) -> str:
-    """Format a time in seconds to a human-readable format."""
-    from datetime import timedelta
-
-    td = timedelta(seconds=time_in_seconds)
-    days = td.days
-    hours, remainder = divmod(td.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-
-    # Format based on magnitude
-    if days > 0:
-        total_hours = days * 24 + hours
-        return f"{total_hours + minutes / 60:.2f}h"
-    elif hours > 0:
-        return f"{hours + minutes / 60:.2f}h"
-    elif minutes > 0:
-        return f"{minutes + seconds / 60:.2f}m"
+def format_time(time_s: float) -> str:
+    """
+    Format a time in seconds to a human-readable format:
+    - >1d -> Xd Yh
+    - >1h -> Xh Ym
+    - >1m -> Xm Ys
+    - <1s -> Xms
+    - Else: Xs
+    """
+    if time_s >= 86400:
+        d = time_s // 86400
+        h = (time_s % 86400) // 3600
+        return f"{d:.0f}d" + (f" {h:.0f}h" if h > 0 else "")
+    elif time_s >= 3600:
+        h = time_s // 3600
+        m = (time_s % 3600) // 60
+        return f"{h:.0f}h" + (f" {m:.0f}m" if m > 0 else "")
+    elif time_s >= 60:
+        m = time_s // 60
+        s = (time_s % 60) // 1
+        return f"{m:.0f}m" + (f" {s:.0f}s" if s > 0 else "")
+    elif time_s < 1:
+        ms = time_s * 1e3
+        return f"{ms:.0f}ms"
     else:
-        # Include microseconds for sub-second precision
-        total_seconds = seconds + td.microseconds / 1_000_000
-        return f"{total_seconds:.2f}s"
+        return f"{time_s:.0f}s"
 
 
 def format_num(num: float | int, precision: int = 2) -> str:
@@ -297,11 +302,13 @@ def default_dtype(dtype):
         torch.set_default_dtype(prev)
 
 
-def install_env(env_id: str) -> None:
+def install_env(env_id: str, prerelease: bool = False) -> None:
     """Install an environment in subprocess."""
     logger = get_logger()
     logger.info(f"Installing environment {env_id}")
     install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
+    if prerelease:
+        install_cmd.insert(-1, "--prerelease")
     result = subprocess.run(install_cmd, capture_output=True, text=True)
     for line in result.stdout.splitlines():
         if line.strip():

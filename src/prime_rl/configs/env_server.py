@@ -13,6 +13,7 @@ class EnvServerConfig(BaseConfig):
 
     env: EnvConfig = EnvConfig()
     log: LogConfig = LogConfig()
+    env_install_prerelease: bool = False
 
     output_dir: Annotated[
         Path,

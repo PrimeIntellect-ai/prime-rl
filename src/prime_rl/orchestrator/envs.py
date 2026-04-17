@@ -104,18 +104,27 @@ class Env:
         self._env_server_process = process
         return address
 
+    def _sampling_args_with_salt(self, cache_salt: str | None) -> dict:
+        if cache_salt is None:
+            return self.sampling_args
+        sampling_args = {**self.sampling_args}
+        extra_body = {**sampling_args.get("extra_body", {}), "cache_salt": cache_salt}
+        sampling_args["extra_body"] = extra_body
+        return sampling_args
+
     async def run_rollout(
         self,
         client: vf.ClientConfig,
         example: dict,
         model_name: str,
+        cache_salt: str | None = None,
     ) -> vf.RolloutOutput:
         """Run a single rollout for an example."""
         return await self.env.run_rollout(
             vf.RolloutInput(**example),
             client=client,
             model=model_name,
-            sampling_args=self.sampling_args,
+            sampling_args=self._sampling_args_with_salt(cache_salt),
             max_retries=self.config.max_retries,
             state_columns=REQUIRED_STATE_COLUMNS,
             env_client=self.env_client,
@@ -127,13 +136,14 @@ class Env:
         example: dict,
         model_name: str,
         rollouts_per_example: int,
+        cache_salt: str | None = None,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
         return await self.env.run_group(
             [vf.RolloutInput(**example) for _ in range(rollouts_per_example)],
             client=client,
             model=model_name,
-            sampling_args=self.sampling_args,
+            sampling_args=self._sampling_args_with_salt(cache_salt),
             max_retries=self.config.max_retries,
             state_columns=REQUIRED_STATE_COLUMNS,
             env_client=self.env_client,
@@ -171,6 +181,7 @@ class EvalEnv(Env):
         get_client: Callable[[], Awaitable[vf.ClientConfig]],
         ckpt_step: int,
         step: int,
+        cache_salt: str | None = None,
     ) -> list[vf.RolloutOutput]:
         num_examples = len(self.examples)
         rollouts_per_example = self.config.rollouts_per_example
@@ -190,6 +201,7 @@ class EvalEnv(Env):
                         example=example,
                         model_name=model_name,
                         rollouts_per_example=rollouts_per_example,
+                        cache_salt=cache_salt,
                     )
                     pbar.update(rollouts_per_example)
                     return outputs
@@ -206,7 +218,9 @@ class EvalEnv(Env):
                 """Run a single rollout for one example."""
                 try:
                     client = await get_client()
-                    output = await self.run_rollout(client=client, example=example, model_name=model_name)
+                    output = await self.run_rollout(
+                        client=client, example=example, model_name=model_name, cache_salt=cache_salt
+                    )
                     pbar.update(1)
                     return [output]
                 except Exception as e:

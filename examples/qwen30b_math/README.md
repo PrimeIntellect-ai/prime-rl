@@ -1,6 +1,6 @@
-# Qwen 2.5 32B Math
+# Qwen 3 30B - A3B Math
 
-This example guides you through RL training [Qwen2.5-32B](https://huggingface.co/Qwen/Qwen2.5-32B) on math tasks.
+This example guides you through RL training [Qwen3-30B-A3B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-30B-A3B-Thinking-2507) on math tasks.
 
 ## Requirements
 

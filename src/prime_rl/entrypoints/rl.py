@@ -13,6 +13,7 @@ import pynvml
 import tomli_w
 
 from prime_rl.configs.rl import RLConfig
+from prime_rl.trainer.model import pre_download_model
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
@@ -556,6 +557,9 @@ def rl(config: RLConfig):
         if resume_step is not None:
             get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")
             clean_future_steps(config.output_dir, resume_step)
+
+    if not config.dry_run:
+        pre_download_model(config.trainer.model.name)
 
     if config.slurm is not None:
         rl_slurm(config)
