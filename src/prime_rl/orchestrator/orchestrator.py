@@ -438,10 +438,13 @@ async def orchestrate(config: OrchestratorConfig):
                 break
 
             if attempt == MAX_EMPTY_BATCH_ATTEMPTS - 1:
+                logger.error(
+                    f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
+                    f"filtered out all {num_rollouts} rollouts - crashing orchestrator"
+                )
                 raise RuntimeError(
                     f"All {num_rollouts} rollouts were filtered out on "
-                    f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}; "
-                    "crashing orchestrator."
+                    f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
                 )
 
             logger.warning(
