@@ -76,6 +76,11 @@ from prime_rl.utils.utils import (
 # and artifacts are persisted *before* this point, so a forced exit is safe.
 SHUTDOWN_TIMEOUT_S = 300
 
+# Maximum number of times to regenerate a training batch when all rollouts are
+# filtered out. After this many retries, the orchestrator crashes rather than
+# silently skipping training steps.
+MAX_EMPTY_BATCH_RETRIES = 3
+
 
 @clean_exit
 async def orchestrate(config: OrchestratorConfig):
@@ -410,9 +415,8 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Schedule generating the training batch. Retry on empty-after-filter
         # batches so the trainer never receives an empty batch.
-        MAX_EMPTY_BATCH_RETRIES = 3
         generate_completions_time = 0.0
-        for attempt in range(MAX_EMPTY_BATCH_RETRIES + 1):
+        for retry in range(MAX_EMPTY_BATCH_RETRIES + 1):
             train_task = asyncio.create_task(scheduler.generate_batch(step=progress.step))
             await train_task
             generate_completions_time += scheduler.last_batch_generation_time
@@ -430,7 +434,7 @@ async def orchestrate(config: OrchestratorConfig):
             if len(filtered_rollouts) > 0:
                 break
 
-            if attempt == MAX_EMPTY_BATCH_RETRIES:
+            if retry == MAX_EMPTY_BATCH_RETRIES:
                 raise RuntimeError(
                     f"All {num_rollouts} rollouts were filtered out on "
                     f"{MAX_EMPTY_BATCH_RETRIES + 1} consecutive attempts at step {progress.step}; "
@@ -439,7 +443,7 @@ async def orchestrate(config: OrchestratorConfig):
 
             logger.warning(
                 f"All {num_rollouts} rollouts at step {progress.step} were filtered out; "
-                f"retrying batch generation (attempt {attempt + 2}/{MAX_EMPTY_BATCH_RETRIES + 1})."
+                f"retrying batch generation (retry {retry + 1}/{MAX_EMPTY_BATCH_RETRIES})."
             )
 
         trainable_ratio = len(filtered_rollouts) / num_rollouts
