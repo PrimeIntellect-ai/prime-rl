@@ -151,47 +151,37 @@ def setup_filters(configs: list[FilterConfig], vocab_size: int) -> list[RolloutF
 def apply_filters(
     filters: list[RolloutFilter],
     rollouts: list[vf.RolloutOutput],
-) -> tuple[dict[str, float], list[vf.RolloutOutput]]:
-    """Apply filters to rollouts. Detection metrics are always tracked.
+) -> dict[str, float]:
+    """Apply filters to rollouts in-place and return aggregate metrics.
 
-    When a filter has enforce=True, detected rollouts are skipped entirely
-    during training. Reward is kept as-is for baseline calculation.
-
-    First matching filter wins per rollout (no double-counting).
-
-    Returns aggregate metrics and the rollouts that should be sent to the trainer.
+    Each rollout gets a `filter` dict with per-filter detection flags and an
+    `is_filtered` bool that is True iff an enforcing filter detected it.
+    First matching filter wins per rollout (no double-counting). Reward and
+    trajectory tokens are left untouched so the rollout can still contribute
+    to baseline calculations and metric aggregation.
     """
+    for rollout in rollouts:
+        rollout["filter"] = {f.name: False for f in filters}
+        rollout["is_filtered"] = False
+
     if not filters:
-        return {}, rollouts
+        return {}
 
     counts: dict[str, int] = {f.name: 0 for f in filters}
     total_detected = 0
     total_enforced = 0
-    filtered_rollouts: list[vf.RolloutOutput] = []
 
     for rollout in rollouts:
-        if rollout.get("metrics") is None:
-            rollout["metrics"] = {}
-        rollout["metrics"].setdefault("filter/enforced", 0.0)
-        for filt in filters:
-            rollout["metrics"].setdefault(f"filter/{filt.name}", 0.0)
-
         for filt in filters:
             result = filt.check(rollout)
             if result.detected:
                 counts[filt.name] += 1
                 total_detected += 1
-                rollout["metrics"][f"filter/{filt.name}"] = 1.0
-
+                rollout["filter"][filt.name] = True
                 if filt.enforce:
-                    rollout["metrics"]["filter/enforced"] = 1.0
+                    rollout["is_filtered"] = True
                     total_enforced += 1
-                else:
-                    filtered_rollouts.append(rollout)
-
                 break
-        else:
-            filtered_rollouts.append(rollout)
 
     n = len(rollouts)
     metrics: dict[str, float] = {}
@@ -208,4 +198,4 @@ def apply_filters(
             f"({', '.join(f'{name}={c}' for name, c in counts.items() if c > 0)})" + enforced_msg
         )
 
-    return metrics, filtered_rollouts
+    return metrics

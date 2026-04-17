@@ -218,7 +218,7 @@ def test_setup_filters_multiple():
 # --- apply_filters tests (enforce=True) ---
 
 
-def test_apply_filters_enforced_zeros_mask():
+def test_apply_filters_enforced_flags_rollout():
     gibberish_filter = _make_gibberish_filter(enforce=True)
 
     rollout = _make_rollout(
@@ -227,15 +227,14 @@ def test_apply_filters_enforced_zeros_mask():
         reward=1.0,
     )
 
-    metrics, filtered_rollouts = apply_filters([gibberish_filter], [rollout])
+    metrics = apply_filters([gibberish_filter], [rollout])
 
     assert rollout["reward"] == 1.0
     assert rollout["trajectory"][0]["tokens"]["completion_ids"] == [120_000]
     assert rollout["trajectory"][0]["tokens"]["completion_mask"] == [1]
     assert rollout["stop_condition"] is None
-    assert rollout["metrics"]["filter/gibberish"] == 1.0
-    assert rollout["metrics"]["filter/enforced"] == 1.0
-    assert filtered_rollouts == []
+    assert rollout["filter"] == {"gibberish": True}
+    assert rollout["is_filtered"] is True
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/gibberish_rate"] == 1.0
     assert metrics["filter/total_detected_rate"] == 1.0
@@ -251,14 +250,14 @@ def test_apply_filters_preserves_clean_rollouts():
         reward=1.0,
     )
 
-    metrics, filtered_rollouts = apply_filters([gibberish_filter], [rollout])
+    metrics = apply_filters([gibberish_filter], [rollout])
 
     assert rollout["reward"] == 1.0
     assert rollout["trajectory"][0]["tokens"]["completion_ids"] == [50, 60, 70]
     assert all(m == 1 for m in rollout["trajectory"][0]["tokens"]["completion_mask"])
     assert rollout["stop_condition"] is None
-    assert rollout["metrics"]["filter/enforced"] == 0.0
-    assert filtered_rollouts == [rollout]
+    assert rollout["filter"] == {"gibberish": False}
+    assert rollout["is_filtered"] is False
     assert metrics["filter/gibberish_count"] == 0.0
     assert metrics["filter/total_detected_rate"] == 0.0
     assert metrics["filter/total_enforced_rate"] == 0.0
@@ -274,11 +273,11 @@ def test_apply_filters_first_filter_wins():
         reward=1.0,
     )
 
-    metrics, filtered_rollouts = apply_filters([gibberish_filter, repetition_filter], [rollout])
+    metrics = apply_filters([gibberish_filter, repetition_filter], [rollout])
 
     assert rollout["stop_condition"] is None
-    assert rollout["metrics"]["filter/enforced"] == 1.0
-    assert filtered_rollouts == []
+    assert rollout["filter"] == {"gibberish": True, "repetition": False}
+    assert rollout["is_filtered"] is True
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/repetition_count"] == 0.0
     assert metrics["filter/total_detected_rate"] == 1.0
@@ -290,9 +289,10 @@ def test_apply_filters_empty_list():
         completion_ids=[1, 2, 3],
         completion_logprobs=[-1.0, -1.0, -1.0],
     )
-    metrics, filtered_rollouts = apply_filters([], [rollout])
+    metrics = apply_filters([], [rollout])
     assert metrics == {}
-    assert filtered_rollouts == [rollout]
+    assert rollout["filter"] == {}
+    assert rollout["is_filtered"] is False
     assert rollout["reward"] == 1.0
 
 
@@ -304,13 +304,12 @@ def test_apply_filters_mixed_batch():
         completion_ids=[120_000], completion_logprobs=[gibberish_filter.logprob_threshold - 1.0], reward=1.0
     )
 
-    metrics, filtered_rollouts = apply_filters([gibberish_filter], [clean, dirty])
+    metrics = apply_filters([gibberish_filter], [clean, dirty])
 
     assert clean["reward"] == 1.0
     assert dirty["reward"] == 1.0
-    assert clean["metrics"]["filter/enforced"] == 0.0
-    assert dirty["metrics"]["filter/enforced"] == 1.0
-    assert filtered_rollouts == [clean]
+    assert clean["is_filtered"] is False
+    assert dirty["is_filtered"] is True
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/gibberish_rate"] == 0.5
     assert metrics["filter/total_detected_rate"] == 0.5
@@ -326,7 +325,7 @@ def test_apply_filters_enforced_preserves_rollout_tokens():
         reward=1.0,
     )
 
-    _, filtered_rollouts = apply_filters([gibberish_filter], [rollout])
+    apply_filters([gibberish_filter], [rollout])
 
     assert rollout["trajectory"][0]["tokens"]["completion_ids"] == [10, 120_000, 30]
     assert rollout["trajectory"][0]["tokens"]["completion_logprobs"] == [
@@ -335,7 +334,7 @@ def test_apply_filters_enforced_preserves_rollout_tokens():
         -0.5,
     ]
     assert rollout["trajectory"][0]["tokens"]["completion_mask"] == [1, 1, 1]
-    assert filtered_rollouts == []
+    assert rollout["is_filtered"] is True
 
 
 def test_apply_filters_preserves_existing_stop_condition():
@@ -348,10 +347,10 @@ def test_apply_filters_preserves_existing_stop_condition():
     )
     rollout["stop_condition"] = "generation_truncated"
 
-    _, filtered_rollouts = apply_filters([gibberish_filter], [rollout])
+    apply_filters([gibberish_filter], [rollout])
 
     assert rollout["stop_condition"] == "generation_truncated"
-    assert filtered_rollouts == []
+    assert rollout["is_filtered"] is True
 
 
 # --- apply_filters tests (monitor-only, enforce=False) ---
@@ -366,14 +365,13 @@ def test_apply_filters_monitor_only_tracks_detection():
         reward=1.0,
     )
 
-    metrics, filtered_rollouts = apply_filters([gibberish_filter], [rollout])
+    metrics = apply_filters([gibberish_filter], [rollout])
 
     assert rollout["reward"] == 1.0
     assert all(m == 1 for m in rollout["trajectory"][0]["tokens"]["completion_mask"])
     assert rollout["stop_condition"] is None
-    assert rollout["metrics"]["filter/gibberish"] == 1.0
-    assert rollout["metrics"]["filter/enforced"] == 0.0
-    assert filtered_rollouts == [rollout]
+    assert rollout["filter"] == {"gibberish": True}
+    assert rollout["is_filtered"] is False
     assert metrics["filter/gibberish_count"] == 1.0
     assert metrics["filter/gibberish_rate"] == 1.0
     assert metrics["filter/total_detected_rate"] == 1.0
@@ -388,11 +386,12 @@ def test_apply_filters_monitor_only_mixed_batch():
         completion_ids=[120_000], completion_logprobs=[gibberish_filter.logprob_threshold - 1.0], reward=1.0
     )
 
-    metrics, filtered_rollouts = apply_filters([gibberish_filter], [clean, dirty])
+    metrics = apply_filters([gibberish_filter], [clean, dirty])
 
     assert clean["reward"] == 1.0
     assert dirty["reward"] == 1.0
-    assert filtered_rollouts == [clean, dirty]
+    assert clean["is_filtered"] is False
+    assert dirty["is_filtered"] is False
     assert metrics["filter/gibberish_rate"] == 0.5
     assert metrics["filter/total_detected_rate"] == 0.5
     assert metrics["filter/total_enforced_rate"] == 0.0
