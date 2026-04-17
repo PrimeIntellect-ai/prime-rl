@@ -302,10 +302,17 @@ def _patch_lora_key_prefix():
                 # is embedded: "...experts.N.down_proj".  Taking everything
                 # after ".experts" gives "experts.N.down_proj" which is
                 # never in the expected set even though "down_proj" is.
-                # Fix: always compare just the last component of the path.
+                # Qwen3-30B-A3B goes the other way: the expected set
+                # contains the fully-qualified per-expert name
+                # ("experts.N.down_proj") but not the bare suffix.
+                # Accept either form.
                 if ".experts" in module_name:
                     expert_suffix = module_name.split(".")[-1]
-                    if expert_suffix not in expected_lora_modules:
+                    experts_qualified = "experts" + module_name.split(".experts", 1)[-1]
+                    if (
+                        expert_suffix not in expected_lora_modules
+                        and experts_qualified not in expected_lora_modules
+                    ):
                         unexpected_modules.append(module_name)
 
                 elif module_name.rsplit(".", 1)[-1] not in expected_lora_modules:
