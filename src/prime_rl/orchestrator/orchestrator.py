@@ -599,30 +599,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Group by example_id to average across rollouts within each problem
         by_example = results_df.groupby("example_id")
-        if filtered_results_df.empty:
-            prefill_mean, prefill_max, prefill_min = 0.0, 0.0, 0.0
-            decode_mean, decode_max, decode_min = 0.0, 0.0, 0.0
-            samples_per_rollout_mean, samples_per_rollout_max, samples_per_rollout_min = 0.0, 0.0, 0.0
-        else:
-            filtered_by_example = filtered_results_df.groupby("example_id")
-            prefill_by_example = filtered_by_example.prefill_len.mean()
-            prefill_mean, prefill_max, prefill_min = (
-                prefill_by_example.mean(),
-                prefill_by_example.max(),
-                prefill_by_example.min(),
-            )
-            decode_by_example = filtered_by_example.decode_len.mean()
-            decode_mean, decode_max, decode_min = (
-                decode_by_example.mean(),
-                decode_by_example.max(),
-                decode_by_example.min(),
-            )
-            samples_per_rollout_by_example = filtered_by_example.samples_per_rollout.mean()
-            samples_per_rollout_mean, samples_per_rollout_max, samples_per_rollout_min = (
-                samples_per_rollout_by_example.mean(),
-                samples_per_rollout_by_example.max(),
-                samples_per_rollout_by_example.min(),
-            )
+        filtered_by_example = filtered_results_df.groupby("example_id")
 
         solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
         to_log = {
@@ -640,12 +617,12 @@ async def orchestrate(config: OrchestratorConfig):
             "seq_len/all/mean": by_example.seq_len.mean().mean(),
             "seq_len/all/max": by_example.seq_len.mean().max(),
             "seq_len/all/min": by_example.seq_len.mean().min(),
-            "prefill_len/all/mean": prefill_mean,
-            "prefill_len/all/max": prefill_max,
-            "prefill_len/all/min": prefill_min,
-            "decode_len/all/mean": decode_mean,
-            "decode_len/all/max": decode_max,
-            "decode_len/all/min": decode_min,
+            "prefill_len/all/mean": filtered_by_example.prefill_len.mean().mean(),
+            "prefill_len/all/max": filtered_by_example.prefill_len.mean().max(),
+            "prefill_len/all/min": filtered_by_example.prefill_len.mean().min(),
+            "decode_len/all/mean": filtered_by_example.decode_len.mean().mean(),
+            "decode_len/all/max": filtered_by_example.decode_len.mean().max(),
+            "decode_len/all/min": filtered_by_example.decode_len.mean().min(),
             "is_truncated/all/mean": by_example.is_truncated.mean().mean(),
             "is_truncated/all/max": by_example.is_truncated.mean().max(),
             "stop_condition/all/generation_truncated": (
@@ -655,9 +632,9 @@ async def orchestrate(config: OrchestratorConfig):
                 f"stop_condition/all/{sc}": rate
                 for sc, rate in results_df.stop_condition.dropna().value_counts(normalize=True).items()
             },
-            "samples_per_rollout/all/mean": samples_per_rollout_mean,
-            "samples_per_rollout/all/max": samples_per_rollout_max,
-            "samples_per_rollout/all/min": samples_per_rollout_min,
+            "samples_per_rollout/all/mean": filtered_by_example.samples_per_rollout.mean().mean(),
+            "samples_per_rollout/all/max": filtered_by_example.samples_per_rollout.mean().max(),
+            "samples_per_rollout/all/min": filtered_by_example.samples_per_rollout.mean().min(),
             "num_turns/all/mean": by_example.num_turns.mean().mean(),
             "num_turns/all/max": by_example.num_turns.mean().max(),
             "num_turns/all/min": by_example.num_turns.mean().min(),
