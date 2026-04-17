@@ -440,7 +440,7 @@ dependencies = [
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/code-env/@905f3374/code_env-0.1.1-py3-none-any.whl", hash = "sha256:52e88748eeee933add11e3f485e2d9e4d4515cdc609acbd5789862adbd541ac8" },
+    { url = "https://hub.primeintellect.ai/primeintellect/code-env/@2e4fb479/code_env-0.1.1-py3-none-any.whl", hash = "sha256:42a5c0b9bf6d858ff1f71a779d38e5268fb03f63ed347a736eb6938859303177" },
 ]
 
 [[package]]
@@ -452,7 +452,7 @@ dependencies = [
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/color-codeword/@80a7a5ac/color_codeword-0.1.0-py3-none-any.whl", hash = "sha256:c8be97a91ca823074bfdd2756803d74833fe43b0d09c755b96fb432f9c0d3047" },
+    { url = "https://hub.primeintellect.ai/primeintellect/color-codeword/@828f24c5/color_codeword-0.1.0-py3-none-any.whl", hash = "sha256:5bf72f74d6ee001b6be96768dd269e8762617dd3644238bda7623f58a6bc069a" },
 ]
 
 [[package]]
@@ -879,7 +879,7 @@ wheels = [
 
 [[package]]
 name = "flash-attn-4"
-version = "4.0.0b6.dev7+gabd9943.d20260414"
+version = "4.0.0b6.dev7+gabd9943"
 source = { git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=abd9943b#abd9943b66704f650ea1485a17126cd3817d1b1d" }
 dependencies = [
     { name = "apache-tvm-ffi", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1594,7 +1594,7 @@ dependencies = [
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/logic-env/@faee829c/logic_env-0.1.0-py3-none-any.whl", hash = "sha256:789523bfbd87af97d67422b1ba6f89c181d8d33e4b6aedce629c312b0ab4ed1f" },
+    { url = "https://hub.primeintellect.ai/primeintellect/logic-env/@7bded58d/logic_env-0.1.0-py3-none-any.whl", hash = "sha256:3ecc5f31feb13fb5bd8d9a091d1d7cf0e6a8687c758f9b2a04e5f1b3b0c235a8" },
 ]
 
 [[package]]
@@ -2794,7 +2794,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0760204" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=77a9f28" },
     { name = "vllm", specifier = ">=0.19.0" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.20/vllm_router-0.1.20-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
@@ -2831,16 +2831,16 @@ wheels = [
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.5"
+version = "0.1.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2f/d2/17236f43b855a4261252d317ef230beb0571268427418c8d471d3eba195c/prime_tunnel-0.1.5.tar.gz", hash = "sha256:eec296f92abbd761edcb779db7052bf9ce9c3469641f8f17645b7ed5c478257e", size = 12609, upload-time = "2026-03-21T00:52:56.147Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d1/e8/fec186cfbcc670deed94a7b5ace67688feed38b114b1c602d35a8f8d7564/prime_tunnel-0.1.6.tar.gz", hash = "sha256:5e371bc3557d8a5257a43ef1aeea1f8918da966a8565dacd33a647b6c82a0eaa", size = 13019, upload-time = "2026-04-13T15:13:17.24Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/66/d2/26c801e0ee8ed867875a704c1fa238581f505bbd96f618c894c8dca991fc/prime_tunnel-0.1.5-py3-none-any.whl", hash = "sha256:fc24bf60d8023f53850be9602dc7d0e1be3e091a019a06c65d32a6b3d61754af", size = 14758, upload-time = "2026-03-21T00:52:55.278Z" },
+    { url = "https://files.pythonhosted.org/packages/52/35/adfac88e5880418f095758729b73e395c81be869d0be786fcd4b31938b2f/prime_tunnel-0.1.6-py3-none-any.whl", hash = "sha256:bc096bca509621379f671e2401253ab2ebe6c8c143d797b6ef85d8290c462e0d", size = 14914, upload-time = "2026-04-13T15:13:16.08Z" },
 ]
 
 [[package]]
@@ -4031,8 +4031,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.12.dev2"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0760204#07602042d6909b1d3c405d6d99aee0088c7990d2" }
+version = "0.1.12.dev6"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=77a9f28#77a9f282bdea2c09b34e726a1e6c7b5e55bab8be" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
