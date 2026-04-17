@@ -159,3 +159,21 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_shared_model_name_propagates_to_subconfigs():
+    """Top-level model.name propagates to trainer, orchestrator, and inference, and resolves the tokenizer."""
+    model_name = "PrimeIntellect/test-model"
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": model_name},
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {},
+        }
+    )
+    assert config.trainer.model.name == model_name
+    assert config.orchestrator.model.name == model_name
+    assert config.inference is not None and config.inference.model.name == model_name
+    assert config.trainer.tokenizer.name == model_name
+    assert config.orchestrator.tokenizer.name == model_name
