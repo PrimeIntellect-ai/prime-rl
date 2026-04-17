@@ -97,7 +97,7 @@ def per_token_group_quant_fp8(
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=8, num_stages=3),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 128}, num_warps=8, num_stages=3),
     ],
-    key=["S"],
+    key=["Nq", "Nk"],
 )
 @triton.jit
 def _triton_fp8_indexer_kernel(
@@ -108,7 +108,8 @@ def _triton_fp8_indexer_kernel(
     Out,
     KS,
     KE,
-    S,
+    Nq,
+    Nk,
     stride_qh,
     stride_qs,
     stride_ks,
@@ -125,15 +126,15 @@ def _triton_fp8_indexer_kernel(
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     offs_d = tl.arange(0, D)
 
-    mask_m = offs_m < S
-    mask_n = offs_n < S
+    mask_m = offs_m < Nq
+    mask_n = offs_n < Nk
 
-    ks_vals = tl.load(KS + offs_m, mask=mask_m, other=S)
+    ks_vals = tl.load(KS + offs_m, mask=mask_m, other=Nk)
     ke_vals = tl.load(KE + offs_m, mask=mask_m, other=0)
 
     offs_m_64 = offs_m.to(tl.int64)
     offs_n_64 = offs_n.to(tl.int64)
-    out_ptrs = Out + offs_m_64[:, None] * S + offs_n_64[None, :]
+    out_ptrs = Out + offs_m_64[:, None] * Nk + offs_n_64[None, :]
     out_mask = mask_m[:, None] & mask_n[None, :]
 
     ks_min = tl.min(ks_vals)
@@ -145,8 +146,8 @@ def _triton_fp8_indexer_kernel(
         return
 
     # Clamp indices for FP8 loads (can't use mask+other with fp8 dtype)
-    offs_n_safe = tl.minimum(offs_n, S - 1)
-    offs_m_safe = tl.minimum(offs_m, S - 1)
+    offs_n_safe = tl.minimum(offs_n, Nk - 1)
+    offs_m_safe = tl.minimum(offs_m, Nq - 1)
 
     k_block = tl.load(K_fp8 + offs_n_safe[:, None] * stride_ks + offs_d[None, :])
     k_sc = tl.load(K_scales + offs_n_safe, mask=mask_n, other=0.0).to(tl.float32)
@@ -170,39 +171,44 @@ def _triton_fp8_indexer_kernel(
 def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
     """Triton FP8 indexer: UE8M0 quantization + fused scoring kernel + topk.
 
+    Supports asymmetric query/key counts: queries may be a CP shard while keys
+    are the full (gathered) sequence.
+
     Args:
-        q: [S, H, D] bf16 query vectors per head
-        k: [S, D] bf16 key vectors (shared across heads)
-        w: [S, H] bf16 per-head weights
-        ks: [S] int32 sequence start per token
-        ke: [S] int32 causal end per token (= position + 1)
+        q: [Nq, H, D] bf16 query vectors per head
+        k: [Nk, D] bf16 key vectors (shared across heads)
+        w: [Nq, H] bf16 per-head weights
+        ks: [Nq] int32 sequence start per query (in [0, Nk] index space)
+        ke: [Nq] int32 causal end per query (= global_position + 1, in [0, Nk])
         topk: number of top indices to return
         weight_scale: constant scaling factor for weights
 
     Returns:
-        [S, topk] int32 selected token indices per query
+        [Nq, topk] int32 selected token indices in [0, Nk]; out-of-range -> Nk (sentinel)
     """
     # NOTE: We don't use weight scale in this kernel as it produces higher KL mismatch for some reason
     # This is not a problem result-wise, as it is a constant multiplier
     _weight_scale = weight_scale
-    S, H, D = q.shape
+    Nq, H, D = q.shape
+    Nk, D_k = k.shape
+    assert D == D_k, f"q/k dim mismatch: {D} vs {D_k}"
     device = q.device
 
-    q_flat = q.reshape(S * H, D).contiguous()
+    q_flat = q.reshape(Nq * H, D).contiguous()
     q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True)
     k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True)
 
-    q_fp8 = q_fp8.view(S, H, D).permute(1, 0, 2).contiguous()
+    q_fp8 = q_fp8.view(Nq, H, D).permute(1, 0, 2).contiguous()
 
     # Fold q_scale into weights
-    q_scales = q_scales.view(S, H)
+    q_scales = q_scales.view(Nq, H)
     w = w * q_scales
 
-    logits = torch.empty(S, S, dtype=torch.float32, device=device)
+    logits = torch.empty(Nq, Nk, dtype=torch.float32, device=device)
 
     grid = lambda meta: (
-        triton.cdiv(S, meta["BLOCK_M"]),
-        triton.cdiv(S, meta["BLOCK_N"]),
+        triton.cdiv(Nq, meta["BLOCK_M"]),
+        triton.cdiv(Nk, meta["BLOCK_N"]),
     )
     _triton_fp8_indexer_kernel[grid](
         q_fp8,
@@ -212,7 +218,8 @@ def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
         logits,
         ks,
         ke,
-        S,
+        Nq,
+        Nk,
         q_fp8.stride(0),
         q_fp8.stride(1),
         k_fp8.stride(0),
@@ -221,16 +228,16 @@ def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
         D=D,
     )
 
-    actual_topk = min(topk, S)
+    actual_topk = min(topk, Nk)
     _, indices = torch.topk(logits, actual_topk, dim=-1)
     if actual_topk < topk:
-        padding = torch.full((S, topk - actual_topk), S, dtype=indices.dtype, device=device)
+        padding = torch.full((Nq, topk - actual_topk), Nk, dtype=indices.dtype, device=device)
         indices = torch.cat([indices, padding], dim=-1)
 
-    # Replace cross-sequence indices with sentinel S (maps to zero-valued KV)
+    # Replace cross-sequence indices with sentinel Nk (maps to zero-valued KV)
     ks_exp = ks.unsqueeze(1).expand_as(indices)
     ke_exp = ke.unsqueeze(1).expand_as(indices)
     out_of_range = (indices < ks_exp) | (indices >= ke_exp)
-    indices = indices.masked_fill(out_of_range, S)
+    indices = indices.masked_fill(out_of_range, Nk)
 
     return indices.to(torch.int32)

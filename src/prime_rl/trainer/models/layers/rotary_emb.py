@@ -117,6 +117,19 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     return q_embed, k_embed
 
 
+def apply_rotary_pos_emb_interleave_single(t, cos, sin, unsqueeze_dim=1):
+    """Interleaved RoPE applied to a single tensor (q or k).
+
+    Useful when q and k have different sequence lengths (e.g. context parallelism
+    where queries are sharded but keys are gathered).
+    """
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    b, h, s, d = t.shape
+    t = t.view(b, h, s, d // 2, 2).transpose(4, 3).reshape(b, h, s, d)
+    return (t * cos) + (rotate_half(t) * sin)
+
+
 def apply_rotary_pos_emb_interleave(q, k, cos, sin, unsqueeze_dim=1):
     """Interleaved RoPE: converts from [r0, i0, r1, i1, ...] layout before applying rotation.
 

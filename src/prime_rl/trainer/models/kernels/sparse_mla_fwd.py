@@ -104,8 +104,13 @@ def sparse_mla_fwd(
 
             b_i, g_i = by, bz
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
-            q_i = s_i
-            max_kv_i = q_i
+
+            # Sentinel index = seq_len_kv - 1 (the wrapper appends a zero sentinel row).
+            # The indexer wrapper guarantees out-of-causal-range indices are set to the
+            # sentinel value, so we can delegate causal masking entirely to the indexer.
+            # This also makes the kernel correct under context parallelism, where local
+            # query position no longer matches global key position.
+            sentinel_idx = seq_len_kv - 1
 
             H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
             H1 = H0 + H_per_block
@@ -115,7 +120,7 @@ def sparse_mla_fwd(
 
             for i_i in T.Pipelined(NI, num_stages=num_stages):
                 for bi_i in T.Parallel(BI):
-                    mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] <= max_kv_i
+                    mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] < sentinel_idx
 
                 for bi_i, d_i in T.Parallel(BI, D):
                     KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]

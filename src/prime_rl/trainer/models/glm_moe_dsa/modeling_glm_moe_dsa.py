@@ -27,7 +27,6 @@ from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.utils.cp import gather_for_cp, shard_for_cp
 
 
 def _sparse_mla_attention_args(config: GlmMoeDsaConfig) -> SparseMlaAttentionArgs:
@@ -87,22 +86,6 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         self._cp_rank = cp_rank
         self._cp_world_size = cp_world_size
 
-    @property
-    def cp_enabled(self) -> bool:
-        return hasattr(self, "_cp_group") and hasattr(self, "_cp_rank") and hasattr(self, "_cp_world_size")
-
-    def shard_to_cp(self, t: torch.Tensor) -> torch.Tensor:
-        if not self.cp_enabled:
-            return t
-
-        return shard_for_cp(t, self._cp_rank, self._cp_world_size)
-
-    def gather_for_cp(self, t: torch.Tensor) -> torch.Tensor:
-        if not self.cp_enabled:
-            return t
-
-        return gather_for_cp(t, self._cp_group)
-
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
         self,
@@ -112,16 +95,18 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         ke: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
+        # Hidden state stays sharded across CP ranks. The attention module gathers only
+        # the small k-side tensors (kv_compressed, k_rope, index_k) internally; queries
+        # are kept local. Position embeddings and ks/ke arrive in their full shapes and
+        # are sliced inside the attention module.
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.gather_for_cp(hidden_states)
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             ks=ks,
             ke=ke,
         )
-        hidden_states = self.shard_to_cp(hidden_states)
         hidden_states = residual + hidden_states
 
         residual = hidden_states

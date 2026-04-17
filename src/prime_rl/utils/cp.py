@@ -72,6 +72,11 @@ def setup_sparse_mla_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: 
             continue
 
         layer.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+        # Propagate to the attention module so it can gather only the small k-side tensors
+        # while keeping queries (and the full hidden state) sharded across CP ranks.
+        attn = getattr(layer, "self_attn", None)
+        if attn is not None and hasattr(attn, "set_context_parallel_attributes"):
+            attn.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
         count += 1
 
     if count > 0:
@@ -98,16 +103,18 @@ def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Ten
     return chunked_t[cp_rank]
 
 
-def gather_for_cp(t: torch.Tensor, cp_group: dist.ProcessGroup) -> torch.Tensor:
+def gather_for_cp(t: torch.Tensor, cp_group: dist.ProcessGroup, dim: int = 1) -> torch.Tensor:
     gathered_t = dist_nn.all_gather(t, group=cp_group)
 
-    return torch.cat(gathered_t, dim=1)
+    return torch.cat(gathered_t, dim=dim)
 
 
-def gather_for_cp_wo_grad(t: torch.Tensor, cp_world_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
+def gather_for_cp_wo_grad(
+    t: torch.Tensor, cp_world_size: int, cp_group: dist.ProcessGroup, dim: int = 1
+) -> torch.Tensor:
     empty_like_t = [torch.empty_like(t) for _ in range(cp_world_size)]
-    dist.all_gather(empty_like_t, t, group=cp_group)
-    return torch.cat(empty_like_t, dim=1)
+    dist.all_gather(empty_like_t, t.contiguous(), group=cp_group)
+    return torch.cat(empty_like_t, dim=dim)
 
 
 def get_padding_logit_from_prev_cp_rank(
