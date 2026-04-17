@@ -253,3 +253,31 @@ def test_subconfig_seq_len_wins_over_shared():
     )
     assert config.trainer.model.seq_len == 8192
     assert config.orchestrator.seq_len == 4096
+
+
+def test_shared_model_name_resolves_inference_parser():
+    """Shared model.name propagates to inference before ModelConfig runs its parser auto-resolver."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {},
+        }
+    )
+    assert config.inference is not None
+    assert config.inference.model.name == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    assert config.inference.model.tool_call_parser == "qwen3_coder"
+
+
+def test_explicit_inference_parser_wins_over_auto():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"model": {"tool_call_parser": "hermes"}},
+        }
+    )
+    assert config.inference is not None
+    assert config.inference.model.tool_call_parser == "hermes"
