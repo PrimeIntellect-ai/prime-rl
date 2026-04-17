@@ -184,7 +184,7 @@ class ModelConfig(BaseModelConfig):
     attn: Annotated[
         AttnImplementation,
         Field(
-            description="The attention implementation to use. When CP is enabled, ring attention uses the matching kernel family (FA2 for flash_attention_2, FA3 for flash_attention_3).",
+            description="The attention implementation to use. When CP is enabled, ring attention uses the matching kernel family (FA2 for flash_attention_2, FA3 for flash_attention_3, FA4 for fa4).",
         ),
     ] = "flash_attention_2"
 
@@ -368,12 +368,12 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def cp_only_with_flash_attn(self):
-        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3"]:
-            raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
-        if self.cp > 1 and self.attn == "flash_attention_3" and self.impl != "custom":
+        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "fa4"]:
+            raise ValueError("CP is only supported with flash attention 2, flash attention 3, or fa4")
+        if self.cp > 1 and self.attn in ("flash_attention_3", "fa4") and self.impl != "custom":
             raise ValueError(
-                "CP with flash_attention_3 requires model.impl='custom' "
-                "(the FA3 ring-attention kernel is only implemented for the custom model path)"
+                f"CP with {self.attn} requires model.impl='custom' "
+                "(the ring-attention kernel is only implemented for the custom model path)"
             )
         return self
 
