@@ -76,10 +76,10 @@ from prime_rl.utils.utils import (
 # and artifacts are persisted *before* this point, so a forced exit is safe.
 SHUTDOWN_TIMEOUT_S = 300
 
-# Maximum number of times to regenerate a training batch when all rollouts are
-# filtered out. After this many retries, the orchestrator crashes rather than
-# silently skipping training steps.
-MAX_EMPTY_BATCH_RETRIES = 3
+# Maximum number of times to attempt generating a training batch when all
+# rollouts are filtered out. After this many attempts, the orchestrator crashes
+# rather than silently skipping training steps.
+MAX_EMPTY_BATCH_ATTEMPTS = 3
 
 
 @clean_exit
@@ -421,7 +421,7 @@ async def orchestrate(config: OrchestratorConfig):
         num_rollouts = 0
         num_unique_examples = 0
         n_trainable = 0
-        for retry in range(MAX_EMPTY_BATCH_RETRIES + 1):
+        for attempt in range(MAX_EMPTY_BATCH_ATTEMPTS):
             train_rollouts = await scheduler.generate_batch(step=progress.step)
             generate_completions_time += scheduler.last_batch_generation_time
 
@@ -437,16 +437,16 @@ async def orchestrate(config: OrchestratorConfig):
             if n_trainable > 0:
                 break
 
-            if retry == MAX_EMPTY_BATCH_RETRIES:
+            if attempt == MAX_EMPTY_BATCH_ATTEMPTS - 1:
                 raise RuntimeError(
                     f"All {num_rollouts} rollouts were filtered out on "
-                    f"{MAX_EMPTY_BATCH_RETRIES + 1} consecutive attempts at step {progress.step}; "
+                    f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}; "
                     "crashing orchestrator."
                 )
 
             logger.warning(
-                f"All {num_rollouts} rollouts at step {progress.step} were filtered out - "
-                f"retrying batch generation (retry {retry + 1}/{MAX_EMPTY_BATCH_RETRIES})"
+                f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
+                f"filtered out all {num_rollouts} rollouts - retrying batch generation"
             )
 
         trainable_ratio = n_trainable / num_rollouts
