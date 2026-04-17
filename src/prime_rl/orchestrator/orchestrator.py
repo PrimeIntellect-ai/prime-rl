@@ -236,7 +236,6 @@ async def orchestrate(config: OrchestratorConfig):
         enable_policy_updates=enable_policy_updates,
         lora_name=config.model.lora.name if config.model.lora else None,
         config=config,
-        use_prefix_cache_salt=config.experimental.use_prefix_cache_salt,
     )
     scheduler.model_name = rollout_model_name
 
@@ -380,7 +379,6 @@ async def orchestrate(config: OrchestratorConfig):
                 logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
                 await scheduler.cancel_inflight_rollouts()
 
-            eval_cache_salt = str(ckpt_step) if config.experimental.use_prefix_cache_salt else None
             eval_results = await asyncio.gather(
                 *[
                     eval_env.evaluate(
@@ -388,7 +386,7 @@ async def orchestrate(config: OrchestratorConfig):
                         get_client=inference_pool.get_eval_client,
                         ckpt_step=ckpt_step,
                         step=progress.step,
-                        cache_salt=eval_cache_salt,
+                        cache_salt=str(ckpt_step),
                     )
                     for eval_env in envs_to_eval
                 ]
@@ -718,7 +716,6 @@ async def orchestrate(config: OrchestratorConfig):
 
     if config.eval and eval_envs is not None:
         logger.info("Running final evals")
-        final_cache_salt = str(ckpt_step) if config.experimental.use_prefix_cache_salt else None
         eval_results = await asyncio.gather(
             *[
                 eval_env.evaluate(
@@ -726,7 +723,7 @@ async def orchestrate(config: OrchestratorConfig):
                     get_client=inference_pool.get_eval_client,
                     ckpt_step=ckpt_step,
                     step=progress.step,
-                    cache_salt=final_cache_salt,
+                    cache_salt=str(ckpt_step),
                 )
                 for eval_env in eval_envs
             ]

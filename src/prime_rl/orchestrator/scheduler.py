@@ -68,7 +68,6 @@ class Scheduler:
         tasks_per_minute: int | None,
         enable_policy_updates: bool = True,
         lora_name: str | None = None,
-        use_prefix_cache_salt: bool = False,
     ):
         self.logger = get_logger()
         if tasks_per_minute is not None:
@@ -87,7 +86,6 @@ class Scheduler:
         self.strict_async_level = strict_async_level
         self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
-        self.use_prefix_cache_salt = use_prefix_cache_salt
         self.model_name = self.config.model.name
         self.json_logging = config.log.json_logging
 
@@ -198,7 +196,7 @@ class Scheduler:
         env_name = group.example["env_name"]
         env = self.train_envs.get(env_name)
 
-        cache_salt = str(self.ckpt_step) if self.use_prefix_cache_salt else None
+        cache_salt = str(self.ckpt_step)
         if env.requires_group_scoring:
             rollout_count = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0

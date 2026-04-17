@@ -809,19 +809,6 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-class OrchestratorExperimentalConfig(BaseConfig):
-    """Experimental features for the orchestrator."""
-
-    use_prefix_cache_salt: Annotated[
-        bool,
-        Field(
-            description="Whether to set a cache_salt on inference requests that changes with each weight update. "
-            "This invalidates prefix-cached KV states from previous policies without resetting the entire cache, "
-            "while preserving cache hits for in-flight off-policy rollouts.",
-        ),
-    ] = True
-
-
 class TeacherModelConfig(BaseConfig):
     """Configures the teacher model for computing teacher logprobs (e.g. for distillation)."""
 
@@ -1051,11 +1038,6 @@ class OrchestratorConfig(BaseConfig):
             description="Allow pre-release versions when installing environments (e.g. verifiers>=0.1.12.dev5). Passes --prerelease to prime env install."
         ),
     ] = False
-
-    experimental: Annotated[
-        OrchestratorExperimentalConfig,
-        Field(description="Experimental features for the orchestrator."),
-    ] = OrchestratorExperimentalConfig()
 
     @model_validator(mode="before")
     @classmethod

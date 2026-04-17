@@ -244,19 +244,6 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class InferenceExperimentalConfig(BaseConfig):
-    """Experimental features for inference."""
-
-    reset_prefix_cache_after_update: Annotated[
-        bool,
-        Field(
-            description="Whether to reset the prefix cache after weight updates (update_weights, load_lora_adapter). "
-            "Ensures all KV states are recomputed with the new weights at the cost of extra prefill. "
-            "When False, prefer using orchestrator.experimental.use_prefix_cache_salt to invalidate stale caches via salt instead.",
-        ),
-    ] = False
-
-
 class InferenceConfig(BaseConfig):
     """Configures inference."""
 
@@ -425,11 +412,6 @@ class InferenceConfig(BaseConfig):
     output_dir: Annotated[Path, Field(description="Directory for SLURM logs and generated scripts.")] = Path("outputs")
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
-
-    experimental: Annotated[
-        InferenceExperimentalConfig,
-        Field(description="Experimental features for inference."),
-    ] = InferenceExperimentalConfig()
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):

@@ -198,24 +198,16 @@ async def resume(request: Request):
 async def update_weights(request: Request):
     data = await request.json()
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    if request.app.state.reset_prefix_cache_after_update:
-        await engine_client(request).reset_prefix_cache()
     return {"status": "ok"}
 
 
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
-    """Load a LoRA adapter, optionally resetting the prefix cache.
-
-    Wrapper around vLLM's /v1/load_lora_adapter that also resets the prefix cache
-    to invalidate KV states computed with old weights (unless disabled via config).
-    """
+    """Wrapper around vLLM's /v1/load_lora_adapter."""
     handler = models(raw_request)
     response = await handler.load_lora_adapter(lora_request)
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
-    if raw_request.app.state.reset_prefix_cache_after_update:
-        await engine_client(raw_request).reset_prefix_cache()
     return {"status": "ok"}
 
 
@@ -273,8 +265,6 @@ async def custom_init_app_state(
     2. Replace the serving_chat with our OpenAIServingChatWithTokens wrapper.
     """
     await init_app_state(engine_client, state, args, supported_tasks)
-
-    state.reset_prefix_cache_after_update = getattr(args, "reset_prefix_cache_after_update", True)
 
     if "generate" in supported_tasks and state.openai_serving_chat is not None:
         original_chat = state.openai_serving_chat
@@ -342,7 +332,6 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
 
     args.tool_call_parser = resolve_tool_call_parser(args.model, args.tool_call_parser)
     args.enable_auto_tool_choice = args.tool_call_parser is not None
-    args.reset_prefix_cache_after_update = config.experimental.reset_prefix_cache_after_update
     if args.tool_call_parser is not None:
         logger.info(f"Using tool_call_parser='{args.tool_call_parser}' for model '{args.model}'")
 
