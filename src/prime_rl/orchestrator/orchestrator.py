@@ -441,10 +441,14 @@ async def orchestrate(config: OrchestratorConfig):
                     f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
                     f"filtered out all {num_rollouts} rollouts - crashing orchestrator"
                 )
-                raise RuntimeError(
+                reason = (
                     f"All {num_rollouts} rollouts were filtered out on "
                     f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
                 )
+                evicted_path = config.output_dir / "control" / "evicted.txt"
+                evicted_path.parent.mkdir(parents=True, exist_ok=True)
+                evicted_path.write_text(reason)
+                raise RuntimeError(reason)
 
             logger.warning(
                 f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
