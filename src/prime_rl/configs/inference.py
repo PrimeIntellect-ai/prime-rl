@@ -244,6 +244,10 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
+class InferenceExperimentalConfig(BaseConfig):
+    """Experimental features for inference."""
+
+
 class InferenceConfig(BaseConfig):
     """Configures inference."""
 
@@ -412,6 +416,11 @@ class InferenceConfig(BaseConfig):
     output_dir: Annotated[Path, Field(description="Directory for SLURM logs and generated scripts.")] = Path("outputs")
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+
+    experimental: Annotated[
+        InferenceExperimentalConfig,
+        Field(description="Experimental features for inference."),
+    ] = InferenceExperimentalConfig()
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):

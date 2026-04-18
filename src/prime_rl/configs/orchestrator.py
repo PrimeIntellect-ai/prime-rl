@@ -809,6 +809,10 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+class OrchestratorExperimentalConfig(BaseConfig):
+    """Experimental features for the orchestrator."""
+
+
 class TeacherModelConfig(BaseConfig):
     """Configures the teacher model for computing teacher logprobs (e.g. for distillation)."""
 
@@ -1038,6 +1042,11 @@ class OrchestratorConfig(BaseConfig):
             description="Allow pre-release versions when installing environments (e.g. verifiers>=0.1.12.dev5). Passes --prerelease to prime env install."
         ),
     ] = False
+
+    experimental: Annotated[
+        OrchestratorExperimentalConfig,
+        Field(description="Experimental features for the orchestrator."),
+    ] = OrchestratorExperimentalConfig()
 
     @model_validator(mode="before")
     @classmethod
