@@ -55,43 +55,10 @@ _SAMPLE_SCHEMA = pa.schema(
 )
 
 
-_DROP_JSON_VALUE = object()
-
-
-def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str = "") -> Any:
-    """Remove non-finite floats so payloads remain valid JSON."""
-    if isinstance(value, float):
-        if math.isfinite(value):
-            return value
-        dropped_paths.append(path)
-        return _DROP_JSON_VALUE
-
-    if isinstance(value, dict):
-        sanitized: dict[str, Any] = {}
-        for key, item in value.items():
-            item_path = f"{path}.{key}" if path else str(key)
-            sanitized_item = _drop_non_finite_json_values(item, dropped_paths, item_path)
-            if sanitized_item is not _DROP_JSON_VALUE:
-                sanitized[key] = sanitized_item
-        return sanitized
-
-    if isinstance(value, list):
-        sanitized_items: list[Any] = []
-        for idx, item in enumerate(value):
-            item_path = f"{path}[{idx}]"
-            sanitized_item = _drop_non_finite_json_values(item, dropped_paths, item_path)
-            if sanitized_item is not _DROP_JSON_VALUE:
-                sanitized_items.append(sanitized_item)
-        return sanitized_items
-
-    return value
-
-
 class PrimeMonitor(Monitor):
     """Logs to Prime Intellect API."""
 
     def _api_headers(self) -> dict[str, str]:
-        """Return auth headers accepted by Prime's monitoring API."""
         return {
             "Authorization": f"Bearer {self.api_key}",
             "x-api-key": self.api_key,
@@ -99,9 +66,33 @@ class PrimeMonitor(Monitor):
         }
 
     def _sanitize_json_payload(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Return a JSON-safe payload and warn when non-finite values are dropped."""
+        """Drop non-finite floats before sending JSON payloads to the public API."""
         dropped_paths: list[str] = []
-        sanitized_payload = _drop_non_finite_json_values(payload, dropped_paths)
+        dropped_value = object()
+
+        def sanitize(value: Any, path: str = "") -> Any:
+            if isinstance(value, float) and not math.isfinite(value):
+                dropped_paths.append(path)
+                return dropped_value
+            if isinstance(value, dict):
+                sanitized: dict[str, Any] = {}
+                for key, item in value.items():
+                    item_path = f"{path}.{key}" if path else str(key)
+                    sanitized_item = sanitize(item, item_path)
+                    if sanitized_item is not dropped_value:
+                        sanitized[key] = sanitized_item
+                return sanitized
+            if isinstance(value, list):
+                sanitized_items: list[Any] = []
+                for idx, item in enumerate(value):
+                    item_path = f"{path}[{idx}]"
+                    sanitized_item = sanitize(item, item_path)
+                    if sanitized_item is not dropped_value:
+                        sanitized_items.append(sanitized_item)
+                return sanitized_items
+            return value
+
+        sanitized_payload = sanitize(payload)
 
         if dropped_paths:
             preview = ", ".join(dropped_paths[:5])
