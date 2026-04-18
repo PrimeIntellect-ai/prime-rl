@@ -58,21 +58,13 @@ _SAMPLE_SCHEMA = pa.schema(
 _DROP_JSON_VALUE = object()
 
 
-def _normalize_presign_response(payload: Any) -> dict[str, str]:
-    """Normalize presign responses across legacy and public API shapes."""
-    if not isinstance(payload, dict):
-        raise ValueError("Presign response must be a JSON object")
-
-    response_data = payload.get("data", payload)
-    if not isinstance(response_data, dict):
-        raise ValueError("Presign response data must be a JSON object")
-
-    presigned_url = response_data.get("presigned_url") or response_data.get("presignedUrl")
-    s3_key = response_data.get("s3_key") or response_data.get("s3Key")
-    if not isinstance(presigned_url, str) or not isinstance(s3_key, str):
-        raise ValueError("Presign response is missing presigned URL or S3 key")
-
-    return {"presigned_url": presigned_url, "s3_key": s3_key}
+def _normalize_presign_response(payload: dict[str, Any]) -> dict[str, str]:
+    """Parse the public API presign response into the monitor's internal field names."""
+    response_data = payload["data"]
+    return {
+        "presigned_url": response_data["presignedUrl"],
+        "s3_key": response_data["s3Key"],
+    }
 
 
 def _drop_non_finite_json_values(value: Any, path: str = "") -> tuple[Any, list[str]]:
