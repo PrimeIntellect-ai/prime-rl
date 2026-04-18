@@ -59,6 +59,55 @@ _SAMPLE_SCHEMA = pa.schema(
 _DROP_JSON_VALUE = object()
 
 
+def _normalize_presign_response(payload: Any) -> dict[str, str]:
+    """Normalize presign responses across legacy and public API shapes."""
+    if not isinstance(payload, dict):
+        raise ValueError("Presign response must be a JSON object")
+
+    response_data = payload.get("data", payload)
+    if not isinstance(response_data, dict):
+        raise ValueError("Presign response data must be a JSON object")
+
+    presigned_url = response_data.get("presigned_url") or response_data.get("presignedUrl")
+    s3_key = response_data.get("s3_key") or response_data.get("s3Key")
+    if not isinstance(presigned_url, str) or not isinstance(s3_key, str):
+        raise ValueError("Presign response is missing presigned URL or S3 key")
+
+    return {"presigned_url": presigned_url, "s3_key": s3_key}
+
+
+def _drop_non_finite_json_values(value: Any, path: str = "") -> tuple[Any, list[str]]:
+    """Remove non-finite floats so payloads remain valid JSON."""
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value, []
+        return _DROP_JSON_VALUE, [path]
+
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        dropped_paths: list[str] = []
+        for key, item in value.items():
+            item_path = f"{path}.{key}" if path else str(key)
+            sanitized_item, item_dropped_paths = _drop_non_finite_json_values(item, item_path)
+            dropped_paths.extend(item_dropped_paths)
+            if sanitized_item is not _DROP_JSON_VALUE:
+                sanitized[key] = sanitized_item
+        return sanitized, dropped_paths
+
+    if isinstance(value, list):
+        sanitized_items: list[Any] = []
+        dropped_paths: list[str] = []
+        for idx, item in enumerate(value):
+            item_path = f"{path}[{idx}]"
+            sanitized_item, item_dropped_paths = _drop_non_finite_json_values(item, item_path)
+            dropped_paths.extend(item_dropped_paths)
+            if sanitized_item is not _DROP_JSON_VALUE:
+                sanitized_items.append(sanitized_item)
+        return sanitized_items, dropped_paths
+
+    return value, []
+
+
 class PrimeMonitor(Monitor):
     """Logs to Prime Intellect API."""
 
@@ -74,55 +123,9 @@ class PrimeMonitor(Monitor):
         """Return whether this monitor is talking to the public v1 monitoring API."""
         return urlparse(self.base_url).path.rstrip("/").endswith("/api/v1/rft")
 
-    def _normalize_presign_response(self, payload: Any) -> dict[str, str] | None:
-        """Normalize presign responses across legacy and public API shapes."""
-        if not isinstance(payload, dict):
-            return None
-
-        response_data = payload.get("data", payload)
-        if not isinstance(response_data, dict):
-            return None
-
-        presigned_url = response_data.get("presigned_url") or response_data.get("presignedUrl")
-        s3_key = response_data.get("s3_key") or response_data.get("s3Key")
-        if not isinstance(presigned_url, str) or not isinstance(s3_key, str):
-            return None
-
-        return {"presigned_url": presigned_url, "s3_key": s3_key}
-
-    def _sanitize_json_value(self, value: Any, path: str, dropped_paths: list[str]) -> Any:
-        """Drop non-finite floats so payloads remain valid JSON."""
-        if isinstance(value, float):
-            if math.isfinite(value):
-                return value
-            dropped_paths.append(path)
-            return _DROP_JSON_VALUE
-
-        if isinstance(value, dict):
-            sanitized: dict[str, Any] = {}
-            for key, item in value.items():
-                item_path = f"{path}.{key}" if path else str(key)
-                sanitized_item = self._sanitize_json_value(item, item_path, dropped_paths)
-                if sanitized_item is not _DROP_JSON_VALUE:
-                    sanitized[key] = sanitized_item
-            return sanitized
-
-        if isinstance(value, (list, tuple)):
-            sanitized_items = []
-            for idx, item in enumerate(value):
-                item_path = f"{path}[{idx}]"
-                sanitized_item = self._sanitize_json_value(item, item_path, dropped_paths)
-                if sanitized_item is not _DROP_JSON_VALUE:
-                    sanitized_items.append(sanitized_item)
-            return sanitized_items
-
-        return value
-
     def _sanitize_json_payload(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Return a JSON-safe payload and warn when non-finite values are dropped."""
-        dropped_paths: list[str] = []
-        sanitized_payload = self._sanitize_json_value(payload, path="", dropped_paths=dropped_paths)
-        assert isinstance(sanitized_payload, dict), "Sanitized payload must remain a dictionary"
+        sanitized_payload, dropped_paths = _drop_non_finite_json_values(payload)
 
         if dropped_paths:
             preview = ", ".join(dropped_paths[:5])
@@ -473,10 +476,7 @@ class PrimeMonitor(Monitor):
                 json={"run_id": self.run_id, "step": step},
             )
             response.raise_for_status()
-            presign_data = self._normalize_presign_response(response.json())
-            if presign_data is None:
-                self.logger.warning(f"Invalid presign response at step {step}")
-            return presign_data
+            return _normalize_presign_response(response.json())
         except Exception as e:
             self.logger.warning(f"Failed to request presigned URL: {type(e).__name__}: {e}")
             return None
