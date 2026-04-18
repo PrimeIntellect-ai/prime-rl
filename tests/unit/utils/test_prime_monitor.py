@@ -1,18 +1,8 @@
 import io
 import json
-import sys
-from types import ModuleType
 from unittest.mock import Mock
 
 import pyarrow.parquet as pq
-
-prime_cli_module = ModuleType("prime_cli")
-prime_cli_core_module = ModuleType("prime_cli.core")
-prime_cli_config_module = ModuleType("prime_cli.core.config")
-prime_cli_config_module.Config = type("Config", (), {})
-sys.modules.setdefault("prime_cli", prime_cli_module)
-sys.modules.setdefault("prime_cli.core", prime_cli_core_module)
-sys.modules.setdefault("prime_cli.core.config", prime_cli_config_module)
 
 from prime_rl.utils.monitor.prime import PrimeMonitor
 

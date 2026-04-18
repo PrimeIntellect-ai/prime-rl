@@ -91,23 +91,13 @@ def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str
 class PrimeMonitor(Monitor):
     """Logs to Prime Intellect API."""
 
-    def _api_headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "x-api-key": self.api_key,
-            "Content-Type": "application/json",
-        }
-
     def _sanitize_json_payload(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Drop non-finite floats before sending JSON payloads to the public API."""
-        try:
-            json.dumps(payload, allow_nan=False)
-            return payload
-        except ValueError:
-            pass
-
         dropped_paths: list[str] = []
         sanitized_payload = _drop_non_finite_json_values(payload, dropped_paths)
+        if not dropped_paths:
+            return payload
+
         preview = ", ".join(dropped_paths[:5])
         suffix = " ..." if len(dropped_paths) > 5 else ""
         self.logger.warning(
@@ -158,6 +148,11 @@ class PrimeMonitor(Monitor):
 
         self.api_key = api_key
         self.base_url = config.base_url.rstrip("/")
+        self._headers = {
+            "Authorization": f"Bearer {api_key}",
+            "x-api-key": api_key,
+            "Content-Type": "application/json",
+        }
 
         run_id = os.getenv("RUN_ID")
         if not run_id:
@@ -220,7 +215,7 @@ class PrimeMonitor(Monitor):
         try:
             response = httpx.post(
                 f"{self.base_url}/external-runs",
-                headers=self._api_headers(),
+                headers=self._headers,
                 json=payload,
                 timeout=30,
             )
@@ -256,7 +251,7 @@ class PrimeMonitor(Monitor):
         try:
             response = httpx.put(
                 f"{self.base_url}/external-runs/{self.run_id}/status",
-                headers=self._api_headers(),
+                headers=self._headers,
                 json=payload,
                 timeout=30,
             )
@@ -438,7 +433,7 @@ class PrimeMonitor(Monitor):
         try:
             response = await self._client.post(
                 f"{self.base_url}/samples/presign",
-                headers=self._api_headers(),
+                headers=self._headers,
                 json={"run_id": self.run_id, "step": step},
             )
             response.raise_for_status()
@@ -474,7 +469,7 @@ class PrimeMonitor(Monitor):
             try:
                 response = await self._client.post(
                     f"{self.base_url}/samples/confirm",
-                    headers=self._api_headers(),
+                    headers=self._headers,
                     json={"run_id": self.run_id, "step": step, "s3_key": s3_key},
                 )
                 response.raise_for_status()
@@ -542,7 +537,7 @@ class PrimeMonitor(Monitor):
         try:
             response = httpx.post(
                 f"{self.base_url}/finalize",
-                headers=self._api_headers(),
+                headers=self._headers,
                 json=payload,
                 timeout=30,
             )
@@ -655,7 +650,7 @@ class PrimeMonitor(Monitor):
             try:
                 response = await self._client.post(
                     full_endpoint,
-                    headers=self._api_headers(),
+                    headers=self._headers,
                     json=sanitized_data,
                 )
                 response.raise_for_status()
