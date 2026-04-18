@@ -91,6 +91,8 @@ all = [
     "prime-rl[flash-attn]",
     "prime-rl[disagg]",
     "prime-rl[quack]",
+    "prime-rl[flash-attn-3]",
+    "prime-rl[flash-attn-cute]",
 ]
 
 [dependency-groups]
