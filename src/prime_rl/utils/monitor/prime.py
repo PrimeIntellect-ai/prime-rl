@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -55,6 +56,9 @@ _SAMPLE_SCHEMA = pa.schema(
 )
 
 
+_DROP_JSON_VALUE = object()
+
+
 class PrimeMonitor(Monitor):
     """Logs to Prime Intellect API."""
 
@@ -85,6 +89,50 @@ class PrimeMonitor(Monitor):
             return None
 
         return {"presigned_url": presigned_url, "s3_key": s3_key}
+
+    def _sanitize_json_value(self, value: Any, path: str, dropped_paths: list[str]) -> Any:
+        """Drop non-finite floats so payloads remain valid JSON."""
+        if isinstance(value, float):
+            if math.isfinite(value):
+                return value
+            dropped_paths.append(path)
+            return _DROP_JSON_VALUE
+
+        if isinstance(value, dict):
+            sanitized: dict[str, Any] = {}
+            for key, item in value.items():
+                item_path = f"{path}.{key}" if path else str(key)
+                sanitized_item = self._sanitize_json_value(item, item_path, dropped_paths)
+                if sanitized_item is not _DROP_JSON_VALUE:
+                    sanitized[key] = sanitized_item
+            return sanitized
+
+        if isinstance(value, (list, tuple)):
+            sanitized_items = []
+            for idx, item in enumerate(value):
+                item_path = f"{path}[{idx}]"
+                sanitized_item = self._sanitize_json_value(item, item_path, dropped_paths)
+                if sanitized_item is not _DROP_JSON_VALUE:
+                    sanitized_items.append(sanitized_item)
+            return sanitized_items
+
+        return value
+
+    def _sanitize_json_payload(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a JSON-safe payload and warn when non-finite values are dropped."""
+        dropped_paths: list[str] = []
+        sanitized_payload = self._sanitize_json_value(payload, path="", dropped_paths=dropped_paths)
+        assert isinstance(sanitized_payload, dict), "Sanitized payload must remain a dictionary"
+
+        if dropped_paths:
+            preview = ", ".join(dropped_paths[:5])
+            suffix = " ..." if len(dropped_paths) > 5 else ""
+            self.logger.warning(
+                f"Dropping {len(dropped_paths)} non-finite value(s) from Prime monitor {endpoint} payload: "
+                f"{preview}{suffix}"
+            )
+
+        return sanitized_payload
 
     def __init__(
         self,
@@ -516,11 +564,16 @@ class PrimeMonitor(Monitor):
 
     def _submit_final_summary(self, summary: dict[str, Any]) -> bool:
         """Submit the final summary/finalize request synchronously."""
+        payload = self._sanitize_json_payload(
+            "finalize",
+            {"run_id": self.run_id, "summary": summary},
+        )
+
         try:
             response = httpx.post(
                 f"{self.base_url}/finalize",
                 headers=self._api_headers(),
-                json={"run_id": self.run_id, "summary": summary},
+                json=payload,
                 timeout=30,
             )
         except httpx.HTTPError as e:
@@ -626,13 +679,14 @@ class PrimeMonitor(Monitor):
     async def _make_request_async(self, endpoint: str, data: dict[str, Any], max_retries: int = 3) -> None:
         """Make an async POST request to the Prime Intellect API with retries."""
         full_endpoint = f"{self.base_url}/{endpoint}"
+        sanitized_data = self._sanitize_json_payload(endpoint, data)
 
         for attempt in range(max_retries):
             try:
                 response = await self._client.post(
                     full_endpoint,
                     headers=self._api_headers(),
-                    json=data,
+                    json=sanitized_data,
                 )
                 response.raise_for_status()
                 return  # Success
