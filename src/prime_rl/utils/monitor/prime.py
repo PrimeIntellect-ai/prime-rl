@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 import pyarrow as pa
@@ -119,10 +118,6 @@ class PrimeMonitor(Monitor):
             "Content-Type": "application/json",
         }
 
-    def _uses_public_monitoring_api(self) -> bool:
-        """Return whether this monitor is talking to the public v1 monitoring API."""
-        return urlparse(self.base_url).path.rstrip("/").endswith("/api/v1/rft")
-
     def _sanitize_json_payload(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Return a JSON-safe payload and warn when non-finite values are dropped."""
         sanitized_payload, dropped_paths = _drop_non_finite_json_values(payload)
@@ -201,7 +196,7 @@ class PrimeMonitor(Monitor):
         os.register_at_fork(after_in_child=self._reinit_after_fork)
 
         # Optionally, initialize sample logging attributes
-        if config is not None and config.log_extras:
+        if config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
                 self._pending_sample_steps: set[int] = set()
@@ -211,13 +206,6 @@ class PrimeMonitor(Monitor):
 
     def _register_run(self, config: PrimeMonitorConfig, run_config: BaseConfig | None) -> str | None:
         """Register an external run with the platform. Returns run_id on success, None on failure."""
-        if not self.api_key:
-            self.logger.warning(
-                f"Prime Intellect API key not found. Set {config.api_key_var} environment variable or run `prime login`. "
-                "PrimeMonitor will not be able to register or upload data."
-            )
-            return None
-
         prime_config = None
         team_id = config.team_id
         frontend_url = config.frontend_url
@@ -245,12 +233,9 @@ class PrimeMonitor(Monitor):
         if wandb and getattr(wandb, "project", None):
             payload["wandb_project"] = wandb.project
 
-        parsed = urlparse(config.base_url)
-        api_base = f"{parsed.scheme}://{parsed.netloc}/api/v1/rft"
-
         try:
             response = httpx.post(
-                f"{api_base}/external-runs",
+                f"{self.base_url}/external-runs",
                 headers=self._api_headers(),
                 json=payload,
                 timeout=30,
@@ -277,19 +262,16 @@ class PrimeMonitor(Monitor):
 
     def _finalize_run(self, success: bool) -> None:
         """Mark the run as completed or failed on the platform."""
-        if not getattr(self, "_registered", False):
+        if not self._registered:
             return
 
         payload: dict = {"status": "completed" if success else "failed"}
         status_label = "completed" if success else "failed"
         self.logger.info(f"Finalizing platform run {self.run_id} as {status_label}")
 
-        parsed = urlparse(self.base_url)
-        finalize_url = f"{parsed.scheme}://{parsed.netloc}/api/v1/rft/external-runs/{self.run_id}/status"
-
         try:
             response = httpx.put(
-                finalize_url,
+                f"{self.base_url}/external-runs/{self.run_id}/status",
                 headers=self._api_headers(),
                 json=payload,
                 timeout=30,
@@ -601,7 +583,7 @@ class PrimeMonitor(Monitor):
         if os.getpid() != self._owner_pid:
             return
 
-        if finalized_via_summary and self._uses_public_monitoring_api():
+        if finalized_via_summary:
             self._finalized = True
             return
 
