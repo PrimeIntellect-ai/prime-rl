@@ -58,15 +58,6 @@ _SAMPLE_SCHEMA = pa.schema(
 _DROP_JSON_VALUE = object()
 
 
-def _normalize_presign_response(payload: dict[str, Any]) -> dict[str, str]:
-    """Parse the public API presign response into the monitor's internal field names."""
-    response_data = payload["data"]
-    return {
-        "presigned_url": response_data["presignedUrl"],
-        "s3_key": response_data["s3Key"],
-    }
-
-
 def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str = "") -> Any:
     """Remove non-finite floats so payloads remain valid JSON."""
     if isinstance(value, float):
@@ -448,7 +439,11 @@ class PrimeMonitor(Monitor):
                 json={"run_id": self.run_id, "step": step},
             )
             response.raise_for_status()
-            return _normalize_presign_response(response.json())
+            response_data = response.json()["data"]
+            return {
+                "presigned_url": response_data["presignedUrl"],
+                "s3_key": response_data["s3Key"],
+            }
         except Exception as e:
             self.logger.warning(f"Failed to request presigned URL: {type(e).__name__}: {e}")
             return None
