@@ -67,36 +67,33 @@ def _normalize_presign_response(payload: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _drop_non_finite_json_values(value: Any, path: str = "") -> tuple[Any, list[str]]:
+def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str = "") -> Any:
     """Remove non-finite floats so payloads remain valid JSON."""
     if isinstance(value, float):
         if math.isfinite(value):
-            return value, []
-        return _DROP_JSON_VALUE, [path]
+            return value
+        dropped_paths.append(path)
+        return _DROP_JSON_VALUE
 
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
-        dropped_paths: list[str] = []
         for key, item in value.items():
             item_path = f"{path}.{key}" if path else str(key)
-            sanitized_item, item_dropped_paths = _drop_non_finite_json_values(item, item_path)
-            dropped_paths.extend(item_dropped_paths)
+            sanitized_item = _drop_non_finite_json_values(item, dropped_paths, item_path)
             if sanitized_item is not _DROP_JSON_VALUE:
                 sanitized[key] = sanitized_item
-        return sanitized, dropped_paths
+        return sanitized
 
     if isinstance(value, list):
         sanitized_items: list[Any] = []
-        dropped_paths: list[str] = []
         for idx, item in enumerate(value):
             item_path = f"{path}[{idx}]"
-            sanitized_item, item_dropped_paths = _drop_non_finite_json_values(item, item_path)
-            dropped_paths.extend(item_dropped_paths)
+            sanitized_item = _drop_non_finite_json_values(item, dropped_paths, item_path)
             if sanitized_item is not _DROP_JSON_VALUE:
                 sanitized_items.append(sanitized_item)
-        return sanitized_items, dropped_paths
+        return sanitized_items
 
-    return value, []
+    return value
 
 
 class PrimeMonitor(Monitor):
@@ -112,7 +109,8 @@ class PrimeMonitor(Monitor):
 
     def _sanitize_json_payload(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Return a JSON-safe payload and warn when non-finite values are dropped."""
-        sanitized_payload, dropped_paths = _drop_non_finite_json_values(payload)
+        dropped_paths: list[str] = []
+        sanitized_payload = _drop_non_finite_json_values(payload, dropped_paths)
 
         if dropped_paths:
             preview = ", ".join(dropped_paths[:5])
