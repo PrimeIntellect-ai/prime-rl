@@ -67,6 +67,26 @@ class PrimeMonitor(Monitor):
             "Content-Type": "application/json",
         }
 
+    def _uses_public_monitoring_api(self) -> bool:
+        """Return whether this monitor is talking to the public v1 monitoring API."""
+        return urlparse(self.base_url).path.rstrip("/").endswith("/api/v1/rft")
+
+    def _normalize_presign_response(self, payload: Any) -> dict[str, str] | None:
+        """Normalize presign responses across legacy and public API shapes."""
+        if not isinstance(payload, dict):
+            return None
+
+        response_data = payload.get("data", payload)
+        if not isinstance(response_data, dict):
+            return None
+
+        presigned_url = response_data.get("presigned_url") or response_data.get("presignedUrl")
+        s3_key = response_data.get("s3_key") or response_data.get("s3Key")
+        if not isinstance(presigned_url, str) or not isinstance(s3_key, str):
+            return None
+
+        return {"presigned_url": presigned_url, "s3_key": s3_key}
+
     def __init__(
         self,
         config: PrimeMonitorConfig | None,
@@ -375,10 +395,6 @@ class PrimeMonitor(Monitor):
                 self.logger.warning(f"Failed to get presigned URL for samples at step {step}")
                 return
 
-            if "presigned_url" not in presign_data or "s3_key" not in presign_data:
-                self.logger.warning(f"Invalid presign response at step {step}")
-                return
-
             presigned_url = presign_data["presigned_url"]
             s3_key = presign_data["s3_key"]
 
@@ -411,7 +427,10 @@ class PrimeMonitor(Monitor):
                 json={"run_id": self.run_id, "step": step},
             )
             response.raise_for_status()
-            return response.json()
+            presign_data = self._normalize_presign_response(response.json())
+            if presign_data is None:
+                self.logger.warning(f"Invalid presign response at step {step}")
+            return presign_data
         except Exception as e:
             self.logger.warning(f"Failed to request presigned URL: {type(e).__name__}: {e}")
             return None
@@ -497,22 +516,46 @@ class PrimeMonitor(Monitor):
             f"Logged distributions at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
+    def _submit_final_summary(self, summary: dict[str, Any]) -> bool:
+        """Submit the final summary/finalize request synchronously."""
+        try:
+            response = httpx.post(
+                f"{self.base_url}/finalize",
+                headers=self._api_headers(),
+                json={"run_id": self.run_id, "summary": summary},
+                timeout=30,
+            )
+        except httpx.HTTPError as e:
+            self.logger.warning(f"Failed to submit final summary for platform run {self.run_id}: {e}")
+            return False
+
+        if response.status_code != 200:
+            self.logger.warning(
+                f"Failed to submit final summary for platform run {self.run_id} "
+                f"(HTTP {response.status_code}): {response.text}"
+            )
+            return False
+
+        return True
+
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to Prime Intellect API."""
         if not self.is_master or not self.enabled:
             return
 
         self.logger.info("Saving final summary to Prime Intellect API")
-        self._make_request(
-            "finalize",
-            {
-                "run_id": self.run_id,
-                "summary": self.history[-1] if self.history else {},
-            },
-        )
-        if os.getpid() == self._owner_pid:
-            self._finalize_run(success=True)
+        summary = self.history[-1] if self.history else {}
+        finalized_via_summary = self._submit_final_summary(summary)
+
+        if os.getpid() != self._owner_pid:
+            return
+
+        if finalized_via_summary and self._uses_public_monitoring_api():
             self._finalized = True
+            return
+
+        self._finalize_run(success=True)
+        self._finalized = True
 
     def close(self) -> None:
         """Close the HTTP client and stop the background event loop."""

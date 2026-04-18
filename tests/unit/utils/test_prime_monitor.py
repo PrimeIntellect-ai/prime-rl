@@ -1,9 +1,30 @@
 import asyncio
 import io
 import json
+import os
+import sys
+import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pyarrow.parquet as pq
+
+prime_cli_module = types.ModuleType("prime_cli")
+prime_cli_core_module = types.ModuleType("prime_cli.core")
+prime_cli_config_module = types.ModuleType("prime_cli.core.config")
+
+
+class _FakePrimeConfig:
+    api_key = None
+    team_id = None
+    frontend_url = None
+
+
+prime_cli_config_module.Config = _FakePrimeConfig
+prime_cli_module.core = prime_cli_core_module
+prime_cli_core_module.config = prime_cli_config_module
+sys.modules.setdefault("prime_cli", prime_cli_module)
+sys.modules.setdefault("prime_cli.core", prime_cli_core_module)
+sys.modules.setdefault("prime_cli.core.config", prime_cli_config_module)
 
 from prime_rl.utils.monitor.prime import PrimeMonitor
 
@@ -156,6 +177,24 @@ def test_request_presigned_url_uses_bearer_auth_headers():
     )
 
 
+def test_request_presigned_url_normalizes_public_api_response_shape():
+    monitor = _make_monitor(
+        api_key="pit-test",
+        run_id="run-123",
+        base_url="https://api.primeintellect.ai/api/v1/rft",
+        _client=AsyncMock(),
+    )
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {"data": {"presignedUrl": "https://upload", "s3Key": "samples/key", "expiresIn": 900}}
+    monitor._client.post.return_value = response
+    monitor.logger = MagicMock()
+
+    presign_data = asyncio.run(monitor._request_presigned_url(step=5))
+
+    assert presign_data == {"presigned_url": "https://upload", "s3_key": "samples/key"}
+
+
 def test_confirm_samples_upload_uses_bearer_auth_headers():
     monitor = _make_monitor(
         api_key="pit-test",
@@ -180,3 +219,42 @@ def test_confirm_samples_upload_uses_bearer_auth_headers():
         },
         json={"run_id": "run-123", "step": 5, "s3_key": "samples/key"},
     )
+
+
+def test_save_final_summary_uses_finalize_endpoint_for_public_api():
+    monitor = _make_monitor(
+        base_url="https://api.primeintellect.ai/api/v1/rft",
+        enabled=True,
+        is_master=True,
+        history=[{"reward/mean": 1.0}],
+        _owner_pid=os.getpid(),
+        _finalized=False,
+    )
+    monitor.logger = MagicMock()
+    monitor._submit_final_summary = MagicMock(return_value=True)
+    monitor._finalize_run = MagicMock()
+
+    monitor.save_final_summary()
+
+    monitor._submit_final_summary.assert_called_once_with({"reward/mean": 1.0})
+    monitor._finalize_run.assert_not_called()
+    assert monitor._finalized is True
+
+
+def test_save_final_summary_falls_back_to_status_update_when_finalize_request_fails():
+    monitor = _make_monitor(
+        base_url="https://api.primeintellect.ai/api/v1/rft",
+        enabled=True,
+        is_master=True,
+        history=[{"reward/mean": 1.0}],
+        _owner_pid=os.getpid(),
+        _finalized=False,
+    )
+    monitor.logger = MagicMock()
+    monitor._submit_final_summary = MagicMock(return_value=False)
+    monitor._finalize_run = MagicMock()
+
+    monitor.save_final_summary()
+
+    monitor._finalize_run.assert_called_once_with(success=True)
+    assert monitor._finalized is True
