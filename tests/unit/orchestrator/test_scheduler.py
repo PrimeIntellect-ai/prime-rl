@@ -25,7 +25,6 @@ def make_scheduler() -> Scheduler:
     scheduler.groups = {}
     scheduler.max_off_policy_steps = 1
     scheduler.cancelled_rollouts_count = 0
-    scheduler.masked_stale_rollouts_count = 0
     scheduler.mask_off_policy_rollouts = False
     scheduler.policy_update_lock = asyncio.Lock()
     scheduler.inflight_policy_update_task = None
@@ -39,7 +38,6 @@ def test_update_off_policy_does_not_increment_interleaved_on_policy_tasks():
         scheduler = Scheduler.__new__(Scheduler)
         scheduler.max_off_policy_steps = 1
         scheduler.cancelled_rollouts_count = 0
-        scheduler.masked_stale_rollouts_count = 0
         scheduler.mask_off_policy_rollouts = False
         scheduler.logger = MagicMock()
 
@@ -86,53 +84,6 @@ def test_update_off_policy_does_not_increment_interleaved_on_policy_tasks():
 
         for task in (stale_task, survivor_task, interleaved_task):
             if task is not None and not task.done():
-                task.cancel()
-        await asyncio.sleep(0)
-
-    asyncio.run(run())
-
-
-def test_update_off_policy_masks_stale_instead_of_dropping_when_enabled():
-    async def run() -> None:
-        scheduler = Scheduler.__new__(Scheduler)
-        scheduler.max_off_policy_steps = 2
-        scheduler.cancelled_rollouts_count = 0
-        scheduler.masked_stale_rollouts_count = 0
-        scheduler.mask_off_policy_rollouts = True
-        scheduler.logger = MagicMock()
-        scheduler.drop_group = AsyncMock()
-
-        client = SimpleNamespace(api_base_url="http://test")
-        stale_task = asyncio.create_task(asyncio.sleep(60))
-        fresh_task = asyncio.create_task(asyncio.sleep(60))
-
-        scheduler.inflight_requests = {
-            stale_task: InflightRequest(off_policy_steps=2, client_config=client, env_name="test", group_id=1),
-            fresh_task: InflightRequest(off_policy_steps=0, client_config=client, env_name="test", group_id=2),
-        }
-
-        await scheduler._update_off_policy()
-
-        # Stale request is kept, tagged as is_stale, and no further off-policy increment.
-        assert stale_task in scheduler.inflight_requests
-        assert scheduler.inflight_requests[stale_task].is_stale is True
-        assert scheduler.inflight_requests[stale_task].off_policy_steps == 2
-        # Fresh request is untouched and its counter is incremented once.
-        assert scheduler.inflight_requests[fresh_task].is_stale is False
-        assert scheduler.inflight_requests[fresh_task].off_policy_steps == 1
-        # No cancellation happened; mask counter increments.
-        scheduler.drop_group.assert_not_awaited()
-        assert scheduler.cancelled_rollouts_count == 0
-        assert scheduler.masked_stale_rollouts_count == 1
-
-        # A second pass with the fresh request still below threshold doesn't double-count
-        # the already-stale one.
-        await scheduler._update_off_policy()
-        assert scheduler.masked_stale_rollouts_count == 1
-        assert scheduler.inflight_requests[fresh_task].off_policy_steps == 2
-
-        for task in (stale_task, fresh_task):
-            if not task.done():
                 task.cancel()
         await asyncio.sleep(0)
 
