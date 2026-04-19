@@ -51,6 +51,49 @@ def tiny_config() -> GlmMoeDsaConfig:
     )
 
 
+def multi_tiny_config() -> GlmMoeDsaConfig:
+    """FSDP-R=2-friendly tiny config for multi-rank NIXL tests.
+
+    Every quantized non-expert tensor's rank-local dim-0 shard is a multiple
+    of ``BLOCK_SIZE=128``, so per-shard FP8 block quantization tiles cleanly
+    with no cross-shard block straddles:
+      - fused_qkv_a_proj: sources [256, 256] and [256, 256] → shard rows 128
+      - q_b_proj [768, 256] → shard 384
+      - kv_b_proj [512, 128] → shard 256
+      - o_proj [256, 256] → shard 128
+      - indexer.wq_b [1024, 256] → shard 512
+      - indexer.wk [256, 256] → shard 128
+      - shared_experts.gate_up_proj sources [256, 256] → shard 128
+      - shared_experts.down_proj [256, 256] → shard 128
+    """
+    return GlmMoeDsaConfig(
+        vocab_size=1024,
+        hidden_size=256,
+        intermediate_size=512,
+        moe_intermediate_size=256,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        n_shared_experts=1,
+        n_routed_experts=8,
+        kv_lora_rank=128,
+        q_lora_rank=256,
+        qk_rope_head_dim=128,
+        v_head_dim=64,
+        qk_nope_head_dim=64,
+        n_group=1,
+        topk_group=1,
+        num_experts_per_tok=2,
+        first_k_dense_replace=1,
+        max_position_embeddings=2048,
+        index_n_heads=4,
+        index_head_dim=256,
+        index_topk=64,
+        pad_token_id=0,
+        use_grouped_mm=False,
+    )
+
+
 def medium_config() -> GlmMoeDsaConfig:
     """Bandwidth-realistic config.
 
@@ -89,9 +132,16 @@ def medium_config() -> GlmMoeDsaConfig:
     )
 
 
+_CONFIGS = {
+    "tiny": tiny_config,
+    "multi_tiny": multi_tiny_config,
+    "medium": medium_config,
+}
+
+
 def build_tiny(out_dir: Path, seed: int = 0, size: str = "tiny") -> Path:
     torch.manual_seed(seed)
-    cfg = medium_config() if size == "medium" else tiny_config()
+    cfg = _CONFIGS[size]()
     model = GlmMoeDsaForCausalLM(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(out_dir, safe_serialization=True)
@@ -103,7 +153,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("out_dir", type=Path)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--size", choices=("tiny", "medium"), default="tiny")
+    ap.add_argument("--size", choices=tuple(_CONFIGS.keys()), default="tiny")
     args = ap.parse_args()
     path = build_tiny(args.out_dir, seed=args.seed, size=args.size)
     print(f"Wrote {args.size} GLM MoE DSA to {path}")

@@ -1,19 +1,25 @@
 """Trainer-side NIXL (UCX/RDMA) weight sender.
 
-Replaces the per-step ``.full_tensor()``/NCCL-broadcast path for GLM MoE DSA
-training: each trainer rank pushes its FSDP/EP shards directly into pre-
-registered parameter memory on the inference side.
+Replaces the per-step ``.full_tensor()``/NCCL-broadcast path for GLM MoE DSA:
+each trainer rank pushes its FSDP/EP shards directly into pre-registered
+parameter memory on the inference side.
 
-Slot allocation is delegated to the model (``model.allocate_slots``); this
-module just wraps those buffers into a :class:`NixlTransferMeta`, registers
-them with NIXL, builds the per-expert routing table, and posts writes.
+Routing is per-slot:
+  * Expert tensors — fused, EP+FSDP-local. Routed per-expert via the inference
+    side's ``expert_map`` (only peers that own a given global expert receive
+    writes for it).
+  * Non-expert tensors — one slot per source, replicated on every inference
+    rank. ``per_shard`` slots hold the rank-local FSDP slice and are written
+    to ``chunk[fsdp_rank]`` on **every** inference peer. ``gather`` slots hold
+    the full tensor (via ``full_tensor()`` in the conversion pass) and are
+    written once, round-robin to the inference rank matched by ``i % R``.
 """
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -38,11 +44,7 @@ def _is_expert_tensor(name: str) -> bool:
 
 
 def create_nixl_metadata(model: PreTrainedModelPrimeRL, parallel_dims: ParallelDims) -> NixlTransferMeta:
-    """Build :class:`NixlTransferMeta` from model + parallel setup.
-
-    Slot allocation is model-specific (``model.allocate_slots``); the
-    ep/fsdp coordinates are read off ``parallel_dims`` directly.
-    """
+    """Build :class:`NixlTransferMeta` from model + parallel setup."""
     if parallel_dims.ep_enabled:
         ep_mesh = parallel_dims.get_mesh("ep")
         ep_size, ep_rank = ep_mesh.size(), ep_mesh.get_local_rank()
@@ -52,10 +54,10 @@ def create_nixl_metadata(model: PreTrainedModelPrimeRL, parallel_dims: ParallelD
         ep_size, ep_rank = 1, 0
         fsdp_size, fsdp_rank = 1, 0
 
-    num_local_experts = model.config.n_routed_experts // ep_size
-    owned_global_experts = list(
-        range(ep_rank * num_local_experts, (ep_rank + 1) * num_local_experts)
-    )
+    num_experts_per_ep = model.config.n_routed_experts // ep_size
+    num_local_experts = num_experts_per_ep // fsdp_size
+    base = ep_rank * num_experts_per_ep + fsdp_rank * num_local_experts
+    owned_global_experts = list(range(base, base + num_local_experts))
     return NixlTransferMeta(
         slots=model.allocate_slots(parallel_dims),
         num_layers=model.config.num_hidden_layers,
@@ -65,6 +67,7 @@ def create_nixl_metadata(model: PreTrainedModelPrimeRL, parallel_dims: ParallelD
         owned_global_experts=owned_global_experts,
         fsdp_size=fsdp_size,
         fsdp_rank=fsdp_rank,
+        non_expert_layout=model.non_expert_slot_layout(parallel_dims),
     )
 
 
@@ -82,7 +85,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.config = config
         self.world = get_world()
         self._multi_run_manager = None
-
         self._meta = meta
 
         self._agent = NixlAgentWrapper(
@@ -91,19 +93,20 @@ class NIXLWeightBroadcast(WeightBroadcast):
             backends=config.backends,
         )
 
-        # Register every slot with NIXL. Expert slots get chunked per-expert
-        # so ``local_expert[i]`` can land in whichever inference rank owns it.
-        descriptors: dict[str, bytes] = {}
+        # Register every slot and build local descriptors.
+        #   - expert slots: chunked per-expert (num_local_experts chunks)
+        #   - non-expert slots: single chunk (write whole slot — local FSDP shard
+        #     for per_shard, full tensor for gather)
         local_preps: dict[str, Any] = {}
-        for layer_idx in range(self._meta.num_layers):
-            for name, tensor in self._meta.slots[layer_idx].items():
+        for layer_idx in range(meta.num_layers):
+            for name, tensor in meta.slots[layer_idx].items():
                 self._agent.register_tensor(tensor)
-                chunks = self._meta.num_local_experts if _is_expert_tensor(name) else 1
-                descs = self._agent.chunked_descs(tensor, chunks)
-                descriptors[name] = self._agent.serialize_descs(descs)
+                if _is_expert_tensor(name):
+                    descs = self._agent.chunked_descs(tensor, meta.num_local_experts)
+                else:
+                    descs = self._agent.chunked_descs(tensor, 1)
                 local_preps[name] = self._agent.prep_local(descs)
 
-        # Rendezvous.
         self._spg = StatelessProcessGroup.create(
             host=config.host,
             port=config.port,
@@ -111,68 +114,97 @@ class NIXLWeightBroadcast(WeightBroadcast):
             world_size=self.world.world_size + config.inference_world_size,
             store_timeout=config.timeout,
         )
-        my_info = {
-            "role": "trainer",
-            "global_rank": self.world.rank,
-            "agent_name": self._agent.name,
-            "agent_metadata": self._agent.get_metadata(),
-            "descriptors": descriptors,
-            "owned_global_experts": self._meta.owned_global_experts,
-        }
-        all_info: list[dict[str, Any]] = self._spg.all_gather_obj(my_info)
-        inference_infos = all_info[self.world.world_size :]
+
+        gathered = self._spg.all_gather_obj(
+            {
+                "role": "trainer",
+                "global_rank": self.world.rank,
+                "agent_name": self._agent.name,
+                "agent_metadata": self._agent.get_metadata(),
+            }
+        )
+        inference_infos = gathered[self.world.world_size :]
         for peer in inference_infos:
             self._agent.add_remote(peer["agent_metadata"])
             self._agent.make_connection(peer["agent_name"])
 
-        # Build per-expert write routes. Each trainer rank's EP shard is
-        # unique — no "lead" election — but the inference side may replicate
-        # experts across ranks (inference DP), so every matching peer needs
-        # its own write. Fail loud if no inference rank holds an owned expert.
+        # Build remote descriptors directly from each inference peer's published
+        # (ptr, nbytes, dev) tuples — the trainer knows the layout and picks offsets
+        # into the remote registered memory to point the WRITE at.
+        trainer_ws = self.world.world_size
+        my_rank = self.world.rank
         self._writes: list[tuple[Any, int, Any, int]] = []
-        for layer_idx in range(self._meta.num_layers):
-            for name in self._meta.slots[layer_idx]:
-                if not _is_expert_tensor(name):
-                    continue
-                moe_prefix = f"model.layers.{layer_idx}.mlp.experts"
+        for layer_idx in range(meta.num_layers):
+            for name, slot in meta.slots[layer_idx].items():
                 local_prep = local_preps[name]
-                for local_idx, global_idx in enumerate(self._meta.owned_global_experts):
-                    matching = [p for p in inference_infos if global_idx in p["expert_map"][moe_prefix]]
-                    assert matching, f"no inference peer holds expert {global_idx} for {moe_prefix}"
-                    for peer in matching:
-                        remote_idx = peer["expert_map"][moe_prefix].index(global_idx)
-                        remote_descs = self._agent.deserialize_descs(peer["descriptors"][name])
+                slot_bytes = slot.numel() * slot.element_size()
+                bytes_per_row = slot_bytes // slot.shape[0]
+
+                if _is_expert_tensor(name):
+                    moe_prefix = f"model.layers.{layer_idx}.mlp.experts"
+                    expert_bytes = slot_bytes // meta.num_local_experts
+                    for local_idx, global_idx in enumerate(meta.owned_global_experts):
+                        for peer in inference_infos:
+                            if global_idx not in peer["expert_map"][moe_prefix]:
+                                continue
+                            remote_idx = peer["expert_map"][moe_prefix].index(global_idx)
+                            ptr, _nbytes, dev = peer["tensor_ptrs"][name]
+                            remote_descs = self._agent.descs_from_tuples(
+                                [(ptr + remote_idx * expert_bytes, expert_bytes, dev)]
+                            )
+                            remote_prep = self._agent.prep_remote(peer["agent_name"], remote_descs)
+                            self._writes.append((local_prep, local_idx, remote_prep, 0))
+                    continue
+
+                info = meta.non_expert_layout[layer_idx][name]
+                offset_bytes = info["offset_rows"] * bytes_per_row
+                if info["handling"] == "per_shard":
+                    # Write this rank's shard to chunk[my_rank] on EVERY inference peer.
+                    for peer in inference_infos:
+                        ptr, _nbytes, dev = peer["tensor_ptrs"][info["inference_name"]]
+                        remote_descs = self._agent.descs_from_tuples(
+                            [(ptr + offset_bytes + my_rank * slot_bytes, slot_bytes, dev)]
+                        )
                         remote_prep = self._agent.prep_remote(peer["agent_name"], remote_descs)
-                        self._writes.append((local_prep, local_idx, remote_prep, remote_idx))
+                        self._writes.append((local_prep, 0, remote_prep, 0))
+                else:
+                    # Gather: trainer rank r writes the full slot to inference peers
+                    # where i % R == r. For R >= I only the first I trainers write;
+                    # for R < I each trainer fans out to ceil(I/R) peers.
+                    for i, peer in enumerate(inference_infos):
+                        if i % trainer_ws != my_rank:
+                            continue
+                        ptr, _nbytes, dev = peer["tensor_ptrs"][info["inference_name"]]
+                        remote_descs = self._agent.descs_from_tuples(
+                            [(ptr + offset_bytes, slot_bytes, dev)]
+                        )
+                        remote_prep = self._agent.prep_remote(peer["agent_name"], remote_descs)
+                        self._writes.append((local_prep, 0, remote_prep, 0))
 
         self._bytes_per_push = sum(
             t.numel() * t.element_size()
-            for slots in self._meta.slots.values()
-            for name, t in slots.items()
-            if _is_expert_tensor(name)
+            for slots in meta.slots.values()
+            for t in slots.values()
         )
 
         self.logger.info(
             f"NIXL transfer initialized: rank={self.world.rank} "
-            f"owned_experts={self._meta.owned_global_experts} writes={len(self._writes)} "
+            f"owned_experts={meta.owned_global_experts} writes={len(self._writes)} "
             f"bytes_per_push={self._bytes_per_push / 1e6:.2f} MB"
         )
 
     @torch.no_grad()
     def push_once(self, model: PreTrainedModelPrimeRL) -> None:
-        """Convert every layer into its stable FP8 slot and post all writes."""
+        """Convert every layer into its stable slot and post all writes."""
         device = next(model.parameters()).device
 
         t_start = time.perf_counter()
 
-        # Pass 1 — convert. Must synchronize before posting NIXL writes, or
-        # UCX reads HBM whose contents the GPU hasn't finished writing.
         for layer_idx in range(self._meta.num_layers):
             model.convert_layer_to_vllm_kernel(layer_idx, out_buffers=self._meta.slots[layer_idx])
         torch.cuda.synchronize(device)
         t_converted = time.perf_counter()
 
-        # Pass 2 — post writes.
         handles = [self._agent.post_write(lp, li, rp, ri) for lp, li, rp, ri in self._writes]
         t_posted = time.perf_counter()
 

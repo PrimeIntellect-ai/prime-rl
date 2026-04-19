@@ -1,12 +1,19 @@
 """Multi-rank NIXL test: R=2 trainer ranks, I=2 inference ranks.
 
-Exercises the real expert routing table — each trainer rank owns a different
-half of the experts, each inference rank also owns a different half, so the
-write pattern is a 2x2 permutation, not identity. If routing is wrong we'd
-see mismatches. 4 GPUs total.
+Exercises expert + non-expert routing on 4 GPUs:
+  - each trainer rank owns a different half of the experts (EP) and a
+    ``Shard(0)`` DTensor slice of every non-expert param (FSDP);
+  - each inference rank owns a different half of the experts and a full
+    replica of every non-expert param.
+
+Uses ``multi_tiny``, whose dim-0 sizes are multiples of ``2 × BLOCK_SIZE``
+so all non-expert slots take the ``per_shard`` path (per-shard FP8 quantize
+is bit-exact to full-tensor quantize when shard boundaries land on block
+boundaries). One slot that doesn't satisfy that (if any) falls back to the
+``gather`` round-robin path.
 
 Run:
-    uv run python tests/integration/nixl/test_nixl_glm_multi.py
+    PYTHONPATH=. uv run python tests/integration/nixl/test_nixl_glm_multi.py
 """
 
 from __future__ import annotations
@@ -33,8 +40,7 @@ I = int(os.environ.get("NIXL_TEST_I", "2"))  # noqa: E741
 
 
 def _fixture_dir() -> Path:
-    # Shared path so srun can reuse the fixture across nodes; /tmp is node-local.
-    return Path(os.environ.get("HOME", "/home/matej")) / ".cache" / "prime_rl_nixl" / "glm_moe_dsa_medium"
+    return Path(os.environ.get("HOME", "/home/matej")) / ".cache" / "prime_rl_nixl" / "glm_moe_dsa_multi_tiny"
 
 
 def _ensure_fixture(path: Path, seed: int = 0) -> Path:
@@ -42,7 +48,7 @@ def _ensure_fixture(path: Path, seed: int = 0) -> Path:
         return path
     from tests.fixtures.build_tiny_glm_moe_dsa import build_tiny
 
-    return build_tiny(path, seed=seed, size="medium")
+    return build_tiny(path, seed=seed, size="multi_tiny")
 
 
 def _trainer(local_rank: int, rank: int, port: int, dist_port: int, fixture_dir: str, ready_q: mp.Queue) -> None:
@@ -67,9 +73,7 @@ def _trainer(local_rank: int, rank: int, port: int, dist_port: int, fixture_dir:
 
         model = GlmMoeDsaForCausalLM.from_pretrained(fixture_dir, dtype=torch.bfloat16).to(device).eval()
 
-        # Simulate EP sharding: rewrite expert tensors to keep only this rank's slice.
-        # In a real training run this falls out of DTensor.to_local(); for the test
-        # we do it manually so we don't need to set up FSDP/EP on a 2-rank stub.
+        # Simulate EP sharding of expert tensors by slicing in place.
         num_experts = model.config.n_routed_experts
         experts_per_rank = num_experts // R
         start = rank * experts_per_rank
@@ -81,8 +85,11 @@ def _trainer(local_rank: int, rank: int, port: int, dist_port: int, fixture_dir:
                 sliced = torch.nn.Parameter(full.data[start:end].contiguous(), requires_grad=False)
                 setattr(experts_mod, attr, sliced)
 
-        # EP borrows from dp_shard (see ParallelDims._build_mesh_with_ep): dp_shard=R, ep=R
-        # ⇒ dp_shard_mod_ep=1 (no replica), dp_shard_in_ep=R ⇒ EP mesh = all R ranks.
+        # Non-expert params stay full (each rank holds an identical copy). The
+        # trainer's convert step slices dim 0 by rank for per_shard slots, so the
+        # inference side still ends up with the full tensor after the writes land.
+
+        # With dp_shard=R and ep=R: dp_shard_mod_ep=1, dp_shard_in_ep=R. EP mesh = all R ranks.
         parallel_dims = ParallelDims(dp_replicate=1, dp_shard=R, cp=1, pp=1, ep=R, world_size=R)
         parallel_dims.build_mesh()
 
@@ -98,6 +105,48 @@ def _trainer(local_rank: int, rank: int, port: int, dist_port: int, fixture_dir:
         ready_q.put((f"trainer-{rank}", f"fail: {e}\n{traceback.format_exc()}"))
 
 
+def _build_inference_tensors(ref_model, device: torch.device, experts_per_inf: int):
+    from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
+    from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import _BASE, _DENSE, _SPARSE
+
+    cfg = ref_model.config
+    ref_sd = ref_model.state_dict()
+    tensors: dict[str, torch.Tensor] = {}
+
+    for layer_idx in range(cfg.num_hidden_layers):
+        prefix = f"model.layers.{layer_idx}"
+        is_sparse = f"{prefix}.mlp.router.gate.weight" in ref_sd
+        specs = _BASE + (_SPARSE if is_sparse else _DENSE)
+        for spec in specs:
+            if spec.dst.startswith("mlp.experts."):
+                continue
+            src_shapes = [ref_sd[f"{prefix}.{name}"].shape for name in spec.sources]
+            dst_shape = list(src_shapes[0])
+            dst_shape[spec.cat_dim] = sum(s[spec.cat_dim] for s in src_shapes)
+            dtype = torch.float8_e4m3fn if spec.quantize else torch.bfloat16
+            tensors[f"{prefix}.{spec.dst}"] = torch.zeros(dst_shape, dtype=dtype, device=device)
+            if spec.quantize:
+                scale_shape = tuple(
+                    ceil_div(d, BLOCK_SIZE) if i >= len(dst_shape) - 2 else d
+                    for i, d in enumerate(dst_shape)
+                )
+                tensors[spec.scale_name(prefix)] = torch.zeros(scale_shape, dtype=torch.float32, device=device)
+
+    # Expert slots shrunk to this inference rank's owned-expert count.
+    from prime_rl.trainer.parallel_dims import ParallelDims
+
+    ref_slots_full = ref_model.allocate_slots(ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1))
+    for layer_idx in range(cfg.first_k_dense_replace, cfg.num_hidden_layers):
+        for k, t in ref_slots_full[layer_idx].items():
+            if ".mlp.experts." not in k:
+                continue
+            shape = list(t.shape)
+            shape[0] = experts_per_inf
+            tensors[k] = torch.zeros(shape, dtype=t.dtype, device=device)
+
+    return tensors
+
+
 def _inference(local_rank: int, inf_rank: int, port: int, fixture_dir: str, ready_q: mp.Queue) -> None:
     try:
         os.environ["LOCAL_RANK"] = str(local_rank)
@@ -106,101 +155,93 @@ def _inference(local_rank: int, inf_rank: int, port: int, fixture_dir: str, read
 
         from vllm.distributed.utils import StatelessProcessGroup
 
-        from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
-        from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
         from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
         from prime_rl.trainer.models.glm_moe_dsa.modeling_glm_moe_dsa import GlmMoeDsaForCausalLM
-        from prime_rl.trainer.parallel_dims import ParallelDims
         from prime_rl.utils.nixl_transfer import NixlAgentWrapper, make_agent_name
 
-        cfg = GlmMoeDsaConfig.from_pretrained(fixture_dir)
+        ref_model = GlmMoeDsaForCausalLM.from_pretrained(fixture_dir, dtype=torch.bfloat16).to(device)
+        cfg = ref_model.config
         num_experts = cfg.n_routed_experts
-        moe_dim = cfg.moe_intermediate_size
-        hidden_dim = cfg.hidden_size
-        first_k_dense = cfg.first_k_dense_replace
-        num_layers = cfg.num_hidden_layers
-
         assert num_experts % I == 0
         experts_per_inf = num_experts // I
-        # Each inference rank owns a contiguous half: rank 0 gets [0,experts_per_inf), rank 1 gets the rest.
         owned = list(range(inf_rank * experts_per_inf, (inf_rank + 1) * experts_per_inf))
-        # _expert_map entries: local index for owned, -1 for not-owned.
-        expert_map_tensor = torch.full((num_experts,), -1, dtype=torch.long, device=device)
-        for local_idx, global_idx in enumerate(owned):
-            expert_map_tensor[global_idx] = local_idx
 
-        w13_shape = (experts_per_inf, 2 * moe_dim, hidden_dim)
-        w2_shape = (experts_per_inf, hidden_dim, moe_dim)
-        s_w13 = (ceil_div(2 * moe_dim, BLOCK_SIZE), ceil_div(hidden_dim, BLOCK_SIZE))
-        s_w2 = (ceil_div(hidden_dim, BLOCK_SIZE), ceil_div(moe_dim, BLOCK_SIZE))
+        tensors = _build_inference_tensors(ref_model, device, experts_per_inf)
 
         agent = NixlAgentWrapper(name=make_agent_name("inference", R + inf_rank), local_rank=local_rank)
-
-        layer_tensors: dict[tuple[int, str], torch.Tensor] = {}
-        descriptors: dict[str, bytes] = {}
-        for layer_idx in range(first_k_dense, num_layers):
-            specs = {
-                "w13_weight": torch.zeros(w13_shape, dtype=torch.float8_e4m3fn, device=device),
-                "w2_weight": torch.zeros(w2_shape, dtype=torch.float8_e4m3fn, device=device),
-                "w13_weight_scale_inv": torch.zeros((experts_per_inf, *s_w13), dtype=torch.float32, device=device),
-                "w2_weight_scale_inv": torch.zeros((experts_per_inf, *s_w2), dtype=torch.float32, device=device),
-            }
-            for attr, t in specs.items():
-                agent.register_tensor(t)
-                name = f"model.layers.{layer_idx}.mlp.experts.{attr}"
-                descriptors[name] = agent.serialize_descs(agent.chunked_descs(t, experts_per_inf))
-                layer_tensors[(layer_idx, attr)] = t
+        tensor_ptrs: dict[str, tuple[int, int, int]] = {}
+        for name, t in tensors.items():
+            agent.register_tensor(t)
+            tensor_ptrs[name] = (t.data_ptr(), t.numel() * t.element_size(), t.get_device())
 
         expert_map_per_prefix = {
-            f"model.layers.{l}.mlp.experts": owned for l in range(first_k_dense, num_layers)
+            f"model.layers.{layer_idx}.mlp.experts": owned
+            for layer_idx in range(cfg.first_k_dense_replace, cfg.num_hidden_layers)
         }
 
         global_rank = R + inf_rank
         spg = StatelessProcessGroup.create(
             host="localhost", port=port, rank=global_rank, world_size=R + I, store_timeout=120
         )
-        my_info = {
-            "role": "inference",
-            "global_rank": global_rank,
-            "agent_name": agent.name,
-            "agent_metadata": agent.get_metadata(),
-            "descriptors": descriptors,
-            "expert_map": expert_map_per_prefix,
-        }
-        peers = spg.all_gather_obj(my_info)
-        for p in peers[:R]:
-            agent.add_remote(p["agent_metadata"])
+        gathered = spg.all_gather_obj(
+            {
+                "role": "inference",
+                "global_rank": global_rank,
+                "agent_name": agent.name,
+                "agent_metadata": agent.get_metadata(),
+                "tensor_ptrs": tensor_ptrs,
+                "expert_map": expert_map_per_prefix,
+            }
+        )
+        for peer in gathered[:R]:
+            agent.add_remote(peer["agent_metadata"])
 
         spg.barrier()
 
-        ref_model = GlmMoeDsaForCausalLM.from_pretrained(fixture_dir, dtype=torch.bfloat16).to(device)
+        # Reference: single-shot quantize of the full unsliced model into fused
+        # buffers. Expert slots use the FULL expert count (so we can ``index_select``
+        # the owned slice for comparison); non-expert slots match inference-side.
+        ref_buffers: dict[str, torch.Tensor] = {}
+        for name, t in tensors.items():
+            if ".mlp.experts." in name:
+                shape = list(t.shape)
+                shape[0] = num_experts
+                ref_buffers[name] = torch.zeros(shape, dtype=t.dtype, device=device)
+            else:
+                ref_buffers[name] = torch.zeros(t.shape, dtype=t.dtype, device=device)
         ref_sd = ref_model.state_dict()
-        ref_slots = ref_model.allocate_slots(
-            ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
-        )
-
         mismatches: list[str] = []
-        for layer_idx in range(first_k_dense, num_layers):
-            layer_sd = {k: v.to(torch.bfloat16) for k, v in ref_sd.items() if k.startswith(f"model.layers.{layer_idx}.")}
-            reference_full = ref_slots[layer_idx]
-            convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx, out_buffers=reference_full)
-            owned_idx = torch.tensor(owned, device=device)
-            for attr in ("w13_weight", "w2_weight", "w13_weight_scale_inv", "w2_weight_scale_inv"):
-                ref_full = reference_full[f"model.layers.{layer_idx}.mlp.experts.{attr}"].to(device)
-                ref_local = ref_full.index_select(0, owned_idx)
-                got = layer_tensors[(layer_idx, attr)]
-                if ref_local.dtype == torch.float8_e4m3fn:
-                    equal = torch.equal(ref_local.view(torch.uint8), got.view(torch.uint8))
+        owned_idx = torch.tensor(owned, device=device)
+        for layer_idx in range(cfg.num_hidden_layers):
+            layer_sd = {
+                k: v.to(torch.bfloat16)
+                for k, v in ref_sd.items()
+                if k.startswith(f"model.layers.{layer_idx}.")
+            }
+            layer_buffers = {k: v for k, v in ref_buffers.items() if k.startswith(f"model.layers.{layer_idx}.")}
+            convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx, out_buffers=layer_buffers)
+
+            for slot_name, ref_tensor in layer_buffers.items():
+                got = tensors[slot_name]
+                if ".mlp.experts." in slot_name:
+                    ref_cmp = ref_tensor.index_select(0, owned_idx)
                 else:
-                    equal = torch.equal(ref_local, got)
+                    ref_cmp = ref_tensor
+                if ref_cmp.dtype == torch.float8_e4m3fn:
+                    equal = torch.equal(ref_cmp.view(torch.uint8), got.view(torch.uint8))
+                else:
+                    equal = torch.equal(ref_cmp, got)
                 if not equal:
                     mismatches.append(
-                        f"{attr}@L{layer_idx}: ref.sum={ref_local.float().abs().sum().item():.2f} "
-                        f"got.sum={got.float().abs().sum().item():.2f}"
+                        f"{slot_name}@L{layer_idx}: "
+                        f"ref.abs_sum={ref_cmp.float().abs().sum().item():.4f} "
+                        f"got.abs_sum={got.float().abs().sum().item():.4f}"
                     )
 
         if mismatches:
-            ready_q.put((f"inference-{inf_rank}", f"fail: {len(mismatches)} mismatches:\n  " + "\n  ".join(mismatches[:8])))
+            ready_q.put(
+                (f"inference-{inf_rank}", f"fail: {len(mismatches)} mismatches:\n  " + "\n  ".join(mismatches[:12]))
+            )
         else:
             ready_q.put((f"inference-{inf_rank}", "ok"))
     except Exception as e:

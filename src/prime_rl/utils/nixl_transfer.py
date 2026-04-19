@@ -16,7 +16,7 @@ import os
 import socket
 import subprocess
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Sequence
 
 from torch import Tensor
 
@@ -31,14 +31,17 @@ class NixlTransferMeta:
     directly — that lives on the model side.
     """
 
-    slots: dict[int, dict[str, Tensor]]  # layer_idx -> {dst_name: stable buffer}
+    slots: dict[int, dict[str, Tensor]]  # layer_idx -> {slot_key: stable buffer}
     num_layers: int
     ep_size: int
     ep_rank: int
     num_local_experts: int
     owned_global_experts: list[int]
-    fsdp_size: int
+    fsdp_size: int  # FSDP degree within an EP group (dp_shard_mod_ep)
     fsdp_rank: int
+    # For every non-expert slot key: {"inference_name": str, "offset_rows": int, "handling": "per_shard"|"gather"}.
+    # Expert slots are absent — they route via expert_map instead.
+    non_expert_layout: dict[int, dict[str, dict]]
 
 
 @functools.lru_cache(maxsize=1)
@@ -125,6 +128,12 @@ class NixlAgentWrapper:
         tuples = [(base + i * chunk, chunk, dev) for i in range(num_chunks)]
         return self._agent.get_xfer_descs(tuples, mem_type="cuda")
 
+    def descs_from_tuples(self, tuples: Sequence[tuple[int, int, int]]):
+        """Build xfer descriptors from raw ``(ptr, size, device)`` tuples. Used to
+        construct descriptors pointing into a remote agent's registered memory
+        from per-tensor ``(ptr, size, dev)`` info published at rendezvous."""
+        return self._agent.get_xfer_descs(list(tuples), mem_type="cuda")
+
     def get_metadata(self) -> bytes:
         return self._agent.get_agent_metadata()
 
@@ -175,68 +184,3 @@ class NixlAgentWrapper:
 
 def make_agent_name(role: str, global_rank: int) -> str:
     return f"{role}-{socket.gethostname()}-r{global_rank}"
-
-
-@dataclass
-class KonigAssignment:
-    trainer_rank: int
-    inference_rank: int
-    chunk_idx: int
-
-
-def konig_schedule(trainer_ws: int, inference_ws: int) -> list[list[KonigAssignment]]:
-    """König-style bipartite schedule for non-expert FSDP-sharded tensors.
-
-    Supports divisible R:I ratios only (v1). Three regimes:
-
-    - ``R == I``: direct rotation (``R`` rounds, one trainer writes one chunk to one inference
-      per round — the pattern used in ``put_bw_nxn_konig.py``).
-    - ``R > I`` with ``R % I == 0``: group trainers into ``I`` buckets of ``R/I``; over ``I`` rounds
-      each inference rank receives the appropriate trainer's chunk from every bucket.
-    - ``I > R`` with ``I % R == 0``: each trainer writes to ``I/R`` inference ranks per round.
-
-    Returns ``list[list[KonigAssignment]]`` — one list of assignments per round.
-    """
-    if trainer_ws == inference_ws:
-        n = trainer_ws
-        return [[KonigAssignment(t, (t + k) % n, chunk_idx=t) for t in range(n)] for k in range(n)]
-    if trainer_ws > inference_ws and trainer_ws % inference_ws == 0:
-        r, i = trainer_ws, inference_ws
-        group = r // i
-        return [
-            [
-                KonigAssignment(
-                    trainer_rank=t,
-                    inference_rank=((t // group) + k) % i,
-                    chunk_idx=t,
-                )
-                for t in range(r)
-            ]
-            for k in range(i)
-        ]
-    if inference_ws > trainer_ws and inference_ws % trainer_ws == 0:
-        r, i = trainer_ws, inference_ws
-        fan = i // r
-        rounds: list[list[KonigAssignment]] = []
-        for k in range(r):
-            round_list: list[KonigAssignment] = []
-            for t in range(r):
-                for j in range(fan):
-                    round_list.append(
-                        KonigAssignment(
-                            trainer_rank=t,
-                            inference_rank=(t * fan + j + k * fan) % i,
-                            chunk_idx=t,
-                        )
-                    )
-            rounds.append(round_list)
-        return rounds
-    raise ValueError(
-        f"NIXL König schedule requires divisible trainer/inference world sizes "
-        f"(R={trainer_ws}, I={inference_ws}). Non-divisible ratios are a future phase."
-    )
-
-
-def peer_table_from_gather(gathered: list[dict[str, Any]], trainer_ws: int) -> tuple[list[dict], list[dict]]:
-    """Split an ``all_gather_obj`` result into (trainer_infos, inference_infos)."""
-    return gathered[:trainer_ws], gathered[trainer_ws:]

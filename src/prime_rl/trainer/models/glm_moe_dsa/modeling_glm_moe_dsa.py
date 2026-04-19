@@ -4,6 +4,7 @@ from typing import Optional, Union
 import torch
 import torch.distributed as dist
 from torch import Tensor, nn
+from torch.distributed.tensor import DTensor
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
@@ -12,10 +13,8 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
-from torch.distributed.tensor import DTensor
-
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
+from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div, fp8_block_quantize, grouped_fp8_block_quantize
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
     _BASE,
@@ -27,13 +26,13 @@ from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
     convert_tt_layer_to_vllm_kernel,
     convert_tt_to_hf_moe,
 )
-from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.cp import gather_for_cp, shard_for_cp
 
 
@@ -186,25 +185,78 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         return state_dict
 
     def convert_layer_to_vllm_kernel(self, layer_idx: int, out_buffers: dict[str, Tensor]) -> None:
-        prefix = f"model.layers.{layer_idx}."
-        layer_sd = {
-            k: (v.to_local() if isinstance(v, DTensor) else v).to(torch.bfloat16)
-            for k, v in self.state_dict().items()
-            if k.startswith(prefix)
-        }
-        convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx, out_buffers=out_buffers)
+        """Quantize/copy one layer's tensors into ``out_buffers``.
+
+        Expert specs — fused cat-then-quantize into an EP+FSDP-local slot.
+
+        Non-expert specs — one slot per source. The slot's dim-0 size tells us
+        the handling:
+          - equal to the source's full dim 0 → ``gather``: quantize the full
+            tensor (via ``full_tensor()`` for DTensor, as-is for plain).
+          - smaller → ``per_shard``: take this rank's ``dim0/fsdp_size`` slab,
+            either via ``to_local()`` on the DTensor or by slicing the plain
+            tensor (test path — the assumption that plain tensors carry the
+            full content matches how the test fixtures are set up).
+        """
+        prefix = f"model.layers.{layer_idx}"
+        state_dict = self.state_dict()
+        is_sparse = f"{prefix}.mlp.router.gate.weight" in state_dict
+        specs = _BASE + (_SPARSE if is_sparse else _DENSE)
+
+        my_rank = dist.get_rank() if dist.is_initialized() else 0
+
+        for spec in specs:
+            is_expert = spec.dst.startswith("mlp.experts.")
+            if is_expert:
+                srcs: list[Tensor] = []
+                for name in spec.sources:
+                    s = state_dict[f"{prefix}.{name}"]
+                    s = s.to_local() if isinstance(s, DTensor) else s
+                    srcs.append(s.to(torch.bfloat16))
+                tensor = srcs[0] if len(srcs) == 1 else torch.cat(srcs, dim=spec.cat_dim)
+                dst = f"{prefix}.{spec.dst}"
+                if spec.quantize:
+                    scale_name = spec.scale_name(prefix)
+                    quantize = grouped_fp8_block_quantize if tensor.ndim == 3 else fp8_block_quantize
+                    quantize(tensor, out=out_buffers[dst], sf=out_buffers[scale_name])
+                else:
+                    out_buffers[dst].copy_(tensor)
+                continue
+
+            for src_name in spec.sources:
+                src = state_dict[f"{prefix}.{src_name}"]
+                slot_key = f"{prefix}.{src_name}"
+                slot = out_buffers[slot_key]
+                src_rows_full = src.shape[0]  # DTensor.shape is global; plain is its actual rows
+                if slot.shape[0] == src_rows_full:
+                    value = src.full_tensor() if isinstance(src, DTensor) else src
+                else:
+                    if isinstance(src, DTensor):
+                        value = src.to_local()
+                    else:
+                        step = slot.shape[0]
+                        value = src[my_rank * step : (my_rank + 1) * step].contiguous()
+                value = value.to(torch.bfloat16)
+                if spec.quantize:
+                    scale_key = slot_key.removesuffix(".weight") + ".weight_scale_inv"
+                    fp8_block_quantize(value, out=slot, sf=out_buffers[scale_key])
+                else:
+                    slot.copy_(value)
 
     def allocate_slots(self, parallel_dims: ParallelDims) -> dict[int, dict[str, Tensor]]:
-        """Stable FP8-kernel destination buffers for every layer.
+        """Stable destination buffers for NIXL weight transfer.
 
-        Sizes are taken from the model's own (possibly DTensor-sharded) state
-        dict, so expert tensors come out at ``(num_local_experts, …)`` and
-        everything else at its full shape. The NIXL broadcast writes into
-        these every push.
+        Experts: one fused slot per spec, EP+FSDP-local shape.
+        Non-experts: one slot per source, shape determined by handling:
+          - per-shard when ``src_rows % fsdp_total == 0`` AND (for quantized specs)
+            ``(src_rows / fsdp_total) % BLOCK_SIZE == 0`` — slot holds the
+            rank-local FSDP shard.
+          - gather otherwise — slot holds the full tensor.
         """
         state_dict = self.state_dict()
         device = next(self.parameters()).device
-        dtype = torch.bfloat16
+        bf16 = torch.bfloat16
+        fsdp_total = parallel_dims.dp_shard * parallel_dims.cp
 
         slots: dict[int, dict[str, Tensor]] = {}
         for layer_idx in range(self.config.num_hidden_layers):
@@ -214,22 +266,98 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
 
             layer_slots: dict[str, Tensor] = {}
             for spec in specs:
-                src = state_dict[f"{prefix}.{spec.sources[0]}"]
-                src_shape = (src.to_local() if isinstance(src, DTensor) else src).shape
-                dst_shape = list(src_shape)
-                dst_shape[spec.cat_dim] *= len(spec.sources)
-                dst_dtype = torch.float8_e4m3fn if spec.quantize else dtype
-                layer_slots[f"{prefix}.{spec.dst}"] = torch.empty(dst_shape, dtype=dst_dtype, device=device)
-                if spec.quantize:
-                    scale_shape = tuple(
-                        ceil_div(d, BLOCK_SIZE) if i >= len(dst_shape) - 2 else d
-                        for i, d in enumerate(dst_shape)
+                if spec.dst.startswith("mlp.experts."):
+                    src_local_shapes = [
+                        (s.to_local() if isinstance(s, DTensor) else s).shape
+                        for s in (state_dict[f"{prefix}.{name}"] for name in spec.sources)
+                    ]
+                    dst_shape = list(src_local_shapes[0])
+                    dst_shape[spec.cat_dim] = sum(sh[spec.cat_dim] for sh in src_local_shapes)
+                    dst_dtype = torch.float8_e4m3fn if spec.quantize else bf16
+                    layer_slots[f"{prefix}.{spec.dst}"] = torch.empty(dst_shape, dtype=dst_dtype, device=device)
+                    if spec.quantize:
+                        scale_shape = tuple(
+                            ceil_div(d, BLOCK_SIZE) if i >= len(dst_shape) - 2 else d
+                            for i, d in enumerate(dst_shape)
+                        )
+                        layer_slots[spec.scale_name(prefix)] = torch.empty(
+                            scale_shape, dtype=torch.float32, device=device
+                        )
+                    continue
+
+                for src_name in spec.sources:
+                    src = state_dict[f"{prefix}.{src_name}"]
+                    full_shape = tuple(src.shape)
+                    src_rows = full_shape[0]
+                    per_shard = src_rows % fsdp_total == 0 and (
+                        not spec.quantize or (src_rows // fsdp_total) % BLOCK_SIZE == 0
                     )
-                    layer_slots[spec.scale_name(prefix)] = torch.empty(
-                        scale_shape, dtype=torch.float32, device=device
-                    )
+                    rows = src_rows // fsdp_total if per_shard else src_rows
+                    slot_shape = (rows,) + full_shape[1:]
+                    slot_dtype = torch.float8_e4m3fn if spec.quantize else bf16
+                    slot_key = f"{prefix}.{src_name}"
+                    layer_slots[slot_key] = torch.empty(slot_shape, dtype=slot_dtype, device=device)
+                    if spec.quantize:
+                        scale_shape = tuple(
+                            ceil_div(d, BLOCK_SIZE) if i >= len(slot_shape) - 2 else d
+                            for i, d in enumerate(slot_shape)
+                        )
+                        scale_key = slot_key.removesuffix(".weight") + ".weight_scale_inv"
+                        layer_slots[scale_key] = torch.empty(scale_shape, dtype=torch.float32, device=device)
             slots[layer_idx] = layer_slots
         return slots
+
+    def non_expert_slot_layout(self, parallel_dims: ParallelDims) -> dict[int, dict[str, dict]]:
+        """Per non-expert slot key → inference-side placement info.
+
+        Entries:
+          - ``inference_name``: vLLM tensor name (fused dst param / scale buffer).
+          - ``offset_rows``: row offset of this slot within ``inference_name``.
+          - ``handling``: ``"per_shard"`` or ``"gather"``.
+        """
+        state_dict = self.state_dict()
+        fsdp_total = parallel_dims.dp_shard * parallel_dims.cp
+        layout: dict[int, dict[str, dict]] = {}
+        for layer_idx in range(self.config.num_hidden_layers):
+            prefix = f"model.layers.{layer_idx}"
+            is_sparse = f"{prefix}.mlp.router.gate.weight" in state_dict
+            specs = _BASE + (_SPARSE if is_sparse else _DENSE)
+            layer_layout: dict[str, dict] = {}
+
+            for spec in specs:
+                if spec.dst.startswith("mlp.experts."):
+                    continue
+                inference_value = f"{prefix}.{spec.dst}"
+                inference_scale = spec.scale_name(prefix) if spec.quantize else ""
+                row_off = 0
+                scale_row_off = 0
+                for src_name in spec.sources:
+                    src = state_dict[f"{prefix}.{src_name}"]
+                    src_rows = src.shape[0]
+                    per_shard = src_rows % fsdp_total == 0 and (
+                        not spec.quantize or (src_rows // fsdp_total) % BLOCK_SIZE == 0
+                    )
+                    handling = "per_shard" if per_shard else "gather"
+                    slot_key = f"{prefix}.{src_name}"
+                    layer_layout[slot_key] = {
+                        "inference_name": inference_value,
+                        "offset_rows": row_off,
+                        "rows": src_rows,
+                        "handling": handling,
+                    }
+                    if spec.quantize:
+                        scale_key = slot_key.removesuffix(".weight") + ".weight_scale_inv"
+                        scale_rows = ceil_div(src_rows, BLOCK_SIZE)
+                        layer_layout[scale_key] = {
+                            "inference_name": inference_scale,
+                            "offset_rows": scale_row_off,
+                            "rows": scale_rows,
+                            "handling": handling,
+                        }
+                        scale_row_off += scale_rows
+                    row_off += src_rows
+            layout[layer_idx] = layer_layout
+        return layout
 
 
 @auto_docstring
