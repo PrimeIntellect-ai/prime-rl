@@ -238,6 +238,7 @@ async def orchestrate(config: OrchestratorConfig):
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
         tasks_per_minute=config.tasks_per_minute,
+        mask_off_policy_rollouts=config.experimental.mask_off_policy_rollouts,
         enable_policy_updates=enable_policy_updates,
         lora_name=config.model.lora.name if config.model.lora else None,
         config=config,
@@ -526,9 +527,15 @@ async def orchestrate(config: OrchestratorConfig):
             if samples is None:
                 samples = []
             rollout_samples_per_rollout.append(len(samples))
+            off_policy_masked = rollout.get("off_policy_masked", False)
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
+                if off_policy_masked:
+                    # Rollout exceeded max_off_policy_steps under mask_off_policy_rollouts mode:
+                    # keep the sample for batch-filling, but zero its loss mask so it contributes
+                    # no gradient.
+                    sample.completion_mask = [False] * len(sample.completion_mask)
                 sample_decode_tokens = sum(sample.completion_mask)
                 sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                 rollout_decode_tokens += sample_decode_tokens

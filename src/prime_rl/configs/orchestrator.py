@@ -812,6 +812,18 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 class OrchestratorExperimentalConfig(BaseConfig):
     """Experimental features for the orchestrator."""
 
+    mask_off_policy_rollouts: Annotated[
+        bool,
+        Field(
+            description=(
+                "Experimental: when a rollout's off-policy age exceeds max_off_policy_steps, keep the rollout "
+                "and zero out its loss mask instead of cancelling it. The rollout still fills a batch slot but "
+                "contributes no gradient, which keeps the batching pipeline moving under heavy off-policyness "
+                "at the cost of wasted compute on the masked rollouts."
+            ),
+        ),
+    ] = False
+
 
 class TeacherModelConfig(BaseConfig):
     """Configures the teacher model for computing teacher logprobs (e.g. for distillation)."""

@@ -32,6 +32,9 @@ class InflightRequest:
     env_name: str
     group_id: int | None = None
     rollout_count: int = 1
+    # Set when the rollout exceeded max_off_policy_steps under mask_off_policy_rollouts mode.
+    # The request is kept running to completion and its tokens are later masked from the loss.
+    is_stale: bool = False
 
 
 @dataclass
@@ -66,6 +69,7 @@ class Scheduler:
         max_off_policy_steps: int,
         strict_async_level: bool,
         tasks_per_minute: int | None,
+        mask_off_policy_rollouts: bool = False,
         enable_policy_updates: bool = True,
         lora_name: str | None = None,
     ):
@@ -84,6 +88,7 @@ class Scheduler:
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
+        self.mask_off_policy_rollouts = mask_off_policy_rollouts
         self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
         self.model_name = self.config.model.name
@@ -111,6 +116,7 @@ class Scheduler:
         self.inflight_policy_update_task: asyncio.Task | None = None
         self.policy_update_lock = asyncio.Lock()
         self.cancelled_rollouts_count = 0
+        self.masked_stale_rollouts_count = 0
         self.empty_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.errored_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.total_rollouts_by_env: dict[str, int] = defaultdict(int)
@@ -347,8 +353,29 @@ class Scheduler:
         stale_group_ids = {
             info.group_id
             for info in self.inflight_requests.values()
-            if info.group_id is not None and info.off_policy_steps >= self.max_off_policy_steps
+            if info.group_id is not None and not info.is_stale and info.off_policy_steps >= self.max_off_policy_steps
         }
+
+        if self.mask_off_policy_rollouts:
+            # Experimental: mark requests in stale groups for loss-masking and let them finish
+            # instead of cancelling. Keeps the batching pipeline flowing under heavy off-policyness.
+            newly_masked = 0
+            for info in self.inflight_requests.values():
+                if info.group_id in stale_group_ids and not info.is_stale:
+                    info.is_stale = True
+                    newly_masked += info.rollout_count
+            for task, info in list(self.inflight_requests.items()):
+                if info.is_stale:
+                    continue
+                info.off_policy_steps += 1
+            self.masked_stale_rollouts_count += newly_masked
+            if newly_masked:
+                self.logger.warning(
+                    f"Marked {newly_masked} rollout requests as stale (loss-masked, kept running). "
+                    f"Consider increasing max_off_policy_steps to avoid this."
+                )
+            return
+
         tasks_to_increment = [
             task
             for task, info in list(self.inflight_requests.items())
@@ -449,6 +476,7 @@ class Scheduler:
                             )
                         else:
                             rollout["env_name"] = env_name
+                            rollout["off_policy_masked"] = rollout_info.is_stale
                             valid_rollouts.append(rollout)
 
                     if has_failures and env.requires_group_scoring:
@@ -525,6 +553,7 @@ class Scheduler:
             "scheduler/inflight_rollouts": self.inflight_rollout_count,
             "scheduler/inflight_samples": self.inflight_sample_count,
             "scheduler/cancelled_rollouts": self.cancelled_rollouts_count,
+            "scheduler/masked_stale_rollouts": self.masked_stale_rollouts_count,
             "empty_rollouts/all": sum(self.empty_rollouts_by_env.values()) / max(total_rollouts, 1),
             "errored_rollouts/all": sum(self.errored_rollouts_by_env.values()) / max(total_rollouts, 1),
             "off_policy_level/all/max": self.max_off_policy_level,
@@ -541,6 +570,7 @@ class Scheduler:
             metrics[f"off_policy_level/{env_name}/max"] = max(steps)
             metrics[f"off_policy_level/{env_name}/mean"] = sum(steps) / len(steps)
         self.cancelled_rollouts_count = 0
+        self.masked_stale_rollouts_count = 0
         self.empty_rollouts_by_env.clear()
         self.errored_rollouts_by_env.clear()
         self.total_rollouts_by_env.clear()
