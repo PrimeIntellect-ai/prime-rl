@@ -76,7 +76,12 @@ def map_gpu_to_nic(gpu: int) -> str:
 def pin_ucx_rail(local_rank: int) -> None:
     """Set per-rank UCX env *before* the nixl agent is created.
 
-    Uses ``setdefault`` so anything in ``.env`` takes precedence.
+    ``UCX_NET_DEVICES`` is hard-overridden to the GPU's PIX-attached NIC so
+    that inference decode workers — where vLLM pre-sets UCX_NET_DEVICES=mlx5_0:1
+    for its PD KV connector — do not funnel every weight-transfer WRITE through
+    a single NIC per node. This only affects UCX agents created AFTER this
+    point in the process; the PD connector's UCP worker is already up with
+    its own env snapshot and keeps using mlx5_0.
     """
     try:
         nic = map_gpu_to_nic(local_rank)
@@ -84,7 +89,7 @@ def pin_ucx_rail(local_rank: int) -> None:
         # Fallback: let UCX auto-discover if topology probing fails (e.g. in CI).
         nic = None
     if nic is not None:
-        os.environ.setdefault("UCX_NET_DEVICES", nic)
+        os.environ["UCX_NET_DEVICES"] = nic
     # cuda_ipc is disabled: inter-node transfers go over RDMA (rc_mlx5) via
     # GPUDirect, and cuda_ipc's memh packing trips an assertion when torch's
     # caching allocator hands out a tensor that spans across CUDA allocation
