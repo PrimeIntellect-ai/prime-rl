@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from vllm.distributed.utils import StatelessProcessGroup
 
@@ -87,17 +88,19 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self._multi_run_manager = None
         self._meta = meta
 
+        self.logger.info(f"[nixl trainer rank={self.world.rank}] creating NIXL agent")
         self._agent = NixlAgentWrapper(
             name=make_agent_name("trainer", self.world.rank),
             local_rank=self.world.local_rank,
             backends=config.backends,
         )
+        self.logger.info(f"[nixl trainer rank={self.world.rank}] agent created; registering slots")
 
-        # Register every slot and build local descriptors.
-        #   - expert slots: chunked per-expert (num_local_experts chunks)
-        #   - non-expert slots: single chunk (write whole slot — local FSDP shard
-        #     for per_shard, full tensor for gather)
+        # Register each slot's full memory region once (one NIXL reg entry per
+        # slot). Chunks are addressed via sub-range xfer descriptors at write
+        # time — NIXL resolves the rkey from the containing registered region.
         local_preps: dict[str, Any] = {}
+        n_slots = 0
         for layer_idx in range(meta.num_layers):
             for name, tensor in meta.slots[layer_idx].items():
                 self._agent.register_tensor(tensor)
@@ -106,6 +109,12 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 else:
                     descs = self._agent.chunked_descs(tensor, 1)
                 local_preps[name] = self._agent.prep_local(descs)
+                n_slots += 1
+        self.logger.info(
+            f"[nixl trainer rank={self.world.rank}] registered {n_slots} slots; "
+            f"creating StatelessProcessGroup host={config.host} port={config.port} "
+            f"rank={self.world.rank} world_size={self.world.world_size + config.inference_world_size}"
+        )
 
         self._spg = StatelessProcessGroup.create(
             host=config.host,
@@ -114,8 +123,25 @@ class NIXLWeightBroadcast(WeightBroadcast):
             world_size=self.world.world_size + config.inference_world_size,
             store_timeout=config.timeout,
         )
+        self.logger.info(f"[nixl trainer rank={self.world.rank}] SPG created; round 1 all_gather_obj")
 
-        gathered = self._spg.all_gather_obj(
+        # Round 1 — share the layout only. Inference uses it to size its chunked
+        # registrations; we wait until round 2 to exchange agent metadata so the
+        # peer's metadata includes every chunk registration.
+        self._spg.all_gather_obj(
+            {
+                "role": "trainer",
+                "global_rank": self.world.rank,
+                "non_expert_layout": meta.non_expert_layout,
+            }
+        )
+        self.logger.info(
+            f"[nixl trainer rank={self.world.rank}] round 1 done; round 2 all_gather_obj for descriptors"
+        )
+
+        # Round 2 — fresh agent_metadata (after all chunk registrations land on
+        # both sides) + inference's serialized chunk descriptors.
+        round2 = self._spg.all_gather_obj(
             {
                 "role": "trainer",
                 "global_rank": self.world.rank,
@@ -123,22 +149,58 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 "agent_metadata": self._agent.get_metadata(),
             }
         )
-        inference_infos = gathered[self.world.world_size :]
+        inference_infos = round2[self.world.world_size :]
         for peer in inference_infos:
             self._agent.add_remote(peer["agent_metadata"])
             self._agent.make_connection(peer["agent_name"])
+        self.logger.info(f"[nixl trainer rank={self.world.rank}] round 2 done; building write table")
 
-        # Build remote descriptors directly from each inference peer's published
-        # (ptr, nbytes, dev) tuples — the trainer knows the layout and picks offsets
-        # into the remote registered memory to point the WRITE at.
+        # Build the write table. Each entry: (local_prep, local_idx, remote_prep,
+        # remote_idx, peer_name, tag). Inference publishes a list of per-chunk
+        # 1-entry dlists per slot; we deserialize the one matching our chunk and
+        # prep it per-peer so make_prepped_xfer pairs 1-entry local ↔ 1-entry remote.
         trainer_ws = self.world.world_size
         my_rank = self.world.rank
-        self._writes: list[tuple[Any, int, Any, int]] = []
+        self._writes: list[tuple[Any, int, Any, int, str, str]] = []
+        remote_prep_cache: dict[tuple[str, str, int], Any] = {}
+        # Diagnostic: collect slot name → (local_bytes, remote_chunk_bytes) for
+        # any non-expert per_shard slot so we can catch length mismatches at
+        # init (the writer-side ``makeXferReq`` only surfaces them as INVALID_PARAM).
+        first_size_logged = False
+
+        def _get_remote_prep(peer_name: str, slot_name: str, chunk_idx: int, peer_descs: list[bytes]) -> Any:
+            key = (peer_name, slot_name, chunk_idx)
+            cached = remote_prep_cache.get(key)
+            if cached is not None:
+                return cached
+            remote_dlist = self._agent.deserialize_descs(peer_descs[chunk_idx])
+            cached = self._agent.prep_remote(peer_name, remote_dlist)
+            remote_prep_cache[key] = cached
+            return cached
+
+        # Verify local/remote desc sizes match as we build the table — NIXL's
+        # ``makeXferReq`` only surfaces mismatches at post time as INVALID_PARAM.
+        import pickle as _pkl
+
+        def _dlist_byte_size(bytes_blob: bytes) -> int:
+            # Deserialized xfer dlist's descCount is 1 (single-entry); read size
+            # from the underlying pickle structure for diagnostics only.
+            try:
+                obj = _pkl.loads(bytes_blob)
+                return int(obj[0][1]) if hasattr(obj, "__getitem__") else -1
+            except Exception:
+                return -1
+
+        def _check(tag: str, local_b: int, remote_b: int) -> None:
+            if local_b != remote_b:
+                self.logger.error(
+                    f"[nixl rank={self.world.rank}] SIZE MISMATCH {tag} local={local_b} remote={remote_b}"
+                )
+
         for layer_idx in range(meta.num_layers):
             for name, slot in meta.slots[layer_idx].items():
                 local_prep = local_preps[name]
                 slot_bytes = slot.numel() * slot.element_size()
-                bytes_per_row = slot_bytes // slot.shape[0]
 
                 if _is_expert_tensor(name):
                     moe_prefix = f"model.layers.{layer_idx}.mlp.experts"
@@ -148,38 +210,42 @@ class NIXLWeightBroadcast(WeightBroadcast):
                             if global_idx not in peer["expert_map"][moe_prefix]:
                                 continue
                             remote_idx = peer["expert_map"][moe_prefix].index(global_idx)
-                            ptr, _nbytes, dev = peer["tensor_ptrs"][name]
-                            remote_descs = self._agent.descs_from_tuples(
-                                [(ptr + remote_idx * expert_bytes, expert_bytes, dev)]
+                            _check(
+                                f"expert:{name}:E{global_idx}@{peer['agent_name']}",
+                                expert_bytes,
+                                _dlist_byte_size(peer["descriptors"][name][remote_idx]),
                             )
-                            remote_prep = self._agent.prep_remote(peer["agent_name"], remote_descs)
-                            self._writes.append((local_prep, local_idx, remote_prep, 0))
+                            remote_prep = _get_remote_prep(peer["agent_name"], name, remote_idx, peer["descriptors"][name])
+                            self._writes.append(
+                                (local_prep, local_idx, remote_prep, 0, peer["agent_name"], f"expert:{name}:E{global_idx}")
+                            )
                     continue
 
                 info = meta.non_expert_layout[layer_idx][name]
-                offset_bytes = info["offset_rows"] * bytes_per_row
                 if info["handling"] == "per_shard":
-                    # Write this rank's shard to chunk[my_rank] on EVERY inference peer.
                     for peer in inference_infos:
-                        ptr, _nbytes, dev = peer["tensor_ptrs"][info["inference_name"]]
-                        remote_descs = self._agent.descs_from_tuples(
-                            [(ptr + offset_bytes + my_rank * slot_bytes, slot_bytes, dev)]
+                        _check(
+                            f"per_shard:{name}@{peer['agent_name']}",
+                            slot_bytes,
+                            _dlist_byte_size(peer["descriptors"][name][my_rank]),
                         )
-                        remote_prep = self._agent.prep_remote(peer["agent_name"], remote_descs)
-                        self._writes.append((local_prep, 0, remote_prep, 0))
+                        remote_prep = _get_remote_prep(peer["agent_name"], name, my_rank, peer["descriptors"][name])
+                        self._writes.append(
+                            (local_prep, 0, remote_prep, 0, peer["agent_name"], f"per_shard:{name}")
+                        )
                 else:
-                    # Gather: trainer rank r writes the full slot to inference peers
-                    # where i % R == r. For R >= I only the first I trainers write;
-                    # for R < I each trainer fans out to ceil(I/R) peers.
                     for i, peer in enumerate(inference_infos):
                         if i % trainer_ws != my_rank:
                             continue
-                        ptr, _nbytes, dev = peer["tensor_ptrs"][info["inference_name"]]
-                        remote_descs = self._agent.descs_from_tuples(
-                            [(ptr + offset_bytes, slot_bytes, dev)]
+                        _check(
+                            f"gather:{name}@{peer['agent_name']}",
+                            slot_bytes,
+                            _dlist_byte_size(peer["descriptors"][name][0]),
                         )
-                        remote_prep = self._agent.prep_remote(peer["agent_name"], remote_descs)
-                        self._writes.append((local_prep, 0, remote_prep, 0))
+                        remote_prep = _get_remote_prep(peer["agent_name"], name, 0, peer["descriptors"][name])
+                        self._writes.append(
+                            (local_prep, 0, remote_prep, 0, peer["agent_name"], f"gather:{name}")
+                        )
 
         self._bytes_per_push = sum(
             t.numel() * t.element_size()
@@ -195,7 +261,14 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
     @torch.no_grad()
     def push_once(self, model: PreTrainedModelPrimeRL) -> None:
-        """Convert every layer into its stable slot and post all writes."""
+        """Convert every layer into its stable slot and post writes in chunks.
+
+        Draining handles every ``flush_every`` posts keeps NIXL/UCX queue
+        depth bounded. Posting all 28k handles at once appeared to overwhelm
+        the UCX progress engine — completions came back so slowly that wall
+        time dwarfed the useful bytes/sec. Progress logs every chunk show
+        where we are if the run ever stalls.
+        """
         device = next(model.parameters()).device
 
         t_start = time.perf_counter()
@@ -205,15 +278,35 @@ class NIXLWeightBroadcast(WeightBroadcast):
         torch.cuda.synchronize(device)
         t_converted = time.perf_counter()
 
-        handles = [self._agent.post_write(lp, li, rp, ri) for lp, li, rp, ri in self._writes]
+        flush_every = 100
+        handles: list = []
+        handle_ctx: list[tuple[str, str]] = []  # parallel list of (peer, tag) for error context
+
+        def _drain(at: int) -> None:
+            t_drain = time.perf_counter()
+            for h, ctx in zip(handles, handle_ctx):
+                self._agent.wait(h, context=f"rank={self.world.rank} peer={ctx[0]} tag={ctx[1]}")
+            handles.clear()
+            handle_ctx.clear()
+            self.logger.info(
+                f"[nixl rank={self.world.rank}] drained through {at}/{len(self._writes)} in {(time.perf_counter() - t_drain) * 1e3:.1f}ms"
+            )
+
+        for i, (lp, li, rp, ri, peer_name, tag) in enumerate(self._writes):
+            handles.append(self._agent.post_write(lp, li, rp, ri))
+            handle_ctx.append((peer_name, tag))
+            if (i + 1) % flush_every == 0:
+                _drain(i + 1)
+        if handles:
+            _drain(len(self._writes))
+
         t_posted = time.perf_counter()
+        t_waited = t_posted
 
-        for h in handles:
-            self._agent.wait(h)
-        t_waited = time.perf_counter()
-
+        self.logger.info(f"[nixl rank={self.world.rank}] entering SPG barrier after drain")
         self._spg.barrier()
         t_done = time.perf_counter()
+        self.logger.info(f"[nixl rank={self.world.rank}] left SPG barrier in {(t_done - t_waited) * 1e3:.1f}ms")
 
         dt_convert = t_converted - t_start
         dt_post = t_posted - t_converted
@@ -239,6 +332,12 @@ class NIXLWeightBroadcast(WeightBroadcast):
         if self.world.is_master:
             notified_runs = self._notify_orchestrator()
             self._wait_for_nixl_ready(notified_runs)
+        # Only rank 0 waits for NIXL_READY (the orchestrator drops it after all
+        # inference engines acknowledge /pause). Hold every other trainer rank
+        # here so no rank starts RDMA-writing into inference memory before all
+        # engines have drained — otherwise a worker still running a forward pass
+        # races the write into its own weight buffers.
+        dist.barrier()
         self.push_once(model)
         self.logger.debug(f"NIXL weights broadcasted in {time.perf_counter() - start:.2f}s")
 

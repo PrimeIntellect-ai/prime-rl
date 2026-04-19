@@ -169,10 +169,8 @@ def _inference(local_rank: int, inf_rank: int, port: int, fixture_dir: str, read
         tensors = _build_inference_tensors(ref_model, device, experts_per_inf)
 
         agent = NixlAgentWrapper(name=make_agent_name("inference", R + inf_rank), local_rank=local_rank)
-        tensor_ptrs: dict[str, tuple[int, int, int]] = {}
-        for name, t in tensors.items():
+        for t in tensors.values():
             agent.register_tensor(t)
-            tensor_ptrs[name] = (t.data_ptr(), t.numel() * t.element_size(), t.get_device())
 
         expert_map_per_prefix = {
             f"model.layers.{layer_idx}.mlp.experts": owned
@@ -183,17 +181,50 @@ def _inference(local_rank: int, inf_rank: int, port: int, fixture_dir: str, read
         spg = StatelessProcessGroup.create(
             host="localhost", port=port, rank=global_rank, world_size=R + I, store_timeout=120
         )
-        gathered = spg.all_gather_obj(
+        # Round 1 — pull trainer's layout. Agent metadata deferred to round 2.
+        round1 = spg.all_gather_obj(
+            {"role": "inference", "global_rank": global_rank, "expert_map": expert_map_per_prefix}
+        )
+        layout = round1[0]["non_expert_layout"]
+
+        descriptors: dict[str, list[bytes]] = {}
+
+        def _publish_chunks(chunk_list: list[torch.Tensor]) -> list[bytes]:
+            out: list[bytes] = []
+            for c in chunk_list:
+                dlist = agent._agent.get_xfer_descs(
+                    [(c.data_ptr(), c.numel() * c.element_size(), c.get_device())],
+                    mem_type="cuda",
+                )
+                out.append(agent.serialize_descs(dlist))
+            return out
+
+        for layer_layout in layout.values():
+            for slot_key, info in layer_layout.items():
+                full = tensors[info["inference_name"]]
+                subview = full.narrow(0, info["offset_rows"], info["rows"])
+                n_chunks = R if info["handling"] == "per_shard" else 1
+                sub_rows = info["rows"] // n_chunks
+                chunks = [subview.narrow(0, i * sub_rows, sub_rows) for i in range(n_chunks)]
+                descriptors[slot_key] = _publish_chunks(chunks)
+        for name, t in tensors.items():
+            if ".mlp.experts." not in name:
+                continue
+            chunks = [t.narrow(0, e, 1) for e in range(experts_per_inf)]
+            descriptors[name] = _publish_chunks(chunks)
+
+        # Round 2 — fresh agent_metadata + descriptors + expert_map.
+        round2 = spg.all_gather_obj(
             {
                 "role": "inference",
                 "global_rank": global_rank,
                 "agent_name": agent.name,
                 "agent_metadata": agent.get_metadata(),
-                "tensor_ptrs": tensor_ptrs,
+                "descriptors": descriptors,
                 "expert_map": expert_map_per_prefix,
             }
         )
-        for peer in gathered[:R]:
+        for peer in round2[:R]:
             agent.add_remote(peer["agent_metadata"])
 
         spg.barrier()

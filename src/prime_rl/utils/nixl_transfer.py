@@ -85,11 +85,15 @@ def pin_ucx_rail(local_rank: int) -> None:
         nic = None
     if nic is not None:
         os.environ.setdefault("UCX_NET_DEVICES", nic)
-    os.environ.setdefault("UCX_TLS", "rc_mlx5,ud,cuda_copy,cuda_ipc")
+    # cuda_ipc is disabled: inter-node transfers go over RDMA (rc_mlx5) via
+    # GPUDirect, and cuda_ipc's memh packing trips an assertion when torch's
+    # caching allocator hands out a tensor that spans across CUDA allocation
+    # segments. We don't need intra-node IPC for the trainer↔inference path.
+    os.environ.setdefault("UCX_TLS", "rc_mlx5,ud,cuda_copy")
     os.environ.setdefault("UCX_IB_GPU_DIRECT_RDMA", "y")
     os.environ.setdefault("UCX_RNDV_SCHEME", "put_zcopy")
     os.environ.setdefault("UCX_RNDV_THRESH", "8192")
-    os.environ.setdefault("UCX_MEMTYPE_CACHE", "y")
+    os.environ.setdefault("UCX_MEMTYPE_CACHE", "n")
     os.environ.setdefault("UCX_WARN_UNUSED_ENV_VARS", "n")
 
 
@@ -113,8 +117,14 @@ class NixlAgentWrapper:
         self._agent = nixl_agent(name, nixl_agent_config(backends=self.backends))
 
     def register_tensor(self, tensor: Tensor):
-        """Pin a tensor's device memory for RDMA and return its xfer descriptor."""
-        self._agent.register_memory(tensor)
+        """Pin a tensor's device memory for RDMA and return its xfer descriptor.
+
+        Explicit ``backends=self.backends`` mirrors how vLLM's NixlConnector
+        registers KV caches — without it, the backend the rkey is bound to can
+        mismatch the one used for the actual transfer and trigger mlx5 local
+        protection errors on WRITE landing.
+        """
+        self._agent.register_memory(tensor, backends=self.backends)
         return self._agent.get_xfer_descs(tensor)
 
     def chunked_descs(self, tensor: Tensor, num_chunks: int):
@@ -147,15 +157,15 @@ class NixlAgentWrapper:
         self._agent.add_remote_agent(peer_metadata)
 
     def prep_local(self, descs):
-        return self._agent.prep_xfer_dlist("NIXL_INIT_AGENT", descs, backends=self.backends)
+        return self._agent.prep_xfer_dlist("NIXL_INIT_AGENT", descs)
 
     def prep_remote(self, peer_name: str, descs):
-        return self._agent.prep_xfer_dlist(peer_name, descs, backends=self.backends)
+        return self._agent.prep_xfer_dlist(peer_name, descs)
 
     def make_connection(self, peer_name: str) -> None:
         """Eagerly establish the UCX connection to a peer so the first transfer
         doesn't race connection setup (see playground commentary)."""
-        self._agent.make_connection(peer_name, backends=self.backends)
+        self._agent.make_connection(peer_name)
 
     def post_write(self, local_prep, local_idx: int, remote_prep, remote_idx: int):
         handle = self._agent.make_prepped_xfer(
@@ -164,21 +174,40 @@ class NixlAgentWrapper:
             [local_idx],
             remote_prep,
             [remote_idx],
-            backends=self.backends,
         )
         state = self._agent.transfer(handle)
         if state == "ERR":
             raise RuntimeError("nixl transfer post returned ERR")
         return handle
 
-    def wait(self, handle) -> None:
+    def post_write_dlist(self, local_dlist, remote_dlist, remote_agent_name: str):
+        """Post a WRITE using raw xfer dlists (no prep step)."""
+        handle = self._agent.initialize_xfer(
+            "WRITE", local_dlist, remote_dlist, remote_agent_name
+        )
+        state = self._agent.transfer(handle)
+        if state == "ERR":
+            raise RuntimeError("nixl transfer post returned ERR")
+        return handle
+
+    def describe_prep(self, prep_handle) -> str:
+        """Best-effort debug repr for a prepped dlist handle."""
+        return repr(prep_handle)
+
+    def wait(self, handle, context: str = "") -> None:
         # Busy-wait mirrors the playground. NIXL does not currently expose a blocking
         # wait; the tight loop is cheap because UCX completions land quickly.
-        while self._agent.check_xfer_state(handle) == "PROC":
-            pass
-        state = self._agent.check_xfer_state(handle)
+        try:
+            while self._agent.check_xfer_state(handle) == "PROC":
+                pass
+            state = self._agent.check_xfer_state(handle)
+        except Exception as exc:
+            raise RuntimeError(
+                f"nixl check_xfer_state raised {type(exc).__name__} ({exc}) "
+                f"from {self.name} context={context!r}"
+            ) from exc
         if state != "DONE":
-            raise RuntimeError(f"nixl transfer ended with state {state}")
+            raise RuntimeError(f"nixl transfer ended with state {state} from {self.name} context={context!r}")
         handle.release()
 
 

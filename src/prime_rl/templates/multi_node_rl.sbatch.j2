@@ -341,7 +341,7 @@ else
         ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.base-url $INFER_URLS"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.admin-base-url $ADMIN_URLS"
-        {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+        {% if use_nccl_broadcast or use_nixl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% endif %}{% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
     fi
@@ -351,10 +351,28 @@ else
 
     export HF_HUB_OFFLINE=1
 
-    # This is required for compilation to work correctly
-    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+    export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
+    {% if use_nixl_broadcast %}# UCX transports minus cuda_ipc. Trainer uses expandable_segments:True
+    # which breaks cuda_ipc memh packing (see third_party/ucx cuda_ipc_md.c assertion).
+    # UCX_NET_DEVICES is intentionally unset here so that pin_ucx_rail can set it
+    # per-rank to the PIX-attached NIC for each GPU. Setting "all" here caused
+    # local rank 4 (GPUs 4-7 have three PIX NICs, including mlx5_8 which is
+    # DOWN on every trainer node) to end up using the dead NIC and hit
+    # REMOTE_DISCONNECT. Avoid apostrophes — this script is wrapped in bash -c.
+    export UCX_TLS=rc_mlx5,rc_x,ud,ud_mlx5,self,cuda_copy
+    {% endif %}
+
+    # NIXL trainer path requires classic cudaMalloc-backed memory — expandable
+    # segments (cuMemMap) trip mlx5 local protection errors on IB posts because
+    # the NIC cannot resolve the registered MR for cuMemCreate-backed ranges.
+    # Non-NIXL paths keep expandable_segments which helps torch.compile.
+    {% if use_nixl_broadcast %}export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
+    {%- else %}export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+    {%- endif %}
 
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
+
+    {% if use_nixl_broadcast %}TRAINER_EXTRA_ARGS="--weight_broadcast.host $MASTER_ADDR"{% else %}TRAINER_EXTRA_ARGS=""{% endif %}
 
     {% if wandb_shared %}WANDB_SHARED_LABEL=trainer {% endif %}uv run torchrun \
         --role=trainer \
@@ -369,6 +387,7 @@ else
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.toml \
+        $TRAINER_EXTRA_ARGS \
         2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 '

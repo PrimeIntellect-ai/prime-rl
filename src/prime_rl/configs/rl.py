@@ -15,6 +15,9 @@ from prime_rl.configs.orchestrator import (
     NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig,
 )
 from prime_rl.configs.orchestrator import (
+    NIXLWeightBroadcastConfig as OrchestratorNIXLWeightBroadcastConfig,
+)
+from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
 from prime_rl.configs.shared import (
@@ -37,6 +40,9 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
+    NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
 )
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
@@ -146,21 +152,25 @@ class SharedModelConfig(BaseConfig):
 class SharedWeightBroadcastConfig(BaseConfig):
     """Configures shared weight broadcast settings."""
 
-    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
-        "filesystem"
-    )
+    type: Annotated[
+        Literal["nccl", "filesystem", "nixl"], Field(description="The type of weight broadcast to use.")
+    ] = "filesystem"
 
-    port: Annotated[int, Field(description="The port to use for NCCL weight broadcast.")] = 29501
-    timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
+    port: Annotated[int, Field(description="Rendezvous port (NCCL or NIXL).")] = 29501
+    timeout: Annotated[int, Field(description="Rendezvous timeout in seconds (NCCL or NIXL).")] = 1200
     quantize_in_weight_transfer: Annotated[
         bool,
         Field(
             description=(
                 "Use kernel-format FP8 quantized NCCL transfer for weight updates. "
-                "When disabled, uses default HF checkpoint-format transfer."
+                "When disabled, uses default HF checkpoint-format transfer. "
+                "Only valid with type='nccl' (NIXL is always kernel-format)."
             ),
         ),
     ] = False
+    backends: Annotated[
+        list[str], Field(description="NIXL backends (only used when type='nixl').")
+    ] = ["UCX"]
 
 
 class BaseDeploymentConfig(BaseModel):
@@ -234,6 +244,13 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 DeploymentConfig: TypeAlias = Annotated[
     SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
+
+
+def _infer_trainer_world_size(deployment: "DeploymentConfig") -> int:
+    """Total number of trainer ranks across all nodes."""
+    if deployment.type == "single_node":
+        return deployment.num_train_gpus
+    return deployment.num_train_nodes * deployment.gpus_per_node
 
 
 class RLConfig(BaseConfig):
@@ -393,10 +410,11 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_enough_devices_for_nccl(self):
         if self.deployment.type == "single_node":
-            if self.trainer.weight_broadcast.type == "nccl":
+            if self.trainer.weight_broadcast.type in ("nccl", "nixl"):
                 if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
                     raise ValueError(
-                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
+                        f"{self.trainer.weight_broadcast.type.upper()} weight broadcast requires at least 2 GPUs to "
+                        "build the broadcast process group."
                     )
         return self
 
@@ -659,6 +677,24 @@ class RLConfig(BaseConfig):
                     inference_world_size=inference_world_size,
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
+            elif self.weight_broadcast.type == "nixl":
+                inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+                trainer_world_size = _infer_trainer_world_size(self.deployment)
+                self.trainer.weight_broadcast = TrainerNIXLWeightBroadcastConfig(
+                    type=self.weight_broadcast.type,
+                    port=self.weight_broadcast.port,
+                    timeout=self.weight_broadcast.timeout,
+                    inference_world_size=inference_world_size,
+                    backends=self.weight_broadcast.backends,
+                )
+                self.orchestrator.weight_broadcast = OrchestratorNIXLWeightBroadcastConfig(
+                    type=self.weight_broadcast.type,
+                    port=self.weight_broadcast.port,
+                    timeout=self.weight_broadcast.timeout,
+                    trainer_world_size=trainer_world_size,
+                    inference_world_size=inference_world_size,
+                    backends=self.weight_broadcast.backends,
+                )
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
@@ -858,6 +894,18 @@ class RLConfig(BaseConfig):
                 assert self.orchestrator.weight_broadcast.type == "nccl"
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
+            if self.weight_broadcast is not None and self.weight_broadcast.type == "nixl":
+                api_server_count = self.inference.api_server_count if self.inference else 1
+                tp = self.inference.parallel.tp if self.inference else 1
+                total_infer_workers = self.deployment.total_infer_nodes * api_server_count * tp
+                trainer_world_size = _infer_trainer_world_size(self.deployment)
+                assert self.trainer.weight_broadcast.type == "nixl"
+                self.trainer.weight_broadcast.host = "0.0.0.0"
+                self.trainer.weight_broadcast.inference_world_size = total_infer_workers
+                assert self.orchestrator.weight_broadcast.type == "nixl"
+                self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
+                self.orchestrator.weight_broadcast.trainer_world_size = trainer_world_size
+
         return self
 
     @model_validator(mode="after")
@@ -883,6 +931,12 @@ class RLConfig(BaseConfig):
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
             assert self.orchestrator.weight_broadcast.type == "nccl"
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
+        if self.weight_broadcast is not None and self.weight_broadcast.type == "nixl":
+            assert self.trainer.weight_broadcast.type == "nixl"
+            self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
+            assert self.orchestrator.weight_broadcast.type == "nixl"
+            self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
+            self.orchestrator.weight_broadcast.trainer_world_size = _infer_trainer_world_size(self.deployment)
 
         return self
 
