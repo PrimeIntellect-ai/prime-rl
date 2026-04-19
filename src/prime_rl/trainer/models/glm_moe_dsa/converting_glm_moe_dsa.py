@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div, fp8_block_quantize, grouped_fp8_block_quantize
+from prime_rl.trainer.models.fp8 import fp8_block_quantize, grouped_fp8_block_quantize
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
@@ -164,6 +164,14 @@ class _Spec:
     sources: tuple[str, ...]  # source suffixes (after "model.layers.{i}.")
     cat_dim: int = 0
     quantize: bool = False
+    # Scale suffix substitution when ``quantize`` — ".weight" → scale_suffix (starts
+    # with "."), or "_weight" → scale_suffix (starts with "_").
+    scale_suffix: str = ".weight_scale_inv"
+
+    def scale_name(self, prefix: str) -> str:
+        dst = f"{prefix}.{self.dst}"
+        strip = ".weight" if self.scale_suffix.startswith(".") else "_weight"
+        return dst.removesuffix(strip) + self.scale_suffix
 
 
 _BASE: tuple[_Spec, ...] = (
@@ -196,8 +204,14 @@ _SPARSE: tuple[_Spec, ...] = (
         quantize=True,
     ),
     _Spec("mlp.shared_experts.down_proj.weight", ("mlp.shared_expert.w2",), quantize=True),
-    _Spec("mlp.experts.w13_weight", ("mlp.experts.w1", "mlp.experts.w3"), cat_dim=1, quantize=True),
-    _Spec("mlp.experts.w2_weight", ("mlp.experts.w2",), quantize=True),
+    _Spec(
+        "mlp.experts.w13_weight",
+        ("mlp.experts.w1", "mlp.experts.w3"),
+        cat_dim=1,
+        quantize=True,
+        scale_suffix="_weight_scale_inv",
+    ),
+    _Spec("mlp.experts.w2_weight", ("mlp.experts.w2",), quantize=True, scale_suffix="_weight_scale_inv"),
 )
 
 
@@ -207,56 +221,33 @@ _DENSE: tuple[_Spec, ...] = (
 )
 
 
-def _scale_shape(shape: torch.Size) -> tuple[int, ...]:
-    if len(shape) == 3:
-        g, r, c = shape
-        return (g, ceil_div(r, BLOCK_SIZE), ceil_div(c, BLOCK_SIZE))
-    r, c = shape
-    return (ceil_div(r, BLOCK_SIZE), ceil_div(c, BLOCK_SIZE))
-
-
 def convert_tt_layer_to_vllm_kernel(
     state_dict: dict[str, Tensor],
     layer_idx: int,
-    out_buffers: dict[str, Tensor] | None = None,
+    out_buffers: dict[str, Tensor],
 ) -> dict[str, Tensor]:
-    """Convert a single GLM MoE DSA layer from prime-rl format to vLLM FP8 kernel format.
-
-    The mapping is deterministic; the only branch is dense-layer vs sparse-layer.
-    ``out_buffers`` is always populated correctly — any destination the caller
-    didn't pre-register is allocated here with the right shape/dtype, then
-    filled in place.
-    """
+    """Convert a single GLM MoE DSA layer from prime-rl format to vLLM FP8 kernel format."""
     prefix = f"model.layers.{layer_idx}"
     is_sparse = f"{prefix}.mlp.router.gate.weight" in state_dict
     specs = _BASE + (_SPARSE if is_sparse else _DENSE)
 
-    if out_buffers is None:
-        out_buffers = {}
-
+    out: dict[str, Tensor] = {}
     for spec in specs:
         dst = f"{prefix}.{spec.dst}"
         srcs = [state_dict[f"{prefix}.{s}"] for s in spec.sources]
-        # Shared-expert tensors live as (1, M, N); drop the leading singleton so
-        # they slot into the 2D destinations above.
-        srcs = [s.squeeze(0) if s.ndim == 3 and s.shape[0] == 1 else s for s in srcs]
-        tensor = srcs[0] if len(srcs) == 1 else torch.cat(srcs, dim=spec.cat_dim)
-
-        dtype = torch.float8_e4m3fn if spec.quantize else tensor.dtype
-        if dst not in out_buffers:
-            out_buffers[dst] = torch.empty(tensor.shape, dtype=dtype, device=tensor.device)
-        buf = out_buffers[dst]
+        if len(srcs) == 1:
+            tensor = srcs[0]
+        else:
+            tensor = torch.cat(srcs, dim=spec.cat_dim)
 
         if spec.quantize:
-            scale_name = dst + "_scale_inv"
-            if scale_name not in out_buffers:
-                out_buffers[scale_name] = torch.empty(
-                    _scale_shape(tensor.shape), dtype=torch.float32, device=tensor.device
-                )
-            sf = out_buffers[scale_name]
+            scale_name = spec.scale_name(prefix)
             quantize = grouped_fp8_block_quantize if tensor.ndim == 3 else fp8_block_quantize
-            quantize(tensor, out=buf, sf=sf)
+            q, s = quantize(tensor, out=out_buffers[dst], sf=out_buffers[scale_name])
+            out[dst] = q
+            out[scale_name] = s
         else:
-            buf.copy_(tensor)
+            out_buffers[dst].copy_(tensor)
+            out[dst] = out_buffers[dst]
 
-    return out_buffers
+    return out

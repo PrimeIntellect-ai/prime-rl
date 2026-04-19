@@ -155,6 +155,7 @@ def _inference(local_rank: int, port: int, fixture_dir: str, ready_q: mp.Queue) 
 
         from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
         from prime_rl.trainer.models.glm_moe_dsa.modeling_glm_moe_dsa import GlmMoeDsaForCausalLM
+        from prime_rl.trainer.rl.broadcast.nixl import _allocate_layer_slots
         from prime_rl.utils.nixl_transfer import NixlAgentWrapper, make_agent_name
 
         # Build stub and register buffers with NIXL.
@@ -205,7 +206,8 @@ def _inference(local_rank: int, port: int, fixture_dir: str, ready_q: mp.Queue) 
         mismatches: list[str] = []
         for layer_idx in range(cfg.first_k_dense_replace, cfg.num_hidden_layers):
             layer_sd = {k: v.to(torch.bfloat16) for k, v in ref_sd.items() if k.startswith(f"model.layers.{layer_idx}.")}
-            reference = convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx)
+            reference = _allocate_layer_slots(layer_sd, layer_idx, torch.bfloat16, device)
+            convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx, out_buffers=reference)
             layer_mod = getattr(stub, f"_layer_{layer_idx}")
             for attr in ("w13_weight", "w2_weight", "w13_weight_scale_inv", "w2_weight_scale_inv"):
                 ref_tensor = reference[f"model.layers.{layer_idx}.mlp.experts.{attr}"].to(device)

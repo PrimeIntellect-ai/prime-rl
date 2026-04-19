@@ -1,9 +1,8 @@
 """Unit tests for the ``out=`` buffers behind the GLM MoE DSA -> vLLM FP8 conversion.
 
 These tests don't require NIXL/RDMA hardware — they verify that the
-pre-registered buffer path produces bit-identical outputs to the allocating
-path. Bit-identical equality is the invariant that keeps live NIXL correctness
-reducible to a single allocating-vs-inplace check.
+pre-registered buffer path is written in place (zero-copy) and matches a
+reference pass bit-exactly.
 """
 
 from __future__ import annotations
@@ -22,10 +21,8 @@ def test_fp8_block_quantize_out_buffers_match_allocating_path(rows: int, cols: i
     device = torch.device("cuda")
     w = torch.randn(rows, cols, dtype=torch.bfloat16, device=device)
 
-    # Allocating path.
     q_ref, s_ref = fp8_block_quantize(w)
 
-    # In-place path with caller-provided buffers.
     out_q = torch.zeros(rows, cols, dtype=torch.float8_e4m3fn, device=device)
     out_sf = torch.zeros(ceil_div(rows, BLOCK_SIZE), ceil_div(cols, BLOCK_SIZE), dtype=torch.float32, device=device)
     fp8_block_quantize(w, out=out_q, sf=out_sf)
@@ -52,74 +49,45 @@ def test_grouped_fp8_block_quantize_out_buffers_match_allocating_path() -> None:
     assert torch.equal(s_ref, out_sf)
 
 
-def test_convert_glm_layer_out_buffers_match() -> None:
-    """``convert_tt_layer_to_vllm_kernel`` with ``out_buffers`` must produce the
-    same expert tensors as the allocating path (bitwise FP8 equality) and
-    populate every destination into the caller's dict."""
+def test_convert_glm_layer_writes_into_preallocated_buffers() -> None:
+    """Running the conversion twice with the same ``out_buffers`` must reuse the
+    storage (no realloc) and match a fresh reference pass bit-exactly."""
+    from tests.unit.train.models.test_glm_moe_dsa_conversion import _allocate_buffers, _attn_state
+
     from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
 
     torch.manual_seed(0)
     device = torch.device("cuda")
     num_experts, moe_dim, dim = 4, 128, 256
     prefix = "model.layers.1"
-    state_dict = {
-        f"{prefix}.mlp.experts.w1": torch.randn(num_experts, moe_dim, dim, dtype=torch.bfloat16, device=device),
-        f"{prefix}.mlp.experts.w2": torch.randn(num_experts, dim, moe_dim, dtype=torch.bfloat16, device=device),
-        f"{prefix}.mlp.experts.w3": torch.randn(num_experts, moe_dim, dim, dtype=torch.bfloat16, device=device),
-        f"{prefix}.mlp.router.gate.weight": torch.randn(num_experts, dim, dtype=torch.bfloat16, device=device),
-        f"{prefix}.mlp.expert_bias": torch.randn(num_experts, dtype=torch.bfloat16, device=device),
-        f"{prefix}.mlp.shared_expert.w1": torch.randn(1, moe_dim, dim, dtype=torch.bfloat16, device=device),
-        f"{prefix}.mlp.shared_expert.w2": torch.randn(1, dim, moe_dim, dtype=torch.bfloat16, device=device),
-        f"{prefix}.mlp.shared_expert.w3": torch.randn(1, moe_dim, dim, dtype=torch.bfloat16, device=device),
-    }
-    # Attention sources (required by _BASE mapping).
-    for name, shape in (
-        ("input_layernorm.weight", (dim,)),
-        ("post_attention_layernorm.weight", (dim,)),
-        ("self_attn.q_a_layernorm.weight", (dim,)),
-        ("self_attn.kv_a_layernorm.weight", (dim,)),
-        ("self_attn.q_a_proj.weight", (dim, dim)),
-        ("self_attn.kv_a_proj_with_mqa.weight", (dim, dim)),
-        ("self_attn.q_b_proj.weight", (dim, dim)),
-        ("self_attn.kv_b_proj.weight", (dim, dim)),
-        ("self_attn.o_proj.weight", (dim, dim)),
-        ("self_attn.indexer.wq_b.weight", (dim, dim)),
-        ("self_attn.indexer.wk.weight", (dim, dim)),
-        ("self_attn.indexer.k_norm.weight", (dim,)),
-        ("self_attn.indexer.k_norm.bias", (dim,)),
-        ("self_attn.indexer.weights_proj.weight", (dim, dim)),
-    ):
-        state_dict[f"{prefix}.{name}"] = torch.randn(*shape, dtype=torch.bfloat16, device=device)
+    state = _attn_state(prefix, device)
+    # Override attn shapes with the ones the rest of this test uses.
+    state.update(
+        {
+            f"{prefix}.mlp.experts.w1": torch.randn(num_experts, moe_dim, dim, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.experts.w2": torch.randn(num_experts, dim, moe_dim, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.experts.w3": torch.randn(num_experts, moe_dim, dim, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.router.gate.weight": torch.randn(num_experts, dim, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.expert_bias": torch.randn(num_experts, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.shared_expert.w1": torch.randn(moe_dim, dim, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.shared_expert.w2": torch.randn(dim, moe_dim, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.shared_expert.w3": torch.randn(moe_dim, dim, dtype=torch.bfloat16, device=device),
+        }
+    )
 
-    ref = convert_tt_layer_to_vllm_kernel(dict(state_dict), layer_idx=1)
+    ref_buffers = _allocate_buffers(state, prefix, is_sparse=True)
+    convert_tt_layer_to_vllm_kernel(state, layer_idx=1, out_buffers=ref_buffers)
 
-    # Pre-register the four expert slots; everything else should be auto-allocated.
-    w13_shape = (num_experts, 2 * moe_dim, dim)
-    w2_shape = (num_experts, dim, moe_dim)
-    s_w13 = (ceil_div(2 * moe_dim, BLOCK_SIZE), ceil_div(dim, BLOCK_SIZE))
-    s_w2 = (ceil_div(dim, BLOCK_SIZE), ceil_div(moe_dim, BLOCK_SIZE))
-    out_buffers = {
-        f"{prefix}.mlp.experts.w13_weight": torch.zeros(w13_shape, dtype=torch.float8_e4m3fn, device=device),
-        f"{prefix}.mlp.experts.w2_weight": torch.zeros(w2_shape, dtype=torch.float8_e4m3fn, device=device),
-        f"{prefix}.mlp.experts.w13_weight_scale_inv": torch.zeros(
-            (num_experts, *s_w13), dtype=torch.float32, device=device
-        ),
-        f"{prefix}.mlp.experts.w2_weight_scale_inv": torch.zeros(
-            (num_experts, *s_w2), dtype=torch.float32, device=device
-        ),
-    }
-    pre_registered = {k: v.data_ptr() for k, v in out_buffers.items()}
-    inp = convert_tt_layer_to_vllm_kernel(dict(state_dict), layer_idx=1, out_buffers=out_buffers)
+    inp_buffers = _allocate_buffers(state, prefix, is_sparse=True)
+    pointers = {k: v.data_ptr() for k, v in inp_buffers.items()}
+    convert_tt_layer_to_vllm_kernel(state, layer_idx=1, out_buffers=inp_buffers)
 
-    # Pre-registered buffers are reused in place (no realloc).
-    for name, ptr in pre_registered.items():
-        assert inp[name].data_ptr() == ptr, name
+    for k, ptr in pointers.items():
+        assert inp_buffers[k].data_ptr() == ptr, k
 
-    # Every reference key is populated; FP8 tensors match bit-exactly.
-    for name, ref_tensor in ref.items():
-        assert name in inp, f"missing {name}"
-        got = inp[name]
-        if ref_tensor.dtype == torch.float8_e4m3fn:
-            assert torch.equal(ref_tensor.view(torch.uint8), got.view(torch.uint8)), name
+    for name, ref in ref_buffers.items():
+        got = inp_buffers[name]
+        if ref.dtype == torch.float8_e4m3fn:
+            assert torch.equal(ref.view(torch.uint8), got.view(torch.uint8)), name
         else:
-            assert torch.equal(ref_tensor, got), name
+            assert torch.equal(ref, got), name

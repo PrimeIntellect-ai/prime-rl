@@ -109,6 +109,7 @@ def _inference(local_rank: int, inf_rank: int, port: int, fixture_dir: str, read
         from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
         from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
         from prime_rl.trainer.models.glm_moe_dsa.modeling_glm_moe_dsa import GlmMoeDsaForCausalLM
+        from prime_rl.trainer.rl.broadcast.nixl import _allocate_layer_slots
         from prime_rl.utils.nixl_transfer import NixlAgentWrapper, make_agent_name
 
         cfg = GlmMoeDsaConfig.from_pretrained(fixture_dir)
@@ -177,7 +178,8 @@ def _inference(local_rank: int, inf_rank: int, port: int, fixture_dir: str, read
         mismatches: list[str] = []
         for layer_idx in range(first_k_dense, num_layers):
             layer_sd = {k: v.to(torch.bfloat16) for k, v in ref_sd.items() if k.startswith(f"model.layers.{layer_idx}.")}
-            reference_full = convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx)
+            reference_full = _allocate_layer_slots(layer_sd, layer_idx, torch.bfloat16, device)
+            convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx, out_buffers=reference_full)
             owned_idx = torch.tensor(owned, device=device)
             for attr in ("w13_weight", "w2_weight", "w13_weight_scale_inv", "w2_weight_scale_inv"):
                 ref_full = reference_full[f"model.layers.{layer_idx}.mlp.experts.{attr}"].to(device)
