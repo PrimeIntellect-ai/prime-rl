@@ -8,6 +8,7 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.broadcast.filesystem import FileSystemWeightBroadcast
 from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcast
+from prime_rl.trainer.rl.broadcast.nixl import NIXLWeightBroadcast, create_nixl_metadata
 
 
 def setup_weight_broadcast(
@@ -22,11 +23,6 @@ def setup_weight_broadcast(
     elif config.type == "filesystem":
         return FileSystemWeightBroadcast(output_dir, config, lora_config)
     elif config.type == "nixl":
-        if model is None or parallel_dims is None:
-            raise ValueError("NIXL weight broadcast requires model and parallel_dims")
-        # Local import — keeps nixl_cu13 off the critical import path when unused.
-        from prime_rl.trainer.rl.broadcast.nixl import NIXLWeightBroadcast, create_nixl_metadata
-
         meta = create_nixl_metadata(model, parallel_dims)
         return NIXLWeightBroadcast(output_dir, config, meta)
     else:

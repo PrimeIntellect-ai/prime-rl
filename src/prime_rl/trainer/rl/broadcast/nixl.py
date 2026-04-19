@@ -17,13 +17,10 @@ from typing import Any, cast
 
 import torch
 import torch.nn as nn
-from torch import Tensor
-from torch.distributed.tensor import DTensor
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
@@ -32,18 +29,8 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nixl_transfer import NixlAgentWrapper, NixlTransferMeta, make_agent_name
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
-from prime_rl.utils.vlm import get_layer_prefix
 
 NIXL_READY_MARKER = "NIXL_READY"
-_TRANSFER_DTYPE = torch.bfloat16
-
-
-def _to_local(tensor: Tensor) -> Tensor:
-    return cast(DTensor, tensor).to_local() if isinstance(tensor, DTensor) else tensor
-
-
-def _materialize_local(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-    return {key: _to_local(value).to(_TRANSFER_DTYPE) for key, value in state_dict.items()}
 
 
 def _is_expert_tensor(name: str) -> bool:
@@ -59,12 +46,10 @@ def create_nixl_metadata(model: PreTrainedModelPrimeRL, parallel_dims: ParallelD
     if parallel_dims.ep_enabled:
         ep_mesh = parallel_dims.get_mesh("ep")
         ep_size, ep_rank = ep_mesh.size(), ep_mesh.get_local_rank()
-    else:
-        ep_size, ep_rank = 1, 0
-    if parallel_dims.dp_shard_enabled:
-        fsdp_mesh = parallel_dims.get_mesh("dp_shard")
+        fsdp_mesh = parallel_dims.get_mesh("dp_shard_mod_ep")
         fsdp_size, fsdp_rank = fsdp_mesh.size(), fsdp_mesh.get_local_rank()
     else:
+        ep_size, ep_rank = 1, 0
         fsdp_size, fsdp_rank = 1, 0
 
     num_local_experts = model.config.n_routed_experts // ep_size
@@ -141,9 +126,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
             self._agent.make_connection(peer["agent_name"])
 
         # Build per-expert write routes. Each trainer rank's EP shard is
-        # unique, so no "lead" election is needed. ``next(...)`` without a
-        # default is the fail-loud assertion that every owned expert has
-        # exactly one home on the inference side.
+        # unique — no "lead" election — but the inference side may replicate
+        # experts across ranks (inference DP), so every matching peer needs
+        # its own write. Fail loud if no inference rank holds an owned expert.
         self._writes: list[tuple[Any, int, Any, int]] = []
         for layer_idx in range(self._meta.num_layers):
             for name in self._meta.slots[layer_idx]:
@@ -152,11 +137,13 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 moe_prefix = f"model.layers.{layer_idx}.mlp.experts"
                 local_prep = local_preps[name]
                 for local_idx, global_idx in enumerate(self._meta.owned_global_experts):
-                    peer = next(p for p in inference_infos if global_idx in p["expert_map"][moe_prefix])
-                    remote_idx = peer["expert_map"][moe_prefix].index(global_idx)
-                    remote_descs = self._agent.deserialize_descs(peer["descriptors"][name])
-                    remote_prep = self._agent.prep_remote(peer["agent_name"], remote_descs)
-                    self._writes.append((local_prep, local_idx, remote_prep, remote_idx))
+                    matching = [p for p in inference_infos if global_idx in p["expert_map"][moe_prefix]]
+                    assert matching, f"no inference peer holds expert {global_idx} for {moe_prefix}"
+                    for peer in matching:
+                        remote_idx = peer["expert_map"][moe_prefix].index(global_idx)
+                        remote_descs = self._agent.deserialize_descs(peer["descriptors"][name])
+                        remote_prep = self._agent.prep_remote(peer["agent_name"], remote_descs)
+                        self._writes.append((local_prep, local_idx, remote_prep, remote_idx))
 
         self._bytes_per_push = sum(
             t.numel() * t.element_size()
@@ -172,10 +159,8 @@ class NIXLWeightBroadcast(WeightBroadcast):
         )
 
     @torch.no_grad()
-    def push_once(self, model: nn.Module) -> None:
+    def push_once(self, model: PreTrainedModelPrimeRL) -> None:
         """Convert every layer into its stable FP8 slot and post all writes."""
-        state_dict = model.state_dict()
-        layer_prefix = get_layer_prefix(model.config)
         device = next(model.parameters()).device
 
         t_start = time.perf_counter()
@@ -183,12 +168,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         # Pass 1 — convert. Must synchronize before posting NIXL writes, or
         # UCX reads HBM whose contents the GPU hasn't finished writing.
         for layer_idx in range(self._meta.num_layers):
-            layer_sd = {k: v for k, v in state_dict.items() if k.startswith(f"{layer_prefix}{layer_idx}.")}
-            convert_tt_layer_to_vllm_kernel(
-                _materialize_local(layer_sd),
-                layer_idx,
-                out_buffers=self._meta.slots[layer_idx],
-            )
+            model.convert_layer_to_vllm_kernel(layer_idx, out_buffers=self._meta.slots[layer_idx])
         torch.cuda.synchronize(device)
         t_converted = time.perf_counter()
 

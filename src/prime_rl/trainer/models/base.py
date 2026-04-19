@@ -108,22 +108,18 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         raise NotImplementedError(f"convert_layer_to_prime is not implemented for {cls.__name__}")
 
-    @classmethod
     def convert_layer_to_vllm_kernel(
-        cls,
-        state_dict: dict[str, Tensor],
+        self,
         layer_idx: int,
-        quantize_fp8: bool = False,
-    ) -> dict[str, Tensor]:
-        """
-        Convert a single layer's state dict from PrimeRL format to vLLM kernel format.
+        out_buffers: dict[str, Tensor],
+    ) -> None:
+        """Convert one layer of this model's state dict into vLLM FP8 kernel format.
 
-        Args:
-            state_dict: Layer weights in PrimeRL format.
-            layer_idx: Layer index to convert.
-            quantize_fp8: Whether to emit FP8 (e4m3) kernel weights with per-block scales.
+        Reads ``self.state_dict()``, resolves any DTensor shards to rank-local
+        tensors, and writes the converted values into the caller-provided
+        ``out_buffers`` in place. Used by the NIXL broadcast path.
         """
-        raise NotImplementedError(f"convert_layer_to_vllm_kernel is not implemented for {cls.__name__}")
+        raise NotImplementedError(f"convert_layer_to_vllm_kernel is not implemented for {self.__class__.__name__}")
 
     def allocate_slots(self, parallel_dims: "ParallelDims") -> dict[int, dict[str, Tensor]]:
         """Allocate stable per-layer destination buffers for NIXL weight transfer.

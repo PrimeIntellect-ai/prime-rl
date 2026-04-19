@@ -185,11 +185,14 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         convert_hf_layer_to_tt(state_dict, layer_idx)
         return state_dict
 
-    @classmethod
-    def convert_layer_to_vllm_kernel(
-        cls, state_dict: dict[str, Tensor], layer_idx: int, quantize_fp8: bool = True
-    ) -> dict[str, Tensor]:
-        return convert_tt_layer_to_vllm_kernel(state_dict, layer_idx)
+    def convert_layer_to_vllm_kernel(self, layer_idx: int, out_buffers: dict[str, Tensor]) -> None:
+        prefix = f"model.layers.{layer_idx}."
+        layer_sd = {
+            k: (v.to_local() if isinstance(v, DTensor) else v).to(torch.bfloat16)
+            for k, v in self.state_dict().items()
+            if k.startswith(prefix)
+        }
+        convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx, out_buffers=out_buffers)
 
     def allocate_slots(self, parallel_dims: ParallelDims) -> dict[int, dict[str, Tensor]]:
         """Stable FP8-kernel destination buffers for every layer.
