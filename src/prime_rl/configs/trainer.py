@@ -784,13 +784,12 @@ class TrainerConfig(BaseConfig):
         ),
     ] = None
 
-    max_async_level: Annotated[
-        int,
+    no_async: Annotated[
+        bool,
         Field(
-            ge=0,
-            description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower performance. If 0, will be fully synchronous.",
+            description="Debug-only flag to force fully synchronous on-policy RL. When True, the trainer broadcasts weights every step (including the final one) and the orchestrator blocks until the matching checkpoint is available. Significantly slower than async training.",
         ),
-    ] = 1
+    ] = False
 
     enable_router_replay: Annotated[
         bool,
@@ -910,8 +909,8 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_weight_broadcast_type(self):
-        if self.weight_broadcast.type == "nccl" and self.max_async_level != 1:
-            raise ValueError("NCCL weight broadcast only works with async level 1")
+        if self.weight_broadcast.type == "nccl" and self.no_async:
+            raise ValueError("NCCL weight broadcast does not support no_async=true")
         return self
 
     @model_validator(mode="after")

@@ -42,9 +42,9 @@ from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
-    validate_shared_max_async_level,
     validate_shared_max_steps,
     validate_shared_model_name,
+    validate_shared_no_async,
     validate_shared_output_dir,
     validate_shared_tokenizer,
     validate_shared_wandb_config,
@@ -330,10 +330,10 @@ class RLConfig(BaseConfig):
         ),
     ] = None
 
-    max_async_level: Annotated[
-        int | None,
+    no_async: Annotated[
+        bool | None,
         Field(
-            description="The async level to use. If None, will fallback to the async level specified on submodule configs."
+            description="Debug-only flag to force fully synchronous on-policy RL. If None, falls back to the value on submodule configs. Significantly slower than async training."
         ),
     ] = None
 
@@ -608,13 +608,13 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_async_level(self):
-        """Auto-setup shared async level for trainer and orchestrator."""
-        if self.max_async_level is not None:
-            self.trainer.max_async_level = self.max_async_level
-            self.orchestrator.max_async_level = self.max_async_level
+    def auto_setup_no_async(self):
+        """Auto-setup shared no_async flag for trainer and orchestrator."""
+        if self.no_async is not None:
+            self.trainer.no_async = self.no_async
+            self.orchestrator.no_async = self.no_async
 
-        validate_shared_max_async_level(self.trainer, self.orchestrator)
+        validate_shared_no_async(self.trainer, self.orchestrator)
 
         return self
 

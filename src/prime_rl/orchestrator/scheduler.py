@@ -62,9 +62,8 @@ class Scheduler:
         buffer: Buffer,
         config: OrchestratorConfig,
         max_inflight_rollouts: int,
-        max_async_level: int,
         max_off_policy_steps: int,
-        strict_async_level: bool,
+        no_async: bool,
         tasks_per_minute: int | None,
         enable_policy_updates: bool = True,
         lora_name: str | None = None,
@@ -81,9 +80,8 @@ class Scheduler:
         self.token_batch_size = config.token_batch_size
         self.rollouts_per_example = config.rollouts_per_example
         self.max_inflight_rollouts = max_inflight_rollouts
-        self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
-        self.strict_async_level = strict_async_level
+        self.no_async = no_async
         self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
         self.model_name = self.config.model.name
@@ -274,17 +272,15 @@ class Scheduler:
 
     def _compute_next_ckpt_step(self) -> int:
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        if self.strict_async_level:
-            return async_away_ckpt_step
-        return max(async_away_ckpt_step, latest_ckpt_step)
+        if self.no_async:
+            return self.step
+        return latest_ckpt_step
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        if next_ckpt_step == async_away_ckpt_step:
+        if self.no_async and next_ckpt_step > (get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0):
             self.logger.info(
-                f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
-                f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+                f"Orchestrator paused: waiting for trainer to complete checkpoint {next_ckpt_step} "
+                f"(on-policy mode, no_async=true). Training is progressing normally."
             )
             self.checkpoint_ready.clear()
             wait_for_ckpt_start_time = time.perf_counter()
@@ -379,8 +375,8 @@ class Scheduler:
             if self.update_policy_task is not None:
                 await safe_cancel(self.update_policy_task)
 
-            # Manually check the async barrier before starting the step, then re-create the update policy loop
-            # This ensures that we respect max_async_level, while still listening for policy updates mid-step
+            # Manually check the async barrier before starting the step, then re-create the update policy loop.
+            # In no_async mode this also blocks until the matching on-policy checkpoint is ready.
             await self.maybe_update_policy()
             self.update_policy_task = asyncio.create_task(self.update_policy_loop())
         else:

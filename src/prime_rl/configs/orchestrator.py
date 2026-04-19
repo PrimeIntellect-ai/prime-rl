@@ -1001,25 +1001,17 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = 8
 
-    max_async_level: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Maximum number of steps the inference can be ahead of training. If 0, will degenerate to synchronous on-policy RL. If >=1, training and inference will be overlapped.",
-        ),
-    ] = 1
-
-    strict_async_level: Annotated[
+    no_async: Annotated[
         bool,
         Field(
-            description="Whether to strictly enforce the max async level. If True, will always ensure that the policy used for generating rollouts is exactly `max_async_level` steps ahead of training. If False, any policy that is at most `max_async_level` steps ahead of training is allowed, i.e. we always use the latest available policy.",
+            description="Debug-only flag to force fully synchronous on-policy RL. If True, the orchestrator waits for the trainer to produce a checkpoint at the current step before generating rollouts. This is significantly slower than async training and is intended only for testing/debugging on-policy behavior.",
         ),
     ] = False
 
     bench: Annotated[
         bool,
         Field(
-            description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 5, max async level to ~infinity and disable W&B.",
+            description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 5 and disable W&B.",
         ),
     ] = False
 
@@ -1087,10 +1079,9 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def nccl_max_async_level(self):
-        if self.weight_broadcast.type == "nccl":
-            if not self.max_async_level == 1:
-                raise ValueError("max_async_level must be 1 for NCCL broadcast")
+    def nccl_requires_async(self):
+        if self.weight_broadcast.type == "nccl" and self.no_async:
+            raise ValueError("NCCL broadcast does not support no_async=true")
         return self
 
     @model_validator(mode="after")
@@ -1136,7 +1127,6 @@ class OrchestratorConfig(BaseConfig):
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
-            self.max_async_level = int(1e9)  # Never wait for RL weight checkpoints
 
             # Disable evaluation
             self.eval = None

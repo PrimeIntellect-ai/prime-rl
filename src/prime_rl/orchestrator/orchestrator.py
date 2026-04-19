@@ -234,9 +234,8 @@ async def orchestrate(config: OrchestratorConfig):
         buffer=buffer,
         inference_pool=inference_pool,
         max_inflight_rollouts=config.max_inflight_rollouts,
-        max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
-        strict_async_level=config.strict_async_level,
+        no_async=config.no_async,
         tasks_per_minute=config.tasks_per_minute,
         enable_policy_updates=enable_policy_updates,
         lora_name=config.model.lora.name if config.model.lora else None,
@@ -485,7 +484,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # VLM: build image cache in a thread so it doesn't block the event loop.
         # This lets the scheduler continue servicing inflight rollout requests
-        # and — with max_async_level >= 2 — overlap with the next batch's inference.
+        # and overlap with the next batch's inference.
         if is_vlm:
             vlm_cache = await asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor)
             mm_token_type_ids_mapping = {}
