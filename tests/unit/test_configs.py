@@ -253,3 +253,24 @@ def test_subconfig_seq_len_wins_over_shared():
     )
     assert config.trainer.model.seq_len == 8192
     assert config.orchestrator.seq_len == 4096
+
+
+def test_shared_output_dir_propagates_through_cli(tmp_path):
+    """Shared output_dir from CLI reaches sub-configs even though tyro constructs
+    sub-configs before the RLConfig before-validator sees them."""
+    toml_path = tmp_path / "cfg.toml"
+    write_toml(
+        toml_path,
+        {
+            "max_steps": 1,
+            "seq_len": 128,
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {},
+            "orchestrator": {"batch_size": 16, "rollouts_per_example": 1},
+            "inference": {},
+        },
+    )
+    shared_out = tmp_path / "shared"
+    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out)])
+    assert config.trainer.output_dir == shared_out
+    assert config.orchestrator.output_dir == shared_out / "run_default"

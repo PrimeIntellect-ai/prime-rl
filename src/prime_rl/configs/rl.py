@@ -468,6 +468,33 @@ class RLConfig(BaseConfig):
 
         data = deepcopy(data)
 
+        # tyro may pass already-constructed sub-config instances rather than
+        # raw dicts (when merging CLI overrides on top of a TOML default). Dump
+        # them back to dicts, dropping fields still at their class defaults so
+        # `fill` can still tell "unset" apart from "set to a default". Discriminator
+        # `type` keys are preserved at every level so pydantic can pick the right
+        # union variant when it re-validates (otherwise `type="multi_node"` gets
+        # stripped as "equals default" and the nested config falls back to the
+        # wrong union variant).
+        def _dump_preserving_discriminators(obj: Any) -> Any:
+            if isinstance(obj, BaseModel):
+                dumped = obj.model_dump(exclude_defaults=True)
+                if "type" in type(obj).model_fields and "type" not in dumped:
+                    dumped["type"] = getattr(obj, "type")
+                for field_name in type(obj).model_fields:
+                    if field_name in dumped:
+                        dumped[field_name] = _dump_preserving_discriminators(getattr(obj, field_name))
+                return dumped
+            if isinstance(obj, list):
+                return [_dump_preserving_discriminators(item) for item in obj]
+            if isinstance(obj, dict):
+                return {k: _dump_preserving_discriminators(v) for k, v in obj.items()}
+            return obj
+
+        for key, value in list(data.items()):
+            if isinstance(value, BaseModel):
+                data[key] = _dump_preserving_discriminators(value)
+
         def get(path: str) -> Any | None:
             """Read a dotted path (e.g. `model.name`) from raw config data. Returns
             None if any intermediate key is missing or not a dict."""
