@@ -21,6 +21,26 @@ from typing import Any, Sequence
 from torch import Tensor
 
 
+@dataclass
+class NixlTransferMeta:
+    """Model-specific metadata produced by ``model.create_nixl_metadata``.
+
+    Holds every piece of state the NIXL broadcast needs to register its
+    local buffers, build the per-expert routing table, and push writes.
+    The broadcast should not derive any of these from ``parallel_dims``
+    directly — that lives on the model side.
+    """
+
+    slots: dict[int, dict[str, Tensor]]  # layer_idx -> {dst_name: stable buffer}
+    num_layers: int
+    ep_size: int
+    ep_rank: int
+    num_local_experts: int
+    owned_global_experts: list[int]
+    fsdp_size: int
+    fsdp_rank: int
+
+
 @functools.lru_cache(maxsize=1)
 def _nvidia_smi_topo() -> str:
     return subprocess.check_output(["nvidia-smi", "topo", "-m"]).decode("utf-8")

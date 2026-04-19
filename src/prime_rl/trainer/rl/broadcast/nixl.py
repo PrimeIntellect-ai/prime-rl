@@ -4,10 +4,9 @@ Replaces the per-step ``.full_tensor()``/NCCL-broadcast path for GLM MoE DSA
 training: each trainer rank pushes its FSDP/EP shards directly into pre-
 registered parameter memory on the inference side.
 
-Every destination buffer the converter writes to is allocated up front and
-registered with NIXL. Expert tensors get per-expert chunked descriptors (so
-``local_expert[i]`` can land in the inference rank that owns the matching
-global expert); non-expert tensors are registered as single-chunk handles.
+Slot allocation is delegated to the model (``model.allocate_slots``); this
+module just wraps those buffers into a :class:`NixlTransferMeta`, registers
+them with NIXL, builds the per-expert routing table, and posts writes.
 """
 
 from __future__ import annotations
@@ -23,68 +22,65 @@ from torch.distributed.tensor import DTensor
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
-from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
-from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
-    _BASE,
-    _DENSE,
-    _SPARSE,
-    convert_tt_layer_to_vllm_kernel,
-)
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.nixl_transfer import NixlAgentWrapper, make_agent_name
+from prime_rl.utils.nixl_transfer import NixlAgentWrapper, NixlTransferMeta, make_agent_name
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
 
 NIXL_READY_MARKER = "NIXL_READY"
+_TRANSFER_DTYPE = torch.bfloat16
 
 
 def _to_local(tensor: Tensor) -> Tensor:
     return cast(DTensor, tensor).to_local() if isinstance(tensor, DTensor) else tensor
 
 
-def _materialize_local(state_dict: dict[str, Tensor], dtype: torch.dtype) -> dict[str, Tensor]:
-    return {key: _to_local(value).to(dtype) for key, value in state_dict.items()}
-
-
-def _allocate_layer_slots(
-    state_dict: dict[str, Tensor],
-    layer_idx: int,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> dict[str, Tensor]:
-    """Pre-allocate every destination buffer ``convert_tt_layer_to_vllm_kernel`` writes.
-
-    Branches once on dense vs sparse (same rule the converter uses). Expert
-    tensors come in sharded along the ep dim, so ``to_local()`` gives the
-    rank-local ``(num_local_experts, …)`` shape. Quantized destinations also
-    get a float32 ``_scale_inv`` companion sized for 128×128 blocks.
-    """
-    prefix = f"model.layers.{layer_idx}"
-    is_sparse = f"{prefix}.mlp.router.gate.weight" in state_dict
-    specs = _BASE + (_SPARSE if is_sparse else _DENSE)
-
-    slots: dict[str, Tensor] = {}
-    for spec in specs:
-        srcs = [_to_local(state_dict[f"{prefix}.{s}"]) for s in spec.sources]
-        dst_shape = list(srcs[0].shape)
-        dst_shape[spec.cat_dim] *= len(srcs)
-        dst_dtype = torch.float8_e4m3fn if spec.quantize else dtype
-        slots[f"{prefix}.{spec.dst}"] = torch.empty(dst_shape, dtype=dst_dtype, device=device)
-        if spec.quantize:
-            scale_shape = tuple(
-                ceil_div(d, BLOCK_SIZE) if i >= len(dst_shape) - 2 else d for i, d in enumerate(dst_shape)
-            )
-            slots[spec.scale_name(prefix)] = torch.empty(scale_shape, dtype=torch.float32, device=device)
-    return slots
+def _materialize_local(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+    return {key: _to_local(value).to(_TRANSFER_DTYPE) for key, value in state_dict.items()}
 
 
 def _is_expert_tensor(name: str) -> bool:
     return ".mlp.experts." in name
+
+
+def create_nixl_metadata(model: PreTrainedModelPrimeRL, parallel_dims: ParallelDims) -> NixlTransferMeta:
+    """Build :class:`NixlTransferMeta` from model + parallel setup.
+
+    Slot allocation is model-specific (``model.allocate_slots``); the
+    ep/fsdp coordinates are read off ``parallel_dims`` directly.
+    """
+    if parallel_dims.ep_enabled:
+        ep_mesh = parallel_dims.get_mesh("ep")
+        ep_size, ep_rank = ep_mesh.size(), ep_mesh.get_local_rank()
+    else:
+        ep_size, ep_rank = 1, 0
+    if parallel_dims.dp_shard_enabled:
+        fsdp_mesh = parallel_dims.get_mesh("dp_shard")
+        fsdp_size, fsdp_rank = fsdp_mesh.size(), fsdp_mesh.get_local_rank()
+    else:
+        fsdp_size, fsdp_rank = 1, 0
+
+    num_local_experts = model.config.n_routed_experts // ep_size
+    owned_global_experts = list(
+        range(ep_rank * num_local_experts, (ep_rank + 1) * num_local_experts)
+    )
+    return NixlTransferMeta(
+        slots=model.allocate_slots(parallel_dims),
+        num_layers=model.config.num_hidden_layers,
+        ep_size=ep_size,
+        ep_rank=ep_rank,
+        num_local_experts=num_local_experts,
+        owned_global_experts=owned_global_experts,
+        fsdp_size=fsdp_size,
+        fsdp_rank=fsdp_rank,
+    )
 
 
 class NIXLWeightBroadcast(WeightBroadcast):
@@ -94,29 +90,15 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self,
         output_dir: Path,
         config: NIXLWeightBroadcastConfig,
-        model: nn.Module,
-        device: torch.device,
-        parallel_dims: ParallelDims,
-        dtype: torch.dtype = torch.bfloat16,
+        meta: NixlTransferMeta,
     ) -> None:
         super().__init__(output_dir)
         self.logger = get_logger()
         self.config = config
         self.world = get_world()
-        self.device = torch.device(device)
-        self.dtype = dtype
         self._multi_run_manager = None
 
-        self.num_layers = model.config.num_hidden_layers
-        if parallel_dims.ep_enabled:
-            ep_mesh = parallel_dims.get_mesh("ep")
-            ep_size, ep_rank = ep_mesh.size(), ep_mesh.get_local_rank()
-        else:
-            ep_size, ep_rank = 1, 0
-        self.num_local_experts = model.config.n_routed_experts // ep_size
-        owned_global_experts = list(
-            range(ep_rank * self.num_local_experts, (ep_rank + 1) * self.num_local_experts)
-        )
+        self._meta = meta
 
         self._agent = NixlAgentWrapper(
             name=make_agent_name("trainer", self.world.rank),
@@ -124,33 +106,24 @@ class NIXLWeightBroadcast(WeightBroadcast):
             backends=config.backends,
         )
 
-        # Allocate every destination buffer the converter writes into. The
-        # converter mutates these in place; ``push_once`` reads them back.
-        model_sd = model.state_dict()
-        self._slots: dict[int, dict[str, Tensor]] = {
-            i: _allocate_layer_slots(model_sd, i, self.dtype, self.device) for i in range(self.num_layers)
-        }
-
-        # Register every slot with NIXL. Expert slots get chunked per-expert so
-        # ``local_expert[i]`` can land in whichever inference rank owns it;
-        # non-expert slots are single-chunk.
+        # Register every slot with NIXL. Expert slots get chunked per-expert
+        # so ``local_expert[i]`` can land in whichever inference rank owns it.
         descriptors: dict[str, bytes] = {}
         local_preps: dict[str, Any] = {}
-        for layer_idx in range(self.num_layers):
-            for name, tensor in self._slots[layer_idx].items():
+        for layer_idx in range(self._meta.num_layers):
+            for name, tensor in self._meta.slots[layer_idx].items():
                 self._agent.register_tensor(tensor)
-                chunks = self.num_local_experts if _is_expert_tensor(name) else 1
+                chunks = self._meta.num_local_experts if _is_expert_tensor(name) else 1
                 descs = self._agent.chunked_descs(tensor, chunks)
                 descriptors[name] = self._agent.serialize_descs(descs)
                 local_preps[name] = self._agent.prep_local(descs)
 
         # Rendezvous.
-        full_ws = self.world.world_size + config.inference_world_size
         self._spg = StatelessProcessGroup.create(
             host=config.host,
             port=config.port,
             rank=self.world.rank,
-            world_size=full_ws,
+            world_size=self.world.world_size + config.inference_world_size,
             store_timeout=config.timeout,
         )
         my_info = {
@@ -159,7 +132,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             "agent_name": self._agent.name,
             "agent_metadata": self._agent.get_metadata(),
             "descriptors": descriptors,
-            "owned_global_experts": owned_global_experts,
+            "owned_global_experts": self._meta.owned_global_experts,
         }
         all_info: list[dict[str, Any]] = self._spg.all_gather_obj(my_info)
         inference_infos = all_info[self.world.world_size :]
@@ -172,13 +145,13 @@ class NIXLWeightBroadcast(WeightBroadcast):
         # default is the fail-loud assertion that every owned expert has
         # exactly one home on the inference side.
         self._writes: list[tuple[Any, int, Any, int]] = []
-        for layer_idx in range(self.num_layers):
-            for name in self._slots[layer_idx]:
+        for layer_idx in range(self._meta.num_layers):
+            for name in self._meta.slots[layer_idx]:
                 if not _is_expert_tensor(name):
                     continue
                 moe_prefix = f"model.layers.{layer_idx}.mlp.experts"
                 local_prep = local_preps[name]
-                for local_idx, global_idx in enumerate(owned_global_experts):
+                for local_idx, global_idx in enumerate(self._meta.owned_global_experts):
                     peer = next(p for p in inference_infos if global_idx in p["expert_map"][moe_prefix])
                     remote_idx = peer["expert_map"][moe_prefix].index(global_idx)
                     remote_descs = self._agent.deserialize_descs(peer["descriptors"][name])
@@ -187,14 +160,14 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
         self._bytes_per_push = sum(
             t.numel() * t.element_size()
-            for slots in self._slots.values()
+            for slots in self._meta.slots.values()
             for name, t in slots.items()
             if _is_expert_tensor(name)
         )
 
         self.logger.info(
             f"NIXL transfer initialized: rank={self.world.rank} "
-            f"owned_experts={owned_global_experts} writes={len(self._writes)} "
+            f"owned_experts={self._meta.owned_global_experts} writes={len(self._writes)} "
             f"bytes_per_push={self._bytes_per_push / 1e6:.2f} MB"
         )
 
@@ -203,19 +176,20 @@ class NIXLWeightBroadcast(WeightBroadcast):
         """Convert every layer into its stable FP8 slot and post all writes."""
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
+        device = next(model.parameters()).device
 
         t_start = time.perf_counter()
 
         # Pass 1 — convert. Must synchronize before posting NIXL writes, or
         # UCX reads HBM whose contents the GPU hasn't finished writing.
-        for layer_idx in range(self.num_layers):
+        for layer_idx in range(self._meta.num_layers):
             layer_sd = {k: v for k, v in state_dict.items() if k.startswith(f"{layer_prefix}{layer_idx}.")}
             convert_tt_layer_to_vllm_kernel(
-                _materialize_local(layer_sd, self.dtype),
+                _materialize_local(layer_sd),
                 layer_idx,
-                out_buffers=self._slots[layer_idx],
+                out_buffers=self._meta.slots[layer_idx],
             )
-        torch.cuda.synchronize(self.device)
+        torch.cuda.synchronize(device)
         t_converted = time.perf_counter()
 
         # Pass 2 — post writes.

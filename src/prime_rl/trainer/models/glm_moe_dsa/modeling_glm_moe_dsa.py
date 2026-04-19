@@ -12,15 +12,22 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
+from torch.distributed.tensor import DTensor
+
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
+    _BASE,
+    _DENSE,
+    _SPARSE,
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
     convert_tt_layer_to_hf,
     convert_tt_layer_to_vllm_kernel,
     convert_tt_to_hf_moe,
 )
+from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
@@ -183,6 +190,43 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         cls, state_dict: dict[str, Tensor], layer_idx: int, quantize_fp8: bool = True
     ) -> dict[str, Tensor]:
         return convert_tt_layer_to_vllm_kernel(state_dict, layer_idx)
+
+    def allocate_slots(self, parallel_dims: ParallelDims) -> dict[int, dict[str, Tensor]]:
+        """Stable FP8-kernel destination buffers for every layer.
+
+        Sizes are taken from the model's own (possibly DTensor-sharded) state
+        dict, so expert tensors come out at ``(num_local_experts, …)`` and
+        everything else at its full shape. The NIXL broadcast writes into
+        these every push.
+        """
+        state_dict = self.state_dict()
+        device = next(self.parameters()).device
+        dtype = torch.bfloat16
+
+        slots: dict[int, dict[str, Tensor]] = {}
+        for layer_idx in range(self.config.num_hidden_layers):
+            prefix = f"model.layers.{layer_idx}"
+            is_sparse = f"{prefix}.mlp.router.gate.weight" in state_dict
+            specs = _BASE + (_SPARSE if is_sparse else _DENSE)
+
+            layer_slots: dict[str, Tensor] = {}
+            for spec in specs:
+                src = state_dict[f"{prefix}.{spec.sources[0]}"]
+                src_shape = (src.to_local() if isinstance(src, DTensor) else src).shape
+                dst_shape = list(src_shape)
+                dst_shape[spec.cat_dim] *= len(spec.sources)
+                dst_dtype = torch.float8_e4m3fn if spec.quantize else dtype
+                layer_slots[f"{prefix}.{spec.dst}"] = torch.empty(dst_shape, dtype=dst_dtype, device=device)
+                if spec.quantize:
+                    scale_shape = tuple(
+                        ceil_div(d, BLOCK_SIZE) if i >= len(dst_shape) - 2 else d
+                        for i, d in enumerate(dst_shape)
+                    )
+                    layer_slots[spec.scale_name(prefix)] = torch.empty(
+                        scale_shape, dtype=torch.float32, device=device
+                    )
+            slots[layer_idx] = layer_slots
+        return slots
 
 
 @auto_docstring

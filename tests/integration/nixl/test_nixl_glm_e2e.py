@@ -62,7 +62,7 @@ def _trainer(local_rank: int, port: int, fixture_dir: str, ready_q: mp.Queue) ->
         from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
         from prime_rl.trainer.models.glm_moe_dsa.modeling_glm_moe_dsa import GlmMoeDsaForCausalLM
         from prime_rl.trainer.parallel_dims import ParallelDims
-        from prime_rl.trainer.rl.broadcast.nixl import NIXLWeightBroadcast
+        from prime_rl.trainer.rl.broadcast.nixl import NIXLWeightBroadcast, create_nixl_metadata
 
         model = GlmMoeDsaForCausalLM.from_pretrained(fixture_dir, dtype=torch.bfloat16).to(device).eval()
 
@@ -75,7 +75,8 @@ def _trainer(local_rank: int, port: int, fixture_dir: str, ready_q: mp.Queue) ->
             timeout=60,
             inference_world_size=1,
         )
-        bcast = NIXLWeightBroadcast(Path(fixture_dir), config, model, device, parallel_dims)
+        meta = create_nixl_metadata(model, parallel_dims)
+        bcast = NIXLWeightBroadcast(Path(fixture_dir), config, meta)
         # Broadcast once, mutate the model, broadcast again — the realistic training
         # loop reuses the same init across every sync, so stable slots and NIXL xfer
         # handles must be safely reusable.
@@ -153,9 +154,8 @@ def _inference(local_rank: int, port: int, fixture_dir: str, ready_q: mp.Queue) 
 
         from vllm.distributed.utils import StatelessProcessGroup
 
-        from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
         from prime_rl.trainer.models.glm_moe_dsa.modeling_glm_moe_dsa import GlmMoeDsaForCausalLM
-        from prime_rl.trainer.rl.broadcast.nixl import _allocate_layer_slots
+        from prime_rl.trainer.parallel_dims import ParallelDims
         from prime_rl.utils.nixl_transfer import NixlAgentWrapper, make_agent_name
 
         # Build stub and register buffers with NIXL.
@@ -203,10 +203,15 @@ def _inference(local_rank: int, port: int, fixture_dir: str, ready_q: mp.Queue) 
                     getattr(experts, attr).data.mul_(0.5).add_(0.1)
         ref_sd = ref_model.state_dict()
 
+        from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
+
+        ref_slots = ref_model.allocate_slots(
+            ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
+        )
         mismatches: list[str] = []
         for layer_idx in range(cfg.first_k_dense_replace, cfg.num_hidden_layers):
             layer_sd = {k: v.to(torch.bfloat16) for k, v in ref_sd.items() if k.startswith(f"model.layers.{layer_idx}.")}
-            reference = _allocate_layer_slots(layer_sd, layer_idx, torch.bfloat16, device)
+            reference = ref_slots[layer_idx]
             convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx, out_buffers=reference)
             layer_mod = getattr(stub, f"_layer_{layer_idx}")
             for attr in ("w13_weight", "w2_weight", "w13_weight_scale_inv", "w2_weight_scale_inv"):

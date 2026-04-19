@@ -25,8 +25,9 @@ def setup_weight_broadcast(
         if model is None or parallel_dims is None:
             raise ValueError("NIXL weight broadcast requires model and parallel_dims")
         # Local import — keeps nixl_cu13 off the critical import path when unused.
-        from prime_rl.trainer.rl.broadcast.nixl import NIXLWeightBroadcast
+        from prime_rl.trainer.rl.broadcast.nixl import NIXLWeightBroadcast, create_nixl_metadata
 
-        return NIXLWeightBroadcast(output_dir, config, model, torch.cuda.current_device(), parallel_dims)
+        meta = create_nixl_metadata(model, parallel_dims)
+        return NIXLWeightBroadcast(output_dir, config, meta)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")

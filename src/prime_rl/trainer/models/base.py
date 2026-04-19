@@ -1,5 +1,10 @@
+from typing import TYPE_CHECKING
+
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.parallel_dims import ParallelDims
 
 
 class PreTrainedModelPrimeRL(PreTrainedModel):
@@ -119,6 +124,15 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
             quantize_fp8: Whether to emit FP8 (e4m3) kernel weights with per-block scales.
         """
         raise NotImplementedError(f"convert_layer_to_vllm_kernel is not implemented for {cls.__name__}")
+
+    def allocate_slots(self, parallel_dims: "ParallelDims") -> dict[int, dict[str, Tensor]]:
+        """Allocate stable per-layer destination buffers for NIXL weight transfer.
+
+        The NIXL broadcast writes into these buffers in place every push; they
+        must be sized for the rank-local shard (EP shard for expert tensors,
+        full tensor for everything else). Implemented per model.
+        """
+        raise NotImplementedError(f"allocate_slots is not implemented for {self.__class__.__name__}")
 
     def init_buffers_post_meta(self) -> None:
         """
