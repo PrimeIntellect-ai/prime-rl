@@ -18,12 +18,12 @@ name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 batch_size = 1024
 rollouts_per_example = 16
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "primeintellect/wordle"
 name = "wordle"
 
-[orchestrator.sampling]
-max_tokens = 1024
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
 
 [trainer] # Default trainer config
 
