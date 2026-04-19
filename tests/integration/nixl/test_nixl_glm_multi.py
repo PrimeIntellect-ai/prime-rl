@@ -105,7 +105,7 @@ def _inference(local_rank: int, inf_rank: int, port: int, fixture_dir: str, read
 
         from vllm.distributed.utils import StatelessProcessGroup
 
-        from prime_rl.trainer.models.fp8 import fp8_blockwise_scale_shape
+        from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
         from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
         from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
         from prime_rl.trainer.models.glm_moe_dsa.modeling_glm_moe_dsa import GlmMoeDsaForCausalLM
@@ -129,8 +129,8 @@ def _inference(local_rank: int, inf_rank: int, port: int, fixture_dir: str, read
 
         w13_shape = (experts_per_inf, 2 * moe_dim, hidden_dim)
         w2_shape = (experts_per_inf, hidden_dim, moe_dim)
-        s_w13 = fp8_blockwise_scale_shape(2 * moe_dim, hidden_dim)
-        s_w2 = fp8_blockwise_scale_shape(hidden_dim, moe_dim)
+        s_w13 = (ceil_div(2 * moe_dim, BLOCK_SIZE), ceil_div(hidden_dim, BLOCK_SIZE))
+        s_w2 = (ceil_div(hidden_dim, BLOCK_SIZE), ceil_div(moe_dim, BLOCK_SIZE))
 
         agent = NixlAgentWrapper(name=make_agent_name("inference", R + inf_rank), local_rank=local_rank)
 
@@ -177,7 +177,7 @@ def _inference(local_rank: int, inf_rank: int, port: int, fixture_dir: str, read
         mismatches: list[str] = []
         for layer_idx in range(first_k_dense, num_layers):
             layer_sd = {k: v.to(torch.bfloat16) for k, v in ref_sd.items() if k.startswith(f"model.layers.{layer_idx}.")}
-            reference_full = convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx, quantize_fp8=True)
+            reference_full = convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx)
             owned_idx = torch.tensor(owned, device=device)
             for attr in ("w13_weight", "w2_weight", "w13_weight_scale_inv", "w2_weight_scale_inv"):
                 ref_full = reference_full[f"model.layers.{layer_idx}.mlp.experts.{attr}"].to(device)

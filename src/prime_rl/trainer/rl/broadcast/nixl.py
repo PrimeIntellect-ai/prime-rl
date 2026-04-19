@@ -34,7 +34,7 @@ from torch.distributed.tensor import DTensor
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
-from prime_rl.trainer.models.fp8 import fp8_blockwise_scale_shape
+from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.broadcast.nccl import filter_state_dict_by_layers
@@ -102,13 +102,12 @@ def _allocate_expert_slots(
     num_local_experts: int,
     moe_dim: int,
     dim: int,
-    block_size: int,
     device: torch.device,
 ) -> dict[str, Tensor]:
     w13_shape = (num_local_experts, 2 * moe_dim, dim)
     w2_shape = (num_local_experts, dim, moe_dim)
-    s_w13 = fp8_blockwise_scale_shape(2 * moe_dim, dim, block_size)
-    s_w2 = fp8_blockwise_scale_shape(dim, moe_dim, block_size)
+    s_w13 = (ceil_div(2 * moe_dim, BLOCK_SIZE), ceil_div(dim, BLOCK_SIZE))
+    s_w2 = (ceil_div(dim, BLOCK_SIZE), ceil_div(moe_dim, BLOCK_SIZE))
     prefix = f"model.layers.{layer_idx}"
     return {
         f"{prefix}.mlp.experts.w13_weight": torch.zeros(w13_shape, dtype=torch.float8_e4m3fn, device=device),
@@ -162,7 +161,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.moe_dim: int = getattr(mc, "moe_intermediate_size", getattr(mc, "intermediate_size"))
         self.hidden_dim: int = mc.hidden_size
         self.first_k_dense: int = getattr(mc, "first_k_dense_replace", 0)
-        self.block_size: int = 128
 
         # EP mesh — in prime-rl, ep is borrowed from dp_shard_in_ep * cp; the actual EP
         # world size and the rank's EP coordinate come from the flattened "ep" submesh.
@@ -197,7 +195,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 self.num_local_experts,
                 self.moe_dim,
                 self.hidden_dim,
-                self.block_size,
                 self.device,
             )
             self._slots.slots[layer_idx] = slots
@@ -307,7 +304,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
             convert_tt_layer_to_vllm_kernel(
                 local_sd,
                 layer_idx,
-                quantize_fp8=True,
                 out_buffers=self._slots.layer_out_buffers(layer_idx),
             )
             moe_layers.append(layer_idx)

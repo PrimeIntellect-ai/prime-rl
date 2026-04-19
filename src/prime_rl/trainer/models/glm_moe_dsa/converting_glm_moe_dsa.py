@@ -1,7 +1,9 @@
+from dataclasses import dataclass
+
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.fp8 import quantize_to_fp8_blockwise
+from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div, fp8_block_quantize, grouped_fp8_block_quantize
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
@@ -146,169 +148,115 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
         convert_tt_layer_to_hf(state_dict, i)
 
 
+# --------------------------------------------------------------------------- #
+# tt (prime-rl) → vLLM FP8 kernel format.
+#
+# The mapping is deterministic (see mapper.py at the repo root). The only
+# branch is dense-layer vs sparse-layer; every destination tensor is either
+# a direct copy, a concat of two sources, or an FP8 block-quantize of the
+# (possibly concatted) source.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class _Spec:
+    dst: str  # destination suffix (after "model.layers.{i}.")
+    sources: tuple[str, ...]  # source suffixes (after "model.layers.{i}.")
+    cat_dim: int = 0
+    quantize: bool = False
+
+
+_BASE: tuple[_Spec, ...] = (
+    _Spec("input_layernorm.weight", ("input_layernorm.weight",)),
+    _Spec("post_attention_layernorm.weight", ("post_attention_layernorm.weight",)),
+    _Spec("self_attn.q_a_layernorm.weight", ("self_attn.q_a_layernorm.weight",)),
+    _Spec("self_attn.kv_a_layernorm.weight", ("self_attn.kv_a_layernorm.weight",)),
+    _Spec(
+        "self_attn.fused_qkv_a_proj.weight",
+        ("self_attn.q_a_proj.weight", "self_attn.kv_a_proj_with_mqa.weight"),
+        quantize=True,
+    ),
+    _Spec("self_attn.q_b_proj.weight", ("self_attn.q_b_proj.weight",), quantize=True),
+    _Spec("self_attn.kv_b_proj.weight", ("self_attn.kv_b_proj.weight",), quantize=True),
+    _Spec("self_attn.o_proj.weight", ("self_attn.o_proj.weight",), quantize=True),
+    _Spec("self_attn.indexer.wq_b.weight", ("self_attn.indexer.wq_b.weight",), quantize=True),
+    _Spec("self_attn.indexer.wk.weight", ("self_attn.indexer.wk.weight",), quantize=True),
+    _Spec("self_attn.indexer.k_norm.weight", ("self_attn.indexer.k_norm.weight",)),
+    _Spec("self_attn.indexer.k_norm.bias", ("self_attn.indexer.k_norm.bias",)),
+    _Spec("self_attn.indexer.weights_proj.weight", ("self_attn.indexer.weights_proj.weight",)),
+)
+
+
+_SPARSE: tuple[_Spec, ...] = (
+    _Spec("mlp.gate.weight", ("mlp.router.gate.weight",)),
+    _Spec("mlp.gate.e_score_correction_bias", ("mlp.expert_bias",)),
+    _Spec(
+        "mlp.shared_experts.gate_up_proj.weight",
+        ("mlp.shared_expert.w1", "mlp.shared_expert.w3"),
+        quantize=True,
+    ),
+    _Spec("mlp.shared_experts.down_proj.weight", ("mlp.shared_expert.w2",), quantize=True),
+    _Spec("mlp.experts.w13_weight", ("mlp.experts.w1", "mlp.experts.w3"), cat_dim=1, quantize=True),
+    _Spec("mlp.experts.w2_weight", ("mlp.experts.w2",), quantize=True),
+)
+
+
+_DENSE: tuple[_Spec, ...] = (
+    _Spec("mlp.gate_up_proj.weight", ("mlp.gate_proj.weight", "mlp.up_proj.weight"), quantize=True),
+    _Spec("mlp.down_proj.weight", ("mlp.down_proj.weight",), quantize=True),
+)
+
+
+def _scale_shape(shape: torch.Size) -> tuple[int, ...]:
+    if len(shape) == 3:
+        g, r, c = shape
+        return (g, ceil_div(r, BLOCK_SIZE), ceil_div(c, BLOCK_SIZE))
+    r, c = shape
+    return (ceil_div(r, BLOCK_SIZE), ceil_div(c, BLOCK_SIZE))
+
+
 def convert_tt_layer_to_vllm_kernel(
     state_dict: dict[str, Tensor],
     layer_idx: int,
-    quantize_fp8: bool = False,
     out_buffers: dict[str, Tensor] | None = None,
 ) -> dict[str, Tensor]:
-    """Convert a single GLM layer from PrimeRL format to vLLM kernel format.
+    """Convert a single GLM MoE DSA layer from prime-rl format to vLLM FP8 kernel format.
 
-    When ``out_buffers`` is supplied, any output whose name matches a key in
-    ``out_buffers`` is written into that buffer in place (zero-copy). Outputs
-    with no matching buffer are allocated fresh, so callers can opt into
-    zero-copy on a per-tensor basis.
+    The mapping is deterministic; the only branch is dense-layer vs sparse-layer.
+    ``out_buffers`` is always populated correctly — any destination the caller
+    didn't pre-register is allocated here with the right shape/dtype, then
+    filled in place.
     """
-    out: dict[str, Tensor] = {}
     prefix = f"model.layers.{layer_idx}"
-    buffers = out_buffers or {}
+    is_sparse = f"{prefix}.mlp.router.gate.weight" in state_dict
+    specs = _BASE + (_SPARSE if is_sparse else _DENSE)
 
-    def _copy_or_set(name: str, tensor: Tensor) -> None:
-        if name in buffers:
-            buffers[name].copy_(tensor)
-            out[name] = buffers[name]
-        else:
-            out[name] = tensor
+    if out_buffers is None:
+        out_buffers = {}
 
-    def add(name: str, tensor: Tensor) -> None:
-        _copy_or_set(name, tensor)
+    for spec in specs:
+        dst = f"{prefix}.{spec.dst}"
+        srcs = [state_dict[f"{prefix}.{s}"] for s in spec.sources]
+        # Shared-expert tensors live as (1, M, N); drop the leading singleton so
+        # they slot into the 2D destinations above.
+        srcs = [s.squeeze(0) if s.ndim == 3 and s.shape[0] == 1 else s for s in srcs]
+        tensor = srcs[0] if len(srcs) == 1 else torch.cat(srcs, dim=spec.cat_dim)
 
-    def add_maybe_fp8(name: str, tensor: Tensor) -> None:
-        if quantize_fp8 and tensor.ndim == 2:
-            scale_name = name.removesuffix(".weight") + ".weight_scale_inv"
-            fp8_weight, scale = quantize_to_fp8_blockwise(
-                tensor,
-                out_q=buffers.get(name),
-                out_scale=buffers.get(scale_name),
-            )
-            out[name] = fp8_weight
-            out[scale_name] = scale
-            return
-        _copy_or_set(name, tensor)
+        dtype = torch.float8_e4m3fn if spec.quantize else tensor.dtype
+        if dst not in out_buffers:
+            out_buffers[dst] = torch.empty(tensor.shape, dtype=dtype, device=tensor.device)
+        buf = out_buffers[dst]
 
-    for name in [f"{prefix}.input_layernorm.weight", f"{prefix}.post_attention_layernorm.weight"]:
-        if name in state_dict:
-            add(name, state_dict[name])
-
-    q_a_key = f"{prefix}.self_attn.q_a_proj.weight"
-    kv_a_key = f"{prefix}.self_attn.kv_a_proj_with_mqa.weight"
-    if q_a_key in state_dict and kv_a_key in state_dict:
-        add_maybe_fp8(
-            f"{prefix}.self_attn.fused_qkv_a_proj.weight", torch.cat([state_dict[q_a_key], state_dict[kv_a_key]], dim=0)
-        )
-
-    for suffix in ["q_a_layernorm.weight", "kv_a_layernorm.weight"]:
-        key = f"{prefix}.self_attn.{suffix}"
-        if key in state_dict:
-            add(key, state_dict[key])
-
-    for suffix in ["q_b_proj.weight", "kv_b_proj.weight", "o_proj.weight"]:
-        key = f"{prefix}.self_attn.{suffix}"
-        if key in state_dict:
-            add_maybe_fp8(key, state_dict[key])
-
-    for suffix in ["indexer.wq_b.weight", "indexer.wk.weight"]:
-        key = f"{prefix}.self_attn.{suffix}"
-        if key in state_dict:
-            add_maybe_fp8(key, state_dict[key])
-    for suffix in ["indexer.k_norm.weight", "indexer.k_norm.bias", "indexer.weights_proj.weight"]:
-        key = f"{prefix}.self_attn.{suffix}"
-        if key in state_dict:
-            add(key, state_dict[key])
-
-    gate_key = f"{prefix}.mlp.gate_proj.weight"
-    up_key = f"{prefix}.mlp.up_proj.weight"
-    down_key = f"{prefix}.mlp.down_proj.weight"
-    if gate_key in state_dict and up_key in state_dict:
-        add_maybe_fp8(f"{prefix}.mlp.gate_up_proj.weight", torch.cat([state_dict[gate_key], state_dict[up_key]], dim=0))
-        if down_key in state_dict:
-            add_maybe_fp8(f"{prefix}.mlp.down_proj.weight", state_dict[down_key])
-
-    router_key = f"{prefix}.mlp.router.gate.weight"
-    if router_key in state_dict:
-        add(f"{prefix}.mlp.gate.weight", state_dict[router_key])
-    expert_bias_key = f"{prefix}.mlp.expert_bias"
-    if expert_bias_key in state_dict:
-        add(f"{prefix}.mlp.gate.e_score_correction_bias", state_dict[expert_bias_key])
-
-    w1_key = f"{prefix}.mlp.experts.w1"
-    w2_key = f"{prefix}.mlp.experts.w2"
-    w3_key = f"{prefix}.mlp.experts.w3"
-    if w1_key in state_dict and w2_key in state_dict and w3_key in state_dict:
-        w1 = state_dict[w1_key]
-        w2 = state_dict[w2_key]
-        w3 = state_dict[w3_key]
-
-        w13_name = f"{prefix}.mlp.experts.w13_weight"
-        w2_name = f"{prefix}.mlp.experts.w2_weight"
-        w13_scale_name = f"{prefix}.mlp.experts.w13_weight_scale_inv"
-        w2_scale_name = f"{prefix}.mlp.experts.w2_weight_scale_inv"
-
-        num_experts = w1.shape[0]
-
-        if quantize_fp8:
-            w13_buf = buffers.get(w13_name)
-            w2_buf = buffers.get(w2_name)
-            w13_scale_buf = buffers.get(w13_scale_name)
-            w2_scale_buf = buffers.get(w2_scale_name)
-
-            w13_fp8_list: list[Tensor] = [] if w13_buf is None else []
-            w13_scales_list: list[Tensor] = [] if w13_scale_buf is None else []
-            w2_fp8_list: list[Tensor] = [] if w2_buf is None else []
-            w2_scales_list: list[Tensor] = [] if w2_scale_buf is None else []
-
-            for expert_idx in range(num_experts):
-                w13_e = torch.cat([w1[expert_idx], w3[expert_idx]], dim=0)
-                expert_w13_fp8, expert_w13_scales = quantize_to_fp8_blockwise(
-                    w13_e,
-                    out_q=w13_buf[expert_idx] if w13_buf is not None else None,
-                    out_scale=w13_scale_buf[expert_idx] if w13_scale_buf is not None else None,
+        if spec.quantize:
+            scale_name = dst + "_scale_inv"
+            if scale_name not in out_buffers:
+                out_buffers[scale_name] = torch.empty(
+                    _scale_shape(tensor.shape), dtype=torch.float32, device=tensor.device
                 )
-                expert_w2_fp8, expert_w2_scales = quantize_to_fp8_blockwise(
-                    w2[expert_idx],
-                    out_q=w2_buf[expert_idx] if w2_buf is not None else None,
-                    out_scale=w2_scale_buf[expert_idx] if w2_scale_buf is not None else None,
-                )
-                if w13_buf is None:
-                    w13_fp8_list.append(expert_w13_fp8)
-                if w13_scale_buf is None:
-                    w13_scales_list.append(expert_w13_scales)
-                if w2_buf is None:
-                    w2_fp8_list.append(expert_w2_fp8)
-                if w2_scale_buf is None:
-                    w2_scales_list.append(expert_w2_scales)
-
-            out[w13_name] = w13_buf if w13_buf is not None else torch.stack(w13_fp8_list)
-            out[w13_scale_name] = w13_scale_buf if w13_scale_buf is not None else torch.stack(w13_scales_list)
-            out[w2_name] = w2_buf if w2_buf is not None else torch.stack(w2_fp8_list)
-            out[w2_scale_name] = w2_scale_buf if w2_scale_buf is not None else torch.stack(w2_scales_list)
+            sf = out_buffers[scale_name]
+            quantize = grouped_fp8_block_quantize if tensor.ndim == 3 else fp8_block_quantize
+            quantize(tensor, out=buf, sf=sf)
         else:
-            w13_buf = buffers.get(w13_name)
-            if w13_buf is not None:
-                # Use concat with out= to avoid intermediate allocation.
-                torch.cat([w1, w3], dim=1, out=w13_buf)
-                out[w13_name] = w13_buf
-            else:
-                out[w13_name] = torch.cat([w1, w3], dim=1)
-            w2_buf = buffers.get(w2_name)
-            if w2_buf is not None:
-                w2_buf.copy_(w2)
-                out[w2_name] = w2_buf
-            else:
-                out[w2_name] = w2
+            buf.copy_(tensor)
 
-    sw1_key = f"{prefix}.mlp.shared_expert.w1"
-    sw2_key = f"{prefix}.mlp.shared_expert.w2"
-    sw3_key = f"{prefix}.mlp.shared_expert.w3"
-    if sw1_key in state_dict and sw2_key in state_dict and sw3_key in state_dict:
-        sw1 = state_dict[sw1_key]
-        sw2 = state_dict[sw2_key]
-        sw3 = state_dict[sw3_key]
-        if sw1.ndim == 3:
-            sw1 = sw1.squeeze(0)
-            sw2 = sw2.squeeze(0)
-            sw3 = sw3.squeeze(0)
-        add_maybe_fp8(f"{prefix}.mlp.shared_experts.gate_up_proj.weight", torch.cat([sw1, sw3], dim=0))
-        add_maybe_fp8(f"{prefix}.mlp.shared_experts.down_proj.weight", sw2)
-
-    return out
+    return out_buffers

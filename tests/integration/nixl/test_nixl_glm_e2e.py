@@ -96,7 +96,7 @@ def _build_inference_stub(fixture_dir: str, device: torch.device) -> tuple:
 
     Returns (model, moe_prefixes, expert_map_per_prefix, num_experts, moe_dim, hidden_dim, first_k_dense, num_layers).
     """
-    from prime_rl.trainer.models.fp8 import fp8_blockwise_scale_shape
+    from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
     from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
 
     cfg = GlmMoeDsaConfig.from_pretrained(fixture_dir)
@@ -115,8 +115,8 @@ def _build_inference_stub(fixture_dir: str, device: torch.device) -> tuple:
 
     w13_shape = (num_experts, 2 * moe_dim, hidden_dim)
     w2_shape = (num_experts, hidden_dim, moe_dim)
-    s_w13 = fp8_blockwise_scale_shape(2 * moe_dim, hidden_dim)
-    s_w2 = fp8_blockwise_scale_shape(hidden_dim, moe_dim)
+    s_w13 = (ceil_div(2 * moe_dim, BLOCK_SIZE), ceil_div(hidden_dim, BLOCK_SIZE))
+    s_w2 = (ceil_div(hidden_dim, BLOCK_SIZE), ceil_div(moe_dim, BLOCK_SIZE))
 
     for layer_idx in range(num_layers):
         container = torch.nn.Module()
@@ -205,7 +205,7 @@ def _inference(local_rank: int, port: int, fixture_dir: str, ready_q: mp.Queue) 
         mismatches: list[str] = []
         for layer_idx in range(cfg.first_k_dense_replace, cfg.num_hidden_layers):
             layer_sd = {k: v.to(torch.bfloat16) for k, v in ref_sd.items() if k.startswith(f"model.layers.{layer_idx}.")}
-            reference = convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx, quantize_fp8=True)
+            reference = convert_tt_layer_to_vllm_kernel(layer_sd, layer_idx)
             layer_mod = getattr(stub, f"_layer_{layer_idx}")
             for attr in ("w13_weight", "w2_weight", "w13_weight_scale_inv", "w2_weight_scale_inv"):
                 ref_tensor = reference[f"model.layers.{layer_idx}.mlp.experts.{attr}"].to(device)

@@ -1,62 +1,90 @@
+import pytest
 import torch
 
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
 
+_BLOCK = 128
 
-def _build_prime_layer_state(layer_idx: int = 0) -> dict[str, torch.Tensor]:
-    prefix = f"model.layers.{layer_idx}"
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="triton fp8 kernel requires CUDA")
+
+
+def _attn_state(prefix: str, device: torch.device) -> dict[str, torch.Tensor]:
     return {
-        f"{prefix}.self_attn.q_a_proj.weight": torch.randn(4, 6),
-        f"{prefix}.self_attn.kv_a_proj_with_mqa.weight": torch.randn(3, 6),
-        f"{prefix}.self_attn.q_b_proj.weight": torch.randn(5, 6),
-        f"{prefix}.self_attn.kv_b_proj.weight": torch.randn(7, 6),
-        f"{prefix}.self_attn.o_proj.weight": torch.randn(6, 5),
-        f"{prefix}.self_attn.indexer.wq_b.weight": torch.randn(4, 6),
-        f"{prefix}.self_attn.indexer.wk.weight": torch.randn(4, 6),
-        f"{prefix}.self_attn.indexer.k_norm.weight": torch.randn(6),
-        f"{prefix}.self_attn.indexer.k_norm.bias": torch.randn(6),
-        f"{prefix}.self_attn.indexer.weights_proj.weight": torch.randn(2, 6),
-        f"{prefix}.mlp.gate_proj.weight": torch.randn(8, 6),
-        f"{prefix}.mlp.up_proj.weight": torch.randn(8, 6),
-        f"{prefix}.mlp.down_proj.weight": torch.randn(6, 8),
-        f"{prefix}.mlp.router.gate.weight": torch.randn(4, 6),
-        f"{prefix}.mlp.expert_bias": torch.randn(4),
-        f"{prefix}.mlp.experts.w1": torch.randn(2, 3, 6),
-        f"{prefix}.mlp.experts.w2": torch.randn(2, 6, 3),
-        f"{prefix}.mlp.experts.w3": torch.randn(2, 3, 6),
-        f"{prefix}.mlp.shared_expert.w1": torch.randn(1, 3, 6),
-        f"{prefix}.mlp.shared_expert.w2": torch.randn(1, 6, 3),
-        f"{prefix}.mlp.shared_expert.w3": torch.randn(1, 3, 6),
+        f"{prefix}.input_layernorm.weight": torch.randn(_BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.post_attention_layernorm.weight": torch.randn(_BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.q_a_layernorm.weight": torch.randn(_BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.kv_a_layernorm.weight": torch.randn(_BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.q_a_proj.weight": torch.randn(_BLOCK, 2 * _BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.kv_a_proj_with_mqa.weight": torch.randn(
+            _BLOCK, 2 * _BLOCK, dtype=torch.bfloat16, device=device
+        ),
+        f"{prefix}.self_attn.q_b_proj.weight": torch.randn(_BLOCK, 2 * _BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.kv_b_proj.weight": torch.randn(_BLOCK, 2 * _BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.o_proj.weight": torch.randn(2 * _BLOCK, _BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.indexer.wq_b.weight": torch.randn(_BLOCK, 2 * _BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.indexer.wk.weight": torch.randn(_BLOCK, 2 * _BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.indexer.k_norm.weight": torch.randn(_BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.indexer.k_norm.bias": torch.randn(_BLOCK, dtype=torch.bfloat16, device=device),
+        f"{prefix}.self_attn.indexer.weights_proj.weight": torch.randn(
+            _BLOCK, 2 * _BLOCK, dtype=torch.bfloat16, device=device
+        ),
     }
 
 
-def test_convert_tt_layer_to_vllm_kernel_no_fp8():
-    state = _build_prime_layer_state()
-    out = convert_tt_layer_to_vllm_kernel(state, layer_idx=0, quantize_fp8=False)
+def test_sparse_layer_produces_vllm_keys():
+    device = torch.device("cuda")
+    prefix = "model.layers.1"
+    num_experts = 2
+    state = _attn_state(prefix, device)
+    state.update(
+        {
+            f"{prefix}.mlp.router.gate.weight": torch.randn(num_experts, _BLOCK, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.expert_bias": torch.randn(num_experts, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.experts.w1": torch.randn(num_experts, _BLOCK, _BLOCK, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.experts.w2": torch.randn(num_experts, _BLOCK, _BLOCK, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.experts.w3": torch.randn(num_experts, _BLOCK, _BLOCK, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.shared_expert.w1": torch.randn(1, _BLOCK, _BLOCK, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.shared_expert.w2": torch.randn(1, _BLOCK, _BLOCK, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.shared_expert.w3": torch.randn(1, _BLOCK, _BLOCK, dtype=torch.bfloat16, device=device),
+        }
+    )
 
-    assert "model.layers.0.self_attn.fused_qkv_a_proj.weight" in out
-    assert out["model.layers.0.self_attn.fused_qkv_a_proj.weight"].shape == (7, 6)
+    out = convert_tt_layer_to_vllm_kernel(state.copy(), layer_idx=1)
 
-    assert "model.layers.0.mlp.gate_up_proj.weight" in out
-    assert out["model.layers.0.mlp.gate_up_proj.weight"].shape == (16, 6)
+    # FP8 experts packed (num_experts, 2*moe_dim, dim) along cat_dim=1.
+    assert out[f"{prefix}.mlp.experts.w13_weight"].dtype == torch.float8_e4m3fn
+    assert out[f"{prefix}.mlp.experts.w13_weight"].shape == (num_experts, 2 * _BLOCK, _BLOCK)
+    assert out[f"{prefix}.mlp.experts.w13_weight_scale_inv"].dtype == torch.float32
+    assert out[f"{prefix}.mlp.experts.w2_weight"].dtype == torch.float8_e4m3fn
 
-    assert "model.layers.0.mlp.experts.w13_weight" in out
-    assert out["model.layers.0.mlp.experts.w13_weight"].shape == (2, 6, 6)
-    assert "model.layers.0.mlp.experts.w2_weight" in out
-    assert out["model.layers.0.mlp.experts.w2_weight"].shape == (2, 6, 3)
+    # Shared experts squeezed to 2D.
+    assert out[f"{prefix}.mlp.shared_experts.gate_up_proj.weight"].shape == (2 * _BLOCK, _BLOCK)
 
-    assert "model.layers.0.mlp.gate.weight" in out
-    assert "model.layers.0.mlp.gate.e_score_correction_bias" in out
+    # Fused QKV projection concatenated along dim=0.
+    assert out[f"{prefix}.self_attn.fused_qkv_a_proj.weight"].shape == (2 * _BLOCK, 2 * _BLOCK)
+
+    # Router + bias routed through without quantization.
+    assert f"{prefix}.mlp.gate.weight" in out
+    assert f"{prefix}.mlp.gate.e_score_correction_bias" in out
 
 
-def test_convert_tt_layer_to_vllm_kernel_with_fp8():
-    state = _build_prime_layer_state()
-    out = convert_tt_layer_to_vllm_kernel(state, layer_idx=0, quantize_fp8=True)
+def test_dense_layer_produces_vllm_keys():
+    device = torch.device("cuda")
+    prefix = "model.layers.0"
+    state = _attn_state(prefix, device)
+    state.update(
+        {
+            f"{prefix}.mlp.gate_proj.weight": torch.randn(_BLOCK, _BLOCK, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.up_proj.weight": torch.randn(_BLOCK, _BLOCK, dtype=torch.bfloat16, device=device),
+            f"{prefix}.mlp.down_proj.weight": torch.randn(_BLOCK, _BLOCK, dtype=torch.bfloat16, device=device),
+        }
+    )
 
-    assert out["model.layers.0.self_attn.fused_qkv_a_proj.weight"].dtype == torch.float8_e4m3fn
-    assert out["model.layers.0.self_attn.fused_qkv_a_proj.weight_scale_inv"].dtype == torch.float32
+    out = convert_tt_layer_to_vllm_kernel(state.copy(), layer_idx=0)
 
-    assert out["model.layers.0.mlp.experts.w13_weight"].dtype == torch.float8_e4m3fn
-    assert out["model.layers.0.mlp.experts.w13_weight_scale_inv"].dtype == torch.float32
-    assert out["model.layers.0.mlp.experts.w2_weight"].dtype == torch.float8_e4m3fn
-    assert out["model.layers.0.mlp.experts.w2_weight_scale_inv"].dtype == torch.float32
+    assert out[f"{prefix}.mlp.gate_up_proj.weight"].shape == (2 * _BLOCK, _BLOCK)
+    assert out[f"{prefix}.mlp.gate_up_proj.weight"].dtype == torch.float8_e4m3fn
+    assert out[f"{prefix}.mlp.down_proj.weight"].dtype == torch.float8_e4m3fn
+    # Sparse-only keys must not leak into a dense conversion.
+    assert f"{prefix}.mlp.experts.w13_weight" not in out
+    assert f"{prefix}.mlp.gate.weight" not in out
