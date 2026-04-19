@@ -63,7 +63,7 @@ class Scheduler:
         config: OrchestratorConfig,
         max_inflight_rollouts: int,
         max_off_policy_steps: int,
-        no_async: bool,
+        on_policy: bool,
         tasks_per_minute: int | None,
         enable_policy_updates: bool = True,
         lora_name: str | None = None,
@@ -81,7 +81,7 @@ class Scheduler:
         self.rollouts_per_example = config.rollouts_per_example
         self.max_inflight_rollouts = max_inflight_rollouts
         self.max_off_policy_steps = max_off_policy_steps
-        self.no_async = no_async
+        self.on_policy = on_policy
         self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
         self.model_name = self.config.model.name
@@ -272,15 +272,15 @@ class Scheduler:
 
     def _compute_next_ckpt_step(self) -> int:
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-        if self.no_async:
+        if self.on_policy:
             return self.step
         return latest_ckpt_step
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
-        if self.no_async and next_ckpt_step > (get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0):
+        if self.on_policy and next_ckpt_step > (get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0):
             self.logger.info(
                 f"Orchestrator paused: waiting for trainer to complete checkpoint {next_ckpt_step} "
-                f"(on-policy mode, no_async=true). Training is progressing normally."
+                f"(on-policy mode, on_policy=true). Training is progressing normally."
             )
             self.checkpoint_ready.clear()
             wait_for_ckpt_start_time = time.perf_counter()
@@ -376,7 +376,7 @@ class Scheduler:
                 await safe_cancel(self.update_policy_task)
 
             # Manually check the async barrier before starting the step, then re-create the update policy loop.
-            # In no_async mode this also blocks until the matching on-policy checkpoint is ready.
+            # In on_policy mode this also blocks until the matching on-policy checkpoint is ready.
             await self.maybe_update_policy()
             self.update_policy_task = asyncio.create_task(self.update_policy_loop())
         else:

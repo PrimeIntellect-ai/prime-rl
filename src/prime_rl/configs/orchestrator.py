@@ -1001,7 +1001,7 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = 8
 
-    no_async: Annotated[
+    on_policy: Annotated[
         bool,
         Field(
             description="Debug-only flag to force fully synchronous on-policy RL. If True, the orchestrator waits for the trainer to produce a checkpoint at the current step before generating rollouts. This is significantly slower than async training and is intended only for testing/debugging on-policy behavior.",
@@ -1080,8 +1080,8 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def nccl_requires_async(self):
-        if self.weight_broadcast.type == "nccl" and self.no_async:
-            raise ValueError("NCCL broadcast does not support no_async=true")
+        if self.weight_broadcast.type == "nccl" and self.on_policy:
+            raise ValueError("NCCL broadcast does not support on_policy=true")
         return self
 
     @model_validator(mode="after")

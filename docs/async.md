@@ -2,7 +2,7 @@
 
 PRIME-RL implements asynchronous off-policy training, instead of the traditional synchronous on-policy training. This means that we allow inference to generate rollouts from a stale policy while the trainer progresses. The orchestrator always serves rollouts from the latest available policy, and off-policy rollouts beyond `max_off_policy_steps` are dropped.
 
-For debugging, you can set `no_async = true` to force fully synchronous on-policy RL. In this mode, the orchestrator blocks until the trainer's checkpoint for the current step is ready. This is significantly slower and is intended only for testing.
+For debugging, you can set `on_policy = true` to force fully synchronous on-policy RL. In this mode, the orchestrator blocks until the trainer's checkpoint for the current step is ready. This is significantly slower and is intended only for testing.
 
 ![Two-Step Off-Policy Training](assets/two-step-off-policy.png)
 

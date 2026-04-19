@@ -784,7 +784,7 @@ class TrainerConfig(BaseConfig):
         ),
     ] = None
 
-    no_async: Annotated[
+    on_policy: Annotated[
         bool,
         Field(
             description="Debug-only flag to force fully synchronous on-policy RL. When True, the trainer broadcasts weights every step (including the final one) and the orchestrator blocks until the matching checkpoint is available. Significantly slower than async training.",
@@ -909,8 +909,8 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_weight_broadcast_type(self):
-        if self.weight_broadcast.type == "nccl" and self.no_async:
-            raise ValueError("NCCL weight broadcast does not support no_async=true")
+        if self.weight_broadcast.type == "nccl" and self.on_policy:
+            raise ValueError("NCCL weight broadcast does not support on_policy=true")
         return self
 
     @model_validator(mode="after")

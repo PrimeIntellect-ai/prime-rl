@@ -235,7 +235,7 @@ async def orchestrate(config: OrchestratorConfig):
         inference_pool=inference_pool,
         max_inflight_rollouts=config.max_inflight_rollouts,
         max_off_policy_steps=config.max_off_policy_steps,
-        no_async=config.no_async,
+        on_policy=config.on_policy,
         tasks_per_minute=config.tasks_per_minute,
         enable_policy_updates=enable_policy_updates,
         lora_name=config.model.lora.name if config.model.lora else None,

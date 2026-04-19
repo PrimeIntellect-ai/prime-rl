@@ -44,7 +44,7 @@ from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
     validate_shared_max_steps,
     validate_shared_model_name,
-    validate_shared_no_async,
+    validate_shared_on_policy,
     validate_shared_output_dir,
     validate_shared_tokenizer,
     validate_shared_wandb_config,
@@ -330,7 +330,7 @@ class RLConfig(BaseConfig):
         ),
     ] = None
 
-    no_async: Annotated[
+    on_policy: Annotated[
         bool | None,
         Field(
             description="Debug-only flag to force fully synchronous on-policy RL. If None, falls back to the value on submodule configs. Significantly slower than async training."
@@ -608,13 +608,13 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_no_async(self):
-        """Auto-setup shared no_async flag for trainer and orchestrator."""
-        if self.no_async is not None:
-            self.trainer.no_async = self.no_async
-            self.orchestrator.no_async = self.no_async
+    def auto_setup_on_policy(self):
+        """Auto-setup shared on_policy flag for trainer and orchestrator."""
+        if self.on_policy is not None:
+            self.trainer.on_policy = self.on_policy
+            self.orchestrator.on_policy = self.on_policy
 
-        validate_shared_no_async(self.trainer, self.orchestrator)
+        validate_shared_on_policy(self.trainer, self.orchestrator)
 
         return self
 

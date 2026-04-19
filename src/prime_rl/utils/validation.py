@@ -94,13 +94,13 @@ def validate_shared_max_steps(
         )
 
 
-def validate_shared_no_async(
+def validate_shared_on_policy(
     trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.no_async != orchestrator.no_async:
+    if trainer.on_policy != orchestrator.on_policy:
         raise ValueError(
-            f"Trainer no_async ({trainer.no_async}) and orchestrator no_async ({orchestrator.no_async}) do not match. Please specify the same value for both."
+            f"Trainer on_policy ({trainer.on_policy}) and orchestrator on_policy ({orchestrator.on_policy}) do not match. Please specify the same value for both."
         )
 
 
