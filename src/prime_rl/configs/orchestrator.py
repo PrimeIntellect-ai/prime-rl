@@ -1079,12 +1079,6 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def nccl_requires_async(self):
-        if self.weight_broadcast.type == "nccl" and self.on_policy:
-            raise ValueError("NCCL broadcast does not support on_policy=true")
-        return self
-
-    @model_validator(mode="after")
     def resolve_batching(self):
         has_rollout_batch = self.batch_size is not None
         has_token_batch = self.token_batch_size is not None

@@ -908,12 +908,6 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_weight_broadcast_type(self):
-        if self.weight_broadcast.type == "nccl" and self.on_policy:
-            raise ValueError("NCCL weight broadcast does not support on_policy=true")
-        return self
-
-    @model_validator(mode="after")
     def validate_opt_and_fsdp_offload(self):
         if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
