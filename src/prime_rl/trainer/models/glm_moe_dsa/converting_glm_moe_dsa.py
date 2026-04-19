@@ -150,22 +150,41 @@ def convert_tt_layer_to_vllm_kernel(
     state_dict: dict[str, Tensor],
     layer_idx: int,
     quantize_fp8: bool = False,
+    out_buffers: dict[str, Tensor] | None = None,
 ) -> dict[str, Tensor]:
-    """Convert a single GLM layer from PrimeRL format to vLLM kernel format."""
+    """Convert a single GLM layer from PrimeRL format to vLLM kernel format.
+
+    When ``out_buffers`` is supplied, any output whose name matches a key in
+    ``out_buffers`` is written into that buffer in place (zero-copy). Outputs
+    with no matching buffer are allocated fresh, so callers can opt into
+    zero-copy on a per-tensor basis.
+    """
     out: dict[str, Tensor] = {}
     prefix = f"model.layers.{layer_idx}"
+    buffers = out_buffers or {}
+
+    def _copy_or_set(name: str, tensor: Tensor) -> None:
+        if name in buffers:
+            buffers[name].copy_(tensor)
+            out[name] = buffers[name]
+        else:
+            out[name] = tensor
 
     def add(name: str, tensor: Tensor) -> None:
-        out[name] = tensor
+        _copy_or_set(name, tensor)
 
     def add_maybe_fp8(name: str, tensor: Tensor) -> None:
         if quantize_fp8 and tensor.ndim == 2:
-            fp8_weight, scale = quantize_to_fp8_blockwise(tensor)
-            out[name] = fp8_weight
             scale_name = name.removesuffix(".weight") + ".weight_scale_inv"
+            fp8_weight, scale = quantize_to_fp8_blockwise(
+                tensor,
+                out_q=buffers.get(name),
+                out_scale=buffers.get(scale_name),
+            )
+            out[name] = fp8_weight
             out[scale_name] = scale
             return
-        out[name] = tensor
+        _copy_or_set(name, tensor)
 
     for name in [f"{prefix}.input_layernorm.weight", f"{prefix}.post_attention_layernorm.weight"]:
         if name in state_dict:
@@ -219,28 +238,64 @@ def convert_tt_layer_to_vllm_kernel(
         w1 = state_dict[w1_key]
         w2 = state_dict[w2_key]
         w3 = state_dict[w3_key]
-        w13 = torch.cat([w1, w3], dim=1)
+
+        w13_name = f"{prefix}.mlp.experts.w13_weight"
+        w2_name = f"{prefix}.mlp.experts.w2_weight"
+        w13_scale_name = f"{prefix}.mlp.experts.w13_weight_scale_inv"
+        w2_scale_name = f"{prefix}.mlp.experts.w2_weight_scale_inv"
+
+        num_experts = w1.shape[0]
 
         if quantize_fp8:
-            w13_fp8: list[Tensor] = []
-            w13_scales: list[Tensor] = []
-            w2_fp8: list[Tensor] = []
-            w2_scales: list[Tensor] = []
-            for expert_idx in range(w1.shape[0]):
-                expert_w13_fp8, expert_w13_scales = quantize_to_fp8_blockwise(w13[expert_idx])
-                expert_w2_fp8, expert_w2_scales = quantize_to_fp8_blockwise(w2[expert_idx])
-                w13_fp8.append(expert_w13_fp8)
-                w13_scales.append(expert_w13_scales)
-                w2_fp8.append(expert_w2_fp8)
-                w2_scales.append(expert_w2_scales)
+            w13_buf = buffers.get(w13_name)
+            w2_buf = buffers.get(w2_name)
+            w13_scale_buf = buffers.get(w13_scale_name)
+            w2_scale_buf = buffers.get(w2_scale_name)
 
-            out[f"{prefix}.mlp.experts.w13_weight"] = torch.stack(w13_fp8)
-            out[f"{prefix}.mlp.experts.w13_weight_scale_inv"] = torch.stack(w13_scales)
-            out[f"{prefix}.mlp.experts.w2_weight"] = torch.stack(w2_fp8)
-            out[f"{prefix}.mlp.experts.w2_weight_scale_inv"] = torch.stack(w2_scales)
+            w13_fp8_list: list[Tensor] = [] if w13_buf is None else []
+            w13_scales_list: list[Tensor] = [] if w13_scale_buf is None else []
+            w2_fp8_list: list[Tensor] = [] if w2_buf is None else []
+            w2_scales_list: list[Tensor] = [] if w2_scale_buf is None else []
+
+            for expert_idx in range(num_experts):
+                w13_e = torch.cat([w1[expert_idx], w3[expert_idx]], dim=0)
+                expert_w13_fp8, expert_w13_scales = quantize_to_fp8_blockwise(
+                    w13_e,
+                    out_q=w13_buf[expert_idx] if w13_buf is not None else None,
+                    out_scale=w13_scale_buf[expert_idx] if w13_scale_buf is not None else None,
+                )
+                expert_w2_fp8, expert_w2_scales = quantize_to_fp8_blockwise(
+                    w2[expert_idx],
+                    out_q=w2_buf[expert_idx] if w2_buf is not None else None,
+                    out_scale=w2_scale_buf[expert_idx] if w2_scale_buf is not None else None,
+                )
+                if w13_buf is None:
+                    w13_fp8_list.append(expert_w13_fp8)
+                if w13_scale_buf is None:
+                    w13_scales_list.append(expert_w13_scales)
+                if w2_buf is None:
+                    w2_fp8_list.append(expert_w2_fp8)
+                if w2_scale_buf is None:
+                    w2_scales_list.append(expert_w2_scales)
+
+            out[w13_name] = w13_buf if w13_buf is not None else torch.stack(w13_fp8_list)
+            out[w13_scale_name] = w13_scale_buf if w13_scale_buf is not None else torch.stack(w13_scales_list)
+            out[w2_name] = w2_buf if w2_buf is not None else torch.stack(w2_fp8_list)
+            out[w2_scale_name] = w2_scale_buf if w2_scale_buf is not None else torch.stack(w2_scales_list)
         else:
-            out[f"{prefix}.mlp.experts.w13_weight"] = w13
-            out[f"{prefix}.mlp.experts.w2_weight"] = w2
+            w13_buf = buffers.get(w13_name)
+            if w13_buf is not None:
+                # Use concat with out= to avoid intermediate allocation.
+                torch.cat([w1, w3], dim=1, out=w13_buf)
+                out[w13_name] = w13_buf
+            else:
+                out[w13_name] = torch.cat([w1, w3], dim=1)
+            w2_buf = buffers.get(w2_name)
+            if w2_buf is not None:
+                w2_buf.copy_(w2)
+                out[w2_name] = w2_buf
+            else:
+                out[w2_name] = w2
 
     sw1_key = f"{prefix}.mlp.shared_expert.w1"
     sw2_key = f"{prefix}.mlp.shared_expert.w2"

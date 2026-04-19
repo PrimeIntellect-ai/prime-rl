@@ -105,9 +105,9 @@ class ModelConfig(BaseModelConfig):
 class WeightBroadcastConfig(BaseConfig):
     """Configures weight broadcast settings."""
 
-    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
-        "filesystem"
-    )
+    type: Annotated[
+        Literal["nccl", "filesystem", "nixl"], Field(description="The type of weight broadcast to use.")
+    ] = "filesystem"
 
 
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)

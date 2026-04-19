@@ -181,7 +181,13 @@ def train(config: TrainerConfig):
         logger.info("Skipping weight broadcast setup (fake data mode)")
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
+        weight_broadcast = setup_weight_broadcast(
+            config.output_dir,
+            config.weight_broadcast,
+            config.model.lora,
+            model=model,
+            parallel_dims=parallel_dims,
+        )
 
     if parallel_dims.cp_enabled:
         cp_group = parallel_dims.world_mesh["cp"].get_group()
