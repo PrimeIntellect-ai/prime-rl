@@ -4,6 +4,42 @@ Imported early (before any model code) by trainer and orchestrator entrypoints.
 Each shim documents the upstream issue and removal condition.
 """
 
+import logging
+import warnings
+
+# ---------------------------------------------------------------------------
+# Third-party warning noise on import
+#
+# - requests 2.33 asserts chardet < 6 but mini-swe-agent-plus → swebench pulls
+#   in chardet 7.x, triggering RequestsDependencyWarning on every import.
+# - tyro mis-handles Annotated[X | Y, Field(discriminator=...)] nested inside
+#   another Union, producing a spurious TyroWarning for our AdvantageConfig.
+#   See tyro/_resolver.py:unwrap_origin_strip_extras.
+#
+# Match by message pattern so we can install the filter before the offending
+# package is imported (importing the warning class would trigger the warning).
+# ---------------------------------------------------------------------------
+warnings.filterwarnings(
+    "ignore",
+    message=r"urllib3 \(.*\) or chardet \(.*\)/charset_normalizer \(.*\) doesn't match a supported version",
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*does not match any type in Union.*",
+)
+
+# ---------------------------------------------------------------------------
+# flash_attn.cute leaks DEBUG logs on import
+#
+# flash_attn/cute/cache_utils.py attaches its own StreamHandler and hardcodes
+# logger.setLevel(DEBUG), so "Persistent cache disabled, using in-memory JIT
+# cache" prints five times when flash_attn.cute.interface loads (once per
+# get_jit_cache call in its module body). Those calls fire during the package
+# import itself, so we can't downgrade the logger after-the-fact — install a
+# drop-everything filter on the named logger before the package loads.
+# ---------------------------------------------------------------------------
+logging.getLogger("flash_attn.cute.cache_utils").addFilter(lambda r: False)
+
 # ---------------------------------------------------------------------------
 # ring_flash_attn + transformers >= 5.4
 #
