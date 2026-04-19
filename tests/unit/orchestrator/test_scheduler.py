@@ -1,9 +1,10 @@
 import asyncio
+from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from prime_rl.orchestrator.scheduler import InflightRequest, Scheduler
+from prime_rl.orchestrator.scheduler import GroupState, InflightRequest, Scheduler
 from prime_rl.utils.async_utils import safe_cancel
 
 
@@ -157,5 +158,96 @@ def test_stop_cancels_inflight_policy_update_task():
         assert cancelled.is_set()
         assert scheduler.update_policy_task is None
         assert scheduler.inflight_policy_update_task is None
+
+    asyncio.run(run())
+
+
+def test_generate_batch_uses_schedule_time_policy_step():
+    class DummyProgressTracker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def update(self, _value):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeBuffer:
+        def __init__(self):
+            self.rollouts = []
+
+        def update(self, rollouts):
+            self.rollouts.extend(rollouts)
+
+        def sample_rollouts(self, n: int):
+            return self.rollouts[-n:]
+
+    async def run() -> None:
+        scheduler = Scheduler.__new__(Scheduler)
+        scheduler.enable_policy_updates = False
+        scheduler.checkpoint_ready = asyncio.Event()
+        scheduler.checkpoint_ready.set()
+        scheduler.logger = MagicMock()
+        scheduler.json_logging = False
+        scheduler.batch_size = 1
+        scheduler.token_batch_size = None
+        scheduler.rollouts_per_example = 1
+        scheduler.max_async_level = 0
+        scheduler.step = 0
+        scheduler.ckpt_step = 11
+        scheduler.last_batch_generation_time = 0.0
+        scheduler.max_inflight_rollouts = 1
+        scheduler.buffer = FakeBuffer()
+        scheduler.inflight_requests = {}
+        scheduler.groups = {}
+        scheduler.total_rollouts_by_env = defaultdict(int)
+        scheduler.empty_rollouts_by_env = defaultdict(int)
+        scheduler.errored_rollouts_by_env = defaultdict(int)
+        scheduler.cancelled_rollouts_count = 0
+        scheduler.inference_pool = SimpleNamespace(get_metrics=lambda: {})
+        scheduler.train_envs = SimpleNamespace(get=lambda _env_name: SimpleNamespace(requires_group_scoring=False))
+        scheduler._fill_inflight_requests = AsyncMock()
+
+        finished = asyncio.Future()
+        finished.set_result(
+            {
+                "example_id": 1,
+                "reward": 1.0,
+                "error": None,
+                "trajectory": [
+                    {
+                        "tokens": {
+                            "prompt_ids": [1],
+                            "prompt_mask": [False],
+                            "completion_ids": [2],
+                            "completion_mask": [True],
+                            "completion_logprobs": [-0.1],
+                        }
+                    }
+                ],
+                "timing": {"generation_ms": 1.0, "scoring_ms": 1.0},
+                "metrics": {},
+                "is_truncated": False,
+            }
+        )
+
+        group_id = 7
+        scheduler.inflight_requests = {
+            finished: InflightRequest(
+                off_policy_steps=0,
+                client_config=SimpleNamespace(api_base_url="http://test", extra_headers={}),
+                env_name="math",
+                policy_step=5,
+                group_id=group_id,
+            )
+        }
+        scheduler.groups = {group_id: GroupState(example={"env_name": "math"}, rollouts_to_schedule=0)}
+
+        with patch("prime_rl.orchestrator.scheduler.ProgressTracker", DummyProgressTracker):
+            batch = await scheduler.generate_batch(step=12, target=1)
+
+        assert batch[0]["env_name"] == "math"
+        assert batch[0]["policy_step"] == 5
 
     asyncio.run(run())
