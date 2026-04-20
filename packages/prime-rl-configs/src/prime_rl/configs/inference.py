@@ -453,7 +453,6 @@ class InferenceConfig(BaseConfig):
         if self.deployment.type != "single_node":
             return self
 
-        router_port_explicit = "router_port" in self.deployment.model_fields_set
         server_port_explicit = "port" in self.server.model_fields_set
 
         if self.deployment.router_port is None:
@@ -477,9 +476,6 @@ class InferenceConfig(BaseConfig):
 
         if self.deployment.backend_port == self.deployment.router_port:
             raise ValueError("deployment.backend_port must differ from deployment.router_port for single-node.")
-
-        if router_port_explicit and not server_port_explicit:
-            self.server.port = self.deployment.router_port
 
         return self
 
