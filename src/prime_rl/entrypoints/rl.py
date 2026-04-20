@@ -66,8 +66,10 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
 
     if config.inference is not None:
-        # Exclude launcher-only fields that are not needed by the vLLM server
-        exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
+        # Exclude launcher-only fields that are not needed by the inference entrypoint.
+        exclude_inference = {"slurm", "output_dir", "dry_run"}
+        if config.inference.deployment.type in ("multi_node", "disaggregated"):
+            exclude_inference.add("deployment")
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
 
@@ -151,20 +153,45 @@ def rl_local(config: RLConfig):
     all_gpu_ids = list(set(infer_gpu_ids + trainer_gpu_ids + teacher_gpu_ids))
     check_gpus_available(all_gpu_ids)
 
-    # Validate client port matches inference server port
+    # Validate client ports match the inference routing shape.
     if config.inference is not None and not config.orchestrator.client.is_elastic:
         from urllib.parse import urlparse
 
         base_url = config.orchestrator.client.base_url[0]
-        parsed = urlparse(base_url)
-        client_port = parsed.port
-        expected_port = config.inference.server.port
-        if client_port != expected_port:
-            raise ValueError(
-                f"orchestrator.client.base_url port ({client_port}) does not match "
-                f"inference.server.port ({expected_port}). "
-                f"Update the base_url to use port {expected_port} to match the inference server."
-            )
+        base_port = urlparse(base_url).port
+
+        if config.inference.deployment.type == "single_node" and config.inference.deployment.use_router:
+            expected_base_port = config.inference.deployment.router_port
+            if base_port != expected_base_port:
+                raise ValueError(
+                    f"orchestrator.client.base_url port ({base_port}) does not match "
+                    f"inference.deployment.router_port ({expected_base_port}). "
+                    f"Update the base_url to use port {expected_base_port} to match the single-node router."
+                )
+
+            admin_base_url = config.orchestrator.client.admin_base_url
+            if not admin_base_url:
+                raise ValueError(
+                    "orchestrator.client.admin_base_url must be set for single-node router deployments "
+                    "to route admin operations directly to the backend."
+                )
+
+            admin_port = urlparse(admin_base_url[0]).port
+            expected_admin_port = config.inference.deployment.backend_port
+            if admin_port != expected_admin_port:
+                raise ValueError(
+                    f"orchestrator.client.admin_base_url port ({admin_port}) does not match "
+                    f"inference.deployment.backend_port ({expected_admin_port}). "
+                    f"Update the admin_base_url to use port {expected_admin_port} to match the single-node backend."
+                )
+        else:
+            expected_port = config.inference.server.port
+            if base_port != expected_port:
+                raise ValueError(
+                    f"orchestrator.client.base_url port ({base_port}) does not match "
+                    f"inference.server.port ({expected_port}). "
+                    f"Update the base_url to use port {expected_port} to match the inference server."
+                )
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)

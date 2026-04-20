@@ -747,6 +747,34 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_single_node_inference_urls(self):
+        """Auto-configure single-node router/backend URLs for the orchestrator client."""
+        if self.inference is None:
+            return self
+
+        if self.deployment.type != "single_node":
+            return self
+
+        if self.orchestrator.client.is_elastic:
+            return self
+
+        host = self.inference.server.host or "localhost"
+
+        if self.inference.deployment.type == "single_node" and self.inference.deployment.use_router:
+            if "base_url" not in self.orchestrator.client.model_fields_set:
+                self.orchestrator.client.base_url = [f"http://{host}:{self.inference.deployment.router_port}/v1"]
+
+            if "admin_base_url" not in self.orchestrator.client.model_fields_set:
+                self.orchestrator.client.admin_base_url = [f"http://{host}:{self.inference.deployment.backend_port}/v1"]
+
+            return self
+
+        if "base_url" not in self.orchestrator.client.model_fields_set:
+            self.orchestrator.client.base_url = [f"http://{host}:{self.inference.server.port}/v1"]
+
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_router_replay(self):
         if self.trainer.enable_router_replay:
             if self.inference is not None:

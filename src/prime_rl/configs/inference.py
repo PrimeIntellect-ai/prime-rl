@@ -137,6 +137,25 @@ class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     type: Literal["single_node"] = "single_node"
 
+    use_router: Annotated[
+        bool,
+        Field(
+            description="Whether to run a local vllm-router in front of the single-node backend.",
+        ),
+    ] = True
+    router_port: Annotated[
+        int,
+        Field(description="Port for the vllm-router when use_router is enabled."),
+    ] = 8000
+    backend_port: Annotated[
+        int,
+        Field(description="Port for the single-node vLLM backend when use_router is enabled."),
+    ] = 8100
+    router_policy: Annotated[
+        str,
+        Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin')."),
+    ] = "consistent_hash"
+
 
 class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     """Configures a multi-node inference deployment. Each node runs an independent vLLM replica."""
@@ -426,6 +445,26 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_single_node_router(self):
+        if self.deployment.type != "single_node" or not self.deployment.use_router:
+            return self
+
+        if "router_port" in self.deployment.model_fields_set and self.deployment.router_port != self.server.port:
+            raise ValueError(
+                "For single-node router deployments, deployment.router_port must match server.port. "
+                "Set server.port to the public router port and deployment.backend_port to the backend port."
+            )
+
+        self.deployment.router_port = self.server.port
+
+        if self.deployment.backend_port == self.deployment.router_port:
+            raise ValueError(
+                "deployment.backend_port must differ from server.port when deployment.use_router is enabled."
+            )
+
         return self
 
     @model_validator(mode="after")

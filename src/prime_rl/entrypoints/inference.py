@@ -1,5 +1,6 @@
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import tomli_w
@@ -34,7 +35,13 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     template = env.get_template(config.slurm.template_path.name)
 
     is_disaggregated = config.deployment.type == "disaggregated"
-    dp_per_node = config.deployment.gpus_per_node // config.parallel.tp
+    is_multi_node = config.deployment.type == "multi_node"
+    is_single_node_router = config.deployment.type == "single_node" and config.deployment.use_router
+    dp_per_node = (
+        config.data_parallel_size_local or config.parallel.dp
+        if is_single_node_router
+        else config.deployment.gpus_per_node // config.parallel.tp
+    )
 
     template_vars = dict(
         **config.slurm.template_vars,
@@ -45,9 +52,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         num_nodes=getattr(config.deployment, "num_nodes", 1),
         port=config.server.port,
         disaggregated=is_disaggregated,
+        single_node_router=is_single_node_router,
     )
-
-    is_multi_node = config.deployment.type == "multi_node"
 
     if is_disaggregated:
         template_vars.update(
@@ -68,13 +74,12 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             if config.deployment.kv_cache_offload
             else 0,
         )
-    elif is_multi_node:
+    elif is_multi_node or is_single_node_router:
         template_vars.update(
             router_port=config.deployment.router_port,
             backend_port=config.deployment.backend_port,
             router_policy=config.deployment.router_policy,
         )
-
     script = template.render(**template_vars)
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +122,72 @@ def inference_slurm(config: InferenceConfig):
     logger.success(f"{result.stdout.strip()}\n\n{log_message}")
 
 
+def run_single_node_with_router(config: InferenceConfig):
+    """Run a single-node backend behind a local vllm-router."""
+    from prime_rl.inference.server import setup_vllm_env
+
+    logger = setup_logger("info")
+
+    host = config.server.host or "0.0.0.0"
+    router_port = config.deployment.router_port
+    backend_port = config.deployment.backend_port
+    router_dp_size = config.data_parallel_size_local or config.parallel.dp
+
+    logger.info(f"Starting single-node backend on http://{host}:{backend_port}/v1")
+    logger.info(f"Starting single-node router on http://{host}:{router_port}/v1\n")
+
+    setup_vllm_env(config)
+
+    with tempfile.TemporaryDirectory(prefix="prime-rl-inference-") as tmpdir:
+        config_path = write_config(config, Path(tmpdir))
+
+        backend_cmd = [
+            sys.executable,
+            "-m",
+            "prime_rl.entrypoints.inference",
+            "@",
+            str(config_path),
+            "--server.host",
+            host,
+            "--server.port",
+            str(backend_port),
+            "--deployment.use_router",
+            "false",
+        ]
+        router_cmd = [
+            "vllm-router",
+            "--policy",
+            config.deployment.router_policy,
+            "--worker-urls",
+            f"http://127.0.0.1:{backend_port}",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            str(router_port),
+            "--intra-node-data-parallel-size",
+            str(router_dp_size),
+            "--worker-startup-timeout-secs",
+            "4200",
+            "--log-level",
+            "debug",
+        ]
+
+        backend_proc = subprocess.Popen(backend_cmd)
+        try:
+            result = subprocess.run(router_cmd)
+        finally:
+            if backend_proc.poll() is None:
+                backend_proc.terminate()
+                try:
+                    backend_proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    backend_proc.kill()
+                    backend_proc.wait()
+
+        if result.returncode != 0:
+            sys.exit(result.returncode)
+
+
 def inference_local(config: InferenceConfig):
     """Run inference locally."""
     from prime_rl.inference.server import setup_vllm_env
@@ -125,6 +196,10 @@ def inference_local(config: InferenceConfig):
 
     if config.dry_run:
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
+        return
+
+    if config.deployment.type == "single_node" and config.deployment.use_router:
+        run_single_node_with_router(config)
         return
 
     host = config.server.host or "0.0.0.0"

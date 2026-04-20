@@ -159,3 +159,60 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_inference_single_node_router_defaults_follow_server_port():
+    config = InferenceConfig(server={"port": 9000})
+    assert config.deployment.type == "single_node"
+    assert config.deployment.use_router is True
+    assert config.deployment.router_port == 9000
+    assert config.deployment.backend_port == 8100
+
+
+def test_inference_single_node_router_rejects_backend_port_conflict():
+    with pytest.raises(ValidationError, match="deployment.backend_port must differ from server.port"):
+        InferenceConfig(
+            server={"port": 9000},
+            deployment={"type": "single_node", "use_router": True, "backend_port": 9000},
+        )
+
+
+def test_inference_single_node_router_rejects_router_port_mismatch():
+    with pytest.raises(ValidationError, match="deployment.router_port must match server.port"):
+        InferenceConfig(
+            server={"port": 9000},
+            deployment={"type": "single_node", "use_router": True, "router_port": 9001},
+        )
+
+
+def test_rl_single_node_router_sets_client_and_admin_urls():
+    config = cli(
+        RLConfig,
+        args=[
+            "@",
+            "configs/ci/integration/rl/start.toml",
+            "--inference.server.port",
+            "9000",
+            "--inference.deployment.use_router",
+            "true",
+            "--inference.deployment.backend_port",
+            "9100",
+        ],
+    )
+    assert config.orchestrator.client.base_url == ["http://localhost:9000/v1"]
+    assert config.orchestrator.client.admin_base_url == ["http://localhost:9100/v1"]
+
+
+def test_rl_single_node_without_router_keeps_base_url_on_server_port():
+    config = cli(
+        RLConfig,
+        args=[
+            "@",
+            "configs/ci/integration/rl/start.toml",
+            "--inference.server.port",
+            "9001",
+            "--inference.deployment.use_router",
+            "false",
+        ],
+    )
+    assert config.orchestrator.client.base_url == ["http://localhost:9001/v1"]

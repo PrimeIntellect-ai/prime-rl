@@ -36,7 +36,7 @@ export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
 export ROUTER_PORT={{ router_port }}
 export RPC_PORT={{ data_parallel_rpc_port }}
-{%- elif num_nodes > 1 %}
+{%- elif num_nodes > 1 or single_node_router %}
 export ROUTER_PORT={{ router_port }}
 export BACKEND_PORT={{ backend_port }}
 {%- endif %}
@@ -94,6 +94,11 @@ ROUTER_ARGS=""
 for host in ${HOSTNAMES[@]}; do
     ROUTER_ARGS="$ROUTER_ARGS http://${host}:${BACKEND_PORT}"
 done
+export INFER_URLS
+export ROUTER_ARGS
+{%- elif single_node_router %}
+INFER_URLS="http://${HOSTNAMES[0]}:${ROUTER_PORT}/v1"
+ROUTER_ARGS="http://${HOSTNAMES[0]}:${BACKEND_PORT}"
 export INFER_URLS
 export ROUTER_ARGS
 {%- else %}
@@ -270,8 +275,30 @@ srun bash -c '
     # Required for graph compilation to work
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
 
+{%- if single_node_router %}
+    ROUTER_LOG="$OUTPUT_DIR/logs/inference/router.log"
+    echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
+
+    vllm-router \
+        --policy {{ router_policy }} \
+        --worker-urls $ROUTER_ARGS \
+        --host 0.0.0.0 \
+        --port $ROUTER_PORT \
+        --intra-node-data-parallel-size {{ dp_per_node }} \
+        --worker-startup-timeout-secs 4200 \
+        --log-level debug \
+        >> $ROUTER_LOG 2>&1 &
+
+    uv run inference \
+        @ $CONFIG_PATH \
+        --server.host 0.0.0.0 \
+        --server.port $BACKEND_PORT \
+        --deployment.use_router false \
+        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+{%- else %}
     uv run inference \
         @ $CONFIG_PATH \
         2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+{%- endif %}
 {%- endif %}
 '
