@@ -84,6 +84,8 @@ For `InferenceConfig` with `deployment.type = "single_node"`:
 
 When the RL entrypoint auto-manages local inference, it routes generation traffic through `orchestrator.client.base_url` and sends admin traffic (health checks, weight updates, pause/resume) to `orchestrator.client.admin_base_url`.
 
+If single-node RL auto-configures `teacher_inference` from the primary inference config, it also assigns a distinct teacher router/backend pair (`teacher_inference.server.port + 100` for the backend by default) so the teacher server does not reuse the rollout inference ports.
+
 ### Boolean fields
 
 ```bash

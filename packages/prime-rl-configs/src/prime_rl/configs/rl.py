@@ -944,18 +944,61 @@ class RLConfig(BaseConfig):
 
         from prime_rl.configs.orchestrator import TeacherModelConfig
 
+        auto_configured_teacher = False
         if self.teacher_inference is None:
+            auto_configured_teacher = True
             if self.inference is None:
                 self.teacher_inference = InferenceConfig()
             else:
                 self.teacher_inference = copy.deepcopy(self.inference)
-            self.teacher_inference.server.port = (self.inference.server.port if self.inference else 8000) + 1
+            teacher_public_port = (self.inference.server.port if self.inference else 8000) + 1
+            if teacher_public_port > 65535:
+                raise ValueError(
+                    "Auto-configured teacher_inference.server.port exceeds the valid port range. "
+                    "Set teacher_inference.server.port explicitly."
+                )
+
+            self.teacher_inference.server.port = teacher_public_port
+            if self.teacher_inference.deployment.type == "single_node":
+                teacher_backend_port = teacher_public_port + 100
+                if teacher_backend_port > 65535:
+                    raise ValueError(
+                        "Auto-configured teacher_inference.deployment.backend_port exceeds the valid port range. "
+                        "Set teacher_inference.deployment.backend_port explicitly."
+                    )
+                self.teacher_inference.deployment.router_port = teacher_public_port
+                self.teacher_inference.deployment.backend_port = teacher_backend_port
         elif self.inference is not None and self.teacher_inference.server.port == self.inference.server.port:
             raise ValueError(
                 f"teacher_inference.server.port ({self.teacher_inference.server.port}) conflicts with "
                 f"inference.server.port ({self.inference.server.port}). "
                 "Either use different ports or let teacher_inference be auto-configured."
             )
+
+        if auto_configured_teacher:
+            self.teacher_inference = InferenceConfig.model_validate(
+                self.teacher_inference.model_dump(exclude_none=True, mode="python")
+            )
+
+        if (
+            self.inference is not None
+            and self.inference.deployment.type == "single_node"
+            and self.teacher_inference.deployment.type == "single_node"
+        ):
+            primary_ports = {
+                self.inference.deployment.router_port,
+                self.inference.deployment.backend_port,
+            }
+            teacher_ports = {
+                self.teacher_inference.deployment.router_port,
+                self.teacher_inference.deployment.backend_port,
+            }
+            collisions = sorted(primary_ports & teacher_ports)
+            if collisions:
+                raise ValueError(
+                    "teacher_inference single-node ports must not reuse inference router/backend ports. "
+                    f"Conflicting port(s): {collisions}."
+                )
 
         tp = self.teacher_inference.parallel.tp
         num_teacher_gpus = self.deployment.num_teacher_gpus
@@ -966,8 +1009,14 @@ class RLConfig(BaseConfig):
 
         if self.orchestrator.teacher_model is None:
             self.orchestrator.teacher_model = TeacherModelConfig()
-        host = self.teacher_inference.server.host or "localhost"
-        port = self.teacher_inference.server.port
+        host = self.teacher_inference.server.host
+        if host in (None, "0.0.0.0", "::"):
+            host = "localhost"
+        port = (
+            self.teacher_inference.deployment.router_port
+            if self.teacher_inference.deployment.type == "single_node"
+            else self.teacher_inference.server.port
+        )
         self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
         self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
 

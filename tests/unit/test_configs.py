@@ -193,3 +193,43 @@ def test_rl_config_auto_sets_single_node_router_and_admin_urls():
     )
     assert config.orchestrator.client.base_url == ["http://localhost:9000/v1"]
     assert config.orchestrator.client.admin_base_url == ["http://localhost:9100/v1"]
+
+
+def test_rl_config_auto_sets_non_conflicting_teacher_inference_ports():
+    config = cli(
+        RLConfig,
+        args=[
+            "@",
+            "configs/ci/integration/rl/start.toml",
+            "--inference.server.port",
+            "9000",
+            "--deployment.num_teacher_gpus",
+            "1",
+        ],
+    )
+
+    assert config.teacher_inference is not None
+    assert config.teacher_inference.server.port == 9001
+    assert config.teacher_inference.deployment.router_port == 9001
+    assert config.teacher_inference.deployment.backend_port == 9101
+    assert config.orchestrator.teacher_model is not None
+    assert config.orchestrator.teacher_model.client.base_url == ["http://localhost:9001/v1"]
+
+
+def test_rl_config_rejects_teacher_inference_backend_port_collisions():
+    with pytest.raises(ValidationError, match="must not reuse inference router/backend ports"):
+        cli(
+            RLConfig,
+            args=[
+                "@",
+                "configs/ci/integration/rl/start.toml",
+                "--inference.server.port",
+                "9000",
+                "--deployment.num_teacher_gpus",
+                "1",
+                "--teacher_inference.server.port",
+                "9001",
+                "--teacher_inference.deployment.backend_port",
+                "9100",
+            ],
+        )
