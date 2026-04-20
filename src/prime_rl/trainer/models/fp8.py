@@ -46,7 +46,10 @@ def _grouped_fp8_block_quantize(
         other=0.0,
     ).to(tl.float32)
     amax = tl.max(tl.abs(x))
-    scale = tl.maximum(amax / 448.0, 1e-4)
+    # Floor matches the pre-Triton PyTorch kernel (main's quantize_to_fp8_blockwise).
+    # Raising to 1e-4 was observable drift on blocks with amax < ~0.0448 — tiny
+    # nonzero weights got zeroed out at dequant time.
+    scale = tl.maximum(amax / 448.0, 1e-12)
     y = x / scale
     tl.store(
         out_ptr + pid_g * stride_yg + row_offsets[:, None] * stride_ym + col_offsets[None, :] * stride_yn,
