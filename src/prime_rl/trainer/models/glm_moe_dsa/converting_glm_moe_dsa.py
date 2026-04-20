@@ -20,7 +20,7 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
         return
 
     # Router: gate.weight -> router.gate.weight
-    state_dict[f"model.layers.{i}.umlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
+    state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
     del state_dict[f"model.layers.{i}.mlp.gate.weight"]
 
     # Routed experts: fused or per-expert format -> stacked w1/w2/w3
