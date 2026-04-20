@@ -86,6 +86,8 @@ When the RL entrypoint auto-manages local inference, it routes generation traffi
 
 If single-node RL auto-configures `teacher_inference` from the primary inference config, it also assigns a distinct teacher router/backend pair (`teacher_inference.server.port + 100` for the backend by default) so the teacher server does not reuse the rollout inference ports.
 
+Single-node RL only supports `inference.deployment.type = "single_node"`. If you need disaggregated or multi-node inference, use `deployment.type = "multi_node"` for the RL run instead of mixing it into the local single-node launcher path.
+
 ### Boolean fields
 
 ```bash

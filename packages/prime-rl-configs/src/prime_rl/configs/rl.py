@@ -384,6 +384,11 @@ class RLConfig(BaseConfig):
                     "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
                     "since no orchestrator or inference server will be running."
                 )
+        elif self.inference is not None and self.inference.deployment.type != "single_node":
+            raise ValueError(
+                "single-node RL only supports inference.deployment.type = 'single_node'. "
+                "Use deployment.type = 'multi_node' for disaggregated or multi-node inference configs."
+            )
         return self
 
     # TODO: fix this
@@ -761,7 +766,12 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_single_node_client_urls(self):
-        if self.deployment.type != "single_node" or self.inference is None or self.orchestrator.client.is_elastic:
+        if (
+            self.deployment.type != "single_node"
+            or self.inference is None
+            or self.inference.deployment.type != "single_node"
+            or self.orchestrator.client.is_elastic
+        ):
             return self
 
         host = self.inference.server.host

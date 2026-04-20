@@ -233,3 +233,16 @@ def test_rl_config_rejects_teacher_inference_backend_port_collisions():
                 "9100",
             ],
         )
+
+
+def test_rl_config_rejects_disaggregated_inference_for_single_node_deployment():
+    with pytest.raises(ValidationError, match="single-node RL only supports inference.deployment.type = 'single_node'"):
+        cli(
+            RLConfig,
+            args=[
+                "@",
+                "configs/ci/integration/rl/start.toml",
+                "--inference.deployment.type",
+                "disaggregated",
+            ],
+        )
