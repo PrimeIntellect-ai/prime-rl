@@ -703,15 +703,6 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
-    quantize_in_weight_transfer: Annotated[
-        bool,
-        Field(
-            description=(
-                "Use kernel-format FP8 quantized NCCL transfer for weight updates. "
-                "When disabled, uses default HF checkpoint-format transfer."
-            ),
-        ),
-    ] = False
 
 
 class NIXLWeightBroadcastConfig(BaseWeightBroadcastConfig):

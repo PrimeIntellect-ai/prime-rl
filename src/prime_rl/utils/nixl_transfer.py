@@ -15,33 +15,9 @@ import functools
 import os
 import socket
 import subprocess
-from dataclasses import dataclass
 from typing import Sequence
 
 from torch import Tensor
-
-
-@dataclass
-class NixlTransferMeta:
-    """Model-specific metadata produced by ``model.create_nixl_metadata``.
-
-    Holds every piece of state the NIXL broadcast needs to register its
-    local buffers, build the per-expert routing table, and push writes.
-    The broadcast should not derive any of these from ``parallel_dims``
-    directly — that lives on the model side.
-    """
-
-    slots: dict[int, dict[str, Tensor]]  # layer_idx -> {slot_key: stable buffer}
-    num_layers: int
-    ep_size: int
-    ep_rank: int
-    num_local_experts: int
-    owned_global_experts: list[int]
-    fsdp_size: int  # FSDP degree within an EP group (dp_shard_mod_ep)
-    fsdp_rank: int
-    # For every non-expert slot key: {"inference_name": str, "offset_rows": int, "handling": "per_shard"|"gather"}.
-    # Expert slots are absent — they route via expert_map instead.
-    non_expert_layout: dict[int, dict[str, dict]]
 
 
 @functools.lru_cache(maxsize=1)

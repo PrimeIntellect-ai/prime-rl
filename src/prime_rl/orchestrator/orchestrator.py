@@ -273,7 +273,6 @@ async def orchestrate(config: OrchestratorConfig):
                 config.weight_broadcast.port,
                 config.weight_broadcast.timeout,
                 inference_world_size=config.weight_broadcast.inference_world_size,
-                quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )
         elif config.weight_broadcast.type == "nixl":
             await init_nixl_transfer(

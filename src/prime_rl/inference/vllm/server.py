@@ -228,10 +228,9 @@ async def init_broadcaster(request: Request):
     timeout = data.get("timeout")
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
-    quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer),
+        args=(host, port, rank_offset, inference_world_size, timeout),
     )
     return {"status": "ok"}
 

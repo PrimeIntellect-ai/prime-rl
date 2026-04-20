@@ -158,16 +158,6 @@ class SharedWeightBroadcastConfig(BaseConfig):
 
     port: Annotated[int, Field(description="Rendezvous port (NCCL or NIXL).")] = 29501
     timeout: Annotated[int, Field(description="Rendezvous timeout in seconds (NCCL or NIXL).")] = 1200
-    quantize_in_weight_transfer: Annotated[
-        bool,
-        Field(
-            description=(
-                "Use kernel-format FP8 quantized NCCL transfer for weight updates. "
-                "When disabled, uses default HF checkpoint-format transfer. "
-                "Only valid with type='nccl' (NIXL is always kernel-format)."
-            ),
-        ),
-    ] = False
     backends: Annotated[
         list[str], Field(description="NIXL backends (only used when type='nixl').")
     ] = ["UCX"]
@@ -419,22 +409,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_quantize_in_weight_transfer(self):
-        if self.weight_broadcast is None or not self.weight_broadcast.quantize_in_weight_transfer:
-            return self
-
-        if self.weight_broadcast.type != "nccl":
-            raise ValueError("weight_broadcast.quantize_in_weight_transfer requires weight_broadcast.type = 'nccl'.")
-
-        if self.inference is None:
-            raise ValueError("weight_broadcast.quantize_in_weight_transfer requires an inference config.")
-
-        if self.trainer.model.impl != "custom":
-            raise ValueError("weight_broadcast.quantize_in_weight_transfer requires trainer.model.impl = 'custom'.")
-
-        return self
-
-    @model_validator(mode="after")
     def validate_teacher_model(self):
         if (
             self.trainer.loss.type == "default" and self.trainer.loss.teacher_tau > 0
@@ -668,14 +642,12 @@ class RLConfig(BaseConfig):
                     inference_world_size=inference_world_size,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
-                    quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
                 self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
                     inference_world_size=inference_world_size,
-                    quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
             elif self.weight_broadcast.type == "nixl":
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1

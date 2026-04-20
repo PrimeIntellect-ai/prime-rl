@@ -18,12 +18,16 @@ model's converter and reuse the primitives here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.fp8 import fp8_block_quantize, grouped_fp8_block_quantize
+from prime_rl.trainer.models.fp8 import BLOCK_SIZE, fp8_block_quantize, grouped_fp8_block_quantize
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.models.slots import Slot
+    from prime_rl.trainer.parallel_dims import ParallelDims
 
 
 @dataclass(frozen=True)
@@ -118,3 +122,76 @@ class ConversionSpec:
         suffix = self.quantization.scale_suffix
         strip = ".weight" if suffix.startswith(".") else "_weight"
         return slot_key.removesuffix(strip) + suffix
+
+    @property
+    def is_expert_spec(self) -> bool:
+        """True iff this spec produces a fused stacked-expert slot."""
+        return self.dst.startswith("mlp.experts.")
+
+    def get_handler_class(
+        self, src: Optional[Tensor] = None, parallel_dims: Optional["ParallelDims"] = None
+    ) -> type["Slot"]:
+        """Which :class:`~prime_rl.trainer.models.slots.Slot` subclass handles this spec.
+
+        Expert specs route to :class:`ExpertSlot` regardless of runtime
+        context, so ``src`` and ``parallel_dims`` may be omitted.
+        Non-expert specs require both to pick :class:`ShardedSlot` vs
+        :class:`GatheredSlot` (shape divisibility, FP8 block alignment,
+        :data:`~prime_rl.trainer.models.slots.SMALL_NON_EXPERT_BYTES`).
+        """
+        from prime_rl.trainer.models.slots import (
+            SMALL_NON_EXPERT_BYTES,
+            ExpertSlot,
+            GatheredSlot,
+            ShardedSlot,
+        )
+
+        if self.is_expert_spec:
+            return ExpertSlot
+        assert src is not None and parallel_dims is not None, (
+            f"non-expert spec {self.dst!r} needs src + parallel_dims for dispatch"
+        )
+        fsdp_total = parallel_dims.dp_shard * parallel_dims.cp
+        src_rows = src.shape[0]
+        per_shard = (
+            src_rows % fsdp_total == 0
+            and (not self.quantized or (src_rows // fsdp_total) % BLOCK_SIZE == 0)
+            and src.numel() * src.element_size() >= SMALL_NON_EXPERT_BYTES
+        )
+        return ShardedSlot if per_shard else GatheredSlot
+
+    def build_slots(
+        self, prefix: str, state_dict: dict[str, Tensor], parallel_dims: "ParallelDims"
+    ) -> list["Slot"]:
+        """Instantiate every slot this spec produces at ``prefix``.
+
+        Dispatches through :meth:`get_handler_class` for both expert and
+        non-expert cases. Expert specs yield one :class:`ExpertSlot`;
+        non-expert specs yield one :class:`ShardedSlot` or
+        :class:`GatheredSlot` per source (fused specs may have one source
+        shardable and another not).
+        """
+        if self.is_expert_spec:
+            cls = self.get_handler_class()
+            return [cls.from_spec(self, prefix, state_dict, parallel_dims)]
+        slots: list["Slot"] = []
+        row_off = 0
+        scale_row_off = 0
+        for src_name in self.sources:
+            src = state_dict[f"{prefix}.{src_name}"]
+            cls = self.get_handler_class(src, parallel_dims)
+            slots.append(
+                cls.from_spec(
+                    spec=self,
+                    prefix=prefix,
+                    src_name=src_name,
+                    src=src,
+                    parallel_dims=parallel_dims,
+                    offset_rows=row_off,
+                    scale_offset_rows=scale_row_off,
+                )
+            )
+            row_off += src.shape[0]
+            if self.quantized:
+                scale_row_off += (src.shape[0] + BLOCK_SIZE - 1) // BLOCK_SIZE
+        return slots

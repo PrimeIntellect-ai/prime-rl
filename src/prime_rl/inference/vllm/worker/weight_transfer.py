@@ -35,45 +35,6 @@ def build_expert_map(model: Module) -> dict[str, torch.Tensor]:
 
 
 @torch.no_grad()
-def load_weights_kernel(model: Module, state_iter: Generator[tuple[str, torch.Tensor], None, None]) -> None:
-    """Load vLLM kernel-format tensors using in-place copy_ updates."""
-    params = dict(model.named_parameters())
-    expert_slices = build_expert_map(model)
-
-    loaded = 0
-    skipped: list[str] = []
-    shape_mismatches: list[str] = []
-
-    for name, tensor in state_iter:
-        if name not in params:
-            skipped.append(name)
-            continue
-
-        param = params[name]
-        if param.shape != tensor.shape:
-            sliced = False
-            for module_name, global_indices in expert_slices.items():
-                if not name.startswith(f"{module_name}."):
-                    continue
-                tensor = tensor[global_indices.to(tensor.device)]
-                sliced = True
-                break
-
-            if not sliced or param.shape != tensor.shape:
-                shape_mismatches.append(f"{name}: param={list(param.shape)} != received={list(tensor.shape)}")
-                continue
-
-        param.copy_(tensor)
-        loaded += 1
-
-    if shape_mismatches:
-        raise ValueError(f"Kernel weight transfer had {len(shape_mismatches)} shape mismatches: {shape_mismatches}")
-    if skipped:
-        raise ValueError(f"Kernel weight transfer skipped {len(skipped)} weights not found in model: {skipped}")
-    logger.debug(f"Kernel weight transfer copied {loaded} weights in-place")
-
-
-@torch.no_grad()
 def update_mla_absorbed_weights(model: Module) -> None:
     """Recompute MLA absorbed KV weights after in-place kv_b_proj updates."""
     from vllm.model_executor.layers.quantization.utils.quant_utils import get_and_maybe_dequant_weights
@@ -104,5 +65,3 @@ def update_mla_absorbed_weights(model: Module) -> None:
         logger.debug(f"Updated MLA absorbed weights for module {name}")
 
 
-def postprocess_weights_kernel(model: Module, _model_config, _device: torch.device) -> None:
-    update_mla_absorbed_weights(model)

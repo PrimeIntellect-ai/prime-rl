@@ -146,31 +146,6 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
         convert_tt_layer_to_hf(state_dict, i)
 
 
-# --------------------------------------------------------------------------- #
-# tt (prime-rl) → vLLM FP8 kernel format.
-#
-# The mapping is deterministic (see mapper.py at the repo root). The only
-# branch is dense-layer vs sparse-layer; every destination tensor is either
-# a direct copy, a concat of two sources, or an FP8 block-quantize of the
-# (possibly concatted) source.
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# vLLM-kernel conversion table.
-#
-# Every destination tensor is either:
-#   * a plain copy (possibly with a dtype cast — layernorm affine params and
-#     ``mlp.expert_bias`` are fp32 on the inference side), or
-#   * a concat of one or more sources followed by FP8 block quantization.
-#
-# Defaults come from :class:`ConversionSpec`: bf16 destination, copy_cast
-# transform, no scale buffer. Overrides are explicit per row. Non-expert
-# quantized specs use ``.weight`` → ``.weight_scale_inv``; stacked-expert
-# specs use ``_weight`` → ``_weight_scale_inv``.
-# --------------------------------------------------------------------------- #
-
-
 _BASE: tuple[ConversionSpec, ...] = (
     ConversionSpec("input_layernorm.weight", ("input_layernorm.weight",)),
     ConversionSpec("post_attention_layernorm.weight", ("post_attention_layernorm.weight",)),
@@ -266,28 +241,3 @@ _DENSE: tuple[ConversionSpec, ...] = (
         quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
     ),
 )
-
-
-def convert_tt_layer_to_vllm_kernel(
-    state_dict: dict[str, Tensor],
-    layer_idx: int,
-    out_buffers: dict[str, Tensor],
-) -> dict[str, Tensor]:
-    """Convert a single GLM MoE DSA layer from prime-rl format to vLLM FP8 kernel format."""
-    prefix = f"model.layers.{layer_idx}"
-    is_sparse = f"{prefix}.mlp.router.gate.weight" in state_dict
-    specs = _BASE + (_SPARSE if is_sparse else _DENSE)
-
-    out: dict[str, Tensor] = {}
-    for spec in specs:
-        dst = f"{prefix}.{spec.dst}"
-        srcs = [state_dict[f"{prefix}.{s}"] for s in spec.sources]
-        tensor = srcs[0] if len(srcs) == 1 else torch.cat(srcs, dim=spec.cat_dim)
-
-        scale_slot = out_buffers[spec.scale_name(prefix)] if spec.quantized else None
-        spec.quantization.apply(tensor, out_buffers[dst], scale_slot)
-        out[dst] = out_buffers[dst]
-        if spec.quantized:
-            out[spec.scale_name(prefix)] = scale_slot
-
-    return out

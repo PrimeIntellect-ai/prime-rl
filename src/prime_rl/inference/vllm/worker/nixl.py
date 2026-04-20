@@ -16,6 +16,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import build_expert_map, update_mla_absorbed_weights
+from prime_rl.trainer.models.slots import LayoutEntry
 from prime_rl.utils.nixl_transfer import NixlAgentWrapper, make_agent_name
 
 if TYPE_CHECKING:
@@ -45,23 +46,16 @@ class NIXLWeightUpdateWorker(Worker):
         global_rank = trainer_world_size + rank_offset + local_rank
         full_world_size = trainer_world_size + inference_world_size
 
-        logger.info(
-            f"Initializing NIXL transfer: local_rank={local_rank} rank_offset={rank_offset} "
-            f"global_rank={global_rank} trainer_ws={trainer_world_size} inference_ws={inference_world_size}"
-        )
-
         model_runner = self.model_runner
         model = model_runner.model.runnable if hasattr(model_runner.model, "runnable") else model_runner.model
         assert isinstance(model, Module)
         self._model = model
 
-        logger.info(f"[nixl inference rank={global_rank}] creating NIXL agent")
         self._agent = NixlAgentWrapper(
             name=make_agent_name("inference", global_rank),
             local_rank=local_rank,
             backends=backends,
         )
-        logger.info(f"[nixl inference rank={global_rank}] agent created; registering tensors")
 
         named_tensors: dict[str, torch.Tensor] = {}
         # Register each vLLM target tensor as a single NIXL region (one MR on the
@@ -88,13 +82,10 @@ class NIXLWeightUpdateWorker(Worker):
             world_size=full_world_size,
             store_timeout=timeout,
         )
-        logger.info(
-            f"[nixl inference rank={global_rank}] gathered {len(named_tensors)} tensor refs; "
-            f"SPG created; round 1 all_gather_obj"
-        )
 
-        # Round 1 — pull trainer's layout. Agent metadata is deferred to round 2
-        # so the metadata trainer sees already includes every chunk registration.
+        # Round 1 — pull trainer's flat LayoutEntry list. Agent metadata is
+        # deferred to round 2 so the metadata trainer sees already includes
+        # every chunk registration.
         round1 = self._spg.all_gather_obj(
             {
                 "role": "inference",
@@ -102,10 +93,7 @@ class NIXLWeightUpdateWorker(Worker):
                 "expert_map": expert_map,
             }
         )
-        trainer_infos = round1[:trainer_world_size]
-        layout: dict = trainer_infos[0]["non_expert_layout"]
-
-        logger.info(f"[nixl inference rank={global_rank}] round 1 done; building chunked descriptors")
+        layout_entries: list[LayoutEntry] = round1[0]["layout_entries"]
 
         # For each slot, publish a LIST of serialized 1-entry xfer dlists, each
         # covering one chunk's sub-range within the (already-registered) full
@@ -122,14 +110,12 @@ class NIXLWeightUpdateWorker(Worker):
                 out.append(self._agent.serialize_descs(dlist))
             return out
 
-        for layer_layout in layout.values():
-            for slot_key, info in layer_layout.items():
-                full = named_tensors[info["inference_name"]]
-                subview = full.narrow(0, info["offset_rows"], info["rows"])
-                n_chunks = trainer_world_size if info["handling"] == "per_shard" else 1
-                sub_rows = info["rows"] // n_chunks
-                chunks = [subview.narrow(0, i * sub_rows, sub_rows) for i in range(n_chunks)]
-                descriptors[slot_key] = _publish_chunks(chunks)
+        for entry in layout_entries:
+            full = named_tensors[entry.inference_name]
+            subview = full.narrow(0, entry.offset_rows, entry.rows)
+            sub_rows = entry.rows // entry.num_chunks
+            chunks = [subview.narrow(0, i * sub_rows, sub_rows) for i in range(entry.num_chunks)]
+            descriptors[entry.slot_key] = _publish_chunks(chunks)
 
         for name, tensor in named_tensors.items():
             if ".mlp.experts." not in name:
@@ -154,19 +140,12 @@ class NIXLWeightUpdateWorker(Worker):
         for peer in round2[:trainer_world_size]:
             self._agent.add_remote(peer["agent_metadata"])
         logger.info(
-            f"NIXL transfer ready: rank={global_rank} published {len(descriptors)} slot descriptors, "
-            f"added {trainer_world_size} trainer peers"
+            f"NIXL transfer ready: rank={global_rank} descriptors={len(descriptors)} trainers={trainer_world_size}"
         )
 
     @torch.no_grad()
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
         if not hasattr(self, "_spg"):
             raise RuntimeError("NIXL transfer not initialized — call /init_nixl_transfer first")
-        rank = getattr(self._agent, "name", "?")
-        logger.info(f"[nixl inference {rank}] entering SPG barrier in update_weights_from_path")
-        import time
-        t0 = time.perf_counter()
         self._spg.barrier()
-        logger.info(f"[nixl inference {rank}] left SPG barrier in {(time.perf_counter() - t0) * 1e3:.1f}ms")
         update_mla_absorbed_weights(self._model)
-        logger.info(f"[nixl inference {rank}] update_mla_absorbed_weights done")

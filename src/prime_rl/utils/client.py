@@ -383,7 +383,6 @@ async def init_nccl_broadcast(
     port: int,
     timeout: int,
     inference_world_size: int | None = None,
-    quantize_in_weight_transfer: bool = False,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
 
@@ -416,7 +415,6 @@ async def init_nccl_broadcast(
                     "rank_offset": rank_offset,
                     "inference_world_size": inference_world_size,
                     "timeout": timeout,
-                    "quantize_in_weight_transfer": quantize_in_weight_transfer,
                 },
             )
             response.raise_for_status()
