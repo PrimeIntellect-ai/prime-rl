@@ -11,8 +11,11 @@ import verifiers as vf
 from PIL import Image
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.configs.trainer import RoleLossMaskConfig
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.chat_template import (
+    IncrementalTokenizationError,
+    build_incremental_token_mask,
     common_prefix_len,
     deserialize_tool_calls,
     normalize_messages,
@@ -76,6 +79,78 @@ def _render_messages(
         tools=tools,
         processor=processor,
     )
+
+
+def _should_mask_role(message: dict[str, Any], config: RoleLossMaskConfig) -> bool:
+    role = message.get("role")
+    match role:
+        case "system":
+            return config.system
+        case "user":
+            return config.user
+        case "assistant":
+            return config.assistant
+        case "tool":
+            return config.tool
+        case _:
+            raise ValueError(f"Invalid message role: {role}")
+
+
+def _build_role_loss_masks_for_step(
+    step: vf.TrajectoryStep,
+    tokenizer: PreTrainedTokenizer,
+    loss_mask_config: RoleLossMaskConfig,
+    tools: list[dict[str, Any]] | None = None,
+    processor=None,
+) -> tuple[list[bool], list[bool]] | None:
+    prompt = _normalize_messages(step.get("prompt"), default_role="user")
+    completion = _normalize_messages(step.get("completion"), default_role="assistant")
+
+    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
+    completion = _strip_message_content(_deserialize_tool_calls(completion))
+
+    if processor is not None:
+        prompt = _prepare_messages_for_processor(prompt)
+        completion = _prepare_messages_for_processor(completion)
+
+    messages = prompt + completion
+
+    try:
+        full_ids, full_loss_mask = build_incremental_token_mask(
+            tokenizer,
+            messages,
+            role_to_mask=lambda message: _should_mask_role(message, loss_mask_config),
+            tools=tools,
+            collapse_consecutive_tool_messages=True,
+            processor=processor,
+        )
+    except IncrementalTokenizationError as e:
+        get_logger().warning(f"Skipping rollout step due to unstable incremental tokenization: {e}")
+        return None
+
+    tokens = step.get("tokens")
+    if tokens is not None:
+        prompt_len = len(tokens["prompt_ids"])
+        completion_len = len(tokens["completion_ids"])
+        if len(full_ids) != prompt_len + completion_len:
+            get_logger().warning(
+                "Skipping rollout step because role-based mask tokenization length "
+                f"({len(full_ids)}) did not match rollout tokens ({prompt_len + completion_len})."
+            )
+            return None
+        split_idx = prompt_len
+    else:
+        prompt_has_assistant_completion = len(completion) > 0 and completion[0].get("role") == "assistant"
+        prompt_ids = _render_messages(
+            tokenizer,
+            prompt,
+            add_generation_prompt=prompt_has_assistant_completion,
+            tools=tools,
+            processor=processor,
+        )
+        split_idx = _common_prefix_len(prompt_ids, full_ids)
+
+    return full_loss_mask[:split_idx], full_loss_mask[split_idx:]
 
 
 def _prepare_messages_for_processor(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -232,6 +307,9 @@ def interleave_rollout(
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
+    tokenizer: PreTrainedTokenizer | None = None,
+    loss_mask_config: RoleLossMaskConfig | None = None,
+    processor=None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -270,11 +348,13 @@ def interleave_rollout(
     has_error = output["error"] is not None
     # this field should be guaranteed because we set temperature in get_sampling_args
     temperature = output["sampling_args"]["temperature"]
+    tools = _convert_tools_to_oai_format(output.get("tool_defs", []))
+    use_custom_loss_mask = loss_mask_config is not None and not loss_mask_config.is_completion_only()
 
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
         if tokens is not None:
-            return {
+            prepared = {
                 "prompt_ids": list(tokens["prompt_ids"]),
                 "prompt_mask": [bool(i) for i in tokens["prompt_mask"]],
                 "completion_ids": list(tokens["completion_ids"]),
@@ -282,6 +362,18 @@ def interleave_rollout(
                 "completion_logprobs": list(tokens["completion_logprobs"]),
                 "routed_experts": tokens.get("routed_experts"),
             }
+            if use_custom_loss_mask:
+                assert tokenizer is not None
+                role_masks = _build_role_loss_masks_for_step(
+                    step, tokenizer, loss_mask_config, tools=tools, processor=processor
+                )
+                if role_masks is None:
+                    return None
+                prepared["prompt_loss_mask"], prepared["completion_loss_mask"] = role_masks
+            else:
+                prepared["prompt_loss_mask"] = list(prepared["prompt_mask"])
+                prepared["completion_loss_mask"] = list(prepared["completion_mask"])
+            return prepared
 
         logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
         return None
@@ -297,8 +389,12 @@ def interleave_rollout(
         """Create a new TrainingSample from a trajectory step."""
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
+            prompt_loss_mask = [False] * len(tokens["prompt_loss_mask"])
+            completion_loss_mask = [False] * len(tokens["completion_loss_mask"])
         else:
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
+            prompt_loss_mask = [bool(i) for i in tokens["prompt_loss_mask"]]
+            completion_loss_mask = [bool(i) for i in tokens["completion_loss_mask"]]
         completion_ids = list(tokens["completion_ids"])
 
         routed_experts = _align_routed_experts(
@@ -309,8 +405,10 @@ def interleave_rollout(
         return TrainingSample(
             prompt_ids=prompt_ids,
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
+            prompt_loss_mask=prompt_loss_mask,
             completion_ids=completion_ids,
             completion_mask=completion_mask,
+            completion_loss_mask=completion_loss_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
@@ -327,6 +425,8 @@ def interleave_rollout(
         new_prompt_ids = tokens["prompt_ids"][prefix_len:]
         sample.completion_ids.extend(new_prompt_ids)
         sample.completion_mask.extend([False] * len(new_prompt_ids))
+        assert sample.completion_loss_mask is not None
+        sample.completion_loss_mask.extend(tokens["prompt_loss_mask"][prefix_len:])
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
         sample.completion_temperatures.extend([temperature] * len(new_prompt_ids))
 
@@ -335,8 +435,10 @@ def interleave_rollout(
         sample.completion_ids.extend(completion_ids)
         if has_error:
             sample.completion_mask.extend([False] * len(tokens["completion_mask"]))
+            sample.completion_loss_mask.extend([False] * len(tokens["completion_loss_mask"]))
         else:
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
+            sample.completion_loss_mask.extend(bool(i) for i in tokens["completion_loss_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 

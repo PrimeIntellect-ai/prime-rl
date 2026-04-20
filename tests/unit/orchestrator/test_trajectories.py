@@ -7,6 +7,7 @@ import pytest
 import verifiers as vf
 from PIL import Image
 
+from prime_rl.configs.trainer import RoleLossMaskConfig
 from prime_rl.orchestrator.trajectories import (
     VLMImageCache,
     _align_routed_experts,
@@ -28,6 +29,34 @@ def _pixels(data: list[list[float]]) -> tuple[bytes, list[int]]:
 def _decode_pixels(pixel_bytes: bytes, shape: list[int]) -> list[list[float]]:
     """Decode raw pixel bytes back to nested list for assertions."""
     return np.frombuffer(pixel_bytes, dtype=np.float32).reshape(shape).tolist()
+
+
+class SimpleChatTokenizer:
+    def __init__(self):
+        self._tok2id: dict[str, int] = {}
+        self._next_id = 1
+
+    def _id(self, token: str) -> int:
+        if token not in self._tok2id:
+            self._tok2id[token] = self._next_id
+            self._next_id += 1
+        return self._tok2id[token]
+
+    def apply_chat_template(self, messages, add_generation_prompt=False, return_dict=False, tools=None):
+        del return_dict, tools
+        ids = []
+        for message in messages:
+            role = message.get("role", "unknown")
+            ids.append(self._id(f"<|{role}|>"))
+            content = message.get("content", "")
+            if isinstance(content, str):
+                if content:
+                    ids.append(self._id(content))
+            else:
+                ids.append(self._id(str(content)))
+        if add_generation_prompt:
+            ids.append(self._id("<|assistant|>"))
+        return ids
 
 
 def test_deserialize_tool_calls_does_not_inject_missing_key():
@@ -413,6 +442,22 @@ def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_tra
     assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
     # Temperatures: 2 completion tokens at temp 1.0, then 2 prompt tokens at temp 1.0, then 2 completion tokens at temp 1.0
     assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+
+def test_interleave_rollout_tool_only_loss_mask_marks_tool_outputs(multi_step_trajectory_with_tool_calls_output):
+    tokenizer = SimpleChatTokenizer()
+
+    rollouts = interleave_rollout(
+        multi_step_trajectory_with_tool_calls_output,
+        tokenizer=tokenizer,
+        loss_mask_config=RoleLossMaskConfig(assistant=False, tool=True),
+    )
+    assert rollouts is not None
+    assert len(rollouts) == 1
+
+    rollout = rollouts[0]
+    assert rollout.prompt_loss_mask == [False, False]
+    assert rollout.completion_loss_mask == [False, False, True, True, False, False]
 
 
 @pytest.fixture

@@ -678,6 +678,19 @@ class DataLoaderConfig(BaseConfig):
     fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
 
 
+class RoleLossMaskConfig(BaseConfig):
+    """Configures which message roles contribute to training loss."""
+
+    system: Annotated[bool, Field(description="Whether system messages contribute to the loss.")] = False
+    user: Annotated[bool, Field(description="Whether user messages contribute to the loss.")] = False
+    assistant: Annotated[bool, Field(description="Whether assistant messages contribute to the loss.")] = True
+    tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
+
+    def is_completion_only(self) -> bool:
+        """Whether this matches the default RL mask of assistant completions only."""
+        return not self.system and not self.user and self.assistant and not self.tool
+
+
 class BaseWeightBroadcastConfig(BaseModel):
     """Configures the base weight broadcast."""
 
@@ -737,6 +750,29 @@ class TrainerConfig(BaseConfig):
 
     # The loss configuration
     loss: LossConfig = DefaultLossConfig()
+
+    rl_loss_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Weight for the configured RL loss (`trainer.loss`). Set to 0 to disable that term.",
+        ),
+    ] = 1.0
+
+    sft_loss_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Weight for an auxiliary masked SFT loss on the same RL samples. Set to 0 to disable it.",
+        ),
+    ] = 0.0
+
+    unit_advantage: Annotated[
+        bool,
+        Field(
+            description="If true, overwrite advantages with 1.0 right before computing the RL loss term.",
+        ),
+    ] = False
 
     # The optimizer configuration
     optim: OptimizerConfig = AdamWConfig()
@@ -960,4 +996,12 @@ class TrainerConfig(BaseConfig):
         if self.enable_router_replay and self.model.impl not in ("custom", "auto"):
             raise ValueError("Router replay is only supported with the custom implementation or auto mode")
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_loss_weights(self):
+        if self.rl_loss_weight == 0 and self.sft_loss_weight == 0:
+            raise ValueError("At least one of rl_loss_weight or sft_loss_weight must be > 0.")
+        if self.loss.type == "sft" and self.sft_loss_weight > 0:
+            raise ValueError("trainer.loss.type='sft' already uses SFT loss. Set sft_loss_weight = 0.")
         return self

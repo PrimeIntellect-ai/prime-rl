@@ -154,10 +154,22 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with prompt mask length != prompt ids length ({len(sample.prompt_mask)} != {len(sample.prompt_ids)})",
             )
+        if sample.prompt_loss_mask is not None and len(sample.prompt_loss_mask) != len(sample.prompt_ids):
+            return (
+                False,
+                "Run wrote a sample with prompt loss mask length != prompt ids length "
+                f"({len(sample.prompt_loss_mask)} != {len(sample.prompt_ids)})",
+            )
         if len(sample.completion_mask) != len(sample.completion_ids):
             return (
                 False,
                 f"Run wrote a sample with completion mask length != completion ids length ({len(sample.completion_mask)} != {len(sample.completion_ids)})",
+            )
+        if sample.completion_loss_mask is not None and len(sample.completion_loss_mask) != len(sample.completion_ids):
+            return (
+                False,
+                "Run wrote a sample with completion loss mask length != completion ids length "
+                f"({len(sample.completion_loss_mask)} != {len(sample.completion_ids)})",
             )
         if len(sample.completion_logprobs) != len(sample.completion_ids):
             return (

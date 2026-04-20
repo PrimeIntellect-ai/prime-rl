@@ -30,6 +30,7 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
     selective_log_softmax,
+    sft_loss_fn,
     setup_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
@@ -150,6 +151,7 @@ def train(config: TrainerConfig):
     # Set up the loss function
     logger.info(f"Setting up loss function ({config.loss})")
     loss_fn = setup_loss_fn(config.loss)
+    auxiliary_sft_loss_enabled = config.sft_loss_weight > 0
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -435,17 +437,51 @@ def train(config: TrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
-            loss, loss_tensors = compute_loss(
-                trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
-                if teacher_logprobs is not None
-                else None,
-                advantages=advantages.squeeze().split(response_lengths),
-                loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_fn=loss_fn,
-                loss_scale=loss_scale,
+            split_trainer_logprobs = out["logprobs"].squeeze().split(response_lengths)
+            split_inference_logprobs = inference_logprobs.squeeze().split(response_lengths)
+            split_teacher_logprobs = (
+                teacher_logprobs.squeeze().split(response_lengths) if teacher_logprobs is not None else None
             )
+            split_loss_mask = loss_mask.squeeze().split(response_lengths)
+            split_advantages = (
+                torch.ones_like(advantages).squeeze().split(response_lengths)
+                if config.unit_advantage
+                else advantages.squeeze().split(response_lengths)
+            )
+
+            loss = None
+            loss_tensors = {}
+
+            if config.rl_loss_weight > 0:
+                rl_loss, rl_loss_tensors = compute_loss(
+                    trainer_logprobs=split_trainer_logprobs,
+                    inference_logprobs=split_inference_logprobs,
+                    teacher_logprobs=split_teacher_logprobs,
+                    advantages=split_advantages,
+                    loss_mask=split_loss_mask,
+                    loss_fn=loss_fn,
+                    loss_scale=loss_scale,
+                )
+                loss = rl_loss * config.rl_loss_weight
+                loss_tensors.update(rl_loss_tensors)
+                loss_tensors["rl_loss"] = rl_loss.detach().unsqueeze(0)
+
+            if auxiliary_sft_loss_enabled:
+                sft_loss, sft_loss_tensors = compute_loss(
+                    trainer_logprobs=split_trainer_logprobs,
+                    inference_logprobs=split_inference_logprobs,
+                    teacher_logprobs=None,
+                    advantages=split_advantages,
+                    loss_mask=split_loss_mask,
+                    loss_fn=sft_loss_fn,
+                    loss_scale=loss_scale,
+                )
+                loss = sft_loss * config.sft_loss_weight if loss is None else loss + sft_loss * config.sft_loss_weight
+                loss_tensors["sft_loss"] = sft_loss.detach().unsqueeze(0)
+                for key, value in sft_loss_tensors.items():
+                    loss_tensors[f"sft_{key}"] = value
+
+            assert loss is not None, "At least one loss term must be enabled"
 
             # Backward pass
             with maybe_record_function("backward"):

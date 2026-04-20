@@ -134,3 +134,21 @@ def test_prepare_sample_none_routed_experts():
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is None
+
+
+def test_prepare_sample_prefers_explicit_loss_masks():
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        prompt_loss_mask=[False, True],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_loss_mask=[False, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+    )
+
+    micro_batch = prepare_sample(sample, seq_len=8)
+
+    assert micro_batch.loss_mask == [False, True, False, True]

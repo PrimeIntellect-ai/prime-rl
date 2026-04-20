@@ -14,7 +14,7 @@ from prime_rl.configs.shared import (
     TransportConfig,
     WandbWithExtrasConfig,
 )
-from prime_rl.configs.trainer import TokenizerConfig
+from prime_rl.configs.trainer import RoleLossMaskConfig, TokenizerConfig
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 
@@ -888,6 +888,9 @@ class OrchestratorConfig(BaseConfig):
 
     # The advantage configuration
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
+
+    # Training-token mask configuration
+    loss_mask: RoleLossMaskConfig = RoleLossMaskConfig()
 
     # Rollout filters (monitor by default, enforce optionally)
     filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()]

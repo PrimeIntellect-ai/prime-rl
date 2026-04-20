@@ -18,6 +18,7 @@ from prime_rl.configs.trainer import (
     GCConfig,
     ModelConfig,
     OptimizerConfig,
+    RoleLossMaskConfig,
     SchedulerConfig,
     TokenizerConfig,
 )
@@ -50,13 +51,7 @@ class FakeDataConfig(BaseDataConfig):
     input_ids: Literal["increasing", "random"] = "increasing"
 
 
-class LossMaskConfig(BaseConfig):
-    """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
-
-    system: Annotated[bool, Field(description="Whether system messages contribute to the loss.")] = False
-    user: Annotated[bool, Field(description="Whether user messages contribute to the loss.")] = False
-    assistant: Annotated[bool, Field(description="Whether assistant messages contribute to the loss.")] = True
-    tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
+LossMaskConfig = RoleLossMaskConfig
 
 
 class SFTDataConfig(BaseDataConfig):

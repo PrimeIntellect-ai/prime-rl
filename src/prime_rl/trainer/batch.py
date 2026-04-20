@@ -9,7 +9,17 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     Tokenize and prepare tensors.
     """
     input_ids = training_example.prompt_ids + training_example.completion_ids
-    loss_mask = training_example.prompt_mask + training_example.completion_mask
+    prompt_loss_mask = (
+        training_example.prompt_loss_mask
+        if training_example.prompt_loss_mask is not None
+        else training_example.prompt_mask
+    )
+    completion_loss_mask = (
+        training_example.completion_loss_mask
+        if training_example.completion_loss_mask is not None
+        else training_example.completion_mask
+    )
+    loss_mask = prompt_loss_mask + completion_loss_mask
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))

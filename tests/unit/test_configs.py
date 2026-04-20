@@ -11,7 +11,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
-from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.trainer import SFTLossConfig, TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli
 
 # All config config classes
@@ -159,3 +159,13 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_trainer_config_requires_some_loss_weight():
+    with pytest.raises(ValidationError, match="At least one of rl_loss_weight or sft_loss_weight must be > 0"):
+        TrainerConfig.model_validate({"rl_loss_weight": 0.0, "sft_loss_weight": 0.0})
+
+
+def test_trainer_config_rejects_auxiliary_sft_with_sft_base_loss():
+    with pytest.raises(ValidationError, match="trainer.loss.type='sft' already uses SFT loss"):
+        TrainerConfig.model_validate({"loss": SFTLossConfig().model_dump(), "sft_loss_weight": 0.5})
