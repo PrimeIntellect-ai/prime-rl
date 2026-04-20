@@ -15,6 +15,7 @@ from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div, fp8_block_quantize, grouped_fp8_block_quantize
+from prime_rl.utils.classic_cuda_pool import classic_cuda_alloc
 
 # Source tensors smaller than this fall out of the per-shard NIXL path and are
 # gathered instead — a single trainer rank writes the full tensor to each
@@ -276,55 +277,59 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         fsdp_total = parallel_dims.dp_shard * parallel_dims.cp
 
         slots: dict[int, dict[str, Tensor]] = {}
-        for layer_idx in range(self.config.num_hidden_layers):
-            prefix = f"model.layers.{layer_idx}"
-            is_sparse = f"{prefix}.mlp.router.gate.weight" in state_dict
-            specs = _BASE + (_SPARSE if is_sparse else _DENSE)
+        # NIXL-registered slot buffers must be backed by classic cudaMalloc,
+        # not PyTorch's VMM-backed expandable segments — the mlx5 HCA fails
+        # translation on cuMemMap-backed VA and returns "Local protection".
+        with classic_cuda_alloc():
+            for layer_idx in range(self.config.num_hidden_layers):
+                prefix = f"model.layers.{layer_idx}"
+                is_sparse = f"{prefix}.mlp.router.gate.weight" in state_dict
+                specs = _BASE + (_SPARSE if is_sparse else _DENSE)
 
-            layer_slots: dict[str, Tensor] = {}
-            for spec in specs:
-                if spec.dst.startswith("mlp.experts."):
-                    src_local_shapes = [
-                        (s.to_local() if isinstance(s, DTensor) else s).shape
-                        for s in (state_dict[f"{prefix}.{name}"] for name in spec.sources)
-                    ]
-                    dst_shape = list(src_local_shapes[0])
-                    dst_shape[spec.cat_dim] = sum(sh[spec.cat_dim] for sh in src_local_shapes)
-                    dst_dtype = torch.float8_e4m3fn if spec.quantize else bf16
-                    layer_slots[f"{prefix}.{spec.dst}"] = torch.empty(dst_shape, dtype=dst_dtype, device=device)
-                    if spec.quantize:
-                        # 3D expert slot: leading expert dim is un-blocked; last 2 dims tile 128×128.
-                        scale_shape = (dst_shape[0], ceil_div(dst_shape[1], BLOCK_SIZE), ceil_div(dst_shape[2], BLOCK_SIZE))
-                        layer_slots[spec.scale_name(prefix)] = torch.empty(
-                            scale_shape, dtype=torch.float32, device=device
+                layer_slots: dict[str, Tensor] = {}
+                for spec in specs:
+                    if spec.dst.startswith("mlp.experts."):
+                        src_local_shapes = [
+                            (s.to_local() if isinstance(s, DTensor) else s).shape
+                            for s in (state_dict[f"{prefix}.{name}"] for name in spec.sources)
+                        ]
+                        dst_shape = list(src_local_shapes[0])
+                        dst_shape[spec.cat_dim] = sum(sh[spec.cat_dim] for sh in src_local_shapes)
+                        dst_dtype = torch.float8_e4m3fn if spec.quantize else bf16
+                        layer_slots[f"{prefix}.{spec.dst}"] = torch.empty(dst_shape, dtype=dst_dtype, device=device)
+                        if spec.quantize:
+                            # 3D expert slot: leading expert dim is un-blocked; last 2 dims tile 128×128.
+                            scale_shape = (dst_shape[0], ceil_div(dst_shape[1], BLOCK_SIZE), ceil_div(dst_shape[2], BLOCK_SIZE))
+                            layer_slots[spec.scale_name(prefix)] = torch.empty(
+                                scale_shape, dtype=torch.float32, device=device
+                            )
+                        continue
+
+                    for src_name in spec.sources:
+                        src = state_dict[f"{prefix}.{src_name}"]
+                        full_shape = tuple(src.shape)
+                        src_rows = full_shape[0]
+                        per_shard = (
+                            src_rows % fsdp_total == 0
+                            and (not spec.quantize or (src_rows // fsdp_total) % BLOCK_SIZE == 0)
+                            and src.numel() * src.element_size() >= _SMALL_NON_EXPERT_BYTES
                         )
-                    continue
-
-                for src_name in spec.sources:
-                    src = state_dict[f"{prefix}.{src_name}"]
-                    full_shape = tuple(src.shape)
-                    src_rows = full_shape[0]
-                    per_shard = (
-                        src_rows % fsdp_total == 0
-                        and (not spec.quantize or (src_rows // fsdp_total) % BLOCK_SIZE == 0)
-                        and src.numel() * src.element_size() >= _SMALL_NON_EXPERT_BYTES
-                    )
-                    rows = src_rows // fsdp_total if per_shard else src_rows
-                    slot_shape = (rows,) + full_shape[1:]
-                    if spec.quantize:
-                        slot_dtype = torch.float8_e4m3fn
-                    elif src_name in vllm_fp32_srcs:
-                        slot_dtype = torch.float32
-                    else:
-                        slot_dtype = bf16
-                    slot_key = f"{prefix}.{src_name}"
-                    layer_slots[slot_key] = torch.empty(slot_shape, dtype=slot_dtype, device=device)
-                    if spec.quantize:
-                        # 2D non-expert slot: both dims tile 128×128.
-                        scale_shape = (ceil_div(slot_shape[0], BLOCK_SIZE), ceil_div(slot_shape[1], BLOCK_SIZE))
-                        scale_key = slot_key.removesuffix(".weight") + ".weight_scale_inv"
-                        layer_slots[scale_key] = torch.empty(scale_shape, dtype=torch.float32, device=device)
-            slots[layer_idx] = layer_slots
+                        rows = src_rows // fsdp_total if per_shard else src_rows
+                        slot_shape = (rows,) + full_shape[1:]
+                        if spec.quantize:
+                            slot_dtype = torch.float8_e4m3fn
+                        elif src_name in vllm_fp32_srcs:
+                            slot_dtype = torch.float32
+                        else:
+                            slot_dtype = bf16
+                        slot_key = f"{prefix}.{src_name}"
+                        layer_slots[slot_key] = torch.empty(slot_shape, dtype=slot_dtype, device=device)
+                        if spec.quantize:
+                            # 2D non-expert slot: both dims tile 128×128.
+                            scale_shape = (ceil_div(slot_shape[0], BLOCK_SIZE), ceil_div(slot_shape[1], BLOCK_SIZE))
+                            scale_key = slot_key.removesuffix(".weight") + ".weight_scale_inv"
+                            layer_slots[scale_key] = torch.empty(scale_shape, dtype=torch.float32, device=device)
+                slots[layer_idx] = layer_slots
         return slots
 
     def non_expert_slot_layout(self, parallel_dims: ParallelDims) -> dict[int, dict[str, dict]]:

@@ -362,13 +362,12 @@ else
     export UCX_TLS=rc_mlx5,rc_x,ud,ud_mlx5,self,cuda_copy
     {% endif %}
 
-    # NIXL trainer path requires classic cudaMalloc-backed memory — expandable
-    # segments (cuMemMap) trip mlx5 local protection errors on IB posts because
-    # the NIC cannot resolve the registered MR for cuMemCreate-backed ranges.
-    # Non-NIXL paths keep expandable_segments which helps torch.compile.
-    {% if use_nixl_broadcast %}export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
-    {%- else %}export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-    {%- endif %}
+    # expandable_segments is safe for the trainer even with NIXL: the NIXL
+    # slot buffers are carved out into a classic-cudaMalloc MemPool via
+    # prime_rl.utils.classic_cuda_pool, so mlx5 registration only ever sees
+    # contiguous-pinned memory while the rest of training keeps the VMM
+    # fragmentation mitigation.
+    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
