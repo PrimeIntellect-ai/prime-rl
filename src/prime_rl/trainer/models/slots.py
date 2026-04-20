@@ -144,6 +144,20 @@ def _resolve_source(src: Tensor, slot_rows: int) -> Tensor:
     return src
 
 
+def _shard_rank_and_size(parallel_dims: ParallelDims) -> tuple[int, int]:
+    """Rank + size along the FSDP shard axis (``dp_shard_cp``).
+
+    With HSDP (``dp_replicate > 1``), the full params are replicated across
+    replicas. Only the primary replica participates in NIXL, so slot
+    chunking / write routing is indexed by this per-replica rank, not the
+    global process rank.
+    """
+    if not dist.is_initialized():
+        return 0, 1
+    mesh = parallel_dims.get_mesh("dp_shard_cp")
+    return mesh.get_local_rank(), mesh.size()
+
+
 def _alloc_scale_2d(weight_shape: tuple[int, ...], device: torch.device) -> Tensor:
     """2D non-expert scale: both dims tile 128×128."""
     return torch.empty(
@@ -196,7 +210,7 @@ class ShardedSlot:
         scale_offset_rows: int,
     ) -> "ShardedSlot":
         fsdp_total = parallel_dims.dp_shard * parallel_dims.cp
-        my_rank = dist.get_rank() if dist.is_initialized() else 0
+        my_rank, trainer_ws = _shard_rank_and_size(parallel_dims)
         src_rows = src.shape[0]
         rows_per_shard = src_rows // fsdp_total
         weight = torch.empty(
@@ -228,7 +242,7 @@ class ShardedSlot:
             rows=src_rows,
             scale_rows=scale_rows,
             my_rank=my_rank,
-            trainer_ws=parallel_dims.world_size,
+            trainer_ws=trainer_ws,
         )
 
     @property
@@ -314,7 +328,7 @@ class GatheredSlot:
         offset_rows: int,
         scale_offset_rows: int,
     ) -> "GatheredSlot":
-        my_rank = dist.get_rank() if dist.is_initialized() else 0
+        my_rank, trainer_ws = _shard_rank_and_size(parallel_dims)
         weight = torch.empty(tuple(src.shape), dtype=spec.slot_dtype, device=src.device)
         slot_key = f"{prefix}.{src_name}"
         scale: Optional[Tensor] = None
@@ -341,7 +355,7 @@ class GatheredSlot:
             rows=src_rows,
             scale_rows=scale_rows,
             my_rank=my_rank,
-            trainer_ws=parallel_dims.world_size,
+            trainer_ws=trainer_ws,
         )
 
     @property
@@ -442,6 +456,16 @@ class ExpertSlot:
         # expert count (for stacked-expert sources like mlp.experts.w1).
         sample: DTensor = state_dict[f"{prefix}.{spec.sources[0]}"]
         num_local_experts = sample.to_local().shape[0]
+        # Sanity check: when sample is a DTensor, its global shape carries
+        # the full expert count and must factor cleanly into (ep × fsdp × local).
+        # Catches EP>fsdp configs where the mesh wiring isn't what we assume.
+        if isinstance(sample, DTensor):
+            total_experts = sample.shape[0]
+            assert num_local_experts * fsdp_size * ep_size == total_experts, (
+                f"EP partition mismatch for {spec.dst!r} at {prefix}: "
+                f"local={num_local_experts} * fsdp={fsdp_size} * ep={ep_size} "
+                f"!= total={total_experts}"
+            )
         num_experts_per_ep = num_local_experts * fsdp_size
         base = ep_rank * num_experts_per_ep + fsdp_rank * num_local_experts
         owned_global_experts = list(range(base, base + num_local_experts))

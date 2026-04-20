@@ -243,6 +243,21 @@ def _infer_trainer_world_size(deployment: "DeploymentConfig") -> int:
     return deployment.num_train_nodes * deployment.gpus_per_node
 
 
+def _infer_nixl_trainer_ws(deployment: "DeploymentConfig", dp_replicate: int) -> int:
+    """Per-replica trainer world size for NIXL SPG rendezvous.
+
+    With HSDP (``dp_replicate > 1``) the full weights are replicated across
+    replicas and only replica 0 participates in the NIXL transfer. The SPG
+    joined by inference must size the trainer side accordingly.
+    """
+    total = _infer_trainer_world_size(deployment)
+    if total % dp_replicate != 0:
+        raise ValueError(
+            f"trainer world size ({total}) is not divisible by dp_replicate ({dp_replicate})"
+        )
+    return total // dp_replicate
+
+
 class RLConfig(BaseConfig):
     """Configures an RL training run."""
 
@@ -651,7 +666,7 @@ class RLConfig(BaseConfig):
                 )
             elif self.weight_broadcast.type == "nixl":
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
-                trainer_world_size = _infer_trainer_world_size(self.deployment)
+                trainer_world_size = _infer_nixl_trainer_ws(self.deployment, self.trainer.model.dp_replicate)
                 self.trainer.weight_broadcast = TrainerNIXLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     port=self.weight_broadcast.port,
@@ -870,7 +885,7 @@ class RLConfig(BaseConfig):
                 api_server_count = self.inference.api_server_count if self.inference else 1
                 tp = self.inference.parallel.tp if self.inference else 1
                 total_infer_workers = self.deployment.total_infer_nodes * api_server_count * tp
-                trainer_world_size = _infer_trainer_world_size(self.deployment)
+                trainer_world_size = _infer_nixl_trainer_ws(self.deployment, self.trainer.model.dp_replicate)
                 assert self.trainer.weight_broadcast.type == "nixl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
@@ -908,7 +923,9 @@ class RLConfig(BaseConfig):
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
             assert self.orchestrator.weight_broadcast.type == "nixl"
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
-            self.orchestrator.weight_broadcast.trainer_world_size = _infer_trainer_world_size(self.deployment)
+            self.orchestrator.weight_broadcast.trainer_world_size = _infer_nixl_trainer_ws(
+                self.deployment, self.trainer.model.dp_replicate
+            )
 
         return self
 

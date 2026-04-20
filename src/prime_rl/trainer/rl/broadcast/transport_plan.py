@@ -70,8 +70,17 @@ class TransportPlan:
     def __init__(self, model: PreTrainedModelPrimeRL, parallel_dims: ParallelDims) -> None:
         self.logger = get_logger()
         self.parallel_dims = parallel_dims
-        self.my_rank = dist.get_rank() if dist.is_initialized() else 0
-        self.trainer_ws = parallel_dims.world_size
+        # Per-replica NIXL coordinates. With HSDP, only replica-0 ranks ever
+        # reach this constructor; ``my_rank`` indexes into the dp_shard_cp
+        # axis (equivalently the SPG trainer-rank range), not the global
+        # process rank.
+        if dist.is_initialized() and parallel_dims.dp_replicate_enabled:
+            shard_mesh = parallel_dims.get_mesh("dp_shard_cp")
+            self.my_rank = shard_mesh.get_local_rank()
+            self.trainer_ws = shard_mesh.size()
+        else:
+            self.my_rank = dist.get_rank() if dist.is_initialized() else 0
+            self.trainer_ws = parallel_dims.world_size
 
         state_dict = model.state_dict()
         self.slots: list[Slot] = []

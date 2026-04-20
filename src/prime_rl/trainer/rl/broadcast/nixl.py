@@ -3,6 +3,13 @@
 Thin orchestrator around :class:`~prime_rl.trainer.rl.broadcast.transport_plan.TransportPlan`:
 owns the NIXL agent + SPG, delegates every model/FSDP/EP-aware concern to
 the plan, and runs the orchestrator handshake around each push.
+
+HSDP: when ``dp_replicate > 1``, only the primary replica (``dp_replicate
+rank 0``) participates in the NIXL transfer. Non-primary replicas hold
+bit-identical weights, so a second copy over the wire would be pure
+waste. Both replicas still hit ``broadcast_weights`` — the non-primary
+path is a pair of ``dist.barrier()`` calls that keep the replicas in
+lockstep with the primary's push.
 """
 
 from __future__ import annotations
@@ -44,10 +51,20 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.logger = get_logger()
         self.config = config
         self.world = get_world()
+        self.parallel_dims = parallel_dims
         self._multi_run_manager = None
 
-        self._plan = TransportPlan(model, parallel_dims)
+        # Only the primary HSDP replica runs NIXL. For dp_replicate == 1 this
+        # is every rank.
+        if parallel_dims.dp_replicate_enabled:
+            self.is_primary_replica = parallel_dims.get_mesh("dp_replicate").get_local_rank() == 0
+        else:
+            self.is_primary_replica = True
 
+        if not self.is_primary_replica:
+            return
+
+        self._plan = TransportPlan(model, parallel_dims)
         self._agent = NixlAgentWrapper(
             name=make_agent_name("trainer", self.world.rank),
             local_rank=self.world.local_rank,
@@ -55,11 +72,15 @@ class NIXLWeightBroadcast(WeightBroadcast):
         )
         self._plan.register(self._agent)
 
+        # SPG ranks cover replica-0 trainer ranks plus every inference rank.
+        # Non-primary replicas are absent from the SPG entirely.
+        trainer_ws_per_replica = parallel_dims.dp_shard * parallel_dims.cp
+        spg_rank = parallel_dims.get_mesh("dp_shard_cp").get_local_rank() if dist.is_initialized() else 0
         self._spg = StatelessProcessGroup.create(
             host=config.host,
             port=config.port,
-            rank=self.world.rank,
-            world_size=self.world.world_size + config.inference_world_size,
+            rank=spg_rank,
+            world_size=trainer_ws_per_replica + config.inference_world_size,
             store_timeout=config.timeout,
         )
         self._plan.rendezvous(self._spg, self._agent, config.inference_world_size)
@@ -75,13 +96,15 @@ class NIXLWeightBroadcast(WeightBroadcast):
         if self.world.is_master:
             notified_runs = self._notify_orchestrator()
             self._wait_for_nixl_ready(notified_runs)
-        # Only rank 0 waits for NIXL_READY (the orchestrator drops it after all
-        # inference engines acknowledge /pause). Hold every other trainer rank
-        # here so no rank starts RDMA-writing into inference memory before all
-        # engines have drained — otherwise a worker still running a forward pass
-        # races the write into its own weight buffers.
+        # All trainer ranks (primary + replica copies) barrier before any
+        # RDMA WRITE starts — non-master ranks must not race past NIXL_READY.
         dist.barrier()
-        self.push_once(model)
+        if self.is_primary_replica:
+            self.push_once(model)
+        # Second barrier so non-primary replicas exit in lockstep with the
+        # primary's push rather than running ahead into the next step while
+        # the primary is still draining / in SPG barrier.
+        dist.barrier()
         self.logger.debug(f"NIXL weights broadcasted in {time.perf_counter() - start:.2f}s")
 
     @property
