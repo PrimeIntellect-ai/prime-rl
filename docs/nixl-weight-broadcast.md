@@ -1,8 +1,7 @@
 # NIXL weight broadcast — system contract
 
 What each role promises, what flows between them, and what the system
-guarantees after a push. For class-level ownership + code-side wire
-formats see `docs/nixl-architecture.md`.
+guarantees after a push.
 
 ## Roles
 
