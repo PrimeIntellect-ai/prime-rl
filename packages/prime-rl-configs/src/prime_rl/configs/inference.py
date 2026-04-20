@@ -137,6 +137,26 @@ class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     type: Literal["single_node"] = "single_node"
 
+    router_port: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            le=65535,
+            description="Public port for the vllm-router. Defaults to server.port for single-node deployments.",
+        ),
+    ] = None
+    backend_port: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            le=65535,
+            description="Internal port for the local vLLM backend behind the single-node router.",
+        ),
+    ] = None
+    router_policy: Annotated[
+        str, Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin').")
+    ] = "consistent_hash"
+
 
 class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     """Configures a multi-node inference deployment. Each node runs an independent vLLM replica."""
@@ -426,6 +446,41 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_single_node_router(self):
+        if self.deployment.type != "single_node":
+            return self
+
+        router_port_explicit = "router_port" in self.deployment.model_fields_set
+        server_port_explicit = "port" in self.server.model_fields_set
+
+        if self.deployment.router_port is None:
+            self.deployment.router_port = self.server.port
+        elif not server_port_explicit:
+            self.server.port = self.deployment.router_port
+        elif self.server.port != self.deployment.router_port:
+            raise ValueError(
+                f"server.port ({self.server.port}) must match deployment.router_port "
+                f"({self.deployment.router_port}) for single-node deployments."
+            )
+
+        if self.deployment.backend_port is None:
+            backend_port = self.deployment.router_port + 100
+            if backend_port > 65535:
+                raise ValueError(
+                    f"deployment.backend_port was not set and deployment.router_port ({self.deployment.router_port}) "
+                    "does not allow choosing a default backend port within the valid range."
+                )
+            self.deployment.backend_port = backend_port
+
+        if self.deployment.backend_port == self.deployment.router_port:
+            raise ValueError("deployment.backend_port must differ from deployment.router_port for single-node.")
+
+        if router_port_explicit and not server_port_explicit:
+            self.server.port = self.deployment.router_port
+
         return self
 
     @model_validator(mode="after")

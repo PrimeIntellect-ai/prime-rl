@@ -159,3 +159,37 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_single_node_inference_defaults_to_router_frontend():
+    config = InferenceConfig()
+    assert config.deployment.type == "single_node"
+    assert config.server.port == 8000
+    assert config.deployment.router_port == 8000
+    assert config.deployment.backend_port == 8100
+
+
+def test_single_node_inference_custom_public_port_updates_router_port():
+    config = InferenceConfig.model_validate({"server": {"port": 9000}})
+    assert config.server.port == 9000
+    assert config.deployment.router_port == 9000
+    assert config.deployment.backend_port == 9100
+
+
+def test_single_node_inference_rejects_mismatched_public_and_router_ports():
+    with pytest.raises(ValidationError, match="must match deployment.router_port"):
+        InferenceConfig.model_validate(
+            {
+                "server": {"port": 9000},
+                "deployment": {"type": "single_node", "router_port": 9001},
+            }
+        )
+
+
+def test_rl_config_auto_sets_single_node_router_and_admin_urls():
+    config = cli(
+        RLConfig,
+        args=["@", "configs/ci/integration/rl/start.toml", "--inference.server.port", "9000"],
+    )
+    assert config.orchestrator.client.base_url == ["http://localhost:9000/v1"]
+    assert config.orchestrator.client.admin_base_url == ["http://localhost:9100/v1"]

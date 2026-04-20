@@ -14,6 +14,49 @@ INFERENCE_TOML = "inference.toml"
 INFERENCE_SBATCH = "inference.sbatch"
 
 
+def _router_bind_host(host: str | None) -> str:
+    return host or "0.0.0.0"
+
+
+def _router_worker_host(host: str | None) -> str:
+    if host in (None, "0.0.0.0", "::"):
+        return "127.0.0.1"
+    return host
+
+
+def build_single_node_router_cmd(config: InferenceConfig) -> list[str]:
+    assert config.deployment.type == "single_node"
+
+    dp_per_node = config.data_parallel_size_local or config.parallel.dp
+    worker_url = f"http://{_router_worker_host(config.server.host)}:{config.deployment.backend_port}"
+
+    return [
+        "vllm-router",
+        "--policy",
+        config.deployment.router_policy,
+        "--worker-urls",
+        worker_url,
+        "--host",
+        _router_bind_host(config.server.host),
+        "--port",
+        str(config.deployment.router_port),
+        "--intra-node-data-parallel-size",
+        str(dp_per_node),
+        "--worker-startup-timeout-secs",
+        "4200",
+        "--log-level",
+        "debug",
+    ]
+
+
+def build_single_node_backend_config(config: InferenceConfig) -> InferenceConfig:
+    assert config.deployment.type == "single_node"
+
+    backend_config = config.model_copy(deep=True)
+    backend_config.server.port = config.deployment.backend_port
+    return backend_config
+
+
 def write_config(config: InferenceConfig, output_dir: Path, exclude: set[str] | None = None) -> Path:
     """Write resolved config to disk."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -127,15 +170,36 @@ def inference_local(config: InferenceConfig):
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
         return
 
-    host = config.server.host or "0.0.0.0"
-    port = config.server.port
-    logger.info(f"Starting inference on http://{host}:{port}/v1\n")
-
     setup_vllm_env(config)
 
     from prime_rl.inference.vllm.server import server  # pyright: ignore
 
-    server(config, vllm_extra=config.vllm_extra)
+    if config.deployment.type != "single_node":
+        host = config.server.host or "0.0.0.0"
+        port = config.server.port
+        logger.info(f"Starting inference on http://{host}:{port}/v1\n")
+        server(config, vllm_extra=config.vllm_extra)
+        return
+
+    router_cmd = build_single_node_router_cmd(config)
+    backend_config = build_single_node_backend_config(config)
+    public_host = config.server.host or "0.0.0.0"
+    logger.info(
+        f"Starting inference router on http://{public_host}:{config.deployment.router_port}/v1 "
+        f"with backend on http://{_router_worker_host(config.server.host)}:{config.deployment.backend_port}/v1\n"
+    )
+
+    router_process = subprocess.Popen(router_cmd)
+    try:
+        server(backend_config, vllm_extra=config.vllm_extra)
+    finally:
+        if router_process.poll() is None:
+            router_process.terminate()
+            try:
+                router_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                router_process.kill()
+                router_process.wait(timeout=5)
 
 
 def inference(config: InferenceConfig):

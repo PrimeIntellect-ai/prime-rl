@@ -41,6 +41,8 @@ The entrypoint launches torchrun internally — no need to call torchrun directl
 
 Launches a vLLM-based inference server with OpenAI-compatible API.
 
+On **single-node** deployments, the `inference` entrypoint now starts a local `vllm-router` in front of the backend vLLM server by default. The public API stays on `server.port`; the backend binds to `deployment.backend_port`.
+
 ```bash
 uv run inference @ configs/debug/infer.toml
 uv run inference --model.name Qwen/Qwen3-0.6B --model.enforce-eager

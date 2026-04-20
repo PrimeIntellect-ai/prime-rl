@@ -167,6 +167,18 @@ def rl_local(config: RLConfig):
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
 
+        if config.deployment.type == "single_node" and config.orchestrator.client.admin_base_url:
+            admin_url = config.orchestrator.client.admin_base_url[0]
+            admin_parsed = urlparse(admin_url)
+            admin_port = admin_parsed.port
+            expected_admin_port = config.inference.deployment.backend_port
+            if admin_port != expected_admin_port:
+                raise ValueError(
+                    f"orchestrator.client.admin_base_url port ({admin_port}) does not match "
+                    f"inference.deployment.backend_port ({expected_admin_port}). "
+                    f"Update the admin_base_url to use port {expected_admin_port} to match the inference backend."
+                )
+
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
