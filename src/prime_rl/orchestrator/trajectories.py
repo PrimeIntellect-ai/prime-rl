@@ -121,7 +121,6 @@ def _build_role_loss_masks_for_step(
             messages,
             role_to_mask=lambda message: _should_mask_role(message, loss_mask_config),
             tools=tools,
-            collapse_consecutive_tool_messages=True,
             processor=processor,
         )
     except IncrementalTokenizationError as e:

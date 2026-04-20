@@ -460,6 +460,57 @@ def test_interleave_rollout_tool_only_loss_mask_marks_tool_outputs(multi_step_tr
     assert rollout.completion_loss_mask == [False, False, True, True, False, False]
 
 
+def test_interleave_rollout_tool_only_loss_mask_keeps_consecutive_tool_messages():
+    tokenizer = SimpleChatTokenizer()
+
+    output = vf.RolloutOutput(
+        example_id=0,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[
+                    {"role": "user", "content": "U1"},
+                    {"role": "assistant", "content": "A1 + TC1"},
+                    {"role": "tool", "tool_call_id": "TR1", "content": "TR1"},
+                    {"role": "tool", "tool_call_id": "TR2", "content": "TR2"},
+                ],
+                completion=[{"role": "assistant", "content": "A2"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+                    prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0],
+                    completion_ids=[9, 10],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.3, -0.4],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+        ],
+        reward=1.0,
+        advantage=None,
+        stop_condition=None,
+        metrics={"has_error": 0.0, "tool_calls": 2.0},
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    rollouts = interleave_rollout(
+        output,
+        tokenizer=tokenizer,
+        loss_mask_config=RoleLossMaskConfig(assistant=False, tool=True),
+    )
+
+    assert rollouts is not None
+    assert len(rollouts) == 1
+    assert rollouts[0].prompt_loss_mask == [False, False, False, False, True, True, True, True]
+    assert rollouts[0].completion_loss_mask == [False, False]
+
+
 @pytest.fixture
 def five_step_trajectory_with_extension_break():
     """
