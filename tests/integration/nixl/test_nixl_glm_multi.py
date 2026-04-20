@@ -123,9 +123,10 @@ def _build_inference_tensors(ref_model, device: torch.device, experts_per_inf: i
             src_shapes = [ref_sd[f"{prefix}.{name}"].shape for name in spec.sources]
             dst_shape = list(src_shapes[0])
             dst_shape[spec.cat_dim] = sum(s[spec.cat_dim] for s in src_shapes)
-            dtype = torch.float8_e4m3fn if spec.quantize else torch.bfloat16
-            tensors[f"{prefix}.{spec.dst}"] = torch.zeros(dst_shape, dtype=dtype, device=device)
-            if spec.quantize:
+            tensors[f"{prefix}.{spec.dst}"] = torch.zeros(
+                dst_shape, dtype=spec.slot_dtype, device=device
+            )
+            if spec.quantized:
                 scale_shape = tuple(
                     ceil_div(d, BLOCK_SIZE) if i >= len(dst_shape) - 2 else d
                     for i, d in enumerate(dst_shape)

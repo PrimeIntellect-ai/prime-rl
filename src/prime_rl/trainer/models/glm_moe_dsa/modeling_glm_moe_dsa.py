@@ -14,14 +14,7 @@ from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div, fp8_block_quantize, grouped_fp8_block_quantize
-from prime_rl.utils.classic_cuda_pool import classic_cuda_alloc
-
-# Source tensors smaller than this fall out of the per-shard NIXL path and are
-# gathered instead — a single trainer rank writes the full tensor to each
-# inference peer. Below ~2 MiB the per-shard shard size drops under 32 KiB per
-# peer, at which point the RDMA handle overhead eats any parallelism gain.
-_SMALL_NON_EXPERT_BYTES = 2 * 1024 * 1024
+from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
     _BASE,
@@ -33,6 +26,13 @@ from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
     convert_tt_to_hf_moe,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
+from prime_rl.utils.classic_cuda_pool import classic_cuda_alloc
+
+# Source tensors smaller than this fall out of the per-shard NIXL path and are
+# gathered instead — a single trainer rank writes the full tensor to each
+# inference peer. Below ~2 MiB the per-shard shard size drops under 32 KiB per
+# peer, at which point the RDMA handle overhead eats any parallelism gain.
+_SMALL_NON_EXPERT_BYTES = 2 * 1024 * 1024
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -191,18 +191,16 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         return state_dict
 
     def convert_layer_to_vllm_kernel(self, layer_idx: int, out_buffers: dict[str, Tensor]) -> None:
-        """Quantize/copy one layer's tensors into ``out_buffers``.
+        """Transform one layer's source tensors into pre-allocated slot buffers.
 
-        Expert specs — fused cat-then-quantize into an EP+FSDP-local slot.
+        Experts: concatenate local experts and call :meth:`QuantizationSpec.apply`
+        once into the fused EP+FSDP-local slot.
 
-        Non-expert specs — one slot per source. The slot's dim-0 size tells us
-        the handling:
-          - equal to the source's full dim 0 → ``gather``: quantize the full
-            tensor (via ``full_tensor()`` for DTensor, as-is for plain).
-          - smaller → ``per_shard``: take this rank's ``dim0/fsdp_size`` slab,
-            either via ``to_local()`` on the DTensor or by slicing the plain
-            tensor (test path — the assumption that plain tensors carry the
-            full content matches how the test fixtures are set up).
+        Non-experts: iterate sources (each has its own per-source slot);
+        infer ``gather`` vs ``per_shard`` from the slot's dim-0 size (equal
+        to the source's full dim 0 → gather, smaller → per_shard), then
+        call :meth:`QuantizationSpec.apply` from source into slot (+ scale
+        buffer if :attr:`spec.quantized`).
         """
         prefix = f"model.layers.{layer_idx}"
         state_dict = self.state_dict()
@@ -220,13 +218,9 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
                     s = s.to_local() if isinstance(s, DTensor) else s
                     srcs.append(s)
                 tensor = srcs[0] if len(srcs) == 1 else torch.cat(srcs, dim=spec.cat_dim)
-                dst = f"{prefix}.{spec.dst}"
-                if spec.quantize:
-                    scale_name = spec.scale_name(prefix)
-                    quantize = grouped_fp8_block_quantize if tensor.ndim == 3 else fp8_block_quantize
-                    quantize(tensor, out=out_buffers[dst], sf=out_buffers[scale_name])
-                else:
-                    out_buffers[dst].copy_(tensor)
+                dst_slot = out_buffers[f"{prefix}.{spec.dst}"]
+                scale_slot = out_buffers[spec.scale_name(prefix)] if spec.quantized else None
+                spec.quantization.apply(tensor, dst_slot, scale_slot)
                 continue
 
             for src_name in spec.sources:
@@ -243,37 +237,28 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
                         # TODO: not needed except of tests
                         step = slot.shape[0]
                         value = src[my_rank * step : (my_rank + 1) * step].contiguous()
-                if spec.quantize:
-                    scale_key = slot_key.removesuffix(".weight") + ".weight_scale_inv"
-                    fp8_block_quantize(value, out=slot, sf=out_buffers[scale_key])
-                else:
-                    slot.copy_(value)
+                scale_slot = out_buffers[spec.per_source_scale_key(slot_key)] if spec.quantized else None
+                spec.quantization.apply(value, slot, scale_slot)
 
     def allocate_slots(self, parallel_dims: ParallelDims) -> dict[int, dict[str, Tensor]]:
         """Stable destination buffers for NIXL weight transfer.
 
-        Experts: one fused slot per spec, EP+FSDP-local shape.
-        Non-experts: one slot per source, shape determined by handling:
-          - per-shard when ``src_rows % fsdp_total == 0`` AND (for quantized specs)
-            ``(src_rows / fsdp_total) % BLOCK_SIZE == 0`` AND the source tensor
-            is at least :data:`_SMALL_NON_EXPERT_BYTES` — slot holds the
-            rank-local FSDP shard.
-          - gather otherwise — slot holds the full tensor. Small tensors fall
-            here so a single rank fans them out round-robin instead of every
-            rank writing its shard to every inference peer (which blows up the
-            RDMA handle count for kilobyte-scale layernorms and biases).
+        Experts: one fused slot per spec, EP+FSDP-local shape, dtype from
+        :attr:`spec.slot_dtype`.
+
+        Non-experts: one slot per source. Shape is determined by handling:
+          - ``per_shard`` when ``src_rows % fsdp_total == 0`` AND (for
+            quantized specs) ``(src_rows / fsdp_total) % BLOCK_SIZE == 0``
+            AND the source is at least :data:`_SMALL_NON_EXPERT_BYTES` —
+            slot holds the rank-local FSDP shard.
+          - ``gather`` otherwise — slot holds the full tensor. Small
+            tensors fall here so one rank fans them out round-robin
+            instead of every rank writing its shard to every inference
+            peer (which would blow up the RDMA handle count for
+            kilobyte-scale layernorms and biases).
         """
         state_dict = self.state_dict()
         device = next(self.parameters()).device
-        bf16 = torch.bfloat16
-        # vLLM stores layernorm affine params and the expert-routing bias in fp32
-        # for numerical stability. Slots for these sources must match that dtype,
-        # otherwise NIXL sees a 2× byte-length mismatch on WRITE.
-        vllm_fp32_srcs = {
-            "self_attn.indexer.k_norm.weight",
-            "self_attn.indexer.k_norm.bias",
-            "mlp.expert_bias",
-        }
         fsdp_total = parallel_dims.dp_shard * parallel_dims.cp
 
         slots: dict[int, dict[str, Tensor]] = {}
@@ -295,9 +280,10 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
                         ]
                         dst_shape = list(src_local_shapes[0])
                         dst_shape[spec.cat_dim] = sum(sh[spec.cat_dim] for sh in src_local_shapes)
-                        dst_dtype = torch.float8_e4m3fn if spec.quantize else bf16
-                        layer_slots[f"{prefix}.{spec.dst}"] = torch.empty(dst_shape, dtype=dst_dtype, device=device)
-                        if spec.quantize:
+                        layer_slots[f"{prefix}.{spec.dst}"] = torch.empty(
+                            dst_shape, dtype=spec.slot_dtype, device=device
+                        )
+                        if spec.quantized:
                             # 3D expert slot: leading expert dim is un-blocked; last 2 dims tile 128×128.
                             scale_shape = (dst_shape[0], ceil_div(dst_shape[1], BLOCK_SIZE), ceil_div(dst_shape[2], BLOCK_SIZE))
                             layer_slots[spec.scale_name(prefix)] = torch.empty(
@@ -311,24 +297,21 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
                         src_rows = full_shape[0]
                         per_shard = (
                             src_rows % fsdp_total == 0
-                            and (not spec.quantize or (src_rows // fsdp_total) % BLOCK_SIZE == 0)
+                            and (not spec.quantized or (src_rows // fsdp_total) % BLOCK_SIZE == 0)
                             and src.numel() * src.element_size() >= _SMALL_NON_EXPERT_BYTES
                         )
                         rows = src_rows // fsdp_total if per_shard else src_rows
                         slot_shape = (rows,) + full_shape[1:]
-                        if spec.quantize:
-                            slot_dtype = torch.float8_e4m3fn
-                        elif src_name in vllm_fp32_srcs:
-                            slot_dtype = torch.float32
-                        else:
-                            slot_dtype = bf16
                         slot_key = f"{prefix}.{src_name}"
-                        layer_slots[slot_key] = torch.empty(slot_shape, dtype=slot_dtype, device=device)
-                        if spec.quantize:
+                        layer_slots[slot_key] = torch.empty(
+                            slot_shape, dtype=spec.slot_dtype, device=device
+                        )
+                        if spec.quantized:
                             # 2D non-expert slot: both dims tile 128×128.
                             scale_shape = (ceil_div(slot_shape[0], BLOCK_SIZE), ceil_div(slot_shape[1], BLOCK_SIZE))
-                            scale_key = slot_key.removesuffix(".weight") + ".weight_scale_inv"
-                            layer_slots[scale_key] = torch.empty(scale_shape, dtype=torch.float32, device=device)
+                            layer_slots[spec.per_source_scale_key(slot_key)] = torch.empty(
+                                scale_shape, dtype=torch.float32, device=device
+                            )
                 slots[layer_idx] = layer_slots
         return slots
 
@@ -353,7 +336,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
                 if spec.dst.startswith("mlp.experts."):
                     continue
                 inference_value = f"{prefix}.{spec.dst}"
-                inference_scale = spec.scale_name(prefix) if spec.quantize else ""
+                inference_scale = spec.scale_name(prefix) if spec.quantized else ""
                 row_off = 0
                 scale_row_off = 0
                 for src_name in spec.sources:
@@ -361,7 +344,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
                     src_rows = src.shape[0]
                     per_shard = (
                         src_rows % fsdp_total == 0
-                        and (not spec.quantize or (src_rows // fsdp_total) % BLOCK_SIZE == 0)
+                        and (not spec.quantized or (src_rows // fsdp_total) % BLOCK_SIZE == 0)
                         and src.numel() * src.element_size() >= _SMALL_NON_EXPERT_BYTES
                     )
                     handling = "per_shard" if per_shard else "gather"
@@ -372,10 +355,9 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
                         "rows": src_rows,
                         "handling": handling,
                     }
-                    if spec.quantize:
-                        scale_key = slot_key.removesuffix(".weight") + ".weight_scale_inv"
+                    if spec.quantized:
                         scale_rows = ceil_div(src_rows, BLOCK_SIZE)
-                        layer_layout[scale_key] = {
+                        layer_layout[spec.per_source_scale_key(slot_key)] = {
                             "inference_name": inference_scale,
                             "offset_rows": scale_row_off,
                             "rows": scale_rows,

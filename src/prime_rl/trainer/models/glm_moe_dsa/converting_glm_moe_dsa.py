@@ -1,9 +1,7 @@
-from dataclasses import dataclass
-
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.fp8 import fp8_block_quantize, grouped_fp8_block_quantize
+from prime_rl.trainer.models.conversion_spec import ConversionSpec, QuantizationSpec
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
@@ -22,7 +20,7 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
         return
 
     # Router: gate.weight -> router.gate.weight
-    state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
+    state_dict[f"model.layers.{i}.umlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
     del state_dict[f"model.layers.{i}.mlp.gate.weight"]
 
     # Routed experts: fused or per-expert format -> stacked w1/w2/w3
@@ -158,66 +156,115 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
-class _Spec:
-    dst: str  # destination suffix (after "model.layers.{i}.")
-    sources: tuple[str, ...]  # source suffixes (after "model.layers.{i}.")
-    cat_dim: int = 0
-    quantize: bool = False
-    # Scale suffix substitution when ``quantize`` — ".weight" → scale_suffix (starts
-    # with "."), or "_weight" → scale_suffix (starts with "_").
-    scale_suffix: str = ".weight_scale_inv"
+# --------------------------------------------------------------------------- #
+# vLLM-kernel conversion table.
+#
+# Every destination tensor is either:
+#   * a plain copy (possibly with a dtype cast — layernorm affine params and
+#     ``mlp.expert_bias`` are fp32 on the inference side), or
+#   * a concat of one or more sources followed by FP8 block quantization.
+#
+# Defaults come from :class:`ConversionSpec`: bf16 destination, copy_cast
+# transform, no scale buffer. Overrides are explicit per row. Non-expert
+# quantized specs use ``.weight`` → ``.weight_scale_inv``; stacked-expert
+# specs use ``_weight`` → ``_weight_scale_inv``.
+# --------------------------------------------------------------------------- #
 
-    def scale_name(self, prefix: str) -> str:
-        dst = f"{prefix}.{self.dst}"
-        strip = ".weight" if self.scale_suffix.startswith(".") else "_weight"
-        return dst.removesuffix(strip) + self.scale_suffix
 
-
-_BASE: tuple[_Spec, ...] = (
-    _Spec("input_layernorm.weight", ("input_layernorm.weight",)),
-    _Spec("post_attention_layernorm.weight", ("post_attention_layernorm.weight",)),
-    _Spec("self_attn.q_a_layernorm.weight", ("self_attn.q_a_layernorm.weight",)),
-    _Spec("self_attn.kv_a_layernorm.weight", ("self_attn.kv_a_layernorm.weight",)),
-    _Spec(
+_BASE: tuple[ConversionSpec, ...] = (
+    ConversionSpec("input_layernorm.weight", ("input_layernorm.weight",)),
+    ConversionSpec("post_attention_layernorm.weight", ("post_attention_layernorm.weight",)),
+    ConversionSpec("self_attn.q_a_layernorm.weight", ("self_attn.q_a_layernorm.weight",)),
+    ConversionSpec("self_attn.kv_a_layernorm.weight", ("self_attn.kv_a_layernorm.weight",)),
+    ConversionSpec(
         "self_attn.fused_qkv_a_proj.weight",
         ("self_attn.q_a_proj.weight", "self_attn.kv_a_proj_with_mqa.weight"),
-        quantize=True,
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
     ),
-    _Spec("self_attn.q_b_proj.weight", ("self_attn.q_b_proj.weight",), quantize=True),
-    _Spec("self_attn.kv_b_proj.weight", ("self_attn.kv_b_proj.weight",), quantize=True),
-    _Spec("self_attn.o_proj.weight", ("self_attn.o_proj.weight",), quantize=True),
-    _Spec("self_attn.indexer.wq_b.weight", ("self_attn.indexer.wq_b.weight",), quantize=True),
-    _Spec("self_attn.indexer.wk.weight", ("self_attn.indexer.wk.weight",), quantize=True),
-    _Spec("self_attn.indexer.k_norm.weight", ("self_attn.indexer.k_norm.weight",)),
-    _Spec("self_attn.indexer.k_norm.bias", ("self_attn.indexer.k_norm.bias",)),
-    _Spec("self_attn.indexer.weights_proj.weight", ("self_attn.indexer.weights_proj.weight",)),
+    ConversionSpec(
+        "self_attn.q_b_proj.weight",
+        ("self_attn.q_b_proj.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "self_attn.kv_b_proj.weight",
+        ("self_attn.kv_b_proj.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "self_attn.o_proj.weight",
+        ("self_attn.o_proj.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "self_attn.indexer.wq_b.weight",
+        ("self_attn.indexer.wq_b.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "self_attn.indexer.wk.weight",
+        ("self_attn.indexer.wk.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    # vLLM keeps indexer k_norm affine params in fp32 — the QuantizationSpec
+    # here is just a dtype cast, no FP8 scale buffer.
+    ConversionSpec(
+        "self_attn.indexer.k_norm.weight",
+        ("self_attn.indexer.k_norm.weight",),
+        quantization=QuantizationSpec(torch.float32),
+    ),
+    ConversionSpec(
+        "self_attn.indexer.k_norm.bias",
+        ("self_attn.indexer.k_norm.bias",),
+        quantization=QuantizationSpec(torch.float32),
+    ),
+    ConversionSpec("self_attn.indexer.weights_proj.weight", ("self_attn.indexer.weights_proj.weight",)),
 )
 
 
-_SPARSE: tuple[_Spec, ...] = (
-    _Spec("mlp.gate.weight", ("mlp.router.gate.weight",)),
-    _Spec("mlp.gate.e_score_correction_bias", ("mlp.expert_bias",)),
-    _Spec(
+_SPARSE: tuple[ConversionSpec, ...] = (
+    ConversionSpec("mlp.gate.weight", ("mlp.router.gate.weight",)),
+    # vLLM keeps the expert-routing bias in fp32.
+    ConversionSpec(
+        "mlp.gate.e_score_correction_bias",
+        ("mlp.expert_bias",),
+        quantization=QuantizationSpec(torch.float32),
+    ),
+    ConversionSpec(
         "mlp.shared_experts.gate_up_proj.weight",
         ("mlp.shared_expert.w1", "mlp.shared_expert.w3"),
-        quantize=True,
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
     ),
-    _Spec("mlp.shared_experts.down_proj.weight", ("mlp.shared_expert.w2",), quantize=True),
-    _Spec(
+    ConversionSpec(
+        "mlp.shared_experts.down_proj.weight",
+        ("mlp.shared_expert.w2",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
         "mlp.experts.w13_weight",
         ("mlp.experts.w1", "mlp.experts.w3"),
         cat_dim=1,
-        quantize=True,
-        scale_suffix="_weight_scale_inv",
+        quantization=QuantizationSpec(torch.float8_e4m3fn, "_weight_scale_inv"),
     ),
-    _Spec("mlp.experts.w2_weight", ("mlp.experts.w2",), quantize=True, scale_suffix="_weight_scale_inv"),
+    ConversionSpec(
+        "mlp.experts.w2_weight",
+        ("mlp.experts.w2",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, "_weight_scale_inv"),
+    ),
 )
 
 
-_DENSE: tuple[_Spec, ...] = (
-    _Spec("mlp.gate_up_proj.weight", ("mlp.gate_proj.weight", "mlp.up_proj.weight"), quantize=True),
-    _Spec("mlp.down_proj.weight", ("mlp.down_proj.weight",), quantize=True),
+_DENSE: tuple[ConversionSpec, ...] = (
+    ConversionSpec(
+        "mlp.gate_up_proj.weight",
+        ("mlp.gate_proj.weight", "mlp.up_proj.weight"),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "mlp.down_proj.weight",
+        ("mlp.down_proj.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
 )
 
 
@@ -235,19 +282,12 @@ def convert_tt_layer_to_vllm_kernel(
     for spec in specs:
         dst = f"{prefix}.{spec.dst}"
         srcs = [state_dict[f"{prefix}.{s}"] for s in spec.sources]
-        if len(srcs) == 1:
-            tensor = srcs[0]
-        else:
-            tensor = torch.cat(srcs, dim=spec.cat_dim)
+        tensor = srcs[0] if len(srcs) == 1 else torch.cat(srcs, dim=spec.cat_dim)
 
-        if spec.quantize:
-            scale_name = spec.scale_name(prefix)
-            quantize = grouped_fp8_block_quantize if tensor.ndim == 3 else fp8_block_quantize
-            q, s = quantize(tensor, out=out_buffers[dst], sf=out_buffers[scale_name])
-            out[dst] = q
-            out[scale_name] = s
-        else:
-            out_buffers[dst].copy_(tensor)
-            out[dst] = out_buffers[dst]
+        scale_slot = out_buffers[spec.scale_name(prefix)] if spec.quantized else None
+        spec.quantization.apply(tensor, out_buffers[dst], scale_slot)
+        out[dst] = out_buffers[dst]
+        if spec.quantized:
+            out[spec.scale_name(prefix)] = scale_slot
 
     return out

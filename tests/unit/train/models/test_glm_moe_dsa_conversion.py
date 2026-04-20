@@ -44,9 +44,9 @@ def _allocate_buffers(state_dict: dict[str, torch.Tensor], prefix: str, is_spars
         srcs = [state_dict[f"{prefix}.{s}"] for s in spec.sources]
         dst_shape = list(srcs[0].shape)
         dst_shape[spec.cat_dim] *= len(srcs)
-        dtype = torch.float8_e4m3fn if spec.quantize else srcs[0].dtype
+        dtype = spec.slot_dtype if spec.quantized else srcs[0].dtype
         buffers[f"{prefix}.{spec.dst}"] = torch.zeros(dst_shape, dtype=dtype, device=srcs[0].device)
-        if spec.quantize:
+        if spec.quantized:
             scale_shape = tuple(
                 ceil_div(d, BLOCK_SIZE) if i >= len(dst_shape) - 2 else d for i, d in enumerate(dst_shape)
             )
