@@ -784,13 +784,6 @@ class TrainerConfig(BaseConfig):
         ),
     ] = None
 
-    on_policy: Annotated[
-        bool,
-        Field(
-            description="Debug-only flag to force fully synchronous on-policy RL. When True, the trainer broadcasts weights every step (including the final one) and the orchestrator blocks until the matching checkpoint is available. Significantly slower than async training.",
-        ),
-    ] = False
-
     enable_router_replay: Annotated[
         bool,
         Field(

@@ -274,18 +274,14 @@ class Scheduler:
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
         if self.on_policy:
             return self.step
-        # Bound the orchestrator/trainer gap to max_off_policy_steps so the orchestrator can't
-        # race ahead indefinitely when the trainer is slow to broadcast. When latest_ckpt_step
-        # lags below this bound, we return the bound to trigger a wait path.
-        min_required_ckpt_step = max(self.step - self.max_off_policy_steps, 0)
-        return max(min_required_ckpt_step, latest_ckpt_step)
+        # Cap the orchestrator at most 1 step ahead of the trainer so it doesn't race away.
+        async_away_ckpt_step = max(self.step - 1, 0)
+        return max(async_away_ckpt_step, latest_ckpt_step)
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
         if next_ckpt_step > latest_ckpt_step:
-            reason = (
-                "on-policy mode, on_policy=true" if self.on_policy else f">{self.max_off_policy_steps} step(s) ahead"
-            )
+            reason = "on-policy mode, on_policy=true" if self.on_policy else "1 step ahead"
             self.logger.info(
                 f"Orchestrator paused: waiting for trainer to complete checkpoint {next_ckpt_step} "
                 f"({reason}). Training is progressing normally."

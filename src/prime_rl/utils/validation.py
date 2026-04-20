@@ -94,16 +94,6 @@ def validate_shared_max_steps(
         )
 
 
-def validate_shared_on_policy(
-    trainer: TrainerConfig,
-    orchestrator: OrchestratorConfig,
-) -> None:
-    if trainer.on_policy != orchestrator.on_policy:
-        raise ValueError(
-            f"Trainer on_policy ({trainer.on_policy}) and orchestrator on_policy ({orchestrator.on_policy}) do not match. Please specify the same value for both."
-        )
-
-
 def validate_shared_tokenizer(
     trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,

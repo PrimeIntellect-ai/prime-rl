@@ -44,7 +44,6 @@ from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
     validate_shared_max_steps,
     validate_shared_model_name,
-    validate_shared_on_policy,
     validate_shared_output_dir,
     validate_shared_tokenizer,
     validate_shared_wandb_config,
@@ -330,13 +329,6 @@ class RLConfig(BaseConfig):
         ),
     ] = None
 
-    on_policy: Annotated[
-        bool | None,
-        Field(
-            description="Debug-only flag to force fully synchronous on-policy RL. If None, falls back to the value on submodule configs. Significantly slower than async training."
-        ),
-    ] = None
-
     weight_broadcast: Annotated[
         SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
     ] = None
@@ -604,17 +596,6 @@ class RLConfig(BaseConfig):
             self.orchestrator.max_steps = self.max_steps
 
         validate_shared_max_steps(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_on_policy(self):
-        """Auto-setup shared on_policy flag for trainer and orchestrator."""
-        if self.on_policy is not None:
-            self.trainer.on_policy = self.on_policy
-            self.orchestrator.on_policy = self.on_policy
-
-        validate_shared_on_policy(self.trainer, self.orchestrator)
 
         return self
 

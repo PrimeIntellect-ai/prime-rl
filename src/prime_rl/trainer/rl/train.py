@@ -240,10 +240,9 @@ def train(config: TrainerConfig):
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            # Skip the trailing broadcast that the orchestrator would never consume:
-            # async mode stays one step behind the trainer, on_policy is lockstep.
-            tail_skip = 0 if config.on_policy else 1
-            is_tail_step = config.max_steps and progress.step >= config.max_steps - tail_skip
+            # Async mode stays at most one step behind the trainer, so the orchestrator
+            # would never consume a broadcast emitted on the final step.
+            is_tail_step = config.max_steps and progress.step >= config.max_steps - 1
             if progress.step > 0 and (not is_tail_step or config.weight_broadcast.type == "filesystem"):
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
