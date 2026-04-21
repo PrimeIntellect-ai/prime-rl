@@ -552,6 +552,23 @@ async def orchestrate(config: OrchestratorConfig):
             f"to {len(train_examples)} training examples"
         )
 
+        # Invariant: the trainer never receives an empty batch. The filter-based
+        # retry above keeps it by construction, but `interleave_rollout` can still
+        # drop every non-filtered rollout (e.g. role-based loss mask tokenization
+        # doesn't match the vLLM tokens). Evict the run rather than crash the
+        # trainer with an opaque IndexError at `micro_batches[0]`.
+        if not train_examples:
+            reason = (
+                f"At step {progress.step}, {n_trainable}/{num_rollouts} rollouts survived filtering "
+                f"but interleave_rollout dropped all of them (likely role-based loss mask tokenization "
+                f"failures). Check warnings from _build_role_loss_masks_for_step."
+            )
+            logger.error(reason)
+            evicted_path = config.output_dir / "control" / "evicted.txt"
+            evicted_path.parent.mkdir(parents=True, exist_ok=True)
+            evicted_path.write_text(reason)
+            raise RuntimeError(reason)
+
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0
         if config.teacher_model and teacher_inference_pool:

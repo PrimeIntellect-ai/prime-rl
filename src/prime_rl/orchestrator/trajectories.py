@@ -116,11 +116,17 @@ def _build_role_loss_masks_for_step(
     messages = prompt + completion
 
     try:
+        # Collapse consecutive tool messages for incremental rendering: Qwen3-style
+        # chat templates group adjacent tool responses into a single user block, so
+        # render([..., tool_i]) is not a token prefix of render([..., tool_i, tool_{i+1}]).
+        # Rendering them together preserves the prefix invariant; all collapsed tool
+        # messages share the same role ("tool") so the loss mask is unchanged.
         full_ids, full_loss_mask = build_incremental_token_mask(
             tokenizer,
             messages,
             role_to_mask=lambda message: _should_mask_role(message, loss_mask_config),
             tools=tools,
+            collapse_consecutive_tool_messages=True,
             processor=processor,
         )
     except IncrementalTokenizationError as e:
