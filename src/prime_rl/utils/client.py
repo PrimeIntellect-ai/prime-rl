@@ -247,7 +247,7 @@ async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
     logger.info("Pausing inference engines for weight update")
 
     async def _pause(client: AsyncClient) -> None:
-        response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
+        response = await client.post("/pause", params={"mode": "keep", "clear_cache": "true"})
         response.raise_for_status()
 
     await asyncio.gather(*[_pause(client) for client in admin_clients])

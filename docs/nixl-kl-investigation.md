@@ -832,3 +832,34 @@ shards by rank), GatheredSlot (rank 0 authoritative), ExpertSlot
 Retains iter15's pre-write barrier (still correct).
 
 Wandb name `nixl-iter16-bytedump`.
+
+Results (job 5680):
+- 64 trainer dumps + 32 inference dumps written (162 GB total).
+- `tools/nixl_diff.py` ran: **1920 comparisons, 0 mismatches.**
+- Every slot across every layer: bytes in inference = bytes expected from
+  trainer. ShardedSlot assembly, GatheredSlot, ExpertSlot per-expert,
+  scales — all match.
+
+**Transport is proven bit-exact.** The drift cannot come from what we
+write. Must be from INFERENCE-SIDE STATE that differs between NCCL and
+NIXL paths despite identical weights.
+
+### Iteration 17 — clear_cache=true on pause
+
+Candidate: KV cache. Both paths pause with `clear_cache=false`, so
+cached KV entries (computed with pre-push weights) persist across
+broadcast and are used by rollouts against new weights. If NIXL's
+timing somehow causes different cache staleness than NCCL, that
+could explain the drift.
+
+Change: `_pause_engines` passes `clear_cache=true`. Forces every
+inference engine to drop its KV cache on pause — rollouts after the
+broadcast compute KVs from scratch using the fresh weights.
+
+This is a heavy hammer: NCCL uses the same code path, and NCCL was
+already bounded with `clear_cache=false`, so if the KV cache was
+*the* differentiator we'd expect NCCL KL to be affected too. Still
+worth testing — the interaction with NIXL's shorter pauses might be
+what breaks NIXL specifically.
+
+Wandb name `nixl-iter17-clearcache`.
