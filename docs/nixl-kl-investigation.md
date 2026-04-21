@@ -395,4 +395,29 @@ writes, or (b) keep DG off, or (c) have trainer write scales in
 DG layout.
 If NIXL KL still drifts → problem is elsewhere.
 
+Job 5660. KL series (step 0-9):
+0.0020, 0.0013, 0.0025, 0.0037, **0.0113**, **0.0088**, **0.0157**, **0.0063**, **0.0194**, **0.0084**.
+
+**FALSIFIED.** Disabling DG made KL **worse**, not better. So the issue
+isn't that DG reads raw scales wrong — it's something else. Possible:
+when DG is off, vLLM falls back to a non-DG GEMM path that has its
+*own* scale layout expectation, and that one is also clobbered by
+raw scales (or something unrelated breaks). Too noisy a test to be
+useful alone.
+
+### Iteration 6 — shape + stride diagnostic
+
+Narrow hypothesis: trainer writes scale bytes in row-major order but
+inference's `weight_scale_inv` (after DG's
+`maybe_post_process_fp8_weight_block` at initial model load) is in a
+permuted / column-major / TMA-aligned layout. Byte count matches so
+NIXL accepts the write, but values end up in wrong positions (sum is
+permutation-invariant, so my SIG sum check doesn't catch it).
+
+Add `.shape` and `.stride()` to both trainer and inference SIG logs
+for all three anchors. A discrepancy = silent layout corruption.
+
+DG re-enabled (`use_deep_gemm = true`). Wandb name
+`nixl-iter6-shape-stride`.
+
 _(append iterations below as they run)_

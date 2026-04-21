@@ -175,14 +175,22 @@ class NIXLWeightUpdateWorker(Worker):
 
         g_t, g_loc = _lookup(g_name)
         if g_t is not None:
-            logger.info(f"[nixl SIG inference] anchor=G loc={g_loc} key={g_name} sum={g_t.to(torch.float64).sum().item():.8f}")
+            logger.info(
+                f"[nixl SIG inference] anchor=G loc={g_loc} key={g_name} "
+                f"sum={g_t.to(torch.float64).sum().item():.8f} "
+                f"shape={tuple(g_t.shape)} stride={tuple(g_t.stride())}"
+            )
         f_t, f_loc = _lookup(f_name)
         f_s, f_s_loc = _lookup(f_scale_name)
         if f_t is not None:
             sc = f_s.to(torch.float64).sum().item() if f_s is not None else -1.0
+            s_shape = tuple(f_s.shape) if f_s is not None else None
+            s_stride = tuple(f_s.stride()) if f_s is not None else None
             logger.info(
                 f"[nixl SIG inference] anchor=F loc={f_loc}/{f_s_loc} key={f_name} "
-                f"w_bytes={f_t.view(torch.uint8).to(torch.int64).sum().item()} scale={sc:.8f}"
+                f"w_bytes={f_t.view(torch.uint8).to(torch.int64).sum().item()} "
+                f"w_shape={tuple(f_t.shape)} w_stride={tuple(f_t.stride())} "
+                f"scale={sc:.8f} s_shape={s_shape} s_stride={s_stride}"
             )
         e_t, e_loc = _lookup(e_name)
         e_s, e_s_loc = _lookup(e_scale_name)
@@ -191,9 +199,13 @@ class NIXLWeightUpdateWorker(Worker):
             if 0 in owned:
                 local_idx = owned.index(0)
                 sc0 = e_s[local_idx].to(torch.float64).sum().item() if e_s is not None else -1.0
+                s_shape = tuple(e_s.shape) if e_s is not None else None
+                s_stride = tuple(e_s.stride()) if e_s is not None else None
                 logger.info(
                     f"[nixl SIG inference] anchor=E loc={e_loc}/{e_s_loc} key={e_name}[E0] "
-                    f"w_bytes={e_t[local_idx].view(torch.uint8).to(torch.int64).sum().item()} scale={sc0:.8f}"
+                    f"w_bytes={e_t[local_idx].view(torch.uint8).to(torch.int64).sum().item()} "
+                    f"w_shape={tuple(e_t.shape)} w_stride={tuple(e_t.stride())} "
+                    f"scale={sc0:.8f} s_shape={s_shape} s_stride={s_stride}"
                 )
 
         update_mla_absorbed_weights(self._model)

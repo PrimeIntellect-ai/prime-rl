@@ -246,24 +246,35 @@ class TransportPlan:
         if self.my_rank == 0:
             for slot in self.slots:
                 if slot.slot_key == "model.layers.3.input_layernorm.weight":
-                    s = slot.weight.to(torch.float64).sum().item()
+                    w = slot.weight
                     self.logger.info(
-                        f"[nixl SIG trainer] anchor=G key={slot.slot_key} sum={s:.8f}"
+                        f"[nixl SIG trainer] anchor=G key={slot.slot_key} "
+                        f"sum={w.to(torch.float64).sum().item():.8f} "
+                        f"shape={tuple(w.shape)} stride={tuple(w.stride())}"
                     )
                 elif slot.slot_key == "model.layers.3.self_attn.kv_b_proj.weight":
-                    w = slot.weight.view(torch.uint8).to(torch.int64).sum().item()
-                    sc = slot.scale.to(torch.float64).sum().item() if slot.scale is not None else 0.0
+                    w = slot.weight
+                    sc = slot.scale
+                    w_bytes = w.view(torch.uint8).to(torch.int64).sum().item()
+                    s_sum = sc.to(torch.float64).sum().item() if sc is not None else 0.0
+                    s_shape = tuple(sc.shape) if sc is not None else None
+                    s_stride = tuple(sc.stride()) if sc is not None else None
                     self.logger.info(
-                        f"[nixl SIG trainer] anchor=F key={slot.slot_key} w_bytes={w} scale={sc:.8f}"
+                        f"[nixl SIG trainer] anchor=F key={slot.slot_key} "
+                        f"w_bytes={w_bytes} w_shape={tuple(w.shape)} w_stride={tuple(w.stride())} "
+                        f"scale={s_sum:.8f} s_shape={s_shape} s_stride={s_stride}"
                     )
                 elif slot.slot_key == "model.layers.3.mlp.experts.w13_weight":
-                    # Stacked (num_local, ...) — log expert[0] only.
-                    # trainer rank 0 has local_experts = [0,1,2,3]; expert[0]
-                    # is global expert 0.
-                    w0 = slot.weight[0].view(torch.uint8).to(torch.int64).sum().item()
-                    sc0 = slot.scale[0].to(torch.float64).sum().item() if slot.scale is not None else 0.0
+                    w0 = slot.weight[0]
+                    sc0 = slot.scale[0] if slot.scale is not None else None
+                    w_bytes = w0.view(torch.uint8).to(torch.int64).sum().item()
+                    s_sum = sc0.to(torch.float64).sum().item() if sc0 is not None else 0.0
+                    s_shape = tuple(sc0.shape) if sc0 is not None else None
+                    s_stride = tuple(sc0.stride()) if sc0 is not None else None
                     self.logger.info(
-                        f"[nixl SIG trainer] anchor=E key={slot.slot_key}[E0] w_bytes={w0} scale={sc0:.8f}"
+                        f"[nixl SIG trainer] anchor=E key={slot.slot_key}[E0] "
+                        f"w_bytes={w_bytes} w_shape={tuple(w0.shape)} w_stride={tuple(w0.stride())} "
+                        f"scale={s_sum:.8f} s_shape={s_shape} s_stride={s_stride}"
                     )
 
         handles: list = []
