@@ -12,10 +12,10 @@ name = "PrimeIntellect/Qwen3-0.6B"
 batch_size = 512
 rollouts_per_example = 16
 
-[orchestrator.sampling]
-max_tokens = 2048
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "math-env"
 name = "gsm8k"
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main", math_verify_max_workers = 128, math_verify_timeout = 60 }

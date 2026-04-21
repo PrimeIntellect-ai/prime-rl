@@ -1,9 +1,16 @@
 import io
 import json
+from unittest.mock import Mock
 
 import pyarrow.parquet as pq
 
 from prime_rl.utils.monitor.prime import PrimeMonitor
+
+
+def _new_monitor() -> PrimeMonitor:
+    monitor = PrimeMonitor.__new__(PrimeMonitor)
+    monitor._closed = True
+    return monitor
 
 
 def _build_rollout(*, example_id: int, reward: float, task: str) -> dict:
@@ -35,7 +42,7 @@ def _build_rollout(*, example_id: int, reward: float, task: str) -> dict:
 
 
 def test_rollouts_to_parquet_bytes_preserves_all_rollouts_and_ids():
-    monitor = PrimeMonitor.__new__(PrimeMonitor)
+    monitor = _new_monitor()
     monitor.run_id = "run-123"
 
     parquet_bytes = monitor._rollouts_to_parquet_bytes(
@@ -61,7 +68,7 @@ def test_rollouts_to_parquet_bytes_preserves_all_rollouts_and_ids():
 
 
 def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
-    monitor = PrimeMonitor.__new__(PrimeMonitor)
+    monitor = _new_monitor()
     monitor.run_id = "run-456"
 
     parquet_bytes = monitor._rollouts_to_parquet_bytes(
@@ -85,3 +92,20 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert len(rows) == 1
     assert rows[0]["problem_id"] == 1
     assert rows[0]["sample_id"] == 0
+
+
+def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
+    monitor = _new_monitor()
+    monitor.logger = Mock()
+
+    payload = {
+        "metrics": {"finite": 1.0, "nan": float("nan")},
+        "distributions": [0.5, float("inf")],
+    }
+
+    sanitized = monitor._sanitize_json_payload("metrics", payload)
+
+    assert sanitized == {"metrics": {"finite": 1.0}, "distributions": [0.5]}
+    monitor.logger.warning.assert_called_once_with(
+        "Dropping 2 non-finite value(s) from Prime monitor metrics payload: metrics.nan, distributions[1]"
+    )

@@ -45,10 +45,10 @@ batch_size = 512
 oversampling_factor = 2
 max_off_policy_steps = 8
 
-[orchestrator.sampling]
-max_tokens = 32768
+[orchestrator.train.sampling]
+max_completion_tokens = 32768
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "math-env"
 name = "math"
 

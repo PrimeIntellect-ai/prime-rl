@@ -59,12 +59,13 @@ def get_model_completion_len(output: vf.RolloutOutput) -> int:
     return sum(len(step["tokens"]["completion_ids"]) for step in output["trajectory"] if step.get("tokens"))
 
 
-def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path) -> None:
+def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path, exclude_keys: set[str] | None = None) -> None:
     """Save rollouts to a JSONL file using verifiers serialization."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         for rollout in rollouts:
-            json.dump(rollout, f, default=make_serializable)
+            row = {k: v for k, v in rollout.items() if k not in exclude_keys} if exclude_keys else rollout
+            json.dump(row, f, default=make_serializable)
             f.write("\n")
 
 

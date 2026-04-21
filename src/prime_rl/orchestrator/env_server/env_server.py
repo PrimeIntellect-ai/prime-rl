@@ -18,7 +18,7 @@ def run_server(config: EnvServerConfig):
     env_ids_to_install = set()
     env_ids_to_install.update(get_env_ids_to_install([config.env]))
     for env_id in env_ids_to_install:
-        install_env(env_id)
+        install_env(env_id, prerelease=config.env_install_prerelease)
 
     log_dir = (get_log_dir(config.output_dir) / config.env.resolved_name).as_posix()
 

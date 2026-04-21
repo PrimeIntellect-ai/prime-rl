@@ -715,7 +715,7 @@ class GibberishFilterConfig(BaseModel):
     enforce: Annotated[
         bool,
         Field(
-            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+            description="If True, skip detected rollouts entirely so they are not sent to the trainer. If False, only track detection metrics."
         ),
     ] = False
     token_id_threshold: Annotated[
@@ -739,7 +739,7 @@ class RepetitionFilterConfig(BaseModel):
     enforce: Annotated[
         bool,
         Field(
-            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+            description="If True, skip detected rollouts entirely so they are not sent to the trainer. If False, only track detection metrics."
         ),
     ] = False
     window: Annotated[
@@ -765,7 +765,7 @@ class ZeroAdvantageFilterConfig(BaseModel):
     enforce: Annotated[
         bool,
         Field(
-            description="If True, mask detected rollouts so they don't contribute to training. If False, only track detection metrics."
+            description="If True, skip detected rollouts entirely so they are not sent to the trainer. If False, only track detection metrics."
         ),
     ] = True
 
@@ -811,15 +811,6 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 
 class OrchestratorExperimentalConfig(BaseConfig):
     """Experimental features for the orchestrator."""
-
-    use_prefix_cache_salt: Annotated[
-        bool,
-        Field(
-            description="Whether to set a cache_salt on inference requests that changes with each weight update. "
-            "This invalidates prefix-cached KV states from previous policies without resetting the entire cache, "
-            "while preserving cache hits for in-flight off-policy rollouts.",
-        ),
-    ] = True
 
 
 class TeacherModelConfig(BaseConfig):
@@ -1044,6 +1035,13 @@ class OrchestratorConfig(BaseConfig):
             description="Whether to use the token-in-token-out (TITO) client for training across all environments. WARNING: Only use this if your environment has a linear history and the chat template has the extension property (i.e. no tokens are ever removed or inserted by the chat template)"
         ),
     ] = True
+
+    env_install_prerelease: Annotated[
+        bool,
+        Field(
+            description="Allow pre-release versions when installing environments (e.g. verifiers>=0.1.12.dev5). Passes --prerelease to prime env install."
+        ),
+    ] = False
 
     experimental: Annotated[
         OrchestratorExperimentalConfig,

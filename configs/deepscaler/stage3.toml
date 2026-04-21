@@ -20,11 +20,11 @@ resume_step = 1000
 batch_size = 1024
 rollouts_per_example = 8
 
-[orchestrator.sampling]
+[orchestrator.train.sampling]
 temperature = 0.6
-max_tokens = 24576
+max_completion_tokens = 24576
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "math-env"
 name = "deepscaler"
 args = { dataset_name= "agentica-org/DeepScaleR-Preview-Dataset", dataset_subset = "default", question_key = "problem", answer_key = "solution", math_verify_max_workers = 128, math_verify_timeout = 60 }

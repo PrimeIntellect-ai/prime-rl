@@ -53,7 +53,21 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
+
+
+def pre_download_model(model_name: str) -> None:
+    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training."""
+    if Path(model_name).exists():
+        get_logger().info(f"Model {model_name} found at local path, skipping download")
+        return
+    get_logger().info(f"Pre-downloading model {model_name}")
+    t0 = time.perf_counter()
+    path = snapshot_download(repo_id=model_name, repo_type="model")
+    get_logger().debug(
+        f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
+    )
 
 
 def _patch_qwen3_5_moe_conversion_mapping():
@@ -621,6 +635,11 @@ def can_reinit_empty_buffers(model: nn.Module):
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
         return True
 
+    # GPT-OSS (has original_inv_freq alongside inv_freq from dynamic rope scaling)
+    gpt_oss_buffers = {"model.rotary_emb.inv_freq", "model.rotary_emb.original_inv_freq"}
+    if set(buffer_names) == gpt_oss_buffers:
+        return True
+
     # Gemma3 model (has embed_scale and local rotary emb)
     gemma3_buffers = {"model.embed_tokens.embed_scale", "model.rotary_emb.inv_freq", "model.rotary_emb_local.inv_freq"}
     if set(buffer_names) == gemma3_buffers:
@@ -635,8 +654,21 @@ def fix_model_post_empty(model: nn.Module):
     # HF standard transformer model
     if "model.rotary_emb.inv_freq" in buffer_names:
         rotary_emb = model.model.rotary_emb
-        inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
+        if hasattr(rotary_emb, "rope_init_fn"):
+            rope_init_fn = rotary_emb.rope_init_fn
+        else:
+            # GPT-OSS stores rope_init_fn only as a local in __init__; re-derive it
+            from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+            rope_init_fn = (
+                ROPE_INIT_FUNCTIONS[rotary_emb.rope_type]
+                if rotary_emb.rope_type != "default"
+                else rotary_emb.compute_default_rope_parameters
+            )
+        inv_freq, rotary_emb.attention_scaling = rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
+        if "model.rotary_emb.original_inv_freq" in buffer_names:
+            rotary_emb.original_inv_freq.copy_(inv_freq)
     # Gemma3 local rotary emb
     if "model.rotary_emb_local.inv_freq" in buffer_names:
         rotary_emb_local = model.model.rotary_emb_local

@@ -33,8 +33,8 @@ save_adapter_separately = true
 batch_size = 256
 rollouts_per_example = 4
 
-[orchestrator.sampling]
-max_tokens = 512
+[orchestrator.train.sampling]
+max_completion_tokens = 512
 temperature = 0.7
 
 [orchestrator.teacher_rollout_model.client]
@@ -44,7 +44,7 @@ api_key_var = "PRIME_API_KEY"
 [orchestrator.teacher_rollout_model.model]
 name = "qwen/qwen3-235b-a22b-instruct-2507"
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "primeintellect/alphabet-sort"
 name = "alphabet-sort"
 args = { min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_turn = 3, similarity_power = 4, power_per_turn = false }

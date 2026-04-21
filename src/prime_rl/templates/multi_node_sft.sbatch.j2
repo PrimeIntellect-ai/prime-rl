@@ -59,6 +59,26 @@ cd $PROJECT_DIR && uv sync --all-extras
 {{ pre_run_command }}
 {% endif %}
 
+# Cleanup stale node-local state from prior jobs. Orphan python/torchrun/vllm
+# processes and vLLM/torch IPC files under /dev/shm and /tmp can survive SLURM
+# termination and cause the next launch to hang. Harmless on clean nodes.
+srun bash -c '
+    pkill -9 -f "python.*prime_rl" 2>/dev/null
+    pkill -9 -f "torchrun" 2>/dev/null
+    pkill -9 -f "vllm-router" 2>/dev/null
+    pkill -9 -f "vllm" 2>/dev/null
+    pkill -9 -f "prime_rl" 2>/dev/null
+    # Also match prctl-set process names (kernel comm) like "vllm::router"
+    # which pkill -f does not see because -f only matches the cmdline.
+    pkill -9 "vllm" 2>/dev/null
+    pkill -9 "vllm::.*" 2>/dev/null
+    sleep 2
+    rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
+    procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
+    gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
+    echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
+'
+
 # Run SFT
 srun bash -c '
     # Setup environment

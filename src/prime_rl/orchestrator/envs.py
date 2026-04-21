@@ -104,9 +104,7 @@ class Env:
         self._env_server_process = process
         return address
 
-    def _sampling_args_with_salt(self, cache_salt: str | None) -> dict:
-        if cache_salt is None:
-            return self.sampling_args
+    def _sampling_args_with_salt(self, cache_salt: str) -> dict:
         sampling_args = {**self.sampling_args}
         extra_body = {**sampling_args.get("extra_body", {}), "cache_salt": cache_salt}
         sampling_args["extra_body"] = extra_body
@@ -117,7 +115,7 @@ class Env:
         client: vf.ClientConfig,
         example: dict,
         model_name: str,
-        cache_salt: str | None = None,
+        cache_salt: str,
     ) -> vf.RolloutOutput:
         """Run a single rollout for an example."""
         return await self.env.run_rollout(
@@ -136,7 +134,7 @@ class Env:
         example: dict,
         model_name: str,
         rollouts_per_example: int,
-        cache_salt: str | None = None,
+        cache_salt: str,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
         return await self.env.run_group(
@@ -181,7 +179,7 @@ class EvalEnv(Env):
         get_client: Callable[[], Awaitable[vf.ClientConfig]],
         ckpt_step: int,
         step: int,
-        cache_salt: str | None = None,
+        cache_salt: str,
     ) -> list[vf.RolloutOutput]:
         num_examples = len(self.examples)
         rollouts_per_example = self.config.rollouts_per_example
@@ -352,10 +350,13 @@ class Envs(Generic[EnvT]):
         log_level: str | None = None,
         json_logging: bool = False,
     ) -> None:
-        """Spawn env servers (where needed) and connect all env clients in parallel."""
-        await asyncio.gather(
-            *(env.start(log_dir=log_dir, log_level=log_level, json_logging=json_logging) for env in self)
-        )
+        """Spawn env servers (where needed) and connect env clients one at a time.
+
+        Serialized to avoid a TOCTOU port race: get_free_port() only holds the port
+        until it returns, so parallel spawns can hand the same port to two children.
+        """
+        for env in self:
+            await env.start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
         atexit.register(self.shutdown)
 
     def shutdown(self) -> None:

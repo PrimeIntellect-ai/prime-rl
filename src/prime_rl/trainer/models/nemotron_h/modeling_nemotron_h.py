@@ -9,6 +9,7 @@ Hybrid Mamba-Transformer-MoE architecture with three distinct layer types:
 from typing import Optional
 
 import torch
+import torch.distributed as dist
 from torch import Tensor, nn
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
@@ -18,6 +19,7 @@ from transformers.utils import auto_docstring, logging
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.cp_mamba import mamba_cp_forward
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import LatentMoE, NemotronHRouter, NonGatedGroupedExperts
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
@@ -113,7 +115,12 @@ def _ensure_zamba2_compat(config: NemotronHConfig):
 
 
 class NemotronHMambaLayer(GradientCheckpointingLayer):
-    """Mamba-2 SSM layer: norm -> NemotronHMamba2Mixer -> residual."""
+    """Mamba-2 SSM layer: norm -> NemotronHMamba2Mixer -> residual.
+
+    With context parallelism, uses all-to-all head partitioning: transposes
+    from sequence-parallel to head-parallel before the SSM, so each CP rank
+    processes the full sequence on a subset of heads, then transposes back.
+    """
 
     def __init__(self, config: NemotronHConfig, layer_idx: int):
         super().__init__()
@@ -122,6 +129,21 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
         self.mamba = NemotronHMamba2Mixer(config, layer_idx=layer_idx)
         self.mlp = None  # No MoE in this layer type
+
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        assert self.mamba.num_heads % cp_world_size == 0, (
+            f"num_heads ({self.mamba.num_heads}) must be divisible by cp_world_size ({cp_world_size})"
+        )
+        assert self.mamba.n_groups % cp_world_size == 0, (
+            f"n_groups ({self.mamba.n_groups}) must be divisible by cp_world_size ({cp_world_size})"
+        )
+        self._cp_group = cp_group
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
+
+    @property
+    def cp_enabled(self) -> bool:
+        return hasattr(self, "_cp_group")
 
     def forward(
         self,
@@ -132,7 +154,12 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
-        hidden_states = self.mamba(hidden_states)
+        if self.cp_enabled:
+            hidden_states = mamba_cp_forward(
+                self.mamba, hidden_states, self._cp_group, self._cp_rank, self._cp_world_size
+            )
+        else:
+            hidden_states = self.mamba(hidden_states)
         return residual + hidden_states
 
 

@@ -53,7 +53,7 @@ COPY examples /app/examples
 COPY benchmarks/scripts /app/benchmarks/scripts
 
 RUN --mount=type=cache,target=/app/.cache/uv \
-    uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --group mamba-ssm --locked --no-dev
+    uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --group mamba-ssm --locked --no-dev
 
 # arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
 ARG TARGETARCH
