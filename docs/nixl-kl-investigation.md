@@ -1116,31 +1116,34 @@ the same inference tensor, the non-expert path exposes it more.
   (iter21): similar partial effect.
 
 **Conclusion.** Both isolated halves (experts-only, non-experts-only)
-drift past NCCL-baseline bounds, so the bug is in the *NIXL write /
-registration mechanism itself*, not in which tensors we select or
-how we quantize them. All pieces that would have shown a byte-level
-error have been instrumented and proven correct. The divergence must
-come from one of:
+drift past NCCL-baseline bounds. The bug is deterministic — user
+reran the experiments multiple times, NIXL crashes every run, NCCL
+is stable every run. That rules out the inference-side continuous-
+batching / scheduler-state non-determinism theory: if it were
+stochastic it wouldn't reproduce identically. All pieces that would
+have shown a byte-level error have been instrumented and proven
+correct.
+
+What's left:
 
 1. **Write ordering / visibility across concurrent UCX endpoints.**
-   A single push posts thousands of WRITEs across 64 trainer ranks
-   to 32 inference peers. Even after per-handle drain + SPG barrier
-   + GPUDirect flush + SYNC_MEMOPS, there may be a memory-ordering
+   A single push posts thousands of WRITEs from 64 trainer ranks to
+   32 inference peers. Even after per-handle drain + SPG barrier +
+   GPUDirect flush + `SYNC_MEMOPS`, there may be a memory-ordering
    gap on the receiving GPU that subsequent inference kernels read
-   through. The three "helps but doesn't fix" fixes all point in
-   this direction and stack without ever fully bounding — maybe
-   there's yet another fence required, or the issue is race-
-   condition-like (partial effect from any single fence).
-2. **Tensor identity transition outside the one-shot audit window.**
-   We snapshot identity at init and re-verify at the first push.
-   vLLM could rebuild param tensors between pushes in a way that
-   the one-shot check misses. Widening the audit to re-verify
-   every push is a cheap next step.
-3. **Inference-side compute non-determinism amplified by
-   continuous-batching / scheduler state.** Two runs with
-   byte-identical weights could diverge through the generation
-   stream alone (batch composition, speculative decoding,
-   cross-request state). Hard to test directly but explains why
-   the drift is phase-transition-like rather than monotonic.
+   through. The three "helps but doesn't fix" fixes (iter15, iter19,
+   iter21) all point in this direction and stack without ever fully
+   bounding — suggesting the reordering can happen at multiple
+   levels (NIC → HBM → SM caches) and each fence closes one.
+   Non-expert-only being worse than expert-only (see iter26/27)
+   fits this exactly: non-experts fan out 64 concurrent writes to
+   different chunks of the same fused param, experts write
+   independently owned chunks.
+2. **Tensor identity transition between pushes.** The iter22 audit
+   snapshots `(ptr, storage_ptr, shape, stride)` at init and
+   re-verifies at the **first** push. vLLM could rebuild param
+   tensors between pushes in a way the one-shot check misses.
+   Cheap next step: widen the audit to every push, not just
+   the first.
 
 _(append iterations below as they run)_
