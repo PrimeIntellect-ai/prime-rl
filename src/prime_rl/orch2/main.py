@@ -27,6 +27,7 @@ from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_bat
 from prime_rl.transport.base import TrainingBatchSender
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
+from prime_rl.utils.monitor import get_monitor, setup_monitor
 from prime_rl.utils.pathing import get_broadcast_dir
 
 # ---------- inference admin (single endpoint) ----------
@@ -152,6 +153,18 @@ class TrainBatcher:
             f"Version: {self.engine.policy_version} | "
             f"Convert: {convert_time:.2f}s | Ship: {send_time:.2f}s"
         )
+        get_monitor().log(
+            {
+                "train/reward/mean": reward_mean,
+                "train/advantage/abs_mean": adv_abs,
+                "train/seq_len/mean": seq_mean,
+                "train/batch_size": len(samples),
+                "train/policy_version": self.engine.policy_version,
+                "time/convert": convert_time,
+                "time/ship": send_time,
+            },
+            step=self.step,
+        )
         self.step += 1
 
     def _convert(self, rollouts: list[vf.RolloutOutput]) -> list[TrainingSample]:
@@ -230,6 +243,16 @@ async def run(cfg: OrchestratorConfig) -> None:
 
     tokenizer = setup_tokenizer(cfg.tokenizer)
     logger.info(f"Tokenizer ready: {cfg.tokenizer.name}")
+
+    setup_monitor(
+        wandb_config=cfg.wandb,
+        output_dir=cfg.output_dir,
+        tokenizer=tokenizer,
+        run_config=cfg,
+        prime_config=cfg.prime_monitor,
+    )
+    if cfg.wandb is not None:
+        logger.info(f"Wandb monitor ready (project={cfg.wandb.project}, name={cfg.wandb.name})")
 
     num_envs = len(cfg.train.env)
     per_env_concurrency = max(1, cfg.max_inflight_rollouts // num_envs)
