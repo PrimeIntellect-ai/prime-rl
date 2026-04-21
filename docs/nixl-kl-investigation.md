@@ -355,4 +355,44 @@ both `named_parameters` and `named_buffers`, and logs the location
 
 Wandb name `nixl-iter4-sigdiag-scalefix`.
 
+Job 5657. Key inference-side SIG observations (all 32 workers, step 0):
+
+| Anchor | loc | Trainer | Inference | Match |
+|---|---|---:|---:|---|
+| G | param | 249.99527359 | 249.99527359 | ✓ |
+| F | param/param | w=2300248861 s=0.10161349 | w=2300248861 s=0.10161349 | ✓ |
+| E | param/param | w=3793830601 s=0.27224205 | w=3793830601 s=0.27224205 | ✓ |
+
+Both FP8 weight AND scale match bit-exact on all three slot types.
+Transport is fully verified. KL drift is NOT a transport bug. It's
+elsewhere.
+
+**KL series (iter4), same deterministic pattern:**
+0.0021, 0.0031, 0.0006, 0.0012, 0.0049, 0.0038, 0.0021, 0.0045, **0.0050** → fails bound.
+
+**Analysis:** vLLM's `Fp8LinearMethod.process_weights_after_loading`
+calls `maybe_post_process_fp8_weight_block` when
+`use_deep_gemm=True`, which runs `transform_sf_into_required_layout`
+to permute `weight_scale_inv` into a DeepGemm-specific layout. This
+happens ONCE at initial model load. After that, both NCCL+FP8 and
+NIXL paths `copy_` raw blockwise scales over the transformed scales
+— DG then reads the raw values in the transformed layout → wrong
+GEMM output.
+
+The NCCL baseline shows KL ~0.001 while NIXL shows ~0.002-0.03; if
+this hypothesis is correct, NCCL is also slightly broken but just
+less bad for reasons unclear. The cleanest way to falsify is to
+disable DeepGemm entirely and see if NIXL becomes bounded.
+
+### Iteration 5 — disable `use_deep_gemm` to falsify DG layout hypothesis
+
+Single change in `prod.toml`: `inference.use_deep_gemm = false`.
+All SIG diagnostics stay. Wandb name `nixl-iter5-no-deep-gemm`.
+
+If NIXL KL stays bounded <0.005 → DG layout mismatch is the bug,
+and the fix is either (a) re-run the DG layout transform after
+writes, or (b) keep DG off, or (c) have trainer write scales in
+DG layout.
+If NIXL KL still drifts → problem is elsewhere.
+
 _(append iterations below as they run)_
