@@ -323,4 +323,36 @@ SHA will be added post-commit. Adds anchors:
 
 Wandb name `nixl-iter3-sigdiag-3anchors`.
 
+Job 5653, 11 steps observed (KL drifts: breaks 0.005 at steps 4, 6,
+8, 10 — matches iter1 drift pattern).
+
+**Trainer SIG (rank 0, anchor stepwise):**
+- G: `249.99527359 → 249.99527359 → ... → 249.99527740` (bf16 noise).
+- F w_bytes: `2300248320 → 2300245929 → 2300253387 → ...` (changes).
+- E w_bytes: `3793815079 → 3793813458 → 3793823409 → ...` (changes).
+
+**Inference SIG (all workers matched):**
+
+| Step | Anchor | Trainer | Inference | Match |
+|---:|---|---:|---:|---|
+| 0 | G w | 249.99527359 | 249.99527359 | ✓ |
+| 0 | F w_bytes | 2300248320 | 2300248320 | ✓ |
+| 0 | F scale | 0.10161374 | **0.00000000** | ✗ |
+| 0 | E w_bytes | 3793815079 | 3793815079 | ✓ |
+| 0 | E scale | 0.27224183 | **0.00000000** | ✗ |
+
+**Interpretation:** FP8 weight bytes match. Scales read as 0 on
+inference — almost certainly a diagnostic bug: vLLM stores
+`weight_scale_inv` as a `Parameter`, not a `Buffer`, so my
+`named_bufs[...]` lookup returns nothing and I print 0. Need to
+check both `named_parameters()` and `named_buffers()`.
+
+### Iteration 4 — fix scale lookup on inference diagnostic
+
+Same anchors, but the inference-side `_lookup()` helper now checks
+both `named_parameters` and `named_buffers`, and logs the location
+(`loc=param/buf/MISSING`) so we can tell.
+
+Wandb name `nixl-iter4-sigdiag-scalefix`.
+
 _(append iterations below as they run)_
