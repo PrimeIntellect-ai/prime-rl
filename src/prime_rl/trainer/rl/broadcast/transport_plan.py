@@ -234,20 +234,37 @@ class TransportPlan:
         torch.cuda.synchronize(device)
         t_converted = time.perf_counter()
 
-        # Diagnostic: rank-0 logs post-convert signature for a canonical
-        # gather-only, non-quantized slot. Trainer's slot.weight holds
-        # the full tensor (GatheredSlot when small) so inference's
-        # matching param should produce the same signature after the
-        # push barrier. Use layer 3 (first sparse layer) as the anchor.
+        # Diagnostic: rank-0 logs post-convert signatures for anchor
+        # slots covering each slot type. Trainer's slot.weight holds
+        # the exact content that's about to be RDMA-written. Inference
+        # logs the matching param/buffer sum after the barrier. If
+        # sums diverge for a given anchor, that slot type has a
+        # transport or quantize bug.
+        #   G (bf16 gather)   : input_layernorm.weight
+        #   F (fp8 gather)    : self_attn.kv_b_proj.weight + scale
+        #   E (fp8 expert)    : mlp.experts.w13_weight expert[0]
         if self.my_rank == 0:
-            anchor_key = "model.layers.3.input_layernorm.weight"
             for slot in self.slots:
-                if slot.slot_key == anchor_key:
-                    w_sig = slot.weight.to(torch.float64).sum().item()
+                if slot.slot_key == "model.layers.3.input_layernorm.weight":
+                    s = slot.weight.to(torch.float64).sum().item()
                     self.logger.info(
-                        f"[nixl SIG trainer] key={slot.slot_key} sum={w_sig:.8f} shape={tuple(slot.weight.shape)}"
+                        f"[nixl SIG trainer] anchor=G key={slot.slot_key} sum={s:.8f}"
                     )
-                    break
+                elif slot.slot_key == "model.layers.3.self_attn.kv_b_proj.weight":
+                    w = slot.weight.view(torch.uint8).to(torch.int64).sum().item()
+                    sc = slot.scale.to(torch.float64).sum().item() if slot.scale is not None else 0.0
+                    self.logger.info(
+                        f"[nixl SIG trainer] anchor=F key={slot.slot_key} w_bytes={w} scale={sc:.8f}"
+                    )
+                elif slot.slot_key == "model.layers.3.mlp.experts.w13_weight":
+                    # Stacked (num_local, ...) — log expert[0] only.
+                    # trainer rank 0 has local_experts = [0,1,2,3]; expert[0]
+                    # is global expert 0.
+                    w0 = slot.weight[0].view(torch.uint8).to(torch.int64).sum().item()
+                    sc0 = slot.scale[0].to(torch.float64).sum().item() if slot.scale is not None else 0.0
+                    self.logger.info(
+                        f"[nixl SIG trainer] anchor=E key={slot.slot_key}[E0] w_bytes={w0} scale={sc0:.8f}"
+                    )
 
         handles: list = []
         handle_ctx: list[tuple[str, str]] = []

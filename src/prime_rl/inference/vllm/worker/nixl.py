@@ -149,16 +149,35 @@ class NIXLWeightUpdateWorker(Worker):
             raise RuntimeError("NIXL transfer not initialized — call /init_nixl_transfer first")
         self._spg.barrier()
 
-        # Diagnostic: match the trainer-side SIG log for the same anchor
-        # param. If trainer and inference sums line up per step, transport
-        # is faithful; otherwise there's a write-table / offset issue.
-        anchor_name = "model.layers.3.input_layernorm.weight"
-        for name, param in self._model.named_parameters():
-            if name == anchor_name:
-                w_sig = param.data.to(torch.float64).sum().item()
-                logger.info(
-                    f"[nixl SIG inference] key={name} sum={w_sig:.8f} shape={tuple(param.shape)}"
-                )
-                break
+        # Diagnostic: mirror the trainer-side SIG anchors.
+        #   G (bf16 gather)   : input_layernorm.weight
+        #   F (fp8 gather)    : self_attn.kv_b_proj.weight + scale
+        #   E (fp8 expert)    : mlp.experts.w13_weight expert[0]
+        named_params = dict(self._model.named_parameters())
+        named_bufs = dict(self._model.named_buffers())
+        g_name = "model.layers.3.input_layernorm.weight"
+        f_name = "model.layers.3.self_attn.kv_b_proj.weight"
+        f_scale_name = "model.layers.3.self_attn.kv_b_proj.weight_scale_inv"
+        e_name = "model.layers.3.mlp.experts.w13_weight"
+        e_scale_name = "model.layers.3.mlp.experts.w13_weight_scale_inv"
+        e_prefix = "model.layers.3.mlp.experts"
+        # Import locally to avoid circular init on older worker vLLM builds.
+        from prime_rl.inference.vllm.worker.weight_transfer import build_expert_map
+        expert_map = build_expert_map(self._model)
+
+        if g_name in named_params:
+            s = named_params[g_name].data.to(torch.float64).sum().item()
+            logger.info(f"[nixl SIG inference] anchor=G key={g_name} sum={s:.8f}")
+        if f_name in named_params:
+            w = named_params[f_name].data.view(torch.uint8).to(torch.int64).sum().item()
+            sc = named_bufs[f_scale_name].data.to(torch.float64).sum().item() if f_scale_name in named_bufs else 0.0
+            logger.info(f"[nixl SIG inference] anchor=F key={f_name} w_bytes={w} scale={sc:.8f}")
+        if e_name in named_params and e_prefix in expert_map:
+            owned = expert_map[e_prefix].cpu().tolist()
+            if 0 in owned:
+                local_idx = owned.index(0)
+                w0 = named_params[e_name].data[local_idx].view(torch.uint8).to(torch.int64).sum().item()
+                sc0 = named_bufs[e_scale_name].data[local_idx].to(torch.float64).sum().item() if e_scale_name in named_bufs else 0.0
+                logger.info(f"[nixl SIG inference] anchor=E key={e_name}[E0] w_bytes={w0} scale={sc0:.8f}")
 
         update_mla_absorbed_weights(self._model)

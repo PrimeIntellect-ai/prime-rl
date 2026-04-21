@@ -276,4 +276,51 @@ consistency. If signatures diverge, it's a transport/addressing bug.
 - `prod.toml` unchanged (still NIXL). Wandb name
   `nixl-iter2-sigdiag`.
 
+Job 5650, 10 steps observed:
+
+| Step | KL |
+|---:|---:|
+| 0 | 0.0024 |
+| 1 | 0.0015 |
+| 2 | 0.0014 |
+| 3 | 0.0038 |
+| 4 | 0.0037 |
+| 5 | 0.0021 |
+| 6 | **0.0067** |
+| 7 | 0.0032 |
+| 8 | **0.0057** |
+| 9 | 0.0034 |
+
+**Verdict on KL:** FAIL — breaks 0.005 at step 6. Consistent with
+iter1 (different numbers, same shape).
+
+**SIG comparison, `model.layers.3.input_layernorm.weight`:**
+
+| Step | Trainer sum | All 32 inference workers |
+|---:|---:|---:|
+| 0 | 249.99527359 | 249.99527359 ✓ |
+| 1 | 249.99526978 | 249.99526978 ✓ |
+| 2 | 249.99527359 | 249.99527359 ✓ |
+| 3 | 249.99527359 | 249.99527359 ✓ |
+| ... | all match | all match |
+
+**Key result:** transport is bit-exact for the bf16 GatheredSlot. KL
+drift does NOT come from this slot type. Rules out a broad transport
+bug. Problem is in FP8-quantized slots or ExpertSlots (or in how
+inference uses them). Next: expand anchors to F (fp8 gather) and E
+(expert) to localize.
+
+### Iteration 3 — expand signature diagnostic to FP8 + expert slots
+
+SHA will be added post-commit. Adds anchors:
+- **F** `model.layers.3.self_attn.kv_b_proj.weight` — FP8 gathered
+  (rows=28672, fsdp_total=64 → per-shard rows=448, fails 128-align
+  gate → GatheredSlot fp8).
+- **E** `model.layers.3.mlp.experts.w13_weight[0]` — ExpertSlot fp8
+  grouped, expert 0 specifically. Trainer rank 0 owns experts
+  [0..4); inference worker that owns global expert 0 (via its
+  `expert_map`) logs the local index.
+
+Wandb name `nixl-iter3-sigdiag-3anchors`.
+
 _(append iterations below as they run)_
