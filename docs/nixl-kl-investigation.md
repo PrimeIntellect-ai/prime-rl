@@ -936,3 +936,64 @@ culprit is GPUDirect RDMA visibility / ordering on this stack rather
 than weight content.
 
 Wandb name `nixl-iter19-gdrdma-flush`.
+
+Results (job 5685, 11 steps observed before cancel):
+| Step | KL | | Step | KL |
+|---:|---:|---|---:|---:|
+| 0 | 0.0010 | | 6 | 0.0020 |
+| 1 | 0.0020 | | 7 | **0.0051** |
+| 2 | 0.0030 | | 8 | **0.0065** |
+| 3 | 0.0021 | | 9 | **0.0075** |
+| 4 | 0.0029 | | 10 | 0.0036 |
+| 5 | 0.0011 | | | |
+
+**Verdict:** improves again, still FAIL. Better than iter18 across most
+of the first 10 steps, especially steps 5-6 and 9-10. So explicit
+GPUDirect flush is affecting real behavior, but visibility alone is not
+the whole bug.
+
+### Iteration 20 — per-write drain on top of quantizer + GPUDirect flush
+
+Next NIXL-specific hypothesis: even with correct bytes and explicit
+owner-context flush, batching thousands of posted WRITEs before a drain
+still leaves a UCX/NIXL completion-ordering effect that inference does
+not tolerate.
+
+Change:
+- `NIXLWeightBroadcast.push_once`: call
+  `TransportPlan.push_once(..., flush_every=1)`
+
+Wandb name `nixl-iter20-gdrdma-flush-perwrite`.
+
+Results (job 5687, 7 steps observed before cancel):
+| Step | KL |
+|---:|---:|
+| 0 | 0.0014 |
+| 1 | 0.0004 |
+| 2 | 0.0036 |
+| 3 | 0.0010 |
+| 4 | 0.0037 |
+| 5 | **0.0106** |
+| 6 | **0.0077** |
+
+**Verdict:** FAIL, and worse than iter19. Per-write draining is not the
+missing piece once the quantizer swap + GPUDirect flush are already in
+place. It increases cost and breaks the bound earlier, so discard it.
+
+### Iteration 21 — set `CU_POINTER_ATTRIBUTE_SYNC_MEMOPS` on registered tensors
+
+Next NIXL-specific hypothesis: the GPUDirect flush improves visibility,
+but the destination allocations themselves still are not marked for the
+stronger CUDA synchronization semantics intended for peer / RDMA-touched
+memory regions.
+
+CUDA documents `CU_POINTER_ATTRIBUTE_SYNC_MEMOPS` exactly for this
+class of interaction. Set it on every inference tensor before
+`register_memory()` and keep the explicit GPUDirect flush from iter19.
+
+Change:
+- `NIXLWeightUpdateWorker.init_nixl_transfer`: call
+  `cuPointerSetAttribute(CU_POINTER_ATTRIBUTE_SYNC_MEMOPS=1, ptr=...)`
+  for every registered param / scale tensor.
+
+Wandb name `nixl-iter21-sync-memops`.

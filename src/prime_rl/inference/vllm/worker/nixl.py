@@ -41,6 +41,14 @@ def _cudart():
     return cudart
 
 
+@functools.lru_cache(maxsize=1)
+def _cuda_driver():
+    driver = _ctypes.CDLL("libcuda.so.1")
+    driver.cuPointerSetAttribute.argtypes = [_ctypes.c_void_p, _ctypes.c_int, _ctypes.c_uint64]
+    driver.cuPointerSetAttribute.restype = _ctypes.c_int
+    return driver
+
+
 @functools.lru_cache(maxsize=8)
 def _gpudirect_rdma_attrs(device: int) -> tuple[int, int]:
     cudart = _cudart()
@@ -72,6 +80,25 @@ def _flush_gpudirect_rdma_writes(device: int) -> None:
     )
     if err != 0:
         raise RuntimeError(f"cudaDeviceFlushGPUDirectRDMAWrites failed with error {err}")
+
+
+def _enable_sync_memops(tensor: torch.Tensor) -> None:
+    """Enable synchronous CUDA memops on a buffer touched by GPUDirect RDMA.
+
+    CUDA documents this attribute specifically for pointer regions involved in
+    peer / RDMA interactions. NIXL register_memory does not do this for us, so
+    make it explicit on every registered inference buffer.
+    """
+    driver = _cuda_driver()
+    value = _ctypes.c_uint(1)
+    CU_POINTER_ATTRIBUTE_SYNC_MEMOPS = 6
+    err = driver.cuPointerSetAttribute(
+        _ctypes.byref(value),
+        CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
+        _ctypes.c_uint64(tensor.data_ptr()),
+    )
+    if err != 0:
+        raise RuntimeError(f"cuPointerSetAttribute(SYNC_MEMOPS) failed with error {err}")
 
 
 class NIXLWeightUpdateWorker(Worker):
@@ -110,12 +137,14 @@ class NIXLWeightUpdateWorker(Worker):
         for name, param in model.named_parameters():
             t = param.data.contiguous()
             named_tensors[name] = t
+            _enable_sync_memops(t)
             self._agent.register_tensor(t)
         for name, buf in model.named_buffers():
             if name in named_tensors or not name.endswith("_weight_scale_inv"):
                 continue
             t = buf.contiguous()
             named_tensors[name] = t
+            _enable_sync_memops(t)
             self._agent.register_tensor(t)
 
         expert_map = {k: v.cpu().tolist() for k, v in build_expert_map(model).items()}
