@@ -44,7 +44,12 @@ class GenerateRequest(BaseModel):
     prompt_token_ids: list[int]
     images: list[RawImageData] | None = None
 
-    max_tokens: int = 4096
+    # When unset, fill from max_model_len - prompt_len at request time so we
+    # match /v1/chat/completions behavior. The previous 4096 hard default
+    # silently truncated long completions on 8k+ context runs (e.g. hendrycks
+    # reasoning rollouts capped at 4096 tokens, making rendered rollouts look
+    # shorter than main's for the same model).
+    max_tokens: int | None = None
     temperature: float = 1.0
     top_p: float = 1.0
     top_k: int = -1
@@ -94,8 +99,15 @@ class OpenAIServingGenerate:
             pil_images = [Image.open(BytesIO(base64.b64decode(img.data))) for img in request.images]
             engine_prompt["multi_modal_data"] = {"image": pil_images}
 
+        # Match /v1/chat/completions: if the client didn't ask for a specific
+        # cap, let the model generate up to whatever room is left in context.
+        max_tokens = request.max_tokens
+        if max_tokens is None:
+            model_config = await self.engine_client.get_model_config()
+            max_tokens = max(1, model_config.max_model_len - len(request.prompt_token_ids))
+
         sampling_params = SamplingParams(
-            max_tokens=request.max_tokens,
+            max_tokens=max_tokens,
             temperature=request.temperature,
             top_p=request.top_p,
             top_k=request.top_k,
