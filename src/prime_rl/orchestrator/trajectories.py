@@ -106,8 +106,13 @@ def _build_role_loss_masks_for_step(
     prompt = _normalize_messages(step.get("prompt"), default_role="user")
     completion = _normalize_messages(step.get("completion"), default_role="assistant")
 
-    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
-    completion = _strip_message_content(_deserialize_tool_calls(completion))
+    # NOTE: Unlike the SFT data pipeline we deliberately do NOT strip whitespace
+    # or deserialize tool_call arguments here. The rendered tokens only exist to
+    # derive a per-token role mask that must align with vLLM's `prompt_ids +
+    # completion_ids`. Any mutation that changes how `apply_chat_template` serializes
+    # the messages (stripped whitespace in content, `tojson`-reformatted tool_call
+    # arguments that came in as a raw JSON string, etc.) will make the re-render
+    # diverge from vLLM's tokens and trip the length-match check below.
 
     if processor is not None:
         prompt = _prepare_messages_for_processor(prompt)
@@ -138,9 +143,14 @@ def _build_role_loss_masks_for_step(
         prompt_len = len(tokens["prompt_ids"])
         completion_len = len(tokens["completion_ids"])
         if len(full_ids) != prompt_len + completion_len:
+            vllm_ids = list(tokens["prompt_ids"]) + list(tokens["completion_ids"])
+            first_diff = _common_prefix_len(full_ids, vllm_ids)
             get_logger().warning(
                 "Skipping rollout step because role-based mask tokenization length "
-                f"({len(full_ids)}) did not match rollout tokens ({prompt_len + completion_len})."
+                f"({len(full_ids)}) did not match rollout tokens ({prompt_len + completion_len}). "
+                f"First differing position: {first_diff} (prompt_len={prompt_len}). "
+                f"vLLM tokens around diff: {vllm_ids[max(0, first_diff - 4) : first_diff + 8]!r}, "
+                f"re-rendered: {full_ids[max(0, first_diff - 4) : first_diff + 8]!r}."
             )
             return None
         split_idx = prompt_len
