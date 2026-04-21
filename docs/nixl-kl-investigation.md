@@ -573,4 +573,44 @@ semantics are the issue.
 
 Wandb name `nixl-iter11-enforce-eager`.
 
+Job 5673. KL (14 steps):
+
+| Step | KL |
+|---:|---:|
+| 0 | 0.0000 |
+| 1 | 0.0016 |
+| 2 | 0.0016 |
+| 3 | 0.0000 |
+| 4 | 0.0027 |
+| 5 | 0.0026 |
+| 6 | 0.0035 |
+| 7 | **0.0052** |
+| 8 | **0.0133** |
+| 9 | **0.0129** |
+| 10 | **0.0195** |
+| 11 | **0.0138** |
+| 12 | **0.0078** |
+| 13 | **0.0345** |
+
+First 7 steps tantalizingly clean, step 8 onward explodes. Step 13
+is the worst yet seen (0.0345). Enforce_eager **delayed** the drift
+but didn't bound it. So not a CUDA-graph issue.
+
+### Iteration 12 — verify non-layer anchors transport correctly
+
+iter8 added embed_tokens / model.norm / lm_head to the specs but
+never verified by SIG. Let me do that explicitly before ruling out
+non-layer transport as a suspect.
+
+Add N anchors on both sides:
+- `model.embed_tokens.weight`
+- `model.norm.weight`
+- `lm_head.weight`
+
+Also revert `enforce_eager = true` to speed up iterations (it didn't
+bound drift, and the diagnostic is what matters). Keep iter10's
+`cuda.synchronize()` on inference side.
+
+Wandb name `nixl-iter12-non-layer-sig`.
+
 _(append iterations below as they run)_

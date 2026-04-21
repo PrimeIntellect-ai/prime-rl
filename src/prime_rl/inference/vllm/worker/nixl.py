@@ -178,6 +178,20 @@ class NIXLWeightUpdateWorker(Worker):
         from prime_rl.inference.vllm.worker.weight_transfer import build_expert_map
         expert_map = build_expert_map(self._model)
 
+        # N anchors for non-layer tensors (iter8 fix verification).
+        for n_name in (
+            "model.embed_tokens.weight",
+            "model.norm.weight",
+            "lm_head.weight",
+        ):
+            n_t, n_loc = _lookup(n_name)
+            if n_t is not None:
+                logger.info(
+                    f"[nixl SIG inference] anchor=N loc={n_loc} key={n_name} "
+                    f"sum={n_t.to(torch.float64).sum().item():.8f} shape={tuple(n_t.shape)}"
+                )
+            else:
+                logger.warning(f"[nixl SIG inference] anchor=N MISSING key={n_name}")
         fused_qkv_name = "model.layers.3.self_attn.fused_qkv_a_proj.weight"
         fused_qkv_scale_name = "model.layers.3.self_attn.fused_qkv_a_proj.weight_scale_inv"
         # F_q covers inference fused_qkv_a_proj[0:2048] → matches q_a_proj (row 0..2047).

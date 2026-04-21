@@ -305,6 +305,18 @@ class TransportPlan:
                         f"w_bytes={w_bytes} w_shape={tuple(w.shape)} "
                         f"scale={s_sum:.8f}"
                     )
+                elif slot.slot_key in (
+                    "model.embed_tokens.weight",
+                    "model.norm.weight",
+                    "lm_head.weight",
+                ):
+                    # N anchors for non-layer tensors added in iter8.
+                    w = slot.weight
+                    self.logger.info(
+                        f"[nixl SIG trainer] anchor=N key={slot.slot_key} "
+                        f"sum={w.to(torch.float64).sum().item():.8f} "
+                        f"shape={tuple(w.shape)}"
+                    )
                 elif slot.slot_key == "model.layers.3.mlp.experts.w13_weight":
                     # E anchors for 3 experts spread across the local block.
                     for local_idx in (0, 1, 2, 3):
