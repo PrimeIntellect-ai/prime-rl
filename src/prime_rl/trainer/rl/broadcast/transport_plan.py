@@ -71,6 +71,7 @@ class TransportPlan:
     def __init__(self, model: PreTrainedModelPrimeRL, parallel_dims: ParallelDims) -> None:
         self.logger = get_logger()
         self.parallel_dims = parallel_dims
+        self.transfer_mode = os.environ.get("PRIME_RL_NIXL_TRANSFER_MODE", "all")
         # Per-replica NIXL coordinates. With HSDP, only replica-0 ranks ever
         # reach this constructor; ``my_rank`` indexes into the dp_shard_cp
         # axis (equivalently the SPG trainer-rank range), not the global
@@ -99,6 +100,28 @@ class TransportPlan:
             for spec in model.non_layer_conversion_specs():
                 self.slots.extend(spec.build_slots("", state_dict, parallel_dims))
 
+        if self.transfer_mode == "non_expert_only":
+            before = len(self.slots)
+            self.slots = [slot for slot in self.slots if not isinstance(slot, ExpertSlot)]
+            self.logger.info(
+                "NIXL transfer mode non_expert_only: kept %d/%d slots",
+                len(self.slots),
+                before,
+            )
+        elif self.transfer_mode == "expert_only":
+            before = len(self.slots)
+            self.slots = [slot for slot in self.slots if isinstance(slot, ExpertSlot)]
+            self.logger.info(
+                "NIXL transfer mode expert_only: kept %d/%d slots",
+                len(self.slots),
+                before,
+            )
+        elif self.transfer_mode != "all":
+            raise ValueError(
+                f"Unsupported PRIME_RL_NIXL_TRANSFER_MODE={self.transfer_mode!r}; "
+                "expected one of: all, non_expert_only, expert_only"
+            )
+
         # Diagnostic: surface any state_dict keys we'd normally expect to
         # transport but none of the conversion specs cover. If a tensor is
         # in the trainer's live state_dict but NIXL skips it, inference
@@ -120,6 +143,10 @@ class TransportPlan:
             }
             # Simpler: everything model.*  or lm_head.weight.
             relevant = {k for k in state_dict.keys() if k.startswith("model.") or k == "lm_head.weight"}
+            if self.transfer_mode == "non_expert_only":
+                relevant = {k for k in relevant if ".mlp.experts." not in k}
+            elif self.transfer_mode == "expert_only":
+                relevant = {k for k in relevant if ".mlp.experts." in k}
             untracked = sorted(relevant - tracked)
             if untracked:
                 self.logger.warning(

@@ -12,6 +12,7 @@ from prime_rl.trainer.rl.broadcast import setup_weight_broadcast
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
@@ -66,6 +67,26 @@ from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
+
+
+def _should_use_ep_grad_clip(parameters: list[torch.nn.Parameter], ep_enabled: bool) -> bool:
+    if not ep_enabled:
+        return False
+
+    has_ep_grad = False
+    has_non_ep_grad = False
+    for param in parameters:
+        grad = param.grad
+        if grad is None:
+            continue
+        if not isinstance(param, DTensor) or not isinstance(grad, DTensor):
+            return False
+        mesh_dim_names = param.device_mesh.mesh_dim_names
+        if mesh_dim_names is not None and "ep" in mesh_dim_names:
+            has_ep_grad = True
+        else:
+            has_non_ep_grad = True
+    return has_ep_grad and has_non_ep_grad
 
 
 @clean_exit
@@ -483,8 +504,14 @@ def train(config: TrainerConfig):
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
+            params = list(model.parameters())
+            use_ep_grad_clip = _should_use_ep_grad_clip(params, parallel_dims.ep_enabled)
+            if parallel_dims.ep_enabled and not use_ep_grad_clip and world.is_master and progress.step == 0:
+                logger.warning(
+                    "Falling back to non-EP grad clipping because gradients do not span both EP and non-EP DTensor sets"
+                )
             grad_norm = clip_grad_norm_(
-                model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
+                params, max_norm=config.optim.max_norm, ep_enabled=use_ep_grad_clip
             )
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))

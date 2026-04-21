@@ -17,7 +17,11 @@ from torch.nn import Module
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import build_expert_map, update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import (
+    assert_mla_absorbed_weights_match,
+    build_expert_map,
+    update_mla_absorbed_weights,
+)
 from prime_rl.trainer.models.slots import LayoutEntry
 from prime_rl.utils.nixl_transfer import NixlAgentWrapper, make_agent_name
 
@@ -39,14 +43,6 @@ def _cudart():
     cudart.cudaDeviceFlushGPUDirectRDMAWrites.argtypes = [_ctypes.c_int, _ctypes.c_int]
     cudart.cudaDeviceFlushGPUDirectRDMAWrites.restype = _ctypes.c_int
     return cudart
-
-
-@functools.lru_cache(maxsize=1)
-def _cuda_driver():
-    driver = _ctypes.CDLL("libcuda.so.1")
-    driver.cuPointerSetAttribute.argtypes = [_ctypes.c_void_p, _ctypes.c_int, _ctypes.c_uint64]
-    driver.cuPointerSetAttribute.restype = _ctypes.c_int
-    return driver
 
 
 @functools.lru_cache(maxsize=8)
@@ -82,23 +78,64 @@ def _flush_gpudirect_rdma_writes(device: int) -> None:
         raise RuntimeError(f"cudaDeviceFlushGPUDirectRDMAWrites failed with error {err}")
 
 
-def _enable_sync_memops(tensor: torch.Tensor) -> None:
-    """Enable synchronous CUDA memops on a buffer touched by GPUDirect RDMA.
+_ALLOWED_UNPUBLISHED_CUDA_ATTR_SUFFIXES = (
+    "W_UV",
+    "W_UK_T",
+    "W_K",
+    "W_K_scale",
+    "W_V",
+    "W_V_scale",
+)
 
-    CUDA documents this attribute specifically for pointer regions involved in
-    peer / RDMA interactions. NIXL register_memory does not do this for us, so
-    make it explicit on every registered inference buffer.
-    """
-    driver = _cuda_driver()
-    value = _ctypes.c_uint(1)
-    CU_POINTER_ATTRIBUTE_SYNC_MEMOPS = 6
-    err = driver.cuPointerSetAttribute(
-        _ctypes.byref(value),
-        CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
-        _ctypes.c_uint64(tensor.data_ptr()),
+_IGNORED_RUNTIME_CUDA_ATTR_SUFFIXES = (
+    "topk_indices_buffer",
+    "kv_cache",
+)
+
+
+def _iter_unpublished_cuda_tensor_attrs(model: Module):
+    for module_name, module in model.named_modules():
+        module_prefix = f"{module_name}." if module_name else ""
+        parameters = module._parameters
+        buffers = module._buffers
+        children = module._modules
+        for attr_name, value in vars(module).items():
+            if not isinstance(value, torch.Tensor) or not value.is_cuda:
+                continue
+            if attr_name in parameters or attr_name in buffers or attr_name in children:
+                continue
+            yield f"{module_prefix}{attr_name}", value
+
+
+def _assert_live_contiguous_registration(name: str, tensor: torch.Tensor) -> torch.Tensor:
+    reg_tensor = tensor.contiguous()
+    if reg_tensor.data_ptr() != tensor.data_ptr():
+        raise RuntimeError(
+            f"NIXL registration would detach non-contiguous tensor {name}: "
+            f"shape={tuple(tensor.shape)} stride={tuple(tensor.stride())}"
+        )
+    return reg_tensor
+
+
+def _assert_narrow_view(full: torch.Tensor, view: torch.Tensor, name: str) -> None:
+    if full.untyped_storage().data_ptr() != view.untyped_storage().data_ptr():
+        raise RuntimeError(f"NIXL narrow() lost shared storage for {name}")
+    expected_ptr_delta = (view.storage_offset() - full.storage_offset()) * full.element_size()
+    actual_ptr_delta = view.data_ptr() - full.data_ptr()
+    if expected_ptr_delta != actual_ptr_delta:
+        raise RuntimeError(
+            f"NIXL narrow() pointer mismatch for {name}: "
+            f"expected_delta={expected_ptr_delta} actual_delta={actual_ptr_delta}"
+        )
+
+
+def _capture_tensor_identity(tensor: torch.Tensor) -> tuple[int, int, tuple[int, ...], tuple[int, ...]]:
+    return (
+        tensor.data_ptr(),
+        tensor.untyped_storage().data_ptr(),
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
     )
-    if err != 0:
-        raise RuntimeError(f"cuPointerSetAttribute(SYNC_MEMOPS) failed with error {err}")
 
 
 class NIXLWeightUpdateWorker(Worker):
@@ -130,22 +167,65 @@ class NIXLWeightUpdateWorker(Worker):
         )
 
         named_tensors: dict[str, torch.Tensor] = {}
+        unpublished_cuda_attrs = list(_iter_unpublished_cuda_tensor_attrs(model))
+        ignored_runtime_unpublished = [
+            (name, tuple(tensor.shape), tuple(tensor.stride()))
+            for name, tensor in unpublished_cuda_attrs
+            if name.endswith(_IGNORED_RUNTIME_CUDA_ATTR_SUFFIXES)
+        ]
+        unexpected_unpublished = [
+            (name, tuple(tensor.shape), tuple(tensor.stride()))
+            for name, tensor in unpublished_cuda_attrs
+            if not name.endswith(_ALLOWED_UNPUBLISHED_CUDA_ATTR_SUFFIXES)
+            and not name.endswith(_IGNORED_RUNTIME_CUDA_ATTR_SUFFIXES)
+        ]
+        if unexpected_unpublished:
+            raise RuntimeError(
+                "NIXL found unpublished CUDA tensors outside the explicit allowlist: "
+                f"{unexpected_unpublished}"
+            )
+        if ignored_runtime_unpublished:
+            logger.info(
+                "NIXL ignored runtime CUDA attrs not relevant to weight transfer: count=%d sample=%s",
+                len(ignored_runtime_unpublished),
+                ignored_runtime_unpublished[:8],
+            )
+        handled_unpublished = [
+            (name, tensor)
+            for name, tensor in unpublished_cuda_attrs
+            if name.endswith(_ALLOWED_UNPUBLISHED_CUDA_ATTR_SUFFIXES)
+        ]
+        if handled_unpublished:
+            logger.info(
+                "NIXL unpublished CUDA attrs handled out-of-band: %s",
+                [
+                    {
+                        "name": name,
+                        "shape": tuple(tensor.shape),
+                        "stride": tuple(tensor.stride()),
+                        "contig": tensor.is_contiguous(),
+                    }
+                    for name, tensor in handled_unpublished
+                ],
+            )
+
         # Register each vLLM target tensor as a single NIXL region (one MR on the
         # NIC). Sub-range xfer descriptors at post time resolve to this MR's rkey —
         # overlapping per-chunk MRs confuse mlx5 rkey lookup and trigger local
         # protection errors on WRITE landing.
         for name, param in model.named_parameters():
-            t = param.data.contiguous()
+            t = _assert_live_contiguous_registration(name, param.data)
             named_tensors[name] = t
-            _enable_sync_memops(t)
             self._agent.register_tensor(t)
         for name, buf in model.named_buffers():
             if name in named_tensors or not name.endswith("_weight_scale_inv"):
                 continue
-            t = buf.contiguous()
+            t = _assert_live_contiguous_registration(name, buf)
             named_tensors[name] = t
-            _enable_sync_memops(t)
             self._agent.register_tensor(t)
+        self._registered_tensor_identities = {
+            name: _capture_tensor_identity(tensor) for name, tensor in named_tensors.items()
+        }
 
         expert_map = {k: v.cpu().tolist() for k, v in build_expert_map(model).items()}
 
@@ -174,9 +254,10 @@ class NIXLWeightUpdateWorker(Worker):
         # tensor. Trainer picks the right index per write.
         descriptors: dict[str, list[bytes]] = {}
 
-        def _publish_chunks(chunks: list[torch.Tensor]) -> list[bytes]:
+        def _publish_chunks(full: torch.Tensor, key: str, chunks: list[torch.Tensor]) -> list[bytes]:
             out: list[bytes] = []
-            for c in chunks:
+            for i, c in enumerate(chunks):
+                _assert_narrow_view(full, c, f"{key}[chunk={i}]")
                 dlist = self._agent._agent.get_xfer_descs(
                     [(c.data_ptr(), c.numel() * c.element_size(), c.get_device())],
                     mem_type="cuda",
@@ -189,7 +270,7 @@ class NIXLWeightUpdateWorker(Worker):
             subview = full.narrow(0, entry.offset_rows, entry.rows)
             sub_rows = entry.rows // entry.num_chunks
             chunks = [subview.narrow(0, i * sub_rows, sub_rows) for i in range(entry.num_chunks)]
-            descriptors[entry.slot_key] = _publish_chunks(chunks)
+            descriptors[entry.slot_key] = _publish_chunks(full, entry.slot_key, chunks)
 
         for name, tensor in named_tensors.items():
             if ".mlp.experts." not in name:
@@ -197,7 +278,7 @@ class NIXLWeightUpdateWorker(Worker):
             moe_prefix = name.rsplit(".", 1)[0]
             num_local = len(expert_map[moe_prefix])
             chunks = [tensor.narrow(0, e, 1) for e in range(num_local)]
-            descriptors[name] = _publish_chunks(chunks)
+            descriptors[name] = _publish_chunks(tensor, name, chunks)
 
         # Round 2 — publish agent metadata (now carrying all chunk registrations),
         # serialized descriptors, and expert map. Trainer picks these up.
@@ -253,6 +334,26 @@ class NIXLWeightUpdateWorker(Worker):
         named_params = dict(self._model.named_parameters())
         named_bufs = dict(self._model.named_buffers())
 
+        if not getattr(self, "_validated_registered_tensor_identities", False):
+            for name, expected in self._registered_tensor_identities.items():
+                if name in named_params:
+                    live = named_params[name].data
+                elif name in named_bufs:
+                    live = named_bufs[name].data
+                else:
+                    raise RuntimeError(f"NIXL published tensor disappeared from live model: {name}")
+                actual = _capture_tensor_identity(live)
+                if actual != expected:
+                    raise RuntimeError(
+                        f"NIXL published tensor identity changed after init for {name}: "
+                        f"expected={expected} actual={actual}"
+                    )
+            logger.info(
+                "NIXL published tensor identity audit passed for %d tensors",
+                len(self._registered_tensor_identities),
+            )
+            self._validated_registered_tensor_identities = True
+
         def _lookup(name):
             """vLLM stores FP8 scales sometimes as params, sometimes as buffers."""
             if name in named_params:
@@ -296,6 +397,20 @@ class NIXLWeightUpdateWorker(Worker):
                     f"[nixl SIG inference] anchor=N loc={n_loc} key={n_name} "
                     f"sum={full_sum:.8f} shape={tuple(n_t.shape)}"
                 )
+        for scale_name in (
+            "model.layers.3.self_attn.mla_attn.mla_attn._q_scale",
+            "model.layers.3.self_attn.mla_attn.mla_attn._k_scale",
+            "model.layers.3.self_attn.mla_attn.mla_attn._v_scale",
+            "model.layers.3.self_attn.mla_attn.mla_attn._prob_scale",
+        ):
+            scale_t, scale_loc = _lookup(scale_name)
+            if scale_t is None:
+                logger.warning(f"[nixl SIG inference] anchor=A MISSING key={scale_name}")
+                continue
+            logger.info(
+                f"[nixl SIG inference] anchor=A loc={scale_loc} key={scale_name} "
+                f"value={scale_t.to(torch.float64).item():.8f} shape={tuple(scale_t.shape)}"
+            )
         fused_qkv_name = "model.layers.3.self_attn.fused_qkv_a_proj.weight"
         fused_qkv_scale_name = "model.layers.3.self_attn.fused_qkv_a_proj.weight_scale_inv"
         # F_q covers inference fused_qkv_a_proj[0:2048] → matches q_a_proj (row 0..2047).
@@ -332,6 +447,10 @@ class NIXLWeightUpdateWorker(Worker):
                     )
 
         update_mla_absorbed_weights(self._model)
+        if not getattr(self, "_validated_mla_absorbed_weights", False):
+            checked = assert_mla_absorbed_weights_match(self._model)
+            logger.info(f"NIXL MLA refresh audit passed for {checked} modules")
+            self._validated_mla_absorbed_weights = True
 
     def _maybe_dump_inference(self) -> None:
         """One-shot dump of every param + relevant buffer to
