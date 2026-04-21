@@ -1,5 +1,17 @@
 # Vendored from tile-ai/tilelang (Apache 2.0), modified for dynamic shapes.
 
+# TileLang ships a libcudart stub that wins dlsym(RTLD_DEFAULT, ...) if the
+# real libcudart has not been loaded with RTLD_GLOBAL yet, and its self-check
+# then aborts the process. Preload the real library before the tilelang
+# import below so dlsym finds it first. Wrapped in try/except because CDLL
+# can fail on hosts without a real CUDA runtime (e.g. CI).
+import ctypes as _ctypes
+
+try:
+    _ctypes.CDLL("libcudart.so", mode=_ctypes.RTLD_GLOBAL)
+except OSError:
+    pass
+
 import tilelang
 from tilelang import language as T
 

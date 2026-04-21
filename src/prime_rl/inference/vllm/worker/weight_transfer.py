@@ -34,75 +34,67 @@ def build_expert_map(model: Module) -> dict[str, torch.Tensor]:
     return expert_slices
 
 
-@torch.no_grad()
-def load_weights_kernel(model: Module, state_iter: Generator[tuple[str, torch.Tensor], None, None]) -> None:
-    """Load vLLM kernel-format tensors using in-place copy_ updates."""
-    params = dict(model.named_parameters())
-    expert_slices = build_expert_map(model)
-
-    loaded = 0
-    skipped: list[str] = []
-    shape_mismatches: list[str] = []
-
-    for name, tensor in state_iter:
-        if name not in params:
-            skipped.append(name)
+def _iter_mla_absorbed_modules(model: Module):
+    for name, module in model.named_modules():
+        has_absorbed_weights = hasattr(module, "W_UV") or hasattr(module, "W_UK_T")
+        if not has_absorbed_weights or not hasattr(module, "kv_b_proj"):
             continue
+        yield name, module
 
-        param = params[name]
-        if param.shape != tensor.shape:
-            sliced = False
-            for module_name, global_indices in expert_slices.items():
-                if not name.startswith(f"{module_name}."):
-                    continue
-                tensor = tensor[global_indices.to(tensor.device)]
-                sliced = True
-                break
 
-            if not sliced or param.shape != tensor.shape:
-                shape_mismatches.append(f"{name}: param={list(param.shape)} != received={list(tensor.shape)}")
-                continue
+def _compute_mla_absorbed_weights(
+    module: Module,
+    out_dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    from vllm.model_executor.layers.quantization.utils.quant_utils import get_and_maybe_dequant_weights
 
-        param.copy_(tensor)
-        loaded += 1
-
-    if shape_mismatches:
-        raise ValueError(f"Kernel weight transfer had {len(shape_mismatches)} shape mismatches: {shape_mismatches}")
-    if skipped:
-        raise ValueError(f"Kernel weight transfer skipped {len(skipped)} weights not found in model: {skipped}")
-    logger.debug(f"Kernel weight transfer copied {loaded} weights in-place")
+    kv_b_proj_weight = get_and_maybe_dequant_weights(module.kv_b_proj, out_dtype=out_dtype).T
+    kv_b_proj_weight = kv_b_proj_weight.view(
+        module.kv_lora_rank,
+        module.num_heads,
+        module.qk_nope_head_dim + module.v_head_dim,
+    )
+    w_uk, w_uv = kv_b_proj_weight.split([module.qk_nope_head_dim, module.v_head_dim], dim=-1)
+    return w_uv.transpose(0, 1), w_uk.permute(1, 2, 0)
 
 
 @torch.no_grad()
 def update_mla_absorbed_weights(model: Module) -> None:
     """Recompute MLA absorbed KV weights after in-place kv_b_proj updates."""
-    from vllm.model_executor.layers.quantization.utils.quant_utils import get_and_maybe_dequant_weights
-
-    for name, module in model.named_modules():
-        has_absorbed_weights = hasattr(module, "W_UV") or hasattr(module, "W_UK_T")
-        if not has_absorbed_weights or not hasattr(module, "kv_b_proj"):
-            continue
-
+    for name, module in _iter_mla_absorbed_modules(model):
         if hasattr(module, "W_UV"):
             out_dtype = module.W_UV.dtype
         else:
             out_dtype = torch.bfloat16
 
-        kv_b_proj_weight = get_and_maybe_dequant_weights(module.kv_b_proj, out_dtype=out_dtype).T
-        kv_b_proj_weight = kv_b_proj_weight.view(
-            module.kv_lora_rank,
-            module.num_heads,
-            module.qk_nope_head_dim + module.v_head_dim,
-        )
-        w_uk, w_uv = kv_b_proj_weight.split([module.qk_nope_head_dim, module.v_head_dim], dim=-1)
+        w_uv, w_uk_t = _compute_mla_absorbed_weights(module, out_dtype)
 
         if hasattr(module, "W_UV"):
-            module.W_UV.copy_(w_uv.transpose(0, 1))
+            module.W_UV.copy_(w_uv)
         if hasattr(module, "W_UK_T"):
-            module.W_UK_T.copy_(w_uk.permute(1, 2, 0))
+            module.W_UK_T.copy_(w_uk_t)
 
         logger.debug(f"Updated MLA absorbed weights for module {name}")
 
 
-def postprocess_weights_kernel(model: Module, _model_config, _device: torch.device) -> None:
-    update_mla_absorbed_weights(model)
+@torch.no_grad()
+def assert_mla_absorbed_weights_match(model: Module) -> int:
+    """Verify that live MLA absorbed tensors match vLLM's canonical recompute."""
+    checked = 0
+    for name, module in _iter_mla_absorbed_modules(model):
+        if hasattr(module, "W_UV"):
+            out_dtype = module.W_UV.dtype
+        else:
+            out_dtype = torch.bfloat16
+
+        expected_w_uv, expected_w_uk_t = _compute_mla_absorbed_weights(module, out_dtype)
+
+        if hasattr(module, "W_UV") and not torch.equal(module.W_UV, expected_w_uv):
+            diff = (module.W_UV - expected_w_uv).abs().max().item()
+            raise RuntimeError(f"MLA absorbed W_UV mismatch for module {name}: max_abs_diff={diff}")
+        if hasattr(module, "W_UK_T") and not torch.equal(module.W_UK_T, expected_w_uk_t):
+            diff = (module.W_UK_T - expected_w_uk_t).abs().max().item()
+            raise RuntimeError(f"MLA absorbed W_UK_T mismatch for module {name}: max_abs_diff={diff}")
+        checked += 1
+    return checked
+

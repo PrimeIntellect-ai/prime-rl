@@ -790,10 +790,6 @@ class NCCLWeightBroadcastConfig(BaseModel):
     host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
     port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
-    quantize_in_weight_transfer: Annotated[
-        bool,
-        Field(description="Use kernel-format FP8 quantized NCCL transfer for weight updates."),
-    ] = False
 
     inference_world_size: Annotated[
         int,
@@ -804,8 +800,34 @@ class NCCLWeightBroadcastConfig(BaseModel):
     ] = 1
 
 
+class NIXLWeightBroadcastConfig(BaseModel):
+    """Configures the NIXL weight transfer.
+
+    FP8 kernel-format transfer is always used for NIXL.
+    """
+
+    type: Literal["nixl"] = "nixl"
+
+    host: Annotated[str, Field(description="Rendezvous host used by StatelessProcessGroup.")] = "localhost"
+    port: Annotated[int, Field(description="Rendezvous port used by StatelessProcessGroup.")] = 29502
+    timeout: Annotated[int, Field(description="Rendezvous timeout in seconds.")] = 1200
+
+    trainer_world_size: Annotated[
+        int,
+        Field(ge=1, description="Total number of trainer ranks (FSDP × EP)."),
+    ] = 1
+
+    inference_world_size: Annotated[
+        int,
+        Field(ge=1, description="Total number of inference GPUs across all servers."),
+    ] = 1
+
+    backends: Annotated[list[str], Field(description="NIXL backends to initialize the agent with.")] = ["UCX"]
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -1088,9 +1110,9 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def nccl_max_async_level(self):
-        if self.weight_broadcast.type == "nccl":
+        if self.weight_broadcast.type in ("nccl", "nixl"):
             if not self.max_async_level == 1:
-                raise ValueError("max_async_level must be 1 for NCCL broadcast")
+                raise ValueError(f"max_async_level must be 1 for {self.weight_broadcast.type} broadcast")
         return self
 
     @model_validator(mode="after")

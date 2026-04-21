@@ -703,19 +703,26 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
-    quantize_in_weight_transfer: Annotated[
-        bool,
-        Field(
-            description=(
-                "Use kernel-format FP8 quantized NCCL transfer for weight updates. "
-                "When disabled, uses default HF checkpoint-format transfer."
-            ),
-        ),
-    ] = False
+
+
+class NIXLWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    """Configures the NIXL (UCX/RDMA) weight transfer.
+
+    FP8 kernel-format transfer is always used for NIXL — the whole point of
+    the pre-registered stable buffers is to avoid per-step FP8 allocation.
+    """
+
+    type: Literal["nixl"] = "nixl"
+    host: Annotated[str, Field(description="Rendezvous host used by StatelessProcessGroup.")] = "localhost"
+    port: Annotated[int, Field(description="Rendezvous port used by StatelessProcessGroup.")] = 29502
+    timeout: Annotated[int, Field(description="Rendezvous timeout in seconds.")] = 1200
+    inference_world_size: Annotated[int, Field(description="Total number of inference GPUs.")] = 1
+    backends: Annotated[list[str], Field(description="NIXL backends to initialize the agent with.")] = ["UCX"]
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 

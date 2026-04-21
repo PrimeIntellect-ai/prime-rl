@@ -4,6 +4,7 @@ from typing import Optional, Union
 import torch
 import torch.distributed as dist
 from torch import Tensor, nn
+from torch.distributed.tensor import DTensor
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
@@ -13,12 +14,15 @@ from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.conversion_spec import ConversionSpec
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
+    _BASE,
+    _DENSE,
+    _SPARSE,
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
     convert_tt_layer_to_hf,
-    convert_tt_layer_to_vllm_kernel,
     convert_tt_to_hf_moe,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
@@ -178,11 +182,29 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         convert_hf_layer_to_tt(state_dict, layer_idx)
         return state_dict
 
-    @classmethod
-    def convert_layer_to_vllm_kernel(
-        cls, state_dict: dict[str, Tensor], layer_idx: int, quantize_fp8: bool = False
-    ) -> dict[str, Tensor]:
-        return convert_tt_layer_to_vllm_kernel(state_dict, layer_idx, quantize_fp8=quantize_fp8)
+    def conversion_specs(self, layer_idx: int) -> tuple[ConversionSpec, ...]:
+        """Return the conversion specs for one layer.
+
+        Layer-independent base specs apply to every layer; the MoE vs dense
+        MLP specs depend on whether this layer has a router gate (sparse
+        after ``first_k_dense_replace``).
+        """
+        prefix = f"model.layers.{layer_idx}"
+        is_sparse = f"{prefix}.mlp.router.gate.weight" in self.state_dict()
+        return _BASE + (_SPARSE if is_sparse else _DENSE)
+
+    def non_layer_conversion_specs(self) -> tuple[ConversionSpec, ...]:
+        """Non-per-layer tensors. Covers embed_tokens, model.norm, lm_head —
+        otherwise NIXL never updates them on inference, causing KL drift as
+        trainer gradients advance them but inference stays at initial load.
+        """
+        specs = (
+            ConversionSpec("model.embed_tokens.weight", ("model.embed_tokens.weight",)),
+            ConversionSpec("model.norm.weight", ("model.norm.weight",)),
+        )
+        if not self.config.tie_word_embeddings:
+            specs = specs + (ConversionSpec("lm_head.weight", ("lm_head.weight",)),)
+        return specs
 
 
 @auto_docstring

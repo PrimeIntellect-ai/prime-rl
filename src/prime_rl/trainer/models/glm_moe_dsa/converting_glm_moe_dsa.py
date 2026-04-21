@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.fp8 import quantize_to_fp8_blockwise
+from prime_rl.trainer.models.conversion_spec import ConversionSpec, QuantizationSpec
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
@@ -146,114 +146,98 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
         convert_tt_layer_to_hf(state_dict, i)
 
 
-def convert_tt_layer_to_vllm_kernel(
-    state_dict: dict[str, Tensor],
-    layer_idx: int,
-    quantize_fp8: bool = False,
-) -> dict[str, Tensor]:
-    """Convert a single GLM layer from PrimeRL format to vLLM kernel format."""
-    out: dict[str, Tensor] = {}
-    prefix = f"model.layers.{layer_idx}"
+_BASE: tuple[ConversionSpec, ...] = (
+    ConversionSpec("input_layernorm.weight", ("input_layernorm.weight",)),
+    ConversionSpec("post_attention_layernorm.weight", ("post_attention_layernorm.weight",)),
+    ConversionSpec("self_attn.q_a_layernorm.weight", ("self_attn.q_a_layernorm.weight",)),
+    ConversionSpec("self_attn.kv_a_layernorm.weight", ("self_attn.kv_a_layernorm.weight",)),
+    ConversionSpec(
+        "self_attn.fused_qkv_a_proj.weight",
+        ("self_attn.q_a_proj.weight", "self_attn.kv_a_proj_with_mqa.weight"),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "self_attn.q_b_proj.weight",
+        ("self_attn.q_b_proj.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "self_attn.kv_b_proj.weight",
+        ("self_attn.kv_b_proj.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "self_attn.o_proj.weight",
+        ("self_attn.o_proj.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "self_attn.indexer.wq_b.weight",
+        ("self_attn.indexer.wq_b.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "self_attn.indexer.wk.weight",
+        ("self_attn.indexer.wk.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    # vLLM keeps indexer k_norm affine params in fp32 — the QuantizationSpec
+    # here is just a dtype cast, no FP8 scale buffer.
+    ConversionSpec(
+        "self_attn.indexer.k_norm.weight",
+        ("self_attn.indexer.k_norm.weight",),
+        quantization=QuantizationSpec(torch.float32),
+    ),
+    ConversionSpec(
+        "self_attn.indexer.k_norm.bias",
+        ("self_attn.indexer.k_norm.bias",),
+        quantization=QuantizationSpec(torch.float32),
+    ),
+    ConversionSpec("self_attn.indexer.weights_proj.weight", ("self_attn.indexer.weights_proj.weight",)),
+)
 
-    def add(name: str, tensor: Tensor) -> None:
-        out[name] = tensor
 
-    def add_maybe_fp8(name: str, tensor: Tensor) -> None:
-        if quantize_fp8 and tensor.ndim == 2:
-            fp8_weight, scale = quantize_to_fp8_blockwise(tensor)
-            out[name] = fp8_weight
-            scale_name = name.removesuffix(".weight") + ".weight_scale_inv"
-            out[scale_name] = scale
-            return
-        out[name] = tensor
+_SPARSE: tuple[ConversionSpec, ...] = (
+    ConversionSpec("mlp.gate.weight", ("mlp.router.gate.weight",)),
+    # vLLM keeps the expert-routing bias in fp32.
+    ConversionSpec(
+        "mlp.gate.e_score_correction_bias",
+        ("mlp.expert_bias",),
+        quantization=QuantizationSpec(torch.float32),
+    ),
+    ConversionSpec(
+        "mlp.shared_experts.gate_up_proj.weight",
+        ("mlp.shared_expert.w1", "mlp.shared_expert.w3"),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "mlp.shared_experts.down_proj.weight",
+        ("mlp.shared_expert.w2",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "mlp.experts.w13_weight",
+        ("mlp.experts.w1", "mlp.experts.w3"),
+        cat_dim=1,
+        quantization=QuantizationSpec(torch.float8_e4m3fn, "_weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "mlp.experts.w2_weight",
+        ("mlp.experts.w2",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, "_weight_scale_inv"),
+    ),
+)
 
-    for name in [f"{prefix}.input_layernorm.weight", f"{prefix}.post_attention_layernorm.weight"]:
-        if name in state_dict:
-            add(name, state_dict[name])
 
-    q_a_key = f"{prefix}.self_attn.q_a_proj.weight"
-    kv_a_key = f"{prefix}.self_attn.kv_a_proj_with_mqa.weight"
-    if q_a_key in state_dict and kv_a_key in state_dict:
-        add_maybe_fp8(
-            f"{prefix}.self_attn.fused_qkv_a_proj.weight", torch.cat([state_dict[q_a_key], state_dict[kv_a_key]], dim=0)
-        )
-
-    for suffix in ["q_a_layernorm.weight", "kv_a_layernorm.weight"]:
-        key = f"{prefix}.self_attn.{suffix}"
-        if key in state_dict:
-            add(key, state_dict[key])
-
-    for suffix in ["q_b_proj.weight", "kv_b_proj.weight", "o_proj.weight"]:
-        key = f"{prefix}.self_attn.{suffix}"
-        if key in state_dict:
-            add_maybe_fp8(key, state_dict[key])
-
-    for suffix in ["indexer.wq_b.weight", "indexer.wk.weight"]:
-        key = f"{prefix}.self_attn.{suffix}"
-        if key in state_dict:
-            add_maybe_fp8(key, state_dict[key])
-    for suffix in ["indexer.k_norm.weight", "indexer.k_norm.bias", "indexer.weights_proj.weight"]:
-        key = f"{prefix}.self_attn.{suffix}"
-        if key in state_dict:
-            add(key, state_dict[key])
-
-    gate_key = f"{prefix}.mlp.gate_proj.weight"
-    up_key = f"{prefix}.mlp.up_proj.weight"
-    down_key = f"{prefix}.mlp.down_proj.weight"
-    if gate_key in state_dict and up_key in state_dict:
-        add_maybe_fp8(f"{prefix}.mlp.gate_up_proj.weight", torch.cat([state_dict[gate_key], state_dict[up_key]], dim=0))
-        if down_key in state_dict:
-            add_maybe_fp8(f"{prefix}.mlp.down_proj.weight", state_dict[down_key])
-
-    router_key = f"{prefix}.mlp.router.gate.weight"
-    if router_key in state_dict:
-        add(f"{prefix}.mlp.gate.weight", state_dict[router_key])
-    expert_bias_key = f"{prefix}.mlp.expert_bias"
-    if expert_bias_key in state_dict:
-        add(f"{prefix}.mlp.gate.e_score_correction_bias", state_dict[expert_bias_key])
-
-    w1_key = f"{prefix}.mlp.experts.w1"
-    w2_key = f"{prefix}.mlp.experts.w2"
-    w3_key = f"{prefix}.mlp.experts.w3"
-    if w1_key in state_dict and w2_key in state_dict and w3_key in state_dict:
-        w1 = state_dict[w1_key]
-        w2 = state_dict[w2_key]
-        w3 = state_dict[w3_key]
-        w13 = torch.cat([w1, w3], dim=1)
-
-        if quantize_fp8:
-            w13_fp8: list[Tensor] = []
-            w13_scales: list[Tensor] = []
-            w2_fp8: list[Tensor] = []
-            w2_scales: list[Tensor] = []
-            for expert_idx in range(w1.shape[0]):
-                expert_w13_fp8, expert_w13_scales = quantize_to_fp8_blockwise(w13[expert_idx])
-                expert_w2_fp8, expert_w2_scales = quantize_to_fp8_blockwise(w2[expert_idx])
-                w13_fp8.append(expert_w13_fp8)
-                w13_scales.append(expert_w13_scales)
-                w2_fp8.append(expert_w2_fp8)
-                w2_scales.append(expert_w2_scales)
-
-            out[f"{prefix}.mlp.experts.w13_weight"] = torch.stack(w13_fp8)
-            out[f"{prefix}.mlp.experts.w13_weight_scale_inv"] = torch.stack(w13_scales)
-            out[f"{prefix}.mlp.experts.w2_weight"] = torch.stack(w2_fp8)
-            out[f"{prefix}.mlp.experts.w2_weight_scale_inv"] = torch.stack(w2_scales)
-        else:
-            out[f"{prefix}.mlp.experts.w13_weight"] = w13
-            out[f"{prefix}.mlp.experts.w2_weight"] = w2
-
-    sw1_key = f"{prefix}.mlp.shared_expert.w1"
-    sw2_key = f"{prefix}.mlp.shared_expert.w2"
-    sw3_key = f"{prefix}.mlp.shared_expert.w3"
-    if sw1_key in state_dict and sw2_key in state_dict and sw3_key in state_dict:
-        sw1 = state_dict[sw1_key]
-        sw2 = state_dict[sw2_key]
-        sw3 = state_dict[sw3_key]
-        if sw1.ndim == 3:
-            sw1 = sw1.squeeze(0)
-            sw2 = sw2.squeeze(0)
-            sw3 = sw3.squeeze(0)
-        add_maybe_fp8(f"{prefix}.mlp.shared_experts.gate_up_proj.weight", torch.cat([sw1, sw3], dim=0))
-        add_maybe_fp8(f"{prefix}.mlp.shared_experts.down_proj.weight", sw2)
-
-    return out
+_DENSE: tuple[ConversionSpec, ...] = (
+    ConversionSpec(
+        "mlp.gate_up_proj.weight",
+        ("mlp.gate_proj.weight", "mlp.up_proj.weight"),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "mlp.down_proj.weight",
+        ("mlp.down_proj.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+)
