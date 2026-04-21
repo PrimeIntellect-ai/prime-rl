@@ -179,19 +179,31 @@ class NIXLWeightUpdateWorker(Worker):
         expert_map = build_expert_map(self._model)
 
         # N anchors for non-layer tensors (iter8 fix verification).
+        # For ShardedSlot non-layer tensors (embed, lm_head), log just
+        # rows [0:2420] which is exactly trainer rank 0's shard on a
+        # 64-rank FSDP setup. Its sum should match trainer's SIG.
         for n_name in (
             "model.embed_tokens.weight",
             "model.norm.weight",
             "lm_head.weight",
         ):
             n_t, n_loc = _lookup(n_name)
-            if n_t is not None:
+            if n_t is None:
+                logger.warning(f"[nixl SIG inference] anchor=N MISSING key={n_name}")
+                continue
+            full_sum = n_t.to(torch.float64).sum().item()
+            if n_t.dim() >= 2 and n_t.shape[0] > 2420:
+                head_sum = n_t[:2420].to(torch.float64).sum().item()
                 logger.info(
                     f"[nixl SIG inference] anchor=N loc={n_loc} key={n_name} "
-                    f"sum={n_t.to(torch.float64).sum().item():.8f} shape={tuple(n_t.shape)}"
+                    f"full_sum={full_sum:.8f} head2420_sum={head_sum:.8f} "
+                    f"shape={tuple(n_t.shape)}"
                 )
             else:
-                logger.warning(f"[nixl SIG inference] anchor=N MISSING key={n_name}")
+                logger.info(
+                    f"[nixl SIG inference] anchor=N loc={n_loc} key={n_name} "
+                    f"sum={full_sum:.8f} shape={tuple(n_t.shape)}"
+                )
         fused_qkv_name = "model.layers.3.self_attn.fused_qkv_a_proj.weight"
         fused_qkv_scale_name = "model.layers.3.self_attn.fused_qkv_a_proj.weight_scale_inv"
         # F_q covers inference fused_qkv_a_proj[0:2048] → matches q_a_proj (row 0..2047).

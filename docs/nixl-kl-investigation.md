@@ -613,4 +613,39 @@ bound drift, and the diagnostic is what matters). Keep iter10's
 
 Wandb name `nixl-iter12-non-layer-sig`.
 
+Job 5675. N anchors (step 0):
+
+| Anchor | Trainer (rank 0) | Inference (full) |
+|---|---:|---:|
+| embed_tokens | shape=(2420, 6144) sum=-267.60458417 | shape=(154880, 6144) sum=-3344.23836319 |
+| norm | shape=(6144,) sum=7389.40228271 | shape=(6144,) sum=7389.40228271 |
+| lm_head | shape=(2420, 6144) sum=-608.90899851 | shape=(154880, 6144) sum=26654.80971022 |
+
+- **`norm`**: trainer rank 0 has full tensor (GatheredSlot), sum matches inference. ✓
+- **`embed_tokens`/`lm_head`**: trainer rank 0 has a ShardedSlot (rows [0:2420) out of 154880). Sum is "my rank's shard only" — doesn't match inference's full-tensor sum, which is expected.
+
+Can't conclude anything from full-tensor sums with shards. Need to
+compare trainer's rank-0 shard sum against inference's first-2420-rows
+sum. That's the real transport test.
+
+Sums across 3 steps (checking if they change):
+
+| Side | key | step 0 | step 1 | step 2 |
+|---|---|---|---|---|
+| Trainer r0 | embed | -267.60453103 | -267.60458417 | -267.60493758 |
+| Inference | embed full | -3344.23709496 | -3344.23804252 | -3344.23836319 |
+| Trainer r0 | lm_head | -608.90899851 | -608.91084457 | -608.91285951 |
+| Inference | lm_head full | 26654.47212133 | 26654.53509487 | 26654.80971022 |
+
+Both sides change (≈SignSGD per-step updates at lr=1e-6). Direction
+and magnitude of change is in the ballpark — suggests transport is
+working, but I need the precise sub-range sum to verify.
+
+### Iteration 13 — precise ShardedSlot verification (head 2420 rows)
+
+Inference also logs `tensor[:2420]` sum. Should match trainer rank 0's
+shard sum exactly for embed_tokens and lm_head.
+
+Wandb name `nixl-iter13-head2420`.
+
 _(append iterations below as they run)_
