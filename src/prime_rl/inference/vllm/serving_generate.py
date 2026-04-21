@@ -10,6 +10,7 @@ No Jinja rendering, no server-side chat template application.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import Mapping
 from io import BytesIO
@@ -130,14 +131,22 @@ class OpenAIServingGenerate:
             data_parallel_rank=data_parallel_rank,
         )
 
-        async for output in generator:
-            if await raw_request.is_disconnected():
-                await self.engine_client.abort(request_id)
-                return {"error": "Client disconnected"}
-            for comp_output in output.outputs:
-                if comp_output.routed_experts is not None:
-                    routed_experts_map[comp_output.index] = _encode_routed_experts(comp_output.routed_experts)
-            final_output = output
+        # Drain the generator without polling ``raw_request.is_disconnected``
+        # per decode step. That poll is one ASGI ``receive()`` await per
+        # yielded token — at ~2k concurrent rollouts each producing dozens of
+        # tokens, it was the single largest per-step overhead on the /generate
+        # path (vLLM's own chat completions handler uses the CancelledError
+        # pattern for the same reason). Starlette cancels this coroutine on
+        # client disconnect, so the except branch still catches it.
+        try:
+            async for output in generator:
+                for comp_output in output.outputs:
+                    if comp_output.routed_experts is not None:
+                        routed_experts_map[comp_output.index] = _encode_routed_experts(comp_output.routed_experts)
+                final_output = output
+        except asyncio.CancelledError:
+            await self.engine_client.abort(request_id)
+            raise
 
         if final_output is None:
             return {"error": "No output generated"}
