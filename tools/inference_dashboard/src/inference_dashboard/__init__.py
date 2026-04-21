@@ -1,1 +1,0 @@
-"""Standalone inference dashboard package."""

@@ -1,1 +1,0 @@
-export var selectTooltipSettings = state => state.tooltip.settings;

@@ -1,1 +1,0 @@
-export var selectTooltipPayloadSearcher = state => state.options.tooltipPayloadSearcher;
