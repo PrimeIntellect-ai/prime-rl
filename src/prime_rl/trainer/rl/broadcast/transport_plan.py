@@ -341,6 +341,13 @@ class TransportPlan:
             handles.clear()
             handle_ctx.clear()
 
+        # PRE-WRITE barrier: ensure every inference worker has actually entered
+        # update_weights_from_path and is quiescent before we start RDMA-writing
+        # into their weight memory. The orchestrator's /pause should do this
+        # too, but /pause may return before all in-flight CUDA work actually
+        # drains on inference — this is the belt-and-suspenders check.
+        spg.barrier()
+
         for i, w in enumerate(self._writes):
             handles.append(agent.post_write(w.local_prep, w.local_idx, w.remote_prep, 0))
             handle_ctx.append((w.peer_name, w.tag))

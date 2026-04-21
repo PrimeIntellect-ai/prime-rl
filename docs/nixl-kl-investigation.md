@@ -759,4 +759,29 @@ phase transition.
 - Inspect if any vLLM `process_weights_after_loading` hook needs
   re-triggering after weight update.
 
-_(append iterations below as they run)_
+### Iteration 15 — pre-write SPG barrier
+
+Hypothesis: orchestrator's `/pause` might return before all in-flight
+CUDA work on inference has drained. Trainer then starts RDMA-writing
+into inference's weight memory while inference's *previous* forward
+pass (or KV cache write, or speculative decode tail) is still using
+that memory. Non-deterministic partial corruption → drift.
+
+Fix: add a **pre-write** SPG barrier. Every inference worker
+`cuda.synchronize()`s (drain ALL in-flight CUDA work) and enters the
+SPG barrier. Trainer blocks at the matching barrier BEFORE posting
+any RDMA WRITE. Only after all 64 trainer ranks + 32 inference ranks
+have rendezvoused do writes begin.
+
+Flow:
+```
+trainer: convert → cuda.sync → SPG.barrier #1 → post writes → drain
+         → SPG.barrier #2
+inference: cuda.sync → SPG.barrier #1 → (wait while writes land)
+         → SPG.barrier #2 → cuda.sync → mla.absorb
+```
+
+Reverted `flush_every=1` → 100 (speed) and `enforce_eager` → false
+(speed). Only the pre-write barrier change is being tested.
+
+Wandb name `nixl-iter15-prewrite-barrier`.

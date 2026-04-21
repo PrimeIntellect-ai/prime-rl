@@ -147,11 +147,17 @@ class NIXLWeightUpdateWorker(Worker):
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
         if not hasattr(self, "_spg"):
             raise RuntimeError("NIXL transfer not initialized — call /init_nixl_transfer first")
+        # PRE-WRITE: fully drain any in-flight inference CUDA work and
+        # signal to the trainer that this worker is quiescent. Trainer
+        # will block at a matching barrier before posting any RDMA.
+        torch.cuda.synchronize()
         self._spg.barrier()
-        # CUDA cross-stream visibility fence: the RDMA writes landed on
-        # GPU HBM from the NIC's PCIe bus, not via a CUDA stream. Without
-        # this sync, subsequent kernels on stream 0 may read cached/stale
-        # values for SM-visible memory.
+        # POST-WRITE: trainer posts writes + drains handles, then hits
+        # the end-of-push barrier. When this returns, every RDMA WRITE
+        # has been ack'd at this worker's NIC.
+        self._spg.barrier()
+        # CUDA cross-stream visibility fence: writes landed via PCIe DMA,
+        # not on a CUDA stream; sync so subsequent SM kernels see them.
         torch.cuda.synchronize()
 
         # Diagnostic: mirror the trainer-side SIG anchors.
