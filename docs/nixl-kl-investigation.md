@@ -898,3 +898,38 @@ kernel's execution in prod (vs the isolated unit test) introduces a
 difference, this catches it.
 
 Wandb name `nixl-iter18-pytorch-quantize`.
+
+Results (job 5683, 11 steps observed before cancel):
+| Step | KL | | Step | KL |
+|---:|---:|---|---:|---:|
+| 0 | 0.0005 | | 6 | 0.0035 |
+| 1 | 0.0040 | | 7 | **0.0059** |
+| 2 | 0.0015 | | 8 | 0.0033 |
+| 3 | 0.0034 | | 9 | **0.0114** |
+| 4 | 0.0036 | | 10 | **0.0086** |
+| 5 | **0.0059** | | | |
+
+**Verdict:** big improvement, still FAIL. This is the closest NIXL run yet
+to the NCCL bound, so the quantizer swap clearly matters. But it still
+breaks the strict `<0.005` regime at steps 5 and 7 and then drifts hard
+at steps 9-10. Conclusion: Triton-vs-PyTorch FP8 quantization is a real
+contributor, not the whole bug.
+
+### Iteration 19 — abort in-flight requests on pause
+
+Next runtime hypothesis: `mode="keep"` preserves active inference
+requests across a policy update. Even if the final weight bytes are
+correct, resuming those requests under the new weights may leave them
+with stale per-request state that the NCCL path tolerates better only
+because its update path is slower / more CUDA-stream-ordered.
+
+Isolated change:
+- `_pause_engines`: `mode="abort", clear_cache=false`
+
+This aborts all in-flight requests at update time but does **not** clear
+prefix/KV cache. Since this run already uses
+`orchestrator.experimental.use_prefix_cache_salt = true`, new requests
+should already miss the old prefix cache. So this specifically tests the
+live-request continuation theory rather than cache invalidation.
+
+Wandb name `nixl-iter19-abort-inflight`.
