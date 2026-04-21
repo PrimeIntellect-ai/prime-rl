@@ -648,4 +648,49 @@ shard sum exactly for embed_tokens and lm_head.
 
 Wandb name `nixl-iter13-head2420`.
 
+Results (job 5676, 14 steps):
+- **Transport verified bit-exact.** Inference's
+  `embed_tokens.weight[:2420].sum()` equals trainer rank-0's shard
+  sum exactly. Same for `lm_head`. No missing or misrouted bytes.
+- **KL still drifts**: 0.0007, 0.0015, **0.0053**, 0.0018, 0.0031,
+  0.0046, **0.0114**, **0.0073**, **0.0083**, **0.0123**, **0.0127**,
+  **0.0074**, **0.0436**, **0.0098**.
+
+**Transport is bullet-proof. Drift source is elsewhere.**
+
+### Extended NCCL+FP8 baseline (re-check)
+
+Switched to `main`, ran 20 steps to verify the NCCL baseline itself
+stays bounded (not just 10-step artifact):
+
+| Step | KL | | Step | KL |
+|---:|---:|---|---:|---:|
+| 0 | 0.0010 | | 10 | 0.0013 |
+| 1 | 0.0016 | | 11 | 0.0008 |
+| 2 | 0.0019 | | 12 | 0.0005 |
+| 3 | 0.0014 | | 13 | 0.0011 |
+| 4 | 0.0016 | | 14 | 0.0015 |
+| 5 | 0.0012 | | 15 | 0.0011 |
+| 6 | 0.0004 | | 16 | 0.0007 |
+| 7 | 0.0014 | | 17 | 0.0020 |
+| 8 | 0.0012 | | 18 | 0.0020 |
+| 9 | 0.0026 | | 19 | 0.0022 |
+
+All 20 steps **under 0.003**. The bounded regime is definitively
+achievable on this config with NCCL+FP8. Drift is NIXL-specific.
+
+### Iteration 14 — maximum conservatism
+
+Combine everything that might help at once:
+- `enforce_eager = true` on inference (disable CUDA graphs).
+- `flush_every = 1` on trainer push (per-write drain ordering).
+- `cuda.synchronize()` on inference after SPG barrier.
+- Non-layer specs transported (embed/norm/lm_head).
+
+If KL converges to NCCL-baseline, at least one of these knobs was
+the bug — can bisect from there. If still drifting, the bug is
+deeper than transport ordering, cache visibility, or graph capture.
+
+Wandb name `nixl-iter14-conservative`.
+
 _(append iterations below as they run)_
