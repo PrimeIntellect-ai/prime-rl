@@ -245,37 +245,45 @@ class TransportPlan:
         #   E (fp8 expert)    : mlp.experts.w13_weight expert[0]
         if self.my_rank == 0:
             for slot in self.slots:
-                if slot.slot_key == "model.layers.3.input_layernorm.weight":
-                    w = slot.weight
-                    self.logger.info(
-                        f"[nixl SIG trainer] anchor=G key={slot.slot_key} "
-                        f"sum={w.to(torch.float64).sum().item():.8f} "
-                        f"shape={tuple(w.shape)} stride={tuple(w.stride())}"
-                    )
-                elif slot.slot_key == "model.layers.3.self_attn.kv_b_proj.weight":
+                # F_q: q_a_proj source (first source of fused_qkv_a_proj).
+                #   inference fused_qkv_a_proj[0:2048] should == this.
+                # F_kv: kv_a_proj_with_mqa source (second source of fused_qkv_a_proj).
+                #   inference fused_qkv_a_proj[2048:2624] should == this.
+                # If any region sum diverges, offset/routing is off for fused specs.
+                if slot.slot_key == "model.layers.3.self_attn.q_a_proj.weight":
                     w = slot.weight
                     sc = slot.scale
                     w_bytes = w.view(torch.uint8).to(torch.int64).sum().item()
                     s_sum = sc.to(torch.float64).sum().item() if sc is not None else 0.0
-                    s_shape = tuple(sc.shape) if sc is not None else None
-                    s_stride = tuple(sc.stride()) if sc is not None else None
                     self.logger.info(
-                        f"[nixl SIG trainer] anchor=F key={slot.slot_key} "
-                        f"w_bytes={w_bytes} w_shape={tuple(w.shape)} w_stride={tuple(w.stride())} "
-                        f"scale={s_sum:.8f} s_shape={s_shape} s_stride={s_stride}"
+                        f"[nixl SIG trainer] anchor=F_q key={slot.slot_key} "
+                        f"w_bytes={w_bytes} w_shape={tuple(w.shape)} "
+                        f"scale={s_sum:.8f}"
+                    )
+                elif slot.slot_key == "model.layers.3.self_attn.kv_a_proj_with_mqa.weight":
+                    w = slot.weight
+                    sc = slot.scale
+                    w_bytes = w.view(torch.uint8).to(torch.int64).sum().item()
+                    s_sum = sc.to(torch.float64).sum().item() if sc is not None else 0.0
+                    self.logger.info(
+                        f"[nixl SIG trainer] anchor=F_kv key={slot.slot_key} "
+                        f"w_bytes={w_bytes} w_shape={tuple(w.shape)} "
+                        f"scale={s_sum:.8f}"
                     )
                 elif slot.slot_key == "model.layers.3.mlp.experts.w13_weight":
-                    w0 = slot.weight[0]
-                    sc0 = slot.scale[0] if slot.scale is not None else None
-                    w_bytes = w0.view(torch.uint8).to(torch.int64).sum().item()
-                    s_sum = sc0.to(torch.float64).sum().item() if sc0 is not None else 0.0
-                    s_shape = tuple(sc0.shape) if sc0 is not None else None
-                    s_stride = tuple(sc0.stride()) if sc0 is not None else None
-                    self.logger.info(
-                        f"[nixl SIG trainer] anchor=E key={slot.slot_key}[E0] "
-                        f"w_bytes={w_bytes} w_shape={tuple(w0.shape)} w_stride={tuple(w0.stride())} "
-                        f"scale={s_sum:.8f} s_shape={s_shape} s_stride={s_stride}"
-                    )
+                    # E anchors for 3 experts spread across the local block.
+                    for local_idx in (0, 1, 2, 3):
+                        if local_idx < slot.weight.shape[0]:
+                            w = slot.weight[local_idx]
+                            sc = slot.scale[local_idx] if slot.scale is not None else None
+                            w_bytes = w.view(torch.uint8).to(torch.int64).sum().item()
+                            s_sum = sc.to(torch.float64).sum().item() if sc is not None else 0.0
+                            self.logger.info(
+                                f"[nixl SIG trainer] anchor=E[E{local_idx}] "
+                                f"key={slot.slot_key} "
+                                f"w_bytes={w_bytes} w_shape={tuple(w.shape)} "
+                                f"scale={s_sum:.8f}"
+                            )
 
         handles: list = []
         handle_ctx: list[tuple[str, str]] = []

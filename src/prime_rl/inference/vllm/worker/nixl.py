@@ -173,39 +173,39 @@ class NIXLWeightUpdateWorker(Worker):
         from prime_rl.inference.vllm.worker.weight_transfer import build_expert_map
         expert_map = build_expert_map(self._model)
 
-        g_t, g_loc = _lookup(g_name)
-        if g_t is not None:
+        fused_qkv_name = "model.layers.3.self_attn.fused_qkv_a_proj.weight"
+        fused_qkv_scale_name = "model.layers.3.self_attn.fused_qkv_a_proj.weight_scale_inv"
+        # F_q covers inference fused_qkv_a_proj[0:2048] → matches q_a_proj (row 0..2047).
+        # F_kv covers inference fused_qkv_a_proj[2048:2624] → matches kv_a_proj_with_mqa (row 0..575).
+        fq_t, fq_loc = _lookup(fused_qkv_name)
+        fq_s, fq_s_loc = _lookup(fused_qkv_scale_name)
+        if fq_t is not None:
+            q_w_bytes = fq_t[:2048].contiguous().view(torch.uint8).to(torch.int64).sum().item()
+            kv_w_bytes = fq_t[2048:2624].contiguous().view(torch.uint8).to(torch.int64).sum().item()
+            q_s_sum = fq_s[:16].to(torch.float64).sum().item() if fq_s is not None else -1.0
+            kv_s_sum = fq_s[16:21].to(torch.float64).sum().item() if fq_s is not None else -1.0
             logger.info(
-                f"[nixl SIG inference] anchor=G loc={g_loc} key={g_name} "
-                f"sum={g_t.to(torch.float64).sum().item():.8f} "
-                f"shape={tuple(g_t.shape)} stride={tuple(g_t.stride())}"
+                f"[nixl SIG inference] anchor=F_q loc={fq_loc}/{fq_s_loc} key={fused_qkv_name}[:2048] "
+                f"w_bytes={q_w_bytes} w_shape={tuple(fq_t[:2048].shape)} scale={q_s_sum:.8f}"
             )
-        f_t, f_loc = _lookup(f_name)
-        f_s, f_s_loc = _lookup(f_scale_name)
-        if f_t is not None:
-            sc = f_s.to(torch.float64).sum().item() if f_s is not None else -1.0
-            s_shape = tuple(f_s.shape) if f_s is not None else None
-            s_stride = tuple(f_s.stride()) if f_s is not None else None
             logger.info(
-                f"[nixl SIG inference] anchor=F loc={f_loc}/{f_s_loc} key={f_name} "
-                f"w_bytes={f_t.view(torch.uint8).to(torch.int64).sum().item()} "
-                f"w_shape={tuple(f_t.shape)} w_stride={tuple(f_t.stride())} "
-                f"scale={sc:.8f} s_shape={s_shape} s_stride={s_stride}"
+                f"[nixl SIG inference] anchor=F_kv loc={fq_loc}/{fq_s_loc} key={fused_qkv_name}[2048:2624] "
+                f"w_bytes={kv_w_bytes} w_shape={tuple(fq_t[2048:2624].shape)} scale={kv_s_sum:.8f}"
             )
         e_t, e_loc = _lookup(e_name)
         e_s, e_s_loc = _lookup(e_scale_name)
         if e_t is not None and e_prefix in expert_map:
             owned = expert_map[e_prefix].cpu().tolist()
-            if 0 in owned:
-                local_idx = owned.index(0)
-                sc0 = e_s[local_idx].to(torch.float64).sum().item() if e_s is not None else -1.0
-                s_shape = tuple(e_s.shape) if e_s is not None else None
-                s_stride = tuple(e_s.stride()) if e_s is not None else None
-                logger.info(
-                    f"[nixl SIG inference] anchor=E loc={e_loc}/{e_s_loc} key={e_name}[E0] "
-                    f"w_bytes={e_t[local_idx].view(torch.uint8).to(torch.int64).sum().item()} "
-                    f"w_shape={tuple(e_t.shape)} w_stride={tuple(e_t.stride())} "
-                    f"scale={sc0:.8f} s_shape={s_shape} s_stride={s_stride}"
-                )
+            # Log global experts 0..3 that this worker owns (if any).
+            for global_id in (0, 1, 2, 3):
+                if global_id in owned:
+                    local_idx = owned.index(global_id)
+                    w_bytes = e_t[local_idx].view(torch.uint8).to(torch.int64).sum().item()
+                    s_sum = e_s[local_idx].to(torch.float64).sum().item() if e_s is not None else -1.0
+                    logger.info(
+                        f"[nixl SIG inference] anchor=E[E{global_id}] loc={e_loc}/{e_s_loc} "
+                        f"key={e_name}[local={local_idx}] "
+                        f"w_bytes={w_bytes} scale={s_sum:.8f}"
+                    )
 
         update_mla_absorbed_weights(self._model)

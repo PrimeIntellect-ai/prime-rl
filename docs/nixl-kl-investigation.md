@@ -420,4 +420,41 @@ for all three anchors. A discrepancy = silent layout corruption.
 DG re-enabled (`use_deep_gemm = true`). Wandb name
 `nixl-iter6-shape-stride`.
 
+Results (step 0 only, cancelled early):
+
+| Anchor | Trainer | Inference | Match |
+|---|---|---|---|
+| G | shape=(6144,) stride=(1,) sum=249.99527359 | shape=(6144,) stride=(1,) sum=249.99527359 | ✓ |
+| F w | shape=(28672, 512) stride=(512, 1) bytes=2300251362 | same | ✓ |
+| F s | shape=(224, 4) stride=(4, 1) sum=0.10161371 | shape=(224, 4) stride=(4, 1) sum=0.10161371 | ✓ |
+| E w | shape=(4096, 6144) stride=(6144, 1) bytes=3793825267 | shape=(16, 4096, 6144) (per-expert slice identical) | ✓ |
+| E s | shape=(32, 48) stride=(48, 1) sum=0.27224193 | same | ✓ |
+
+**Layouts match bit-exact.** No transpose, no permutation, no TMA-aligned
+reshape. My layout-mismatch theory is falsified. DG on Hopper with
+disable_ue8m0=True must keep the scale in raw row-major blockwise
+layout, or the transform is a no-op for these shapes.
+
+KL step 0 = 0.0013 — still drifting (but only 1 step observed before
+cancel). Pattern matches prior iterations qualitatively.
+
+### Iteration 7 — multi-source fused-region sum check
+
+Hypothesis: single-source transport is proven faithful. Multi-source
+fused specs (e.g. `fused_qkv_a_proj`) have two trainer slots written
+to different offsets in one inference tensor. If the offset math is
+off (even by a few rows), the sub-ranges would be swapped/shifted
+but sum-over-full-tensor stays correct.
+
+Check: on inference, slice `fused_qkv_a_proj.weight[0:2048]` and
+`[2048:2624]` and log each sum. Trainer logs per-source slot sum.
+Matching pairs confirm fused routing; mismatched pairs reveal the
+offset bug.
+
+Also widen expert anchors to global experts 0-3 (trainer rank 0's
+owned set), so we cross-check the per-expert remote_idx mapping
+across multiple entries.
+
+Wandb name `nixl-iter7-fused-region`.
+
 _(append iterations below as they run)_
