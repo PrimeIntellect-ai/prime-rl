@@ -12,10 +12,10 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 batch_size = 512
 rollouts_per_example = 16
 
-[orchestrator.sampling]
-max_tokens = 2048
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "math-env"
 name = "hendrycks-math"
 args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 128, math_verify_timeout = 60 }
@@ -28,7 +28,7 @@ hard_threshold = 0.0
 interval = 10
 
 [orchestrator.eval.sampling]
-max_tokens = 2048
+max_completion_tokens = 2048
 
 [[orchestrator.eval.env]]
 id = "math500"

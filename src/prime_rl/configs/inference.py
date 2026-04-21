@@ -85,7 +85,7 @@ class ModelConfig(BaseModelConfig):
             description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`. "
             'Set to "auto" to infer from the model name.',
         ),
-    ] = None
+    ] = "auto"
 
     reasoning_parser: Annotated[
         str | None,
@@ -246,15 +246,6 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 
 class InferenceExperimentalConfig(BaseConfig):
     """Experimental features for inference."""
-
-    reset_prefix_cache_after_update: Annotated[
-        bool,
-        Field(
-            description="Whether to reset the prefix cache after weight updates (update_weights, load_lora_adapter). "
-            "Ensures all KV states are recomputed with the new weights at the cost of extra prefill. "
-            "When False, prefer using orchestrator.experimental.use_prefix_cache_salt to invalidate stale caches via salt instead.",
-        ),
-    ] = False
 
 
 class InferenceConfig(BaseConfig):

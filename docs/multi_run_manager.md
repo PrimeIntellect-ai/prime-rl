@@ -110,6 +110,7 @@ The eviction takes effect through two mechanisms:
 - The orchestrator checks for `evicted.txt` at the start of each iteration in its main loop
 - If found, it raises a `RuntimeError` with the eviction reason, causing the orchestrator to exit
 - This surfaces the eviction reason to the user
+- The orchestrator also self-evicts by writing `evicted.txt` if a training batch has no learning signal (all rollouts filtered out) on `MAX_EMPTY_BATCH_ATTEMPTS` (3) consecutive attempts
 
 ## LoRA Module Registration
 

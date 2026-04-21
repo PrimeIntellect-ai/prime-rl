@@ -93,14 +93,18 @@ class FlashAttention(nn.Module):
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
-        args = [q, k, v, cu_seqlens, cu_seqlens]
-        if self._flash_attn_version != 4:
-            args.extend([max_seqlen, max_seqlen])
         kwargs: dict = {"causal": True}
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
             kwargs["window_size"] = (sliding_window - 1, 0)
-        out = self._flash_attn_call(*args, **kwargs)
+        if self._flash_attn_version == 4:
+            # FA4's flash_attn_varlen_func has qv as the 4th positional arg,
+            # so cu_seqlens must be passed as keyword args to avoid misalignment.
+            kwargs["cu_seqlens_q"] = cu_seqlens
+            kwargs["cu_seqlens_k"] = cu_seqlens
+            out = self._flash_attn_call(q, k, v, **kwargs)
+        else:
+            out = self._flash_attn_call(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
         if isinstance(out, tuple):
             out = out[0]
         return out
@@ -291,10 +295,14 @@ def substitute_ring_attn(
     """Patch _compute_attention on FlashAttention variants to use ring attention."""
     from ring_flash_attn import llama3_flash_attn_varlen_func
 
-    from .ring_attn import ring_fa3_varlen_func
+    from .ring_attn import ring_fa3_varlen_func, ring_fa4_varlen_func
 
-    use_fa3 = attn_impl == "flash_attention_3"
-    ring_func = ring_fa3_varlen_func if use_fa3 else llama3_flash_attn_varlen_func
+    if attn_impl == "fa4":
+        ring_func = ring_fa4_varlen_func
+    elif attn_impl == "flash_attention_3":
+        ring_func = ring_fa3_varlen_func
+    else:
+        ring_func = llama3_flash_attn_varlen_func
 
     def _ring_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
         from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS

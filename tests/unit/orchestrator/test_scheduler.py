@@ -29,7 +29,6 @@ def make_scheduler() -> Scheduler:
     scheduler.inflight_policy_update_task = None
     scheduler.update_policy_task = None
     scheduler.enable_policy_updates = True
-    scheduler.use_prefix_cache_salt = False
     return scheduler
 
 

@@ -53,7 +53,21 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
+
+
+def pre_download_model(model_name: str) -> None:
+    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training."""
+    if Path(model_name).exists():
+        get_logger().info(f"Model {model_name} found at local path, skipping download")
+        return
+    get_logger().info(f"Pre-downloading model {model_name}")
+    t0 = time.perf_counter()
+    path = snapshot_download(repo_id=model_name, repo_type="model")
+    get_logger().debug(
+        f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
+    )
 
 
 def _patch_qwen3_5_moe_conversion_mapping():

@@ -13,10 +13,10 @@ batch_size = 256
 rollouts_per_example = 16
 
 
-[orchestrator.sampling]
-max_tokens = 64
+[orchestrator.train.sampling]
+max_completion_tokens = 64
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "color-codeword"
 args = { images_per_turn = 1, max_turns = 3, num_examples = 1000, seed = 42 }
 

@@ -742,9 +742,8 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_session_headers(self):
-        """Auto-configure X-Session-ID header for sticky routing at the inference router."""
-        if "extra_headers_from_state" not in self.orchestrator.client.model_fields_set:
-            self.orchestrator.client.extra_headers_from_state = {"X-Session-ID": "example_id"}
+        """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
+        self.orchestrator.client.extra_headers_from_state.setdefault("X-Session-ID", "example_id")
         return self
 
     @model_validator(mode="after")
