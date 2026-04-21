@@ -997,3 +997,150 @@ Change:
   for every registered param / scale tensor.
 
 Wandb name `nixl-iter21-sync-memops`.
+
+### Iterations 22–25 — identity audits, view assertions, freeze knobs
+
+Consolidated as commit `6f4a6856d` (`Exp iter22-27 (squash): ...`).
+Adds env-var-gated audits + knobs for the next round of experiments.
+None of them bound the drift on their own; all exist for the iter26 /
+iter27 diagnostic below.
+
+**New knobs** (all off by default):
+- `PRIME_RL_FREEZE_ROUTED_EXPERTS=1`: freeze every `.mlp.experts.*`
+  param on the trainer. Only non-experts receive gradient updates.
+- `PRIME_RL_FREEZE_NON_EXPERTS=1`: freeze everything except experts.
+- `PRIME_RL_NIXL_TRANSFER_MODE=all|non_expert_only|expert_only`:
+  filters `TransportPlan.slots` so only one class of tensor moves
+  on the wire each push.
+
+**New inference-side one-shot audits** (fire on first push, raise on
+mismatch):
+- `_iter_unpublished_cuda_tensor_attrs`: walks the model looking
+  for CUDA tensors set as plain Python attrs (not Parameters,
+  Buffers, or submodules). These are NIXL-invisible. Surfaces
+  MLA's `W_UV`, `W_UK_T`, `W_K`, `W_K_scale`, `W_V`, `W_V_scale` —
+  derived from `kv_b_proj` / scale and must be recomputed each
+  push. Explicit allowlist + ignore list, so anything unexpected
+  raises hard.
+- `_assert_live_contiguous_registration`: fails if `.contiguous()`
+  would silently detach the registered tensor from the live model
+  param (pointer moves → RDMA writes land in the wrong memory).
+- `_assert_narrow_view`: confirms each published chunk view shares
+  storage with its parent and has matching pointer deltas.
+- `_capture_tensor_identity` + `_validated_registered_tensor_identities`:
+  snapshots `(ptr, storage_ptr, shape, stride)` at init, re-checks
+  at first push. Proves vLLM hasn't quietly rebuilt param tensors.
+- `assert_mla_absorbed_weights_match`: recomputes `W_UV` / `W_UK_T`
+  from live `kv_b_proj` / scale and asserts they equal what the
+  module currently holds — verifies the MLA refresh path.
+
+**Trainer grad-clip fallback** (`_should_use_ep_grad_clip`): when
+freezing one side, gradients no longer span both EP and non-EP
+DTensor sets, which crashed the torchtitan EP-aware clip. Falls
+back to the non-EP path with a one-time warning.
+
+**Result for iter22-25 alone:** every audit passes on every run.
+No unexpected CUDA tensors, no tensor identities change between
+init and first push, MLA absorbed weights match recompute. NIXL
+registration and wire mechanics remain proven correct; drift is
+still present and unexplained by anything these audits can see.
+
+### Iterations 26 & 27 — freeze half the model, transport half
+
+Using the knobs above, test whether the drift is specific to
+experts vs non-experts by updating + transporting only one class
+at a time. The other class is frozen and byte-identical between
+trainer and inference throughout the run.
+
+| Run | Steps | Median `mismatch_kl/mean` | Max mean | First breach of 0.005 | Max of max |
+|---|---:|---:|---:|---:|---:|
+| `nccl-extensive` (baseline) | 40 | 0.0011 | 0.0028 | never | 0.0674 |
+| `nixl-iter26-expert-only` | 39 | 0.0046 | 0.0224 | **step 15** | 0.0939 |
+| `nixl-iter27-nonexpert-only` | 28 | 0.0111 | **0.0733** | **step 8** | **1.8213** |
+
+Both freeze-half runs drift. Non-expert-only is **earlier and
+worse** than expert-only:
+
+- `nixl-iter26-expert-only`: median ~5× NCCL baseline, breaches at
+  step 15, max_mean 0.0224.
+- `nixl-iter27-nonexpert-only`: median ~10× NCCL baseline, breaches
+  at step 8, max_mean 0.0733, and a single step's max hits **1.82**
+  — 180× the bound.
+- NCCL baseline under the same config: median stays ~0.001, max
+  spikes to 0.067 occasionally, but mean never breaches 0.005
+  across 40 steps.
+
+**Implication.** The bug is NOT in expert routing or in non-expert
+fused-source handling — both isolated halves drift on their own.
+It is in the NIXL write mechanism itself.
+
+Non-expert-only being *worse* than expert-only is counterintuitive
+but consistent with how the write table is built: non-expert
+`ShardedSlot`s fan out across all 64 trainer ranks writing chunks
+in parallel to a *shared* fused inference param, whereas
+`ExpertSlot`s have a single trainer rank writing each expert (no
+cross-rank writes to the same remote region). If the drift has
+anything to do with concurrent RDMA writes to adjacent regions of
+the same inference tensor, the non-expert path exposes it more.
+
+## Summary to date
+
+**Ruled out — repeatedly**
+- Conversion-spec coverage (iter8 adds non-layer; iter9 UNTRACKED
+  says every `model.*` / `lm_head.weight` state_dict key is
+  covered).
+- FP8 quantization numerics (iter0 parity test; iter13 SIGs
+  bit-exact; iter16 byte-level diff = 1920 comparisons / 0
+  mismatches; iter18 swap Triton → PyTorch = no change).
+- DeepGemm / CUDA graphs (iter5 disable DG → worse; iter11
+  enforce_eager → delays the break, does not bound).
+- Layout mismatch: shape, stride, dtype all match (iter6, iter12,
+  iter13).
+- Single-slot transport faithfulness: G (bf16), F (fp8 gather),
+  F_q / F_kv (multi-source fused), E[E0..E3] (experts) — all
+  bit-exact (iter3, iter4, iter7, iter13, iter16).
+- Inference tensor identity unchanged between init and first push
+  (iter22 audit).
+- Unpublished CUDA attrs (MLA absorbed + scales) accounted for via
+  allowlist + `assert_mla_absorbed_weights_match` (iter22).
+- Expert routing / per-expert global-id mapping (iter16 byte diff;
+  iter26 expert-only still drifts but less than non-expert-only).
+- Orchestrator pause `clear_cache`: same value in NCCL vs NIXL
+  (iter17).
+
+**Helps but does not fix**
+- Pre-write SPG barrier (iter15): bounded steps 0–7, break step 8+.
+- GPUDirect RDMA flush on inference (iter19): similar partial
+  effect.
+- `CU_POINTER_ATTRIBUTE_SYNC_MEMOPS` on registered tensors
+  (iter21): similar partial effect.
+
+**Conclusion.** Both isolated halves (experts-only, non-experts-only)
+drift past NCCL-baseline bounds, so the bug is in the *NIXL write /
+registration mechanism itself*, not in which tensors we select or
+how we quantize them. All pieces that would have shown a byte-level
+error have been instrumented and proven correct. The divergence must
+come from one of:
+
+1. **Write ordering / visibility across concurrent UCX endpoints.**
+   A single push posts thousands of WRITEs across 64 trainer ranks
+   to 32 inference peers. Even after per-handle drain + SPG barrier
+   + GPUDirect flush + SYNC_MEMOPS, there may be a memory-ordering
+   gap on the receiving GPU that subsequent inference kernels read
+   through. The three "helps but doesn't fix" fixes all point in
+   this direction and stack without ever fully bounding — maybe
+   there's yet another fence required, or the issue is race-
+   condition-like (partial effect from any single fence).
+2. **Tensor identity transition outside the one-shot audit window.**
+   We snapshot identity at init and re-verify at the first push.
+   vLLM could rebuild param tensors between pushes in a way that
+   the one-shot check misses. Widening the audit to re-verify
+   every push is a cheap next step.
+3. **Inference-side compute non-determinism amplified by
+   continuous-batching / scheduler state.** Two runs with
+   byte-identical weights could diverge through the generation
+   stream alone (batch composition, speculative decoding,
+   cross-request state). Hard to test directly but explains why
+   the drift is phase-transition-like rather than monotonic.
+
+_(append iterations below as they run)_
