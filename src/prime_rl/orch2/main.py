@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Iterator
 
 import httpx
+import tomli_w
 import torch
 import verifiers as vf
 
@@ -67,9 +68,14 @@ class InferenceAdmin:
             raise ValueError(f"Model '{model_name}' not found on {self.base_url}")
 
     async def update_weights(self, weight_dir: Path) -> None:
+        # vLLM's update_weights_from_path passes the string straight to HF's
+        # DefaultModelLoader, which first validates as a repo ID. A relative
+        # path with multiple slashes trips that check before the local-path
+        # fallback. Resolve to absolute here.
+        path = weight_dir.resolve().as_posix()
         (await self.client.post("/pause", params={"mode": "keep", "clear_cache": "false"})).raise_for_status()
         try:
-            (await self.client.post("/update_weights", json={"weight_dir": weight_dir.as_posix()})).raise_for_status()
+            (await self.client.post("/update_weights", json={"weight_dir": path})).raise_for_status()
         finally:
             (await self.client.post("/resume")).raise_for_status()
 
@@ -209,6 +215,14 @@ async def run(cfg: OrchestratorConfig) -> None:
     logger = get_logger()
     logger.info(f"Output dir: {cfg.output_dir}")
     logger.info(f"Model: {cfg.model.name}")
+
+    # Trainer reads orchestrator config from output_dir/control/orch.toml
+    # (see prime_rl.trainer.runs.RunManager.get_orchestrator_config).
+    control_dir = cfg.output_dir / "control"
+    control_dir.mkdir(parents=True, exist_ok=True)
+    with open(control_dir / "orch.toml", "wb") as f:
+        tomli_w.dump(cfg.model_dump(exclude_none=True, mode="json"), f)
+    logger.info(f"Wrote orch config to {control_dir / 'orch.toml'}")
     logger.info(
         f"Batch size: {cfg.batch_size} | Rollouts/example: {cfg.rollouts_per_example} | "
         f"Max in-flight: {cfg.max_inflight_rollouts} | Max off-policy: {cfg.max_off_policy_steps}"
