@@ -238,18 +238,42 @@ over 17 steps. Fails the bound at step 11+. That's what we're fixing.
 
 ### Iteration 1 — reproduce NIXL drift on current SHA (baseline)
 
-Goal: rerun NIXL with zero code changes to confirm the 0.002→0.035
-drift is reproducible (rules out non-determinism) and serves as the
-diagnostic starting point.
+SHA: `81be8e763` (investigation doc commit on top of `f23d68b52`; no
+numerical code changes). `prod.toml`: NIXL, wandb
+`nixl-iter1-repro`. Job 5648.
 
-- Branch: `nixl-weight-transfer` @ `f23d68b52` (no code changes).
-- `prod.toml`: `weight_broadcast.type = "nixl"`,
-  `quantize_in_weight_transfer` commented out.
-- Wandb name: `nixl-iter1-repro`.
-- Pass criterion: reproduces a growing KL trend (matches prior run
-  qualitatively). If it's somehow bounded, investigation is moot and
-  we just test the 20-step extension.
-- Monitoring: ScheduleWakeup ~15 min; watch for `Traceback`,
-  `NIXL_ERR_`, or log-mtime stall.
+| Step | KL | | Step | KL |
+|---:|---:|---|---:|---:|
+| 0 | 0.0026 | | 5 | 0.0027 |
+| 1 | 0.0016 | | 6 | **0.0064** |
+| 2 | 0.0032 | | 7 | **0.0051** |
+| 3 | 0.0006 | | 8 | **0.0062** |
+| 4 | 0.0046 | | 9 | **0.0075** |
+
+**Verdict:** FAIL. KL breaks 0.005 at step 6 and stays elevated.
+Matches prior run qualitatively (steady slow upward drift). Drift is
+deterministic, not noise. Good diagnostic baseline to work from.
+
+Cancelled at step 9.
+
+### Iteration 2 — end-to-end signature diagnostic
+
+Hypothesis: transport isn't faithful across steps. Add per-step
+signature logs on both trainer and inference sides for a canonical
+anchor slot. If signatures match every step but KL still grows, the
+transport is fine and the drift is in quantization/dequantization
+consistency. If signatures diverge, it's a transport/addressing bug.
+
+- Anchor: `model.layers.3.input_layernorm.weight` — small, 1D
+  bf16, non-quantized, GatheredSlot (full tensor on every trainer
+  rank; rank 0 writes once per inference peer round-robin).
+- Trainer rank-0 log after `slot.convert()` (before post_write):
+  `[nixl SIG trainer] key=... sum=... shape=...`
+- Inference (all workers) log after SPG barrier:
+  `[nixl SIG inference] key=... sum=... shape=...`
+- Expected: trainer step N's sum should equal every inference
+  worker's sum for that step. Drift = write bug.
+- `prod.toml` unchanged (still NIXL). Wandb name
+  `nixl-iter2-sigdiag`.
 
 _(append iterations below as they run)_

@@ -234,6 +234,21 @@ class TransportPlan:
         torch.cuda.synchronize(device)
         t_converted = time.perf_counter()
 
+        # Diagnostic: rank-0 logs post-convert signature for a canonical
+        # gather-only, non-quantized slot. Trainer's slot.weight holds
+        # the full tensor (GatheredSlot when small) so inference's
+        # matching param should produce the same signature after the
+        # push barrier. Use layer 3 (first sparse layer) as the anchor.
+        if self.my_rank == 0:
+            anchor_key = "model.layers.3.input_layernorm.weight"
+            for slot in self.slots:
+                if slot.slot_key == anchor_key:
+                    w_sig = slot.weight.to(torch.float64).sum().item()
+                    self.logger.info(
+                        f"[nixl SIG trainer] key={slot.slot_key} sum={w_sig:.8f} shape={tuple(slot.weight.shape)}"
+                    )
+                    break
+
         handles: list = []
         handle_ctx: list[tuple[str, str]] = []
 

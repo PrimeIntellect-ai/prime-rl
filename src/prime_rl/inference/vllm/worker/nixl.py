@@ -148,4 +148,17 @@ class NIXLWeightUpdateWorker(Worker):
         if not hasattr(self, "_spg"):
             raise RuntimeError("NIXL transfer not initialized — call /init_nixl_transfer first")
         self._spg.barrier()
+
+        # Diagnostic: match the trainer-side SIG log for the same anchor
+        # param. If trainer and inference sums line up per step, transport
+        # is faithful; otherwise there's a write-table / offset issue.
+        anchor_name = "model.layers.3.input_layernorm.weight"
+        for name, param in self._model.named_parameters():
+            if name == anchor_name:
+                w_sig = param.data.to(torch.float64).sum().item()
+                logger.info(
+                    f"[nixl SIG inference] key={name} sum={w_sig:.8f} shape={tuple(param.shape)}"
+                )
+                break
+
         update_mla_absorbed_weights(self._model)
