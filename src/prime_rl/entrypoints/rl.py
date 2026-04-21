@@ -266,12 +266,13 @@ def rl_local(config: RLConfig):
             )
 
         # Start orchestrator process
+        orchestrator_bin = "orch2" if config.use_orch2 else "orchestrator"
         orchestrator_cmd = [
-            "orchestrator",
+            orchestrator_bin,
             "@",
             (config_dir / ORCHESTRATOR_TOML).as_posix(),
         ]
-        logger.info("Starting orchestrator process")
+        logger.info(f"Starting orchestrator process ({orchestrator_bin})")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
         with open(log_dir / "orchestrator.log", "w") as log_file:
             orchestrator_process = Popen(
