@@ -457,4 +457,47 @@ across multiple entries.
 
 Wandb name `nixl-iter7-fused-region`.
 
+**Step 0 SIGs (from job 5665):**
+
+| Anchor | Trainer | Inference | Match |
+|---|---|---|---|
+| F_q  | w=1956669286 s=0.09529844 | w=1956669286 s=0.09529844 | ✓ |
+| F_kv | w=533551617  s=0.09167859 | w=533551617  s=0.09167859 | ✓ |
+| E[0] | w=3793822673 s=0.27224198 | w=3793822673 s=0.27224198 | ✓ |
+| E[1] | w=4007950214 s=0.28839970 | w=4007950214 s=0.28839970 | ✓ |
+| E[2] | w=3353069296 s=0.29298384 | w=3353069296 s=0.29298384 | ✓ |
+| E[3] | w=4060886279 s=0.25664634 | w=4060886279 s=0.25664634 | ✓ |
+
+Fused multi-source offsets and multi-expert routing both match
+bit-exact. Transport is **100% verified** for all slot types and
+routing modes I've tested in layer 3.
+
+**Breakthrough hypothesis: non-layer tensors aren't transported.**
+Listing `conversion_specs()` output shows coverage is **per-layer only**:
+
+- Per-layer: layernorms, attention projections, indexer, MoE bits.
+- Missing: `model.embed_tokens.weight`, `model.norm.weight`,
+  `lm_head.weight`.
+
+In the NCCL+FP8 baseline, `filter_state_dict_by_layers` yields
+`layer_idx=-1` containing exactly these non-layer tensors, and they
+get broadcast. In NIXL, `TransportPlan.__init__` iterates only
+`range(num_hidden_layers)` and never picks them up. They stay at
+whatever inference loaded from disk; trainer's gradient updates them
+locally; KL drifts as the two copies diverge.
+
+### Iteration 8 — transport non-layer tensors (embed, norm, lm_head)
+
+Code changes:
+- Base model: new `non_layer_conversion_specs()` hook, default `()`.
+- `GlmMoeDsaForCausalLM`: override to return specs for embed, norm,
+  and (conditionally) lm_head.
+- `ConversionSpec.build_slots` + slot `from_spec`: `_join()` helper
+  so empty prefix → plain source name (no leading dot).
+- `TransportPlan.__init__`: after per-layer slots, append slots from
+  `model.non_layer_conversion_specs()` at prefix=`""`.
+
+If this is the bug, KL should drop to NCCL-baseline-like level
+(<0.005) across all steps. Wandb name `nixl-iter8-non-layer`.
+
 _(append iterations below as they run)_

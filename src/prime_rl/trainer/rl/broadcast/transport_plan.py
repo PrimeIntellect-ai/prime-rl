@@ -92,6 +92,11 @@ class TransportPlan:
                 prefix = f"model.layers.{layer_idx}"
                 for spec in model.conversion_specs(layer_idx):
                     self.slots.extend(spec.build_slots(prefix, state_dict, parallel_dims))
+            # Non-layer tensors (e.g. embed_tokens, model.norm, lm_head).
+            # Without these, inference never gets updates for top-level
+            # params and KL drifts as trainer gradients advance them.
+            for spec in model.non_layer_conversion_specs():
+                self.slots.extend(spec.build_slots("", state_dict, parallel_dims))
 
         # Populated in register().
         self._local_preps: dict[str, Any] = {}

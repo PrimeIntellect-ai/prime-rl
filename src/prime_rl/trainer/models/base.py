@@ -116,6 +116,17 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         raise NotImplementedError(f"conversion_specs is not implemented for {self.__class__.__name__}")
 
+    def non_layer_conversion_specs(self) -> tuple["ConversionSpec", ...]:
+        """Return :class:`ConversionSpec` entries for top-level (non-per-layer)
+        tensors such as ``embed_tokens.weight``, ``norm.weight``, and
+        ``lm_head.weight``. TransportPlan appends these after per-layer
+        specs, using an empty prefix so ``dst`` / sources are treated as
+        full paths.
+
+        Default: no top-level tensors.
+        """
+        return ()
+
     def init_buffers_post_meta(self) -> None:
         """
         Initialize buffers that are not in the state dict after loading with meta device.

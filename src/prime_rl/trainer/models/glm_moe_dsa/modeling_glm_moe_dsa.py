@@ -193,6 +193,19 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         is_sparse = f"{prefix}.mlp.router.gate.weight" in self.state_dict()
         return _BASE + (_SPARSE if is_sparse else _DENSE)
 
+    def non_layer_conversion_specs(self) -> tuple[ConversionSpec, ...]:
+        """Non-per-layer tensors. Covers embed_tokens, model.norm, lm_head —
+        otherwise NIXL never updates them on inference, causing KL drift as
+        trainer gradients advance them but inference stays at initial load.
+        """
+        specs = (
+            ConversionSpec("model.embed_tokens.weight", ("model.embed_tokens.weight",)),
+            ConversionSpec("model.norm.weight", ("model.norm.weight",)),
+        )
+        if not self.config.tie_word_embeddings:
+            specs = specs + (ConversionSpec("lm_head.weight", ("lm_head.weight",)),)
+        return specs
+
 
 @auto_docstring
 class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):

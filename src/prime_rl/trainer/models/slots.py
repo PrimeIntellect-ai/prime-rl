@@ -144,6 +144,13 @@ def _resolve_source(src: Tensor, slot_rows: int) -> Tensor:
     return src
 
 
+def _join(prefix: str, name: str) -> str:
+    """Concatenate a per-layer prefix with a local name. Empty prefix (for
+    non-layer tensors like ``lm_head.weight``) passes through unchanged —
+    otherwise we'd emit a leading dot."""
+    return f"{prefix}.{name}" if prefix else name
+
+
 def _shard_rank_and_size(parallel_dims: ParallelDims) -> tuple[int, int]:
     """Rank + size along the FSDP shard axis (``dp_shard_cp``).
 
@@ -218,7 +225,7 @@ class ShardedSlot:
             dtype=spec.slot_dtype,
             device=src.device,
         )
-        slot_key = f"{prefix}.{src_name}"
+        slot_key = _join(prefix, src_name)
         scale: Optional[Tensor] = None
         scale_key: Optional[str] = None
         inference_scale_name: Optional[str] = None
@@ -235,7 +242,7 @@ class ShardedSlot:
             source_name=slot_key,
             slot_key=slot_key,
             scale_key=scale_key,
-            inference_name=f"{prefix}.{spec.dst}",
+            inference_name=_join(prefix, spec.dst),
             inference_scale_name=inference_scale_name,
             offset_rows=offset_rows,
             scale_offset_rows=scale_offset_rows if spec.quantized else None,
@@ -330,7 +337,7 @@ class GatheredSlot:
     ) -> "GatheredSlot":
         my_rank, trainer_ws = _shard_rank_and_size(parallel_dims)
         weight = torch.empty(tuple(src.shape), dtype=spec.slot_dtype, device=src.device)
-        slot_key = f"{prefix}.{src_name}"
+        slot_key = _join(prefix, src_name)
         scale: Optional[Tensor] = None
         scale_key: Optional[str] = None
         inference_scale_name: Optional[str] = None
@@ -348,7 +355,7 @@ class GatheredSlot:
             source_name=slot_key,
             slot_key=slot_key,
             scale_key=scale_key,
-            inference_name=f"{prefix}.{spec.dst}",
+            inference_name=_join(prefix, spec.dst),
             inference_scale_name=inference_scale_name,
             offset_rows=offset_rows,
             scale_offset_rows=scale_offset_rows if spec.quantized else None,

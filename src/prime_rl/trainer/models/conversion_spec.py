@@ -108,7 +108,8 @@ class ConversionSpec:
         assert self.quantized, f"spec {self.dst!r} is not quantized"
         suffix = self.quantization.scale_suffix
         strip = ".weight" if suffix.startswith(".") else "_weight"
-        return f"{prefix}.{self.dst}".removesuffix(strip) + suffix
+        full = f"{prefix}.{self.dst}" if prefix else self.dst
+        return full.removesuffix(strip) + suffix
 
     def per_source_scale_key(self, slot_key: str) -> str:
         """Scale buffer name for a per-source slot of a quantized spec.
@@ -178,7 +179,8 @@ class ConversionSpec:
         row_off = 0
         scale_row_off = 0
         for src_name in self.sources:
-            src = state_dict[f"{prefix}.{src_name}"]
+            full_src = f"{prefix}.{src_name}" if prefix else src_name
+            src = state_dict[full_src]
             cls = self.get_handler_class(src, parallel_dims)
             slots.append(
                 cls.from_spec(
