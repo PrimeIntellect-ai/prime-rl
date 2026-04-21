@@ -249,11 +249,100 @@ def pretokenize_rollout_trajectory(
     return True
 
 
+def _expand_vlm_image_placeholders(
+    sample: TrainingSample,
+    image_grid_thw: list[list[int]],
+    *,
+    image_token_id: int,
+    merge_size: int,
+    temperature: float,
+) -> None:
+    """In place: replace each un-expanded `<|image_pad|>` in a TrainingSample
+    with N copies matching the per-image patch count.
+
+    The Qwen3-VL renderer emits one un-expanded placeholder per image so vLLM
+    can expand them server-side against ``multi_modal_data``. The trainer
+    forward pass, by contrast, expects placeholders pre-expanded 1:1 with
+    image features. Every parallel per-token array on the sample (mask,
+    logprobs, temperatures, routed_experts) has to be padded at the exact
+    same positions or the training loss lines up with the wrong tokens.
+
+    Idempotent: if the sample already carries expanded placeholders (total
+    pad count already matches the feature count) we return immediately. Any
+    other count triggers a hard ``ValueError`` rather than silent drift.
+    """
+    denom = merge_size * merge_size
+    expected_features = sum(max(t * h * w // denom, 1) for t, h, w in image_grid_thw)
+    expected_images = len(image_grid_thw)
+    total_pads = sample.prompt_ids.count(image_token_id) + sample.completion_ids.count(image_token_id)
+    if total_pads == 0 or total_pads == expected_features:
+        return
+    if total_pads != expected_images:
+        raise ValueError(f"Expected {expected_images} image placeholder(s) to match image_grid_thw, found {total_pads}")
+
+    grid_iter = iter(image_grid_thw)
+
+    # Prompt stream: only ids and prompt_mask are per-token.
+    new_prompt_ids: list[int] = []
+    new_prompt_mask: list[bool] = []
+    for tok, masked in zip(sample.prompt_ids, sample.prompt_mask, strict=True):
+        if tok == image_token_id:
+            t, h, w = next(grid_iter)
+            count = max(t * h * w // denom, 1)
+            new_prompt_ids.extend([image_token_id] * count)
+            new_prompt_mask.extend([masked] * count)
+        else:
+            new_prompt_ids.append(tok)
+            new_prompt_mask.append(masked)
+
+    # Completion stream: ids + mask + logprobs + temperatures stay in lockstep.
+    # Inserted pad positions are not gradient-tracked and carry no real
+    # logprob; the extension path already uses mask=False / lp=0.0 for them.
+    new_comp_ids: list[int] = []
+    new_comp_mask: list[bool] = []
+    new_comp_lp: list[float] = []
+    new_comp_temps: list[float] = []
+    for tok, masked, lp, temp in zip(
+        sample.completion_ids,
+        sample.completion_mask,
+        sample.completion_logprobs,
+        sample.completion_temperatures,
+        strict=True,
+    ):
+        if tok == image_token_id:
+            t, h, w = next(grid_iter)
+            count = max(t * h * w // denom, 1)
+            new_comp_ids.extend([image_token_id] * count)
+            new_comp_mask.extend([False] * count)
+            new_comp_lp.extend([0.0] * count)
+            new_comp_temps.extend([temperature] * count)
+        else:
+            new_comp_ids.append(tok)
+            new_comp_mask.append(masked)
+            new_comp_lp.append(lp)
+            new_comp_temps.append(temp)
+
+    sample.prompt_ids = new_prompt_ids
+    sample.prompt_mask = new_prompt_mask
+    sample.completion_ids = new_comp_ids
+    sample.completion_mask = new_comp_mask
+    sample.completion_logprobs = new_comp_lp
+    sample.completion_temperatures = new_comp_temps
+    # VLM rollouts don't ship routed-experts data (dense Qwen3-VL); re-align
+    # if some future path does provide it so downstream shape checks hold.
+    if sample.routed_experts is not None:
+        sample.routed_experts = _align_routed_experts(
+            sample.routed_experts,
+            len(sample.prompt_ids) + len(sample.completion_ids),
+        )
+
+
 def interleave_rollout(
     output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
+    processor: Any | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -409,11 +498,23 @@ def interleave_rollout(
     # Attach images once per sample using only the last merged step
     if vlm_cache is not None:
         key = output["example_id"] if cache_key is None else cache_key
+        image_token_id = getattr(processor, "image_token_id", None) if processor is not None else None
+        merge_size = (
+            getattr(getattr(processor, "image_processor", None), "merge_size", None) if processor is not None else None
+        )
         for _, sample, last_step_idx in active_samples:
             pv, shape, grids = vlm_cache.get_for_step(key, last_step_idx)
             sample.pixel_values = pv
             sample.pixel_values_shape = shape
             sample.image_grid_thw = grids
+            if grids and image_token_id is not None and merge_size:
+                _expand_vlm_image_placeholders(
+                    sample,
+                    grids,
+                    image_token_id=image_token_id,
+                    merge_size=merge_size,
+                    temperature=temperature,
+                )
             if mm_token_type_ids_mapping is not None:
                 sample.mm_token_type_ids = [
                     mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids
