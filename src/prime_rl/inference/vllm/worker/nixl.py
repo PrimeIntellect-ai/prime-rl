@@ -8,6 +8,8 @@ before it has to build the chunked descriptors.
 
 from __future__ import annotations
 
+import ctypes as _ctypes
+import functools
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -27,6 +29,49 @@ else:
     Worker = object  # type: ignore
 
 logger = init_logger("vllm.inference.vllm.worker_nixl")
+
+
+@functools.lru_cache(maxsize=1)
+def _cudart():
+    cudart = _ctypes.CDLL("libcudart.so")
+    cudart.cudaDeviceGetAttribute.argtypes = [_ctypes.POINTER(_ctypes.c_int), _ctypes.c_int, _ctypes.c_int]
+    cudart.cudaDeviceGetAttribute.restype = _ctypes.c_int
+    cudart.cudaDeviceFlushGPUDirectRDMAWrites.argtypes = [_ctypes.c_int, _ctypes.c_int]
+    cudart.cudaDeviceFlushGPUDirectRDMAWrites.restype = _ctypes.c_int
+    return cudart
+
+
+@functools.lru_cache(maxsize=8)
+def _gpudirect_rdma_attrs(device: int) -> tuple[int, int]:
+    cudart = _cudart()
+    value = _ctypes.c_int()
+    err = cudart.cudaDeviceGetAttribute(_ctypes.byref(value), 117, device)
+    if err != 0:
+        raise RuntimeError(f"cudaDeviceGetAttribute(117) failed with error {err}")
+    flush_options = value.value
+    err = cudart.cudaDeviceGetAttribute(_ctypes.byref(value), 118, device)
+    if err != 0:
+        raise RuntimeError(f"cudaDeviceGetAttribute(118) failed with error {err}")
+    return flush_options, value.value
+
+
+def _flush_gpudirect_rdma_writes(device: int) -> None:
+    """Force GPUDirect RDMA writes visible to the owning CUDA context.
+
+    This is NIXL-specific: NCCL's copy path is stream-ordered, but one-sided
+    RDMA lands outside CUDA stream semantics. Even on devices that report
+    owner-ordering support, forcing the flush is a cheap runtime falsification
+    of the "remote writes are not fully visible yet" hypothesis.
+    """
+    cudart = _cudart()
+    cudaFlushGPUDirectRDMAWritesTargetCurrentDevice = 0
+    cudaFlushGPUDirectRDMAWritesToOwner = 100
+    err = cudart.cudaDeviceFlushGPUDirectRDMAWrites(
+        cudaFlushGPUDirectRDMAWritesTargetCurrentDevice,
+        cudaFlushGPUDirectRDMAWritesToOwner,
+    )
+    if err != 0:
+        raise RuntimeError(f"cudaDeviceFlushGPUDirectRDMAWrites failed with error {err}")
 
 
 class NIXLWeightUpdateWorker(Worker):
@@ -156,6 +201,14 @@ class NIXLWeightUpdateWorker(Worker):
         # the end-of-push barrier. When this returns, every RDMA WRITE
         # has been ack'd at this worker's NIC.
         self._spg.barrier()
+        flush_options, ordering = _gpudirect_rdma_attrs(self.device.index)
+        if not getattr(self, "_logged_gpudirect_caps", False):
+            logger.info(
+                f"[nixl GPUDirect] device={self.device.index} "
+                f"flush_options={flush_options} ordering={ordering}"
+            )
+            self._logged_gpudirect_caps = True
+        _flush_gpudirect_rdma_writes(self.device.index)
         # CUDA cross-stream visibility fence: writes landed via PCIe DMA,
         # not on a CUDA stream; sync so subsequent SM kernels see them.
         torch.cuda.synchronize()

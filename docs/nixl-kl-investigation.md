@@ -898,3 +898,41 @@ kernel's execution in prod (vs the isolated unit test) introduces a
 difference, this catches it.
 
 Wandb name `nixl-iter18-pytorch-quantize`.
+
+Results (job 5683, 11 steps observed before cancel):
+| Step | KL | | Step | KL |
+|---:|---:|---|---:|---:|
+| 0 | 0.0005 | | 6 | 0.0035 |
+| 1 | 0.0040 | | 7 | **0.0059** |
+| 2 | 0.0015 | | 8 | 0.0033 |
+| 3 | 0.0034 | | 9 | **0.0114** |
+| 4 | 0.0036 | | 10 | **0.0086** |
+| 5 | **0.0059** | | | |
+
+**Verdict:** big improvement, still FAIL. The PyTorch quantizer swap is
+the first NIXL change that gets close to the NCCL bound, so the Triton
+vs main-FP8 path difference is definitely real. But because KL still
+breaks the strict bound and then drifts sharply by steps 9-10, the
+quantizer mismatch is only part of the problem.
+
+### Iteration 19 — explicit GPUDirect RDMA flush on inference
+
+Stay inside the NIXL path only. Hypothesis: the final written bytes are
+correct at rest, but the owning CUDA context is still not consuming them
+with the same visibility semantics as NCCL's stream-ordered `copy_()`
+path at the moment forward resumes.
+
+Change:
+- In `NIXLWeightUpdateWorker.update_weights_from_path`, after the
+  post-write `spg.barrier()` and before `torch.cuda.synchronize()`,
+  call:
+  `cudaDeviceFlushGPUDirectRDMAWrites(CurrentDevice, ToOwner)`
+- Log `cudaDevAttrGPUDirectRDMAFlushWritesOptions` and
+  `cudaDevAttrGPUDirectRDMAWritesOrdering` once per worker so the run
+  records what the device claims.
+
+This is a narrow NIXL-specific runtime check. If it fixes the drift, the
+culprit is GPUDirect RDMA visibility / ordering on this stack rather
+than weight content.
+
+Wandb name `nixl-iter19-gdrdma-flush`.
