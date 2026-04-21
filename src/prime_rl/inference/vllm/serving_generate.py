@@ -101,10 +101,11 @@ class OpenAIServingGenerate:
 
         # Match /v1/chat/completions: if the client didn't ask for a specific
         # cap, let the model generate up to whatever room is left in context.
+        # vLLM v1 AsyncLLM exposes model_config directly (no async getter).
         max_tokens = request.max_tokens
         if max_tokens is None:
-            model_config = await self.engine_client.get_model_config()
-            max_tokens = max(1, model_config.max_model_len - len(request.prompt_token_ids))
+            max_model_len = self.engine_client.model_config.max_model_len
+            max_tokens = max(1, max_model_len - len(request.prompt_token_ids))
 
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
