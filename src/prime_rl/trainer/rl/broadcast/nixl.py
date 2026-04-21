@@ -87,7 +87,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
     @torch.no_grad()
     def push_once(self, model: PreTrainedModelPrimeRL) -> None:
-        self._plan.push_once(model, self._agent, self._spg, flush_every=1)
+        self._plan.push_once(model, self._agent, self._spg)
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
