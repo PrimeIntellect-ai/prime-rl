@@ -521,4 +521,36 @@ never transports.
 
 Wandb name `nixl-iter9-untracked-keys`.
 
+Job 5670, startup log:
+
+```
+INFO [nixl UNTRACKED] ok — every model state_dict key is tracked by some slot
+```
+
+**Every key is tracked.** No missing tensors. Combined with iter7's
+SIG verifying all slot content transfers bit-exact, transport is
+proven 100% faithful for every weight.
+
+So the bug is *not* in weights at all. The KL drift must come from
+somewhere else in inference's state machine.
+
+### Iteration 10 — CUDA cross-stream visibility fence
+
+Hypothesis: NIXL RDMA writes land on GPU HBM via the NIC's PCIe
+DMA, not via a CUDA stream. Without an explicit fence,
+subsequent kernels on stream 0 may read cached/stale values.
+
+My SIG diagnostic computed `.sum().item()` which blocks the CPU
+until a CUDA kernel completes — that's an implicit sync and may be
+masking the bug. When I read SIG values everything syncs, so they
+match. But the *next* forward pass on a live rollout request may
+not have the same sync, and could read stale data → wrong logprobs
+→ KL drift.
+
+Add `torch.cuda.synchronize()` on inference right after
+`spg.barrier()` and before `update_mla_absorbed_weights`. Cheap
+(one device-wide sync per push), unambiguous.
+
+Wandb name `nixl-iter10-cuda-sync`.
+
 _(append iterations below as they run)_

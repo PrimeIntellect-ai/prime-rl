@@ -148,6 +148,11 @@ class NIXLWeightUpdateWorker(Worker):
         if not hasattr(self, "_spg"):
             raise RuntimeError("NIXL transfer not initialized — call /init_nixl_transfer first")
         self._spg.barrier()
+        # CUDA cross-stream visibility fence: the RDMA writes landed on
+        # GPU HBM from the NIC's PCIe bus, not via a CUDA stream. Without
+        # this sync, subsequent kernels on stream 0 may read cached/stale
+        # values for SM-visible memory.
+        torch.cuda.synchronize()
 
         # Diagnostic: mirror the trainer-side SIG anchors.
         #   G (bf16 gather)   : input_layernorm.weight
