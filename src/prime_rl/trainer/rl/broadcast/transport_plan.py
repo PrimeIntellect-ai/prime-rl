@@ -98,6 +98,36 @@ class TransportPlan:
             for spec in model.non_layer_conversion_specs():
                 self.slots.extend(spec.build_slots("", state_dict, parallel_dims))
 
+        # Diagnostic: surface any state_dict keys we'd normally expect to
+        # transport but none of the conversion specs cover. If a tensor is
+        # in the trainer's live state_dict but NIXL skips it, inference
+        # stays at its initial value while trainer drifts by gradient —
+        # precisely the failure mode we're chasing.
+        if self.my_rank == 0:
+            tracked: set[str] = set()
+            for slot in self.slots:
+                if hasattr(slot, "source_name"):
+                    tracked.add(slot.source_name)
+                if hasattr(slot, "source_names"):
+                    tracked.update(slot.source_names)
+            # Only flag things that look like model parameters/buffers (not
+            # optimizer state, step counters, etc.).
+            relevant = {
+                k for k in state_dict.keys()
+                if (k.startswith("model.") or k == "lm_head.weight")
+                and not k.startswith("model.layers.") == False  # keep both
+            }
+            # Simpler: everything model.*  or lm_head.weight.
+            relevant = {k for k in state_dict.keys() if k.startswith("model.") or k == "lm_head.weight"}
+            untracked = sorted(relevant - tracked)
+            if untracked:
+                self.logger.warning(
+                    f"[nixl UNTRACKED] {len(untracked)} model state_dict keys not in any "
+                    f"conversion spec (they will NOT be transported): first 30 = {untracked[:30]}"
+                )
+            else:
+                self.logger.info(f"[nixl UNTRACKED] ok — every model state_dict key is tracked by some slot")
+
         # Populated in register().
         self._local_preps: dict[str, Any] = {}
         # Populated in rendezvous().

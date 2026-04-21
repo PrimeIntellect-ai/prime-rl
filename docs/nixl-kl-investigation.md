@@ -500,4 +500,25 @@ Code changes:
 If this is the bug, KL should drop to NCCL-baseline-like level
 (<0.005) across all steps. Wandb name `nixl-iter8-non-layer`.
 
+Job 5668. Slot count 1626 → 1629 (+3 slots = embed/norm/lm_head, as
+expected). bytes/push 25889 → 25948 MB (+59 MB, matches 3 bf16
+tensors of the expected sizes).
+
+KL series (9 steps):
+0.0018, 0.0025, 0.0027, 0.0038, 0.0040, 0.0029, **0.0113**, 0.0044, **0.0095**
+
+**Verdict: FAIL.** Fix was conceptually right (non-layer tensors need
+to be transported) but not the dominant cause of drift. Some *other*
+state is also missing or stale on inference.
+
+### Iteration 9 — untracked-keys diagnostic
+
+Kept the non-layer fix (still correct). Added a startup warning on
+trainer rank 0: compare `model.*`/`lm_head.weight` keys in the live
+state_dict against the set of source names covered by all slots.
+Any mismatch = something in the trainer's live model that NIXL
+never transports.
+
+Wandb name `nixl-iter9-untracked-keys`.
+
 _(append iterations below as they run)_
