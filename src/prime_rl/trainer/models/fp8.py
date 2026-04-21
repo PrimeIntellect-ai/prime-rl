@@ -1,6 +1,9 @@
+"""FP8 e4m3 blockwise quantization — PyTorch impl (identical to main's
+``quantize_to_fp8_blockwise``). Diagnostic swap in iter18 to rule out any
+subtle Triton-kernel difference vs the NCCL+FP8 path on main.
+"""
+
 import torch
-import triton
-import triton.language as tl
 
 BLOCK_SIZE = 128
 
@@ -13,50 +16,58 @@ def align(x: int, y: int) -> int:
     return ceil_div(x, y) * y
 
 
+def _quantize_2d_pytorch(weight: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
+    """Bit-identical port of main's ``quantize_to_fp8_blockwise``."""
+    if weight.ndim != 2:
+        raise ValueError(f"FP8 quantization expects a 2D tensor, got shape={tuple(weight.shape)}")
 
-@triton.jit
-def _grouped_fp8_block_quantize(
-    x_ptr,
-    out_ptr,
-    sf_ptr,
-    groups,
-    rows,
-    cols,
-    stride_xg,
-    stride_xm,
-    stride_xn,
-    stride_yg,
-    stride_ym,
-    stride_yn,
-    stride_sg,
-    stride_sm,
-    stride_sn,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-):
-    pid_g = tl.program_id(axis=0)
-    pid_m = tl.program_id(axis=1)
-    pid_n = tl.program_id(axis=2)
-    row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    mask = (pid_g < groups) & (row_offsets[:, None] < rows) & (col_offsets[None, :] < cols)
-    x = tl.load(
-        x_ptr + pid_g * stride_xg + row_offsets[:, None] * stride_xm + col_offsets[None, :] * stride_xn,
-        mask=mask,
-        other=0.0,
-    ).to(tl.float32)
-    amax = tl.max(tl.abs(x))
-    # Floor matches the pre-Triton PyTorch kernel (main's quantize_to_fp8_blockwise).
-    # Raising to 1e-4 was observable drift on blocks with amax < ~0.0448 — tiny
-    # nonzero weights got zeroed out at dequant time.
-    scale = tl.maximum(amax / 448.0, 1e-12)
-    y = x / scale
-    tl.store(
-        out_ptr + pid_g * stride_yg + row_offsets[:, None] * stride_ym + col_offsets[None, :] * stride_yn,
-        y.to(tl.float8e4nv),
-        mask=mask,
-    )
-    tl.store(sf_ptr + pid_g * stride_sg + pid_m * stride_sm + pid_n * stride_sn, scale, mask=pid_g < groups)
+    rows, cols = weight.shape
+    pad_rows = (block_size - rows % block_size) % block_size
+    pad_cols = (block_size - cols % block_size) % block_size
+
+    if pad_rows or pad_cols:
+        padded = torch.zeros(
+            rows + pad_rows,
+            cols + pad_cols,
+            dtype=weight.dtype,
+            device=weight.device,
+        )
+        padded[:rows, :cols] = weight
+    else:
+        padded = weight.contiguous()
+
+    padded_rows, padded_cols = padded.shape
+    blocks = padded.view(
+        padded_rows // block_size,
+        block_size,
+        padded_cols // block_size,
+        block_size,
+    ).permute(0, 2, 1, 3)
+
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+    max_abs = blocks.float().abs().amax(dim=(2, 3))
+    scales = (max_abs / fp8_max).clamp(min=1e-12)
+    blocks_fp8 = (blocks.float() / scales[:, :, None, None]).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn)
+
+    quantized = blocks_fp8.permute(0, 2, 1, 3).reshape(padded_rows, padded_cols)[:rows, :cols].contiguous()
+    return quantized, scales.float().contiguous()
+
+
+def fp8_block_quantize(
+    x: torch.Tensor,
+    out: torch.Tensor | None = None,
+    sf: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """2D FP8 blockwise quantize — matches main's PyTorch impl exactly.
+
+    If ``out``/``sf`` are provided, results are copied into them.
+    """
+    q, s = _quantize_2d_pytorch(x, BLOCK_SIZE)
+    if out is not None:
+        out.copy_(q)
+    if sf is not None:
+        sf.copy_(s)
+    return q, s
 
 
 def grouped_fp8_block_quantize(
@@ -64,49 +75,29 @@ def grouped_fp8_block_quantize(
     out: torch.Tensor | None = None,
     sf: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """FP8 e4m3 blockwise quantization for a 3D tensor ``(groups, rows, cols)``.
+    """3D grouped FP8 block quantize — per-expert loop of ``_quantize_2d_pytorch``.
 
-    Every ``(gran_k, gran_k)`` tile shares a single fp32 scale. ``out`` and
-    ``sf`` are written in place when provided; otherwise fresh buffers are
-    allocated and returned.
+    Mirrors main's per-expert loop in ``convert_tt_layer_to_vllm_kernel``
+    (loop over ``w13[expert_idx]`` then ``torch.stack``). If ``out``/``sf``
+    are provided, results are copied in place.
     """
-    assert x.dim() == 3
+    if x.ndim != 3:
+        raise ValueError(f"grouped_fp8_block_quantize expects 3D, got shape={tuple(x.shape)}")
     groups, rows, cols = x.shape
-    if out is None:
-        out = torch.empty((groups, rows, cols), device=x.device, dtype=torch.float8_e4m3fn)
-    if sf is None:
-        sf = torch.empty((groups, ceil_div(rows, BLOCK_SIZE), ceil_div(cols, BLOCK_SIZE)), device=x.device, dtype=torch.float32)
-    grid = (groups, ceil_div(rows, BLOCK_SIZE), ceil_div(cols, BLOCK_SIZE))
-    _grouped_fp8_block_quantize[grid](
-        x,
-        out,
-        sf,
-        groups,
-        rows,
-        cols,
-        x.stride(0),
-        x.stride(1),
-        x.stride(2),
-        out.stride(0),
-        out.stride(1),
-        out.stride(2),
-        sf.stride(0),
-        sf.stride(1),
-        sf.stride(2),
-        BLOCK_M=BLOCK_SIZE,
-        BLOCK_N=BLOCK_SIZE,
-        num_warps=8,
+    q_accum = torch.empty(
+        (groups, rows, cols), dtype=torch.float8_e4m3fn, device=x.device
     )
-    return out, sf
-
-
-def fp8_block_quantize(
-    x: torch.Tensor, out: torch.Tensor | None = None, sf: torch.Tensor | None = None
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """2D variant of :func:`grouped_fp8_block_quantize` (``groups=1``)."""
-    assert x.dim() == 2
-    out = out.unsqueeze(0) if out is not None else None
-    sf = sf.unsqueeze(0) if sf is not None else None
-    x = x.unsqueeze(0)
-    q, s = grouped_fp8_block_quantize(x, out=out, sf=sf)
-    return q.squeeze(0), s.squeeze(0)
+    s_accum = torch.empty(
+        (groups, ceil_div(rows, BLOCK_SIZE), ceil_div(cols, BLOCK_SIZE)),
+        dtype=torch.float32,
+        device=x.device,
+    )
+    for g in range(groups):
+        q_g, s_g = _quantize_2d_pytorch(x[g], BLOCK_SIZE)
+        q_accum[g] = q_g
+        s_accum[g] = s_g
+    if out is not None:
+        out.copy_(q_accum)
+    if sf is not None:
+        sf.copy_(s_accum)
+    return q_accum, s_accum

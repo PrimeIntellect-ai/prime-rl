@@ -863,3 +863,38 @@ worth testing — the interaction with NIXL's shorter pauses might be
 what breaks NIXL specifically.
 
 Wandb name `nixl-iter17-clearcache`.
+
+Results (job 5681, 14 steps):
+| Step | KL | | Step | KL |
+|---:|---:|---|---:|---:|
+| 0 | 0.0026 | | 7 | 0.0040 |
+| 1 | 0.0029 | | 8 | 0.0024 |
+| 2 | 0.0012 | | 9 | 0.0049 |
+| 3 | 0.0016 | | 10 | 0.0032 |
+| 4 | 0.0030 | | 11 | 0.0040 |
+| 5 | 0.0015 | | 12 | **0.0069** |
+| 6 | 0.0017 | | 13 | **0.0097** |
+
+Helps — steps 0-11 all under 0.005 (best run yet) — but **not the fix**.
+NCCL path uses `clear_cache=false` too and is bounded, so this is a
+symptom of something else. Reverted.
+
+### Iteration 18 — replace Triton FP8 kernel with PyTorch impl from main
+
+User suggestion: take main's exact `quantize_to_fp8_blockwise` PyTorch
+kernel and use it as the NIXL quantize path. Rules out ANY subtle
+behavior of the Triton kernel (compile-cache, tile-size effects, weird
+stream interaction, etc.).
+
+Implementation: replaced `fp8.py` entirely with a PyTorch port of
+main's function plus an out=/sf= in-place convention so the slot-buffer
+API still works. Grouped (3D) path: per-expert loop of the 2D impl
+then stack — exactly mirrors main's per-expert loop in
+`convert_tt_layer_to_vllm_kernel`.
+
+Earlier iter0 unit test showed Triton ≡ PyTorch bit-exact, so
+numerically we expect zero change. But if something about the Triton
+kernel's execution in prod (vs the isolated unit test) introduces a
+difference, this catches it.
+
+Wandb name `nixl-iter18-pytorch-quantize`.
