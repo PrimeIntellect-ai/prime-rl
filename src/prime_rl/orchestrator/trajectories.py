@@ -249,110 +249,6 @@ def pretokenize_rollout_trajectory(
     return True
 
 
-def _expand_vlm_image_placeholders(
-    sample: TrainingSample,
-    tokens_per_image: list[int],
-    *,
-    image_token_id: int,
-    temperature: float,
-) -> None:
-    """In place: replace each un-expanded image placeholder in a TrainingSample
-    with N copies, one per soft image feature the trainer's vision tower will
-    produce.
-
-    VLM renderers emit a single placeholder per image so vLLM can expand them
-    server-side against ``multi_modal_data``. The trainer forward expects them
-    pre-expanded 1:1 with vision features, otherwise it aborts with
-    "image features and image tokens do not match". Every parallel per-token
-    array on the sample (mask, logprobs, temperatures) has to be padded at the
-    same positions or the training loss lines up with the wrong tokens.
-
-    ``tokens_per_image`` is the model-agnostic spec — one integer per image
-    giving the soft-token count the vision tower produces. For Qwen3-VL that's
-    ``(t*h*w) // merge_size**2`` derived from ``image_grid_thw``; for
-    Gemma-style processors it comes back directly as
-    ``num_soft_tokens_per_image``. The caller computes this list from whatever
-    metadata the processor exposed; this helper only knows how to splice it.
-
-    Idempotent: if the sample already carries expanded placeholders (total pad
-    count matches the expected feature count) we return immediately. Any other
-    count triggers a hard ``ValueError`` rather than silent drift.
-    """
-    expected_features = sum(max(n, 1) for n in tokens_per_image)
-    expected_images = len(tokens_per_image)
-    total_pads = sample.prompt_ids.count(image_token_id) + sample.completion_ids.count(image_token_id)
-    if total_pads == 0 or total_pads == expected_features:
-        return
-    if total_pads != expected_images:
-        raise ValueError(
-            f"Expected {expected_images} image placeholder(s) to match tokens_per_image, found {total_pads}"
-        )
-
-    counts_iter = iter(tokens_per_image)
-
-    # Prompt stream: only ids and prompt_mask are per-token.
-    new_prompt_ids: list[int] = []
-    new_prompt_mask: list[bool] = []
-    for tok, masked in zip(sample.prompt_ids, sample.prompt_mask, strict=True):
-        if tok == image_token_id:
-            count = max(next(counts_iter), 1)
-            new_prompt_ids.extend([image_token_id] * count)
-            new_prompt_mask.extend([masked] * count)
-        else:
-            new_prompt_ids.append(tok)
-            new_prompt_mask.append(masked)
-
-    # Completion stream: ids + mask + logprobs + temperatures stay in lockstep.
-    # Inserted pad positions are not gradient-tracked and carry no real
-    # logprob; the extension path already uses mask=False / lp=0.0 for them.
-    new_comp_ids: list[int] = []
-    new_comp_mask: list[bool] = []
-    new_comp_lp: list[float] = []
-    new_comp_temps: list[float] = []
-    for tok, masked, lp, temp in zip(
-        sample.completion_ids,
-        sample.completion_mask,
-        sample.completion_logprobs,
-        sample.completion_temperatures,
-        strict=True,
-    ):
-        if tok == image_token_id:
-            count = max(next(counts_iter), 1)
-            new_comp_ids.extend([image_token_id] * count)
-            new_comp_mask.extend([False] * count)
-            new_comp_lp.extend([0.0] * count)
-            new_comp_temps.extend([temperature] * count)
-        else:
-            new_comp_ids.append(tok)
-            new_comp_mask.append(masked)
-            new_comp_lp.append(lp)
-            new_comp_temps.append(temp)
-
-    sample.prompt_ids = new_prompt_ids
-    sample.prompt_mask = new_prompt_mask
-    sample.completion_ids = new_comp_ids
-    sample.completion_mask = new_comp_mask
-    sample.completion_logprobs = new_comp_lp
-    sample.completion_temperatures = new_comp_temps
-    # Dense VLMs (Qwen3-VL, Gemma4) don't ship routed-experts data; re-align if
-    # some future MoE-VLM path does provide it so downstream shape checks hold.
-    if sample.routed_experts is not None:
-        sample.routed_experts = _align_routed_experts(
-            sample.routed_experts,
-            len(sample.prompt_ids) + len(sample.completion_ids),
-        )
-
-
-def _tokens_per_image_from_grid_thw(grids: list[list[int]], merge_size: int) -> list[int]:
-    """Qwen2/3-VL-style derivation: patches per image = t*h*w, soft tokens =
-    patches / merge_size**2. Gemma-style processors bypass this path — their
-    image_processor already returns ``num_soft_tokens_per_image`` directly,
-    which we pass through unchanged.
-    """
-    denom = merge_size * merge_size
-    return [max(t * h * w // denom, 1) for t, h, w in grids]
-
-
 def interleave_rollout(
     output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
@@ -511,37 +407,18 @@ def interleave_rollout(
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples.append((new_prefix, make_sample(tokens), step_idx))
 
-    # Attach images once per sample using only the last merged step
+    # Attach images once per sample using only the last merged step. Prompt
+    # tokens already contain fully expanded <|image_pad|> placeholders because
+    # VLMs go through MITO (chat completions), which runs apply_chat_template
+    # server-side; the orchestrator re-tokenizes via the same processor in the
+    # fallback path so features and tokens stay 1:1.
     if vlm_cache is not None:
         key = output["example_id"] if cache_key is None else cache_key
-        image_token_id = getattr(processor, "image_token_id", None) if processor is not None else None
-        merge_size = (
-            getattr(getattr(processor, "image_processor", None), "merge_size", None) if processor is not None else None
-        )
         for _, sample, last_step_idx in active_samples:
             pv, shape, grids = vlm_cache.get_for_step(key, last_step_idx)
             sample.pixel_values = pv
             sample.pixel_values_shape = shape
             sample.image_grid_thw = grids
-            # Derive a model-agnostic soft-token count per image. Qwen2/3-VL
-            # exposes patch geometry via image_grid_thw; Gemma-family processors
-            # return num_soft_tokens_per_image directly and don't populate grids
-            # at all. Whichever is present is enough to expand placeholders.
-            tokens_per_image = None
-            if grids and image_token_id is not None:
-                if merge_size:
-                    tokens_per_image = _tokens_per_image_from_grid_thw(grids, merge_size)
-                else:
-                    # Treat grids as an already-normalized list of per-image
-                    # counts (e.g. [[n], ...]) emitted by a non-Qwen processor.
-                    tokens_per_image = [max(int(g[0]), 1) for g in grids]
-            if tokens_per_image is not None and image_token_id is not None:
-                _expand_vlm_image_placeholders(
-                    sample,
-                    tokens_per_image,
-                    image_token_id=image_token_id,
-                    temperature=temperature,
-                )
             if mm_token_type_ids_mapping is not None:
                 sample.mm_token_type_ids = [
                     mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids

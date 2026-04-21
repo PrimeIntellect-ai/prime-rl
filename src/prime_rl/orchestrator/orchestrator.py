@@ -152,6 +152,7 @@ async def orchestrate(config: OrchestratorConfig):
         rollout_client_config=rollout_client_config,
         rollout_model_name=rollout_model_name,
         tokenizer=tokenizer,
+        is_vlm=is_vlm,
         logger=logger,
     )
 
@@ -872,11 +873,29 @@ async def setup_rollout_inference_pool(
     rollout_client_config,
     rollout_model_name: str,
     tokenizer,
+    is_vlm: bool,
     logger,
 ):
-    """Set up rollout inference for either direct renderer clients or external hard distillation."""
+    """Set up rollout inference.
+
+    Routing policy:
+      - external teacher rollout → MITO (openai_chat_completions), no renderer
+      - VLM → MITO (openai_chat_completions), no renderer. Image preprocessing
+        and chat templating live server-side; the client never tokenizes images.
+      - plain LM → renderer client (TITO via /v1/generate).
+    """
     if config.teacher_rollout_model is not None:
         logger.info("Using external rollout model without renderer client")
+        inference_pool = await setup_inference_pool(
+            rollout_client_config,
+            model_name=rollout_model_name,
+            train_client_type="openai_chat_completions",
+            eval_client_type="openai_chat_completions",
+        )
+        return None, inference_pool
+
+    if is_vlm:
+        logger.info("VLM detected — using MITO (openai_chat_completions) rollout client")
         inference_pool = await setup_inference_pool(
             rollout_client_config,
             model_name=rollout_model_name,
