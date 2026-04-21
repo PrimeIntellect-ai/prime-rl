@@ -936,3 +936,36 @@ culprit is GPUDirect RDMA visibility / ordering on this stack rather
 than weight content.
 
 Wandb name `nixl-iter19-gdrdma-flush`.
+
+Results (job 5685, 11 steps observed before cancel):
+| Step | KL | | Step | KL |
+|---:|---:|---|---:|---:|
+| 0 | 0.0010 | | 6 | 0.0020 |
+| 1 | 0.0020 | | 7 | **0.0051** |
+| 2 | 0.0030 | | 8 | **0.0065** |
+| 3 | 0.0021 | | 9 | **0.0075** |
+| 4 | 0.0029 | | 10 | 0.0036 |
+| 5 | 0.0011 | | | |
+
+**Verdict:** improves again, still FAIL. This is better than iter18 over
+most of the first 10 steps, especially steps 5-6 and 9-10, so explicit
+GPUDirect flush is affecting real behavior. But since the bound still
+breaks at steps 7-9, visibility alone is not the whole bug.
+
+### Iteration 20 — per-write drain on top of quantizer + GPUDirect flush
+
+Next NIXL-specific hypothesis: even with correct bytes and explicit
+owner-context flush, batching thousands of posted WRITEs before a drain
+still leaves a UCX/NIXL completion-ordering effect that the inference
+side does not tolerate.
+
+Change:
+- `NIXLWeightBroadcast.push_once`: call
+  `TransportPlan.push_once(..., flush_every=1)`
+
+This was already directionally helpful in the old path (iter14). Now we
+test it on top of the two content/runtime fixes that already helped:
+1. PyTorch FP8 quantizer parity with main
+2. explicit GPUDirect RDMA flush
+
+Wandb name `nixl-iter20-gdrdma-flush-perwrite`.
