@@ -87,6 +87,10 @@ class InferenceAdmin:
 # TrainingBatch and ships to trainer. Single coroutine, single loop.
 
 
+class _Done(Exception):
+    """Raised by the batcher when max_steps has been reached. Caught by run()."""
+
+
 class TrainBatcher:
     def __init__(
         self,
@@ -96,6 +100,7 @@ class TrainBatcher:
         engine: RolloutEngine,
         batch_size: int,
         advantage_cfg: DefaultAdvantageConfig,
+        max_steps: int | None = None,
     ):
         self.in_q = in_q
         self.tokenizer = tokenizer
@@ -103,6 +108,7 @@ class TrainBatcher:
         self.engine = engine
         self.batch_size = batch_size
         self.advantage_cfg = advantage_cfg
+        self.max_steps = max_steps
         self.step = 0
         self.logger = get_logger()
 
@@ -117,6 +123,8 @@ class TrainBatcher:
             while len(buf) >= self.batch_size:
                 rollouts, buf = buf[: self.batch_size], buf[self.batch_size :]
                 await self._ship(rollouts)
+                if self.max_steps is not None and self.step >= self.max_steps:
+                    raise _Done()
 
     def _score(self, group: Group) -> None:
         rewards = torch.tensor([[r.get("reward", 0.0) for r in group.rollouts]], dtype=torch.float32)
@@ -267,7 +275,7 @@ async def run(cfg: OrchestratorConfig) -> None:
 
     engine = RolloutEngine(pools, groups_q)
     training_sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
-    batcher = TrainBatcher(groups_q, tokenizer, training_sender, engine, cfg.batch_size, cfg.advantage)
+    batcher = TrainBatcher(groups_q, tokenizer, training_sender, engine, cfg.batch_size, cfg.advantage, cfg.max_steps)
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
 
     admin = InferenceAdmin(cfg.client.base_url[0], os.getenv(cfg.client.api_key_var, "EMPTY"))
@@ -294,10 +302,13 @@ async def run(cfg: OrchestratorConfig) -> None:
     watcher = WeightWatcher(get_broadcast_dir(cfg.output_dir), on_new_weights)
 
     logger.success("Orch2 starting — producing rollouts")
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(engine.run())
-        tg.create_task(batcher.run())
-        tg.create_task(watcher.run())
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(engine.run())
+            tg.create_task(batcher.run())
+            tg.create_task(watcher.run())
+    except* _Done:
+        logger.success(f"Orch2 finished: reached max_steps={cfg.max_steps}")
 
 
 def main() -> None:
