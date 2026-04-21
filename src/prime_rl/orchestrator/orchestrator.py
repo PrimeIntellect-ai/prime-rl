@@ -480,26 +480,43 @@ async def orchestrate(config: OrchestratorConfig):
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # Pretokenize using the Renderer (same chat template used during rollout)
-        for rollout in train_rollouts:
-            pretokenize_rollout_trajectory(rollout, tokenizer, processor=processor, renderer=renderer)
+        # Stage 1: pretokenize + (for VLM) build image cache concurrently.
+        # Pretokenize is a no-op when the renderer client already populated
+        # `tokens` on each trajectory step, but the fallback-tokenizer path
+        # and image-cache build are both CPU-heavy. Running them on threads
+        # and awaiting a single gather lets whichever finishes first free
+        # the event loop immediately and, with max_async_level >= 2, overlaps
+        # this whole stage with inference for the next batch.
+        async def _pretokenize_all() -> None:
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        pretokenize_rollout_trajectory,
+                        rollout,
+                        tokenizer,
+                        processor=processor,
+                        renderer=renderer,
+                    )
+                    for rollout in train_rollouts
+                )
+            )
 
-        # VLM: build image cache in a thread so it doesn't block the event loop.
-        # This lets the scheduler continue servicing inflight rollout requests
-        # and — with max_async_level >= 2 — overlap with the next batch's inference.
         if is_vlm:
-            vlm_cache = await asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor)
             mm_token_type_ids_mapping = {}
             if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
                 mm_token_type_ids_mapping[processor.image_token_id] = 1
             if hasattr(processor, "video_token_id") and processor.video_token_id is not None:
                 mm_token_type_ids_mapping[processor.video_token_id] = 2
-
+            _, vlm_cache = await asyncio.gather(
+                _pretokenize_all(),
+                asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor),
+            )
             logger.info(
                 f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
                 f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
             )
         else:
+            await _pretokenize_all()
             vlm_cache = None
             mm_token_type_ids_mapping = None
 
