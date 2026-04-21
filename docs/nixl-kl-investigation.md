@@ -553,4 +553,24 @@ Add `torch.cuda.synchronize()` on inference right after
 
 Wandb name `nixl-iter10-cuda-sync`.
 
+Job 5672. KL (9 steps):
+0.0028, 0.0010, 0.0019, 0.0004, 0.0049, 0.0024, **0.0052**, **0.0089**, 0.0017
+
+Step 6 and 7 break 0.005. Same drift pattern. cuda.sync didn't help.
+
+### Iteration 11 — disable CUDA graphs (enforce_eager)
+
+Hypothesis: vLLM compiles CUDA graphs for inference. Graph replay
+semantics with RDMA-modified memory are subtle — kernels re-read
+memory but graph-captured kernel IDs may persist quantization-
+specific immutable state. If so, NIXL's bypassing-stream writes
+would not be observed by graph-replayed kernels, while NCCL's
+stream-0 `param.copy_()` would.
+
+`prod.toml` adds `inference.model.enforce_eager = true`. Disables
+CUDA graphs at the cost of throughput, but if KL bounds, graph
+semantics are the issue.
+
+Wandb name `nixl-iter11-enforce-eager`.
+
 _(append iterations below as they run)_
