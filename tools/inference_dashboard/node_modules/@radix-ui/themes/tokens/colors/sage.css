@@ -1,0 +1,123 @@
+:root, .light, .light-theme {
+    --sage-1: #fbfdfc;
+    --sage-2: #f7f9f8;
+    --sage-3: #eef1f0;
+    --sage-4: #e6e9e8;
+    --sage-5: #dfe2e0;
+    --sage-6: #d7dad9;
+    --sage-7: #cbcfcd;
+    --sage-8: #b8bcba;
+    --sage-9: #868e8b;
+    --sage-10: #7c8481;
+    --sage-11: #5f6563;
+    --sage-12: #1a211e;
+    --sage-a1: #00804004;
+    --sage-a2: #00402008;
+    --sage-a3: #002d1e11;
+    --sage-a4: #001f1519;
+    --sage-a5: #00180820;
+    --sage-a6: #00140d28;
+    --sage-a7: #00140a34;
+    --sage-a8: #000f0847;
+    --sage-a9: #00110b79;
+    --sage-a10: #00100a83;
+    --sage-a11: #000a07a0;
+    --sage-a12: #000805e5;
+    --sage-surface: #ffffffcc;
+    --sage-indicator: var(--sage-9);
+    --sage-track: var(--sage-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        :root, .light, .light-theme {
+            --sage-1: color(display-p3 0.986 0.992 0.988);
+            --sage-2: color(display-p3 0.97 0.977 0.974);
+            --sage-3: color(display-p3 0.935 0.944 0.94);
+            --sage-4: color(display-p3 0.904 0.913 0.909);
+            --sage-5: color(display-p3 0.875 0.885 0.88);
+            --sage-6: color(display-p3 0.844 0.854 0.849);
+            --sage-7: color(display-p3 0.8 0.811 0.806);
+            --sage-8: color(display-p3 0.725 0.738 0.732);
+            --sage-9: color(display-p3 0.531 0.556 0.546);
+            --sage-10: color(display-p3 0.492 0.515 0.506);
+            --sage-11: color(display-p3 0.377 0.395 0.389);
+            --sage-12: color(display-p3 0.107 0.129 0.118);
+            --sage-a1: color(display-p3 0.024 0.514 0.267 / 0.016);
+            --sage-a2: color(display-p3 0.02 0.267 0.145 / 0.032);
+            --sage-a3: color(display-p3 0.008 0.184 0.125 / 0.067);
+            --sage-a4: color(display-p3 0.012 0.094 0.051 / 0.095);
+            --sage-a5: color(display-p3 0.008 0.098 0.035 / 0.126);
+            --sage-a6: color(display-p3 0.004 0.078 0.027 / 0.157);
+            --sage-a7: color(display-p3 0 0.059 0.039 / 0.2);
+            --sage-a8: color(display-p3 0.004 0.047 0.031 / 0.275);
+            --sage-a9: color(display-p3 0.004 0.059 0.035 / 0.471);
+            --sage-a10: color(display-p3 0 0.047 0.031 / 0.51);
+            --sage-a11: color(display-p3 0 0.031 0.02 / 0.624);
+            --sage-a12: color(display-p3 0 0.027 0.012 / 0.895);
+            --sage-surface: color(display-p3 1 1 1 / 0.8);
+        }
+    }
+}
+.dark, .dark-theme {
+    --sage-1: #101211;
+    --sage-2: #171918;
+    --sage-3: #202221;
+    --sage-4: #272a29;
+    --sage-5: #2e3130;
+    --sage-6: #373b39;
+    --sage-7: #444947;
+    --sage-8: #5b625f;
+    --sage-9: #63706b;
+    --sage-10: #717d79;
+    --sage-11: #adb5b2;
+    --sage-12: #eceeed;
+    --sage-a1: #00000000;
+    --sage-a2: #f0f2f108;
+    --sage-a3: #f3f5f412;
+    --sage-a4: #f2fefd1a;
+    --sage-a5: #f1fbfa22;
+    --sage-a6: #edfbf42d;
+    --sage-a7: #edfcf73c;
+    --sage-a8: #ebfdf657;
+    --sage-a9: #dffdf266;
+    --sage-a10: #e5fdf674;
+    --sage-a11: #f4fefbb0;
+    --sage-a12: #fdfffeed;
+    --sage-surface: #1e201f80;
+    --sage-indicator: var(--sage-9);
+    --sage-track: var(--sage-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        .dark, .dark-theme {
+            --sage-1: color(display-p3 0.064 0.07 0.067);
+            --sage-2: color(display-p3 0.092 0.098 0.094);
+            --sage-3: color(display-p3 0.128 0.135 0.131);
+            --sage-4: color(display-p3 0.155 0.164 0.159);
+            --sage-5: color(display-p3 0.183 0.193 0.188);
+            --sage-6: color(display-p3 0.218 0.23 0.224);
+            --sage-7: color(display-p3 0.269 0.285 0.277);
+            --sage-8: color(display-p3 0.362 0.382 0.373);
+            --sage-9: color(display-p3 0.398 0.438 0.421);
+            --sage-10: color(display-p3 0.453 0.49 0.474);
+            --sage-11: color(display-p3 0.685 0.709 0.697);
+            --sage-12: color(display-p3 0.927 0.933 0.93);
+            --sage-a1: color(display-p3 0 0 0 / 0);
+            --sage-a2: color(display-p3 0.976 0.988 0.984 / 0.03);
+            --sage-a3: color(display-p3 0.992 0.945 0.941 / 0.072);
+            --sage-a4: color(display-p3 0.988 0.996 0.992 / 0.102);
+            --sage-a5: color(display-p3 0.992 1 0.996 / 0.131);
+            --sage-a6: color(display-p3 0.973 1 0.976 / 0.173);
+            --sage-a7: color(display-p3 0.957 1 0.976 / 0.233);
+            --sage-a8: color(display-p3 0.957 1 0.984 / 0.334);
+            --sage-a9: color(display-p3 0.902 1 0.957 / 0.397);
+            --sage-a10: color(display-p3 0.929 1 0.973 / 0.452);
+            --sage-a11: color(display-p3 0.969 1 0.988 / 0.688);
+            --sage-a12: color(display-p3 0.992 1 0.996 / 0.929);
+            --sage-surface: color(display-p3 0.1176 0.1255 0.1176 / 0.5);
+        }
+    }
+}
+:root {
+    --sage-contrast: white;
+}

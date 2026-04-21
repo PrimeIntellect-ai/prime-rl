@@ -785,3 +785,50 @@ Reverted `flush_every=1` → 100 (speed) and `enforce_eager` → false
 (speed). Only the pre-write barrier change is being tested.
 
 Wandb name `nixl-iter15-prewrite-barrier`.
+
+Results (job 5679, 15 steps):
+| Step | KL | | Step | KL |
+|---:|---:|---|---:|---:|
+| 0 | 0.0014 | | 8 | **0.0074** |
+| 1 | 0.0008 | | 9 | **0.0052** |
+| 2 | 0.0018 | | 10 | **0.0075** |
+| 3 | 0.0035 | | 11 | 0.0028 |
+| 4 | 0.0046 | | 12 | 0.0015 |
+| 5 | 0.0007 | | 13 | **0.0121** |
+| 6 | 0.0019 | | 14 | **0.0182** |
+| 7 | 0.0034 | | | |
+
+Steps 0-7 all bounded (max 0.0046, first time we pass step 6-7).
+Pre-write barrier *helps* — drift delayed. But step 8 still breaks
+0.005 and spikes at step 13-14. Barrier isn't the full story.
+
+### Iteration 16 — byte-level dump + diff
+
+Going to the bigger guns: dump every trainer slot's content and
+every inference param/buffer at push #1, then run a tool that
+reconstructs the expected inference state from the trainer shards
+and compares byte-for-byte with the actual inference state. Any
+mismatch (even a single off-by-one position) surfaces here.
+
+Scope: layer 3 (covers all slot types — gather, sharded, expert,
+fused) + non-layer (embed, norm, lm_head). About 5 GB of dumps
+total.
+
+Controls:
+- `NIXL_DUMP_DIR=/beegfs/outputs/nixl-broadcast/dump` (env var).
+- `NIXL_DUMP_PUSH=1` (env var — dump on the first push).
+
+Inserts:
+- Trainer `push_once`: `self._maybe_dump_trainer()` after convert.
+- Inference `update_weights_from_path`: `self._maybe_dump_inference()`
+  after cuda.sync.
+
+Diff tool: `tools/nixl_diff.py <dump_dir>` — reconstructs expected
+inference state per inference_name from all trainer ranks, compares
+to each inference worker's actual bytes. Handles ShardedSlot (concat
+shards by rank), GatheredSlot (rank 0 authoritative), ExpertSlot
+(per-global-expert).
+
+Retains iter15's pre-write barrier (still correct).
+
+Wandb name `nixl-iter16-bytedump`.

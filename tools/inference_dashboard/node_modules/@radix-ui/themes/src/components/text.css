@@ -1,0 +1,85 @@
+.rt-Text {
+  line-height: var(--line-height, var(--default-line-height));
+  letter-spacing: var(--letter-spacing, inherit);
+
+  :where(&) {
+    margin: 0;
+  }
+
+  &:where([data-accent-color]) {
+    color: var(--accent-a11);
+  }
+
+  &:where([data-accent-color].rt-high-contrast),
+  :where([data-accent-color]:not(.radix-themes)) &:where(.rt-high-contrast) {
+    color: var(--accent-12);
+  }
+
+  /* stylelint-disable selector-max-type */
+  &:where(label) {
+    /* Better -webkit-tap-highlight-color */
+    @media (pointer: coarse) {
+      -webkit-tap-highlight-color: transparent;
+      &:where(:active) {
+        outline: 0.75em solid var(--gray-a4);
+        outline-offset: -0.6em;
+      }
+    }
+  }
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * SIZES                                                                                           *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+@breakpoints {
+  .rt-Text {
+    &:where(.rt-r-size-1) {
+      font-size: var(--font-size-1);
+      --line-height: var(--line-height-1);
+      --letter-spacing: var(--letter-spacing-1);
+    }
+    &:where(.rt-r-size-2) {
+      font-size: var(--font-size-2);
+      --line-height: var(--line-height-2);
+      --letter-spacing: var(--letter-spacing-2);
+    }
+    &:where(.rt-r-size-3) {
+      font-size: var(--font-size-3);
+      --line-height: var(--line-height-3);
+      --letter-spacing: var(--letter-spacing-3);
+    }
+    &:where(.rt-r-size-4) {
+      font-size: var(--font-size-4);
+      --line-height: var(--line-height-4);
+      --letter-spacing: var(--letter-spacing-4);
+    }
+    &:where(.rt-r-size-5) {
+      font-size: var(--font-size-5);
+      --line-height: var(--line-height-5);
+      --letter-spacing: var(--letter-spacing-5);
+    }
+    &:where(.rt-r-size-6) {
+      font-size: var(--font-size-6);
+      --line-height: var(--line-height-6);
+      --letter-spacing: var(--letter-spacing-6);
+    }
+    &:where(.rt-r-size-7) {
+      font-size: var(--font-size-7);
+      --line-height: var(--line-height-7);
+      --letter-spacing: var(--letter-spacing-7);
+    }
+    &:where(.rt-r-size-8) {
+      font-size: var(--font-size-8);
+      --line-height: var(--line-height-8);
+      --letter-spacing: var(--letter-spacing-8);
+    }
+    &:where(.rt-r-size-9) {
+      font-size: var(--font-size-9);
+      --line-height: var(--line-height-9);
+      --letter-spacing: var(--letter-spacing-9);
+    }
+  }
+}

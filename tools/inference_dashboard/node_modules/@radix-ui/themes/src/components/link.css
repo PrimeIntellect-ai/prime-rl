@@ -1,0 +1,94 @@
+.rt-Link {
+  /* Override the cursor on the HTML element even if rendering a <button> */
+  /* stylelint-disable selector-max-type */
+  &:where(:any-link, button) {
+    cursor: var(--cursor-link);
+  }
+
+  &:where(:disabled, [data-disabled]) {
+    cursor: var(--cursor-disabled);
+  }
+
+  &:where(:focus-visible) {
+    border-radius: calc(0.07em * var(--radius-factor));
+    outline-color: var(--focus-8);
+    outline-width: 2px;
+    outline-style: solid;
+    outline-offset: 2px;
+  }
+
+  :where([data-accent-color]:not(.radix-themes, .rt-high-contrast)) &:where([data-accent-color='']) {
+    color: var(--accent-12);
+  }
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * UNDERLINE                                                                                       *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+.rt-Link {
+  &:where(:any-link, button) {
+    text-decoration-line: none;
+    text-decoration-style: solid;
+    text-decoration-thickness: min(2px, max(1px, 0.05em));
+    text-underline-offset: calc(0.025em + 2px);
+    text-decoration-color: var(--accent-a5);
+
+    /* Enhancement for bright colors */
+    @supports (color: color-mix(in oklab, white, black)) {
+      text-decoration-color: color-mix(in oklab, var(--accent-a5), var(--gray-a6));
+    }
+
+    @media (pointer: coarse) {
+      /* Better -webkit-tap-highlight-color */
+      &:where(:active:not(:focus-visible, [data-state='open'])) {
+        outline: 0.75em solid var(--accent-a4);
+        outline-offset: -0.6em;
+      }
+    }
+
+    &:where(.rt-underline-auto) {
+      @media (hover: hover) {
+        &:where(:hover) {
+          text-decoration-line: underline;
+        }
+      }
+
+      &:where(.rt-high-contrast),
+      :where([data-accent-color]:not(.radix-themes, .rt-high-contrast)) &:where([data-accent-color='']) {
+        text-decoration-line: underline;
+        text-decoration-color: var(--accent-a6);
+
+        /* Enhancement for bright colors */
+        @supports (color: color-mix(in oklab, white, black)) {
+          text-decoration-color: color-mix(in oklab, var(--accent-a6), var(--gray-a6));
+        }
+      }
+    }
+
+    &:where(.rt-underline-hover) {
+      @media (hover: hover) {
+        &:where(:hover) {
+          text-decoration-line: underline;
+        }
+      }
+    }
+
+    &:where(.rt-underline-always) {
+      text-decoration-line: underline;
+    }
+  }
+}
+
+/* all focused states underline */
+
+.rt-Link:where(:focus-visible) {
+  text-decoration-line: none;
+}
+
+/* Enhancement – hide underline for when Link's only child is a Code where underline is hard to see */
+.rt-Link:where(:has(.rt-Code:not(.rt-variant-ghost):only-child)) {
+  text-decoration-color: transparent;
+}

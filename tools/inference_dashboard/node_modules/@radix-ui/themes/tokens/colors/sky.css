@@ -1,0 +1,129 @@
+:root, .light, .light-theme {
+    --sky-1: #f9feff;
+    --sky-2: #f1fafd;
+    --sky-3: #e1f6fd;
+    --sky-4: #d1f0fa;
+    --sky-5: #bee7f5;
+    --sky-6: #a9daed;
+    --sky-7: #8dcae3;
+    --sky-8: #60b3d7;
+    --sky-9: #7ce2fe;
+    --sky-10: #74daf8;
+    --sky-11: #00749e;
+    --sky-12: #1d3e56;
+    --sky-a1: #00d5ff06;
+    --sky-a2: #00a4db0e;
+    --sky-a3: #00b3ee1e;
+    --sky-a4: #00ace42e;
+    --sky-a5: #00a1d841;
+    --sky-a6: #0092ca56;
+    --sky-a7: #0089c172;
+    --sky-a8: #0085bf9f;
+    --sky-a9: #00c7fe83;
+    --sky-a10: #00bcf38b;
+    --sky-a11: #00749e;
+    --sky-a12: #002540e2;
+    --sky-surface: #eef9fdcc;
+    --sky-indicator: var(--sky-9);
+    --sky-track: var(--sky-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        :root, .light, .light-theme {
+            --sky-1: color(display-p3 0.98 0.995 0.999);
+            --sky-2: color(display-p3 0.953 0.98 0.99);
+            --sky-3: color(display-p3 0.899 0.963 0.989);
+            --sky-4: color(display-p3 0.842 0.937 0.977);
+            --sky-5: color(display-p3 0.777 0.9 0.954);
+            --sky-6: color(display-p3 0.701 0.851 0.921);
+            --sky-7: color(display-p3 0.604 0.785 0.879);
+            --sky-8: color(display-p3 0.457 0.696 0.829);
+            --sky-9: color(display-p3 0.585 0.877 0.983);
+            --sky-10: color(display-p3 0.555 0.845 0.959);
+            --sky-11: color(display-p3 0.193 0.448 0.605);
+            --sky-12: color(display-p3 0.145 0.241 0.329);
+            --sky-a1: color(display-p3 0.02 0.804 1 / 0.02);
+            --sky-a2: color(display-p3 0.024 0.592 0.757 / 0.048);
+            --sky-a3: color(display-p3 0.004 0.655 0.886 / 0.102);
+            --sky-a4: color(display-p3 0.004 0.604 0.851 / 0.157);
+            --sky-a5: color(display-p3 0.004 0.565 0.792 / 0.224);
+            --sky-a6: color(display-p3 0.004 0.502 0.737 / 0.299);
+            --sky-a7: color(display-p3 0.004 0.459 0.694 / 0.397);
+            --sky-a8: color(display-p3 0 0.435 0.682 / 0.542);
+            --sky-a9: color(display-p3 0.004 0.71 0.965 / 0.416);
+            --sky-a10: color(display-p3 0.004 0.647 0.914 / 0.444);
+            --sky-a11: color(display-p3 0.193 0.448 0.605);
+            --sky-a12: color(display-p3 0.145 0.241 0.329);
+            --sky-surface: color(display-p3 0.9412 0.9765 0.9843 / 0.8);
+        }
+    }
+}
+.dark, .dark-theme {
+    --sky-1: #0d141f;
+    --sky-2: #111a27;
+    --sky-3: #112840;
+    --sky-4: #113555;
+    --sky-5: #154467;
+    --sky-6: #1b537b;
+    --sky-7: #1f6692;
+    --sky-8: #197cae;
+    --sky-9: #7ce2fe;
+    --sky-10: #a8eeff;
+    --sky-11: #75c7f0;
+    --sky-12: #c2f3ff;
+    --sky-a1: #0044ff0f;
+    --sky-a2: #1171fb18;
+    --sky-a3: #1184fc33;
+    --sky-a4: #128fff49;
+    --sky-a5: #1c9dfd5d;
+    --sky-a6: #28a5ff72;
+    --sky-a7: #2badfe8b;
+    --sky-a8: #1db2fea9;
+    --sky-a9: #7ce3fffe;
+    --sky-a10: #a8eeff;
+    --sky-a11: #7cd3ffef;
+    --sky-a12: #c2f3ff;
+    --sky-surface: #13233b80;
+    --sky-indicator: var(--sky-9);
+    --sky-track: var(--sky-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        .dark, .dark-theme {
+            --sky-1: color(display-p3 0.056 0.078 0.116);
+            --sky-2: color(display-p3 0.075 0.101 0.149);
+            --sky-3: color(display-p3 0.089 0.154 0.244);
+            --sky-4: color(display-p3 0.106 0.207 0.323);
+            --sky-5: color(display-p3 0.135 0.261 0.394);
+            --sky-6: color(display-p3 0.17 0.322 0.469);
+            --sky-7: color(display-p3 0.205 0.394 0.557);
+            --sky-8: color(display-p3 0.232 0.48 0.665);
+            --sky-9: color(display-p3 0.585 0.877 0.983);
+            --sky-10: color(display-p3 0.718 0.925 0.991);
+            --sky-11: color(display-p3 0.536 0.772 0.924);
+            --sky-12: color(display-p3 0.799 0.947 0.993);
+            --sky-a1: color(display-p3 0 0.282 0.996 / 0.055);
+            --sky-a2: color(display-p3 0.157 0.467 0.992 / 0.089);
+            --sky-a3: color(display-p3 0.192 0.522 0.996 / 0.19);
+            --sky-a4: color(display-p3 0.212 0.584 1 / 0.274);
+            --sky-a5: color(display-p3 0.259 0.631 1 / 0.349);
+            --sky-a6: color(display-p3 0.302 0.655 1 / 0.433);
+            --sky-a7: color(display-p3 0.329 0.686 1 / 0.526);
+            --sky-a8: color(display-p3 0.325 0.71 1 / 0.643);
+            --sky-a9: color(display-p3 0.592 0.894 1 / 0.984);
+            --sky-a10: color(display-p3 0.722 0.933 1 / 0.992);
+            --sky-a11: color(display-p3 0.536 0.772 0.924);
+            --sky-a12: color(display-p3 0.799 0.947 0.993);
+            --sky-surface: color(display-p3 0.0863 0.1333 0.2196 / 0.5);
+        }
+    }
+}
+:root {
+    --sky-contrast: #1c2024;
+}
+@supports (color: color-mix(in oklab, white, black)) {
+    .dark,
+.dark-theme {
+        --sky-track: color-mix(in oklab, var(--sky-8), var(--sky-9) 65%);
+    }
+}

@@ -1,0 +1,246 @@
+/* stylelint-disable selector-max-type */
+/* Disable selector-max-type rule to target individual element types. */
+/* Make sure these tags are wrapped in `:where()` for 0 specificity. */
+
+.rt-reset {
+  /* * * * * * * * * * * * * * * * * * * */
+  /*                                     */
+  /*              Margins                */
+  /*                                     */
+  /* * * * * * * * * * * * * * * * * * * */
+
+  &:where(body, blockquote, dl, dd, figure, p) {
+    margin: 0;
+  }
+
+  /* * * * * * * * * * * * * * * * * * * */
+  /*                                     */
+  /*             Typography              */
+  /*                                     */
+  /* * * * * * * * * * * * * * * * * * * */
+
+  &:where(address, b, cite, code, dfn, em, i, kbd, q, samp, small, strong, var) {
+    font: unset;
+  }
+  &:where(h1, h2, h3, h4, h5, h6) {
+    font: unset;
+    margin: 0;
+  }
+
+  /* * * * * * * * * * * * * * * * * * * */
+  /*                                     */
+  /*        Interactive elements         */
+  /*                                     */
+  /* * * * * * * * * * * * * * * * * * * */
+
+  &:where(a) {
+    all: unset;
+    -webkit-tap-highlight-color: transparent;
+  }
+  &:where(
+      button,
+      select,
+
+      /* Buttons */
+      [type='button'],
+      [type='image'],
+      [type='reset'],
+      [type='submit'],
+
+      /* Non-textual inputs */
+      [type='checkbox'],
+      [type='color'],
+      [type='radio'],
+      [type='range']
+    ) {
+    all: unset;
+    display: inline-block;
+    font-weight: normal;
+    font-style: normal;
+    text-indent: initial;
+    -webkit-tap-highlight-color: transparent;
+  }
+  &:where(label) {
+    -webkit-tap-highlight-color: transparent;
+  }
+  &:where(select) {
+    font-weight: normal;
+    font-style: normal;
+    text-align: start;
+  }
+  &:where(
+      textarea,
+      input:not(
+          /* Buttons */
+          [type='button'],
+          [type='image'],
+          [type='reset'],
+          [type='submit'],
+
+          /* Non-textual inputs */
+          [type='checkbox'],
+          [type='color'],
+          [type='radio'],
+          [type='range']
+        )
+    ) {
+    all: unset;
+    display: block;
+    width: stretch;
+    font-weight: normal;
+    font-style: normal;
+    text-align: start;
+    text-indent: initial;
+    -webkit-tap-highlight-color: transparent;
+
+    /* Make sure parent <label> doesn't change the text cursor */
+    cursor: text;
+
+    /* Recover textarea pre-wrap in Firefox */
+    white-space: pre-wrap;
+  }
+  &:where(:focus) {
+    outline: none;
+  }
+  &::placeholder {
+    color: unset;
+    opacity: unset;
+    /* Weird, but placeholders are selectable in Chrome and Safari */
+    user-select: none;
+  }
+
+  /* * * * * * * * * * * * * * * * * * * */
+  /*                                     */
+  /*               Tables                */
+  /*                                     */
+  /* * * * * * * * * * * * * * * * * * * */
+
+  &:where(table) {
+    all: unset;
+    display: table;
+    text-indent: initial;
+  }
+  &:where(caption) {
+    text-align: inherit;
+  }
+  &:where(td) {
+    padding: 0;
+  }
+  &:where(th) {
+    font-weight: unset;
+    text-align: inherit;
+    padding: 0;
+  }
+
+  /* * * * * * * * * * * * * * * * * * * */
+  /*                                     */
+  /*       Individual style tweaks       */
+  /*                                     */
+  /* * * * * * * * * * * * * * * * * * * */
+
+  &:where(abbr, acronym) {
+    text-decoration: none;
+  }
+  &:where(canvas, object, picture, summary) {
+    display: block;
+  }
+  &:where(del, s) {
+    text-decoration: unset;
+  }
+  &:where(fieldset, hr) {
+    all: unset;
+    display: block;
+  }
+  &:where(legend) {
+    padding: 0;
+    border: none;
+    /* Normalize with label */
+    cursor: default;
+  }
+  &:where(li) {
+    display: block;
+    text-align: unset;
+  }
+  &:where(ol, ul) {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  &:where(iframe) {
+    display: block;
+    border: none;
+  }
+  &:where(iframe) {
+    width: stretch;
+  }
+  &:where(ins, u) {
+    text-decoration: none;
+  }
+  &:where(img) {
+    display: block;
+    max-width: 100%;
+  }
+  &:where(svg) {
+    display: block;
+    max-width: 100%;
+    flex-shrink: 0;
+  }
+  &:where(mark) {
+    all: unset;
+  }
+  &:where(pre) {
+    font: unset;
+    margin: unset;
+  }
+  &:where(q)::before,
+  &:where(q)::after {
+    content: '';
+  }
+  &:where(sub, sup) {
+    font: unset;
+    vertical-align: unset;
+  }
+  &:where(details) ::marker,
+  &:where(summary)::marker {
+    content: none;
+  }
+  &:where(video) {
+    display: block;
+    width: stretch;
+  }
+
+  /* * * * * * * * * * * * * * * * * * * */
+  /*                                     */
+  /*               Cursors               */
+  /*                                     */
+  /* * * * * * * * * * * * * * * * * * * */
+
+  &:where(:any-link) {
+    cursor: var(--cursor-link);
+  }
+  &:where(button) {
+    cursor: var(--cursor-button);
+  }
+  &:where(:disabled, [data-disabled]) {
+    cursor: var(--cursor-disabled);
+  }
+  &:where(input[type='checkbox']) {
+    cursor: var(--cursor-checkbox);
+  }
+  &:where(input[type='radio']) {
+    cursor: var(--cursor-radio);
+  }
+
+  /* * * * * * * * * * * * * * * * * * * */
+  /*                                     */
+  /*             Box sizing              */
+  /*                                     */
+  /* * * * * * * * * * * * * * * * * * * */
+
+  &,
+  &::before,
+  &::after {
+    /* Don't reorder this rule or remove "&" */
+    box-sizing: border-box;
+  }
+}

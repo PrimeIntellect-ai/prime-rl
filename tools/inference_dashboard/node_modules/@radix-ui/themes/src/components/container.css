@@ -1,0 +1,42 @@
+.radix-themes {
+  --container-1: 448px;
+  --container-2: 688px;
+  --container-3: 880px;
+  --container-4: 1136px;
+}
+
+.rt-Container {
+  display: flex;
+  box-sizing: border-box;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+  flex-grow: 1;
+}
+
+.rt-ContainerInner {
+  width: 100%;
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * SIZES                                                                                           *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+@breakpoints {
+  .rt-ContainerInner {
+    :where(.rt-Container.rt-r-size-1) & {
+      max-width: var(--container-1);
+    }
+    :where(.rt-Container.rt-r-size-2) & {
+      max-width: var(--container-2);
+    }
+    :where(.rt-Container.rt-r-size-3) & {
+      max-width: var(--container-3);
+    }
+    :where(.rt-Container.rt-r-size-4) & {
+      max-width: var(--container-4);
+    }
+  }
+}

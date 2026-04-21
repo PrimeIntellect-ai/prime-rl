@@ -1,0 +1,123 @@
+:root, .light, .light-theme {
+    --iris-1: #fdfdff;
+    --iris-2: #f8f8ff;
+    --iris-3: #f0f1fe;
+    --iris-4: #e6e7ff;
+    --iris-5: #dadcff;
+    --iris-6: #cbcdff;
+    --iris-7: #b8baf8;
+    --iris-8: #9b9ef0;
+    --iris-9: #5b5bd6;
+    --iris-10: #5151cd;
+    --iris-11: #5753c6;
+    --iris-12: #272962;
+    --iris-a1: #0000ff02;
+    --iris-a2: #0000ff07;
+    --iris-a3: #0011ee0f;
+    --iris-a4: #000bff19;
+    --iris-a5: #000eff25;
+    --iris-a6: #000aff34;
+    --iris-a7: #0008e647;
+    --iris-a8: #0008d964;
+    --iris-a9: #0000c0a4;
+    --iris-a10: #0000b6ae;
+    --iris-a11: #0600abac;
+    --iris-a12: #000246d8;
+    --iris-surface: #f6f6ffcc;
+    --iris-indicator: var(--iris-9);
+    --iris-track: var(--iris-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        :root, .light, .light-theme {
+            --iris-1: color(display-p3 0.992 0.992 0.999);
+            --iris-2: color(display-p3 0.972 0.973 0.998);
+            --iris-3: color(display-p3 0.943 0.945 0.992);
+            --iris-4: color(display-p3 0.902 0.906 1);
+            --iris-5: color(display-p3 0.857 0.861 1);
+            --iris-6: color(display-p3 0.799 0.805 0.987);
+            --iris-7: color(display-p3 0.721 0.727 0.955);
+            --iris-8: color(display-p3 0.61 0.619 0.918);
+            --iris-9: color(display-p3 0.357 0.357 0.81);
+            --iris-10: color(display-p3 0.318 0.318 0.774);
+            --iris-11: color(display-p3 0.337 0.326 0.748);
+            --iris-12: color(display-p3 0.154 0.161 0.371);
+            --iris-a1: color(display-p3 0.02 0.02 1 / 0.008);
+            --iris-a2: color(display-p3 0.024 0.024 0.863 / 0.028);
+            --iris-a3: color(display-p3 0.004 0.071 0.871 / 0.059);
+            --iris-a4: color(display-p3 0.012 0.051 1 / 0.099);
+            --iris-a5: color(display-p3 0.008 0.035 1 / 0.142);
+            --iris-a6: color(display-p3 0 0.02 0.941 / 0.2);
+            --iris-a7: color(display-p3 0.004 0.02 0.847 / 0.279);
+            --iris-a8: color(display-p3 0.004 0.024 0.788 / 0.389);
+            --iris-a9: color(display-p3 0 0 0.706 / 0.644);
+            --iris-a10: color(display-p3 0 0 0.667 / 0.683);
+            --iris-a11: color(display-p3 0.337 0.326 0.748);
+            --iris-a12: color(display-p3 0.154 0.161 0.371);
+            --iris-surface: color(display-p3 0.9647 0.9647 0.9961 / 0.8);
+        }
+    }
+}
+.dark, .dark-theme {
+    --iris-1: #13131e;
+    --iris-2: #171625;
+    --iris-3: #202248;
+    --iris-4: #262a65;
+    --iris-5: #303374;
+    --iris-6: #3d3e82;
+    --iris-7: #4a4a95;
+    --iris-8: #5958b1;
+    --iris-9: #5b5bd6;
+    --iris-10: #6e6ade;
+    --iris-11: #b1a9ff;
+    --iris-12: #e0dffe;
+    --iris-a1: #3636fe0e;
+    --iris-a2: #564bf916;
+    --iris-a3: #525bff3b;
+    --iris-a4: #4d58ff5a;
+    --iris-a5: #5b62fd6b;
+    --iris-a6: #6d6ffd7a;
+    --iris-a7: #7777fe8e;
+    --iris-a8: #7b7afeac;
+    --iris-a9: #6a6afed4;
+    --iris-a10: #7d79ffdc;
+    --iris-a11: #b1a9ff;
+    --iris-a12: #e1e0fffe;
+    --iris-surface: #1d1b3980;
+    --iris-indicator: var(--iris-9);
+    --iris-track: var(--iris-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        .dark, .dark-theme {
+            --iris-1: color(display-p3 0.075 0.075 0.114);
+            --iris-2: color(display-p3 0.089 0.086 0.14);
+            --iris-3: color(display-p3 0.128 0.134 0.272);
+            --iris-4: color(display-p3 0.153 0.165 0.382);
+            --iris-5: color(display-p3 0.192 0.201 0.44);
+            --iris-6: color(display-p3 0.239 0.241 0.491);
+            --iris-7: color(display-p3 0.291 0.289 0.565);
+            --iris-8: color(display-p3 0.35 0.345 0.673);
+            --iris-9: color(display-p3 0.357 0.357 0.81);
+            --iris-10: color(display-p3 0.428 0.416 0.843);
+            --iris-11: color(display-p3 0.685 0.662 1);
+            --iris-12: color(display-p3 0.878 0.875 0.986);
+            --iris-a1: color(display-p3 0.224 0.224 0.992 / 0.051);
+            --iris-a2: color(display-p3 0.361 0.314 1 / 0.08);
+            --iris-a3: color(display-p3 0.357 0.373 1 / 0.219);
+            --iris-a4: color(display-p3 0.325 0.361 1 / 0.337);
+            --iris-a5: color(display-p3 0.38 0.4 1 / 0.4);
+            --iris-a6: color(display-p3 0.447 0.447 1 / 0.454);
+            --iris-a7: color(display-p3 0.486 0.486 1 / 0.534);
+            --iris-a8: color(display-p3 0.502 0.494 1 / 0.652);
+            --iris-a9: color(display-p3 0.431 0.431 1 / 0.799);
+            --iris-a10: color(display-p3 0.502 0.486 1 / 0.832);
+            --iris-a11: color(display-p3 0.685 0.662 1);
+            --iris-a12: color(display-p3 0.878 0.875 0.986);
+            --iris-surface: color(display-p3 0.1098 0.102 0.2118 / 0.5);
+        }
+    }
+}
+:root {
+    --iris-contrast: white;
+}

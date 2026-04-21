@@ -1,0 +1,123 @@
+:root, .light, .light-theme {
+    --sand-1: #fdfdfc;
+    --sand-2: #f9f9f8;
+    --sand-3: #f1f0ef;
+    --sand-4: #e9e8e6;
+    --sand-5: #e2e1de;
+    --sand-6: #dad9d6;
+    --sand-7: #cfceca;
+    --sand-8: #bcbbb5;
+    --sand-9: #8d8d86;
+    --sand-10: #82827c;
+    --sand-11: #63635e;
+    --sand-12: #21201c;
+    --sand-a1: #55550003;
+    --sand-a2: #25250007;
+    --sand-a3: #20100010;
+    --sand-a4: #1f150019;
+    --sand-a5: #1f180021;
+    --sand-a6: #19130029;
+    --sand-a7: #19140035;
+    --sand-a8: #1915014a;
+    --sand-a9: #0f0f0079;
+    --sand-a10: #0c0c0083;
+    --sand-a11: #080800a1;
+    --sand-a12: #060500e3;
+    --sand-surface: #ffffffcc;
+    --sand-indicator: var(--sand-9);
+    --sand-track: var(--sand-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        :root, .light, .light-theme {
+            --sand-1: color(display-p3 0.992 0.992 0.989);
+            --sand-2: color(display-p3 0.977 0.977 0.973);
+            --sand-3: color(display-p3 0.943 0.942 0.936);
+            --sand-4: color(display-p3 0.913 0.912 0.903);
+            --sand-5: color(display-p3 0.885 0.883 0.873);
+            --sand-6: color(display-p3 0.854 0.852 0.839);
+            --sand-7: color(display-p3 0.813 0.81 0.794);
+            --sand-8: color(display-p3 0.738 0.734 0.713);
+            --sand-9: color(display-p3 0.553 0.553 0.528);
+            --sand-10: color(display-p3 0.511 0.511 0.488);
+            --sand-11: color(display-p3 0.388 0.388 0.37);
+            --sand-12: color(display-p3 0.129 0.126 0.111);
+            --sand-a1: color(display-p3 0.349 0.349 0.024 / 0.012);
+            --sand-a2: color(display-p3 0.161 0.161 0.024 / 0.028);
+            --sand-a3: color(display-p3 0.067 0.067 0.008 / 0.063);
+            --sand-a4: color(display-p3 0.129 0.129 0.012 / 0.099);
+            --sand-a5: color(display-p3 0.098 0.067 0.008 / 0.126);
+            --sand-a6: color(display-p3 0.102 0.075 0.004 / 0.161);
+            --sand-a7: color(display-p3 0.098 0.098 0.004 / 0.208);
+            --sand-a8: color(display-p3 0.086 0.075 0.004 / 0.287);
+            --sand-a9: color(display-p3 0.051 0.051 0.004 / 0.471);
+            --sand-a10: color(display-p3 0.047 0.047 0 / 0.514);
+            --sand-a11: color(display-p3 0.031 0.031 0 / 0.632);
+            --sand-a12: color(display-p3 0.024 0.02 0 / 0.891);
+            --sand-surface: color(display-p3 1 1 1 / 0.8);
+        }
+    }
+}
+.dark, .dark-theme {
+    --sand-1: #111110;
+    --sand-2: #191918;
+    --sand-3: #222221;
+    --sand-4: #2a2a28;
+    --sand-5: #31312e;
+    --sand-6: #3b3a37;
+    --sand-7: #494844;
+    --sand-8: #62605b;
+    --sand-9: #6f6d66;
+    --sand-10: #7c7b74;
+    --sand-11: #b5b3ad;
+    --sand-12: #eeeeec;
+    --sand-a1: #00000000;
+    --sand-a2: #f4f4f309;
+    --sand-a3: #f6f6f513;
+    --sand-a4: #fefef31b;
+    --sand-a5: #fbfbeb23;
+    --sand-a6: #fffaed2d;
+    --sand-a7: #fffbed3c;
+    --sand-a8: #fff9eb57;
+    --sand-a9: #fffae965;
+    --sand-a10: #fffdee73;
+    --sand-a11: #fffcf4b0;
+    --sand-a12: #fffffded;
+    --sand-surface: #21212080;
+    --sand-indicator: var(--sand-9);
+    --sand-track: var(--sand-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        .dark, .dark-theme {
+            --sand-1: color(display-p3 0.067 0.067 0.063);
+            --sand-2: color(display-p3 0.098 0.098 0.094);
+            --sand-3: color(display-p3 0.135 0.135 0.129);
+            --sand-4: color(display-p3 0.164 0.163 0.156);
+            --sand-5: color(display-p3 0.193 0.192 0.183);
+            --sand-6: color(display-p3 0.23 0.229 0.217);
+            --sand-7: color(display-p3 0.285 0.282 0.267);
+            --sand-8: color(display-p3 0.384 0.378 0.357);
+            --sand-9: color(display-p3 0.434 0.428 0.403);
+            --sand-10: color(display-p3 0.487 0.481 0.456);
+            --sand-11: color(display-p3 0.707 0.703 0.68);
+            --sand-12: color(display-p3 0.933 0.933 0.926);
+            --sand-a1: color(display-p3 0 0 0 / 0);
+            --sand-a2: color(display-p3 0.992 0.992 0.988 / 0.034);
+            --sand-a3: color(display-p3 0.996 0.996 0.992 / 0.072);
+            --sand-a4: color(display-p3 0.992 0.992 0.953 / 0.106);
+            --sand-a5: color(display-p3 1 1 0.965 / 0.135);
+            --sand-a6: color(display-p3 1 0.976 0.929 / 0.177);
+            --sand-a7: color(display-p3 1 0.984 0.929 / 0.236);
+            --sand-a8: color(display-p3 1 0.976 0.925 / 0.341);
+            --sand-a9: color(display-p3 1 0.98 0.925 / 0.395);
+            --sand-a10: color(display-p3 1 0.992 0.933 / 0.45);
+            --sand-a11: color(display-p3 1 0.996 0.961 / 0.685);
+            --sand-a12: color(display-p3 1 1 0.992 / 0.929);
+            --sand-surface: color(display-p3 0.1255 0.1255 0.1255 / 0.5);
+        }
+    }
+}
+:root {
+    --sand-contrast: white;
+}

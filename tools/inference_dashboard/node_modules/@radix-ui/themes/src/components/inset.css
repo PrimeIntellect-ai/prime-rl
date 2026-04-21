@@ -1,0 +1,111 @@
+.rt-Inset {
+  box-sizing: border-box;
+
+  /* We reset the defined margin variables to avoid inheriting them from a higher component */
+  /* If a margin IS defined on the component itself, the utility class will win and reset it */
+  --margin-top: 0px;
+  --margin-right: 0px;
+  --margin-bottom: 0px;
+  --margin-left: 0px;
+
+  overflow: hidden;
+
+  /*
+   * Note: Next.js may collapse this into a shorthand "margin" declaration when bundling the CSS.
+   * If any of the variables are set to "initial", the shorthand syntax will become invalid and botch the Inset styles.
+   */
+  margin-top: var(--margin-top-override);
+  margin-right: var(--margin-right-override);
+  margin-bottom: var(--margin-bottom-override);
+  margin-left: var(--margin-left-override);
+
+  /* Reset the overrides on direct children */
+  :where(&) > * {
+    --margin-top-override: initial;
+    --margin-right-override: initial;
+    --margin-bottom-override: initial;
+    --margin-left-override: initial;
+  }
+}
+
+@breakpoints {
+  .rt-Inset {
+    &:where(.rt-r-clip-border-box) {
+      /* prettier-ignore */
+      --inset-border-radius-calc: calc(var(--inset-border-radius, 0px) - var(--inset-border-width, 0px));
+      --inset-padding-top-calc: var(--inset-padding-top, 0px);
+      --inset-padding-right-calc: var(--inset-padding-right, 0px);
+      --inset-padding-bottom-calc: var(--inset-padding-bottom, 0px);
+      --inset-padding-left-calc: var(--inset-padding-left, 0px);
+    }
+    /* prettier-ignore */
+    &:where(.rt-r-clip-padding-box) {
+      --inset-border-radius-calc: var(--inset-border-radius, 0px);
+      --inset-padding-top-calc: calc(var(--inset-padding-top, 0px) + var(--inset-border-width, 0px));
+      --inset-padding-right-calc: calc(var(--inset-padding-right, 0px) + var(--inset-border-width, 0px));
+      --inset-padding-bottom-calc: calc(var(--inset-padding-bottom, 0px) + var(--inset-border-width, 0px));
+      --inset-padding-left-calc: calc(var(--inset-padding-left, 0px) + var(--inset-border-width, 0px));
+    }
+    &:where(.rt-r-side-top) {
+      --margin-top-override: calc(var(--margin-top) - var(--inset-padding-top-calc));
+      --margin-right-override: calc(var(--margin-right) - var(--inset-padding-right-calc));
+      --margin-bottom-override: var(--margin-bottom);
+      --margin-left-override: calc(var(--margin-left) - var(--inset-padding-left-calc));
+      border-top-left-radius: var(--inset-border-radius-calc);
+      border-top-right-radius: var(--inset-border-radius-calc);
+      border-bottom-left-radius: 0px;
+      border-bottom-right-radius: 0px;
+    }
+    &:where(.rt-r-side-bottom) {
+      --margin-top-override: var(--margin-top);
+      --margin-right-override: calc(var(--margin-right) - var(--inset-padding-right-calc));
+      --margin-bottom-override: calc(var(--margin-bottom) - var(--inset-padding-bottom-calc));
+      --margin-left-override: calc(var(--margin-left) - var(--inset-padding-left-calc));
+      border-top-left-radius: 0px;
+      border-top-right-radius: 0px;
+      border-bottom-left-radius: var(--inset-border-radius-calc);
+      border-bottom-right-radius: var(--inset-border-radius-calc);
+    }
+    &:where(.rt-r-side-left) {
+      --margin-top-override: calc(var(--margin-top) - var(--inset-padding-top-calc));
+      --margin-bottom-override: calc(var(--margin-bottom) - var(--inset-padding-bottom-calc));
+      --margin-left-override: calc(var(--margin-left) - var(--inset-padding-left-calc));
+      --margin-right-override: var(--margin-right);
+      border-top-left-radius: var(--inset-border-radius-calc);
+      border-top-right-radius: 0px;
+      border-bottom-left-radius: var(--inset-border-radius-calc);
+      border-bottom-right-radius: 0px;
+    }
+    &:where(.rt-r-side-right) {
+      --margin-top-override: calc(var(--margin-top) - var(--inset-padding-top-calc));
+      --margin-right-override: calc(var(--margin-right) - var(--inset-padding-right-calc));
+      --margin-bottom-override: calc(var(--margin-bottom) - var(--inset-padding-bottom-calc));
+      --margin-left-override: var(--margin-left);
+      border-top-left-radius: 0px;
+      border-top-right-radius: var(--inset-border-radius-calc);
+      border-bottom-left-radius: 0px;
+      border-bottom-right-radius: var(--inset-border-radius-calc);
+    }
+    &:where(.rt-r-side-x) {
+      --margin-top-override: var(--margin-top);
+      --margin-right-override: calc(var(--margin-right) - var(--inset-padding-right-calc));
+      --margin-bottom-override: var(--margin-bottom);
+      --margin-left-override: calc(var(--margin-left) - var(--inset-padding-left-calc));
+      border-radius: 0px;
+    }
+    &:where(.rt-r-side-y) {
+      --margin-top-override: calc(var(--margin-top) - var(--inset-padding-top-calc));
+      --margin-right-override: var(--margin-right);
+      --margin-bottom-override: calc(var(--margin-bottom) - var(--inset-padding-bottom-calc));
+      --margin-left-override: var(--margin-left);
+      border-radius: 0px;
+    }
+    &:where(.rt-r-side-all) {
+      --margin-top-override: calc(var(--margin-top) - var(--inset-padding-top-calc));
+      --margin-right-override: calc(var(--margin-right) - var(--inset-padding-right-calc));
+      --margin-bottom-override: calc(var(--margin-bottom) - var(--inset-padding-bottom-calc));
+      --margin-left-override: calc(var(--margin-left) - var(--inset-padding-left-calc));
+      border-radius: var(--inset-border-radius-calc);
+    }
+  }
+}

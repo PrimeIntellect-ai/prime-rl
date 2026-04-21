@@ -1,0 +1,362 @@
+:where(.radix-themes) {
+  --switch-disabled-blend-mode: multiply;
+  --switch-high-contrast-checked-color-overlay: var(--black-a8);
+  --switch-high-contrast-checked-active-before-filter: contrast(0.82) saturate(1.2) brightness(1.16);
+}
+
+:is(.dark, .dark-theme),
+:is(.dark, .dark-theme) :where(.radix-themes:not(.light, .light-theme)) {
+  --switch-disabled-blend-mode: screen;
+  --switch-high-contrast-checked-color-overlay: transparent;
+  --switch-high-contrast-checked-active-before-filter: brightness(1.08);
+}
+
+.rt-SwitchRoot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: top;
+  flex-shrink: 0;
+
+  /* Unless in a skeleton, align with text line height when possible and fall back to own height */
+  height: var(--skeleton-height, var(--line-height, var(--switch-height)));
+  --skeleton-height-override: var(--switch-height);
+
+  /* Set root radius when in a skeleton */
+  border-radius: var(--skeleton-radius);
+  --skeleton-radius-override: var(--switch-border-radius);
+
+  --switch-width: calc(var(--switch-height) * 1.75);
+  --switch-thumb-inset: 1px;
+  --switch-thumb-size: calc(var(--switch-height) - var(--switch-thumb-inset) * 2);
+  --switch-thumb-translate-x: calc(var(--switch-width) - var(--switch-height));
+
+  &::before {
+    content: '';
+    display: block;
+    width: var(--switch-width);
+    height: var(--switch-height);
+    border-radius: var(--switch-border-radius);
+    transition: background-position, background-color, box-shadow, filter;
+    transition-timing-function: linear, ease-in-out, ease-in-out, ease-in-out;
+    background-repeat: no-repeat;
+
+    /*
+     * Length of the gradient is: switch width for the checked part, plus switch
+     * height for the thumb part, plus another switch width for the unchecked part
+     */
+    background-size: calc(var(--switch-width) * 2 + var(--switch-height)) 100%;
+  }
+
+  &:where([data-state='unchecked'])::before {
+    transition-duration: 120ms, 140ms, 140ms, 140ms;
+    background-position-x: 100%;
+  }
+  &:where([data-state='checked'])::before {
+    transition-duration: 160ms, 140ms, 140ms, 140ms;
+    background-position: 0%;
+  }
+  &:where(:active)::before {
+    transition-duration: 30ms;
+  }
+  &:where(:focus-visible)::before {
+    outline: 2px solid var(--focus-8);
+    outline-offset: 2px;
+  }
+
+  /* Cursors */
+  &::before {
+    cursor: var(--cursor-switch);
+  }
+  &:where([data-disabled])::before {
+    cursor: var(--cursor-disabled);
+  }
+}
+
+.rt-SwitchThumb {
+  background-color: white;
+  position: absolute;
+  left: var(--switch-thumb-inset);
+  width: var(--switch-thumb-size);
+  height: var(--switch-thumb-size);
+  border-radius: calc(var(--switch-border-radius) - var(--switch-thumb-inset));
+  transition:
+    transform 140ms cubic-bezier(0.45, 0.05, 0.55, 0.95),
+    box-shadow 140ms ease-in-out;
+
+  &:where([data-state='checked']) {
+    transform: translateX(var(--switch-thumb-translate-x));
+  }
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * SIZES                                                                                           *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+@breakpoints {
+  .rt-SwitchRoot {
+    &:where(.rt-r-size-1) {
+      --switch-height: var(--space-4);
+      --switch-border-radius: max(var(--radius-1), var(--radius-thumb));
+    }
+    &:where(.rt-r-size-2) {
+      --switch-height: calc(var(--space-5) * 5 / 6);
+      --switch-border-radius: max(var(--radius-2), var(--radius-thumb));
+    }
+    &:where(.rt-r-size-3) {
+      --switch-height: var(--space-5);
+      --switch-border-radius: max(var(--radius-2), var(--radius-thumb));
+    }
+  }
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * VARIANTS                                                                                        *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+/* surface */
+
+:where(.radix-themes) {
+  --switch-surface-checked-active-filter: brightness(0.92) saturate(1.1);
+}
+
+:is(.dark, .dark-theme),
+:is(.dark, .dark-theme) :where(.radix-themes:not(.light, .light-theme)) {
+  --switch-surface-checked-active-filter: brightness(1.08);
+}
+
+.rt-SwitchRoot:where(.rt-variant-surface) {
+  &::before {
+    background-color: var(--gray-a3);
+    background-image: linear-gradient(to right, var(--accent-track) 40%, transparent 60%);
+    box-shadow: inset 0 0 0 1px var(--gray-a5);
+  }
+  &:where(:active)::before {
+    background-color: var(--gray-a4);
+  }
+  &:where([data-state='checked']:active)::before {
+    filter: var(--switch-surface-checked-active-filter);
+  }
+  &:where(.rt-high-contrast) {
+    &::before {
+      /* prettier-ignore */
+      background-image:
+        linear-gradient(to right, var(--switch-high-contrast-checked-color-overlay) 40%, transparent 60%),
+        linear-gradient(to right, var(--accent-track) 40%, transparent 60%);
+    }
+    &:where([data-state='checked']:active)::before {
+      filter: var(--switch-high-contrast-checked-active-before-filter);
+    }
+  }
+  &:where([data-disabled]) {
+    mix-blend-mode: var(--switch-disabled-blend-mode);
+
+    &::before {
+      filter: none;
+      background-image: none;
+      background-color: var(--gray-a3);
+      box-shadow: inset 0 0 0 1px var(--gray-a3);
+    }
+  }
+
+  & :where(.rt-SwitchThumb) {
+    &:where([data-state='unchecked']) {
+      box-shadow:
+        0 0 1px 1px var(--black-a2),
+        0 1px 1px var(--black-a1),
+        0 2px 4px -1px var(--black-a1);
+    }
+    &:where([data-state='checked']) {
+      box-shadow:
+        0 1px 3px var(--black-a2),
+        0 2px 4px -1px var(--black-a1),
+        0 0 0 1px var(--black-a1),
+        0 0 0 1px var(--accent-a4),
+        -1px 0 1px var(--black-a2);
+
+      &:where(.rt-high-contrast) {
+        box-shadow:
+          0 1px 3px var(--black-a2),
+          0 2px 4px -1px var(--black-a1),
+          0 0 0 1px var(--black-a2),
+          -1px 0 1px var(--black-a2);
+      }
+    }
+    &:where([data-disabled]) {
+      background-color: var(--gray-2);
+      box-shadow:
+        0 0 0 1px var(--gray-a2),
+        0 1px 3px var(--black-a1);
+      /* Avoid the Chrome P3 bug with transition through red when changing light/dark mode */
+      transition: none;
+    }
+  }
+}
+
+/* classic */
+
+:where(.radix-themes) {
+  --switch-surface-checked-active-filter: brightness(0.92) saturate(1.1);
+}
+:is(.dark, .dark-theme),
+:is(.dark, .dark-theme) :where(.radix-themes:not(.light, .light-theme)) {
+  --switch-surface-checked-active-filter: brightness(1.08);
+}
+
+.rt-SwitchRoot:where(.rt-variant-classic) {
+  &::before {
+    background-image: linear-gradient(to right, var(--accent-track) 40%, transparent 60%);
+    background-color: var(--gray-a4);
+    box-shadow: var(--shadow-1);
+  }
+  &:where([data-state='unchecked']:active)::before {
+    background-color: var(--gray-a5);
+  }
+  &:where([data-state='checked'])::before {
+    box-shadow:
+      inset 0 0 0 1px var(--gray-a3),
+      inset 0 0 0 1px var(--accent-a4),
+      inset 0 0 0 1px var(--black-a1),
+      inset 0 1.5px 2px 0 var(--black-a2);
+  }
+  &:where([data-state='checked']:active)::before {
+    filter: var(--switch-surface-checked-active-filter);
+  }
+  &:where(.rt-high-contrast) {
+    &::before {
+      box-shadow:
+        inset 0 0 0 1px var(--gray-a3),
+        inset 0 0 0 1px var(--black-a2),
+        inset 0 1.5px 2px 0 var(--black-a2);
+
+      /* prettier-ignore */
+      background-image:
+        linear-gradient(to right, var(--switch-high-contrast-checked-color-overlay) 40%, transparent 60%),
+        linear-gradient(to right, var(--accent-track) 40%, transparent 60%);
+    }
+    &:where([data-state='checked']:active)::before {
+      filter: var(--switch-high-contrast-checked-active-before-filter);
+    }
+  }
+  &:where([data-disabled]) {
+    mix-blend-mode: var(--switch-disabled-blend-mode);
+
+    &::before {
+      filter: none;
+      background-image: none;
+      background-color: var(--gray-a5);
+      box-shadow: var(--shadow-1);
+      opacity: 0.5;
+    }
+  }
+
+  & :where(.rt-SwitchThumb) {
+    &:where([data-state='unchecked']) {
+      box-shadow:
+        0 1px 3px var(--black-a3),
+        0 2px 4px -1px var(--black-a1),
+        0 0 0 1px var(--black-a2);
+    }
+    &:where([data-state='checked']) {
+      box-shadow:
+        0 1px 3px var(--black-a2),
+        0 2px 4px -1px var(--black-a1),
+        0 0 0 1px var(--black-a1),
+        0 0 0 1px var(--accent-a4),
+        -1px 0 1px var(--black-a2);
+
+      &:where(.rt-high-contrast) {
+        box-shadow:
+          0 1px 3px var(--black-a2),
+          0 2px 4px -1px var(--black-a1),
+          0 0 0 1px var(--black-a2),
+          -1px 0 1px var(--black-a2);
+      }
+    }
+    &:where([data-disabled]) {
+      background-color: var(--gray-2);
+      box-shadow:
+        0 0 0 1px var(--gray-a2),
+        0 1px 3px var(--black-a1);
+      /* Avoid the Chrome P3 bug with transition through red when changing light/dark mode */
+      transition: none;
+    }
+  }
+}
+
+/* soft */
+
+.rt-SwitchRoot:where(.rt-variant-soft) {
+  /* prettier-ignore */
+  &::before {
+    background-image:
+      linear-gradient(to right, var(--accent-a4) 40%, transparent 60%),
+      linear-gradient(to right, var(--accent-a4) 40%, transparent 60%),
+      /* Blend with white to increase contrast in dark mode */
+      linear-gradient(to right, var(--accent-a4) 40%, var(--white-a1) 60%),
+      linear-gradient(to right, var(--gray-a2) 40%, var(--gray-a3) 60%);
+  }
+  &:where([data-state='unchecked'])::before {
+    background-color: var(--gray-a3);
+  }
+  &:where(:active)::before {
+    background-color: var(--gray-a4);
+  }
+  &:where(.rt-high-contrast) {
+    &::before {
+      /* prettier-ignore */
+      background-image:
+        linear-gradient(to right, var(--switch-high-contrast-checked-color-overlay) 40%, transparent 60%),
+        linear-gradient(to right, var(--accent-a6) 40%, transparent 60%),
+        linear-gradient(to right, var(--accent-a6) 40%, transparent 60%),
+        linear-gradient(to right, var(--accent-a6) 40%, var(--white-a1) 60%),
+        linear-gradient(to right, var(--accent-a3) 40%, var(--gray-a3) 60%);
+    }
+    &:where([data-state='checked']:active)::before {
+      filter: var(--switch-high-contrast-checked-active-before-filter);
+    }
+  }
+  &:where([data-disabled]) {
+    mix-blend-mode: var(--switch-disabled-blend-mode);
+
+    &::before {
+      filter: none;
+      background-image: none;
+      background-color: var(--gray-a4);
+    }
+  }
+
+  & :where(.rt-SwitchThumb) {
+    filter: saturate(0.45);
+
+    &:where([data-state='unchecked']) {
+      box-shadow:
+        0 0 0 1px var(--black-a1),
+        0 1px 3px var(--black-a1),
+        0 1px 3px var(--black-a1),
+        0 2px 4px -1px var(--black-a1);
+    }
+
+    &:where([data-state='checked']) {
+      box-shadow:
+        0 0 0 1px var(--black-a1),
+        0 1px 3px var(--black-a2),
+        0 1px 3px var(--accent-a3),
+        0 2px 4px -1px var(--accent-a3);
+    }
+
+    &:where([data-disabled]) {
+      filter: none;
+      background-color: var(--gray-2);
+      box-shadow:
+        0 0 0 1px var(--gray-a2),
+        0 1px 3px var(--black-a1);
+      /* Avoid the Chrome P3 bug with transition through red when changing light/dark mode */
+      transition: none;
+    }
+  }
+}

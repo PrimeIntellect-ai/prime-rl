@@ -1,0 +1,27 @@
+[project]
+name = "inference-dashboard"
+version = "0.1.0"
+description = "Standalone dashboard for disaggregated vLLM inference metrics"
+requires-python = "~=3.12.0"
+dependencies = [
+    "fastapi>=0.116.1",
+    "httpx>=0.28.1",
+    "prometheus-client>=0.22.1",
+    "pydantic>=2.11.7",
+    "uvicorn>=0.35.0",
+]
+
+[project.scripts]
+inference-dashboard = "inference_dashboard.app:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

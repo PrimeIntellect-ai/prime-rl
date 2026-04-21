@@ -1,0 +1,21 @@
+@breakpoints {
+  .rt-r-position-static {
+    position: static;
+  }
+
+  .rt-r-position-absolute {
+    position: absolute;
+  }
+
+  .rt-r-position-relative {
+    position: relative;
+  }
+
+  .rt-r-position-fixed {
+    position: fixed;
+  }
+
+  .rt-r-position-sticky {
+    position: sticky;
+  }
+}

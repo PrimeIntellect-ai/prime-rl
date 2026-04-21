@@ -1,0 +1,153 @@
+{
+  "name": "@radix-ui/themes",
+  "version": "3.3.0",
+  "type": "commonjs",
+  "main": "./dist/cjs/index.js",
+  "types": "./dist/cjs/index.d.ts",
+  "module": "./dist/esm/index.js",
+  "style": "./styles.css",
+  "exports": {
+    ".": {
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      },
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      }
+    },
+    "./components/*": {
+      "require": {
+        "types": "./dist/cjs/components/*.d.ts",
+        "default": "./dist/cjs/components/*.js"
+      },
+      "import": {
+        "types": "./dist/esm/components/*.d.ts",
+        "default": "./dist/esm/components/*.js"
+      }
+    },
+    "./helpers": {
+      "require": {
+        "types": "./dist/cjs/helpers/index.d.ts",
+        "default": "./dist/cjs/helpers/index.js"
+      },
+      "import": {
+        "types": "./dist/esm/helpers/index.d.ts",
+        "default": "./dist/esm/helpers/index.js"
+      }
+    },
+    "./props": {
+      "require": {
+        "types": "./dist/cjs/props/index.d.ts",
+        "default": "./dist/cjs/props/index.js"
+      },
+      "import": {
+        "types": "./dist/esm/props/index.d.ts",
+        "default": "./dist/esm/props/index.js"
+      }
+    },
+    "./*": "./*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": [
+    "*.css"
+  ],
+  "license": "MIT",
+  "files": [
+    "src/**",
+    "dist/**",
+    "tokens/**",
+    "layout/**",
+    "*.css",
+    "postcss-breakpoints.cjs",
+    "postcss-whitespace.cjs"
+  ],
+  "dependencies": {
+    "@radix-ui/colors": "^3.0.0",
+    "classnames": "^2.3.2",
+    "radix-ui": "^1.1.3",
+    "react-remove-scroll-bar": "^2.3.8"
+  },
+  "peerDependencies": {
+    "@types/react": "*",
+    "@types/react-dom": "*",
+    "react": "16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc",
+    "react-dom": "16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc"
+  },
+  "peerDependenciesMeta": {
+    "@types/react": {
+      "optional": true
+    },
+    "@types/react-dom": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/react": "^19.2.10",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "10.4.19",
+    "esbuild": "0.20.0",
+    "eslint": "^9.39.2",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "globals": "^17.2.0",
+    "postcss": "8.4.33",
+    "postcss-cli": "11.0.0",
+    "postcss-combine-duplicated-selectors": "10.0.3",
+    "postcss-custom-media": "10.0.2",
+    "postcss-discard-empty": "6.0.1",
+    "postcss-import": "16.0.0",
+    "postcss-nesting": "12.0.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "stylelint": "16.6.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.54.0"
+  },
+  "homepage": "https://radix-ui.com/themes",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/radix-ui/themes.git"
+  },
+  "bugs": {
+    "url": "https://github.com/radix-ui/themes/issues"
+  },
+  "scripts": {
+    "build": "pnpm build:js && pnpm build:css",
+    "build:js": "pnpm build:js:cjs && pnpm build:js:esm && pnpm build:js:cjs:types && pnpm build:js:esm:types",
+    "build:js:cjs": "node scripts/esbuild-cjs.js",
+    "build:js:cjs:types": "tsc --outdir dist/cjs",
+    "build:js:esm": "node scripts/esbuild-esm.js",
+    "build:js:esm:types": "tsc --outdir dist/esm",
+    "build:css": "pnpm build:css:index && pnpm build:css:tokens && pnpm build:css:components && pnpm build:css:utilities && pnpm build:css:layout",
+    "build:css:index": "postcss src/styles/index.css -o styles.css",
+    "build:css:components": "postcss src/components/index.css -o components.css",
+    "build:css:utilities": "postcss src/styles/utilities/index.css -o utilities.css",
+    "build:css:tokens": "pnpm build:css:tokens:index && pnpm build:css:tokens:base && pnpm build:css:tokens:colors",
+    "build:css:tokens:index": "postcss src/styles/tokens/index.css -o tokens.css",
+    "build:css:tokens:base": "postcss src/styles/tokens/base.css -o tokens/base.css",
+    "build:css:tokens:colors": "postcss src/styles/tokens/colors/*.css --dir tokens/colors",
+    "build:css:layout": "pnpm build:css:layout:index && pnpm build:css:layout:tokens && pnpm build:css:layout:components && pnpm build:css:layout:utilities",
+    "build:css:layout:index": "postcss src/styles/layout.css -o layout.css",
+    "build:css:layout:tokens": "postcss src/styles/tokens/layout.css -o layout/tokens.css",
+    "build:css:layout:components": "postcss src/components/layout.css -o layout/components.css",
+    "build:css:layout:utilities": "postcss src/styles/utilities/layout.css -o layout/utilities.css",
+    "dev": "pnpm dev:js & pnpm dev:css",
+    "dev:js": "pnpm dev:js:cjs & pnpm dev:js:esm & pnpm dev:js:cjs:types & pnpm dev:js:esm:types",
+    "dev:js:cjs": "node scripts/esbuild-cjs.js watch=true",
+    "dev:js:cjs:types": "tsc --watch --incremental --outdir dist/cjs",
+    "dev:js:esm": "node scripts/esbuild-esm.js watch=true",
+    "dev:js:esm:types": "tsc --watch --incremental --outdir dist/esm >/dev/null",
+    "dev:css": "postcss src/styles/index.css -o styles.css --watch",
+    "lint": "pnpm lint:js && pnpm lint:css && pnpm lint:ts",
+    "lint:js": "eslint \"src/**/*.ts*\"",
+    "lint:ts": "tsc --noEmit",
+    "lint:css": "stylelint \"src/**/*.css\"",
+    "clean": "rm -rf .turbo node_modules dist tokens layout *.css"
+  }
+}

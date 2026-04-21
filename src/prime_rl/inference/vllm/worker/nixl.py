@@ -8,7 +8,7 @@ before it has to build the chunked descriptors.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch.nn import Module
@@ -160,6 +160,10 @@ class NIXLWeightUpdateWorker(Worker):
         # not on a CUDA stream; sync so subsequent SM kernels see them.
         torch.cuda.synchronize()
 
+        # Track push count for one-shot diagnostic dumps.
+        self._push_counter = getattr(self, "_push_counter", 0) + 1
+        self._maybe_dump_inference()
+
         # Diagnostic: mirror the trainer-side SIG anchors.
         #   G (bf16 gather)   : input_layernorm.weight
         #   F (fp8 gather)    : self_attn.kv_b_proj.weight + scale
@@ -246,3 +250,53 @@ class NIXLWeightUpdateWorker(Worker):
                     )
 
         update_mla_absorbed_weights(self._model)
+
+    def _maybe_dump_inference(self) -> None:
+        """One-shot dump of every param + relevant buffer to
+        ``$NIXL_DUMP_DIR/inference_r{RRR}.pt`` when this push matches
+        ``$NIXL_DUMP_PUSH``. Pair with trainer dump + tools/nixl_diff.py.
+        """
+        import os
+        dump_dir = os.environ.get("NIXL_DUMP_DIR")
+        target_push = int(os.environ.get("NIXL_DUMP_PUSH", "0"))
+        if not dump_dir or self._push_counter != target_push:
+            return
+        os.makedirs(dump_dir, exist_ok=True)
+
+        LAYER_PREFIX = "model.layers.3."
+        NON_LAYER = {"model.embed_tokens.weight", "model.norm.weight", "lm_head.weight"}
+
+        def _in_scope(name: str) -> bool:
+            if name in NON_LAYER:
+                return True
+            if name.startswith(LAYER_PREFIX):
+                return True
+            return False
+
+        out: dict[str, Any] = {"params": {}, "buffers": {}, "expert_map": {}}
+        for name, p in self._model.named_parameters():
+            if _in_scope(name):
+                out["params"][name] = p.data.detach().cpu().clone()
+        for name, b in self._model.named_buffers():
+            if _in_scope(name):
+                out["buffers"][name] = b.data.detach().cpu().clone()
+
+        from prime_rl.inference.vllm.worker.weight_transfer import build_expert_map
+        for k, v in build_expert_map(self._model).items():
+            if k.startswith(LAYER_PREFIX.rstrip(".")) or LAYER_PREFIX in (k + "."):
+                out["expert_map"][k] = v.cpu().tolist()
+
+        # global_rank is captured at init_nixl_transfer; recover via agent name.
+        # Agent name format: f"inference-{host}-r{global_rank}"
+        rank_str = self._agent.name.split("-r")[-1]
+        try:
+            global_rank = int(rank_str)
+        except ValueError:
+            global_rank = -1
+        fname = f"{dump_dir}/inference_r{global_rank:03d}.pt"
+        import torch as _torch
+        _torch.save(out, fname)
+        logger.info(
+            f"[nixl DUMP] inference rank={global_rank} wrote "
+            f"{len(out['params'])} params + {len(out['buffers'])} buffers to {fname}"
+        )

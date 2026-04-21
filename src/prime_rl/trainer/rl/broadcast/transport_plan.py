@@ -24,6 +24,7 @@ capture at construction time.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -133,6 +134,8 @@ class TransportPlan:
         # Populated in rendezvous().
         self._peers: list[PeerInfo] = []
         self._writes: list[_ResolvedWrite] = []
+        # Push counter for one-shot diagnostic dumps.
+        self._push_counter = 0
         # Derived statistic: total bytes moved per push (sum over all slot buffers,
         # weight + scale). Fan-out across inference peers is separate.
         self._bytes_per_push = sum(
@@ -242,6 +245,61 @@ class TransportPlan:
         self._writes = writes
 
     # ------------------------------------------------------------------ #
+    # Diagnostic dump (one-shot) — byte-level trainer/inference diff
+    # ------------------------------------------------------------------ #
+
+    # Scope of slots to dump. Layer 3 covers all slot types once; non-layer
+    # covers embed/norm/lm_head. Broad enough to catch any routing bug.
+    _DUMP_LAYER_PREFIX = "model.layers.3."
+    _DUMP_NON_LAYER = frozenset({
+        "model.embed_tokens.weight",
+        "model.norm.weight",
+        "lm_head.weight",
+    })
+
+    def _maybe_dump_trainer(self) -> None:
+        """Save per-rank slot contents to ``$NIXL_DUMP_DIR/trainer_r{RRR}.pt``
+        when this push's counter matches ``$NIXL_DUMP_PUSH``. Pair with the
+        inference-side dump and the tools/nixl_diff.py script for a
+        byte-exact cross-check."""
+        dump_dir = os.environ.get("NIXL_DUMP_DIR")
+        target_push = int(os.environ.get("NIXL_DUMP_PUSH", "0"))
+        if not dump_dir or self._push_counter != target_push:
+            return
+        # Rank 0 creates the dir; other ranks will write files shortly after
+        # once their convert completes.
+        if self.my_rank == 0:
+            os.makedirs(dump_dir, exist_ok=True)
+
+        out: dict[str, dict[str, Any]] = {}
+        for slot in self.slots:
+            k = slot.slot_key
+            if not (k.startswith(self._DUMP_LAYER_PREFIX) or k in self._DUMP_NON_LAYER):
+                continue
+            entry: dict[str, Any] = {
+                "type": type(slot).__name__,
+                "slot_key": slot.slot_key,
+                "weight": slot.weight.detach().to("cpu").clone(),
+                "scale": slot.scale.detach().to("cpu").clone() if slot.scale is not None else None,
+            }
+            for attr in (
+                "source_name", "source_names", "inference_name", "inference_scale_name",
+                "offset_rows", "scale_offset_rows", "rows", "scale_rows",
+                "my_rank", "trainer_ws", "moe_prefix", "owned_global_experts",
+                "cat_dim", "scale_key",
+            ):
+                if hasattr(slot, attr):
+                    v = getattr(slot, attr)
+                    if isinstance(v, tuple):
+                        v = list(v)
+                    entry[attr] = v
+            out[k] = entry
+
+        fname = f"{dump_dir}/trainer_r{self.my_rank:03d}.pt"
+        torch.save(out, fname)
+        self.logger.info(f"[nixl DUMP] rank={self.my_rank} wrote {len(out)} slots to {fname}")
+
+    # ------------------------------------------------------------------ #
     # Phase 3: per-step push
     # ------------------------------------------------------------------ #
 
@@ -262,12 +320,16 @@ class TransportPlan:
         """
         device = next(model.parameters()).device
         t_start = time.perf_counter()
+        self._push_counter += 1
 
         state_dict = model.state_dict()
         for slot in self.slots:
             slot.convert(state_dict)
         torch.cuda.synchronize(device)
         t_converted = time.perf_counter()
+
+        # Diagnostic one-shot dump of all slot contents (scope-limited).
+        self._maybe_dump_trainer()
 
         # Diagnostic: rank-0 logs post-convert signatures for anchor
         # slots covering each slot type. Trainer's slot.weight holds

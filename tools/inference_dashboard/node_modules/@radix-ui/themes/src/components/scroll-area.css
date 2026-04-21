@@ -1,0 +1,145 @@
+.radix-themes {
+  --scrollarea-scrollbar-horizontal-margin-top: var(--space-1);
+  --scrollarea-scrollbar-horizontal-margin-bottom: var(--space-1);
+  --scrollarea-scrollbar-horizontal-margin-left: var(--space-1);
+  --scrollarea-scrollbar-horizontal-margin-right: var(--space-1);
+  --scrollarea-scrollbar-vertical-margin-top: var(--space-1);
+  --scrollarea-scrollbar-vertical-margin-bottom: var(--space-1);
+  --scrollarea-scrollbar-vertical-margin-left: var(--space-1);
+  --scrollarea-scrollbar-vertical-margin-right: var(--space-1);
+}
+
+.rt-ScrollAreaRoot {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
+
+.rt-ScrollAreaViewport {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+
+  &:where(:focus-visible) + :where(.rt-ScrollAreaViewportFocusRing) {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    outline: 2px solid var(--focus-8);
+    outline-offset: -2px;
+  }
+
+  /* Stop Chrome back/forward two-finger swipe when there is a horizontal scrollbar */
+  &:where(:has(.rt-ScrollAreaScrollbar[data-orientation='horizontal'])) {
+    overscroll-behavior-x: contain;
+  }
+}
+
+.rt-ScrollAreaViewport > * {
+  display: block !important;
+  width: fit-content;
+  flex-grow: 1;
+}
+
+.rt-ScrollAreaScrollbar {
+  display: flex;
+  /* Ensures no selection */
+  user-select: none;
+  /* Disable browser handling of all panning and zooming gestures on touch devices */
+  touch-action: none;
+
+  &:where([data-orientation='vertical']) {
+    flex-direction: column;
+    width: var(--scrollarea-scrollbar-size);
+  }
+  &:where([data-orientation='horizontal']) {
+    flex-direction: row;
+    height: var(--scrollarea-scrollbar-size);
+  }
+}
+
+.rt-ScrollAreaThumb {
+  position: relative;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 100%;
+    height: 100%;
+    min-width: var(--space-4);
+    min-height: var(--space-4);
+  }
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * SIZES                                                                                           *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+@breakpoints {
+  .rt-ScrollAreaScrollbar {
+    &:where(.rt-r-size-1) {
+      --scrollarea-scrollbar-size: var(--space-1);
+      --scrollarea-scrollbar-border-radius: max(var(--radius-1), var(--radius-full));
+    }
+    &:where(.rt-r-size-2) {
+      --scrollarea-scrollbar-size: var(--space-2);
+      --scrollarea-scrollbar-border-radius: max(var(--radius-1), var(--radius-full));
+    }
+    &:where(.rt-r-size-3) {
+      --scrollarea-scrollbar-size: var(--space-3);
+      --scrollarea-scrollbar-border-radius: max(var(--radius-1), var(--radius-full));
+    }
+  }
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * VARIANTS                                                                                        *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+.rt-ScrollAreaScrollbar {
+  background-color: var(--gray-a3);
+  border-radius: var(--scrollarea-scrollbar-border-radius);
+
+  animation-duration: 120ms;
+  animation-timing-function: ease-out;
+
+  &:where([data-state='visible']) {
+    animation-name: rt-fade-in;
+  }
+  &:where([data-state='hidden']) {
+    animation-name: rt-fade-out;
+  }
+  &:where([data-orientation='horizontal']) {
+    margin-top: var(--scrollarea-scrollbar-horizontal-margin-top);
+    margin-bottom: var(--scrollarea-scrollbar-horizontal-margin-bottom);
+    margin-left: var(--scrollarea-scrollbar-horizontal-margin-left);
+    margin-right: var(--scrollarea-scrollbar-horizontal-margin-right);
+  }
+  &:where([data-orientation='vertical']) {
+    margin-top: var(--scrollarea-scrollbar-vertical-margin-top);
+    margin-bottom: var(--scrollarea-scrollbar-vertical-margin-bottom);
+    margin-left: var(--scrollarea-scrollbar-vertical-margin-left);
+    margin-right: var(--scrollarea-scrollbar-vertical-margin-right);
+  }
+}
+
+.rt-ScrollAreaThumb {
+  background-color: var(--gray-a8);
+  border-radius: inherit;
+  transition: background-color 100ms;
+
+  @media (hover: hover) {
+    &:where(:hover) {
+      background-color: var(--gray-a9);
+    }
+  }
+}

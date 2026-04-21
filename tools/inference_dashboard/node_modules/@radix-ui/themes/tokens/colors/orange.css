@@ -1,0 +1,123 @@
+:root, .light, .light-theme {
+    --orange-1: #fefcfb;
+    --orange-2: #fff7ed;
+    --orange-3: #ffefd6;
+    --orange-4: #ffdfb5;
+    --orange-5: #ffd19a;
+    --orange-6: #ffc182;
+    --orange-7: #f5ae73;
+    --orange-8: #ec9455;
+    --orange-9: #f76b15;
+    --orange-10: #ef5f00;
+    --orange-11: #cc4e00;
+    --orange-12: #582d1d;
+    --orange-a1: #c0400004;
+    --orange-a2: #ff8e0012;
+    --orange-a3: #ff9c0029;
+    --orange-a4: #ff91014a;
+    --orange-a5: #ff8b0065;
+    --orange-a6: #ff81007d;
+    --orange-a7: #ed6c008c;
+    --orange-a8: #e35f00aa;
+    --orange-a9: #f65e00ea;
+    --orange-a10: #ef5f00;
+    --orange-a11: #cc4e00;
+    --orange-a12: #431200e2;
+    --orange-surface: #fff5e9cc;
+    --orange-indicator: var(--orange-9);
+    --orange-track: var(--orange-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        :root, .light, .light-theme {
+            --orange-1: color(display-p3 0.995 0.988 0.985);
+            --orange-2: color(display-p3 0.994 0.968 0.934);
+            --orange-3: color(display-p3 0.989 0.938 0.85);
+            --orange-4: color(display-p3 1 0.874 0.687);
+            --orange-5: color(display-p3 1 0.821 0.583);
+            --orange-6: color(display-p3 0.975 0.767 0.545);
+            --orange-7: color(display-p3 0.919 0.693 0.486);
+            --orange-8: color(display-p3 0.877 0.597 0.379);
+            --orange-9: color(display-p3 0.9 0.45 0.2);
+            --orange-10: color(display-p3 0.87 0.409 0.164);
+            --orange-11: color(display-p3 0.76 0.34 0);
+            --orange-12: color(display-p3 0.323 0.185 0.127);
+            --orange-a1: color(display-p3 0.757 0.267 0.024 / 0.016);
+            --orange-a2: color(display-p3 0.886 0.533 0.008 / 0.067);
+            --orange-a3: color(display-p3 0.922 0.584 0.008 / 0.15);
+            --orange-a4: color(display-p3 1 0.604 0.004 / 0.314);
+            --orange-a5: color(display-p3 1 0.569 0.004 / 0.416);
+            --orange-a6: color(display-p3 0.949 0.494 0.004 / 0.455);
+            --orange-a7: color(display-p3 0.839 0.408 0 / 0.514);
+            --orange-a8: color(display-p3 0.804 0.349 0 / 0.62);
+            --orange-a9: color(display-p3 0.878 0.314 0 / 0.8);
+            --orange-a10: color(display-p3 0.843 0.29 0 / 0.836);
+            --orange-a11: color(display-p3 0.76 0.34 0);
+            --orange-a12: color(display-p3 0.323 0.185 0.127);
+            --orange-surface: color(display-p3 0.9961 0.9608 0.9176 / 0.8);
+        }
+    }
+}
+.dark, .dark-theme {
+    --orange-1: #17120e;
+    --orange-2: #1e160f;
+    --orange-3: #331e0b;
+    --orange-4: #462100;
+    --orange-5: #562800;
+    --orange-6: #66350c;
+    --orange-7: #7e451d;
+    --orange-8: #a35829;
+    --orange-9: #f76b15;
+    --orange-10: #ff801f;
+    --orange-11: #ffa057;
+    --orange-12: #ffe0c2;
+    --orange-a1: #ec360007;
+    --orange-a2: #fe6d000e;
+    --orange-a3: #fb6a0025;
+    --orange-a4: #ff590039;
+    --orange-a5: #ff61004a;
+    --orange-a6: #fd75045c;
+    --orange-a7: #ff832c75;
+    --orange-a8: #fe84389d;
+    --orange-a9: #fe6d15f7;
+    --orange-a10: #ff801f;
+    --orange-a11: #ffa057;
+    --orange-a12: #ffe0c2;
+    --orange-surface: #271d1380;
+    --orange-indicator: var(--orange-9);
+    --orange-track: var(--orange-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        .dark, .dark-theme {
+            --orange-1: color(display-p3 0.088 0.07 0.057);
+            --orange-2: color(display-p3 0.113 0.089 0.061);
+            --orange-3: color(display-p3 0.189 0.12 0.056);
+            --orange-4: color(display-p3 0.262 0.132 0);
+            --orange-5: color(display-p3 0.315 0.168 0.016);
+            --orange-6: color(display-p3 0.376 0.219 0.088);
+            --orange-7: color(display-p3 0.465 0.283 0.147);
+            --orange-8: color(display-p3 0.601 0.359 0.201);
+            --orange-9: color(display-p3 0.9 0.45 0.2);
+            --orange-10: color(display-p3 0.98 0.51 0.23);
+            --orange-11: color(display-p3 1 0.63 0.38);
+            --orange-12: color(display-p3 0.98 0.883 0.775);
+            --orange-a1: color(display-p3 0.961 0.247 0 / 0.022);
+            --orange-a2: color(display-p3 0.992 0.529 0 / 0.051);
+            --orange-a3: color(display-p3 0.996 0.486 0 / 0.131);
+            --orange-a4: color(display-p3 0.996 0.384 0 / 0.211);
+            --orange-a5: color(display-p3 1 0.455 0 / 0.265);
+            --orange-a6: color(display-p3 1 0.529 0.129 / 0.332);
+            --orange-a7: color(display-p3 1 0.569 0.251 / 0.429);
+            --orange-a8: color(display-p3 1 0.584 0.302 / 0.572);
+            --orange-a9: color(display-p3 1 0.494 0.216 / 0.895);
+            --orange-a10: color(display-p3 1 0.522 0.235 / 0.979);
+            --orange-a11: color(display-p3 1 0.63 0.38);
+            --orange-a12: color(display-p3 0.98 0.883 0.775);
+            --orange-surface: color(display-p3 0.1412 0.1098 0.0706 / 0.5);
+        }
+    }
+}
+:root {
+    --orange-contrast: white;
+}

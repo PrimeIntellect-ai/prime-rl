@@ -1,0 +1,245 @@
+.rt-BaseMenuContent {
+  --scrollarea-scrollbar-vertical-margin-top: var(--base-menu-content-padding);
+  --scrollarea-scrollbar-vertical-margin-bottom: var(--base-menu-content-padding);
+  --scrollarea-scrollbar-horizontal-margin-left: var(--base-menu-content-padding);
+  --scrollarea-scrollbar-horizontal-margin-right: var(--base-menu-content-padding);
+
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  background-color: var(--base-menu-bg);
+}
+
+.rt-BaseMenuViewport {
+  flex: 1 1 0%;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: var(--base-menu-content-padding);
+  box-sizing: border-box;
+
+  :where(.rt-BaseMenuContent:has(.rt-ScrollAreaScrollbar[data-orientation='vertical'])) & {
+    padding-right: var(--space-3);
+  }
+}
+
+.rt-BaseMenuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--base-menu-item-height);
+  padding-left: var(--base-menu-item-padding-left);
+  padding-right: var(--base-menu-item-padding-right);
+  box-sizing: border-box;
+  position: relative;
+  outline: none;
+  scroll-margin: var(--base-menu-content-padding) 0;
+
+  /* Fix sticky text highlighting after selection in Firefox */
+  user-select: none;
+
+  /* Cursors */
+  cursor: var(--cursor-menu-item);
+  &:where([data-disabled]) {
+    cursor: default;
+  }
+}
+
+.rt-BaseMenuShortcut {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  padding-left: var(--space-4);
+}
+
+.rt-BaseMenuSubTriggerIcon {
+  color: var(--gray-12);
+  margin-right: calc(-2px * var(--scaling));
+}
+
+.rt-BaseMenuItemIndicator {
+  position: absolute;
+  left: 0;
+  width: var(--base-menu-item-padding-left);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rt-BaseMenuSeparator {
+  height: 1px;
+  margin-top: var(--space-2);
+  margin-bottom: var(--space-2);
+  margin-left: var(--base-menu-item-padding-left);
+  margin-right: var(--base-menu-item-padding-right);
+}
+
+.rt-BaseMenuLabel {
+  display: flex;
+  align-items: center;
+  height: var(--base-menu-item-height);
+  padding-left: var(--base-menu-item-padding-left);
+  padding-right: var(--base-menu-item-padding-right);
+  box-sizing: border-box;
+  color: var(--gray-a10);
+  user-select: none;
+  cursor: default;
+
+  :where(.rt-BaseMenuItem) + & {
+    margin-top: var(--space-2);
+  }
+}
+
+.rt-BaseMenuArrow {
+  fill: var(--base-menu-bg);
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * SIZES                                                                                           *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+@breakpoints {
+  .rt-BaseMenuContent {
+    &:where(.rt-r-size-1) {
+      --base-menu-content-padding: var(--space-1);
+      --base-menu-item-padding-left: calc(var(--space-5) / 1.2);
+      --base-menu-item-padding-right: var(--space-2);
+      --base-menu-item-height: var(--space-5);
+      border-radius: var(--radius-3);
+
+      & :where(.rt-BaseMenuItem) {
+        font-size: var(--font-size-1);
+        line-height: var(--line-height-1);
+        letter-spacing: var(--letter-spacing-1);
+        border-radius: var(--radius-1);
+      }
+
+      & :where(.rt-BaseMenuLabel) {
+        font-size: var(--font-size-1);
+        line-height: var(--line-height-1);
+        letter-spacing: var(--letter-spacing-1);
+      }
+
+      & :where(.rt-BaseMenuItemIndicatorIcon, .rt-BaseMenuSubTriggerIcon) {
+        width: calc(8px * var(--scaling));
+        height: calc(8px * var(--scaling));
+      }
+
+      /* reset with :not:has so we still support browsers without :has */
+      &:where(:not(:has(.rt-BaseMenuCheckboxItem, .rt-BaseMenuRadioItem))) {
+        --base-menu-item-padding-left: var(--space-2);
+      }
+      &:where(:has(.rt-BaseMenuCheckboxItem, .rt-BaseMenuRadioItem)) {
+        --base-menu-item-padding-left: calc(var(--space-5) / 1.2);
+      }
+    }
+
+    &:where(.rt-r-size-2) {
+      --base-menu-content-padding: var(--space-2);
+      --base-menu-item-padding-left: var(--space-3);
+      --base-menu-item-padding-right: var(--space-3);
+      --base-menu-item-height: var(--space-6);
+      border-radius: var(--radius-4);
+
+      & :where(.rt-BaseMenuItem) {
+        font-size: var(--font-size-2);
+        line-height: var(--line-height-2);
+        letter-spacing: var(--letter-spacing-2);
+        border-radius: var(--radius-2);
+      }
+
+      & :where(.rt-BaseMenuLabel) {
+        font-size: var(--font-size-2);
+        line-height: var(--line-height-2);
+        letter-spacing: var(--letter-spacing-2);
+      }
+
+      & :where(.rt-BaseMenuItemIndicatorIcon, .rt-BaseMenuSubTriggerIcon) {
+        width: calc(10px * var(--scaling));
+        height: calc(10px * var(--scaling));
+      }
+
+      /* reset with :not:has so we still support browsers without :has */
+      &:where(:not(:has(.rt-BaseMenuCheckboxItem, .rt-BaseMenuRadioItem))) {
+        --base-menu-item-padding-left: var(--space-3);
+      }
+      &:where(:has(.rt-BaseMenuCheckboxItem, .rt-BaseMenuRadioItem)) {
+        --base-menu-item-padding-left: var(--space-5);
+      }
+    }
+  }
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * VARIANTS                                                                                        *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+.rt-BaseMenuContent {
+  --base-menu-bg: var(--color-panel-solid);
+  box-shadow: var(--shadow-5);
+}
+.rt-BaseMenuItem:where([data-accent-color]) {
+  color: var(--accent-a11);
+}
+.rt-BaseMenuItem:where([data-disabled]) {
+  color: var(--gray-a8);
+}
+.rt-BaseMenuShortcut {
+  color: var(--gray-a11);
+}
+.rt-BaseMenuItem:where([data-disabled], [data-highlighted]),
+.rt-BaseMenuSubTrigger:where([data-state='open']) {
+  & :where(.rt-BaseMenuShortcut) {
+    color: inherit;
+  }
+}
+.rt-BaseMenuSeparator {
+  background-color: var(--gray-a6);
+}
+
+/* solid */
+
+.rt-BaseMenuContent:where(.rt-variant-solid) {
+  & :where(.rt-BaseMenuSubTrigger[data-state='open']) {
+    background-color: var(--gray-a3);
+  }
+  & :where(.rt-BaseMenuItem[data-highlighted]) {
+    background-color: var(--accent-9);
+    color: var(--accent-contrast);
+
+    & :where(.rt-BaseMenuSubTriggerIcon) {
+      color: var(--accent-contrast);
+    }
+  }
+  &:where(.rt-high-contrast) {
+    & :where(.rt-BaseMenuItem[data-highlighted]) {
+      background-color: var(--accent-12);
+      color: var(--accent-1);
+
+      & :where(.rt-BaseMenuSubTriggerIcon) {
+        color: var(--accent-1);
+      }
+
+      &:where([data-accent-color]) {
+        background-color: var(--accent-9);
+        color: var(--accent-contrast);
+      }
+    }
+  }
+}
+
+/* soft */
+
+.rt-BaseMenuContent:where(.rt-variant-soft) {
+  & :where(.rt-BaseMenuSubTrigger[data-state='open']) {
+    background-color: var(--accent-a3);
+  }
+  & :where(.rt-BaseMenuItem[data-highlighted]) {
+    background-color: var(--accent-a4);
+  }
+}

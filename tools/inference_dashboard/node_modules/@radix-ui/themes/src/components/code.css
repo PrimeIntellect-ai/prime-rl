@@ -1,0 +1,187 @@
+/* stylelint-disable selector-max-type */
+/* Disable selector-max-type rule to target individual element types. */
+
+.rt-Code {
+  --code-variant-font-size-adjust: calc(var(--code-font-size-adjust) * 0.95);
+  font-family: var(--code-font-family);
+  font-size: calc(var(--code-variant-font-size-adjust) * 1em);
+  font-style: var(--code-font-style);
+  font-weight: var(--code-font-weight);
+  line-height: 1.25;
+  letter-spacing: calc(var(--code-letter-spacing) + var(--letter-spacing, var(--default-letter-spacing)));
+  border-radius: calc((0.5px + 0.2em) * var(--radius-factor));
+
+  box-sizing: border-box;
+  padding-top: var(--code-padding-top);
+  padding-left: var(--code-padding-left);
+  padding-bottom: var(--code-padding-bottom);
+  padding-right: var(--code-padding-right);
+
+  /* Make sure that the height is not stretched in a Flex/Grid layout */
+  height: fit-content;
+
+  & :where(&) {
+    font-size: inherit;
+  }
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * SIZES                                                                                           *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+@breakpoints {
+  .rt-Code {
+    &:where(.rt-r-size-1) {
+      font-size: calc(var(--font-size-1) * var(--code-variant-font-size-adjust));
+      line-height: var(--line-height-1);
+      --letter-spacing: var(--letter-spacing-1);
+    }
+    &:where(.rt-r-size-2) {
+      font-size: calc(var(--font-size-2) * var(--code-variant-font-size-adjust));
+      line-height: var(--line-height-2);
+      --letter-spacing: var(--letter-spacing-2);
+    }
+    &:where(.rt-r-size-3) {
+      font-size: calc(var(--font-size-3) * var(--code-variant-font-size-adjust));
+      line-height: var(--line-height-3);
+      --letter-spacing: var(--letter-spacing-3);
+    }
+    &:where(.rt-r-size-4) {
+      font-size: calc(var(--font-size-4) * var(--code-variant-font-size-adjust));
+      line-height: var(--line-height-4);
+      --letter-spacing: var(--letter-spacing-4);
+    }
+    &:where(.rt-r-size-5) {
+      font-size: calc(var(--font-size-5) * var(--code-variant-font-size-adjust));
+      line-height: var(--line-height-5);
+      --letter-spacing: var(--letter-spacing-5);
+    }
+    &:where(.rt-r-size-6) {
+      font-size: calc(var(--font-size-6) * var(--code-variant-font-size-adjust));
+      line-height: var(--line-height-6);
+      --letter-spacing: var(--letter-spacing-6);
+    }
+    &:where(.rt-r-size-7) {
+      font-size: calc(var(--font-size-7) * var(--code-variant-font-size-adjust));
+      line-height: var(--line-height-7);
+      --letter-spacing: var(--letter-spacing-7);
+    }
+    &:where(.rt-r-size-8) {
+      font-size: calc(var(--font-size-8) * var(--code-variant-font-size-adjust));
+      line-height: var(--line-height-8);
+      --letter-spacing: var(--letter-spacing-8);
+    }
+    &:where(.rt-r-size-9) {
+      font-size: calc(var(--font-size-9) * var(--code-variant-font-size-adjust));
+      line-height: var(--line-height-9);
+      --letter-spacing: var(--letter-spacing-9);
+    }
+  }
+}
+
+/***************************************************************************************************
+ *                                                                                                 *
+ * VARIANTS                                                                                        *
+ *                                                                                                 *
+ ***************************************************************************************************/
+
+/* ghost */
+
+.rt-Code:where(.rt-variant-ghost) {
+  --code-variant-font-size-adjust: var(--code-font-size-adjust);
+  padding: 0;
+
+  &:where([data-accent-color]) {
+    color: var(--accent-a11);
+  }
+
+  &:where([data-accent-color].rt-high-contrast),
+  :where([data-accent-color]:not(.radix-themes)) &:where(.rt-high-contrast) {
+    color: var(--accent-12);
+  }
+}
+
+/* solid */
+
+.rt-Code:where(.rt-variant-solid) {
+  background-color: var(--accent-a9);
+  color: var(--accent-contrast);
+
+  &::selection {
+    background-color: var(--accent-7);
+    color: var(--accent-12);
+  }
+
+  &:where(.rt-high-contrast) {
+    background-color: var(--accent-12);
+    color: var(--accent-1);
+
+    &::selection {
+      background-color: var(--accent-a11);
+      color: var(--accent-1);
+    }
+  }
+
+  :where(.rt-Link) &,
+  &:where(:any-link, button) {
+    /* Create a new stacking context (otherwise, `filter` may do it on hover) */
+    isolation: isolate;
+    @media (hover: hover) {
+      &:where(:hover) {
+        background-color: var(--accent-10);
+      }
+      &:where(.rt-high-contrast:hover) {
+        background-color: var(--accent-12);
+        /* Re-use base button hover filter */
+        filter: var(--base-button-solid-high-contrast-hover-filter);
+      }
+    }
+  }
+}
+
+/* soft */
+
+.rt-Code:where(.rt-variant-soft) {
+  background-color: var(--accent-a3);
+  color: var(--accent-a11);
+
+  &:where(.rt-high-contrast) {
+    color: var(--accent-12);
+  }
+
+  :where(.rt-Link) &,
+  &:where(:any-link, button) {
+    isolation: isolate;
+    @media (hover: hover) {
+      &:where(:hover) {
+        background-color: var(--accent-a4);
+      }
+    }
+  }
+}
+
+/* outline */
+
+.rt-Code:where(.rt-variant-outline) {
+  box-shadow: inset 0 0 0 max(1px, 0.033em) var(--accent-a8);
+  color: var(--accent-a11);
+
+  &:where(.rt-high-contrast) {
+    box-shadow:
+      inset 0 0 0 max(1px, 0.033em) var(--accent-a7),
+      inset 0 0 0 max(1px, 0.033em) var(--gray-a11);
+    color: var(--accent-12);
+  }
+
+  :where(.rt-Link) &,
+  &:where(:any-link, button) {
+    isolation: isolate;
+    @media (hover: hover) {
+      &:where(:hover) {
+        background-color: var(--accent-a2);
+      }
+    }
+  }
+}

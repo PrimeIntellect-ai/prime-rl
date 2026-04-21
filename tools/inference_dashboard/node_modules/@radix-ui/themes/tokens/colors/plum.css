@@ -1,0 +1,123 @@
+:root, .light, .light-theme {
+    --plum-1: #fefcff;
+    --plum-2: #fdf7fd;
+    --plum-3: #fbebfb;
+    --plum-4: #f7def8;
+    --plum-5: #f2d1f3;
+    --plum-6: #e9c2ec;
+    --plum-7: #deade3;
+    --plum-8: #cf91d8;
+    --plum-9: #ab4aba;
+    --plum-10: #a144af;
+    --plum-11: #953ea3;
+    --plum-12: #53195d;
+    --plum-a1: #aa00ff03;
+    --plum-a2: #c000c008;
+    --plum-a3: #cc00cc14;
+    --plum-a4: #c200c921;
+    --plum-a5: #b700bd2e;
+    --plum-a6: #a400b03d;
+    --plum-a7: #9900a852;
+    --plum-a8: #9000a56e;
+    --plum-a9: #89009eb5;
+    --plum-a10: #7f0092bb;
+    --plum-a11: #730086c1;
+    --plum-a12: #40004be6;
+    --plum-surface: #fdf5fdcc;
+    --plum-indicator: var(--plum-9);
+    --plum-track: var(--plum-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        :root, .light, .light-theme {
+            --plum-1: color(display-p3 0.995 0.988 0.999);
+            --plum-2: color(display-p3 0.988 0.971 0.99);
+            --plum-3: color(display-p3 0.973 0.923 0.98);
+            --plum-4: color(display-p3 0.953 0.875 0.966);
+            --plum-5: color(display-p3 0.926 0.825 0.945);
+            --plum-6: color(display-p3 0.89 0.765 0.916);
+            --plum-7: color(display-p3 0.84 0.686 0.877);
+            --plum-8: color(display-p3 0.775 0.58 0.832);
+            --plum-9: color(display-p3 0.624 0.313 0.708);
+            --plum-10: color(display-p3 0.587 0.29 0.667);
+            --plum-11: color(display-p3 0.543 0.263 0.619);
+            --plum-12: color(display-p3 0.299 0.114 0.352);
+            --plum-a1: color(display-p3 0.675 0.024 1 / 0.012);
+            --plum-a2: color(display-p3 0.58 0.024 0.58 / 0.028);
+            --plum-a3: color(display-p3 0.655 0.008 0.753 / 0.079);
+            --plum-a4: color(display-p3 0.627 0.008 0.722 / 0.126);
+            --plum-a5: color(display-p3 0.58 0.004 0.69 / 0.177);
+            --plum-a6: color(display-p3 0.537 0.004 0.655 / 0.236);
+            --plum-a7: color(display-p3 0.49 0.004 0.616 / 0.314);
+            --plum-a8: color(display-p3 0.471 0.004 0.6 / 0.42);
+            --plum-a9: color(display-p3 0.451 0 0.576 / 0.687);
+            --plum-a10: color(display-p3 0.42 0 0.529 / 0.71);
+            --plum-a11: color(display-p3 0.543 0.263 0.619);
+            --plum-a12: color(display-p3 0.299 0.114 0.352);
+            --plum-surface: color(display-p3 0.9843 0.9647 0.9843 / 0.8);
+        }
+    }
+}
+.dark, .dark-theme {
+    --plum-1: #181118;
+    --plum-2: #201320;
+    --plum-3: #351a35;
+    --plum-4: #451d47;
+    --plum-5: #512454;
+    --plum-6: #5e3061;
+    --plum-7: #734079;
+    --plum-8: #92549c;
+    --plum-9: #ab4aba;
+    --plum-10: #b658c4;
+    --plum-11: #e796f3;
+    --plum-12: #f4d4f4;
+    --plum-a1: #f112f108;
+    --plum-a2: #f22ff211;
+    --plum-a3: #fd4cfd27;
+    --plum-a4: #f646ff3a;
+    --plum-a5: #f455ff48;
+    --plum-a6: #f66dff56;
+    --plum-a7: #f07cfd70;
+    --plum-a8: #ee84ff95;
+    --plum-a9: #e961feb6;
+    --plum-a10: #ed70ffc0;
+    --plum-a11: #f19cfef3;
+    --plum-a12: #feddfef4;
+    --plum-surface: #2f152f80;
+    --plum-indicator: var(--plum-9);
+    --plum-track: var(--plum-9);
+}
+@supports (color: color(display-p3 1 1 1)) {
+    @media (color-gamut: p3) {
+        .dark, .dark-theme {
+            --plum-1: color(display-p3 0.09 0.068 0.092);
+            --plum-2: color(display-p3 0.118 0.077 0.121);
+            --plum-3: color(display-p3 0.192 0.105 0.202);
+            --plum-4: color(display-p3 0.25 0.121 0.271);
+            --plum-5: color(display-p3 0.293 0.152 0.319);
+            --plum-6: color(display-p3 0.343 0.198 0.372);
+            --plum-7: color(display-p3 0.424 0.262 0.461);
+            --plum-8: color(display-p3 0.54 0.341 0.595);
+            --plum-9: color(display-p3 0.624 0.313 0.708);
+            --plum-10: color(display-p3 0.666 0.365 0.748);
+            --plum-11: color(display-p3 0.86 0.602 0.933);
+            --plum-12: color(display-p3 0.936 0.836 0.949);
+            --plum-a1: color(display-p3 0.973 0.071 0.973 / 0.026);
+            --plum-a2: color(display-p3 0.933 0.267 1 / 0.059);
+            --plum-a3: color(display-p3 0.918 0.333 0.996 / 0.148);
+            --plum-a4: color(display-p3 0.91 0.318 1 / 0.219);
+            --plum-a5: color(display-p3 0.914 0.388 1 / 0.269);
+            --plum-a6: color(display-p3 0.906 0.463 1 / 0.328);
+            --plum-a7: color(display-p3 0.906 0.529 1 / 0.425);
+            --plum-a8: color(display-p3 0.906 0.553 1 / 0.568);
+            --plum-a9: color(display-p3 0.875 0.427 1 / 0.69);
+            --plum-a10: color(display-p3 0.886 0.471 0.996 / 0.732);
+            --plum-a11: color(display-p3 0.86 0.602 0.933);
+            --plum-a12: color(display-p3 0.936 0.836 0.949);
+            --plum-surface: color(display-p3 0.1647 0.0863 0.1725 / 0.5);
+        }
+    }
+}
+:root {
+    --plum-contrast: white;
+}
