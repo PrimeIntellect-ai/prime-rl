@@ -66,7 +66,78 @@ def _patch_mamba2_use_triton_ssd():
         logger.warning_once("mamba_ssm not available; NemotronH Mamba layers will use torch_forward (bf16 softplus)")
         return
 
-    def _patched_forward(self, hidden_states, cache_params=None, attention_mask=None):
+    def _varlen_mamba_forward(self, hidden_states, cu_seqlens):
+        """Varlen-aware mamba forward. `cu_seqlens` is required: shape [num_seq+1],
+        e.g. [0, s1, s1+s2, ...]. Handles packed batches by:
+          - applying conv1d per-sequence (with kernel-1 leading zeros)
+          - passing seq_idx to mamba_chunk_scan_combined (SSM state resets at boundaries)
+        """
+        batch_size, seq_len, _ = hidden_states.shape
+        assert batch_size == 1, "varlen mamba expects batch_size=1 (packed)"
+        groups_time_state_size = self.n_groups * self.ssm_state_size
+
+        # 1. Input projection (pointwise, no cross-seq mixing)
+        projected_states = self.in_proj(hidden_states)
+        A = -torch.exp(self.A_log.float())
+        dt_limit_kwargs = {} if self.time_step_limit is None else {"dt_limit": self.time_step_limit}
+
+        gate, hidden_states_B_C, time_step = torch.split(
+            projected_states,
+            [self.intermediate_size, self.conv_dim, self.num_heads],
+            dim=-1,
+        )
+
+        # 2. Per-sequence causal conv1d. self.conv1d already has padding=kernel-1 so
+        # applying it to each segment independently gives the correct causal output
+        # without cross-sequence history.
+        hbc_t = hidden_states_B_C.transpose(1, 2)  # (1, C, L)
+        cu = cu_seqlens.tolist()
+        conv_outs = []
+        for i in range(len(cu) - 1):
+            s, e = cu[i], cu[i + 1]
+            if s == e:
+                continue
+            seg = hbc_t[:, :, s:e]
+            conv_out = self.conv1d(seg)[:, :, : e - s]
+            conv_outs.append(conv_out)
+        hidden_states_B_C = self.act(torch.cat(conv_outs, dim=-1).transpose(1, 2))
+
+        hidden_states, B, C = torch.split(
+            hidden_states_B_C,
+            [self.intermediate_size, groups_time_state_size, groups_time_state_size],
+            dim=-1,
+        )
+
+        # 3. SSM with seq_idx so state resets at sequence boundaries
+        seq_idx = torch.zeros(seq_len, dtype=torch.int32, device=hidden_states.device)
+        for i in range(len(cu) - 1):
+            s, e = cu[i], cu[i + 1]
+            if e > s:
+                seq_idx[s:e] = i
+        seq_idx = seq_idx.unsqueeze(0)  # (1, L)
+
+        scan_output = _mamba_chunk_scan_combined(
+            hidden_states.view(batch_size, seq_len, -1, self.head_dim),
+            time_step,
+            A,
+            B.view(batch_size, seq_len, self.n_groups, -1),
+            C.view(batch_size, seq_len, self.n_groups, -1),
+            chunk_size=self.chunk_size,
+            D=self.D,
+            z=None,
+            seq_idx=seq_idx,
+            return_final_states=False,
+            dt_bias=self.dt_bias,
+            dt_softplus=True,
+            **dt_limit_kwargs,
+        )
+        scan_output = scan_output.view(batch_size, seq_len, -1)
+        scan_output = self.norm(scan_output, gate)
+        return self.out_proj(scan_output)
+
+    def _patched_forward(self, hidden_states, cache_params=None, attention_mask=None, cu_seqlens=None):
+        if cu_seqlens is not None and cache_params is None and "cuda" in self.in_proj.weight.device.type:
+            return _varlen_mamba_forward(self, hidden_states, cu_seqlens)
         if "cuda" in self.in_proj.weight.device.type:
             # Disable fused training path (needs causal_conv1d CUDA extension)
             orig = self.use_mem_eff_path
@@ -78,7 +149,7 @@ def _patch_mamba2_use_triton_ssd():
 
     NemotronHMamba2Mixer.forward = _patched_forward
     _patch_applied = True
-    logger.info("Patched NemotronHMamba2Mixer to use mamba_ssm Triton SSD kernels")
+    logger.info("Patched NemotronHMamba2Mixer: Triton SSD kernels + varlen (cu_seqlens) support")
 
 
 def _ensure_zamba2_compat(config: NemotronHConfig):
@@ -132,7 +203,7 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
-        hidden_states = self.mamba(hidden_states)
+        hidden_states = self.mamba(hidden_states, cu_seqlens=cu_seqlens)
         return residual + hidden_states
 
 
