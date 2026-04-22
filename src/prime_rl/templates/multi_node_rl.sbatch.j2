@@ -202,12 +202,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     echo "INFER_NODE_RANK=$INFER_NODE_RANK REPLICA=$REPLICA_IDX RANK_IN_REPLICA=$RANK_IN_REPLICA LOCAL_IP=$LOCAL_IP" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
-{% if is_disaggregated -%}
-    # PD disaggregated: NIXL KV transfer + role-based inference
-    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
 {%- if use_deep_gemm %}
     export VLLM_USE_DEEP_GEMM=1
 {%- endif %}
+
+{% if is_disaggregated -%}
+    # PD disaggregated: NIXL KV transfer + role-based inference
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
 
     export GLOO_SOCKET_IFNAME=bond0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
@@ -334,9 +335,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         INFER_DP_START_RANK=$((RANK_IN_REPLICA * INFERENCE_DP_LOCAL))
 
         if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\"}"
+            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true}"
         else
-            VLLM_EXTRA="{\"data_parallel_address\": \"$REPLICA_HEAD_HOST\", \"data_parallel_start_rank\": $INFER_DP_START_RANK}"
+            VLLM_EXTRA="{\"data_parallel_address\": \"$REPLICA_HEAD_HOST\", \"data_parallel_start_rank\": $INFER_DP_START_RANK, \"data_parallel_hybrid_lb\": true}"
         fi
 
         uv run inference \
