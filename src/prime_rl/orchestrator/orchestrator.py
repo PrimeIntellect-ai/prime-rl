@@ -895,6 +895,12 @@ async def setup_rollout_inference_pool(
         return None, inference_pool
 
     if is_vlm:
+        if config.model.renderer != "auto":
+            raise ValueError(
+                f"VLM models must use MITO (server-side chat templating), "
+                f"but model.renderer={config.model.renderer!r} was set explicitly. "
+                f"Remove the renderer field or leave it as 'auto' for VLMs."
+            )
         logger.info("VLM detected — using MITO (openai_chat_completions) rollout client")
         inference_pool = await setup_inference_pool(
             rollout_client_config,

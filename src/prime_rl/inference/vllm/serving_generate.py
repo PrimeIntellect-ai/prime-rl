@@ -1,11 +1,11 @@
-"""/v1/generate endpoint — accepts pre-tokenized + pre-processed inputs.
+"""/v1/generate endpoint — accepts pre-tokenized inputs.
 
-Text-only: accepts prompt_token_ids, passes to engine.
-VLM: accepts prompt_token_ids + raw images (multi_modal_data), vLLM processes
-images and expands placeholders. The Renderer does all text tokenization
-client-side — vLLM just handles image processing and generation.
-
+Text-only tokens in, tokens out. The Renderer does all tokenization client-side.
 No Jinja rendering, no server-side chat template application.
+
+VLMs do not use this endpoint. The orchestrator routes VLMs to MITO
+(/v1/chat/completions) where vLLM handles image preprocessing and chat
+templating server-side.
 """
 
 from __future__ import annotations
@@ -13,14 +13,12 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Mapping
-from io import BytesIO
 from typing import Any
 from uuid import uuid4
 
 import numpy as np
 from fastapi import Request
-from PIL import Image
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from vllm.engine.protocol import EngineClient
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
@@ -32,17 +30,9 @@ logger = init_logger(__name__)
 # ── Request / Response schemas ───────────────────────────────────────
 
 
-class RawImageData(BaseModel):
-    """Raw image bytes — vLLM processes them server-side."""
-
-    data: str = Field(description="Base64-encoded image bytes")
-    media_type: str = Field(default="image/png")
-
-
 class GenerateRequest(BaseModel):
     model: str | None = None
     prompt_token_ids: list[int]
-    images: list[RawImageData] | None = None
 
     # When unset, fill from max_model_len - prompt_len at request time so we
     # match /v1/chat/completions behavior. The previous 4096 hard default
@@ -84,7 +74,7 @@ class GenerateResponse(BaseModel):
 
 
 class OpenAIServingGenerate:
-    """Lightweight generate handler — tokens + optional images in, tokens out."""
+    """Lightweight generate handler — tokens in, tokens out."""
 
     def __init__(self, engine_client: EngineClient, chat_handler: Any | None = None):
         self.engine_client = engine_client
@@ -94,10 +84,6 @@ class OpenAIServingGenerate:
         engine_prompt: dict[str, Any] = {
             "prompt_token_ids": request.prompt_token_ids,
         }
-
-        if request.images:
-            pil_images = [Image.open(BytesIO(base64.b64decode(img.data))) for img in request.images]
-            engine_prompt["multi_modal_data"] = {"image": pil_images}
 
         # Match /v1/chat/completions: if the client didn't ask for a specific
         # cap, let the model generate up to whatever room is left in context.
