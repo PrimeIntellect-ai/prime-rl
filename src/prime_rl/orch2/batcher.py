@@ -47,7 +47,7 @@ class TrainBatcher:
         buf: list[vf.RolloutOutput] = []
         while True:
             group = await self.in_q.get()
-            if group.pool_id.startswith("eval"):
+            if group.kind == "eval":
                 continue
             self._score(group)
             buf.extend(group.rollouts)

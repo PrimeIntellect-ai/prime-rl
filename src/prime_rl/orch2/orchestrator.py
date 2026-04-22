@@ -4,12 +4,13 @@ import time
 from pathlib import Path
 
 import tomli_w
+import verifiers as vf
 
 from prime_rl.configs.orchestrator import DefaultAdvantageConfig, OrchestratorConfig
 from prime_rl.orch2.batcher import Done, TrainBatcher
 from prime_rl.orch2.engine import Group, RolloutEngine
 from prime_rl.orch2.inference_admin import InferenceAdmin
-from prime_rl.orch2.pool import build_pool
+from prime_rl.orch2.scheduler import Scheduler
 from prime_rl.orch2.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import setup_training_batch_sender
@@ -54,24 +55,38 @@ async def run(cfg: OrchestratorConfig) -> None:
     if cfg.wandb is not None:
         logger.info(f"Wandb monitor ready (project={cfg.wandb.project}, name={cfg.wandb.name})")
 
-    num_envs = len(cfg.train.env)
-    # pool.concurrency bounds concurrent *groups*; each group fans out to
-    # rollouts_per_example rollouts. Divide by that to match the old orch's
-    # semantics where max_inflight_rollouts counts individual rollouts.
-    per_env_concurrency = max(1, cfg.max_inflight_rollouts // (num_envs * cfg.rollouts_per_example))
-    pools = [build_pool(env_cfg, cfg, per_env_concurrency) for env_cfg in cfg.train.env]
-    for pool in pools:
-        logger.info(
-            f"Pool '{pool.id}' ready | concurrency={pool.concurrency} | "
-            f"rollouts_per_group={pool.rollouts_per_group} | max_off_policy={pool.max_off_policy}"
-        )
+    scheduler = Scheduler(cfg.train.env, kind="train")
+    for task in scheduler.tasks:
+        logger.info(f"Task '{task.id}' ready (kind={task.kind})")
+
+    # Engine-wide cap: total concurrent groups across all tasks. Each group
+    # fans out to rollouts_per_example rollouts, so divide to match the old
+    # orch's semantics where max_inflight_rollouts counts individual rollouts.
+    concurrency = max(1, cfg.max_inflight_rollouts // cfg.rollouts_per_example)
+    logger.info(f"Engine concurrency: {concurrency} groups across {len(scheduler.tasks)} task(s)")
 
     # Bounded so the batcher's async-level barrier cascades backpressure into
     # the engine instead of letting it accumulate unbounded in-flight rollouts.
     groups_per_batch = max(1, cfg.batch_size // cfg.rollouts_per_example)
     groups_q: asyncio.Queue[Group] = asyncio.Queue(maxsize=groups_per_batch * (cfg.max_async_level + 1))
 
-    engine = RolloutEngine(pools, groups_q)
+    client = vf.ClientConfig(
+        client_type="openai_chat_completions",
+        api_base_url=cfg.client.base_url[0],
+        api_key_var=cfg.client.api_key_var,
+        timeout=cfg.client.timeout,
+        connect_timeout=cfg.client.connect_timeout,
+    )
+
+    engine = RolloutEngine(
+        scheduler=scheduler,
+        out_q=groups_q,
+        client=client,
+        model=cfg.model.name,
+        rollouts_per_group=cfg.rollouts_per_example,
+        max_off_policy=cfg.max_off_policy_steps,
+        concurrency=concurrency,
+    )
     training_sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
     batcher = TrainBatcher(
         groups_q,
@@ -104,6 +119,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         t0 = time.perf_counter()
         await admin.update_weights(weight_dir)
         engine.on_new_version(step)
+        scheduler.on_new_version(step)
         logger.success(f"Weights updated to step {step} in {time.perf_counter() - t0:.2f}s ({weight_dir})")
 
     watcher = WeightWatcher(get_broadcast_dir(cfg.output_dir), on_new_weights)

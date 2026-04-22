@@ -44,7 +44,7 @@ sft = "prime_rl.entrypoints.sft:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
-orch2 = "prime_rl.orch2.main:main"
+orch2 = "prime_rl.orch2.orchestrator:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
 
 [project.entry-points."vllm.general_plugins"]

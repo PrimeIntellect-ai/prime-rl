@@ -3,13 +3,14 @@ from dataclasses import dataclass
 
 import verifiers as vf
 
-from prime_rl.orch2.pool import Pool
+from prime_rl.orch2.scheduler import Kind, Scheduler, Task
 
 
 @dataclass
 class Group:
     example: dict
-    pool_id: str
+    env_id: str
+    kind: Kind
     rollouts: list[vf.RolloutOutput]
     policy_version: int
 
@@ -17,38 +18,46 @@ class Group:
 @dataclass
 class Inflight:
     version: int
-    max_off_policy: int
     gather: asyncio.Future
 
 
 class RolloutEngine:
-    def __init__(self, pools: list[Pool], out_q: asyncio.Queue[Group]):
-        self.pools = pools
+    def __init__(
+        self,
+        scheduler: Scheduler,
+        out_q: asyncio.Queue[Group],
+        client: vf.ClientConfig,
+        model: str,
+        rollouts_per_group: int,
+        max_off_policy: int,
+        concurrency: int,
+    ):
+        self.scheduler = scheduler
         self.out_q = out_q
+        self.client = client
+        self.model = model
+        self.rollouts_per_group = rollouts_per_group
+        self.max_off_policy = max_off_policy
+        self.concurrency = concurrency
         self.policy_version = 0
         self._inflight: list[Inflight] = []
 
     async def run(self) -> None:
-        async with asyncio.TaskGroup() as tg:
-            for pool in self.pools:
-                tg.create_task(self._pump(pool))
-
-    async def _pump(self, pool: Pool) -> None:
-        sem = asyncio.Semaphore(pool.concurrency)
+        sem = asyncio.Semaphore(self.concurrency)
         while True:
             await sem.acquire()
-            try:
-                example = next(pool.dataset)
-            except StopIteration:
+            got = self.scheduler.next_task()
+            if got is None:
                 sem.release()
                 return
-            asyncio.create_task(self._run_group(pool, example, sem))
+            task, example = got
+            asyncio.create_task(self._run_group(task, example, sem))
 
-    async def _run_group(self, pool: Pool, example: dict, sem: asyncio.Semaphore) -> None:
+    async def _run_group(self, task: Task, example: dict, sem: asyncio.Semaphore) -> None:
         try:
             version = self.policy_version  # snapshot; current version may advance during await
-            gather = asyncio.gather(*(pool.env.rollout(example, version) for _ in range(pool.rollouts_per_group)))
-            inflight = Inflight(version=version, max_off_policy=pool.max_off_policy, gather=gather)
+            gather = asyncio.gather(*(self._rollout(task, example) for _ in range(self.rollouts_per_group)))
+            inflight = Inflight(version=version, gather=gather)
             self._inflight.append(inflight)
 
             try:
@@ -58,21 +67,35 @@ class RolloutEngine:
             finally:
                 self._inflight.remove(inflight)
 
-            # correctness guard for the async window. Main off policy logic is handle in on_new_version.
-            if self.policy_version - version > pool.max_off_policy:
+            # correctness guard: group may have finished just as a new version arrived
+            if self.policy_version - version > self.max_off_policy:
                 return
 
             await self.out_q.put(
-                Group(example=example, pool_id=pool.id, rollouts=list(rollouts), policy_version=version)
+                Group(
+                    example=example,
+                    env_id=task.id,
+                    kind=task.kind,
+                    rollouts=list(rollouts),
+                    policy_version=version,
+                )
             )
         finally:
             sem.release()
 
+    async def _rollout(self, task: Task, example: dict) -> vf.RolloutOutput:
+        return await task.env.run_rollout(
+            vf.RolloutInput(**example),
+            client=self.client,
+            model=self.model,
+            sampling_args=task.sampling_args,
+            state_columns=["trajectory", "sampling_args"],
+        )
+
     def on_new_version(self, version: int) -> None:
         self.policy_version = version
-        # when new version is arrived, we go over all the in-flight rollouts and cancel them if they are too old.
         for inflight in list(self._inflight):
-            if version - inflight.version > inflight.max_off_policy:
+            if version - inflight.version > self.max_off_policy:
                 inflight.gather.cancel()
 
     def max_off_policy_level(self) -> int:
