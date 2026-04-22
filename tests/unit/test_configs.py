@@ -6,7 +6,11 @@ import tomli_w
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import (
+    DisaggregatedInferenceDeploymentConfig,
+    InferenceConfig,
+    MultiNodeInferenceDeploymentConfig,
+)
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
@@ -165,25 +169,55 @@ def test_single_node_inference_defaults_to_router_frontend():
     config = InferenceConfig()
     assert config.deployment.type == "single_node"
     assert config.server.port == 8000
-    assert config.deployment.router_port == 8000
+    assert config.deployment.router.port == 8000
+    assert config.deployment.router.policy == "consistent_hash"
     assert config.deployment.backend_port == 8100
 
 
 def test_single_node_inference_custom_public_port_updates_router_port():
     config = InferenceConfig.model_validate({"server": {"port": 9000}})
     assert config.server.port == 9000
-    assert config.deployment.router_port == 9000
+    assert config.deployment.router.port == 9000
     assert config.deployment.backend_port == 9100
 
 
 def test_single_node_inference_rejects_mismatched_public_and_router_ports():
-    with pytest.raises(ValidationError, match="must match deployment.router_port"):
+    with pytest.raises(ValidationError, match="must match deployment.router.port"):
         InferenceConfig.model_validate(
             {
                 "server": {"port": 9000},
-                "deployment": {"type": "single_node", "router_port": 9001},
+                "deployment": {"type": "single_node", "router": {"port": 9001}},
             }
         )
+
+
+def test_single_node_inference_accepts_flat_router_fields_for_backwards_compatibility():
+    config = InferenceConfig.model_validate(
+        {
+            "deployment": {
+                "type": "single_node",
+                "router_port": 9000,
+                "router_policy": "round_robin",
+            }
+        }
+    )
+
+    assert config.deployment.router.port == 9000
+    assert config.deployment.router.policy == "round_robin"
+
+
+def test_multi_node_inference_router_defaults_port_when_only_policy_is_set():
+    deployment = MultiNodeInferenceDeploymentConfig.model_validate({"router": {"policy": "round_robin"}})
+
+    assert deployment.router.port == 8000
+    assert deployment.router.policy == "round_robin"
+
+
+def test_disaggregated_inference_router_defaults_port_when_only_policy_is_set():
+    deployment = DisaggregatedInferenceDeploymentConfig.model_validate({"router": {"policy": "round_robin"}})
+
+    assert deployment.router.port == 8000
+    assert deployment.router.policy == "round_robin"
 
 
 def test_rl_config_auto_sets_single_node_router_and_admin_urls():
@@ -210,7 +244,7 @@ def test_rl_config_auto_sets_non_conflicting_teacher_inference_ports():
 
     assert config.teacher_inference is not None
     assert config.teacher_inference.server.port == 9001
-    assert config.teacher_inference.deployment.router_port == 9001
+    assert config.teacher_inference.deployment.router.port == 9001
     assert config.teacher_inference.deployment.backend_port == 9101
     assert config.orchestrator.teacher_model is not None
     assert config.orchestrator.teacher_model.client.base_url == ["http://localhost:9001/v1"]

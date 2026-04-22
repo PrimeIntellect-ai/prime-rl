@@ -2,7 +2,7 @@ import tomllib
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.entrypoints.rl import INFERENCE_TOML, TEACHER_INFERENCE_TOML, write_subconfigs
+from prime_rl.entrypoints.rl import INFERENCE_TOML, TEACHER_INFERENCE_TOML, write_slurm_script, write_subconfigs
 from prime_rl.utils.config import cli
 
 
@@ -12,11 +12,11 @@ def test_write_subconfigs_preserves_single_node_inference_deployment(tmp_path):
         args=[
             "@",
             "configs/ci/integration/rl/start.toml",
-            "--inference.deployment.router_port",
+            "--inference.deployment.router.port",
             "9000",
             "--inference.deployment.backend_port",
             "9105",
-            "--inference.deployment.router_policy",
+            "--inference.deployment.router.policy",
             "round_robin",
         ],
     )
@@ -30,9 +30,8 @@ def test_write_subconfigs_preserves_single_node_inference_deployment(tmp_path):
     assert inference_config["deployment"] == {
         "type": "single_node",
         "gpus_per_node": 8,
-        "router_port": 9000,
+        "router": {"port": 9000, "policy": "round_robin"},
         "backend_port": 9105,
-        "router_policy": "round_robin",
     }
 
 
@@ -60,8 +59,18 @@ def test_write_subconfigs_preserves_teacher_inference_single_node_ports(tmp_path
     assert teacher_inference_config["deployment"] == {
         "type": "single_node",
         "gpus_per_node": 8,
-        "router_port": 9001,
+        "router": {"port": 9001, "policy": "consistent_hash"},
         "backend_port": 9101,
-        "router_policy": "consistent_hash",
     }
     assert validated_teacher_config.server.port == 9001
+
+
+def test_write_slurm_script_passes_top_level_log_level_to_router(tmp_path):
+    config = cli(RLConfig, args=["@", "examples/multinode/rl.toml"])
+    script_path = tmp_path / "rl.sbatch"
+
+    write_slurm_script(config, tmp_path, script_path)
+
+    script = script_path.read_text()
+    assert 'export PRIME_LOG_LEVEL="debug"' in script
+    assert '--log-level "$PRIME_LOG_LEVEL"' in script

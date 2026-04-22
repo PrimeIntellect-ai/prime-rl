@@ -54,6 +54,7 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
 export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
+export PRIME_LOG_LEVEL="{{ prime_log_level }}"
 
 # Setup environment
 cd $PROJECT_DIR
@@ -248,7 +249,7 @@ srun bash -c '
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
             --worker-startup-timeout-secs 4200 \
-            --log-level debug \
+            --log-level "$PRIME_LOG_LEVEL" \
             >> $ROUTER_LOG 2>&1 &
     fi
 
@@ -278,7 +279,7 @@ srun bash -c '
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
             --worker-startup-timeout-secs 4200 \
-            --log-level debug \
+            --log-level "$PRIME_LOG_LEVEL" \
             >> $ROUTER_LOG 2>&1 &
     fi
 

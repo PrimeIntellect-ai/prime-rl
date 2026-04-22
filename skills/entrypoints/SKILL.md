@@ -42,6 +42,7 @@ The entrypoint launches torchrun internally — no need to call torchrun directl
 Launches a vLLM-based inference server with OpenAI-compatible API.
 
 On **single-node** deployments, the `inference` entrypoint now starts a local `vllm-router` in front of the backend vLLM server by default. The public API stays on `server.port`; the backend binds to `deployment.backend_port`.
+Router log level follows `PRIME_LOG_LEVEL`, and when inference is launched through `uv run rl`, the launcher passes the resolved top-level RL `log.level` down to the router and inference subprocesses.
 
 ```bash
 uv run inference @ configs/debug/infer.toml

@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,10 @@ from prime_rl.utils.process import set_proc_title
 
 INFERENCE_TOML = "inference.toml"
 INFERENCE_SBATCH = "inference.sbatch"
+
+
+def _log_level() -> str:
+    return os.environ.get("PRIME_LOG_LEVEL", "info")
 
 
 def _router_bind_host(host: str | None) -> str:
@@ -33,19 +38,19 @@ def build_single_node_router_cmd(config: InferenceConfig) -> list[str]:
     return [
         "vllm-router",
         "--policy",
-        config.deployment.router_policy,
+        config.deployment.router.policy,
         "--worker-urls",
         worker_url,
         "--host",
         _router_bind_host(config.server.host),
         "--port",
-        str(config.deployment.router_port),
+        str(config.deployment.router.port),
         "--intra-node-data-parallel-size",
         str(dp_per_node),
         "--worker-startup-timeout-secs",
         "4200",
         "--log-level",
-        "debug",
+        _log_level(),
     ]
 
 
@@ -88,6 +93,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         num_nodes=getattr(config.deployment, "num_nodes", 1),
         port=config.server.port,
         disaggregated=is_disaggregated,
+        prime_log_level=_log_level(),
     )
 
     is_multi_node = config.deployment.type == "multi_node"
@@ -100,8 +106,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
-            router_port=config.deployment.router_port,
-            router_policy=config.deployment.router_policy,
+            router_port=config.deployment.router.port,
+            router_policy=config.deployment.router.policy,
             data_parallel_rpc_port=config.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
             prefill_env_overrides=config.deployment.prefill_env_overrides,
@@ -113,9 +119,9 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         )
     elif is_multi_node:
         template_vars.update(
-            router_port=config.deployment.router_port,
+            router_port=config.deployment.router.port,
             backend_port=config.deployment.backend_port,
-            router_policy=config.deployment.router_policy,
+            router_policy=config.deployment.router.policy,
         )
 
     script = template.render(**template_vars)
@@ -128,7 +134,7 @@ def inference_slurm(config: InferenceConfig):
     """Run inference via SLURM."""
     assert config.slurm is not None
 
-    logger = setup_logger("info")
+    logger = setup_logger(_log_level())
 
     config_dir = get_config_dir(config.output_dir)
     exclude = (
@@ -164,7 +170,7 @@ def inference_local(config: InferenceConfig):
     """Run inference locally."""
     from prime_rl.inference.server import setup_vllm_env
 
-    logger = setup_logger("info")
+    logger = setup_logger(_log_level())
 
     if config.dry_run:
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
@@ -185,7 +191,7 @@ def inference_local(config: InferenceConfig):
     backend_config = build_single_node_backend_config(config)
     public_host = config.server.host or "0.0.0.0"
     logger.info(
-        f"Starting inference router on http://{public_host}:{config.deployment.router_port}/v1 "
+        f"Starting inference router on http://{public_host}:{config.deployment.router.port}/v1 "
         f"with backend on http://{_router_worker_host(config.server.host)}:{config.deployment.backend_port}/v1\n"
     )
 

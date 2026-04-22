@@ -103,10 +103,8 @@ def check_gpus_available(gpu_ids: list[int]) -> None:
 def rl_local(config: RLConfig):
     assert config.deployment.type == "single_node"
 
-    logger = setup_logger(
-        config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
-        json_logging=config.log.json_logging,
-    )
+    log_level = config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info")
+    logger = setup_logger(log_level, json_logging=config.log.json_logging)
 
     config_dir = config.output_dir / "configs"
     write_subconfigs(config, config_dir)
@@ -216,6 +214,7 @@ def rl_local(config: RLConfig):
                     env={
                         **os.environ,
                         "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
+                        "PRIME_LOG_LEVEL": log_level,
                     },
                     stdout=log_file,
                     stderr=log_file,
@@ -260,6 +259,7 @@ def rl_local(config: RLConfig):
                     env={
                         **os.environ,
                         "CUDA_VISIBLE_DEVICES": ",".join(map(str, teacher_gpu_ids)),
+                        "PRIME_LOG_LEVEL": log_level,
                     },
                     stdout=log_file,
                     stderr=log_file,
@@ -428,6 +428,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
 
     env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
+    log_level = config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info")
 
     if config.deployment.type == "single_node":
         script = template.render(
@@ -454,7 +455,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_prefill_replicas=infer_deploy.num_prefill_replicas,
             num_decode_replicas=infer_deploy.num_decode_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
-            router_port=infer_deploy.router_port,
+            router_port=infer_deploy.router.port,
+            router_policy=infer_deploy.router.policy,
             prefill_port=infer_deploy.prefill_port,
             decode_port=infer_deploy.decode_port,
             inference_tp=config.inference.parallel.tp,
@@ -468,6 +470,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            prime_log_level=log_level,
         )
     else:
         script = template.render(
@@ -482,7 +485,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_infer_replicas=config.deployment.num_infer_replicas,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
-            router_port=getattr(config.inference.deployment, "router_port", 8000) if config.inference else 8000,
+            router_port=config.inference.deployment.router.port if config.inference else 8000,
+            router_policy=config.inference.deployment.router.policy if config.inference else "consistent_hash",
             backend_port=getattr(config.inference.deployment, "backend_port", 8100) if config.inference else 8100,
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
@@ -491,6 +495,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            prime_log_level=log_level,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

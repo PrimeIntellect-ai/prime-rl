@@ -779,7 +779,7 @@ class RLConfig(BaseConfig):
             host = "localhost"
 
         if "base_url" not in self.orchestrator.client.model_fields_set:
-            self.orchestrator.client.base_url = [f"http://{host}:{self.inference.deployment.router_port}/v1"]
+            self.orchestrator.client.base_url = [f"http://{host}:{self.inference.deployment.router.port}/v1"]
 
         if "admin_base_url" not in self.orchestrator.client.model_fields_set:
             self.orchestrator.client.admin_base_url = [f"http://{host}:{self.inference.deployment.backend_port}/v1"]
@@ -976,7 +976,7 @@ class RLConfig(BaseConfig):
                         "Auto-configured teacher_inference.deployment.backend_port exceeds the valid port range. "
                         "Set teacher_inference.deployment.backend_port explicitly."
                     )
-                self.teacher_inference.deployment.router_port = teacher_public_port
+                self.teacher_inference.deployment.router.port = teacher_public_port
                 self.teacher_inference.deployment.backend_port = teacher_backend_port
         elif self.inference is not None and self.teacher_inference.server.port == self.inference.server.port:
             raise ValueError(
@@ -996,11 +996,11 @@ class RLConfig(BaseConfig):
             and self.teacher_inference.deployment.type == "single_node"
         ):
             primary_ports = {
-                self.inference.deployment.router_port,
+                self.inference.deployment.router.port,
                 self.inference.deployment.backend_port,
             }
             teacher_ports = {
-                self.teacher_inference.deployment.router_port,
+                self.teacher_inference.deployment.router.port,
                 self.teacher_inference.deployment.backend_port,
             }
             collisions = sorted(primary_ports & teacher_ports)
@@ -1023,7 +1023,7 @@ class RLConfig(BaseConfig):
         if host in (None, "0.0.0.0", "::"):
             host = "localhost"
         port = (
-            self.teacher_inference.deployment.router_port
+            self.teacher_inference.deployment.router.port
             if self.teacher_inference.deployment.type == "single_node"
             else self.teacher_inference.server.port
         )

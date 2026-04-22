@@ -79,7 +79,8 @@ CLI uses kebab-case (`--model.max-model-len`), TOML uses snake_case (`max_model_
 For `InferenceConfig` with `deployment.type = "single_node"`:
 
 - `server.port` is the public API port exposed by `vllm-router`
-- `deployment.router_port` defaults to `server.port`
+- `deployment.router.port` defaults to `server.port`
+- `deployment.router.policy` controls the router policy shared across single-node, multi-node, and disaggregated inference
 - `deployment.backend_port` defaults to `server.port + 100`
 
 When the RL entrypoint auto-manages local inference, it routes generation traffic through `orchestrator.client.base_url` and sends admin traffic (health checks, weight updates, pause/resume) to `orchestrator.client.admin_base_url`.

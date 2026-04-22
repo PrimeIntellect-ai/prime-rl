@@ -26,3 +26,12 @@ def test_build_single_node_backend_config_moves_server_to_backend_port():
 
     assert config.server.port == 9000
     assert backend_config.server.port == 9100
+
+
+def test_build_single_node_router_cmd_uses_prime_log_level_env(monkeypatch):
+    monkeypatch.setenv("PRIME_LOG_LEVEL", "warning")
+    config = InferenceConfig.model_validate({"server": {"port": 9000}})
+
+    cmd = build_single_node_router_cmd(config)
+
+    assert cmd[cmd.index("--log-level") + 1] == "warning"
