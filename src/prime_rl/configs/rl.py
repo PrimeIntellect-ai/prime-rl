@@ -142,6 +142,16 @@ class SharedModelConfig(BaseConfig):
         Field(description="VLM configuration. Set to enable vision-language model support."),
     ] = None
 
+    tool_parser: Annotated[
+        str | None,
+        Field(description="Tool parser name (propagates to orchestrator/trainer/inference model configs)."),
+    ] = None
+
+    reasoning_parser: Annotated[
+        str | None,
+        Field(description="Reasoning parser name (propagates to orchestrator/trainer/inference model configs)."),
+    ] = None
+
 
 class SharedWeightBroadcastConfig(BaseConfig):
     """Configures shared weight broadcast settings."""
@@ -556,6 +566,18 @@ class RLConfig(BaseConfig):
                 self.orchestrator.model.vlm = self.model.vlm
                 if self.inference is not None:
                     self.inference.model.vlm = self.model.vlm
+
+            if self.model.tool_parser is not None:
+                self.trainer.model.tool_parser = self.model.tool_parser
+                self.orchestrator.model.tool_parser = self.model.tool_parser
+                if self.inference is not None:
+                    self.inference.model.tool_parser = self.model.tool_parser
+
+            if self.model.reasoning_parser is not None:
+                self.trainer.model.reasoning_parser = self.model.reasoning_parser
+                self.orchestrator.model.reasoning_parser = self.model.reasoning_parser
+                if self.inference is not None:
+                    self.inference.model.reasoning_parser = self.model.reasoning_parser
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 

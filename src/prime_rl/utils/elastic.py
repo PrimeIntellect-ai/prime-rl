@@ -107,6 +107,8 @@ class ElasticInferencePool:
         train_client_type: str = "renderer",
         eval_client_type: str = "openai_chat_completions",
         renderer_name: str = "auto",
+        tool_parser: str | None = None,
+        reasoning_parser: str | None = None,
     ):
         self.logger = get_logger()
         self.client_config = client_config
@@ -119,6 +121,8 @@ class ElasticInferencePool:
         self.train_client_type = train_client_type
         self.eval_client_type = eval_client_type
         self.renderer_name = renderer_name
+        self.tool_parser = tool_parser
+        self.reasoning_parser = reasoning_parser
         self.router_url = client_config.router_url
 
         self._servers: dict[str, ServerState] = {}
@@ -143,6 +147,8 @@ class ElasticInferencePool:
         train_client_type: str = "renderer",
         eval_client_type: str = "openai_chat_completions",
         renderer_name: str = "auto",
+        tool_parser: str | None = None,
+        reasoning_parser: str | None = None,
     ) -> ElasticInferencePool:
         if client_config.elastic is None:
             raise ValueError("Elastic inference pool requires elastic config")
@@ -152,6 +158,8 @@ class ElasticInferencePool:
             train_client_type=train_client_type,
             eval_client_type=eval_client_type,
             renderer_name=renderer_name,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
         )
         await pool.start()
         return pool
@@ -199,6 +207,8 @@ class ElasticInferencePool:
                     client_type=self.train_client_type,
                     renderer_name=self.renderer_name,
                     renderer_model_name=self.renderer_model_name,
+                    tool_parser=self.tool_parser,
+                    reasoning_parser=self.reasoning_parser,
                 )
                 if urls
                 else []

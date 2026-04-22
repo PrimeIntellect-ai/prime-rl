@@ -136,6 +136,27 @@ class BaseModelConfig(BaseConfig):
         ),
     ] = "auto"
 
+    tool_parser: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Name of a tool parser in renderers.parsers. Only consumed by "
+                "DefaultRenderer (model-specific renderers bake their own parsing "
+                "in). Options today: 'qwen3', 'qwen3.5', 'glm', 'deepseek_v3'."
+            ),
+        ),
+    ] = None
+
+    reasoning_parser: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Name of a reasoning parser in renderers.parsers. Only consumed "
+                "by DefaultRenderer. Options today: 'think'."
+            ),
+        ),
+    ] = None
+
     vlm: Annotated[
         "VLMConfig | None",
         Field(

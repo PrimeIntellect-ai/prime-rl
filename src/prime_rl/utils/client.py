@@ -65,6 +65,8 @@ class StaticInferencePool:
         train_client_type: str = "renderer",
         eval_client_type: str = "openai_chat_completions",
         renderer_name: str = "auto",
+        tool_parser: str | None = None,
+        reasoning_parser: str | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
@@ -72,6 +74,8 @@ class StaticInferencePool:
             client_type=train_client_type,
             renderer_name=renderer_name,
             renderer_model_name=renderer_model_name,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
@@ -117,6 +121,8 @@ async def setup_inference_pool(
     train_client_type: str = "renderer",
     eval_client_type: str = "openai_chat_completions",
     renderer_name: str = "auto",
+    tool_parser: str | None = None,
+    reasoning_parser: str | None = None,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
@@ -137,6 +143,8 @@ async def setup_inference_pool(
             train_client_type=train_client_type,
             eval_client_type=eval_client_type,
             renderer_name=renderer_name,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
         )
 
     logger.info(
@@ -150,6 +158,8 @@ async def setup_inference_pool(
         train_client_type=train_client_type,
         eval_client_type=eval_client_type,
         renderer_name=renderer_name,
+        tool_parser=tool_parser,
+        reasoning_parser=reasoning_parser,
     )
 
 
@@ -158,6 +168,8 @@ def setup_clients(
     client_type: str = "openai_chat_completions",
     renderer_name: str = "auto",
     renderer_model_name: str | None = None,
+    tool_parser: str | None = None,
+    reasoning_parser: str | None = None,
 ) -> list[vf.ClientConfig]:
     clients = []
     client_idx = 0
@@ -172,6 +184,8 @@ def setup_clients(
                     client_type=client_type,
                     renderer=renderer_name,
                     renderer_model_name=renderer_model_name,
+                    tool_parser=tool_parser,
+                    reasoning_parser=reasoning_parser,
                     api_base_url=base_url,
                     api_key_var=client_config.api_key_var,
                     timeout=client_config.timeout,
