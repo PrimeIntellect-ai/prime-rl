@@ -758,3 +758,201 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
             f"alpha={self.alpha}, dropout={self.lora_dropout}, "
             f"use_grouped_mm={self.use_grouped_mm})"
         )
+
+
+class MultiLoRAGemma4Experts(MultiLoRAModule):
+    """Gemma4TextExperts + multi-LoRA via per-expert for-loop.
+
+    Adapts HF's packed gate_up_proj (first half gate, second half up) and
+    down_proj. Matches the base layer's
+    ``forward(hidden_states, top_k_index, top_k_weights)`` signature so it
+    drops in without touching Gemma4TextMoE.
+    """
+
+    def __init__(
+        self,
+        base_layer,  # transformers Gemma4TextExperts
+        rank: int,
+        n_adapters: int,
+        alpha: float = 32.0,
+        dropout: float = 0.0,
+    ):
+        super().__init__(base_layer)
+        if rank <= 0 or n_adapters <= 0:
+            raise ValueError("rank and n_adapters must be > 0")
+
+        self.num_experts = base_layer.num_experts
+        # gate_up_proj: [E, 2 * intermediate_dim, hidden_dim]
+        self.two_inter = base_layer.gate_up_proj.shape[1]
+        self.dim = base_layer.gate_up_proj.shape[2]
+        self.inter = self.two_inter // 2
+
+        self.rank = rank
+        self.n_adapters = n_adapters
+        self.alpha = alpha
+        self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+
+        self._lora_num_tokens = get_lora_num_tokens()
+        self._scaling_factors = get_multilora_scaling()
+
+        gu_dev, gu_dt = base_layer.gate_up_proj.device, base_layer.gate_up_proj.dtype
+        dn_dev, dn_dt = base_layer.down_proj.device, base_layer.down_proj.dtype
+
+        self.gate_up_lora_A = nn.ParameterList(
+            [
+                nn.Parameter(torch.empty(self.num_experts, rank, self.dim, device=gu_dev, dtype=gu_dt))
+                for _ in range(n_adapters)
+            ]
+        )
+        self.gate_up_lora_B = nn.ParameterList(
+            [
+                nn.Parameter(torch.empty(self.num_experts, self.two_inter, rank, device=gu_dev, dtype=gu_dt))
+                for _ in range(n_adapters)
+            ]
+        )
+        self.down_lora_A = nn.ParameterList(
+            [
+                nn.Parameter(torch.empty(self.num_experts, rank, self.inter, device=dn_dev, dtype=dn_dt))
+                for _ in range(n_adapters)
+            ]
+        )
+        self.down_lora_B = nn.ParameterList(
+            [
+                nn.Parameter(torch.empty(self.num_experts, self.dim, rank, device=dn_dev, dtype=dn_dt))
+                for _ in range(n_adapters)
+            ]
+        )
+
+        self.reset_parameters()
+
+    def reset_parameters(self, index: int | None = None) -> None:
+        if index is None:
+            for i in range(self.n_adapters):
+                self.reset_parameters(i)
+        else:
+            nn.init.kaiming_uniform_(self.gate_up_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.gate_up_lora_B[index])
+            nn.init.kaiming_uniform_(self.down_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.down_lora_B[index])
+
+    def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
+        return [
+            ("gate_up_lora_A", self.gate_up_lora_A[idx]),
+            ("gate_up_lora_B", self.gate_up_lora_B[idx]),
+            ("down_lora_A", self.down_lora_A[idx]),
+            ("down_lora_B", self.down_lora_B[idx]),
+        ]
+
+    def get_lora_param_counts(self) -> tuple[int, int]:
+        adapter_params = (
+            self.gate_up_lora_A[0].numel()
+            + self.gate_up_lora_B[0].numel()
+            + self.down_lora_A[0].numel()
+            + self.down_lora_B[0].numel()
+        )
+        adapted_params = self.base_layer.gate_up_proj.numel() + self.base_layer.down_proj.numel()
+        return adapter_params, adapted_params
+
+    def state_dict_key_prefix(self, prefix: str) -> str:
+        """Rewrite the HF module path into vLLM's Gemma4 expert tree.
+
+        The HF training tree has ``model.language_model.layers.{L}.experts``,
+        but vLLM's Gemma4ForCausalLM exposes experts under
+        ``model.layers.{L}.moe.experts``. Only rewrites the tail so wrapper
+        prefixes (e.g. ``base_model.model.``) added later are preserved.
+        """
+        out = prefix.replace("model.language_model.", "model.")
+        # Append .moe. before the final .experts segment.
+        if out.endswith(".experts"):
+            out = out[: -len(".experts")] + ".moe.experts"
+        return out
+
+    def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
+        state_dict: dict[str, torch.Tensor] = {}
+
+        gu_a = self.gate_up_lora_A[idx].detach()
+        gu_b = self.gate_up_lora_B[idx].detach()
+        dn_a = self.down_lora_A[idx].detach()
+        dn_b = self.down_lora_B[idx].detach()
+
+        if isinstance(gu_a, DTensor):
+            gu_a = gu_a.full_tensor()
+            gu_b = gu_b.full_tensor()
+            dn_a = dn_a.full_tensor()
+            dn_b = dn_b.full_tensor()
+
+        # vLLM consumes gate_proj and up_proj as separate modules. Split the
+        # packed gate_up layout: lora_A is shared (duplicate), lora_B slices
+        # along dim 0 into [gate | up].
+        i = self.inter
+        for expert_id in range(self.num_experts):
+            gu_a_e = gu_a[expert_id].clone()
+            gu_b_e = gu_b[expert_id]
+            state_dict[f"{expert_id}.gate_proj.lora_A.weight"] = gu_a_e
+            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = gu_a_e.clone()
+            state_dict[f"{expert_id}.gate_proj.lora_B.weight"] = gu_b_e[:i, :].clone()
+            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = gu_b_e[i:, :].clone()
+            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = dn_a[expert_id].clone()
+            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = dn_b[expert_id].clone()
+
+        return state_dict
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        adapter_idx = self._lora_num_tokens.argmax().item()
+        gu_a = self.gate_up_lora_A[adapter_idx]
+        gu_b = self.gate_up_lora_B[adapter_idx]
+        dn_a = self.down_lora_A[adapter_idx]
+        dn_b = self.down_lora_B[adapter_idx]
+        scaling = self._scaling_factors[adapter_idx].item()
+
+        base_gu = self.base_layer.gate_up_proj
+        base_dn = self.base_layer.down_proj
+
+        if isinstance(base_gu, DTensor):
+            base_gu = base_gu.to_local()
+            base_dn = base_dn.to_local()
+            gu_a = gu_a.to_local()
+            gu_b = gu_b.to_local()
+            dn_a = dn_a.to_local()
+            dn_b = dn_b.to_local()
+
+        act_fn = self.base_layer.act_fn
+        final_hidden_states = torch.zeros_like(hidden_states)
+        with torch.no_grad():
+            expert_mask = F.one_hot(top_k_index, num_classes=self.num_experts)
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        for expert_idx in expert_hit:
+            expert_idx = expert_idx[0]
+            if expert_idx == self.num_experts:
+                continue
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = hidden_states[token_idx]
+            current_lora = self.lora_dropout(current_state)
+
+            gu_base = F.linear(current_state, base_gu[expert_idx])
+            gu_lora = F.linear(F.linear(current_lora, gu_a[expert_idx]), gu_b[expert_idx])
+            gate, up = (gu_base + scaling * gu_lora).chunk(2, dim=-1)
+            h = act_fn(gate) * up
+
+            h_lora_in = self.lora_dropout(h)
+            dn_base = F.linear(h, base_dn[expert_idx])
+            dn_lora = F.linear(F.linear(h_lora_in, dn_a[expert_idx]), dn_b[expert_idx])
+            out = dn_base + scaling * dn_lora
+            out = out * top_k_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, out.to(final_hidden_states.dtype))
+
+        return final_hidden_states
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, "
+            f"n_adapters={self.n_adapters}, num_experts={self.num_experts}, "
+            f"alpha={self.alpha}, dropout={self.lora_dropout})"
+        )

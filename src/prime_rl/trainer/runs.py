@@ -179,15 +179,16 @@ class MultiRunManager:
         """
         state_dict = {}
         for prefix, module in self._modules:
+            save_prefix = module.state_dict_key_prefix(prefix) if hasattr(module, "state_dict_key_prefix") else prefix
             # Check if module has a custom state_dict_for_adapter method (e.g., MoE modules)
             # which returns vLLM-compatible per-expert format
             if hasattr(module, "state_dict_for_adapter"):
                 for name, tensor in module.state_dict_for_adapter(idx).items():
-                    state_dict[f"{prefix}.{name}"] = tensor.detach()
+                    state_dict[f"{save_prefix}.{name}"] = tensor.detach()
             else:
                 # Default: use named_parameters_for_adapter
                 for name, param in module.named_parameters_for_adapter(idx):
-                    state_dict[f"{prefix}.{name}.weight"] = param.detach()
+                    state_dict[f"{save_prefix}.{name}.weight"] = param.detach()
         return state_dict
 
     def reset_run_parameters(self, idx: int) -> None:

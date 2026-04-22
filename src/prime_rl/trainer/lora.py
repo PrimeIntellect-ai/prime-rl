@@ -6,8 +6,30 @@ import torch.nn as nn
 
 from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
-from prime_rl.trainer.models.layers.lora.multi_moe import MultiLoRAGroupedExperts, MultiLoRANonGatedGroupedExperts
+from prime_rl.trainer.models.layers.lora.multi_moe import (
+    MultiLoRAGemma4Experts,
+    MultiLoRAGroupedExperts,
+    MultiLoRANonGatedGroupedExperts,
+)
 from prime_rl.trainer.models.layers.moe import GroupedExperts, NonGatedGroupedExperts
+
+
+def _expert_module_types() -> tuple[type, ...]:
+    """Return the tuple of expert container types LoRA can target.
+
+    Gemma4TextExperts comes from transformers; import it lazily so the
+    trainer stays importable on environments without that model.
+    """
+    types: list[type] = [GroupedExperts, NonGatedGroupedExperts]
+    try:
+        from transformers.models.gemma4.modeling_gemma4 import Gemma4TextExperts
+
+        types.append(Gemma4TextExperts)
+    except Exception:
+        pass
+    return tuple(types)
+
+
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger
 
@@ -73,9 +95,10 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
     """
     target_modules = []
 
+    expert_types = _expert_module_types()
     for name, module in model.named_modules():
-        # Check if module is Linear or (NonGated)GroupedExperts
-        if not isinstance(module, (nn.Linear, GroupedExperts, NonGatedGroupedExperts)):
+        # Check if module is Linear or a known expert container
+        if not isinstance(module, (nn.Linear, *expert_types)):
             continue
 
         for pattern in target_patterns:
@@ -187,10 +210,19 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
                 alpha=config.alpha,
                 dropout=config.dropout,
             )
+        # Handle HF Gemma4TextExperts (packed gate_up_proj + down_proj)
+        elif type(base_module).__name__ == "Gemma4TextExperts":
+            lora_module = MultiLoRAGemma4Experts(
+                base_layer=base_module,
+                rank=config.rank,
+                n_adapters=n_loras,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
         else:
             logger.warning(
                 f"Module {module_name} is type {type(base_module).__name__}, "
-                f"expected nn.Linear, GroupedExperts, or NonGatedGroupedExperts. Skipping."
+                f"expected nn.Linear, GroupedExperts, NonGatedGroupedExperts, or Gemma4TextExperts. Skipping."
             )
             continue
 

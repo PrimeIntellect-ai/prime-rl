@@ -112,6 +112,15 @@ class MultiLoRAModule(nn.Module):
         """
         ...
 
+    def state_dict_key_prefix(self, prefix: str) -> str:
+        """Transform the model-tree prefix into the save-time key prefix.
+
+        Default: identity. Override when the save format diverges from the
+        in-memory module path (e.g. Gemma4 experts, whose adapter must be
+        saved under vLLM's `.moe.experts.` tree).
+        """
+        return prefix
+
     @abstractmethod
     def get_lora_param_counts(self) -> tuple[int, int]:
         """Get the number of LoRA adapter parameters and adapted base parameters.
