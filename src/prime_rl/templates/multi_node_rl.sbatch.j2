@@ -187,6 +187,12 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {%- if use_deep_gemm %}
     export VLLM_USE_DEEP_GEMM=1
 {%- endif %}
+{%- if torch_profiler_dir %}
+    # Torch profiler enabled via --profiler-config on vLLM. Ensure the dump
+    # dir exists on every inference node. Trigger captures at runtime via
+    # POST /start_profile and /stop_profile on the inference server.
+    mkdir -p "{{ torch_profiler_dir }}"
+{%- endif %}
 
     export GLOO_SOCKET_IFNAME=bond0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200

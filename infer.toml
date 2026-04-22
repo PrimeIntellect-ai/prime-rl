@@ -1,0 +1,31 @@
+output_dir = "/data/outputs/qwen3-fp8-infer"
+enable_expert_parallel = true
+gpu_memory_utilization = 0.75
+enable_eplb = false
+use_deep_gemm = true
+torch_profiler_dir = "/data/outputs/qwen3-fp8-infer/profiler"
+
+[server]
+host = "0.0.0.0"
+port = 8100
+
+[model]
+name = "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8"
+max_model_len = 150000
+
+[deployment]
+type = "disaggregated"
+gpus_per_node = 8
+num_prefill_nodes = 2
+num_decode_nodes = 4
+
+[deployment.kv_cache_offload]
+cpu_bytes = 128_000_000_000
+
+[slurm]
+job_name = "qwen3-fp8-infer"
+partition = "cluster"
+# Nodes with NVreg_EnableStreamMemOPs=0 / empty RegistryDwords in
+# /proc/driver/nvidia/params — GPU Direct RDMA (IBGDA) isn't enabled so UCX
+# fails to start with these peers. Confirmed via SSH probe on 2026-04-20.
+exclude = "ltc-idc3-hgx8-h200-2,ltc-idc3-hgx8-h200-65"

@@ -352,6 +352,17 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
         for key, value in vllm_extra.items():
             setattr(namespace, key, value)
 
+    if config.torch_profiler_dir is not None:
+        # vLLM's --profiler-config (v0.13+). Injected onto the args namespace
+        # so it survives make_arg_parser().parse_args(args=[], namespace=...).
+        # At runtime, POST /start_profile and /stop_profile on the inference
+        # server to capture traces into this dir (per PyTorch worker).
+        os.makedirs(config.torch_profiler_dir, exist_ok=True)
+        setattr(namespace, "profiler_config", {
+            "profiler": "torch",
+            "torch_profiler_dir": config.torch_profiler_dir,
+        })
+
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
     args = parser.parse_args(args=[], namespace=namespace)
