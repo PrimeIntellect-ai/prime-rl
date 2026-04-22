@@ -105,15 +105,58 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
     def _notify_orchestrator(self, save_dir: Path):
-        """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem."""
+        """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem.
+
+        On shared filesystems (NFS/CephFS/PVC-backed volumes), a write on one node
+        is not immediately visible on another node. Without explicit flushing, the
+        orchestrator can see the STABLE sentinel before the adapter files
+        (``adapter_model.safetensors``, ``adapter_config.json``) are visible to the
+        inference worker — leading to ``LoRAAdapterNotFoundError`` when
+        ``/v1/rl/load_lora_adapter`` is called.
+
+        We flush the adapter files (and the containing directory's dentries) to
+        durable storage *before* touching STABLE so the sentinel only appears once
+        everything it points to is readable cluster-wide.
+        """
+        import os
+        # Flush each file that was just written to the broadcast dir
+        for f in save_dir.iterdir():
+            if f.is_file():
+                try:
+                    fd = os.open(str(f), os.O_RDONLY)
+                    try:
+                        os.fsync(fd)
+                    finally:
+                        os.close(fd)
+                except OSError:
+                    # Non-fatal: the sync is best-effort
+                    pass
+        # Flush the directory itself so the dentries for the adapter files are durable
+        try:
+            dfd = os.open(str(save_dir), os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
         stable_file = save_dir / "STABLE"
         stable_file.touch()
+        # Flush the directory once more so STABLE's dentry is durable too
+        try:
+            dfd = os.open(str(save_dir), os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
 
-    def maybe_clean(self, max_async_level: int, interval_to_keep: int | None):
+    def maybe_clean(self, retention: int, interval_to_keep: int | None):
         for idx in self.multi_run_manager.used_idxs:
             maybe_clean(
                 get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
                 self.multi_run_manager.progress[idx].step,
-                max_async_level,
+                retention,
                 interval_to_keep,
             )

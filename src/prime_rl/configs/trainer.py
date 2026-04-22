@@ -707,6 +707,21 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     save_format: Annotated[
         Literal["safetensors", "torch"], Field(description="The format to save the weight checkpoint in.")
     ] = "safetensors"
+    keep_recent: Annotated[
+        int | None,
+        Field(
+            ge=0,
+            description=(
+                "Number of recent broadcast step directories to keep on disk. At trainer step N, "
+                "step_{N - keep_recent - 1} is deleted. If None (default), falls back to "
+                "trainer.max_async_level, which couples retention to the staleness window. Set this "
+                "greater than max_async_level when using LoRA + filesystem broadcast so that vLLM's "
+                "lazy adapter-load on in-flight requests doesn't race the trainer's cleanup — a "
+                "`generate` call admitted under an older adapter can page the adapter dir in *after* "
+                "the orchestrator has moved on. A +1 or +2 buffer over max_async_level is typical."
+            ),
+        ),
+    ] = None
 
 
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
@@ -927,6 +942,21 @@ class TrainerConfig(BaseConfig):
     def validate_weight_broadcast_type(self):
         if self.weight_broadcast.type == "nccl" and self.max_async_level != 1:
             raise ValueError("NCCL weight broadcast only works with async level 1")
+        return self
+
+    @model_validator(mode="after")
+    def validate_broadcast_keep_recent(self):
+        if (
+            self.weight_broadcast.type == "filesystem"
+            and self.weight_broadcast.keep_recent is not None
+            and self.weight_broadcast.keep_recent < self.max_async_level
+        ):
+            raise ValueError(
+                f"weight_broadcast.keep_recent ({self.weight_broadcast.keep_recent}) must be "
+                f">= max_async_level ({self.max_async_level}). The retention window must cover "
+                f"the staleness window, otherwise vLLM can hit LoRAAdapterNotFoundError when an "
+                f"in-flight generate request lazy-loads an adapter dir the trainer already removed."
+            )
         return self
 
     @model_validator(mode="after")

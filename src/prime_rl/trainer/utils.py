@@ -434,9 +434,16 @@ class MemoryProfiler:
         self.step_num += 1
 
 
-def maybe_clean(path: Path, step: int, async_level: int, interval_to_keep: int | None) -> None:
+def maybe_clean(path: Path, step: int, retention: int, interval_to_keep: int | None) -> None:
+    """Delete the broadcast step directory that falls outside the retention window.
+
+    At trainer step N, deletes step_{N - retention - 1}. Caller controls whether
+    `retention` is the orchestrator's staleness bound (max_async_level) or a
+    strictly wider buffer (weight_broadcast.keep_recent) — the two semantics
+    are intentionally decoupled at this layer.
+    """
     logger = get_logger()
-    step = max(step - (async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
+    step = max(step - (retention + 1), 0)  # Consider deleting retention + 1 steps ago
     candidate_path_to_delete = get_step_path(path, step)
     keep = bool(interval_to_keep and step % interval_to_keep == 0)
     logger.debug(f"Considering deleting path {candidate_path_to_delete}")

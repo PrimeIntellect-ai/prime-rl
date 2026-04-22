@@ -249,7 +249,17 @@ def train(config: TrainerConfig):
                 ckpt_interval = config.ckpt and config.ckpt.interval
                 interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
                 if config.weight_broadcast.type == "filesystem":
-                    weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
+                    # Retention window = explicit keep_recent if set, else fall back to
+                    # max_async_level for backward compat. keep_recent > max_async_level
+                    # is the safe setting for LoRA: vLLM lazy-loads adapters inside
+                    # _prepare_inputs, so a generate request admitted under an older
+                    # adapter can page that dir in after the orchestrator has moved on.
+                    retention = (
+                        config.weight_broadcast.keep_recent
+                        if config.weight_broadcast.keep_recent is not None
+                        else config.max_async_level
+                    )
+                    weight_broadcast.maybe_clean(retention, interval_to_keep)
             else:
                 broadcast_weights_time = 0
                 # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
