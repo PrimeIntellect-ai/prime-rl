@@ -101,6 +101,7 @@ class TrainBatcher:
         batch_size: int,
         advantage_cfg: DefaultAdvantageConfig,
         max_steps: int | None = None,
+        max_async_level: int = 1,
     ):
         self.in_q = in_q
         self.tokenizer = tokenizer
@@ -109,6 +110,7 @@ class TrainBatcher:
         self.batch_size = batch_size
         self.advantage_cfg = advantage_cfg
         self.max_steps = max_steps
+        self.max_async_level = max_async_level
         self.step = 0
         self.logger = get_logger()
 
@@ -122,6 +124,12 @@ class TrainBatcher:
             buf.extend(group.rollouts)
             while len(buf) >= self.batch_size:
                 rollouts, buf = buf[: self.batch_size], buf[self.batch_size :]
+                # Async-level barrier: don't ship more than max_async_level batches
+                # ahead of the latest policy version. This throttles orch2 when
+                # weight updates fall behind, and cascades backpressure through
+                # the groups queue to the engine.
+                while self.step - self.engine.policy_version > self.max_async_level:
+                    await asyncio.sleep(0.1)
                 await self._ship(rollouts)
                 if self.max_steps is not None and self.step >= self.max_steps:
                     raise _Done()
@@ -275,7 +283,16 @@ async def run(cfg: OrchestratorConfig) -> None:
 
     engine = RolloutEngine(pools, groups_q)
     training_sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
-    batcher = TrainBatcher(groups_q, tokenizer, training_sender, engine, cfg.batch_size, cfg.advantage, cfg.max_steps)
+    batcher = TrainBatcher(
+        groups_q,
+        tokenizer,
+        training_sender,
+        engine,
+        cfg.batch_size,
+        cfg.advantage,
+        cfg.max_steps,
+        cfg.max_async_level,
+    )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
 
     admin = InferenceAdmin(cfg.client.base_url[0], os.getenv(cfg.client.api_key_var, "EMPTY"))
