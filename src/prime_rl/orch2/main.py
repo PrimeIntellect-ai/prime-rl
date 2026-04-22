@@ -2,247 +2,21 @@ import asyncio
 import os
 import time
 from pathlib import Path
-from typing import Iterator
 
-import httpx
 import tomli_w
-import torch
-import verifiers as vf
 
-from prime_rl.configs.orchestrator import (
-    DefaultAdvantageConfig,
-    OrchestratorConfig,
-    TrainEnvConfig,
-)
-from prime_rl.orch2.engine import EnvWorker, Group, Pool, RolloutEngine
+from prime_rl.configs.orchestrator import DefaultAdvantageConfig, OrchestratorConfig
+from prime_rl.orch2.batcher import Done, TrainBatcher
+from prime_rl.orch2.engine import Group, RolloutEngine
+from prime_rl.orch2.inference_admin import InferenceAdmin
+from prime_rl.orch2.pool import build_pool
 from prime_rl.orch2.watcher import WeightWatcher
-from prime_rl.orchestrator.advantage import AdvantageInputs, default_advantage_fn
-from prime_rl.orchestrator.trajectories import (
-    interleave_rollout,
-    pretokenize_rollout_trajectory,
-)
-from prime_rl.orchestrator.vf_utils import get_completion_len
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
-from prime_rl.transport.base import TrainingBatchSender
+from prime_rl.transport import setup_training_batch_sender
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
-from prime_rl.utils.monitor import get_monitor, setup_monitor
+from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pathing import get_broadcast_dir
-
-# ---------- inference admin (single endpoint) ----------
-
-
-class InferenceAdmin:
-    """Single-endpoint admin client for health, model check, and weight update."""
-
-    def __init__(self, base_url: str, api_key: str | None = None):
-        base_url = base_url.rstrip("/").removesuffix("/v1")
-        headers = {}
-        if api_key and api_key != "EMPTY":
-            headers["Authorization"] = f"Bearer {api_key}"
-        self.base_url = base_url
-        self.client = httpx.AsyncClient(
-            base_url=base_url,
-            headers=headers,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
-            timeout=httpx.Timeout(None),
-        )
-
-    async def wait_healthy(self, timeout: float = 1800.0, interval: float = 1.0) -> None:
-        deadline = time.perf_counter() + timeout
-        while time.perf_counter() < deadline:
-            try:
-                r = await self.client.get("/health")
-                if r.status_code == 200:
-                    return
-            except httpx.TransportError:
-                pass
-            await asyncio.sleep(interval)
-        raise TimeoutError(f"Inference server {self.base_url} not healthy after {timeout}s")
-
-    async def check_model(self, model_name: str) -> None:
-        r = await self.client.get("/v1/models")
-        r.raise_for_status()
-        models = r.json().get("data", [])
-        if not any(m["id"] == model_name for m in models):
-            raise ValueError(f"Model '{model_name}' not found on {self.base_url}")
-
-    async def update_weights(self, weight_dir: Path) -> None:
-        # vLLM's update_weights_from_path passes the string straight to HF's
-        # DefaultModelLoader, which first validates as a repo ID. A relative
-        # path with multiple slashes trips that check before the local-path
-        # fallback. Resolve to absolute here.
-        path = weight_dir.resolve().as_posix()
-        (await self.client.post("/pause", params={"mode": "keep", "clear_cache": "false"})).raise_for_status()
-        try:
-            (await self.client.post("/update_weights", json={"weight_dir": path})).raise_for_status()
-        finally:
-            (await self.client.post("/resume")).raise_for_status()
-
-
-# ---------- train batcher ----------
-#
-# Reads groups, scores advantages, accumulates a batch, converts to
-# TrainingBatch and ships to trainer. Single coroutine, single loop.
-
-
-class _Done(Exception):
-    """Raised by the batcher when max_steps has been reached. Caught by run()."""
-
-
-class TrainBatcher:
-    def __init__(
-        self,
-        in_q: asyncio.Queue[Group],
-        tokenizer,
-        sender: TrainingBatchSender,
-        engine: RolloutEngine,
-        batch_size: int,
-        advantage_cfg: DefaultAdvantageConfig,
-        max_steps: int | None = None,
-        max_async_level: int = 1,
-    ):
-        self.in_q = in_q
-        self.tokenizer = tokenizer
-        self.sender = sender
-        self.engine = engine
-        self.batch_size = batch_size
-        self.advantage_cfg = advantage_cfg
-        self.max_steps = max_steps
-        self.max_async_level = max_async_level
-        self.step = 0
-        self.logger = get_logger()
-        self._last_step_t = time.perf_counter()
-
-    async def run(self) -> None:
-        buf: list[vf.RolloutOutput] = []
-        while True:
-            group = await self.in_q.get()
-            if group.pool_id.startswith("eval"):
-                continue
-            self._score(group)
-            buf.extend(group.rollouts)
-            while len(buf) >= self.batch_size:
-                rollouts, buf = buf[: self.batch_size], buf[self.batch_size :]
-                # Async-level barrier: don't ship more than max_async_level batches
-                # ahead of the latest policy version. This throttles orch2 when
-                # weight updates fall behind, and cascades backpressure through
-                # the groups queue to the engine.
-                while self.step - self.engine.policy_version > self.max_async_level:
-                    await asyncio.sleep(0.1)
-                await self._ship(rollouts)
-                if self.max_steps is not None and self.step >= self.max_steps:
-                    raise _Done()
-
-    def _score(self, group: Group) -> None:
-        rewards = torch.tensor([[r.get("reward", 0.0) for r in group.rollouts]], dtype=torch.float32)
-        lens = torch.tensor([[get_completion_len(r) for r in group.rollouts]], dtype=torch.int64)
-        out = default_advantage_fn(
-            AdvantageInputs(rewards=rewards, completion_lengths=lens),
-            length_shaping=self.advantage_cfg.length_shaping,
-        )
-        for r, a in zip(group.rollouts, out.advantages[0].tolist()):
-            r["advantage"] = a
-
-    async def _ship(self, rollouts: list[vf.RolloutOutput]) -> None:
-        t0 = time.perf_counter()
-        samples = await asyncio.to_thread(self._convert, rollouts)
-        convert_time = time.perf_counter() - t0
-
-        t1 = time.perf_counter()
-        batch = TrainingBatch(examples=samples, step=self.step)
-        await asyncio.to_thread(self.sender.send, batch)
-        send_time = time.perf_counter() - t1
-
-        now = time.perf_counter()
-        step_time = now - self._last_step_t
-        self._last_step_t = now
-
-        rewards = [r.get("reward", 0.0) for r in rollouts]
-        advs = [r.get("advantage") or 0.0 for r in rollouts]
-        seq_lens = [get_completion_len(r) for r in rollouts]
-        reward_mean = sum(rewards) / len(rewards)
-        adv_abs = sum(abs(a) for a in advs) / len(advs)
-        seq_mean = sum(seq_lens) / len(seq_lens)
-        async_level = self.step - self.engine.policy_version
-        max_off_policy_level = self.engine.max_off_policy_level()
-
-        self.logger.success(
-            f"Step {self.step} | "
-            f"Time: {step_time:.2f}s | "
-            f"Reward: {reward_mean:.4f} | "
-            f"Seq. Length: {seq_mean:.1f} tokens/sample | "
-            f"Async Level: {async_level} | "
-            f"Max. Off-Policy Level: {max_off_policy_level}"
-        )
-        get_monitor().log(
-            {
-                "train/reward/mean": reward_mean,
-                "train/advantage/abs_mean": adv_abs,
-                "train/seq_len/mean": seq_mean,
-                "train/batch_size": len(samples),
-                "train/policy_version": self.engine.policy_version,
-                "scheduler/async_level": async_level,
-                "scheduler/max_off_policy_level": max_off_policy_level,
-                "time/step": step_time,
-                "time/convert": convert_time,
-                "time/ship": send_time,
-            },
-            step=self.step,
-        )
-        self.step += 1
-
-    def _convert(self, rollouts: list[vf.RolloutOutput]) -> list[TrainingSample]:
-        samples: list[TrainingSample] = []
-        for r in rollouts:
-            pretokenize_rollout_trajectory(r, self.tokenizer)
-            out = interleave_rollout(r)
-            if out is None:
-                continue
-            for s in out:
-                s.advantage = r.get("advantage")
-                s.reward = r.get("reward")
-            samples.extend(out)
-        return samples
-
-
-# ---------- entrypoint ----------
-
-
-def cycle_forever(ds) -> Iterator[dict]:
-    i = 0
-    while True:
-        for row in ds:
-            r = dict(row)
-            r["example_id"] = i
-            i += 1
-            yield r
-
-
-def build_pool(env_cfg: TrainEnvConfig, cfg: OrchestratorConfig, concurrency: int) -> Pool:
-    env = vf.load_environment(env_cfg.stripped_id, **env_cfg.args)
-    client = vf.ClientConfig(
-        client_type="openai_chat_completions",
-        api_base_url=cfg.client.base_url[0],
-        api_key_var=cfg.client.api_key_var,
-        timeout=cfg.client.timeout,
-        connect_timeout=cfg.client.connect_timeout,
-    )
-    worker = EnvWorker(
-        env=env,
-        client=client,
-        model=cfg.model.name,
-        sampling_args=env_cfg.sampling.to_sampling_args(),
-    )
-    return Pool(
-        id=env_cfg.resolved_name,
-        dataset=cycle_forever(env.get_dataset()),
-        env=worker,
-        concurrency=concurrency,
-        rollouts_per_group=cfg.rollouts_per_example,
-        max_off_policy=cfg.max_off_policy_steps,
-    )
 
 
 async def run(cfg: OrchestratorConfig) -> None:
@@ -340,7 +114,7 @@ async def run(cfg: OrchestratorConfig) -> None:
             tg.create_task(engine.run())
             tg.create_task(batcher.run())
             tg.create_task(watcher.run())
-    except* _Done:
+    except* Done:
         logger.success(f"Orch2 finished: reached max_steps={cfg.max_steps}")
 
 

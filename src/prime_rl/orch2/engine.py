@@ -1,20 +1,9 @@
 import asyncio
 from dataclasses import dataclass
-from typing import Iterator
 
 import verifiers as vf
 
-# ---------- data ----------
-
-
-@dataclass
-class Pool:
-    id: str
-    dataset: Iterator[dict]
-    env: "EnvWorker"
-    concurrency: int
-    rollouts_per_group: int
-    max_off_policy: int
+from prime_rl.orch2.pool import Pool
 
 
 @dataclass
@@ -30,36 +19,6 @@ class Inflight:
     version: int
     max_off_policy: int
     gather: asyncio.Future
-
-
-# ---------- env worker ----------
-
-
-class EnvWorker:
-    def __init__(
-        self,
-        env: vf.Environment,
-        client: vf.ClientConfig,
-        model: str,
-        sampling_args: dict,
-    ):
-        self.env = env
-        self.client = client
-        self.model = model
-        self.sampling_args = sampling_args
-
-    async def rollout(self, example: dict, policy_version: int) -> vf.RolloutOutput:
-        del policy_version  # tracked on the Group, not the rollout
-        return await self.env.run_rollout(
-            vf.RolloutInput(**example),
-            client=self.client,
-            model=self.model,
-            sampling_args=self.sampling_args,
-            state_columns=["trajectory", "sampling_args"],
-        )
-
-
-# ---------- engine ----------
 
 
 class RolloutEngine:
