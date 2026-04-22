@@ -1,6 +1,8 @@
 import torch
 from torch import Tensor
 
+from prime_rl.trainer.models.conversion_spec import ConversionSpec, QuantizationSpec
+
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
     """Get the maximum number of layers in the model."""
@@ -98,3 +100,59 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
     num_layers = get_max_layer_num(state_dict)
     for i in range(num_layers):
         convert_tt_layer_to_hf(state_dict, i)
+
+
+# NIXL ConversionSpec tables for Qwen3MoE.
+#
+# Qwen3-235B-A22B-*-FP8 keeps every linear in block-FP8; only the layernorms
+# and the router gate remain in bf16. vLLM fuses qkv into ``self_attn.qkv_proj``
+# and (for dense layers) gate+up into ``mlp.gate_up_proj``. MoE layers use
+# vLLM's FusedMoE ``w13_weight`` / ``w2_weight`` 3D stacked buffers; the
+# ``_weight_scale_inv`` scale suffix (vs ``.weight_scale_inv`` on 2D linears)
+# matches vLLM's FusedMoE naming convention.
+_BASE: tuple[ConversionSpec, ...] = (
+    ConversionSpec("input_layernorm.weight", ("input_layernorm.weight",)),
+    ConversionSpec("post_attention_layernorm.weight", ("post_attention_layernorm.weight",)),
+    ConversionSpec("self_attn.q_norm.weight", ("self_attn.q_norm.weight",)),
+    ConversionSpec("self_attn.k_norm.weight", ("self_attn.k_norm.weight",)),
+    ConversionSpec(
+        "self_attn.qkv_proj.weight",
+        ("self_attn.q_proj.weight", "self_attn.k_proj.weight", "self_attn.v_proj.weight"),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "self_attn.o_proj.weight",
+        ("self_attn.o_proj.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+)
+
+
+_DENSE: tuple[ConversionSpec, ...] = (
+    ConversionSpec(
+        "mlp.gate_up_proj.weight",
+        ("mlp.gate_proj.weight", "mlp.up_proj.weight"),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "mlp.down_proj.weight",
+        ("mlp.down_proj.weight",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, ".weight_scale_inv"),
+    ),
+)
+
+
+_SPARSE: tuple[ConversionSpec, ...] = (
+    ConversionSpec("mlp.gate.weight", ("mlp.router.gate.weight",)),
+    ConversionSpec(
+        "mlp.experts.w13_weight",
+        ("mlp.experts.w1", "mlp.experts.w3"),
+        cat_dim=1,
+        quantization=QuantizationSpec(torch.float8_e4m3fn, "_weight_scale_inv"),
+    ),
+    ConversionSpec(
+        "mlp.experts.w2_weight",
+        ("mlp.experts.w2",),
+        quantization=QuantizationSpec(torch.float8_e4m3fn, "_weight_scale_inv"),
+    ),
+)

@@ -34,16 +34,27 @@ import torch.distributed as dist
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
 from prime_rl.trainer.models.slots import (
     ExpertSlot,
+    GatheredSlot,
     LayoutEntry,
     PeerInfo,
+    ShardedSlot,
     Slot,
 )
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.classic_cuda_pool import classic_cuda_alloc
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nixl_transfer import NixlAgentWrapper
+
+
+# Diagnostic: when set, push_once delegates to a "serial gather" path — rank 0
+# gathers each slot's full unsharded tensor, quantizes into a shared scratchpad,
+# and issues every RDMA WRITE itself (sequentially per slot, per layer). Used to
+# isolate whether the default concurrent per-shard writer pattern contributes to
+# residual KL drift.
+_SERIAL_PUSH = os.environ.get("PRIME_RL_NIXL_SERIAL_PUSH") == "1"
 
 
 @dataclass
@@ -163,6 +174,17 @@ class TransportPlan:
         self._writes: list[_ResolvedWrite] = []
         # Push counter for one-shot diagnostic dumps.
         self._push_counter = 0
+
+        # Serial-push state (rank 0 only; populated in register + rendezvous).
+        self._serial_enabled = _SERIAL_PUSH
+        self._serial_slot_plans: dict[str, dict[str, Any]] = {}
+        self._serial_scratch_w: Any = None
+        self._serial_scratch_s: Any = None
+        # {(slot_key_or_scale_key, remote_chunk_idx, peer_name): remote_prep}
+        self._serial_remote_preps: dict[tuple[str, int, str], Any] = {}
+        self._serial_model_ref = model
+        if self._serial_enabled:
+            self.logger.info(f"[nixl serial push] enabled on rank {self.my_rank}")
         # Derived statistic: total bytes moved per push (sum over all slot buffers,
         # weight + scale). Fan-out across inference peers is separate.
         self._bytes_per_push = sum(
@@ -186,6 +208,123 @@ class TransportPlan:
                 agent.register_tensor(tensor)
                 descs = agent.chunked_descs(tensor, num_chunks)
                 self._local_preps[key] = agent.prep_local(descs)
+
+        if self._serial_enabled and self.my_rank == 0:
+            self._serial_allocate_and_register(agent)
+
+    # ------------------------------------------------------------------ #
+    # Serial-push helpers (rank 0 only)
+    # ------------------------------------------------------------------ #
+
+    def _serial_full_shape_for_slot(self, slot: Slot) -> tuple[int, ...]:
+        """Full unsharded destination shape a slot would hold if rank 0 materialized it."""
+        state_dict = self._serial_model_ref.state_dict()
+        if isinstance(slot, ExpertSlot):
+            src_shapes = [state_dict[name].shape for name in slot.source_names]
+            dst = list(src_shapes[0])
+            dst[slot.cat_dim] = sum(sh[slot.cat_dim] for sh in src_shapes)
+            return tuple(dst)
+        return tuple(state_dict[slot.source_name].shape)
+
+    def _serial_allocate_and_register(self, agent: NixlAgentWrapper) -> None:
+        """On rank 0: compute per-slot full shapes, allocate shared scratchpads
+        sized to the largest slot's weight + scale, and pre-build per-chunk
+        local preps into those scratchpads."""
+        max_w_nbytes = 0
+        max_s_nbytes = 0
+        plans: dict[str, dict[str, Any]] = {}
+
+        for slot in self.slots:
+            full_shape = self._serial_full_shape_for_slot(slot)
+            dtype = slot.weight.dtype
+            elem = slot.weight.element_size()
+            w_nbytes = 1
+            for d in full_shape:
+                w_nbytes *= d
+            w_nbytes *= elem
+
+            # Inference-side chunk count along dim 0:
+            #   ExpertSlot   → one chunk per global expert
+            #   ShardedSlot  → trainer_ws chunks of rows_per_shard rows
+            #   GatheredSlot → single chunk covering the full tensor
+            if isinstance(slot, ExpertSlot):
+                num_chunks = full_shape[0]
+            elif isinstance(slot, ShardedSlot):
+                num_chunks = slot.trainer_ws
+            else:
+                num_chunks = 1
+            w_chunk_nbytes = w_nbytes // num_chunks
+
+            plan: dict[str, Any] = {
+                "slot": slot,
+                "full_shape": full_shape,
+                "dtype": dtype,
+                "w_nbytes": w_nbytes,
+                "w_chunk_nbytes": w_chunk_nbytes,
+                "num_chunks": num_chunks,
+                "is_expert": isinstance(slot, ExpertSlot),
+                "has_scale": slot.scale is not None,
+            }
+            if slot.scale is not None:
+                if isinstance(slot, ExpertSlot):
+                    scale_shape = (
+                        full_shape[0],
+                        ceil_div(full_shape[1], BLOCK_SIZE),
+                        ceil_div(full_shape[2], BLOCK_SIZE),
+                    )
+                else:
+                    scale_shape = (
+                        ceil_div(full_shape[0], BLOCK_SIZE),
+                        ceil_div(full_shape[1], BLOCK_SIZE),
+                    )
+                s_elem = slot.scale.element_size()
+                s_nbytes = 1
+                for d in scale_shape:
+                    s_nbytes *= d
+                s_nbytes *= s_elem
+                s_chunk_nbytes = s_nbytes // num_chunks
+                plan["scale_shape"] = scale_shape
+                plan["scale_dtype"] = slot.scale.dtype
+                plan["s_nbytes"] = s_nbytes
+                plan["s_chunk_nbytes"] = s_chunk_nbytes
+                max_s_nbytes = max(max_s_nbytes, s_nbytes)
+            plans[slot.slot_key] = plan
+            max_w_nbytes = max(max_w_nbytes, w_nbytes)
+
+        self.logger.info(
+            f"[nixl serial push] allocating scratchpads: weight={max_w_nbytes / 1e9:.2f} GB "
+            f"scale={max_s_nbytes / 1e6:.2f} MB over {len(plans)} slots"
+        )
+        device = torch.device("cuda", torch.cuda.current_device())
+        with classic_cuda_alloc():
+            self._serial_scratch_w = torch.empty(max_w_nbytes, dtype=torch.uint8, device=device)
+            if max_s_nbytes > 0:
+                self._serial_scratch_s = torch.empty(max_s_nbytes, dtype=torch.uint8, device=device)
+        agent.register_tensor(self._serial_scratch_w)
+        if self._serial_scratch_s is not None:
+            agent.register_tensor(self._serial_scratch_s)
+
+        # Pre-build per-chunk local preps for every slot. Scratchpads are
+        # reused across slots: plan's offsets are always 0..nbytes inside
+        # the scratchpad, and we drain between slots.
+        for slot_key, plan in plans.items():
+            w_base = self._serial_scratch_w.data_ptr()
+            dev_idx = device.index
+            w_preps: list[Any] = []
+            for c in range(plan["num_chunks"]):
+                descs = agent.descs_from_tuples([(w_base + c * plan["w_chunk_nbytes"], plan["w_chunk_nbytes"], dev_idx)])
+                w_preps.append(agent.prep_local(descs))
+            plan["w_local_preps"] = w_preps
+            if plan.get("has_scale"):
+                s_base = self._serial_scratch_s.data_ptr()
+                s_preps: list[Any] = []
+                for c in range(plan["num_chunks"]):
+                    descs = agent.descs_from_tuples([
+                        (s_base + c * plan["s_chunk_nbytes"], plan["s_chunk_nbytes"], dev_idx)
+                    ])
+                    s_preps.append(agent.prep_local(descs))
+                plan["s_local_preps"] = s_preps
+        self._serial_slot_plans = plans
 
     # ------------------------------------------------------------------ #
     # Phase 2: rendezvous
@@ -229,12 +368,27 @@ class TransportPlan:
         ]
         self._build_write_table(agent)
 
+        if self._serial_enabled and self.my_rank == 0:
+            self._serial_build_remote_preps(agent)
+
         num_expert_slots = sum(1 for s in self.slots if isinstance(s, ExpertSlot))
         self.logger.info(
             f"NIXL transfer initialized: rank={self.my_rank} slots={len(self.slots)} "
             f"(expert={num_expert_slots}) writes={len(self._writes)} "
             f"bytes_per_push={self._bytes_per_push / 1e6:.2f} MB"
         )
+
+    def _serial_build_remote_preps(self, agent: NixlAgentWrapper) -> None:
+        """Rank-0-only: cache remote preps for every peer × slot × chunk combo."""
+        n = 0
+        for peer in self._peers:
+            for key, serialized_list in peer.descriptors.items():
+                for chunk_idx, serialized in enumerate(serialized_list):
+                    dlist = agent.deserialize_descs(serialized)
+                    prep = agent.prep_remote(peer.agent_name, dlist)
+                    self._serial_remote_preps[(key, chunk_idx, peer.agent_name)] = prep
+                    n += 1
+        self.logger.info(f"[nixl serial push] cached {n} remote preps across {len(self._peers)} peers")
 
     def _build_write_table(self, agent: NixlAgentWrapper) -> None:
         """Resolve every slot's WriteEntry list into cached NIXL prep handles."""
@@ -345,6 +499,8 @@ class TransportPlan:
         inference know every WRITE has been acknowledged before the
         orchestrator calls ``/resume``.
         """
+        if self._serial_enabled:
+            return self.push_once_serial(model, agent, spg)
         device = next(model.parameters()).device
         t_start = time.perf_counter()
         self._push_counter += 1
@@ -463,3 +619,160 @@ class TransportPlan:
             f"barrier={dt_barrier * 1e3:.2f}ms total={dt_total * 1e3:.2f}ms "
             f"wire_bw={gbps_wire:.2f}GB/s net_bw={gbps_net:.2f}GB/s"
         )
+
+    # ------------------------------------------------------------------ #
+    # Serial-gather push path (diagnostic)
+    # ------------------------------------------------------------------ #
+
+    @torch.no_grad()
+    def push_once_serial(
+        self,
+        model: PreTrainedModelPrimeRL,
+        agent: NixlAgentWrapper,
+        spg: StatelessProcessGroup,
+    ) -> None:
+        """Gather full tensor to rank 0, quantize into scratchpad, write one slot at a time.
+
+        Diagnostic alternative to :meth:`push_once` — isolates whether the
+        default concurrent per-shard writer pattern contributes to residual
+        KL drift. Semantics:
+
+          1. Per layer (then non-layer tensors), per slot: every trainer rank
+             calls ``full_tensor()`` on the slot's source(s) so the DTensor
+             collective materializes the unsharded data everywhere. Non-rank-0
+             ranks then drop the result.
+          2. Rank 0 cats fused sources along ``cat_dim`` and runs the spec's
+             quantization into a pre-registered scratchpad.
+          3. Rank 0 posts one RDMA WRITE per (chunk, peer), expert-aware via
+             ``peer.expert_map`` for :class:`ExpertSlot`. Drains before the
+             next slot so the scratchpad can be reused.
+          4. Bracketed by ``spg.barrier()`` so inference sees the same
+             pause/resume contract as the default path.
+        """
+        t_start = time.perf_counter()
+        self._push_counter += 1
+        state_dict = model.state_dict()
+
+        # Group slots by layer_idx (and non-layer bucket) for deterministic ordering.
+        num_layers = model.config.num_hidden_layers
+        per_layer: list[list[Slot]] = [[] for _ in range(num_layers)]
+        non_layer: list[Slot] = []
+        for slot in self.slots:
+            k = slot.slot_key
+            if k.startswith("model.layers."):
+                per_layer[int(k.split(".")[2])].append(slot)
+            else:
+                non_layer.append(slot)
+
+        # PRE-WRITE barrier (matches default push_once).
+        spg.barrier()
+
+        for layer_idx in range(num_layers):
+            for slot in per_layer[layer_idx]:
+                self._serial_push_one_slot(slot, state_dict, agent)
+        for slot in non_layer:
+            self._serial_push_one_slot(slot, state_dict, agent)
+
+        if self.my_rank == 0:
+            torch.cuda.synchronize()
+        spg.barrier()
+        t_done = time.perf_counter()
+        self.logger.info(
+            f"[nixl rank={self.my_rank}] serial-push "
+            f"slots={len(self.slots)} total={(t_done - t_start) * 1e3:.2f}ms"
+        )
+
+    def _serial_push_one_slot(
+        self,
+        slot: Slot,
+        state_dict: dict[str, Any],
+        agent: NixlAgentWrapper,
+    ) -> None:
+        """One full gather + quantize + write-to-all-peers for a single slot.
+
+        Every rank participates in ``full_tensor()``; only rank 0 quantizes and
+        writes. Drains before returning so the scratchpad can be reused.
+        """
+        # 1. Materialize full tensor(s) on every rank (collective).
+        if isinstance(slot, ExpertSlot):
+            names = list(slot.source_names)
+        else:
+            names = [slot.source_name]
+        full_srcs = [state_dict[n].full_tensor() for n in names]
+
+        if self.my_rank != 0:
+            # Non-writer ranks participated in the all_gather; release refs.
+            del full_srcs
+            return
+
+        # 2. Cat if fused, quantize into scratchpad views.
+        if len(full_srcs) == 1:
+            src = full_srcs[0]
+        else:
+            cat_dim = slot.cat_dim if isinstance(slot, ExpertSlot) else slot.spec.cat_dim
+            src = torch.cat(full_srcs, dim=cat_dim)
+
+        plan = self._serial_slot_plans[slot.slot_key]
+        w_view = (
+            self._serial_scratch_w[: plan["w_nbytes"]]
+            .view(plan["dtype"])
+            .view(plan["full_shape"])
+        )
+        s_view = None
+        if plan.get("has_scale"):
+            assert self._serial_scratch_s is not None
+            s_view = (
+                self._serial_scratch_s[: plan["s_nbytes"]]
+                .view(plan["scale_dtype"])
+                .view(plan["scale_shape"])
+            )
+        slot.spec.quantization.apply(src, w_view, s_view)
+        del src, full_srcs
+
+        # 3. Post writes. For experts, write per-global-expert to every peer
+        # that owns that expert. For non-experts, write every chunk to every
+        # peer (full tensor redundantly landed at each peer).
+        handles: list = []
+        ctx: list[tuple[str, str]] = []
+
+        def _drain() -> None:
+            for h, c in zip(handles, ctx):
+                agent.wait(h, context=f"rank=0 peer={c[0]} tag={c[1]}")
+            handles.clear()
+            ctx.clear()
+
+        if isinstance(slot, ExpertSlot):
+            num_global = plan["num_chunks"]
+            for g in range(num_global):
+                for peer in self._peers:
+                    peer_experts = peer.expert_map.get(slot.moe_prefix, [])
+                    if g not in peer_experts:
+                        continue
+                    remote_idx = peer_experts.index(g)
+                    handles.append(agent.post_write(
+                        plan["w_local_preps"][g], 0,
+                        self._serial_remote_preps[(slot.slot_key, remote_idx, peer.agent_name)], 0,
+                    ))
+                    ctx.append((peer.agent_name, f"expert:{slot.slot_key}:E{g}"))
+                    if plan.get("has_scale"):
+                        handles.append(agent.post_write(
+                            plan["s_local_preps"][g], 0,
+                            self._serial_remote_preps[(slot.scale_key, remote_idx, peer.agent_name)], 0,
+                        ))
+                        ctx.append((peer.agent_name, f"expert:{slot.scale_key}:E{g}"))
+        else:
+            num_chunks = plan["num_chunks"]
+            for c_idx in range(num_chunks):
+                for peer in self._peers:
+                    handles.append(agent.post_write(
+                        plan["w_local_preps"][c_idx], 0,
+                        self._serial_remote_preps[(slot.slot_key, c_idx, peer.agent_name)], 0,
+                    ))
+                    ctx.append((peer.agent_name, f"chunk:{slot.slot_key}:{c_idx}"))
+                    if plan.get("has_scale"):
+                        handles.append(agent.post_write(
+                            plan["s_local_preps"][c_idx], 0,
+                            self._serial_remote_preps[(slot.scale_key, c_idx, peer.agent_name)], 0,
+                        ))
+                        ctx.append((peer.agent_name, f"chunk:{slot.scale_key}:{c_idx}"))
+        _drain()

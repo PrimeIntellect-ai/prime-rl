@@ -87,12 +87,6 @@ _ALLOWED_UNPUBLISHED_CUDA_ATTR_SUFFIXES = (
     "W_V_scale",
 )
 
-_IGNORED_RUNTIME_CUDA_ATTR_SUFFIXES = (
-    "topk_indices_buffer",
-    "kv_cache",
-)
-
-
 def _iter_unpublished_cuda_tensor_attrs(model: Module):
     for module_name, module in model.named_modules():
         module_prefix = f"{module_name}." if module_name else ""
@@ -168,28 +162,6 @@ class NIXLWeightUpdateWorker(Worker):
 
         named_tensors: dict[str, torch.Tensor] = {}
         unpublished_cuda_attrs = list(_iter_unpublished_cuda_tensor_attrs(model))
-        ignored_runtime_unpublished = [
-            (name, tuple(tensor.shape), tuple(tensor.stride()))
-            for name, tensor in unpublished_cuda_attrs
-            if name.endswith(_IGNORED_RUNTIME_CUDA_ATTR_SUFFIXES)
-        ]
-        unexpected_unpublished = [
-            (name, tuple(tensor.shape), tuple(tensor.stride()))
-            for name, tensor in unpublished_cuda_attrs
-            if not name.endswith(_ALLOWED_UNPUBLISHED_CUDA_ATTR_SUFFIXES)
-            and not name.endswith(_IGNORED_RUNTIME_CUDA_ATTR_SUFFIXES)
-        ]
-        if unexpected_unpublished:
-            raise RuntimeError(
-                "NIXL found unpublished CUDA tensors outside the explicit allowlist: "
-                f"{unexpected_unpublished}"
-            )
-        if ignored_runtime_unpublished:
-            logger.info(
-                "NIXL ignored runtime CUDA attrs not relevant to weight transfer: count=%d sample=%s",
-                len(ignored_runtime_unpublished),
-                ignored_runtime_unpublished[:8],
-            )
         handled_unpublished = [
             (name, tensor)
             for name, tensor in unpublished_cuda_attrs
