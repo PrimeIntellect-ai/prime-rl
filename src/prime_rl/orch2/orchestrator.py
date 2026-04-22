@@ -1,7 +1,6 @@
 import asyncio
 import os
 import time
-from pathlib import Path
 
 import tomli_w
 import verifiers as vf
@@ -100,7 +99,8 @@ async def run(cfg: OrchestratorConfig) -> None:
     )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
 
-    admin = InferenceAdmin(cfg.client.base_url[0], os.getenv(cfg.client.api_key_var, "EMPTY"))
+    broadcast_dir = get_broadcast_dir(cfg.output_dir)
+    admin = InferenceAdmin(cfg.client.base_url[0], os.getenv(cfg.client.api_key_var, "EMPTY"), broadcast_dir)
     logger.info(f"Admin client ready ({admin.base_url})")
 
     logger.info(f"Weight broadcast mode: {cfg.weight_broadcast.type}")
@@ -115,14 +115,7 @@ async def run(cfg: OrchestratorConfig) -> None:
     await admin.check_model(cfg.model.name)
     logger.success(f"Model '{cfg.model.name}' loaded on inference server")
 
-    async def on_new_weights(step: int, weight_dir: Path) -> None:
-        t0 = time.perf_counter()
-        await admin.update_weights(weight_dir)
-        engine.on_new_version(step)
-        scheduler.on_new_version(step)
-        logger.success(f"Weights updated to step {step} in {time.perf_counter() - t0:.2f}s ({weight_dir})")
-
-    watcher = WeightWatcher(get_broadcast_dir(cfg.output_dir), on_new_weights)
+    watcher = WeightWatcher(broadcast_dir, observers=[admin, engine, scheduler])
 
     logger.success("Orch2 starting — producing rollouts")
     try:

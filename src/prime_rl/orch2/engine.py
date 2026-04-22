@@ -92,10 +92,10 @@ class RolloutEngine:
             state_columns=["trajectory", "sampling_args"],
         )
 
-    def on_new_version(self, version: int) -> None:
-        self.policy_version = version
+    async def on_new_version(self, step: int) -> None:
+        self.policy_version = step
         for inflight in list(self._inflight):
-            if version - inflight.version > self.max_off_policy:
+            if step - inflight.version > self.max_off_policy:
                 inflight.gather.cancel()
 
     def max_off_policy_level(self) -> int:

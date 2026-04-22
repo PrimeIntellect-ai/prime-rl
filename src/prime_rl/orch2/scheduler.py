@@ -1,11 +1,11 @@
 from dataclasses import dataclass
-from typing import Iterator, Literal
+from typing import Iterator, Literal, TypeAlias
 
 import verifiers as vf
 
 from prime_rl.configs.orchestrator import TrainEnvConfig
 
-Kind = Literal["train", "eval"]
+Kind: TypeAlias = Literal["train", "eval"]
 
 
 @dataclass
@@ -48,7 +48,7 @@ class Scheduler:
                 continue
         return None
 
-    def on_new_version(self, step: int) -> None:
+    async def on_new_version(self, step: int) -> None:
         # Placeholder: eval cadence, ratio rebalancing, etc.
         del step
 

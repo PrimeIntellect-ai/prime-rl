@@ -4,16 +4,23 @@ from pathlib import Path
 
 import httpx
 
+from prime_rl.utils.pathing import get_step_path
+
 
 class InferenceAdmin:
-    """Single-endpoint admin client for health, model check, and weight update."""
+    """Single-endpoint admin client for health, model check, and weight update.
 
-    def __init__(self, base_url: str, api_key: str | None = None):
+    Implements the VersionObserver contract: on a new step, resolves
+    broadcast_dir / step_N itself rather than having callers pass the path.
+    """
+
+    def __init__(self, base_url: str, api_key: str | None, broadcast_dir: Path):
         base_url = base_url.rstrip("/").removesuffix("/v1")
         headers = {}
         if api_key and api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
         self.base_url = base_url
+        self.broadcast_dir = broadcast_dir
         self.client = httpx.AsyncClient(
             base_url=base_url,
             headers=headers,
@@ -40,12 +47,12 @@ class InferenceAdmin:
         if not any(m["id"] == model_name for m in models):
             raise ValueError(f"Model '{model_name}' not found on {self.base_url}")
 
-    async def update_weights(self, weight_dir: Path) -> None:
+    async def on_new_version(self, step: int) -> None:
         # vLLM's update_weights_from_path passes the string straight to HF's
         # DefaultModelLoader, which first validates as a repo ID. A relative
         # path with multiple slashes trips that check before the local-path
         # fallback. Resolve to absolute here.
-        path = weight_dir.resolve().as_posix()
+        path = get_step_path(self.broadcast_dir, step).resolve().as_posix()
         (await self.client.post("/pause", params={"mode": "keep", "clear_cache": "false"})).raise_for_status()
         try:
             (await self.client.post("/update_weights", json={"weight_dir": path})).raise_for_status()
