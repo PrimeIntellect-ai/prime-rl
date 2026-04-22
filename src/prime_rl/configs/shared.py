@@ -157,6 +157,18 @@ class BaseModelConfig(BaseConfig):
         ),
     ] = None
 
+    renderer_pool_size: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description=(
+                "Number of renderer slots shared across concurrent rollouts. "
+                "None keeps the verifiers default (1). Bump for long multi-turn "
+                "prompts where client-side jinja tokenization serializes."
+            ),
+        ),
+    ] = None
+
     vlm: Annotated[
         "VLMConfig | None",
         Field(

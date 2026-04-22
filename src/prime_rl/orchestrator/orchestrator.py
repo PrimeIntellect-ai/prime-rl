@@ -925,6 +925,7 @@ async def setup_rollout_inference_pool(
         renderer_name=config.model.renderer,
         tool_parser=config.model.tool_parser,
         reasoning_parser=config.model.reasoning_parser,
+        renderer_pool_size=config.model.renderer_pool_size,
     )
     logger.info("Using direct renderer rollout client")
     return renderer, inference_pool

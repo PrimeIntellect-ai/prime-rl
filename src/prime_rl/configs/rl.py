@@ -152,6 +152,11 @@ class SharedModelConfig(BaseConfig):
         Field(description="Reasoning parser name (propagates to orchestrator/trainer/inference model configs)."),
     ] = None
 
+    renderer_pool_size: Annotated[
+        int | None,
+        Field(ge=1, description="Renderer pool size (propagates to orchestrator/trainer/inference)."),
+    ] = None
+
 
 class SharedWeightBroadcastConfig(BaseConfig):
     """Configures shared weight broadcast settings."""
@@ -578,6 +583,12 @@ class RLConfig(BaseConfig):
                 self.orchestrator.model.reasoning_parser = self.model.reasoning_parser
                 if self.inference is not None:
                     self.inference.model.reasoning_parser = self.model.reasoning_parser
+
+            if self.model.renderer_pool_size is not None:
+                self.trainer.model.renderer_pool_size = self.model.renderer_pool_size
+                self.orchestrator.model.renderer_pool_size = self.model.renderer_pool_size
+                if self.inference is not None:
+                    self.inference.model.renderer_pool_size = self.model.renderer_pool_size
 
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 

@@ -109,6 +109,7 @@ class ElasticInferencePool:
         renderer_name: str = "auto",
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
+        renderer_pool_size: int | None = None,
     ):
         self.logger = get_logger()
         self.client_config = client_config
@@ -123,6 +124,7 @@ class ElasticInferencePool:
         self.renderer_name = renderer_name
         self.tool_parser = tool_parser
         self.reasoning_parser = reasoning_parser
+        self.renderer_pool_size = renderer_pool_size
         self.router_url = client_config.router_url
 
         self._servers: dict[str, ServerState] = {}
@@ -149,6 +151,7 @@ class ElasticInferencePool:
         renderer_name: str = "auto",
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
+        renderer_pool_size: int | None = None,
     ) -> ElasticInferencePool:
         if client_config.elastic is None:
             raise ValueError("Elastic inference pool requires elastic config")
@@ -160,6 +163,7 @@ class ElasticInferencePool:
             renderer_name=renderer_name,
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
+            renderer_pool_size=renderer_pool_size,
         )
         await pool.start()
         return pool
@@ -209,6 +213,7 @@ class ElasticInferencePool:
                     renderer_model_name=self.renderer_model_name,
                     tool_parser=self.tool_parser,
                     reasoning_parser=self.reasoning_parser,
+                    renderer_pool_size=self.renderer_pool_size,
                 )
                 if urls
                 else []
