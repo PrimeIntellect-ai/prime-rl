@@ -188,6 +188,22 @@ class MultiRunManager:
                 # Default: use named_parameters_for_adapter
                 for name, param in module.named_parameters_for_adapter(idx):
                     state_dict[f"{prefix}.{name}.weight"] = param.detach()
+        # Patch for nemotron
+        import re
+
+        def rename_key(k: str) -> str:
+            # mlp -> mixer, self_attn -> mixer
+            k = re.sub(r"(\.layers\.\d+)\.mlp\.", r"\1.mixer.", k)
+            k = re.sub(r"(\.layers\.\d+)\.self_attn\.", r"\1.mixer.", k)
+            return k
+
+        new_sd = {}
+        for k, v in state_dict.items():
+            new_k = rename_key(k)
+            new_sd[new_k] = v
+        state_dict = new_sd
+        # End patch for nemotron
+
         return state_dict
 
     def reset_run_parameters(self, idx: int) -> None:
