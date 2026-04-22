@@ -18,6 +18,7 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_ep_scatter()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_offloading_connector_cpu_block_count()
+    monkey_patch_gemma4()
 
 
 @triton.jit
@@ -996,6 +997,55 @@ def monkey_patch_offloading_connector_cpu_block_count():
         )
 
     CPUOffloadingSpec.__init__ = _patched_init
+
+
+def monkey_patch_gemma4():
+    """Patch Gemma4 model classes for MoE weight loading and LoRA.
+
+    1. Add Gemma4ForCausalLM.get_expert_mapping() — the MoE weight-loading
+       path uses it to map checkpoint expert weights onto FusedMoE's fused
+       w13/w2 params.
+    2. Set Gemma4ForCausalLM.hf_to_vllm_mapper so the conditional-generation
+       checkpoint prefix (`model.language_model.`) and its MoE adapter key
+       layout are translated onto the text-only Gemma4ForCausalLM tree.
+    3. Mark Gemma4ForConditionalGeneration as LoRA-capable. vLLM's
+       supports_lora() is a runtime_checkable Protocol keyed on the
+       attributes below — so attribute assignment is enough.
+    """
+    from vllm.model_executor.layers.fused_moe import FusedMoE
+    from vllm.model_executor.models.gemma4 import Gemma4ForCausalLM
+    from vllm.model_executor.models.gemma4_mm import Gemma4ForConditionalGeneration
+    from vllm.model_executor.models.utils import WeightsMapper
+
+    def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
+        return FusedMoE.make_expert_params_mapping(
+            self,
+            ckpt_gate_proj_name="gate_proj",
+            ckpt_down_proj_name="down_proj",
+            ckpt_up_proj_name="up_proj",
+            num_experts=self.config.num_experts,
+            num_redundant_experts=self.num_redundant_experts,
+        )
+
+    Gemma4ForCausalLM.get_expert_mapping = get_expert_mapping
+    Gemma4ForCausalLM.hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_prefix={
+            "model.language_model.": "model.",
+        },
+        orig_to_new_substr={
+            ".moe.experts.gate_up_proj": ".moe.gate_up_proj",
+            ".moe.experts.down_proj": ".moe.down_proj",
+        },
+    )
+
+    # The instance-level `isinstance(model, SupportsLoRA)` check enforces the
+    # full Protocol body, so we must set every ClassVar declared on it — not
+    # just the three the class-level `_SupportsLoRAType` check looks at.
+    Gemma4ForConditionalGeneration.supports_lora = True
+    Gemma4ForConditionalGeneration.embedding_modules = {}
+    Gemma4ForConditionalGeneration.is_3d_moe_weight = False
+    Gemma4ForConditionalGeneration.is_non_gated_moe = False
+    Gemma4ForConditionalGeneration.lora_skip_prefixes = []
 
 
 def monkey_patch_no_moe_lora():
