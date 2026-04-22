@@ -271,7 +271,10 @@ async def run(cfg: OrchestratorConfig) -> None:
         logger.info(f"Wandb monitor ready (project={cfg.wandb.project}, name={cfg.wandb.name})")
 
     num_envs = len(cfg.train.env)
-    per_env_concurrency = max(1, cfg.max_inflight_rollouts // num_envs)
+    # pool.concurrency bounds concurrent *groups*; each group fans out to
+    # rollouts_per_example rollouts. Divide by that to match the old orch's
+    # semantics where max_inflight_rollouts counts individual rollouts.
+    per_env_concurrency = max(1, cfg.max_inflight_rollouts // (num_envs * cfg.rollouts_per_example))
     pools = [build_pool(env_cfg, cfg, per_env_concurrency) for env_cfg in cfg.train.env]
     for pool in pools:
         logger.info(
@@ -279,7 +282,10 @@ async def run(cfg: OrchestratorConfig) -> None:
             f"rollouts_per_group={pool.rollouts_per_group} | max_off_policy={pool.max_off_policy}"
         )
 
-    groups_q: asyncio.Queue[Group] = asyncio.Queue()
+    # Bounded so the batcher's async-level barrier cascades backpressure into
+    # the engine instead of letting it accumulate unbounded in-flight rollouts.
+    groups_per_batch = max(1, cfg.batch_size // cfg.rollouts_per_example)
+    groups_q: asyncio.Queue[Group] = asyncio.Queue(maxsize=groups_per_batch * (cfg.max_async_level + 1))
 
     engine = RolloutEngine(pools, groups_q)
     training_sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
