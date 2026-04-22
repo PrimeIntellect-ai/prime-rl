@@ -83,7 +83,7 @@ def test_generate_returns_prompt_logprobs_and_forwards_request_metadata():
         assert response.choices[0].logprobs == [-0.6]
 
         call = engine_client.calls[0]
-        assert call["engine_prompt"] == {"prompt_token_ids": [10, 11, 12]}
+        assert call["engine_prompt"] == {"type": "token", "prompt_token_ids": [10, 11, 12]}
         assert call["sampling_params"].prompt_logprobs == 1
         assert call["kwargs"]["lora_request"] is handler.chat_handler.lora_request
         assert call["kwargs"]["priority"] == 7

@@ -20,6 +20,7 @@ import numpy as np
 from fastapi import Request
 from pydantic import BaseModel
 from vllm.engine.protocol import EngineClient
+from vllm.inputs.engine import tokens_input
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
@@ -81,9 +82,9 @@ class OpenAIServingGenerate:
         self.chat_handler = chat_handler
 
     async def generate(self, request: GenerateRequest, raw_request: Request) -> GenerateResponse | dict:
-        engine_prompt: dict[str, Any] = {
-            "prompt_token_ids": request.prompt_token_ids,
-        }
+        # Pre-rendered TokensInput shape (type="token") — avoids vLLM's
+        # "raw prompt" deprecation that targets plain lists/strings.
+        engine_prompt = tokens_input(request.prompt_token_ids)
 
         # Match /v1/chat/completions: if the client didn't ask for a specific
         # cap, let the model generate up to whatever room is left in context.
