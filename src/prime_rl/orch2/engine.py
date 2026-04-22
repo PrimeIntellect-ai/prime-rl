@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import dataclass
 
 import verifiers as vf
+from aiolimiter import AsyncLimiter
 
 from prime_rl.orch2.scheduler import Kind, Scheduler, Task
 
@@ -31,6 +32,7 @@ class RolloutEngine:
         rollouts_per_group: int,
         max_off_policy: int,
         concurrency: int,
+        tasks_per_minute: int | None = None,
     ):
         self.scheduler = scheduler
         self.out_q = out_q
@@ -39,6 +41,7 @@ class RolloutEngine:
         self.rollouts_per_group = rollouts_per_group
         self.max_off_policy = max_off_policy
         self.concurrency = concurrency
+        self.rate_limiter = AsyncLimiter(max_rate=tasks_per_minute, time_period=60) if tasks_per_minute else None
         self.policy_version = 0
         self._inflight: list[Inflight] = []
 
@@ -84,6 +87,8 @@ class RolloutEngine:
             sem.release()
 
     async def _rollout(self, task: Task, example: dict) -> vf.RolloutOutput:
+        if self.rate_limiter is not None:
+            await self.rate_limiter.acquire()
         return await task.env.run_rollout(
             vf.RolloutInput(**example),
             client=self.client,

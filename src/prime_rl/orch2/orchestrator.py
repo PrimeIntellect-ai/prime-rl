@@ -17,6 +17,7 @@ from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pathing import get_broadcast_dir
+from prime_rl.utils.utils import get_env_ids_to_install, install_env
 
 
 async def run(cfg: OrchestratorConfig) -> None:
@@ -40,6 +41,12 @@ async def run(cfg: OrchestratorConfig) -> None:
         f"Batch size: {cfg.batch_size} | Rollouts/example: {cfg.rollouts_per_example} | "
         f"Max in-flight: {cfg.max_inflight_rollouts} | Max off-policy: {cfg.max_off_policy_steps}"
     )
+
+    env_ids_to_install = set(get_env_ids_to_install(cfg.train.env))
+    if cfg.eval is not None:
+        env_ids_to_install.update(get_env_ids_to_install(cfg.eval.env))
+    for env_id in env_ids_to_install:
+        install_env(env_id, prerelease=cfg.env_install_prerelease)
 
     tokenizer = setup_tokenizer(cfg.tokenizer)
     logger.info(f"Tokenizer ready: {cfg.tokenizer.name}")
@@ -85,7 +92,10 @@ async def run(cfg: OrchestratorConfig) -> None:
         rollouts_per_group=cfg.rollouts_per_example,
         max_off_policy=cfg.max_off_policy_steps,
         concurrency=concurrency,
+        tasks_per_minute=cfg.tasks_per_minute,
     )
+    if cfg.tasks_per_minute is not None:
+        logger.info(f"Rate limit: {cfg.tasks_per_minute} tasks/min")
     training_sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
     batcher = TrainBatcher(
         groups_q,
@@ -96,6 +106,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         cfg.advantage,
         cfg.max_steps,
         cfg.max_async_level,
+        strict_async_level=cfg.strict_async_level,
     )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
 
