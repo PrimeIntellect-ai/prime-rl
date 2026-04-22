@@ -92,11 +92,24 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
     (e.g., r".*\\.q_proj$"). Simple names match any component in the module path.
 
     Supports both nn.Linear layers and GroupedExperts (MoE) modules.
+
+    For VLMs registered in VLM_REGISTRY, search is restricted to the language
+    model subtree. Otherwise a bare pattern like "q_proj" would also match
+    vision/audio tower projections, and those LoRAs have no destination in
+    inference-side causal-LM trees (vLLM rejects the adapter on load).
     """
+    from prime_rl.utils.vlm import VLM_REGISTRY
+
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    vlm_info = VLM_REGISTRY.get(model_type) if model_type else None
+    lm_prefix = (vlm_info.language_model_attr + ".") if vlm_info is not None else None
+
     target_modules = []
 
     expert_types = _expert_module_types()
     for name, module in model.named_modules():
+        if lm_prefix is not None and not name.startswith(lm_prefix):
+            continue
         # Check if module is Linear or a known expert container
         if not isinstance(module, (nn.Linear, *expert_types)):
             continue
