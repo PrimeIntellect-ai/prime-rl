@@ -13,7 +13,6 @@ name = "zai-org/GLM-5"
 type = "nccl"
 port = 29502
 timeout = 12000
-quantize_in_weight_transfer = true
 
 [deployment]
 type = "multi_node"

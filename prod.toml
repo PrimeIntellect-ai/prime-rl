@@ -1,0 +1,98 @@
+max_steps = 10000000
+seq_len = 32768
+max_async_level = 1
+output_dir = "/data/outputs/nixl-qwen3-swe-prod"
+clean_output_dir = true
+
+[log]
+level = "debug"
+
+[wandb]
+project = "nixl-broadcast"
+name = "nixl-qwen3-swe-prod"
+
+[model]
+name = "Qwen/Qwen3-235B-A22B-Thinking-2507"
+
+[weight_broadcast]
+type = "nixl"
+port = 29502
+timeout = 12000
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 6
+gpus_per_node = 8
+
+[inference.deployment]
+type = "disaggregated"
+num_prefill_nodes = 2
+num_decode_nodes = 4
+
+[inference.deployment.kv_cache_offload]
+cpu_bytes = 137438953472   # 128 GiB per worker → ~1 TiB per 8-GPU node
+
+[inference.slurm]
+
+[slurm]
+job_name = "nixl-qwen3-swe-prod"
+partition = "cluster"
+# Nodes with NVreg_EnableStreamMemOPs=0 / empty RegistryDwords in
+# /proc/driver/nvidia/params — GPU Direct RDMA (IBGDA) isn't enabled so UCX
+# fails to start with these peers. Confirmed via SSH probe on 2026-04-20.
+exclude = "ltc-idc3-hgx8-h200-2,ltc-idc3-hgx8-h200-65,ltc-idc3-hgx8-h200-3,ltc-idc3-hgx8-h200-5"
+
+[trainer]
+dist_timeout_seconds = 7200
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_2"
+fused_lm_head_token_chunk_size = 1024
+ep = 8
+cp = 1
+optim_cpu_offload = true
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.optim]
+type = "sign_sgd"
+lr = 1e-6
+
+[orchestrator]
+batch_size = 1536
+rollouts_per_example = 16
+oversampling_factor = 2
+max_off_policy_steps = 16
+use_token_client = true
+seed = 42
+
+[orchestrator.train.sampling]
+max_completion_tokens = 32768
+
+[[orchestrator.train.env]]
+id = "mini-swe-agent-plus"
+name = "swe"
+num_workers = 8
+args = { max_turns = 200, cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, labels = ["matej-dev"], total_timeout_minutes = 720, sandbox_client_max_workers = 256, max_command_timeouts = 3, sandbox_command_timeout = 120 }
+
+[inference]
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+enable_eplb = false
+use_deep_gemm = true
+
+[inference.parallel]
+dp = 16
+tp = 1
+
+[inference.model]
+name = "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8"
+max_model_len = 65536

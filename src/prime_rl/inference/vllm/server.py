@@ -175,6 +175,7 @@ def models(request: Request) -> OpenAIServingModels:
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+    "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
 }
 
 
@@ -219,10 +220,27 @@ async def init_broadcaster(request: Request):
     timeout = data.get("timeout")
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
-    quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer),
+        args=(host, port, rank_offset, inference_world_size, timeout),
+    )
+    return {"status": "ok"}
+
+
+@router.post("/init_nixl_transfer")
+async def init_nixl_transfer(request: Request):
+    data = await request.json()
+    await engine_client(request).collective_rpc(
+        "init_nixl_transfer",
+        args=(
+            data["host"],
+            data["port"],
+            data["rank_offset"],
+            data["trainer_world_size"],
+            data["inference_world_size"],
+            data["timeout"],
+            data.get("backends", ["UCX"]),
+        ),
     )
     return {"status": "ok"}
 
@@ -323,6 +341,17 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     if vllm_extra:
         for key, value in vllm_extra.items():
             setattr(namespace, key, value)
+
+    if config.torch_profiler_dir is not None:
+        # vLLM's --profiler-config (v0.13+). Injected onto the args namespace
+        # so it survives make_arg_parser().parse_args(args=[], namespace=...).
+        # At runtime, POST /start_profile and /stop_profile on the inference
+        # server to capture traces into this dir (per PyTorch worker).
+        os.makedirs(config.torch_profiler_dir, exist_ok=True)
+        setattr(namespace, "profiler_config", {
+            "profiler": "torch",
+            "torch_profiler_dir": config.torch_profiler_dir,
+        })
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)

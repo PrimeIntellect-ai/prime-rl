@@ -105,9 +105,9 @@ class ModelConfig(BaseModelConfig):
 class WeightBroadcastConfig(BaseConfig):
     """Configures weight broadcast settings."""
 
-    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
-        "filesystem"
-    )
+    type: Annotated[
+        Literal["nccl", "filesystem", "nixl"], Field(description="The type of weight broadcast to use.")
+    ] = "filesystem"
 
 
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)
@@ -378,6 +378,18 @@ class InferenceConfig(BaseConfig):
             description="Force DeepGEMM FP8 kernels via VLLM_USE_DEEP_GEMM=1. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8).",
         ),
     ] = False
+
+    torch_profiler_dir: Annotated[
+        str | None,
+        Field(
+            description=(
+                "If set, pass --profiler-config '{\"profiler\": \"torch\", "
+                "\"torch_profiler_dir\": <this>}' to vLLM so each worker wires the torch profiler. "
+                "Capture traces at runtime by POST-ing to the inference server's /start_profile and "
+                "/stop_profile endpoints. See https://docs.vllm.ai/en/stable/contributing/profiling/."
+            ),
+        ),
+    ] = None
 
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()

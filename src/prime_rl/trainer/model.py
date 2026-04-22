@@ -184,6 +184,42 @@ def freeze_moe_router(model: nn.Module) -> None:
     logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
+def freeze_routed_experts(model: nn.Module) -> None:
+    """Freeze routed expert parameters while leaving non-expert weights trainable."""
+    logger = get_logger()
+    num_frozen = 0
+    numel_frozen = 0
+    for name, param in model.named_parameters():
+        if ".mlp.experts." not in name:
+            continue
+        param.requires_grad = False
+        num_frozen += 1
+        numel_frozen += param.numel()
+
+    if num_frozen == 0:
+        raise ValueError("No routed expert parameters found to freeze.")
+
+    logger.info(f"Froze {num_frozen} routed expert parameters ({numel_frozen / 1e6:.2f}M params)")
+
+
+def freeze_non_routed_experts(model: nn.Module) -> None:
+    """Freeze every parameter except routed expert weights."""
+    logger = get_logger()
+    num_frozen = 0
+    numel_frozen = 0
+    for name, param in model.named_parameters():
+        if ".mlp.experts." in name:
+            continue
+        param.requires_grad = False
+        num_frozen += 1
+        numel_frozen += param.numel()
+
+    if num_frozen == 0:
+        raise ValueError("No non-routed-expert parameters found to freeze.")
+
+    logger.info(f"Froze {num_frozen} non-routed-expert parameters ({numel_frozen / 1e6:.2f}M params)")
+
+
 def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
@@ -864,6 +900,11 @@ def setup_model(
         # re-freeze base params that LoRA froze earlier.
         if config.lora is not None:
             freeze_all_except_lora_and_specified(model, config.lora)
+
+    if os.environ.get("PRIME_RL_FREEZE_ROUTED_EXPERTS", "0") == "1":
+        freeze_routed_experts(model)
+    if os.environ.get("PRIME_RL_FREEZE_NON_EXPERTS", "0") == "1":
+        freeze_non_routed_experts(model)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:

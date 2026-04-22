@@ -14,6 +14,7 @@ def setup_vllm_env(config: InferenceConfig):
         os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
 
 
+
 def main():
     config = cli(InferenceConfig)
     setup_vllm_env(config)
