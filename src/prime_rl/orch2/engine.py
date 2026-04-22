@@ -115,3 +115,9 @@ class RolloutEngine:
         for inflight in list(self._inflight):
             if version - inflight.version > inflight.max_off_policy:
                 inflight.gather.cancel()
+
+    def max_off_policy_level(self) -> int:
+        """Max lag across currently in-flight groups."""
+        if not self._inflight:
+            return 0
+        return max(self.policy_version - i.version for i in self._inflight)

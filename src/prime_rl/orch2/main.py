@@ -113,6 +113,7 @@ class TrainBatcher:
         self.max_async_level = max_async_level
         self.step = 0
         self.logger = get_logger()
+        self._last_step_t = time.perf_counter()
 
     async def run(self) -> None:
         buf: list[vf.RolloutOutput] = []
@@ -154,20 +155,26 @@ class TrainBatcher:
         await asyncio.to_thread(self.sender.send, batch)
         send_time = time.perf_counter() - t1
 
+        now = time.perf_counter()
+        step_time = now - self._last_step_t
+        self._last_step_t = now
+
         rewards = [r.get("reward", 0.0) for r in rollouts]
         advs = [r.get("advantage") or 0.0 for r in rollouts]
         seq_lens = [get_completion_len(r) for r in rollouts]
         reward_mean = sum(rewards) / len(rewards)
         adv_abs = sum(abs(a) for a in advs) / len(advs)
         seq_mean = sum(seq_lens) / len(seq_lens)
+        async_level = self.step - self.engine.policy_version
+        max_off_policy_level = self.engine.max_off_policy_level()
 
         self.logger.success(
             f"Step {self.step} | "
-            f"Batch: {len(samples)} samples ({len(rollouts)} rollouts) | "
-            f"Reward: {reward_mean:+.4f} | |Adv|: {adv_abs:.4f} | "
-            f"Seq: {seq_mean:.0f} tok | "
-            f"Version: {self.engine.policy_version} | "
-            f"Convert: {convert_time:.2f}s | Ship: {send_time:.2f}s"
+            f"Time: {step_time:.2f}s | "
+            f"Reward: {reward_mean:.4f} | "
+            f"Seq. Length: {seq_mean:.1f} tokens/sample | "
+            f"Async Level: {async_level} | "
+            f"Max. Off-Policy Level: {max_off_policy_level}"
         )
         get_monitor().log(
             {
@@ -176,6 +183,9 @@ class TrainBatcher:
                 "train/seq_len/mean": seq_mean,
                 "train/batch_size": len(samples),
                 "train/policy_version": self.engine.policy_version,
+                "scheduler/async_level": async_level,
+                "scheduler/max_off_policy_level": max_off_policy_level,
+                "time/step": step_time,
                 "time/convert": convert_time,
                 "time/ship": send_time,
             },
