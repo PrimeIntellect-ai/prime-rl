@@ -242,7 +242,7 @@ srun bash -c '
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
         vllm-router \
-            --policy {{ router_policy }} \
+            --policy "{{ router_policy }}" \
             --vllm-pd-disaggregation \
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
@@ -273,7 +273,7 @@ srun bash -c '
         echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
 
         vllm-router \
-            --policy {{ router_policy }} \
+            --policy "{{ router_policy }}" \
             --worker-urls $ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \

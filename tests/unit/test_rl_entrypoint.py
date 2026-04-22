@@ -73,4 +73,6 @@ def test_write_slurm_script_passes_top_level_log_level_to_router(tmp_path):
 
     script = script_path.read_text()
     assert 'export PRIME_LOG_LEVEL="debug"' in script
+    assert 'export ROUTER_POLICY="consistent_hash"' in script
     assert '--log-level "$PRIME_LOG_LEVEL"' in script
+    assert '--policy "$ROUTER_POLICY"' in script
