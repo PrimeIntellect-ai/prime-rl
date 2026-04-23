@@ -199,7 +199,7 @@ class Scheduler:
         env_name = group.example["env_name"]
         env = self.train_envs.get(env_name)
 
-        cache_salt = str(self.ckpt_step)
+        cache_salt = str(self.ckpt_step) if self.config.experimental.use_prefix_cache_salt else ""
         if env.requires_group_scoring:
             rollout_count = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0

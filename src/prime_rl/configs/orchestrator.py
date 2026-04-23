@@ -827,6 +827,19 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 class OrchestratorExperimentalConfig(BaseConfig):
     """Experimental features for the orchestrator."""
 
+    use_prefix_cache_salt: Annotated[
+        bool,
+        Field(
+            description=(
+                "When True (default), a 'cache_salt' key is added to every rollout "
+                "request's extra_body so that rollouts from different training steps "
+                "cannot share KV-cache prefixes. Set to False when the inference "
+                "backend does not support this field (e.g. Dynamo builds older than "
+                "the cache_salt passthrough fix)."
+            ),
+        ),
+    ] = True
+
 
 class TeacherModelConfig(BaseConfig):
     """Configures the teacher model for computing teacher logprobs (e.g. for distillation)."""

@@ -106,8 +106,12 @@ class Env:
 
     def _sampling_args_with_salt(self, cache_salt: str) -> dict:
         sampling_args = {**self.sampling_args}
-        extra_body = {**sampling_args.get("extra_body", {}), "cache_salt": cache_salt}
-        sampling_args["extra_body"] = extra_body
+        # Only inject cache_salt when it is non-empty.  An empty string signals
+        # that the inference backend does not support this field
+        # (use_prefix_cache_salt=False in [experimental]).
+        if cache_salt:
+            extra_body = {**sampling_args.get("extra_body", {}), "cache_salt": cache_salt}
+            sampling_args["extra_body"] = extra_body
         return sampling_args
 
     async def run_rollout(
