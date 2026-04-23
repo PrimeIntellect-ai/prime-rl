@@ -1054,6 +1054,19 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = 8
 
+    max_rollout_time_minutes: Annotated[
+        float | None,
+        Field(
+            gt=0,
+            description=(
+                "Wall-clock cap on a rollout group (minutes). Applies to both train and eval; a group "
+                "whose gather exceeds this limit is cancelled. Train groups that time out are dropped; "
+                "eval groups that time out are still counted (with an empty rollout list) so the batcher's "
+                "expected-count check can resolve. None disables the cap."
+            ),
+        ),
+    ] = None
+
     max_async_level: Annotated[
         int,
         Field(

@@ -61,9 +61,22 @@ async def run(cfg: OrchestratorConfig) -> None:
     if cfg.wandb is not None:
         logger.info(f"Wandb monitor ready (project={cfg.wandb.project}, name={cfg.wandb.name})")
 
-    scheduler = Scheduler(cfg.train.env, kind="train")
+    scheduler = Scheduler(
+        train_envs=cfg.train.env,
+        train_rollouts_per_example=cfg.rollouts_per_example,
+        eval_envs=cfg.eval.env if cfg.eval else None,
+        eval_interval=cfg.eval.interval if cfg.eval else None,
+        eval_at_zero=cfg.eval.eval_base_model if cfg.eval else False,
+    )
     for task in scheduler.tasks:
-        logger.info(f"Task '{task.id}' ready (kind={task.kind})")
+        logger.info(f"Train task '{task.id}' ready (rollouts/group={task.rollouts_per_group})")
+    for task in scheduler.eval_tasks:
+        logger.info(f"Eval task '{task.id}' ready (rollouts/group={task.rollouts_per_group})")
+    if cfg.eval is not None:
+        logger.info(
+            f"Eval interval: {cfg.eval.interval} | eval_base_model: {cfg.eval.eval_base_model} | "
+            f"eval envs: {len(scheduler.eval_tasks)}"
+        )
 
     # Engine-wide cap: total concurrent groups across all tasks. Each group
     # fans out to rollouts_per_example rollouts, so divide to match the old
@@ -90,13 +103,15 @@ async def run(cfg: OrchestratorConfig) -> None:
         out_q=groups_q,
         client=client,
         model=cfg.model.name,
-        rollouts_per_group=cfg.rollouts_per_example,
         max_off_policy=cfg.max_off_policy_steps,
         concurrency=concurrency,
         tasks_per_minute=cfg.tasks_per_minute,
+        max_rollout_time_seconds=(cfg.max_rollout_time_minutes * 60.0) if cfg.max_rollout_time_minutes else None,
     )
     if cfg.tasks_per_minute is not None:
         logger.info(f"Rate limit: {cfg.tasks_per_minute} tasks/min")
+    if cfg.max_rollout_time_minutes is not None:
+        logger.info(f"Rollout time cap: {cfg.max_rollout_time_minutes} min/group")
     training_sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
     rollout_filters = setup_filters(cfg.filters, vocab_size=tokenizer.vocab_size)
     strategy = build_strategy(cfg.batch_size)
@@ -111,6 +126,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         max_steps=cfg.max_steps,
         max_training_batches_ahead=cfg.max_async_level,
         strict_async_level=cfg.strict_async_level,
+        eval_counter=scheduler,
     )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
 
