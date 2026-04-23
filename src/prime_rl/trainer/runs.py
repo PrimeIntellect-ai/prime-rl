@@ -199,7 +199,7 @@ class MultiRunManager:
                     state_dict[f"{prefix}.{name}.weight"] = param.detach()
 
         if self._adapter_state_dict_converter is not None:
-            self._adapter_state_dict_converter(state_dict)
+            state_dict = self._adapter_state_dict_converter(state_dict)
         return state_dict
 
     def reset_run_parameters(self, idx: int) -> None:

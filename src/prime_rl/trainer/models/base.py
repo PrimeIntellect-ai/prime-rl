@@ -106,14 +106,15 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """
-        Convert a LoRA adapter state dict from PrimeRL training format to HuggingFace format in-place.
+        Convert a LoRA adapter state dict from PrimeRL training format to HuggingFace format.
 
         Unlike convert_to_hf, this operates on a partial state dict containing only LoRA
         adapter parameters (e.g. `model.layers.N.<submodule>.<proj>.lora_A.weight`). Models
         whose HF naming differs from PrimeRL naming at the submodule level (e.g. NemotronH's
         unified `mixer` attribute) should override this to perform the rename.
 
-        Default implementation is a no-op.
+        Implementations may mutate state_dict in-place or return a new dict; callers must
+        use the returned value. Default implementation is a no-op.
         """
         return state_dict
 
