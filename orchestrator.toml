@@ -1,0 +1,28 @@
+# Orchestrator config for multi-run RL integration test
+# model.lora.name and output_dir are set via CLI
+batch_size = 1024
+rollouts_per_example = 16
+seq_len = 2048
+max_steps = 200
+
+[model]
+name = "google/gemma-4-26B-A4B-it"
+
+[optim]
+lr = 2e-4
+
+[sampling]
+max_tokens = 256
+
+[sampling.extra_body]
+chat_template_kwarg = { enable_thinking = false }
+
+[[env]]
+id = "ivanleomk/reverse-chinese"
+
+[ckpt]
+interval = 10
+resume_step = -1
+
+[prime_monitor]
+run_name = "gemma4-debug"
