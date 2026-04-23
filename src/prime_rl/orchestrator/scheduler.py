@@ -77,8 +77,16 @@ class Scheduler:
         self.train_envs = train_envs
         self.buffer = buffer
         self.config = config
-        self.batch_size = config.batch_size
-        self.token_batch_size = config.token_batch_size
+        from prime_rl.configs.orchestrator import SamplesBatching, TokensBatching
+
+        if isinstance(config.batch_size, SamplesBatching):
+            self.batch_size = config.batch_size.size
+            self.token_batch_size = None
+        elif isinstance(config.batch_size, TokensBatching):
+            self.batch_size = None
+            self.token_batch_size = config.batch_size.size
+        else:
+            raise ValueError(f"orch1 does not support `{config.batch_size.type}` batching; use orch2")
         self.rollouts_per_example = config.rollouts_per_example
         self.max_inflight_rollouts = max_inflight_rollouts
         self.max_async_level = max_async_level

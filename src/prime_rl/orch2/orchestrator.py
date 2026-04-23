@@ -6,11 +6,12 @@ import tomli_w
 import verifiers as vf
 
 from prime_rl.configs.orchestrator import DefaultAdvantageConfig, OrchestratorConfig
-from prime_rl.orch2.batcher import Done, TrainBatcher
+from prime_rl.orch2.batcher import Done, TrainBatcher, build_strategy
 from prime_rl.orch2.engine import Group, RolloutEngine
 from prime_rl.orch2.inference_admin import InferenceAdmin
 from prime_rl.orch2.scheduler import Scheduler
 from prime_rl.orch2.watcher import WeightWatcher
+from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import setup_training_batch_sender
 from prime_rl.utils.config import cli
@@ -22,7 +23,6 @@ from prime_rl.utils.utils import get_env_ids_to_install, install_env
 
 async def run(cfg: OrchestratorConfig) -> None:
     assert cfg.max_inflight_rollouts is not None
-    assert cfg.batch_size is not None
     assert isinstance(cfg.advantage, DefaultAdvantageConfig), "orch2 minimal only supports default advantage"
     assert len(cfg.client.base_url) == 1, "orch2 assumes a single inference endpoint"
 
@@ -38,7 +38,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         tomli_w.dump(cfg.model_dump(exclude_none=True, mode="json"), f)
     logger.info(f"Wrote orch config to {control_dir / 'orch.toml'}")
     logger.info(
-        f"Batch size: {cfg.batch_size} | Rollouts/example: {cfg.rollouts_per_example} | "
+        f"Batching: {cfg.batch_size.type} | Rollouts/example: {cfg.rollouts_per_example} | "
         f"Max in-flight: {cfg.max_inflight_rollouts} | Max off-policy: {cfg.max_off_policy_steps}"
     )
 
@@ -73,8 +73,9 @@ async def run(cfg: OrchestratorConfig) -> None:
 
     # Bounded so the batcher's async-level barrier cascades backpressure into
     # the engine instead of letting it accumulate unbounded in-flight rollouts.
-    groups_per_batch = max(1, cfg.batch_size // cfg.rollouts_per_example)
-    groups_q: asyncio.Queue[Group] = asyncio.Queue(maxsize=groups_per_batch * (cfg.max_async_level + 1))
+    # Sized from concurrency (upper bound on in-flight groups) rather than
+    # batch size, since token/step modes don't have a fixed batch size.
+    groups_q: asyncio.Queue[Group] = asyncio.Queue(maxsize=concurrency * (cfg.max_async_level + 1))
 
     client = vf.ClientConfig(
         client_type="openai_chat_completions",
@@ -97,15 +98,18 @@ async def run(cfg: OrchestratorConfig) -> None:
     if cfg.tasks_per_minute is not None:
         logger.info(f"Rate limit: {cfg.tasks_per_minute} tasks/min")
     training_sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
+    rollout_filters = setup_filters(cfg.filters, vocab_size=tokenizer.vocab_size)
+    strategy = build_strategy(cfg.batch_size)
     batcher = TrainBatcher(
         groups_q,
         tokenizer,
         training_sender,
         engine,
-        cfg.batch_size,
+        strategy,
         cfg.advantage,
-        cfg.max_steps,
-        cfg.max_async_level,
+        filters=rollout_filters,
+        max_steps=cfg.max_steps,
+        max_training_batches_ahead=cfg.max_async_level,
         strict_async_level=cfg.strict_async_level,
     )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
