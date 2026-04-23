@@ -52,6 +52,15 @@ class GenerateRequest(BaseModel):
     min_tokens: int = 0
     prompt_logprobs: bool = False
     priority: int = 0
+    # Prefix-cache invalidation salt. Must match main's
+    # /v1/chat/completions/tokens path: the orchestrator sets
+    # `extra_body["cache_salt"] = str(ckpt_step)` on every rollout
+    # request. vLLM's KV cache hashes include this salt, so when the
+    # step changes the cache misses and KV is recomputed with fresh
+    # weights. Without this, renderers path silently reuses stale KV
+    # from before the latest weight update and its logprobs drift from
+    # the trainer's forward pass (mismatch_kl grows 3x over training).
+    cache_salt: str | None = None
 
 
 class GenerateChoiceResponse(BaseModel):
@@ -84,7 +93,7 @@ class OpenAIServingGenerate:
     async def generate(self, request: GenerateRequest, raw_request: Request) -> GenerateResponse | dict:
         # Pre-rendered TokensInput shape (type="token") — avoids vLLM's
         # "raw prompt" deprecation that targets plain lists/strings.
-        engine_prompt = tokens_input(request.prompt_token_ids)
+        engine_prompt = tokens_input(request.prompt_token_ids, cache_salt=request.cache_salt)
 
         # Match /v1/chat/completions: if the client didn't ask for a specific
         # cap, let the model generate up to whatever room is left in context.
