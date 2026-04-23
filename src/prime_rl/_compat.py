@@ -36,9 +36,9 @@ if not hasattr(_mfau, "is_flash_attn_greater_or_equal_2_10"):
 try:
     import transformers.integrations.hub_kernels as _hub_kernels
 except ImportError:
-    _hub_kernels = None  # transformers < 5.5, no patch needed
+    _hub_kernels = None  # transformers < 5.5 without hub_kernels module, no patch needed
 
-if _hub_kernels is not None:
+if _hub_kernels is not None and hasattr(_hub_kernels, "lazy_load_kernel"):
     from huggingface_hub.errors import OfflineModeIsEnabled
 
     _original_lazy_load_kernel = _hub_kernels.lazy_load_kernel
