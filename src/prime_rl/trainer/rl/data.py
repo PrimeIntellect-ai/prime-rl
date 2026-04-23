@@ -23,6 +23,9 @@ class TensorMicroBatch(TypedDict):
     inference_logprobs: Float[Tensor, "batch seq"]
     teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
+    # Optional second mask used only by the SFT loss term. None means the SFT
+    # loss falls back to `loss_mask`.
+    sft_loss_mask: Bool[Tensor, "batch seq"] | None
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
 
     # Batch level
@@ -106,6 +109,7 @@ class FakeDataLoader:
             "teacher_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "loss_mask": loss_mask.unsqueeze(0),
+            "sft_loss_mask": None,
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
             "pixel_values": None,
@@ -132,6 +136,7 @@ class FakeDataLoader:
             "teacher_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
+            "sft_loss_mask": None,
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
             "pixel_values": None,
@@ -199,6 +204,9 @@ class DataLoader:
             if micro_batch.teacher_logprobs is not None
             else None,
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
+            sft_loss_mask=torch.tensor(micro_batch.sft_loss_mask, dtype=torch.bool).unsqueeze(0)
+            if micro_batch.sft_loss_mask is not None
+            else None,
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
             # Multimodal fields - no batch dimension for these as they are variable-sized

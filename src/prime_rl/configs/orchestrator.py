@@ -892,6 +892,13 @@ class OrchestratorConfig(BaseConfig):
     # Training-token mask configuration
     loss_mask: RoleLossMaskConfig = RoleLossMaskConfig()
 
+    # Optional second mask used ONLY by the auxiliary SFT loss term when the
+    # trainer has both `rl_loss_weight > 0` and `sft_loss_weight > 0`. Lets you
+    # set e.g. RL on assistant tokens (via `loss_mask`) and SFT on tool tokens
+    # (via `sft_loss_mask`) simultaneously. Leave as None to have the SFT loss
+    # use the same mask as RL.
+    sft_loss_mask: RoleLossMaskConfig | None = None
+
     # Rollout filters (monitor by default, enforce optionally)
     filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()]
 

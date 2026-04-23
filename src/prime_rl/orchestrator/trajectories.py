@@ -142,12 +142,24 @@ def _build_role_loss_masks_for_step(
     if tokens is not None:
         prompt_len = len(tokens["prompt_ids"])
         completion_len = len(tokens["completion_ids"])
-        if len(full_ids) != prompt_len + completion_len:
+        vllm_total = prompt_len + completion_len
+
+        # Qwen-style chat templates append `\n` after every message's `<|im_end|>`,
+        # including the final one. vLLM's `completion_ids` stops at `<|im_end|>`
+        # because the model emits it as a stop token and never generates the
+        # trailing newline, so the re-render is typically one token longer than
+        # the rollout. Trim trailing whitespace-only tokens from the re-render
+        # down to (but not below) the rollout length.
+        while len(full_ids) > vllm_total and tokenizer.decode([full_ids[-1]]).strip() == "":
+            full_ids.pop()
+            full_loss_mask.pop()
+
+        if len(full_ids) != vllm_total:
             vllm_ids = list(tokens["prompt_ids"]) + list(tokens["completion_ids"])
             first_diff = _common_prefix_len(full_ids, vllm_ids)
             get_logger().warning(
                 "Skipping rollout step because role-based mask tokenization length "
-                f"({len(full_ids)}) did not match rollout tokens ({prompt_len + completion_len}). "
+                f"({len(full_ids)}) did not match rollout tokens ({vllm_total}). "
                 f"First differing position: {first_diff} (prompt_len={prompt_len}). "
                 f"vLLM tokens around diff: {vllm_ids[max(0, first_diff - 4) : first_diff + 8]!r}, "
                 f"re-rendered: {full_ids[max(0, first_diff - 4) : first_diff + 8]!r}."
@@ -265,8 +277,28 @@ def _tokenize_step_from_messages(
     }
 
 
+def _sort_dict_keys_recursively(obj: Any) -> Any:
+    """Recursively sort all dict keys alphabetically."""
+    if isinstance(obj, dict):
+        return {k: _sort_dict_keys_recursively(obj[k]) for k in sorted(obj.keys())}
+    if isinstance(obj, list):
+        return [_sort_dict_keys_recursively(v) for v in obj]
+    return obj
+
+
 def _convert_tools_to_oai_format(tool_defs: list) -> list[dict[str, Any]] | None:
-    """Convert verifiers Tool objects or dicts to OAI function-calling format."""
+    """Convert verifiers Tool objects or dicts to OAI function-calling format.
+
+    The OpenAI-compatible inference server (vLLM) serializes each tool's JSON
+    Schema `parameters` with alphabetically sorted keys (schema normalization
+    via Pydantic). The chat template then renders that sorted dict directly via
+    `tojson`, producing e.g. `"parameters": {"additionalProperties": ...,
+    "properties": ...}`. Python dict insertion order gives the opposite here,
+    which breaks the role-mask length check against vLLM's prompt_ids. The
+    outer `{"type", "function"}` wrapper and the inner function fields
+    (`{"name", "description", "parameters"}`) are kept in insertion order,
+    because vLLM preserves those.
+    """
     if not tool_defs:
         return None
 
@@ -281,7 +313,7 @@ def _convert_tools_to_oai_format(tool_defs: list) -> list[dict[str, Any]] | None
             "function": {
                 "name": _get(tool, "name"),
                 "description": _get(tool, "description"),
-                "parameters": _get(tool, "parameters"),
+                "parameters": _sort_dict_keys_recursively(_get(tool, "parameters")),
                 **({} if _get(tool, "strict") is None else {"strict": _get(tool, "strict")}),
             },
         }
@@ -324,6 +356,7 @@ def interleave_rollout(
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     tokenizer: PreTrainedTokenizer | None = None,
     loss_mask_config: RoleLossMaskConfig | None = None,
+    sft_loss_mask_config: RoleLossMaskConfig | None = None,
     processor=None,
 ) -> list[TrainingSample] | None:
     """
@@ -365,6 +398,10 @@ def interleave_rollout(
     temperature = output["sampling_args"]["temperature"]
     tools = _convert_tools_to_oai_format(output.get("tool_defs", []))
     use_custom_loss_mask = loss_mask_config is not None and not loss_mask_config.is_completion_only()
+    # The auxiliary SFT mask is built only when an explicit config is provided.
+    # We build it regardless of whether it happens to be "completion-only"; its
+    # presence in the config is what signals the trainer to use it for SFT.
+    use_sft_loss_mask = sft_loss_mask_config is not None
 
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
@@ -388,6 +425,14 @@ def interleave_rollout(
             else:
                 prepared["prompt_loss_mask"] = list(prepared["prompt_mask"])
                 prepared["completion_loss_mask"] = list(prepared["completion_mask"])
+            if use_sft_loss_mask:
+                assert tokenizer is not None
+                sft_role_masks = _build_role_loss_masks_for_step(
+                    step, tokenizer, sft_loss_mask_config, tools=tools, processor=processor
+                )
+                if sft_role_masks is None:
+                    return None
+                prepared["sft_prompt_loss_mask"], prepared["sft_completion_loss_mask"] = sft_role_masks
             return prepared
 
         logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
@@ -410,6 +455,18 @@ def interleave_rollout(
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
             prompt_loss_mask = [bool(i) for i in tokens["prompt_loss_mask"]]
             completion_loss_mask = [bool(i) for i in tokens["completion_loss_mask"]]
+        # Auxiliary SFT masks, if built (optional — only present when the
+        # orchestrator's `sft_loss_mask` config is set).
+        if use_sft_loss_mask:
+            if has_error:
+                sft_prompt_loss_mask = [False] * len(tokens["sft_prompt_loss_mask"])
+                sft_completion_loss_mask = [False] * len(tokens["sft_completion_loss_mask"])
+            else:
+                sft_prompt_loss_mask = [bool(i) for i in tokens["sft_prompt_loss_mask"]]
+                sft_completion_loss_mask = [bool(i) for i in tokens["sft_completion_loss_mask"]]
+        else:
+            sft_prompt_loss_mask = None
+            sft_completion_loss_mask = None
         completion_ids = list(tokens["completion_ids"])
 
         routed_experts = _align_routed_experts(
@@ -424,6 +481,8 @@ def interleave_rollout(
             completion_ids=completion_ids,
             completion_mask=completion_mask,
             completion_loss_mask=completion_loss_mask,
+            sft_prompt_loss_mask=sft_prompt_loss_mask,
+            sft_completion_loss_mask=sft_completion_loss_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
@@ -442,6 +501,9 @@ def interleave_rollout(
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         assert sample.completion_loss_mask is not None
         sample.completion_loss_mask.extend(tokens["prompt_loss_mask"][prefix_len:])
+        if use_sft_loss_mask:
+            assert sample.sft_completion_loss_mask is not None
+            sample.sft_completion_loss_mask.extend(tokens["sft_prompt_loss_mask"][prefix_len:])
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
         sample.completion_temperatures.extend([temperature] * len(new_prompt_ids))
 
@@ -451,9 +513,15 @@ def interleave_rollout(
         if has_error:
             sample.completion_mask.extend([False] * len(tokens["completion_mask"]))
             sample.completion_loss_mask.extend([False] * len(tokens["completion_loss_mask"]))
+            if use_sft_loss_mask:
+                assert sample.sft_completion_loss_mask is not None
+                sample.sft_completion_loss_mask.extend([False] * len(tokens["sft_completion_loss_mask"]))
         else:
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
             sample.completion_loss_mask.extend(bool(i) for i in tokens["completion_loss_mask"])
+            if use_sft_loss_mask:
+                assert sample.sft_completion_loss_mask is not None
+                sample.sft_completion_loss_mask.extend(bool(i) for i in tokens["sft_completion_loss_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 

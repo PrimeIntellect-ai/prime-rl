@@ -411,13 +411,26 @@ async def orchestrate(config: OrchestratorConfig):
         # Update prev_ckpt_step for next iteration
         prev_ckpt_step = ckpt_step
 
-        # Schedule generating the training batch. Retry on empty-after-filter
-        # batches so the trainer never receives an empty batch.
+        # Schedule generating the training batch. Retry on empty batches whether
+        # they come from filters dropping everything OR from `interleave_rollout`
+        # dropping every non-filtered rollout (e.g. role-based loss mask
+        # tokenization not matching vLLM tokens). The trainer never receives an
+        # empty batch; after MAX_EMPTY_BATCH_ATTEMPTS failed attempts we evict.
         generate_completions_time = 0.0
         train_rollouts: list[vf.RolloutOutput] = []
+        train_examples: list[TrainingSample] = []
         num_rollouts = 0
         num_unique_examples = 0
         n_trainable = 0
+        rollout_prefill_lens: list[int] = []
+        rollout_decode_lens: list[int] = []
+        rollout_samples_per_rollout: list[int] = []
+        num_prefill_tokens = 0
+        num_decode_tokens = 0
+        parallel_preprocess_time = 0.0
+        vlm_cache = None
+        mm_token_type_ids_mapping = None
+
         for attempt in range(MAX_EMPTY_BATCH_ATTEMPTS):
             train_rollouts = await scheduler.generate_batch(step=progress.step)
             generate_completions_time += scheduler.last_batch_generation_time
@@ -431,17 +444,124 @@ async def orchestrate(config: OrchestratorConfig):
             apply_filters(rollout_filters, train_rollouts)
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
-            if n_trainable > 0:
+
+            empty_reason: str | None = None
+            if n_trainable == 0:
+                empty_reason = f"filters dropped all {num_rollouts} rollouts"
+            else:
+                # Save train rollouts to disk (fire-and-forget background thread)
+                step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
+                await asyncio.to_thread(
+                    save_rollouts,
+                    train_rollouts,
+                    step_path / "train_rollouts.jsonl",
+                    exclude_keys={"trajectory"},
+                )
+
+                # VLM: offload base64 images to disk immediately to free memory
+                if is_vlm:
+                    offload_start = time.perf_counter()
+                    num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
+                    if num_offloaded:
+                        logger.info(
+                            f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
+                        )
+
+                # Convert rollouts to training samples
+                parallel_preprocess_start = time.perf_counter()
+
+                # Pretokenize before VLM image cache build (which strips image data from messages)
+                for rollout in train_rollouts:
+                    pretokenize_rollout_trajectory(rollout, tokenizer, processor=processor)
+
+                # VLM: build image cache in a thread so it doesn't block the event loop.
+                # This lets the scheduler continue servicing inflight rollout requests
+                # and — with max_async_level >= 2 — overlap with the next batch's inference.
+                if is_vlm:
+                    vlm_cache = await asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor)
+                    mm_token_type_ids_mapping = {}
+                    if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
+                        mm_token_type_ids_mapping[processor.image_token_id] = 1
+                    if hasattr(processor, "video_token_id") and processor.video_token_id is not None:
+                        mm_token_type_ids_mapping[processor.video_token_id] = 2
+
+                    logger.info(
+                        f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
+                        f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
+                    )
+                else:
+                    vlm_cache = None
+                    mm_token_type_ids_mapping = None
+
+                # Process rollouts in parallel
+                def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
+                    return interleave_rollout(
+                        rollout,
+                        vlm_cache=vlm_cache,
+                        cache_key=rollout_idx,
+                        mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+                        tokenizer=tokenizer,
+                        loss_mask_config=config.loss_mask,
+                        sft_loss_mask_config=config.sft_loss_mask,
+                        processor=processor,
+                    )
+
+                results = await asyncio.gather(
+                    *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(train_rollouts))
+                )
+
+                # Collect results and assign advantages. Metrics are computed over all
+                # rollouts; only non-filtered samples are sent to the trainer.
+                train_examples = []
+                rollout_prefill_lens = []
+                rollout_decode_lens = []
+                rollout_samples_per_rollout = []
+                num_prefill_tokens = 0
+                num_decode_tokens = 0
+                for rollout, samples in zip(train_rollouts, results):
+                    rollout_prefill_tokens = 0
+                    rollout_decode_tokens = 0
+                    if samples is None:
+                        samples = []
+                    rollout_samples_per_rollout.append(len(samples))
+                    for sample in samples:
+                        sample.advantage = rollout["advantage"]
+                        sample.reward = rollout["reward"]
+                        sample_decode_tokens = sum(sample.completion_mask)
+                        sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
+                        rollout_decode_tokens += sample_decode_tokens
+                        rollout_prefill_tokens += sample_prefill_tokens
+                        if not rollout["is_filtered"]:
+                            train_examples.append(sample)
+                    rollout_prefill_lens.append(rollout_prefill_tokens)
+                    rollout_decode_lens.append(rollout_decode_tokens)
+                    num_prefill_tokens += rollout_prefill_tokens
+                    num_decode_tokens += rollout_decode_tokens
+
+                parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
+                logger.debug(
+                    f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
+                    f"to {len(train_examples)} training examples"
+                )
+
+                if not train_examples:
+                    empty_reason = (
+                        f"{n_trainable}/{num_rollouts} rollouts survived filtering but "
+                        "interleave_rollout dropped all of them (likely role-based loss "
+                        "mask tokenization failures)"
+                    )
+
+            if empty_reason is None:
                 break
 
             if attempt == MAX_EMPTY_BATCH_ATTEMPTS - 1:
                 logger.error(
-                    f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
-                    f"filtered out all {num_rollouts} rollouts - crashing orchestrator"
+                    f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step}: "
+                    f"{empty_reason} - crashing orchestrator"
                 )
                 reason = (
-                    f"All {num_rollouts} rollouts were filtered out on "
-                    f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
+                    f"All {MAX_EMPTY_BATCH_ATTEMPTS} batch-generation attempts at step "
+                    f"{progress.step} produced empty training batches. Last reason: {empty_reason}"
                 )
                 evicted_path = config.output_dir / "control" / "evicted.txt"
                 evicted_path.parent.mkdir(parents=True, exist_ok=True)
@@ -449,8 +569,8 @@ async def orchestrate(config: OrchestratorConfig):
                 raise RuntimeError(reason)
 
             logger.warning(
-                f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
-                f"filtered out all {num_rollouts} rollouts - retrying batch generation"
+                f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step}: "
+                f"{empty_reason} - retrying batch generation"
             )
 
         trainable_ratio = n_trainable / num_rollouts
@@ -460,114 +580,6 @@ async def orchestrate(config: OrchestratorConfig):
                 f"({trainable_ratio:.1%}) - this can mean the tasks are too easy or too hard for the "
                 "model, consider reviewing the task difficulty of your environment(s)"
             )
-
-        # Save train rollouts to disk (fire-and-forget background thread)
-        step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
-        await asyncio.to_thread(
-            save_rollouts, train_rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
-        )
-
-        # VLM: offload base64 images to disk immediately to free memory
-        if is_vlm:
-            offload_start = time.perf_counter()
-            num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
-            if num_offloaded:
-                logger.info(
-                    f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
-                )
-
-        # Convert rollouts to training samples
-        parallel_preprocess_start = time.perf_counter()
-
-        # Pretokenize before VLM image cache build (which strips image data from messages)
-        for rollout in train_rollouts:
-            pretokenize_rollout_trajectory(rollout, tokenizer, processor=processor)
-
-        # VLM: build image cache in a thread so it doesn't block the event loop.
-        # This lets the scheduler continue servicing inflight rollout requests
-        # and — with max_async_level >= 2 — overlap with the next batch's inference.
-        if is_vlm:
-            vlm_cache = await asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor)
-            mm_token_type_ids_mapping = {}
-            if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
-                mm_token_type_ids_mapping[processor.image_token_id] = 1
-            if hasattr(processor, "video_token_id") and processor.video_token_id is not None:
-                mm_token_type_ids_mapping[processor.video_token_id] = 2
-
-            logger.info(
-                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
-                f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
-            )
-        else:
-            vlm_cache = None
-            mm_token_type_ids_mapping = None
-
-        # Process rollouts in parallel
-        def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
-            return interleave_rollout(
-                rollout,
-                vlm_cache=vlm_cache,
-                cache_key=rollout_idx,
-                mm_token_type_ids_mapping=mm_token_type_ids_mapping,
-                tokenizer=tokenizer,
-                loss_mask_config=config.loss_mask,
-                processor=processor,
-            )
-
-        results = await asyncio.gather(
-            *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(train_rollouts))
-        )
-
-        # Collect results and assign advantages. Metrics are computed over all
-        # rollouts; only non-filtered samples are sent to the trainer.
-        train_examples: list[TrainingSample] = []
-        rollout_prefill_lens: list[int] = []
-        rollout_decode_lens: list[int] = []
-        rollout_samples_per_rollout: list[int] = []
-        num_prefill_tokens = 0
-        num_decode_tokens = 0
-        for rollout, samples in zip(train_rollouts, results):
-            rollout_prefill_tokens = 0
-            rollout_decode_tokens = 0
-            if samples is None:
-                samples = []
-            rollout_samples_per_rollout.append(len(samples))
-            for sample in samples:
-                sample.advantage = rollout["advantage"]
-                sample.reward = rollout["reward"]
-                sample_decode_tokens = sum(sample.completion_mask)
-                sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
-                rollout_decode_tokens += sample_decode_tokens
-                rollout_prefill_tokens += sample_prefill_tokens
-                if not rollout["is_filtered"]:
-                    train_examples.append(sample)
-            rollout_prefill_lens.append(rollout_prefill_tokens)
-            rollout_decode_lens.append(rollout_decode_tokens)
-            num_prefill_tokens += rollout_prefill_tokens
-            num_decode_tokens += rollout_decode_tokens
-
-        parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
-        logger.debug(
-            f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
-            f"to {len(train_examples)} training examples"
-        )
-
-        # Invariant: the trainer never receives an empty batch. The filter-based
-        # retry above keeps it by construction, but `interleave_rollout` can still
-        # drop every non-filtered rollout (e.g. role-based loss mask tokenization
-        # doesn't match the vLLM tokens). Evict the run rather than crash the
-        # trainer with an opaque IndexError at `micro_batches[0]`.
-        if not train_examples:
-            reason = (
-                f"At step {progress.step}, {n_trainable}/{num_rollouts} rollouts survived filtering "
-                f"but interleave_rollout dropped all of them (likely role-based loss mask tokenization "
-                f"failures). Check warnings from _build_role_loss_masks_for_step."
-            )
-            logger.error(reason)
-            evicted_path = config.output_dir / "control" / "evicted.txt"
-            evicted_path.parent.mkdir(parents=True, exist_ok=True)
-            evicted_path.write_text(reason)
-            raise RuntimeError(reason)
 
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0

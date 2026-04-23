@@ -336,6 +336,9 @@ def train(config: TrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
+            sft_loss_mask = (
+                micro_batch["sft_loss_mask"].to("cuda") if micro_batch["sft_loss_mask"] is not None else None
+            )
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             teacher_logprobs = (
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
@@ -443,6 +446,13 @@ def train(config: TrainerConfig):
                 teacher_logprobs.squeeze().split(response_lengths) if teacher_logprobs is not None else None
             )
             split_loss_mask = loss_mask.squeeze().split(response_lengths)
+            # When the orchestrator supplies a separate SFT mask (e.g. RL on
+            # assistant + SFT on tool), split it the same way; otherwise fall
+            # back to `split_loss_mask` so the single-mask behavior is kept.
+            if sft_loss_mask is not None:
+                split_sft_loss_mask = sft_loss_mask.squeeze().split(response_lengths)
+            else:
+                split_sft_loss_mask = split_loss_mask
             split_advantages = (
                 torch.ones_like(advantages).squeeze().split(response_lengths)
                 if config.unit_advantage
@@ -472,7 +482,7 @@ def train(config: TrainerConfig):
                     inference_logprobs=split_inference_logprobs,
                     teacher_logprobs=None,
                     advantages=split_advantages,
-                    loss_mask=split_loss_mask,
+                    loss_mask=split_sft_loss_mask,
                     loss_fn=sft_loss_fn,
                     loss_scale=loss_scale,
                 )

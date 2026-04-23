@@ -20,6 +20,28 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         else training_example.completion_mask
     )
     loss_mask = prompt_loss_mask + completion_loss_mask
+
+    # Optional second mask for the SFT loss term. When the orchestrator builds
+    # separate role-based masks for RL (e.g. assistant) and SFT (e.g. tool), it
+    # populates `sft_prompt_loss_mask` / `sft_completion_loss_mask`; otherwise
+    # we leave `sft_loss_mask` None and the trainer falls back to `loss_mask`.
+    if (
+        training_example.sft_prompt_loss_mask is not None
+        or training_example.sft_completion_loss_mask is not None
+    ):
+        sft_prompt_loss_mask = (
+            training_example.sft_prompt_loss_mask
+            if training_example.sft_prompt_loss_mask is not None
+            else [False] * len(training_example.prompt_ids)
+        )
+        sft_completion_loss_mask = (
+            training_example.sft_completion_loss_mask
+            if training_example.sft_completion_loss_mask is not None
+            else [False] * len(training_example.completion_ids)
+        )
+        sft_loss_mask: list[bool] | None = sft_prompt_loss_mask + sft_completion_loss_mask
+    else:
+        sft_loss_mask = None
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
@@ -48,6 +70,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             routed_experts = routed_experts[:seq_len]
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
+        if sft_loss_mask is not None:
+            sft_loss_mask = sft_loss_mask[:seq_len]
 
     assert (
         len(input_ids)
@@ -59,6 +83,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     ), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, temperatures: {len(temperatures)}"
     )
+    if sft_loss_mask is not None:
+        assert len(sft_loss_mask) == len(input_ids), (
+            f"sft_loss_mask: {len(sft_loss_mask)}, input_ids: {len(input_ids)}"
+        )
     if teacher_logprobs is not None:
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
 
@@ -76,6 +104,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         input_ids=input_ids,
         advantages=advantages,
         loss_mask=loss_mask,
+        sft_loss_mask=sft_loss_mask,
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
         teacher_logprobs=teacher_logprobs,
@@ -126,8 +155,23 @@ def packed_samples_into_micro_bs(
                 continue
             # Check if sequence fits in this bin
             if len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len:
+                # Length of the bin BEFORE extending, used to backfill the sft
+                # mask when we need to start tracking one mid-bin (or align a
+                # new sample's missing mask with the existing bin).
+                prev_len = len(bin_content.input_ids)
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
+                # Keep `sft_loss_mask` aligned with `loss_mask` over the packed
+                # sequence. If only one side (bin or incoming sample) has an
+                # sft mask, fill the other side's span with False so the
+                # concatenated mask stays the same length as `loss_mask`.
+                if bin_content.sft_loss_mask is not None or sample.sft_loss_mask is not None:
+                    if bin_content.sft_loss_mask is None:
+                        bin_content.sft_loss_mask = [False] * prev_len
+                    if sample.sft_loss_mask is None:
+                        bin_content.sft_loss_mask.extend([False] * len(sample.input_ids))
+                    else:
+                        bin_content.sft_loss_mask.extend(sample.sft_loss_mask)
                 bin_content.advantages.extend(sample.advantages)
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
                 bin_content.temperatures.extend(sample.temperatures)
@@ -173,6 +217,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.input_ids.extend([1] * padding_size)
     micro_batch.advantages.extend([0.0] * padding_size)
     micro_batch.loss_mask.extend([False] * padding_size)
+    if micro_batch.sft_loss_mask is not None:
+        micro_batch.sft_loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
     # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
@@ -193,6 +239,8 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
     dummy.loss_mask = [False] * len(dummy.input_ids)
+    if dummy.sft_loss_mask is not None:
+        dummy.sft_loss_mask = [False] * len(dummy.input_ids)
     return dummy
 
 

@@ -13,6 +13,12 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_temperatures: list[float]  # Per-token temperatures used during generation
     prompt_loss_mask: list[bool] | None = None
     completion_loss_mask: list[bool] | None = None
+    # Optional auxiliary mask used only by the SFT loss term when both RL and
+    # SFT are active. When None, the SFT loss falls back to `*_loss_mask` (the
+    # same mask used for the RL loss). Split prompt/completion to mirror the
+    # existing loss mask plumbing.
+    sft_prompt_loss_mask: list[bool] | None = None
+    sft_completion_loss_mask: list[bool] | None = None
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None
     reward: float | None = None
@@ -48,6 +54,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     position_ids: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     teacher_logprobs: list[float] | None = None
+    # Optional second mask used only by the SFT loss term. Same length as
+    # `loss_mask` when set; None means the SFT loss falls back to `loss_mask`.
+    sft_loss_mask: list[bool] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: list[list[list[int]]] | None = None
 
