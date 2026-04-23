@@ -375,6 +375,23 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
         return state_dict
 
     @classmethod
+    def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        # HF NemotronH unifies attention/mlp under a single `mixer` attribute per layer.
+        import re
+
+        rename = [
+            (re.compile(r"(\.layers\.\d+)\.mlp\."), r"\1.mixer."),
+            (re.compile(r"(\.layers\.\d+)\.self_attn\."), r"\1.mixer."),
+        ]
+        for old_key in list(state_dict.keys()):
+            new_key = old_key
+            for pattern, repl in rename:
+                new_key = pattern.sub(repl, new_key)
+            if new_key != old_key:
+                state_dict[new_key] = state_dict.pop(old_key)
+        return state_dict
+
+    @classmethod
     def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import _rename_keys
 

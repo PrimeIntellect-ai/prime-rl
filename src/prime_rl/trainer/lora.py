@@ -137,6 +137,10 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         config: LoRA configuration
     """
     logger = get_logger()
+    from prime_rl.trainer.models import PreTrainedModelPrimeRL
+
+    if isinstance(model, PreTrainedModelPrimeRL):
+        get_multi_run_manager().register_adapter_state_dict_converter(type(model).convert_adapter_to_hf)
     n_loras = get_multi_run_manager().max_runs
 
     from torch.distributed.fsdp import FSDPModule
