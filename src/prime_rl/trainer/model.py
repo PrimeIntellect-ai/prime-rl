@@ -126,6 +126,173 @@ def _patch_qwen3_5_text_position_ids():
         decoder_layer_cls.forward = _make_patched_forward(_original_forward)
 
 
+def _patch_qwen3_5_linear_attn_varlen():
+    """Thread cu_seqlens through Qwen3.5 GatedDeltaNet so packed batches don't
+    leak conv/SSM state across sequences.
+
+    HF's forward hardcodes seq_idx=None for causal_conv1d and omits cu_seqlens
+    for chunk_gated_delta_rule, so packed RL training sees ~0.23 Mismatch KL vs
+    vLLM (target <0.01). Mirrors the NemotronH mamba fix.
+    """
+    import torch.nn.functional as F
+    from transformers.models.qwen3_5.modeling_qwen3_5 import (
+        Qwen3_5DecoderLayer,
+        Qwen3_5GatedDeltaNet,
+        Qwen3_5TextModel,
+        apply_mask_to_padding_states,
+    )
+
+    if getattr(Qwen3_5GatedDeltaNet.forward, "_prl_varlen_patched", False):
+        return
+
+    _gdn_orig = Qwen3_5GatedDeltaNet.forward
+
+    def _gdn_forward(self, hidden_states, cache_params=None, attention_mask=None, cu_seqlens=None):
+        if cu_seqlens is None or cache_params is not None:
+            return _gdn_orig(self, hidden_states, cache_params=cache_params, attention_mask=attention_mask)
+
+        hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
+        batch_size, seq_len, _ = hidden_states.shape
+
+        mixed_qkv = self.in_proj_qkv(hidden_states).transpose(1, 2)
+        z = self.in_proj_z(hidden_states).reshape(batch_size, seq_len, -1, self.head_v_dim)
+        b = self.in_proj_b(hidden_states)
+        a = self.in_proj_a(hidden_states)
+
+        if self.causal_conv1d_fn is not None:
+            seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+            seq_idx = torch.repeat_interleave(
+                torch.arange(seg_lens.numel(), dtype=torch.int32, device=hidden_states.device),
+                seg_lens,
+            ).unsqueeze(0)
+            mixed_qkv = self.causal_conv1d_fn(
+                x=mixed_qkv,
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                seq_idx=seq_idx,
+            )
+        else:
+            # Per-segment conv1d so the kernel-1 left pad only draws from within each sequence.
+            cu = cu_seqlens.tolist()
+            conv_outs = []
+            for i in range(len(cu) - 1):
+                s, e = cu[i], cu[i + 1]
+                if s == e:
+                    continue
+                conv_outs.append(self.conv1d(mixed_qkv[:, :, s:e])[:, :, : e - s])
+            mixed_qkv = F.silu(torch.cat(conv_outs, dim=-1))
+
+        mixed_qkv = mixed_qkv.transpose(1, 2)
+        query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
+        query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
+        key = key.reshape(batch_size, seq_len, -1, self.head_k_dim)
+        value = value.reshape(batch_size, seq_len, -1, self.head_v_dim)
+
+        beta = b.sigmoid()
+        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
+        if self.num_v_heads // self.num_k_heads > 1:
+            query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+            key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+
+        core_attn_out, _ = self.chunk_gated_delta_rule(
+            query,
+            key,
+            value,
+            g=g,
+            beta=beta,
+            initial_state=None,
+            output_final_state=False,
+            use_qk_l2norm_in_kernel=True,
+            cu_seqlens=cu_seqlens,
+        )
+
+        core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
+        z = z.reshape(-1, self.head_v_dim)
+        core_attn_out = self.norm(core_attn_out, z)
+        core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
+        return self.out_proj(core_attn_out)
+
+    _gdn_forward._prl_varlen_patched = True
+    Qwen3_5GatedDeltaNet.forward = _gdn_forward
+
+    _dec_orig = Qwen3_5DecoderLayer.forward
+
+    def _dec_forward(
+        self,
+        hidden_states,
+        position_embeddings,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        cu_seqlens=None,
+        **kwargs,
+    ):
+        if position_ids is not None and position_ids.ndim == 3:
+            position_ids = position_ids[0]
+        if self.layer_type != "linear_attention":
+            return _dec_orig(
+                self,
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                **kwargs,
+            )
+
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = self.linear_attn(
+            hidden_states=hidden_states,
+            cache_params=past_key_values,
+            attention_mask=attention_mask,
+            cu_seqlens=cu_seqlens,
+        )
+        hidden_states = residual + hidden_states
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        return residual + hidden_states
+
+    Qwen3_5DecoderLayer.forward = _dec_forward
+
+    _text_orig = Qwen3_5TextModel.forward
+
+    def _text_forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        inputs_embeds=None,
+        use_cache=None,
+        **kwargs,
+    ):
+        attn_impl = getattr(self.config, "_attn_implementation", None)
+        cu_seqlens = None
+        if attn_impl in ("flash_attention_2", "flash_attention_3", "fa4") and position_ids is not None:
+            pids = position_ids
+            if pids.ndim == 3:
+                pids = pids[0]
+            flat = pids.view(-1)
+            seqlens = torch.cat([flat[0:1], flat[:-1][(flat == 0)[1:]] + 1, flat[-1:] + 1])
+            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+        kwargs["cu_seqlens"] = cu_seqlens
+        return _text_orig(
+            self,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            **kwargs,
+        )
+
+    Qwen3_5TextModel.forward = _text_forward
+
+
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
 transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
@@ -238,6 +405,7 @@ def get_model(
     if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
         _patch_qwen3_5_text_position_ids()
         _patch_qwen3_5_moe_conversion_mapping()
+        _patch_qwen3_5_linear_attn_varlen()
 
     model_config = cast(
         PretrainedConfig,
@@ -276,6 +444,7 @@ def get_model(
     if getattr(model_config, "model_type", "").startswith("qwen3_5_moe"):
         _patch_qwen3_5_text_position_ids()
         _patch_qwen3_5_moe_conversion_mapping()
+        _patch_qwen3_5_linear_attn_varlen()
     for subconfig_key in getattr(model_config, "sub_configs", {}):
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
