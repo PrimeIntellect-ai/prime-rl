@@ -246,6 +246,10 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
     fi
 
+    # Consumed by prime_rl.inference.vllm.server when torch_profiler_dir is set:
+    # appends "-prefill" / "-decode" so the two roles dump into separate dirs.
+    export PRIME_RL_TORCH_PROFILER_ROLE_SUFFIX="-$ROLE"
+
     echo "ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
         | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 

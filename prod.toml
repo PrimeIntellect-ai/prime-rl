@@ -67,9 +67,9 @@ type = "sign_sgd"
 lr = 1e-6
 
 [orchestrator]
-batch_size = 1536
+batch_size = 512
 rollouts_per_example = 16
-oversampling_factor = 2
+oversampling_factor = 3
 max_off_policy_steps = 16
 use_token_client = true
 seed = 42
@@ -81,7 +81,7 @@ max_completion_tokens = 32768
 id = "mini-swe-agent-plus"
 name = "swe"
 num_workers = 8
-args = { max_turns = 200, cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, labels = ["matej-dev"], total_timeout_minutes = 720, sandbox_client_max_workers = 256, max_command_timeouts = 3, sandbox_command_timeout = 120 }
+args = { max_turns = 100, cpu_cores = 2, memory_gb = 4, disk_size_gb = 4, labels = ["matej-dev"], total_timeout_minutes = 720, sandbox_client_max_workers = 256, max_command_timeouts = 3, sandbox_command_timeout = 120 }
 
 [inference]
 enable_expert_parallel = true
@@ -95,4 +95,4 @@ tp = 1
 
 [inference.model]
 name = "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8"
-max_model_len = 65536
+max_model_len = 150000

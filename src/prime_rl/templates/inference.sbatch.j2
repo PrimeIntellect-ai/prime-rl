@@ -214,6 +214,10 @@ srun bash -c '
         fi
     fi
 
+    # Consumed by prime_rl.inference.vllm.server when torch_profiler_dir is set:
+    # appends "-prefill" / "-decode" so the two roles dump into separate dirs.
+    export PRIME_RL_TORCH_PROFILER_ROLE_SUFFIX="-$ROLE"
+
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK EP=$EP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
