@@ -79,6 +79,28 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     console.print(table)
 
 
+def get_teacher_sampling_args() -> dict[str, Any]:
+    """Sampling args for the teacher `/chat/completions/tokens` prefill call.
+
+    These values are load-bearing rather than user-tunable:
+    - `max_tokens=1`: the teacher isn't sampling — the request just carries
+      `prompt_ids + completion_ids` as tokens to be scored. vLLM rejects `0`.
+    - `temperature=1.0` / `top_p=1.0`: no-op for prompt logprobs today (see
+      vllm-project/vllm#37082), kept to satisfy the schema.
+    - `skip_special_tokens=False`: keep special tokens so teacher logprobs
+      line up 1:1 with the student token ids.
+    - `prompt_logprobs=True`: required — without it the teacher logprobs
+      for `prompt + completion` are not returned.
+    """
+    return {
+        "max_tokens": 1,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "skip_special_tokens": False,
+        "prompt_logprobs": True,
+    }
+
+
 async def compute_teacher_logprobs(
     clients: list[vf.ClientConfig],
     model_name: str,
@@ -95,11 +117,7 @@ async def compute_teacher_logprobs(
                 "model": model_name,
                 "messages": [{"role": "user", "content": ""}],
                 "tokens": sample.prompt_ids + sample.completion_ids,
-                "max_tokens": 1,
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "skip_special_tokens": False,
-                "prompt_logprobs": True,
+                **get_teacher_sampling_args(),
             },
             cast_to=ChatCompletion,
         )
