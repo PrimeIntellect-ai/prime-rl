@@ -444,11 +444,9 @@ async def orchestrate(config: OrchestratorConfig):
                     f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
                 )
 
-                # Early stop only when all filtering is due to zero advantages
-                only_zero_advantage = all(
-                    r["filters"].get("zero_advantage", False) for r in train_rollouts if r["is_filtered"]
-                )
-                if only_zero_advantage:
+                # Early stop when every rollout has zero advantage
+                all_zero_advantage = train_rollouts and all(r.get("advantage") == 0.0 for r in train_rollouts)
+                if all_zero_advantage:
                     logger.warning(f"Early stopping: {reason}")
                     early_stopped = True
                     break
