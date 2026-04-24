@@ -443,9 +443,6 @@ async def orchestrate(config: OrchestratorConfig):
                     f"All {num_rollouts} rollouts were filtered out on "
                     f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
                 )
-                evicted_path = config.output_dir / "control" / "evicted.txt"
-                evicted_path.parent.mkdir(parents=True, exist_ok=True)
-                evicted_path.write_text(reason)
 
                 # Early stop only when all filtering is due to zero advantages
                 only_zero_advantage = all(
@@ -456,6 +453,9 @@ async def orchestrate(config: OrchestratorConfig):
                     early_stopped = True
                     break
 
+                evicted_path = config.output_dir / "control" / "evicted.txt"
+                evicted_path.parent.mkdir(parents=True, exist_ok=True)
+                evicted_path.write_text(reason)
                 logger.error(f"{reason} - crashing orchestrator")
                 raise RuntimeError(reason)
 
