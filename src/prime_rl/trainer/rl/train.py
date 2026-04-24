@@ -318,9 +318,26 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
+        # Local number of unmasked (loss-contributing) tokens on this DP rank for this step.
         loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
         loss_scale = max(loss_scale, 1)
+
+        # --- loss_scale diagnostic: gather across dp_cp ranks ---
+        local = torch.tensor([loss_scale], dtype=torch.float64, device="cuda")
+        dp_cp_group = parallel_dims.world_mesh["dp_cp"].get_group()
+        dp_cp_world_size = dist.get_world_size(dp_cp_group)
+        gathered = [torch.zeros_like(local) for _ in range(dp_cp_world_size)]
+        dist.all_gather(gathered, local, group=dp_cp_group)
+        scales = torch.stack(gathered).squeeze()  # shape: [dp_cp_world_size]
+        # --- end diagnostic gather ---
+
+        # Sum local loss_scales into the true global token count, used to normalize the loss so
+        # that gradients average uniformly across tokens regardless of per-rank token-count skew.
+        global_token_count = scales.sum().item()
+        global_token_count = max(global_token_count, 1)
+
+        # Running sum of per-rank loss across microbatches; all-reduced below for logging.
+        step_local_loss_sum = torch.tensor(0.0, device="cuda")
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -444,12 +461,16 @@ def train(config: TrainerConfig):
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_fn=loss_fn,
-                loss_scale=loss_scale,
+                global_token_count=global_token_count,
             )
 
             # Backward pass
             with maybe_record_function("backward"):
                 loss.backward()
+
+            # loss is already divided by global_token_count, so summing across microbatches and
+            # all-reducing across ranks yields the global token-weighted mean loss directly.
+            step_local_loss_sum += loss.detach()
 
             # Add relevant tensors to tensor dict for logging purposes
             tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
@@ -473,6 +494,18 @@ def train(config: TrainerConfig):
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
+
+        # compute_loss divided by global_token_count, so each rank's grad contribution is already
+        # scaled by 1/global_token_count. FSDP then divided the all-reduced grad by
+        # fsdp_gradient_divide_factor. Multiply by fsdp_gradient_divide_factor to recover the true
+        # global token-weighted mean gradient.
+        for param in model.parameters():
+            if param.grad is not None:
+                param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
+
+        # All-reduce the per-rank loss sums to get the global token-weighted mean loss for logging.
+        dist.all_reduce(step_local_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        global_mean_loss = step_local_loss_sum.item()
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
@@ -573,6 +606,30 @@ def train(config: TrainerConfig):
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)
         disk_metrics["step"] = progress.step
         monitor.log(disk_metrics, step=progress.step)
+
+        # --- loss_scale diagnostic metrics ---
+        loss_scale_metrics = {
+            "loss_scale/local": loss_scale,
+            "loss_scale/mean": scales.mean().item(),
+            "loss_scale/std": scales.std().item(),
+            "loss_scale/min": scales.min().item(),
+            "loss_scale/max": scales.max().item(),
+            "loss_scale/cov": (scales.std() / scales.mean()).item(),
+            "loss_scale/max_ratio": (scales.max() / scales.min()).item(),
+            "step": progress.step,
+        }
+        monitor.log(loss_scale_metrics, step=progress.step)
+        # --- end diagnostic metrics ---
+
+        # Global token-weighted mean loss (unbiased across DP ranks with uneven loss_scale).
+        monitor.log(
+            {
+                "loss/global_mean": global_mean_loss,
+                "loss/global_token_count": global_token_count,
+                "step": progress.step,
+            },
+            step=progress.step,
+        )
 
         # Update Prometheus metrics if configured
         if metrics_server is not None:
