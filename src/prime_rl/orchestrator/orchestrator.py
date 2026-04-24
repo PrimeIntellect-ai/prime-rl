@@ -77,8 +77,8 @@ from prime_rl.utils.utils import (
 SHUTDOWN_TIMEOUT_S = 300
 
 # Maximum number of times to attempt generating a training batch when all
-# rollouts are filtered out. After this many attempts, the orchestrator crashes
-# rather than silently skipping training steps.
+# rollouts are filtered out. After this many attempts, the orchestrator
+# crashes (or early stops for zero advantages) rather than silently skipping training steps.
 MAX_EMPTY_BATCH_ATTEMPTS = 3
 
 
@@ -323,6 +323,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Iterate over dataset in batches
     logger.info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
+    early_stopped = False
 
     while True:
         # Check if this run has been evicted by the trainer
@@ -438,10 +439,6 @@ async def orchestrate(config: OrchestratorConfig):
                 break
 
             if attempt == MAX_EMPTY_BATCH_ATTEMPTS - 1:
-                logger.error(
-                    f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
-                    f"filtered out all {num_rollouts} rollouts - crashing orchestrator"
-                )
                 reason = (
                     f"All {num_rollouts} rollouts were filtered out on "
                     f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
@@ -449,12 +446,26 @@ async def orchestrate(config: OrchestratorConfig):
                 evicted_path = config.output_dir / "control" / "evicted.txt"
                 evicted_path.parent.mkdir(parents=True, exist_ok=True)
                 evicted_path.write_text(reason)
+
+                # Early stop only when all filtering is due to zero advantages
+                only_zero_advantage = all(
+                    r["filters"].get("zero_advantage", False) for r in train_rollouts if r["is_filtered"]
+                )
+                if only_zero_advantage:
+                    logger.warning(f"Early stopping: {reason}")
+                    early_stopped = True
+                    break
+
+                logger.error(f"{reason} - crashing orchestrator")
                 raise RuntimeError(reason)
 
             logger.warning(
                 f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
                 f"filtered out all {num_rollouts} rollouts - retrying batch generation"
             )
+
+        if early_stopped:
+            break
 
         trainable_ratio = n_trainable / num_rollouts
         if trainable_ratio <= 0.1:
@@ -807,7 +818,7 @@ async def orchestrate(config: OrchestratorConfig):
                 save_rollouts, eval_rollouts, step_path / "eval_rollouts.jsonl", exclude_keys={"trajectory"}
             )
 
-    monitor.save_final_summary()
+    monitor.save_final_summary(early_stopped=early_stopped)
 
     # Write final checkpoint
     if ckpt_manager is not None:

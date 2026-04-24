@@ -40,10 +40,10 @@ class MultiMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to log eval samples to {monitor.__class__.__name__}: {e}")
 
-    def save_final_summary(self, filename: str = "final_summary.json") -> None:
+    def save_final_summary(self, filename: str = "final_summary.json", early_stopped: bool = False) -> None:
         for monitor in self.monitors:
             try:
-                monitor.save_final_summary(filename=filename)
+                monitor.save_final_summary(filename=filename, early_stopped=early_stopped)
             except Exception as e:
                 self.logger.warning(f"Failed to save final summary to {monitor.__class__.__name__}: {e}")
 
