@@ -326,11 +326,13 @@ async def orchestrate(config: OrchestratorConfig):
     early_stopped = False
 
     while True:
-        # Check if this run has been evicted by the trainer
+        # Check if this run has been evicted by the trainer (skip early-stop
+        # markers so the run can be resumed with different data/config)
         evicted_path = config.output_dir / "control" / "evicted.txt"
         if evicted_path.exists():
             reason = evicted_path.read_text().strip()
-            raise RuntimeError(f"Run evicted by trainer: {reason}")
+            if not reason.startswith("early_stopped:"):
+                raise RuntimeError(f"Run evicted by trainer: {reason}")
 
         # Capture ckpt_step once for consistency (it's updated inside the scheduler)
         ckpt_step = scheduler.ckpt_step
@@ -444,15 +446,18 @@ async def orchestrate(config: OrchestratorConfig):
                     f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
                 )
 
-                # Early stop when every rollout has zero advantage
+                # Check for zero advantages for early stopping
                 all_zero_advantage = train_rollouts and all(r.get("advantage") == 0.0 for r in train_rollouts)
-                if all_zero_advantage:
-                    logger.warning(f"Early stopping: {reason}")
-                    early_stopped = True
-                    break
 
                 evicted_path = config.output_dir / "control" / "evicted.txt"
                 evicted_path.parent.mkdir(parents=True, exist_ok=True)
+
+                if all_zero_advantage:
+                    logger.warning(f"Early stopping: {reason}")
+                    evicted_path.write_text(f"early_stopped: {reason}")
+                    early_stopped = True
+                    break
+
                 evicted_path.write_text(reason)
                 logger.error(f"{reason} - crashing orchestrator")
                 raise RuntimeError(reason)
