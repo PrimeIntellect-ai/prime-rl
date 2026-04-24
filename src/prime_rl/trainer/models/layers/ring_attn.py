@@ -30,11 +30,11 @@ def _fa3_varlen_forward(
             "max_seqlen_q": max_seqlen_q,
             "max_seqlen_k": max_seqlen_k,
             "softmax_scale": softmax_scale,
-            "causal": causal,
+            "is_causal": causal,
+            "window_size_left": window_size[0],
+            "window_size_right": window_size[1],
         }
     )
-    if "window_size" in params:
-        params["window_size"] = window_size
     out, lse, _, _ = _flash_attn_forward(**params)
     return out, lse
 
@@ -76,11 +76,11 @@ def _fa3_varlen_backward(
             "dk": dk,
             "dv": dv,
             "softmax_scale": softmax_scale,
-            "causal": causal,
+            "is_causal": causal,
+            "window_size_left": window_size[0],
+            "window_size_right": window_size[1],
         }
     )
-    if "window_size" in params:
-        params["window_size"] = window_size
     _flash_attn_backward(**params)
 
 
