@@ -6,6 +6,7 @@ import time
 import tomli_w
 
 from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.metrics import compute_solve_rates
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
@@ -599,17 +600,14 @@ async def orchestrate(config: OrchestratorConfig):
         progress.total_samples += num_rollouts
         progress.total_problems += num_unique_examples
 
-        def compute_solve_rates(df):
-            """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
-            reward_per_problem = df.groupby("example_id").reward.sum()
-            solve_none = (reward_per_problem == 0).mean()
-            solve_all = (reward_per_problem == config.rollouts_per_example).mean()
-            return solve_none, solve_all, 1 - solve_none - solve_all
+        # Group by (env_name, example_id) to average across rollouts within each
+        # (environment, problem) pair.  Grouping by example_id alone would merge
+        # rollouts from different environments that share the same integer ID,
+        # corrupting all /all/ metrics (environments auto-assign IDs from
+        # range(len(dataset)), so collisions are guaranteed in multi-env runs).
+        by_example = results_df.groupby(["env_name", "example_id"])
 
-        # Group by example_id to average across rollouts within each problem
-        by_example = results_df.groupby("example_id")
-
-        solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
+        solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df, config.rollouts_per_example)
         to_log = {
             # Progress metrics
             "progress/tokens": num_tokens,
@@ -702,7 +700,7 @@ async def orchestrate(config: OrchestratorConfig):
             to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
-            solve_none, solve_all, effective_batch_size = compute_solve_rates(env_df)
+            solve_none, solve_all, effective_batch_size = compute_solve_rates(env_df, config.rollouts_per_example)
             to_log[f"solve_none/{env}"] = solve_none
             to_log[f"solve_all/{env}"] = solve_all
             to_log[f"effective_batch_size/{env}"] = effective_batch_size
