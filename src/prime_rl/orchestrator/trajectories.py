@@ -96,6 +96,90 @@ def _should_mask_role(message: dict[str, Any], config: RoleLossMaskConfig) -> bo
             raise ValueError(f"Invalid message role: {role}")
 
 
+def _build_role_loss_mask_from_token_stream(
+    full_ids: list[int],
+    tokenizer: PreTrainedTokenizer,
+    loss_mask_config: RoleLossMaskConfig,
+) -> list[bool]:
+    """Parse a Qwen-style ChatML token stream into a per-token role mask.
+
+    Scans `<|im_start|>ROLE\\n ... <|im_end|>` spans directly in the vLLM
+    token stream — no chat-template re-rendering. This sidesteps every
+    vLLM/template divergence (pretty-print tool_call JSON, JSON-schema key
+    ordering, trailing whitespace, etc.) that the older
+    `build_incremental_token_mask` path tripped on.
+
+    Special-case for Qwen3's tool messages: the template wraps role="tool"
+    inside a user block (`<|im_start|>user\\n<tool_response>…`), so on a
+    `user` header we peek at the next token: if it's the `<tool_response>`
+    special token, we classify the span as `tool`, otherwise as `user`.
+
+    Assumes:
+    - `<|im_start|>`, `<|im_end|>`, `<tool_response>` are single
+      vocabulary tokens (they are in Qwen3).
+    - Role names (`system`, `user`, `assistant`, `tool`) encode as one or
+      more text tokens that decode back to the role string.
+    - The ChatML delimiter between header and body is `\\n` (token 198 in
+      Qwen3).
+    """
+    im_start = tokenizer.convert_tokens_to_ids("<|im_start|>")
+    im_end = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    tool_response = tokenizer.convert_tokens_to_ids("<tool_response>")
+    newline_ids = tokenizer.encode("\n", add_special_tokens=False)
+    if len(newline_ids) != 1:
+        raise RuntimeError(
+            "Expected tokenizer to encode '\\n' as a single token for ChatML "
+            f"parsing, got {newline_ids!r}"
+        )
+    newline = newline_ids[0]
+
+    _KNOWN_ROLES = {"system", "user", "assistant", "tool"}
+
+    def _mask_role(role: str | None) -> bool:
+        # Defensive: an unrecognised role shouldn't mask anything. The token
+        # stream on a live run should only contain the four ChatML roles; if
+        # it doesn't we'd rather be silent than crash the whole batch.
+        if role not in _KNOWN_ROLES:
+            return False
+        return _should_mask_role({"role": role}, loss_mask_config)
+
+    mask = [False] * len(full_ids)
+    current_role: str | None = None
+    i = 0
+    n = len(full_ids)
+    while i < n:
+        tok = full_ids[i]
+        if tok == im_start:
+            # Scan ahead for the `\n` terminating the role header.
+            j = i + 1
+            while j < n and full_ids[j] != newline:
+                j += 1
+            role_tokens = full_ids[i + 1 : j]
+            role_str = tokenizer.decode(role_tokens).strip() if role_tokens else ""
+            # Qwen3's tool messages live inside a `user` block; disambiguate
+            # by peeking at the first body token.
+            if role_str == "user" and j + 1 < n and full_ids[j + 1] == tool_response:
+                role_str = "tool"
+            current_role = role_str
+            span_end = min(j, n - 1)
+            for k in range(i, span_end + 1):
+                mask[k] = _mask_role(current_role)
+            i = j + 1
+        elif tok == im_end and current_role is not None:
+            mask[i] = _mask_role(current_role)
+            i += 1
+            # `\n` separator after <|im_end|> (if present) stays with the
+            # current role, matching the behavior of build_incremental_token_mask.
+            if i < n and full_ids[i] == newline:
+                mask[i] = _mask_role(current_role)
+                i += 1
+            current_role = None
+        else:
+            mask[i] = _mask_role(current_role) if current_role is not None else False
+            i += 1
+    return mask
+
+
 def _build_role_loss_masks_for_step(
     step: vf.TrajectoryStep,
     tokenizer: PreTrainedTokenizer,
@@ -103,29 +187,31 @@ def _build_role_loss_masks_for_step(
     tools: list[dict[str, Any]] | None = None,
     processor=None,
 ) -> tuple[list[bool], list[bool]] | None:
+    """Derive per-token role loss masks for a single trajectory step.
+
+    Parses the vLLM token stream directly when the step carries
+    `prompt_ids`/`completion_ids` (the normal RL path). Falls back to a
+    re-render of the messages when tokens aren't available (e.g. offline
+    SFT-data synthesis).
+    """
+    tokens = step.get("tokens")
+    if tokens is not None:
+        full_ids = list(tokens["prompt_ids"]) + list(tokens["completion_ids"])
+        full_loss_mask = _build_role_loss_mask_from_token_stream(
+            full_ids, tokenizer, loss_mask_config
+        )
+        split_idx = len(tokens["prompt_ids"])
+        return full_loss_mask[:split_idx], full_loss_mask[split_idx:]
+
+    # Fallback: no saved tokens (offline SFT synthesis path). Re-render and
+    # derive the split from the rendered prompt length.
     prompt = _normalize_messages(step.get("prompt"), default_role="user")
     completion = _normalize_messages(step.get("completion"), default_role="assistant")
-
-    # NOTE: Unlike the SFT data pipeline we deliberately do NOT strip whitespace
-    # or deserialize tool_call arguments here. The rendered tokens only exist to
-    # derive a per-token role mask that must align with vLLM's `prompt_ids +
-    # completion_ids`. Any mutation that changes how `apply_chat_template` serializes
-    # the messages (stripped whitespace in content, `tojson`-reformatted tool_call
-    # arguments that came in as a raw JSON string, etc.) will make the re-render
-    # diverge from vLLM's tokens and trip the length-match check below.
-
     if processor is not None:
         prompt = _prepare_messages_for_processor(prompt)
         completion = _prepare_messages_for_processor(completion)
-
     messages = prompt + completion
-
     try:
-        # Collapse consecutive tool messages for incremental rendering: Qwen3-style
-        # chat templates group adjacent tool responses into a single user block, so
-        # render([..., tool_i]) is not a token prefix of render([..., tool_i, tool_{i+1}]).
-        # Rendering them together preserves the prefix invariant; all collapsed tool
-        # messages share the same role ("tool") so the loss mask is unchanged.
         full_ids, full_loss_mask = build_incremental_token_mask(
             tokenizer,
             messages,
@@ -137,46 +223,15 @@ def _build_role_loss_masks_for_step(
     except IncrementalTokenizationError as e:
         get_logger().warning(f"Skipping rollout step due to unstable incremental tokenization: {e}")
         return None
-
-    tokens = step.get("tokens")
-    if tokens is not None:
-        prompt_len = len(tokens["prompt_ids"])
-        completion_len = len(tokens["completion_ids"])
-        vllm_total = prompt_len + completion_len
-
-        # Qwen-style chat templates append `\n` after every message's `<|im_end|>`,
-        # including the final one. vLLM's `completion_ids` stops at `<|im_end|>`
-        # because the model emits it as a stop token and never generates the
-        # trailing newline, so the re-render is typically one token longer than
-        # the rollout. Trim trailing whitespace-only tokens from the re-render
-        # down to (but not below) the rollout length.
-        while len(full_ids) > vllm_total and tokenizer.decode([full_ids[-1]]).strip() == "":
-            full_ids.pop()
-            full_loss_mask.pop()
-
-        if len(full_ids) != vllm_total:
-            vllm_ids = list(tokens["prompt_ids"]) + list(tokens["completion_ids"])
-            first_diff = _common_prefix_len(full_ids, vllm_ids)
-            get_logger().warning(
-                "Skipping rollout step because role-based mask tokenization length "
-                f"({len(full_ids)}) did not match rollout tokens ({vllm_total}). "
-                f"First differing position: {first_diff} (prompt_len={prompt_len}). "
-                f"vLLM tokens around diff: {vllm_ids[max(0, first_diff - 4) : first_diff + 8]!r}, "
-                f"re-rendered: {full_ids[max(0, first_diff - 4) : first_diff + 8]!r}."
-            )
-            return None
-        split_idx = prompt_len
-    else:
-        prompt_has_assistant_completion = len(completion) > 0 and completion[0].get("role") == "assistant"
-        prompt_ids = _render_messages(
-            tokenizer,
-            prompt,
-            add_generation_prompt=prompt_has_assistant_completion,
-            tools=tools,
-            processor=processor,
-        )
-        split_idx = _common_prefix_len(prompt_ids, full_ids)
-
+    prompt_has_assistant_completion = len(completion) > 0 and completion[0].get("role") == "assistant"
+    prompt_ids = _render_messages(
+        tokenizer,
+        prompt,
+        add_generation_prompt=prompt_has_assistant_completion,
+        tools=tools,
+        processor=processor,
+    )
+    split_idx = _common_prefix_len(prompt_ids, full_ids)
     return full_loss_mask[:split_idx], full_loss_mask[split_idx:]
 
 
