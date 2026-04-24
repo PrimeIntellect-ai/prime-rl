@@ -873,8 +873,8 @@ dependencies = [
     { name = "torch", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/test/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:10a730d5e1a1c23afd930ce419ee425cd1925a16b7eac789dfe98c3ca39bc009" },
-    { url = "https://download.pytorch.org/whl/test/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:bbb51d13d7aa1bfe04ef8875ed1bf630ebb116775084a5df612495e10609cd76" },
+    { url = "https://download.pytorch.org/whl/test/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:10a730d5e1a1c23afd930ce419ee425cd1925a16b7eac789dfe98c3ca39bc009", upload-time = "2026-02-14T04:28:12Z" },
+    { url = "https://download.pytorch.org/whl/test/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:bbb51d13d7aa1bfe04ef8875ed1bf630ebb116775084a5df612495e10609cd76", upload-time = "2026-02-14T04:28:05Z" },
 ]
 
 [[package]]
@@ -1771,7 +1771,7 @@ wheels = [
 
 [[package]]
 name = "mini-swe-agent-plus"
-version = "0.2.17"
+version = "0.2.22"
 source = { registry = "https://hub.primeintellect.ai/primeintellect/simple/" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1780,7 +1780,7 @@ dependencies = [
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/mini-swe-agent-plus/@aa6f9500/mini_swe_agent_plus-0.2.17-py3-none-any.whl", hash = "sha256:af4f6e10412b86dd4be0623393fc35275fe95080c95ac032bf39e109a2dd390b" },
+    { url = "https://hub.primeintellect.ai/primeintellect/mini-swe-agent-plus/@9f0cc82a/mini_swe_agent_plus-0.2.22-py3-none-any.whl", hash = "sha256:31a4410ab3a929def687a53162f6eb5cd4a1908f91f716cf3b5966ba6ade9fb8" },
 ]
 
 [[package]]
@@ -2767,7 +2767,7 @@ requires-dist = [
     { name = "math-env", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "math-python", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "math500", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "mini-swe-agent-plus", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
+    { name = "mini-swe-agent-plus", marker = "extra == 'envs'", specifier = ">=0.2.22", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "nixl", marker = "extra == 'disagg'" },
     { name = "nixl-cu12", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" },
     { name = "numpy", specifier = ">=2.2.6" },
@@ -3745,8 +3745,8 @@ dependencies = [
     { name = "typing-extensions", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://download-r2.pytorch.org/whl/cu128/torch-2.10.0%2Bcu128-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:6f09cdf2415516be028ae82e6b985bcfc3eac37bc52ab401142689f6224516ca" },
-    { url = "https://download-r2.pytorch.org/whl/cu128/torch-2.10.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:628e89bd5110ced7debee2a57c69959725b7fbc64eab81a39dd70e46c7e28ba5" },
+    { url = "https://download-r2.pytorch.org/whl/cu128/torch-2.10.0%2Bcu128-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:6f09cdf2415516be028ae82e6b985bcfc3eac37bc52ab401142689f6224516ca", upload-time = "2026-01-21T15:22:03Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu128/torch-2.10.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:628e89bd5110ced7debee2a57c69959725b7fbc64eab81a39dd70e46c7e28ba5", upload-time = "2026-01-21T15:22:11Z" },
 ]
 
 [[package]]
