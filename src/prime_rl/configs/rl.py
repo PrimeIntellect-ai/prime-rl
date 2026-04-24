@@ -414,6 +414,12 @@ class RLConfig(BaseConfig):
         if self.trainer.model.impl != "custom":
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires trainer.model.impl = 'custom'.")
 
+        if not self.inference.enable_expert_parallel:
+            raise ValueError("weight_broadcast.quantize_in_weight_transfer requires inference.enable_expert_parallel.")
+
+        if self.inference.enable_eplb:
+            raise ValueError("weight_broadcast.quantize_in_weight_transfer does not support inference.enable_eplb.")
+
         return self
 
     @model_validator(mode="after")
