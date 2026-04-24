@@ -30,11 +30,19 @@ def _fa3_varlen_forward(
             "max_seqlen_q": max_seqlen_q,
             "max_seqlen_k": max_seqlen_k,
             "softmax_scale": softmax_scale,
-            "causal": causal,
         }
     )
+    # flash_attn_3 3.0.0 renamed `causal` -> `is_causal`. Older 3.0.0b1
+    # builds kept the `causal` name, so check which key the kernel exposes.
+    if "is_causal" in params:
+        params["is_causal"] = causal
+    else:
+        params["causal"] = causal
     if "window_size" in params:
         params["window_size"] = window_size
+    elif "window_size_left" in params and "window_size_right" in params:
+        params["window_size_left"] = window_size[0]
+        params["window_size_right"] = window_size[1]
     out, lse, _, _ = _flash_attn_forward(**params)
     return out, lse
 
@@ -76,11 +84,17 @@ def _fa3_varlen_backward(
             "dk": dk,
             "dv": dv,
             "softmax_scale": softmax_scale,
-            "causal": causal,
         }
     )
+    if "is_causal" in params:
+        params["is_causal"] = causal
+    else:
+        params["causal"] = causal
     if "window_size" in params:
         params["window_size"] = window_size
+    elif "window_size_left" in params and "window_size_right" in params:
+        params["window_size_left"] = window_size[0]
+        params["window_size_right"] = window_size[1]
     _flash_attn_backward(**params)
 
 
