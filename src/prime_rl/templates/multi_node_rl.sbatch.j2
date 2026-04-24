@@ -30,7 +30,10 @@ export GPUS_PER_NODE={{ gpus_per_node }}
 {% if num_infer_nodes > 0 -%}
 export ROUTER_PORT={{ router_port }}
 export INFERENCE_TP={{ inference_tp }}
+export INFERENCE_DP={{ inference_dp }}
 export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
+export INFERENCE_WORLD_SIZE=$((INFERENCE_TP * INFERENCE_DP))
+export INFERENCE_NODES_PER_SERVER=$((INFERENCE_WORLD_SIZE / GPUS_PER_NODE))
 export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
 {% if is_disaggregated -%}
 export NUM_PREFILL_NODES={{ num_prefill_nodes }}
@@ -47,7 +50,7 @@ export INFERENCE_ENABLE_EXPERT_PARALLEL={{ "1" if inference_enable_expert_parall
 
 # Enable distributed EP mode only when expert parallelism spans multiple inference nodes per replica.
 export USE_DISTRIBUTED_EP=0
-if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$NODES_PER_INFER_REPLICA" -gt 1 ]; then
+if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$INFERENCE_NODES_PER_SERVER" -gt 1 ]; then
     USE_DISTRIBUTED_EP=1
 fi
 {%- endif %}
@@ -174,6 +177,8 @@ srun bash -c '
 
 # Run RL
 srun bash -c '
+    ulimit -l unlimited
+    ulimit -u unlimited
     # Source environment
     cd $PROJECT_DIR
     [ -f .env ] && source .env
@@ -247,7 +252,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {% endfor %}
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
     else
-        export UCX_NET_DEVICES=mlx5_0:1
         ROLE="decode"
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
         SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
@@ -293,7 +297,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
         vllm-router \
-            --policy consistent_hash \
+            --policy {{ router_policy }} \
             --vllm-pd-disaggregation \
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
@@ -320,7 +324,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
         vllm-router \
-            --policy consistent_hash \
+            --policy {{ router_policy }} \
             --worker-urls $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
