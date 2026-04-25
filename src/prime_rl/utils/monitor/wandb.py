@@ -74,7 +74,10 @@ class WandbMonitor(Monitor):
                     return wandb.init(
                         id=run_id,
                         project=config.project,
+                        entity=config.entity,
                         name=config.name,
+                        group=config.group,
+                        tags=config.tags,
                         dir=output_dir,
                         config=run_config.model_dump() if run_config else None,
                         settings=settings,

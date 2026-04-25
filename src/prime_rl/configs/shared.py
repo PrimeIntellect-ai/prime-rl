@@ -354,10 +354,31 @@ class WandbConfig(BaseConfig):
     # Shared configs (May be overwritten by WandbConfig from `rl.py`)
     project: Annotated[str, Field(description="The W&B project to log to.")] = "prime-rl"
 
+    entity: Annotated[
+        str | None,
+        Field(
+            description="The W&B entity to log to.",
+        ),
+    ] = None
+
     name: Annotated[
         str | None,
         Field(
             description="The W&B name to to use for logging.",
+        ),
+    ] = None
+
+    group: Annotated[
+        str | None,
+        Field(
+            description="The W&B group to use for logging.",
+        ),
+    ] = None
+
+    tags: Annotated[
+        list[str] | None,
+        Field(
+            description="The W&B tags to attach to the run.",
         ),
     ] = None
 
