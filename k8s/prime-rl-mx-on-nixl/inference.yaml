@@ -1,0 +1,180 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prime-rl-mx-on-nixl-inference
+  namespace: kavin
+  labels:
+    app: prime-rl-mx-on-nixl-inference
+    scenario: C-MX-pipeline-replication
+spec:
+  replicas: 1
+  serviceName: prime-rl-mx-on-nixl-inference
+  selector:
+    matchLabels:
+      app: prime-rl-mx-on-nixl-inference
+  template:
+    metadata:
+      labels:
+        app: prime-rl-mx-on-nixl-inference
+      annotations:
+        networking.gke.io/default-interface: eth0
+        networking.gke.io/interfaces: "[\n  {\"interfaceName\":\"eth0\",\"network\"\
+          :\"default\"},\n  {\"interfaceName\":\"rdma0\",\"network\":\"rdma-0\"},\n\
+          \  {\"interfaceName\":\"rdma1\",\"network\":\"rdma-1\"}\n]\n"
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: inference
+        image: nvcr.io/nvidian/dynamo-dev/prime-rl-mx-on-nixl:v0.2
+        imagePullPolicy: Always
+        command:
+        - /bin/bash
+        - /config/run_inference.sh
+        securityContext:
+          privileged: true
+        resources:
+          limits:
+            nvidia.com/gpu: '2'
+            networking.gke.io.networks/rdma-0: '1'
+            networking.gke.io.networks/rdma-1: '1'
+          requests:
+            nvidia.com/gpu: '2'
+        env:
+        - name: UCX_TLS
+          value: self,sm,rc,cuda_copy,gdr_copy,tcp
+        - name: UCX_IB_GID_INDEX
+          value: '3'
+        - name: OMPI_MCA_pml
+          value: ob1
+        - name: NCCL_SOCKET_IFNAME
+          value: eth0
+        - name: GLOO_SOCKET_IFNAME
+          value: eth0
+        - name: VLLM_WORKER_MULTIPROC_METHOD
+          value: spawn
+        - name: VLLM_USE_V1
+          value: '1'
+        - name: VLLM_SERVER_DEV_MODE
+          value: '1'
+        - name: MODEL_EXPRESS_URL
+          value: modelexpress-server.kavin.svc.cluster.local:8001
+        # ---- MX overlay rendezvous (scenario B) ----
+        # Inference worker's init_nixl_transfer calls
+        # mx_rendezvous.discover_spg_coordinator(...) when these are set,
+        # which overrides the static (host, port) the orchestrator sends
+        # in the /init_nixl_transfer POST body. See
+        # src/prime_rl/inference/vllm/worker/nixl.py:246 for the dispatch
+        # point, and src/prime_rl/utils/mx_rendezvous.py for the protocol.
+        - name: PRIME_RL_MX_RENDEZVOUS
+          value: modelexpress-server.kavin.svc.cluster.local:8001
+        - name: PRIME_RL_MX_MODEL_NAME
+          value: PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT
+        - name: PRIME_RL_MX_TRAINING_RUN_ID
+          value: primerl-overlay-scenario-c
+        # Pipeline replication: after init_nixl_transfer completes on this
+        # inference worker, publish_as_rollout_source() fires, adding this
+        # rollout to the MX catalog as an additional source for the same
+        # (model, version). Future rollouts polling for this model can
+        # then discover us as an alternative to the trainer.
+        # See src/prime_rl/inference/vllm/worker/nixl.py:488 for hook site.
+        - name: PRIME_RL_MX_PIPELINE_REPLICATION
+          value: "1"
+        # --------------------------------------------
+        - name: HF_HOME
+          value: /models/hf_home
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: token
+              optional: true
+        ports:
+        - containerPort: 8000
+          name: http
+        volumeMounts:
+        - name: shared-model-cache
+          mountPath: /models
+        - name: config
+          mountPath: /config
+        - name: output
+          mountPath: /output
+        - name: dshm
+          mountPath: /dev/shm
+        - name: infiniband
+          mountPath: /dev/infiniband
+      volumes:
+      - name: shared-model-cache
+        persistentVolumeClaim:
+          claimName: shared-model-cache
+      - name: config
+        configMap:
+          name: prime-rl-mx-on-nixl-config
+          defaultMode: 493
+      - name: output
+        persistentVolumeClaim:
+          claimName: prime-rl-mx-run-output
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Gi
+      - name: infiniband
+        hostPath:
+          path: /dev/infiniband
+          type: DirectoryOrCreate
+      imagePullSecrets:
+      - name: nvcr-imagepullsecret
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        nvidia.com/gpu.present: 'true'
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: cloud.google.com/gke-nodepool
+                operator: In
+                values:
+                - customer-gpu-o7v
+                - customer-gpu-mh2
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - prime-rl-mx-on-nixl-trainer
+            topologyKey: kubernetes.io/hostname
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      - key: dedicated
+        operator: Equal
+        value: user-workload
+        effect: NoSchedule
+      - key: dedicated
+        operator: Equal
+        value: user-workload
+        effect: NoExecute
+      - key: kubernetes.io/arch
+        operator: Exists
+        effect: NoSchedule
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prime-rl-mx-on-nixl-inference
+  namespace: kavin
+spec:
+  selector:
+    app: prime-rl-mx-on-nixl-inference
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+  clusterIP: None

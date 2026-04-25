@@ -313,8 +313,37 @@ from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server
 def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None):
     """
     Wrap build_app to include our custom router.
+
+    vLLM >= 0.19 auto-attaches a built-in RLHF router (via
+    ``attach_rlhf_router`` inside ``build_app``) which registers its own
+    ``/update_weights`` route that expects a different JSON schema
+    (``{"update_info": ...}``). Since FastAPI resolves routes in insertion
+    order, that built-in wins and our ``/update_weights`` (which takes
+    ``{"weight_dir": ...}`` and dispatches to the NIXL
+    ``update_weights_from_path`` worker RPC) never runs.
+
+    Strip the conflicting built-in routes *before* including our router so
+    ours is the one that handles the POST. We target only the three paths
+    PI's NIXL flow overrides (``/update_weights``, ``/init_nixl_transfer``,
+    ``/init_broadcaster``) and leave the rest of the rlhf router intact
+    (e.g. ``/collective_rpc``, ``/pause``, ``/resume``).
     """
     app = _original_build_app(args, supported_tasks, model_config)
+
+    _OVERRIDES = {"/update_weights", "/init_nixl_transfer", "/init_broadcaster"}
+    try:
+        from fastapi.routing import APIRoute
+
+        app.router.routes = [
+            r for r in app.router.routes
+            if not (isinstance(r, APIRoute) and r.path in _OVERRIDES)
+        ]
+    except Exception:
+        # If the vLLM router shape ever changes such that we can't filter,
+        # fall back to the previous behavior (duplicate routes). Our
+        # /update_weights will still lose but the server will boot.
+        pass
+
     app.include_router(router)
     return app
 

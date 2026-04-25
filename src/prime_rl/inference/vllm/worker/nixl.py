@@ -23,6 +23,12 @@ from prime_rl.inference.vllm.worker.weight_transfer import (
     update_mla_absorbed_weights,
 )
 from prime_rl.trainer.models.slots import LayoutEntry
+from prime_rl.utils.mx_rendezvous import (
+    discover_spg_coordinator,
+    mx_rendezvous_enabled,
+    pipeline_replication_enabled,
+    publish_as_rollout_source,
+)
 from prime_rl.utils.nixl_transfer import NixlAgentWrapper, make_agent_name
 
 if TYPE_CHECKING:
@@ -200,6 +206,29 @@ class NIXLWeightUpdateWorker(Worker):
         }
 
         expert_map = {k: v.cpu().tolist() for k, v in build_expert_map(model).items()}
+
+        # ModelExpress overlay: if PRIME_RL_MX_RENDEZVOUS is set, override
+        # the orchestrator-provided host/port with one discovered via MX
+        # Server. This allows the trainer and inference pods to find each
+        # other without static host/port configuration.
+        #
+        # Also stash the inference rank on self so update_weights_from_path
+        # can use it for pipeline-replication publishes after receive.
+        self._inference_rank = rank_offset + local_rank
+        if mx_rendezvous_enabled():
+            endpoint = discover_spg_coordinator(
+                role="inference",
+                rank=self._inference_rank,
+                expected_trainer_ws=trainer_world_size,
+                expected_inference_ws=inference_world_size,
+                fallback_host=host,
+                fallback_port=port,
+            )
+            host, port = endpoint.host, endpoint.port
+            logger.info(
+                f"[mx-rendezvous] inference rank={global_rank} using discovered "
+                f"SPG coordinator {host}:{port}"
+            )
 
         self._spg = StatelessProcessGroup.create(
             host=host,
@@ -423,6 +452,21 @@ class NIXLWeightUpdateWorker(Worker):
             checked = assert_mla_absorbed_weights_match(self._model)
             logger.info(f"NIXL MLA refresh audit passed for {checked} modules")
             self._validated_mla_absorbed_weights = True
+
+        # ModelExpress overlay: after every receive completes, optionally
+        # publish this rollout as an additional source for the current
+        # version so subsequent rollouts can pull from us rather than from
+        # the trainer. No-op if PRIME_RL_MX_PIPELINE_REPLICATION != 1.
+        if pipeline_replication_enabled() and mx_rendezvous_enabled():
+            try:
+                publish_as_rollout_source(
+                    source_id="",  # inferred from model_name on server
+                    rank=getattr(self, "_inference_rank", 0),
+                )
+            except Exception as exc:  # noqa: BLE001 — non-fatal
+                logger.warning(
+                    f"[mx-rendezvous] pipeline-replication publish failed (non-fatal): {exc}"
+                )
 
     def _maybe_dump_inference(self) -> None:
         """One-shot dump of every param + relevant buffer to

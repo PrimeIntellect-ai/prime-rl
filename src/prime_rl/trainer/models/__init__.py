@@ -19,6 +19,11 @@ from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCaus
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
+# Side-effect import: monkey-patches HF Qwen3ForCausalLM with
+# conversion_specs() so PI's NIXLWeightBroadcast works on dense Qwen3
+# (PI's __init__.py only registers MoE/MLA variants natively).
+from prime_rl.trainer.models import qwen3_specs_patch  # noqa: F401
+
 # Make custom config discoverable by AutoConfig
 AutoConfig.register("afmoe", AfmoeConfig, exist_ok=True)
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)

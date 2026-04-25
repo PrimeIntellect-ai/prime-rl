@@ -1,0 +1,209 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prime-rl-mx-on-nixl-config
+  namespace: kavin
+data:
+  # Per-role TOML configs. Minimal fields to pass each config's validator.
+  # No weight_broadcast in inference.toml — the orchestrator's
+  # /init_nixl_transfer HTTP call configures the inference worker at
+  # runtime when scenario B/C is active. For scenario A, filesystem
+  # default is used.
+
+  # Shared helper script sourced by all three run scripts. Fixes the
+  # tilelang libcudart_stub.so / FlashInfer collision by symlinking the
+  # stub to real cudart. Doing this in the entrypoint (runtime) avoids
+  # a full image rebuild cycle for this single patch. See
+  # docs/TILELANG_LIBCUDART_FIX.md for background.
+  fix_tilelang_stub.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    _STUB="/app/.venv/lib/python3.12/site-packages/tilelang/lib/libcudart_stub.so"
+    _REAL="/usr/local/cuda/lib64/libcudart.so.12"
+    if [ -f "$_STUB" ] && [ ! -L "$_STUB" ] && [ -f "$_REAL" ]; then
+        mv "$_STUB" "${_STUB}.orig"
+        ln -s "$_REAL" "$_STUB"
+        echo "[fix_tilelang_stub] swapped ${_STUB} -> ${_REAL}"
+    elif [ -L "$_STUB" ]; then
+        echo "[fix_tilelang_stub] already patched ($(readlink "$_STUB"))"
+    else
+        echo "[fix_tilelang_stub] nothing to do (stub or real missing)"
+    fi
+
+  trainer.toml: |
+    max_steps = 20
+    output_dir = "/output/run"
+    dist_timeout_seconds = 1800
+
+    [model]
+    name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+    seq_len = 2048
+    # SDPA (PyTorch scaled_dot_product_attention) instead of flash_attention_2:
+    # our ARM64 GB200 image ships flash_attn as an import stub (raises
+    # NotImplementedError when actually called) to avoid a 3+ hour QEMU build
+    # of the real kernels. Trainer forward pass would crash on first call
+    # otherwise. SDPA is slower but correct, adequate for scenario A proof.
+    attn = "sdpa"
+
+    # NIXL backend on Qwen3 enabled via our overlay's qwen3_specs_patch.py
+    # (monkey-patches HF Qwen3ForCausalLM with conversion_specs()).
+    # When PRIME_RL_MX_RENDEZVOUS env is set on the trainer pod, the
+    # SPG host/port discovery is replaced with MX-Server-mediated
+    # rendezvous (scenario B). pipeline_replication=1 enables scenario C.
+    [weight_broadcast]
+    type = "nixl"
+    host = "prime-rl-mx-on-nixl-trainer-0.prime-rl-mx-on-nixl-trainer.kavin.svc.cluster.local"
+    port = 29502
+    timeout = 1200
+    # Must match inference-side TP * DP: currently tp=1, dp=1 on 1 inference
+    # worker. Trainer's SPG builds world_size = trainer_ws + inference_world_size,
+    # so a mismatch hangs all_gather_obj on broadcast_obj from the missing rank.
+    inference_world_size = 1
+
+    [optim]
+    lr = 3e-6
+
+  orchestrator.toml: |
+    # Orchestrator MUST write to a `run_*` subdirectory of the trainer's
+    # output_dir. The trainer's MultiRunManager.discover_runs() scans
+    # `<trainer.output_dir>/run_*` and expects each one's rollouts at
+    #   <trainer.output_dir>/<run_id>/rollouts/step_N/train_rollouts.{jsonl,bin}
+    # and config at
+    #   <trainer.output_dir>/<run_id>/control/orch.toml
+    # Trainer output_dir is /output/run (see trainer.toml), so this MUST be
+    # /output/run/run_default (or any name starting with `run_`).
+    # Without this, FileSystemTrainingBatchReceiver.can_receive() loops
+    # forever with empty `used_idxs` and the trainer is stuck at
+    # "Starting training loop" with 0% GPU util.
+    output_dir = "/output/run/run_default"
+
+    [model]
+    name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+    [client]
+    base_url = ["http://prime-rl-mx-on-nixl-inference-0.prime-rl-mx-on-nixl-inference.kavin.svc.cluster.local:8000/v1"]
+
+    # Match trainer's weight_broadcast — orchestrator coordinates the protocol
+    # (HTTP /init_nixl_transfer, /pause, /resume) so its config drives which
+    # backend the inference workers use.
+    [weight_broadcast]
+    type = "nixl"
+    host = "prime-rl-mx-on-nixl-trainer-0.prime-rl-mx-on-nixl-trainer.kavin.svc.cluster.local"
+    port = 29502
+    timeout = 1200
+    # Trainer runs torchrun --nproc=2 (CUDA_VISIBLE_DEVICES=0,1), so SPG sees
+    # 2 trainer ranks. Default is 1; without this override the SPG world_size
+    # (= trainer_ws + inference_ws) mismatches between sides and
+    # broadcast_obj hangs on /broadcast_from/0/1.
+    trainer_world_size = 2
+    inference_world_size = 1
+
+    [[train.env]]
+    id = "reverse-text"
+
+  inference.toml: |
+    [model]
+    name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+    # TP=1 for Qwen3-0.6B: the model is tiny (~1.2GB) so it fits trivially
+    # on one GB200, and PI's NIXL LayoutEntry code (inference/vllm/worker/nixl.py:299)
+    # assumes inference holds the *unsharded* fused destination tensor —
+    # `full.narrow(0, entry.offset_rows, entry.rows)` with absolute offsets
+    # into the full concat'd qkv/gate_up dims. With TP>1 vLLM column-
+    # partitions these projections and the narrow indices blow past the
+    # local shard size (RuntimeError: start+length exceeds dimension size).
+    # TP-aware LayoutEntry emission is a separate extension to PI's code.
+    [parallel]
+    tp = 1
+
+    # vLLM picks worker_extension_cls from this:
+    #   nccl -> NCCLWeightUpdateWorker
+    #   nixl -> NIXLWeightUpdateWorker (defines /init_nixl_transfer method)
+    #   filesystem -> FileSystemWeightUpdateWorker
+    # Without "nixl", orchestrator's /init_nixl_transfer fails with
+    # 'Worker' object has no attribute 'init_nixl_transfer'.
+    [weight_broadcast]
+    type = "nixl"
+
+  run_trainer.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    cd /app
+    bash /config/fix_tilelang_stub.sh
+    # Hot-patch prime_rl/utils/mx_rendezvous.py from PVC staging. Fixes
+    # the MX Server get_metadata() stripping metadata_endpoint — blob
+    # now smuggled through nixl_metadata bytes field with a magic prefix.
+    # Remove once the overlay image is rebuilt (v0.2+) with the patch
+    # baked in.
+    if [ -f /output/patches/mx_rendezvous.py ]; then
+        cp /output/patches/mx_rendezvous.py /app/src/prime_rl/utils/mx_rendezvous.py
+        echo "[entrypoint] applied mx_rendezvous metadata_endpoint-workaround patch"
+    fi
+    export HF_HOME="/tmp/hf_cache"
+    mkdir -p "$HF_HOME" /output/logs
+    export WANDB_MODE="disabled"
+    export WANDB_DISABLED="true"
+    # Skip expandable_segments: it triggers classic_cuda_pool which needs
+    # CUDA_HOME + nvcc for JIT compile, not present in our python:3.12-slim
+    # runtime stage. Default allocator is fine for Qwen3-0.6B scenario A.
+    # Production GLM-FP8 scenarios should use a cuda-devel runtime base.
+    # export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+    export PYTHONUNBUFFERED=1
+    # Preload real libcudart so TileLang's libcudart_stub.so doesn't win dlsym
+    export LD_PRELOAD="/usr/local/cuda/lib64/libcudart.so.12:${LD_PRELOAD:-}"
+    # Privileged + hostNetwork pods see all 4 host GPUs regardless of the
+    # K8s GPU limit=2. Hard-pin to GPUs 0,1 so torchrun launches 2 ranks
+    # and NCCL talks over PCIe between them rather than over rdma.
+    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+    NPROC=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | grep -c .)
+    echo "[entrypoint] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+    echo "[entrypoint] PRIME_RL_MX_RENDEZVOUS=${PRIME_RL_MX_RENDEZVOUS:-<unset>}"
+    echo "[entrypoint] starting trainer via torchrun (nproc=$NPROC)"
+    exec uv run torchrun \
+        --nproc-per-node="$NPROC" \
+        --rdzv-endpoint=localhost:29503 \
+        --rdzv-id=prime-rl-trainer \
+        --redirect=3 \
+        --tee=3 \
+        -m prime_rl.trainer.rl.train \
+        @ /config/trainer.toml
+
+  run_inference.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    cd /app
+    bash /config/fix_tilelang_stub.sh
+    # Hot-patch prime_rl/utils/mx_rendezvous.py (see run_trainer.sh comment).
+    # Still needed on v0.2: the metadata_endpoint→nixl_metadata workaround
+    # was authored *after* the v0.2 image was built. Will be baked into
+    # v0.3+. server.py /update_weights route-strip patch is baked into
+    # v0.2 — no PVC copy needed for it.
+    if [ -f /output/patches/mx_rendezvous.py ]; then
+        cp /output/patches/mx_rendezvous.py /app/src/prime_rl/utils/mx_rendezvous.py
+        echo "[entrypoint] applied mx_rendezvous metadata_endpoint-workaround patch"
+    fi
+    export HF_HOME="/tmp/hf_cache"
+    mkdir -p "$HF_HOME"
+    export WANDB_MODE="disabled"
+    export WANDB_DISABLED="true"
+    # TileLang ships a stub libcudart_stub.so that wins dlsym(RTLD_DEFAULT)
+    # against the real libcudart, breaking vLLM EngineCore startup with
+    # "undefined symbol: cudaDeviceReset". Preload the real one first.
+    export LD_PRELOAD="/usr/local/cuda/lib64/libcudart.so.12:${LD_PRELOAD:-}"
+    echo "[entrypoint] PRIME_RL_MX_RENDEZVOUS=${PRIME_RL_MX_RENDEZVOUS:-<unset>}"
+    echo "[entrypoint] starting inference (num_gpus=$(nvidia-smi -L | wc -l))"
+    exec uv run inference @ /config/inference.toml
+
+  run_orchestrator.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    cd /app
+    bash /config/fix_tilelang_stub.sh
+    export HF_HOME="/tmp/hf_cache"
+    mkdir -p "$HF_HOME" /tmp/logs /output/logs
+    cd /output
+    export WANDB_MODE="disabled"
+    export WANDB_DISABLED="true"
+    export LD_PRELOAD="/usr/local/cuda/lib64/libcudart.so.12:${LD_PRELOAD:-}"
+    echo "[entrypoint] starting orchestrator"
+    exec uv run orchestrator @ /config/orchestrator.toml
