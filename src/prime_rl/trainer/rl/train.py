@@ -322,9 +322,7 @@ def train(config: TrainerConfig):
         loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
         loss_scale = max(loss_scale, 1)
 
-        # Gather loss_scale across DP ranks only (not dp_cp). CP ranks within a DP cell process
-        # the same microbatches, so their loss_scale values are duplicates; gathering across dp_cp
-        # would inflate the global token count by a factor of cp.
+        # Gather loss_scale across DP ranks
         local = torch.tensor([loss_scale], dtype=torch.float64, device="cuda")
         dp_group = parallel_dims.world_mesh["dp"].get_group()
         dp_world_size = dist.get_world_size(dp_group)
@@ -332,8 +330,7 @@ def train(config: TrainerConfig):
         dist.all_gather(gathered, local, group=dp_group)
         scales = torch.stack(gathered).squeeze()  # shape: [dp_world_size]
 
-        # Sum local loss_scales into the true global token count, used to normalize the loss so
-        # that gradients average uniformly across tokens regardless of per-rank token-count skew.
+        # Sum local loss_scales into the global count of loss tokens
         global_token_count = scales.sum().item()
         global_token_count = max(global_token_count, 1)
 
@@ -469,8 +466,7 @@ def train(config: TrainerConfig):
             with maybe_record_function("backward"):
                 loss.backward()
 
-            # loss is already divided by global_token_count, so summing across microbatches and
-            # all-reducing across ranks yields the global token-weighted mean loss directly.
+            # compute sum of per-token loss (scaled by 1/global_token_count) across microbatches for each rank
             step_local_loss_sum += loss.detach()
 
             # Add relevant tensors to tensor dict for logging purposes
@@ -496,17 +492,13 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        # compute_loss divided by global_token_count, so each rank's grad contribution is already
-        # scaled by 1/global_token_count. FSDP then divided the all-reduced grad by
-        # fsdp_gradient_divide_factor. Multiply by fsdp_gradient_divide_factor to recover the true
-        # global token-weighted mean gradient.
+        # compute_loss divided by global_token_count so multiplying by fsdp_gradient_divide_factor to recover the true
+        # mean per-token gradient.
         for param in model.parameters():
             if param.grad is not None:
                 param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
 
-        # All-reduce the per-rank loss sums to get the global token-weighted mean loss for logging.
-        # Reduce over DP only (not dp_cp): CP ranks within a DP cell hold identical loss values,
-        # so summing over dp_cp would inflate the result by a factor of cp.
+        # All-reduce over the per-rank loss sums over DP ranks to get the mean per-token loss for logging.
         dist.all_reduce(step_local_loss_sum, op=dist.ReduceOp.SUM, group=dp_group)
         global_mean_loss = step_local_loss_sum.item()
 
@@ -624,7 +616,7 @@ def train(config: TrainerConfig):
         monitor.log(loss_scale_metrics, step=progress.step)
         # --- end diagnostic metrics ---
 
-        # Global token-weighted mean loss (unbiased across DP ranks with uneven loss_scale).
+        # mean per-token loss
         monitor.log(
             {
                 "loss/global_mean": global_mean_loss,

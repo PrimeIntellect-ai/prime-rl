@@ -214,9 +214,7 @@ def compute_loss(
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
         loss_fn: Per-sequence loss function
-        loss_scale: Total number of loss-contributing tokens across all DP ranks for this step.
-            Normalizes the loss so gradients average uniformly across tokens regardless of
-            per-rank token-count skew.
+        loss_scale: Scale factor representing the total number of loss tokens in the batch
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
