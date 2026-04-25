@@ -454,9 +454,7 @@ class ElasticInferencePool:
             # Sync all servers in parallel for faster weight updates
             await asyncio.gather(*[self._sync_server_adapter(ip) for ip in self._servers.keys()])
 
-    async def wait_for_ready(
-        self, model_name: str = "", timeout: int | None = None, min_servers: int = 1
-    ) -> None:
+    async def wait_for_ready(self, model_name: str = "", timeout: int | None = None, min_servers: int = 1) -> None:
         if timeout is None:
             timeout = self.client_config.wait_for_ready_timeout
         start = time.time()

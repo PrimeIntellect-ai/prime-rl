@@ -92,7 +92,9 @@ class StaticInferencePool:
         return next(self._eval_cycle)
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
-        await check_health(self._admin_clients, timeout=timeout if timeout is not None else self._wait_for_ready_timeout)
+        await check_health(
+            self._admin_clients, timeout=timeout if timeout is not None else self._wait_for_ready_timeout
+        )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
