@@ -4,6 +4,7 @@ MultiCheckpointManager owns per-run CheckpointManagers and AppStates,
 each saving to its own run directory.
 """
 
+import bisect
 import shutil
 from dataclasses import asdict
 from pathlib import Path
@@ -154,7 +155,12 @@ class MultiCheckpointManager:
                         )
                 dist.barrier()
                 manager.mark_stable(step)
-                manager.ckpt_steps.append(step)
+                # Use insort (like CheckpointManager.save_to_path does) so the
+                # list stays sorted. Plain append would break the
+                # `assert list(ckpt_steps) == sorted(ckpt_steps)` invariant in
+                # maybe_clean when saving a step lower than ones already in the
+                # list (happens on resume with orphan future-step ckpt dirs).
+                bisect.insort(manager.ckpt_steps, step)
             except FileNotFoundError:
                 self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
             except Exception as e:

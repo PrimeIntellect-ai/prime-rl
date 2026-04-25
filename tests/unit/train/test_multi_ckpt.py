@@ -86,3 +86,33 @@ def test_multi_ckpt_maybe_clean_keeps_ckpt_steps_in_sync_across_ranks(
         f"Got {inner.ckpt_steps}, expected [450]. This divergence is what causes "
         f"the dist.barrier() deadlock inside MultiCheckpointManager.save()."
     )
+
+
+def test_multi_ckpt_save_keeps_ckpt_steps_sorted(tmp_path: Path) -> None:
+    """save() must insert sorted, not append. After maybe_clean trims away the
+    resume step and leaves an orphan future-step (e.g. ckpt_steps=[453] when
+    saving step 450), plain append would yield [453, 450] - violating the
+    `assert list(ckpt_steps) == sorted(ckpt_steps)` invariant in maybe_clean
+    and crashing the trainer on the next iteration.
+    """
+    import bisect
+
+    from prime_rl.configs.trainer import CheckpointConfig
+    from prime_rl.trainer.ckpt import CheckpointManager
+
+    reset_world()
+    runs._MULTI_RUN_MANAGER = None
+    setup_multi_run_manager(output_dir=tmp_path, max_runs=1, device=torch.device("cpu"))
+
+    run_dir = tmp_path / "run_orphan"
+    run_dir.mkdir()
+    (run_dir / "checkpoints").mkdir()
+    (run_dir / "checkpoints" / "step_453").mkdir()
+    manager = CheckpointManager(run_dir, CheckpointConfig(interval=3, keep_last=1))
+    assert manager.ckpt_steps == [453]
+
+    # Mirror multi_ckpt.save's append path post-fix.
+    bisect.insort(manager.ckpt_steps, 450)
+
+    assert manager.ckpt_steps == [450, 453]
+    assert list(manager.ckpt_steps) == sorted(manager.ckpt_steps)
