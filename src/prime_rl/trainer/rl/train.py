@@ -322,14 +322,15 @@ def train(config: TrainerConfig):
         loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
         loss_scale = max(loss_scale, 1)
 
-        # --- loss_scale diagnostic: gather across dp_cp ranks ---
+        # Gather loss_scale across DP ranks only (not dp_cp). CP ranks within a DP cell process
+        # the same microbatches, so their loss_scale values are duplicates; gathering across dp_cp
+        # would inflate the global token count by a factor of cp.
         local = torch.tensor([loss_scale], dtype=torch.float64, device="cuda")
-        dp_cp_group = parallel_dims.world_mesh["dp_cp"].get_group()
-        dp_cp_world_size = dist.get_world_size(dp_cp_group)
-        gathered = [torch.zeros_like(local) for _ in range(dp_cp_world_size)]
-        dist.all_gather(gathered, local, group=dp_cp_group)
-        scales = torch.stack(gathered).squeeze()  # shape: [dp_cp_world_size]
-        # --- end diagnostic gather ---
+        dp_group = parallel_dims.world_mesh["dp"].get_group()
+        dp_world_size = dist.get_world_size(dp_group)
+        gathered = [torch.zeros_like(local) for _ in range(dp_world_size)]
+        dist.all_gather(gathered, local, group=dp_group)
+        scales = torch.stack(gathered).squeeze()  # shape: [dp_world_size]
 
         # Sum local loss_scales into the true global token count, used to normalize the loss so
         # that gradients average uniformly across tokens regardless of per-rank token-count skew.
@@ -504,7 +505,9 @@ def train(config: TrainerConfig):
                 param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
 
         # All-reduce the per-rank loss sums to get the global token-weighted mean loss for logging.
-        dist.all_reduce(step_local_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        # Reduce over DP only (not dp_cp): CP ranks within a DP cell hold identical loss values,
+        # so summing over dp_cp would inflate the result by a factor of cp.
+        dist.all_reduce(step_local_loss_sum, op=dist.ReduceOp.SUM, group=dp_group)
         global_mean_loss = step_local_loss_sum.item()
 
         # Optionally, clip the gradients
