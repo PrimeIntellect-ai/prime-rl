@@ -461,7 +461,7 @@ def train(config: TrainerConfig):
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_fn=loss_fn,
-                global_token_count=global_token_count,
+                loss_scale=global_token_count,
             )
 
             # Backward pass
