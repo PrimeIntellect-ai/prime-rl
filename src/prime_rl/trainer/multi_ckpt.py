@@ -219,8 +219,10 @@ class MultiCheckpointManager:
             return False
 
     def maybe_clean(self) -> None:
-        if not self.world.is_master:
-            return
+        # Run on all ranks: file deletion inside CheckpointManager.maybe_clean is
+        # already master-gated, but the in-memory ckpt_steps update must happen on
+        # every rank, otherwise _should_save() diverges across ranks and the next
+        # save can hit the dist.barrier mismatch in save() -> deadlock.
         for idx in self.multi_run_manager.used_idxs:
             if self.managers[idx] is None:
                 continue
