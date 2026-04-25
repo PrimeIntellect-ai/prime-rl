@@ -6,7 +6,14 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, get_lora_num_tokens, get_multilora_scaling
-from prime_rl.trainer.models.layers.moe import GroupedExperts, NonGatedGroupedExperts, relu2
+from prime_rl.trainer.models.layers.moe import (
+    GptOssGroupedExperts,
+    GroupedExperts,
+    NonGatedGroupedExperts,
+    _broadcast_expert_bias,
+    _gpt_oss_apply_gate,
+    relu2,
+)
 
 
 def _run_lora_grouped_mm(
@@ -745,6 +752,313 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
             w2_lora_tmp = torch.matmul(h_lora, w2_lora_a[expert_idx].transpose(-2, -1))
             w2_lora_out = torch.matmul(w2_lora_tmp, w2_lora_b[expert_idx].transpose(-2, -1))
             out = out_base + scaling * w2_lora_out
+
+            out_splits.append(out)
+            start = end
+
+        return torch.cat(out_splits, dim=0)
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, "
+            f"n_adapters={self.n_adapters}, num_experts={self.num_experts}, "
+            f"alpha={self.alpha}, dropout={self.lora_dropout}, "
+            f"use_grouped_mm={self.use_grouped_mm})"
+        )
+
+
+class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
+    """
+    GptOssGroupedExperts + multi-LoRA.
+
+    Adapts the two projections of GPT-OSS experts: the fused gate_up projection
+    (hidden_size -> 2*intermediate_size) and the down projection (intermediate_size -> hidden_size).
+    """
+
+    def __init__(
+        self,
+        base_layer: GptOssGroupedExperts,
+        rank: int,
+        n_adapters: int,
+        alpha: float = 32.0,
+        dropout: float = 0.0,
+        use_grouped_mm: bool = True,
+    ):
+        super().__init__(base_layer)
+        if rank <= 0 or n_adapters <= 0:
+            raise ValueError("rank and n_adapters must be > 0")
+
+        self.num_experts = base_layer.num_experts
+        self.hidden_size = base_layer.hidden_size
+        self.intermediate_size = base_layer.intermediate_size
+        self.gate_up_out = 2 * self.intermediate_size
+
+        if rank % 8 != 0 or self.hidden_size % 8 != 0 or self.intermediate_size % 8 != 0:
+            use_grouped_mm = False
+
+        self.rank = rank
+        self.n_adapters = n_adapters
+        self.alpha = alpha
+        self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+        self.use_grouped_mm = use_grouped_mm
+
+        self._lora_num_tokens = get_lora_num_tokens()
+        self._scaling_factors = get_multilora_scaling()
+
+        self.gate_up_lora_A = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        rank,
+                        self.hidden_size,
+                        device=base_layer.gate_up_proj.device,
+                        dtype=base_layer.gate_up_proj.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+        self.gate_up_lora_B = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        self.gate_up_out,
+                        rank,
+                        device=base_layer.gate_up_proj.device,
+                        dtype=base_layer.gate_up_proj.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+
+        self.down_lora_A = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        rank,
+                        self.intermediate_size,
+                        device=base_layer.down_proj.device,
+                        dtype=base_layer.down_proj.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+        self.down_lora_B = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        self.hidden_size,
+                        rank,
+                        device=base_layer.down_proj.device,
+                        dtype=base_layer.down_proj.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+
+        self.reset_parameters()
+
+    def reset_parameters(self, index: int | None = None) -> None:
+        if index is None:
+            for i in range(self.n_adapters):
+                self.reset_parameters(i)
+        else:
+            nn.init.kaiming_uniform_(self.gate_up_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.gate_up_lora_B[index])
+            nn.init.kaiming_uniform_(self.down_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.down_lora_B[index])
+
+    def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
+        return [
+            ("gate_up_lora_A", self.gate_up_lora_A[idx]),
+            ("gate_up_lora_B", self.gate_up_lora_B[idx]),
+            ("down_lora_A", self.down_lora_A[idx]),
+            ("down_lora_B", self.down_lora_B[idx]),
+        ]
+
+    def get_lora_param_counts(self) -> tuple[int, int]:
+        adapter_params = (
+            self.gate_up_lora_A[0].numel()
+            + self.gate_up_lora_B[0].numel()
+            + self.down_lora_A[0].numel()
+            + self.down_lora_B[0].numel()
+        )
+        adapted_params = self.base_layer.gate_up_proj.numel() + self.base_layer.down_proj.numel()
+        return adapter_params, adapted_params
+
+    def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
+        """vLLM-compatible 3D MoE adapter format.
+
+        For 3D MoE models (gpt-oss in vLLM has `is_3d_moe_weight = True`), vLLM expects:
+        - `experts.base_layer.lora_{A,B}.weight` for the gate_up projection
+        - `experts.lora_{A,B}.weight` for the down projection
+        with experts stacked into the rank dim. See
+        vllm/lora/model_manager.py::_stack_moe_lora_weights, which reshapes
+            lora_A: (num_experts*rank, in)  -> (num_experts, rank, in)
+            lora_B: (out, rank*num_experts) -> (out, rank, num_experts) -> (num_experts, out, rank)
+        """
+        detached_gu_a = self.gate_up_lora_A[idx].detach()
+        detached_gu_b = self.gate_up_lora_B[idx].detach()
+        detached_d_a = self.down_lora_A[idx].detach()
+        detached_d_b = self.down_lora_B[idx].detach()
+
+        if isinstance(detached_gu_a, DTensor):
+            detached_gu_a = detached_gu_a.full_tensor()
+            detached_gu_b = detached_gu_b.full_tensor()
+            detached_d_a = detached_d_a.full_tensor()
+            detached_d_b = detached_d_b.full_tensor()
+
+        # lora_A: (num_experts, rank, in) -> (num_experts*rank, in)
+        gu_a_flat = detached_gu_a.reshape(self.num_experts * self.rank, self.hidden_size).clone()
+        d_a_flat = detached_d_a.reshape(self.num_experts * self.rank, self.intermediate_size).clone()
+        # lora_B: (num_experts, out, rank) -> (out, rank, num_experts) -> (out, rank*num_experts)
+        # vLLM's reshape treats the last dim of lora_B as (rank, num_experts) with experts fast-varying.
+        gu_b_flat = detached_gu_b.permute(1, 2, 0).contiguous().reshape(self.gate_up_out, self.rank * self.num_experts)
+        d_b_flat = detached_d_b.permute(1, 2, 0).contiguous().reshape(self.hidden_size, self.rank * self.num_experts)
+
+        return {
+            "base_layer.lora_A.weight": gu_a_flat,
+            "base_layer.lora_B.weight": gu_b_flat,
+            "lora_A.weight": d_a_flat,
+            "lora_B.weight": d_b_flat,
+        }
+
+    def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        adapter_idx = self._lora_num_tokens.argmax().item()
+        gu_a = self.gate_up_lora_A[adapter_idx]
+        gu_b = self.gate_up_lora_B[adapter_idx]
+        d_a = self.down_lora_A[adapter_idx]
+        d_b = self.down_lora_B[adapter_idx]
+
+        scaling = self._scaling_factors[adapter_idx].item()
+
+        base_gu = self.base_layer.gate_up_proj
+        base_gu_bias = self.base_layer.gate_up_proj_bias
+        base_d = self.base_layer.down_proj
+        base_d_bias = self.base_layer.down_proj_bias
+
+        permuted_indices = None
+        if isinstance(base_gu, DTensor):
+            base_gu = base_gu.to_local()
+            base_gu_bias = base_gu_bias.to_local()
+            base_d = base_d.to_local()
+            base_d_bias = base_d_bias.to_local()
+            gu_a = gu_a.to_local()
+            gu_b = gu_b.to_local()
+            d_a = d_a.to_local()
+            d_b = d_b.to_local()
+
+            if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
+                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
+                from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+                experts_per_ep_rank = base_gu.shape[0]
+                num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
+
+                with torch.no_grad():
+                    permuted_indices, num_tokens_per_expert, _ = generate_permute_indices(
+                        num_tokens_per_expert,
+                        experts_per_ep_rank,
+                        num_ep_ranks,
+                        x.shape[0] + experts_per_ep_rank * TOKEN_GROUP_ALIGN_SIZE_M,
+                        TOKEN_GROUP_ALIGN_SIZE_M,
+                    )
+
+                x = torch.vstack((x, x.new_zeros((x.shape[-1]))))
+                input_shape = x.shape
+                x = x[permuted_indices, :]
+
+        offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
+        lora_x = self.lora_dropout(x)
+
+        if self.use_grouped_mm:
+            gate_up_base = torch._grouped_mm(x.bfloat16(), base_gu.bfloat16(), offs=offsets)
+            gate_up_base = (
+                gate_up_base
+                + _broadcast_expert_bias(base_gu_bias, num_tokens_per_expert, gate_up_base.shape[0]).bfloat16()
+            )
+            gate_up_lora = _run_lora_grouped_mm(lora_x, gu_a, gu_b, offsets)
+            gate_up = gate_up_base + scaling * gate_up_lora.bfloat16()
+
+            h = _gpt_oss_apply_gate(gate_up)
+            lora_h = self.lora_dropout(h)
+
+            out_base = torch._grouped_mm(h, base_d.bfloat16(), offs=offsets)
+            out_base = (
+                out_base + _broadcast_expert_bias(base_d_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
+            )
+            out_lora = _run_lora_grouped_mm(lora_h, d_a, d_b, offsets)
+            out = out_base + scaling * out_lora.bfloat16()
+            out = out.type_as(x)
+        else:
+            out = self._forward_for_loop(
+                x,
+                num_tokens_per_expert,
+                gu_a,
+                gu_b,
+                d_a,
+                d_b,
+                base_gu,
+                base_gu_bias,
+                base_d,
+                base_d_bias,
+                scaling,
+            )
+
+        if permuted_indices is not None:
+            if out.shape[0] < len(permuted_indices):
+                num_padding = len(permuted_indices) - out.shape[0]
+                out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
+            out_unpermuted = out.new_zeros(input_shape)
+            out_unpermuted[permuted_indices, :] = out
+            out = out_unpermuted[:-1]
+
+        return out
+
+    def _forward_for_loop(
+        self,
+        x: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        gu_a: torch.Tensor,
+        gu_b: torch.Tensor,
+        d_a: torch.Tensor,
+        d_b: torch.Tensor,
+        base_gu: torch.Tensor,
+        base_gu_bias: torch.Tensor,
+        base_d: torch.Tensor,
+        base_d_bias: torch.Tensor,
+        scaling: float,
+    ) -> torch.Tensor:
+        n = num_tokens_per_expert.tolist()
+        out_splits = []
+
+        start = 0
+        for e, num_tokens in enumerate(n):
+            if num_tokens == 0:
+                continue
+            end = start + num_tokens
+            x_e = x[start:end]
+            x_e_lora = self.lora_dropout(x_e)
+
+            gate_up_base = x_e @ base_gu[e] + base_gu_bias[e]
+            gate_up_lora_tmp = x_e_lora @ gu_a[e].transpose(-2, -1)
+            gate_up_lora = gate_up_lora_tmp @ gu_b[e].transpose(-2, -1)
+            gate_up = gate_up_base + scaling * gate_up_lora
+
+            h = _gpt_oss_apply_gate(gate_up)
+            h_lora = self.lora_dropout(h)
+
+            out_base = h @ base_d[e] + base_d_bias[e]
+            out_lora_tmp = h_lora @ d_a[e].transpose(-2, -1)
+            out_lora = out_lora_tmp @ d_b[e].transpose(-2, -1)
+            out = out_base + scaling * out_lora
 
             out_splits.append(out)
             start = end
