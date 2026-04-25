@@ -612,7 +612,9 @@ class PrimeMonitor(Monitor):
         self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
         self._thread = Thread(target=self._run_event_loop, daemon=True)
         self._thread.start()
-        self._client = httpx.AsyncClient(timeout=30)
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=60.0, write=300.0, pool=10.0)
+        )
         self._pending_futures: list[asyncio.Future] = []
         if hasattr(self, "_pending_sample_steps") and self._pending_sample_steps:
             self._pending_sample_steps.clear()
