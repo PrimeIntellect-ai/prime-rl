@@ -626,7 +626,7 @@ class PrimeMonitor(Monitor):
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def _flush(self, timeout: float = 30.0) -> None:
+    def _flush(self, timeout: float = 360.0) -> None:
         """Wait for all pending async requests to complete."""
         if not self.enabled or not hasattr(self, "_loop"):
             return
