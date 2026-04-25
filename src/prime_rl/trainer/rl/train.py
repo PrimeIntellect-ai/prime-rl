@@ -318,7 +318,7 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Local number of unmasked (loss-contributing) tokens on this DP rank for this step.
+        # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
         loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
         loss_scale = max(loss_scale, 1)
 
