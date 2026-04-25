@@ -184,6 +184,14 @@ class ClientConfig(BaseConfig):
         ),
     ] = 30.0
 
+    wait_for_ready_timeout: Annotated[
+        int,
+        Field(
+            description="Timeout in seconds for waiting for the inference pool to become ready at startup. "
+            "Applies to both the static health check and elastic DNS-based discovery. Defaults to 1800 seconds.",
+        ),
+    ] = 1800
+
     base_url: Annotated[
         list[str],
         Field(
