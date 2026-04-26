@@ -1,10 +1,14 @@
 import asyncio
 import time
 from pathlib import Path
+from typing import Literal
 
 import httpx
 
+from prime_rl.utils.client import NCCL_READY_MARKER
 from prime_rl.utils.pathing import get_step_path
+
+Mode = Literal["filesystem", "nccl"]
 
 
 class InferenceAdmin:
@@ -12,15 +16,22 @@ class InferenceAdmin:
 
     Implements the VersionObserver contract: on a new step, resolves
     broadcast_dir / step_N itself rather than having callers pass the path.
+
+    In NCCL mode, touches the `NCCL_READY` marker before /update_weights so the
+    trainer's NCCL sender (which polls for it) starts the collective. The
+    weight_dir is still forwarded — vLLM dispatches internally between
+    filesystem load and NCCL receive based on whether the broadcaster is
+    initialized.
     """
 
-    def __init__(self, base_url: str, api_key: str | None, broadcast_dir: Path):
+    def __init__(self, base_url: str, api_key: str | None, broadcast_dir: Path, mode: Mode = "filesystem"):
         base_url = base_url.rstrip("/").removesuffix("/v1")
         headers = {}
         if api_key and api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
         self.base_url = base_url
         self.broadcast_dir = broadcast_dir
+        self.mode = mode
         self.client = httpx.AsyncClient(
             base_url=base_url,
             headers=headers,
@@ -47,14 +58,42 @@ class InferenceAdmin:
         if not any(m["id"] == model_name for m in models):
             raise ValueError(f"Model '{model_name}' not found on {self.base_url}")
 
+    async def init_nccl_broadcaster(
+        self,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        quantize_in_weight_transfer: bool = False,
+    ) -> None:
+        r = await self.client.post(
+            "/init_broadcaster",
+            json={
+                "host": host,
+                "port": port,
+                "rank_offset": 0,
+                "inference_world_size": inference_world_size,
+                "timeout": timeout,
+                "quantize_in_weight_transfer": quantize_in_weight_transfer,
+            },
+        )
+        r.raise_for_status()
+
     async def on_new_version(self, step: int) -> None:
         # vLLM's update_weights_from_path passes the string straight to HF's
         # DefaultModelLoader, which first validates as a repo ID. A relative
         # path with multiple slashes trips that check before the local-path
         # fallback. Resolve to absolute here.
-        path = get_step_path(self.broadcast_dir, step).resolve().as_posix()
+        step_dir = get_step_path(self.broadcast_dir, step)
+        path = step_dir.resolve().as_posix()
         (await self.client.post("/pause", params={"mode": "keep", "clear_cache": "false"})).raise_for_status()
         try:
+            if self.mode == "nccl":
+                # Trainer's NCCL sender is polling for this marker before it
+                # joins the collective. Touch it before /update_weights so the
+                # send + receive line up.
+                step_dir.mkdir(parents=True, exist_ok=True)
+                (step_dir / NCCL_READY_MARKER).touch()
             (await self.client.post("/update_weights", json={"weight_dir": path})).raise_for_status()
         finally:
             (await self.client.post("/resume")).raise_for_status()

@@ -146,12 +146,14 @@ async def run(cfg: OrchestratorConfig) -> None:
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
 
     broadcast_dir = get_broadcast_dir(cfg.output_dir)
-    admin = InferenceAdmin(cfg.client.base_url[0], os.getenv(cfg.client.api_key_var, "EMPTY"), broadcast_dir)
+    admin = InferenceAdmin(
+        cfg.client.base_url[0],
+        os.getenv(cfg.client.api_key_var, "EMPTY"),
+        broadcast_dir,
+        mode=cfg.weight_broadcast.type,
+    )
     logger.info(f"Admin client ready ({admin.base_url})")
-
     logger.info(f"Weight broadcast mode: {cfg.weight_broadcast.type}")
-    if cfg.weight_broadcast.type == "nccl":
-        logger.warning("NCCL weight broadcast is not wired in orch2 yet — falling back to filesystem polling")
 
     logger.info("Waiting for inference server to be healthy...")
     t0 = time.perf_counter()
@@ -160,6 +162,19 @@ async def run(cfg: OrchestratorConfig) -> None:
 
     await admin.check_model(cfg.model.name)
     logger.success(f"Model '{cfg.model.name}' loaded on inference server")
+
+    if cfg.weight_broadcast.type == "nccl":
+        await admin.init_nccl_broadcaster(
+            host=cfg.weight_broadcast.host,
+            port=cfg.weight_broadcast.port,
+            timeout=cfg.weight_broadcast.timeout,
+            inference_world_size=cfg.weight_broadcast.inference_world_size,
+            quantize_in_weight_transfer=cfg.weight_broadcast.quantize_in_weight_transfer,
+        )
+        logger.success(
+            f"NCCL broadcast initialized (host={cfg.weight_broadcast.host}, port={cfg.weight_broadcast.port}, "
+            f"inference_world_size={cfg.weight_broadcast.inference_world_size})"
+        )
 
     watcher = WeightWatcher(broadcast_dir, observers=[admin, engine, scheduler])
 
