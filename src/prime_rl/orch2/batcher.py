@@ -13,6 +13,7 @@ from prime_rl.configs.orchestrator import (
     StepBatching,
     TokensBatching,
 )
+from prime_rl.orch2.ckpt import CkptManager, OrchState
 from prime_rl.orch2.engine import Group
 from prime_rl.orchestrator.advantage import AdvantageInputs, default_advantage_fn
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
@@ -38,7 +39,10 @@ class PolicyState(Protocol):
 
 class EvalCounter(Protocol):
     """Small surface the batcher needs from the scheduler: how many eval
-    groups to expect for a given trigger step."""
+    groups to expect for a given trigger step, plus the most recent eval
+    trigger step for ckpt persistence."""
+
+    last_eval_step: int
 
     def expected_eval_count(self, step: int) -> int | None: ...
 
@@ -318,6 +322,8 @@ class TrainBatcher:
         max_training_batches_ahead: int = 1,
         strict_async_level: bool = False,
         eval_counter: EvalCounter | None = None,
+        ckpt_manager: CkptManager | None = None,
+        ckpt_interval: int | None = None,
     ):
         self.in_q = in_q
         self.policy = policy
@@ -331,6 +337,8 @@ class TrainBatcher:
         self.step = 0
         self.eval_counter = eval_counter
         self._eval_buf: dict[int, list[Group]] = defaultdict(list)
+        self.ckpt_manager = ckpt_manager
+        self.ckpt_interval = ckpt_interval
         self.logger = get_logger()
 
     async def _wait_barrier(self) -> None:
@@ -394,6 +402,17 @@ class TrainBatcher:
             f"Envs: {envs_str}{suffix}"
         )
 
+    async def _maybe_save_ckpt(self) -> None:
+        if not self.ckpt_manager or not self.ckpt_interval:
+            return
+        if self.step <= 0 or self.step % self.ckpt_interval != 0:
+            return
+        if self.max_steps is not None and self.step >= self.max_steps:
+            return  # don't bother saving on the final step — exit follows immediately
+        last_eval = self.eval_counter.last_eval_step if self.eval_counter is not None else 0
+        state = OrchState(step=self.step, last_eval_step=last_eval)
+        await asyncio.to_thread(self.ckpt_manager.save, state, self.step)
+
     async def run(self) -> None:
         while True:
             group = await self.in_q.get()
@@ -408,5 +427,6 @@ class TrainBatcher:
                 trainable, filtered = self.strategy.pop()
                 await self.post.process(trainable, filtered, self.step)
                 self.step += 1
+                await self._maybe_save_ckpt()
                 if self.max_steps is not None and self.step >= self.max_steps:
                     raise Done()

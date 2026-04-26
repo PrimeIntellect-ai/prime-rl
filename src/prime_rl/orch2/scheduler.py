@@ -93,7 +93,7 @@ class Scheduler:
         # Last step an eval was triggered at. Used to fire at the next boundary
         # even when the weight watcher jumps over the exact interval step (e.g.
         # weights skip from 3 → 5 — we still want an eval around step 4/5).
-        self._last_eval_step = 0
+        self.last_eval_step = 0
 
         if eval_at_zero and self.eval_tasks:
             self._start_eval_epoch(0)
@@ -136,7 +136,7 @@ class Scheduler:
             return
         # Watcher may jump over boundaries (e.g. 3 → 5) so we trigger as soon
         # as `step` is an interval past the last eval, not on exact multiples.
-        if step < self._last_eval_step + self.eval_interval:
+        if step < self.last_eval_step + self.eval_interval:
             return
         if self._dispatching_eval_step is not None:
             # Previous epoch still has items in the dispatch queue; skip.
@@ -145,7 +145,7 @@ class Scheduler:
             # when the previous epoch hasn't even finished dispatching.
             return
         self._start_eval_epoch(step)
-        self._last_eval_step = step
+        self.last_eval_step = step
 
 
 def _cycle_forever(ds) -> Iterator[dict]:

@@ -7,6 +7,7 @@ import verifiers as vf
 
 from prime_rl.configs.orchestrator import DefaultAdvantageConfig, OrchestratorConfig
 from prime_rl.orch2.batcher import Done, TrainBatcher, build_strategy
+from prime_rl.orch2.ckpt import setup_ckpt_manager
 from prime_rl.orch2.engine import Group, RolloutEngine
 from prime_rl.orch2.inference_admin import InferenceAdmin
 from prime_rl.orch2.scheduler import Scheduler
@@ -61,12 +62,24 @@ async def run(cfg: OrchestratorConfig) -> None:
     if cfg.wandb is not None:
         logger.info(f"Wandb monitor ready (project={cfg.wandb.project}, name={cfg.wandb.name})")
 
+    # Resolve the resume step early so we can suppress eval_at_zero on resume
+    # (the original run already evaluated the base model).
+    ckpt_manager = setup_ckpt_manager(cfg.output_dir, cfg.ckpt)
+    resume_step: int | None = None
+    if cfg.ckpt and cfg.ckpt.resume_step is not None and ckpt_manager is not None:
+        if cfg.ckpt.resume_step == -1:
+            resume_step = ckpt_manager.latest_step()
+            if resume_step is None:
+                logger.warning("ckpt.resume_step=-1 set but no orch checkpoints found; starting fresh")
+        else:
+            resume_step = cfg.ckpt.resume_step
+
     scheduler = Scheduler(
         train_envs=cfg.train.env,
         train_rollouts_per_example=cfg.rollouts_per_example,
         eval_envs=cfg.eval.env if cfg.eval else None,
         eval_interval=cfg.eval.interval if cfg.eval else None,
-        eval_at_zero=cfg.eval.eval_base_model if cfg.eval else False,
+        eval_at_zero=(cfg.eval.eval_base_model if cfg.eval else False) and resume_step is None,
     )
     for task in scheduler.tasks:
         logger.info(f"Train task '{task.id}' ready (rollouts/group={task.rollouts_per_group})")
@@ -127,6 +140,8 @@ async def run(cfg: OrchestratorConfig) -> None:
         max_training_batches_ahead=cfg.max_async_level,
         strict_async_level=cfg.strict_async_level,
         eval_counter=scheduler,
+        ckpt_manager=ckpt_manager,
+        ckpt_interval=cfg.ckpt.interval if cfg.ckpt else None,
     )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
 
@@ -147,6 +162,20 @@ async def run(cfg: OrchestratorConfig) -> None:
     logger.success(f"Model '{cfg.model.name}' loaded on inference server")
 
     watcher = WeightWatcher(broadcast_dir, observers=[admin, engine, scheduler])
+
+    if resume_step is not None and ckpt_manager is not None:
+        state = ckpt_manager.load(resume_step)
+        batcher.step = state.step
+        scheduler.last_eval_step = state.last_eval_step
+        if cfg.eval and cfg.eval.skip_eval_on_resume:
+            # bump last_eval_step past current so the next interval boundary
+            # is the first eval the resumed run sees
+            scheduler.last_eval_step = state.step
+            logger.info(f"Skipping next eval on resume (last_eval_step={state.step})")
+        await admin.on_new_version(state.step)
+        await engine.on_new_version(state.step)
+        watcher.current_step = state.step
+        logger.success(f"Resumed orch from step {state.step} (eval cursor at {scheduler.last_eval_step})")
 
     logger.success("Orch2 starting — producing rollouts")
     try:
