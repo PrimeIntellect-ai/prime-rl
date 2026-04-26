@@ -30,6 +30,7 @@ class InflightRequest:
     off_policy_steps: int
     client_config: vf.ClientConfig
     env_name: str
+    policy_step: int = 0
     group_id: int | None = None
     rollout_count: int = 1
 
@@ -133,10 +134,10 @@ class Scheduler:
             return sum(get_seq_len(rollout) for rollout in rollouts)
         return len(rollouts)
 
-    def finalize_batch_rollouts(self, rollouts: list[vf.RolloutOutput]) -> list[vf.RolloutOutput]:
+    def finalize_batch_rollouts(self, rollouts: list[vf.RolloutOutput], batch_target: int) -> list[vf.RolloutOutput]:
         if self.batch_size is None:
             return rollouts
-        return rollouts[: self.batch_size]
+        return rollouts[:batch_target]
 
     async def cancel_inflight_rollouts(self):
         """Cancel all in-flight rollout requests."""
@@ -222,6 +223,7 @@ class Scheduler:
             )
         self.inflight_requests[task] = InflightRequest(
             off_policy_steps=0,
+            policy_step=self.ckpt_step,
             client_config=client_config,
             env_name=env_name,
             group_id=group_id,
@@ -370,7 +372,7 @@ class Scheduler:
                 f"Consider increasing max_off_policy_steps to avoid this."
             )
 
-    async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
+    async def generate_batch(self, step: int, target: int | None = None) -> list[vf.RolloutOutput]:
         """Continuously generates a batch of rollouts."""
         self.step = step
 
@@ -388,16 +390,17 @@ class Scheduler:
             self.checkpoint_ready.set()
 
         batch_start_time = time.perf_counter()
+        batch_target = self.batch_target if target is None else target
 
         self.logger.debug("Starting to generate batch rollouts")
 
         batch_rollouts: list[vf.RolloutOutput] = []
         batch_progress = 0
         pbar = ProgressTracker(
-            total=self.batch_target, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
+            total=batch_target, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
         )
 
-        while batch_progress < self.batch_target:
+        while batch_progress < batch_target:
             await self._fill_inflight_requests()
             inflight_tasks = list(self.inflight_requests.keys())
 
@@ -408,7 +411,7 @@ class Scheduler:
             await self.checkpoint_ready.wait()
 
             for finished_task in finished_tasks:
-                if batch_progress >= self.batch_target:
+                if batch_progress >= batch_target:
                     break
 
                 rollout_info = self.inflight_requests.pop(finished_task, None)
@@ -449,6 +452,7 @@ class Scheduler:
                             )
                         else:
                             rollout["env_name"] = env_name
+                            rollout["policy_step"] = rollout_info.policy_step
                             valid_rollouts.append(rollout)
 
                     if has_failures and env.requires_group_scoring:
@@ -484,7 +488,7 @@ class Scheduler:
 
         await self._fill_inflight_requests()
 
-        batch_rollouts = self.finalize_batch_rollouts(batch_rollouts)
+        batch_rollouts = self.finalize_batch_rollouts(batch_rollouts, batch_target=batch_target)
         pbar.close()
         self.last_batch_generation_time = time.perf_counter() - batch_start_time
         return batch_rollouts

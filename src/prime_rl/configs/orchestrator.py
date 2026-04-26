@@ -605,6 +605,13 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = False
 
+    skip_replay: Annotated[
+        bool,
+        Field(
+            description="Whether to skip loading the replay buffer from checkpoint.",
+        ),
+    ] = False
+
 
 class BufferConfig(BaseConfig):
     """Configures the buffer for the orchestrator."""
@@ -667,6 +674,62 @@ class BufferConfig(BaseConfig):
     def validate_thresholds(self):
         if self.easy_threshold is not None and self.hard_threshold is not None:
             assert self.easy_threshold > self.hard_threshold, "easy_threshold must be greater than hard_threshold."
+        return self
+
+
+class ReplaySamplingConfig(BaseModel):
+    """Configures how replay groups are sampled."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["uniform"] = "uniform"
+
+
+class ReplayConfig(BaseConfig):
+    """Configures replay-buffer sampling for the orchestrator."""
+
+    capacity: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Maximum number of rollout groups to retain in replay. Set to 0 to disable replay.",
+        ),
+    ] = 0
+
+    replay_fraction: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            lt=1.0,
+            description="Target fraction of each training batch to source from replay. Set to 0 to disable replay.",
+        ),
+    ] = 0.0
+
+    seed: Annotated[
+        int | None,
+        Field(description="Random seed used for replay sampling."),
+    ] = None
+
+    max_replay_off_policy_steps: Annotated[
+        int | None,
+        Field(
+            ge=0,
+            description="Maximum age in policy steps for completed replay entries. If None, defaults to max_off_policy_steps.",
+        ),
+    ] = None
+
+    sampling: ReplaySamplingConfig = ReplaySamplingConfig()
+
+    @property
+    def enabled(self) -> bool:
+        return self.capacity > 0 and self.replay_fraction > 0.0
+
+    @model_validator(mode="after")
+    def validate_enabled_fields(self):
+        if self.capacity == 0 and self.replay_fraction > 0.0:
+            raise ValueError("replay.capacity must be > 0 when replay_fraction is set")
+        if self.capacity > 0 and self.replay_fraction == 0.0:
+            raise ValueError("replay.replay_fraction must be > 0 when capacity is set")
         return self
 
 
@@ -885,6 +948,9 @@ class OrchestratorConfig(BaseConfig):
 
     # Data buffer configuration
     buffer: BufferConfig = BufferConfig()
+
+    # Replay buffer configuration
+    replay: ReplayConfig = ReplayConfig()
 
     # The advantage configuration
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()

@@ -38,6 +38,13 @@ from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.filters import apply_filters, setup_filters
+from prime_rl.orchestrator.replay import (
+    ReplayBuffer,
+    ReplayGroup,
+    chunk_rollouts,
+    compute_desired_replay_progress,
+    flatten_rollout_groups,
+)
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -218,6 +225,18 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Setting up buffer ({config.buffer})")
     buffer = Buffer(train_envs, config.buffer)
 
+    replay: ReplayBuffer | None = None
+    if config.replay.enabled:
+        replay_max_off_policy_steps = config.replay.max_replay_off_policy_steps
+        if replay_max_off_policy_steps is None:
+            replay_max_off_policy_steps = config.max_off_policy_steps
+        logger.info(f"Setting up replay ({config.replay})")
+        replay = ReplayBuffer(
+            capacity=config.replay.capacity,
+            max_off_policy_steps=replay_max_off_policy_steps,
+            seed=config.replay.seed,
+        )
+
     # Get checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
@@ -293,8 +312,31 @@ async def orchestrate(config: OrchestratorConfig):
     # Reset weights to base model if starting from scratch
     progress = Progress()
 
+    def build_replay_groups(rollouts: list[vf.RolloutOutput], insert_step: int) -> list[ReplayGroup]:
+        replay_groups: list[ReplayGroup] = []
+        for group in chunk_rollouts(rollouts, config.rollouts_per_example):
+            if any(not rollout["is_filtered"] for rollout in group):
+                replay_groups.append(ReplayGroup.from_rollouts(group, insert_step=insert_step))
+        return replay_groups
+
+    def annotate_fresh_groups(groups: list[list[vf.RolloutOutput]]) -> None:
+        for problem_idx, group in enumerate(groups):
+            for rollout in group:
+                rollout["data_source"] = "fresh"
+                rollout["problem_idx"] = problem_idx
+
+    def annotate_replay_groups(replay_groups: list[ReplayGroup], problem_idx_offset: int, current_step: int) -> None:
+        for replay_idx, replay_group in enumerate(replay_groups):
+            problem_idx = problem_idx_offset + replay_idx
+            replay_age_steps = current_step - replay_group.policy_step
+            for rollout in replay_group.rollouts:
+                rollout["data_source"] = "replay"
+                rollout["problem_idx"] = problem_idx
+                rollout["replay_insert_step"] = replay_group.insert_step
+                rollout["replay_age_steps"] = replay_age_steps
+
     if checkpoint_step is not None and ckpt_manager is not None:
-        ckpt_manager.load(progress, buffer, step=checkpoint_step)
+        ckpt_manager.load(progress, buffer, step=checkpoint_step, replay=replay)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
         if config.eval and config.eval.skip_eval_on_resume:
@@ -343,7 +385,7 @@ async def orchestrate(config: OrchestratorConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress, buffer, step=progress.step)
+            ckpt_manager.save(progress, buffer, step=progress.step, replay=replay)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
         # Break if we have reached the maximum number of steps
@@ -416,19 +458,69 @@ async def orchestrate(config: OrchestratorConfig):
         generate_completions_time = 0.0
         train_rollouts: list[vf.RolloutOutput] = []
         num_rollouts = 0
-        num_unique_examples = 0
+        num_problems = 0
         n_trainable = 0
+        replay_requested_progress = 0
+        replay_progress = 0
+        fresh_rollout_count = 0
+        replay_rollout_count = 0
         for attempt in range(MAX_EMPTY_BATCH_ATTEMPTS):
-            train_rollouts = await scheduler.generate_batch(step=progress.step)
-            generate_completions_time += scheduler.last_batch_generation_time
+            fresh_target = scheduler.batch_target
+            replay_requested_progress = 0
+            replayed_groups: list[ReplayGroup] = []
+            if replay is not None:
+                replay.evict_stale(current_step=progress.step)
+                replay_requested_progress = compute_desired_replay_progress(
+                    batch_target=scheduler.batch_target,
+                    replay_fraction=config.replay.replay_fraction,
+                    rollouts_per_example=config.rollouts_per_example,
+                    use_token_batching=scheduler.uses_token_batching,
+                )
+                replayed_groups = replay.sample(
+                    target_progress=replay_requested_progress,
+                    use_token_batching=scheduler.uses_token_batching,
+                    current_step=progress.step,
+                )
+                replay_progress = sum(
+                    group.num_tokens if scheduler.uses_token_batching else group.num_rollouts
+                    for group in replayed_groups
+                )
+                fresh_target = max(scheduler.batch_target - replay_progress, 0)
+
+            fresh_rollouts = []
+            if fresh_target > 0:
+                fresh_rollouts = await scheduler.generate_batch(step=progress.step, target=fresh_target)
+                generate_completions_time += scheduler.last_batch_generation_time
+            fresh_rollout_count = len(fresh_rollouts)
 
             # Compute advantages (in-place)
-            num_rollouts = len(train_rollouts)
-            num_unique_examples = len({r["example_id"] for r in train_rollouts})
-            compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
+            compute_advantages(fresh_rollouts, config.rollouts_per_example, config.advantage)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
-            apply_filters(rollout_filters, train_rollouts)
+            apply_filters(rollout_filters, fresh_rollouts)
+
+            if is_vlm:
+                offload_start = time.perf_counter()
+                num_offloaded = offload_images_to_disk(fresh_rollouts, config.output_dir)
+                if num_offloaded:
+                    logger.info(
+                        f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
+                    )
+
+            for rollout in fresh_rollouts:
+                pretokenize_rollout_trajectory(rollout, tokenizer, processor=processor)
+
+            fresh_groups = chunk_rollouts(fresh_rollouts, config.rollouts_per_example)
+
+            if replay is not None:
+                replay.add(build_replay_groups(fresh_rollouts, insert_step=progress.step))
+                annotate_replay_groups(replayed_groups, problem_idx_offset=len(fresh_groups), current_step=progress.step)
+
+            annotate_fresh_groups(fresh_groups)
+            train_rollouts = flatten_rollout_groups(fresh_groups + [group.rollouts for group in replayed_groups])
+            num_rollouts = len(train_rollouts)
+            num_problems = len(fresh_groups) + len(replayed_groups)
+            replay_rollout_count = sum(group.num_rollouts for group in replayed_groups)
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
             if n_trainable > 0:
@@ -467,21 +559,8 @@ async def orchestrate(config: OrchestratorConfig):
             save_rollouts, train_rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
-        # VLM: offload base64 images to disk immediately to free memory
-        if is_vlm:
-            offload_start = time.perf_counter()
-            num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
-            if num_offloaded:
-                logger.info(
-                    f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
-                )
-
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
-
-        # Pretokenize before VLM image cache build (which strips image data from messages)
-        for rollout in train_rollouts:
-            pretokenize_rollout_trajectory(rollout, tokenizer, processor=processor)
 
         # VLM: build image cache in a thread so it doesn't block the event loop.
         # This lets the scheduler continue servicing inflight rollout requests
@@ -542,7 +621,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
-            f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
+            f"Converted {len(train_rollouts)} rollouts ({num_problems} problems) "
             f"to {len(train_examples)} training examples"
         )
 
@@ -573,8 +652,12 @@ async def orchestrate(config: OrchestratorConfig):
         # Gather metrics in dataframes
         results_df = pd.DataFrame(
             {
+                "problem_idx": [rollout["problem_idx"] for rollout in train_rollouts],
                 "example_id": [rollout["example_id"] for rollout in train_rollouts],
                 "env_name": [rollout["env_name"] for rollout in train_rollouts],
+                "data_source": [rollout["data_source"] for rollout in train_rollouts],
+                "policy_step": [rollout.get("policy_step") for rollout in train_rollouts],
+                "replay_age_steps": [rollout.get("replay_age_steps") for rollout in train_rollouts],
                 "reward": [rollout["reward"] for rollout in train_rollouts],
                 "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
                 "is_filtered": [rollout["is_filtered"] for rollout in train_rollouts],
@@ -595,19 +678,23 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Update progress metrics
         num_tokens = int(results_df.seq_len.sum())
+        fresh_token_count = int(results_df.loc[results_df.data_source == "fresh", "seq_len"].sum())
+        replay_token_count = int(results_df.loc[results_df.data_source == "replay", "seq_len"].sum())
+        batch_progress = num_tokens if scheduler.uses_token_batching else num_rollouts
+        replay_fraction_actual = replay_progress / batch_progress if batch_progress else 0.0
+        replay_fraction_requested = replay_requested_progress / scheduler.batch_target if scheduler.batch_target else 0.0
         progress.total_tokens += num_tokens
         progress.total_samples += num_rollouts
-        progress.total_problems += num_unique_examples
+        progress.total_problems += num_problems
 
         def compute_solve_rates(df):
             """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
-            reward_per_problem = df.groupby("example_id").reward.sum()
+            reward_per_problem = df.groupby("problem_idx").reward.sum()
             solve_none = (reward_per_problem == 0).mean()
             solve_all = (reward_per_problem == config.rollouts_per_example).mean()
             return solve_none, solve_all, 1 - solve_none - solve_all
 
-        # Group by example_id to average across rollouts within each problem
-        by_example = results_df.groupby("example_id")
+        by_problem = results_df.groupby("problem_idx")
 
         solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
         to_log = {
@@ -616,23 +703,27 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/prefill_tokens": num_prefill_tokens,
             "progress/decode_tokens": num_decode_tokens,
             "progress/samples": num_rollouts,
-            "progress/problems": num_unique_examples,
+            "progress/problems": num_problems,
+            "progress/fresh_samples": fresh_rollout_count,
+            "progress/replay_samples": replay_rollout_count,
+            "progress/fresh_tokens": fresh_token_count,
+            "progress/replay_tokens": replay_token_count,
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
             "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             # Sequence length metrics
-            "seq_len/all/mean": by_example.seq_len.mean().mean(),
-            "seq_len/all/max": by_example.seq_len.mean().max(),
-            "seq_len/all/min": by_example.seq_len.mean().min(),
-            "prefill_len/all/mean": by_example.prefill_len.mean().mean(),
-            "prefill_len/all/max": by_example.prefill_len.mean().max(),
-            "prefill_len/all/min": by_example.prefill_len.mean().min(),
-            "decode_len/all/mean": by_example.decode_len.mean().mean(),
-            "decode_len/all/max": by_example.decode_len.mean().max(),
-            "decode_len/all/min": by_example.decode_len.mean().min(),
-            "is_truncated/all/mean": by_example.is_truncated.mean().mean(),
-            "is_truncated/all/max": by_example.is_truncated.mean().max(),
+            "seq_len/all/mean": by_problem.seq_len.mean().mean(),
+            "seq_len/all/max": by_problem.seq_len.mean().max(),
+            "seq_len/all/min": by_problem.seq_len.mean().min(),
+            "prefill_len/all/mean": by_problem.prefill_len.mean().mean(),
+            "prefill_len/all/max": by_problem.prefill_len.mean().max(),
+            "prefill_len/all/min": by_problem.prefill_len.mean().min(),
+            "decode_len/all/mean": by_problem.decode_len.mean().mean(),
+            "decode_len/all/max": by_problem.decode_len.mean().max(),
+            "decode_len/all/min": by_problem.decode_len.mean().min(),
+            "is_truncated/all/mean": by_problem.is_truncated.mean().mean(),
+            "is_truncated/all/max": by_problem.is_truncated.mean().max(),
             "stop_condition/all/generation_truncated": (
                 results_df.is_truncated & (results_df.stop_condition != "prompt_too_long")
             ).mean(),
@@ -640,26 +731,28 @@ async def orchestrate(config: OrchestratorConfig):
                 f"stop_condition/all/{sc}": rate
                 for sc, rate in results_df.stop_condition.dropna().value_counts(normalize=True).items()
             },
-            "samples_per_rollout/all/mean": by_example.samples_per_rollout.mean().mean(),
-            "samples_per_rollout/all/max": by_example.samples_per_rollout.mean().max(),
-            "samples_per_rollout/all/min": by_example.samples_per_rollout.mean().min(),
-            "num_turns/all/mean": by_example.num_turns.mean().mean(),
-            "num_turns/all/max": by_example.num_turns.mean().max(),
-            "num_turns/all/min": by_example.num_turns.mean().min(),
-            "generation_ms/all/mean": by_example.generation_ms.mean().mean(),
-            "generation_ms/all/max": by_example.generation_ms.mean().max(),
-            "generation_ms/all/min": by_example.generation_ms.mean().min(),
-            "scoring_ms/all/mean": by_example.scoring_ms.mean().mean(),
-            "scoring_ms/all/max": by_example.scoring_ms.mean().max(),
-            "scoring_ms/all/min": by_example.scoring_ms.mean().min(),
+            "samples_per_rollout/all/mean": by_problem.samples_per_rollout.mean().mean(),
+            "samples_per_rollout/all/max": by_problem.samples_per_rollout.mean().max(),
+            "samples_per_rollout/all/min": by_problem.samples_per_rollout.mean().min(),
+            "num_turns/all/mean": by_problem.num_turns.mean().mean(),
+            "num_turns/all/max": by_problem.num_turns.mean().max(),
+            "num_turns/all/min": by_problem.num_turns.mean().min(),
+            "generation_ms/all/mean": by_problem.generation_ms.mean().mean(),
+            "generation_ms/all/max": by_problem.generation_ms.mean().max(),
+            "generation_ms/all/min": by_problem.generation_ms.mean().min(),
+            "scoring_ms/all/mean": by_problem.scoring_ms.mean().mean(),
+            "scoring_ms/all/max": by_problem.scoring_ms.mean().max(),
+            "scoring_ms/all/min": by_problem.scoring_ms.mean().min(),
             # Train reward
-            "reward/all/mean": by_example.reward.mean().mean(),
-            "reward/all/max": by_example.reward.mean().max(),
-            "reward/all/min": by_example.reward.mean().min(),
+            "reward/all/mean": by_problem.reward.mean().mean(),
+            "reward/all/max": by_problem.reward.mean().max(),
+            "reward/all/min": by_problem.reward.mean().min(),
             # Solve / batch metrics
             "solve_none/all": solve_none,
             "solve_all/all": solve_all,
             "effective_batch_size/all": effective_batch_size,
+            "replay/requested_fraction": replay_fraction_requested,
+            "replay/actual_fraction": replay_fraction_actual,
             **{f"batch/{env}": r for env, r in results_df.env_name.value_counts(normalize=True).items()},
             # Time metrics
             "time/step": step_time,
@@ -671,6 +764,7 @@ async def orchestrate(config: OrchestratorConfig):
             **scheduler.get_metrics(),
             # Buffer metrics
             **buffer.get_metrics(),
+            **(replay.get_metrics(progress.step) if replay is not None else {}),
             # Event loop lag metrics
             **event_loop_lag_monitor.get_metrics(),
             # Rollout filter metrics (detection rate per filter + overall drop rate)
@@ -693,15 +787,15 @@ async def orchestrate(config: OrchestratorConfig):
         ]
 
         for env, env_df in results_df.groupby("env_name"):
-            env_by_example = env_df.groupby("example_id")
+            env_by_problem = env_df.groupby("problem_idx")
             for col in per_env_columns:
-                to_log[f"{col}/{env}/mean"] = env_by_example[col].mean().mean()
-                to_log[f"{col}/{env}/max"] = env_by_example[col].mean().max()
+                to_log[f"{col}/{env}/mean"] = env_by_problem[col].mean().mean()
+                to_log[f"{col}/{env}/max"] = env_by_problem[col].mean().max()
                 if col != "is_truncated":
-                    to_log[f"{col}/{env}/min"] = env_by_example[col].mean().min()
-            to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
-            to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
-            to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
+                    to_log[f"{col}/{env}/min"] = env_by_problem[col].mean().min()
+            to_log[f"reward/{env}/mean"] = env_by_problem.reward.mean().mean()
+            to_log[f"reward/{env}/max"] = env_by_problem.reward.mean().max()
+            to_log[f"reward/{env}/min"] = env_by_problem.reward.mean().min()
             solve_none, solve_all, effective_batch_size = compute_solve_rates(env_df)
             to_log[f"solve_none/{env}"] = solve_none
             to_log[f"solve_all/{env}"] = solve_all
@@ -713,7 +807,7 @@ async def orchestrate(config: OrchestratorConfig):
                 to_log[f"stop_condition/{env}/{sc}"] = rate
             env_metrics_df = metrics_df.loc[env_df.index]
             for metric in metrics_df.columns:
-                to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["example_id"])[metric].mean().mean()
+                to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["problem_idx"])[metric].mean().mean()
             to_log[f"filters/{env}/is_filtered"] = env_df.is_filtered.astype(float).mean()
             env_filter_df = filter_df.loc[env_df.index]
             for name in filter_df.columns:
@@ -741,8 +835,8 @@ async def orchestrate(config: OrchestratorConfig):
                 tokens=num_prefill_tokens + num_decode_tokens,
             )
 
-        reward_mean = by_example.reward.mean().mean()
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | Seq. Length: {by_example.seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        reward_mean = by_problem.reward.mean().mean()
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | Seq. Length: {by_problem.seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
         # Increment step
@@ -790,7 +884,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Write final checkpoint
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(progress, buffer, step=progress.step)
+        ckpt_manager.save(progress, buffer, step=progress.step, replay=replay)
 
     # Bounded best-effort cleanup. Each await below may block on a remote peer
     # (env-server ZMQ recv, inference admin httpx aclose, etc.). The outer

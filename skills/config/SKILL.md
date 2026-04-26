@@ -168,6 +168,24 @@ In TOML, an empty section header does the same:
 [ckpt]  # enables checkpointing with defaults
 ```
 
+### Replay config
+
+Replay is configured on the orchestrator. In a standalone orchestrator TOML, use `[replay]`. In an `rl` config, nest it under `[orchestrator.replay]`. It stays disabled unless both `capacity` and `replay_fraction` are set:
+
+```toml
+[orchestrator.replay]
+capacity = 1024
+replay_fraction = 0.25
+max_replay_off_policy_steps = 8
+```
+
+Replay entries are stored as full rollout groups, so `capacity` counts groups rather than individual rollouts. When resuming from a checkpoint, you can skip replay restoration independently of the main buffer:
+
+```toml
+[ckpt]
+skip_replay = true
+```
+
 ## Key files
 
 - `src/prime_rl/utils/config.py` — re-exports `BaseConfig` and `cli` from pydantic_config

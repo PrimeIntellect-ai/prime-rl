@@ -159,3 +159,21 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_orchestrator_replay_partial_override(tmp_path):
+    write_toml(tmp_path / "cfg.toml", {"replay": {"capacity": 8, "replay_fraction": 0.25}})
+    config = cli(OrchestratorConfig, args=["@", str(tmp_path / "cfg.toml")])
+
+    assert config.replay.capacity == 8
+    assert config.replay.replay_fraction == 0.25
+    assert config.replay.enabled
+    assert config.replay.sampling.type == "uniform"
+
+
+def test_orchestrator_replay_requires_both_capacity_and_fraction():
+    with pytest.raises(ValidationError, match="replay.capacity must be > 0"):
+        OrchestratorConfig.model_validate({"replay": {"replay_fraction": 0.2}})
+
+    with pytest.raises(ValidationError, match="replay.replay_fraction must be > 0"):
+        OrchestratorConfig.model_validate({"replay": {"capacity": 8}})
