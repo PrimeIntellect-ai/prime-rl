@@ -31,6 +31,9 @@ class MoEArgs:
     use_grouped_mm: bool = True  # grouped mm or for-loop for the experts computation
     load_balance_coeff: float | None = 1e-3
 
+    def __post_init__(self):
+        assert self.use_grouped_mm, "use_grouped_mm must be True"
+
 
 # can be used as dense FFN layer or shared experts in MoE layers
 class FeedForward(nn.Module):
@@ -85,65 +88,6 @@ class BCFeedForward(nn.Module):
         nn.init.trunc_normal_(self.w3, mean=0.0, std=init_std)
 
 
-# TODO: keeping this for-loop implementation for comparison
-#       and readability, may remove later
-def _run_experts_for_loop_impl(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    # NOTE: this would incur a synchronization between device and host
-    num_tokens_per_expert = num_tokens_per_expert.tolist()
-
-    # side-effect code due to the usage of generate_permute_indices
-    num_padding = x.shape[0] - sum(num_tokens_per_expert)
-
-    # a tuple of tensors indexed by experts
-    # each with shape (tokens_per_expert(varying), dim)
-    x = torch.split(
-        x[: sum(num_tokens_per_expert)],
-        split_size_or_sections=num_tokens_per_expert,
-        dim=0,
-    )
-    out_experts_splits = []
-    for expert_idx, x_expert in enumerate(x):
-        h = F.silu(torch.matmul(x_expert, w1[expert_idx].transpose(-2, -1)))
-        h = h * torch.matmul(x_expert, w3[expert_idx].transpose(-2, -1))
-        h = torch.matmul(h, w2[expert_idx].transpose(-2, -1))
-        # h shape (tokens_per_expert(varying), dim)
-        out_experts_splits.append(h)
-    out = torch.cat(out_experts_splits, dim=0)
-
-    # side-effect code due to the usage of generate_permute_indices
-    out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
-
-    return out
-
-
-@expert_parallel
-def _run_experts_for_loop(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    return _run_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
-
-
-@expert_parallel
-def _run_experts_grouped_mm(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert)
-
-
 def _run_experts_grouped_mm_impl(
     w1: torch.Tensor,
     w2: torch.Tensor,
@@ -175,19 +119,16 @@ class GroupedExperts(nn.Module):
         self.w1 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
         self.w2 = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
         self.w3 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
-        self.use_grouped_mm = use_grouped_mm
         self.ep_comm_backend: EPCommBackend = "torch"
+
+        if self.ep_comm_backend == "deepep":
+            self._forward_fn = _run_experts_grouped_mm_impl
+        else:
+            self._forward_fn = expert_parallel(_run_experts_grouped_mm_impl)
+
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
-
-    def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        w1 = self.w1.to_local()
-        w2 = self.w2.to_local()
-        w3 = self.w3.to_local()
-        if self.use_grouped_mm:
-            return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert)
-        return _run_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
     def forward(
         self,
@@ -195,12 +136,18 @@ class GroupedExperts(nn.Module):
         num_tokens_per_expert: torch.Tensor,
     ) -> torch.Tensor:
         if self.ep_comm_backend == "deepep":
-            return self._forward_deepep(x, num_tokens_per_expert)
-
-        if self.use_grouped_mm:
-            return _run_experts_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
+            w1 = self.w1.to_local()
+            w2 = self.w2.to_local()
+            w3 = self.w3.to_local()
         else:
-            return _run_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
+            w1 = self.w1
+            w2 = self.w2
+            w3 = self.w3
+        
+        return self._forward_fn(w1, w2, w3, x, num_tokens_per_expert)
+        
+
+
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)

@@ -123,6 +123,16 @@ All2AllBackend = Literal[
     "flashinfer_nvlink_two_sided",
 ]
 
+DEFAULT_RUNTIME_ENV_OVERRIDES: dict[str, str] = {
+    "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
+    "GLOO_SOCKET_IFNAME": "bond0",
+    "VLLM_ENGINE_READY_TIMEOUT_S": "4200",
+    "UCX_TLS": "all",
+    "UCX_NET_DEVICES": "all",
+    "LD_LIBRARY_PATH": "/shared/ucx/lib:/shared/ucx/lib/ucx:${LD_LIBRARY_PATH:-}",
+}
+
 
 class BaseInferenceDeploymentConfig(BaseModel):
     """Base deployment config for inference."""
@@ -166,80 +176,8 @@ class KVCacheOffloadConfig(BaseModel):
     )
 
 
-class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
-    """Configures a disaggregated prefill/decode inference deployment.
-
-    Each inference replica is split into separate prefill and decode node groups.
-    Requires NIXL for KV transfer and a vllm-router for request routing.
-
-    Multi-replica support: set ``num_prefill_replicas`` / ``num_decode_replicas``
-    to run multiple independent vLLM instances within the prefill / decode node
-    groups.  For example, ``num_prefill_nodes=4, num_prefill_replicas=2`` creates
-    two prefill vLLM instances each spanning 2 nodes (EP16 with 8 GPUs/node).
-    """
-
-    type: Literal["disaggregated"] = "disaggregated"
-
-    num_prefill_nodes: Annotated[int, Field(ge=1, description="Total number of prefill nodes.")] = 1
-    num_decode_nodes: Annotated[int, Field(ge=1, description="Total number of decode nodes.")] = 1
-
-    num_prefill_replicas: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of independent prefill vLLM instances. Must evenly divide num_prefill_nodes.",
-        ),
-    ] = 1
-    num_decode_replicas: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of independent decode vLLM instances. Must evenly divide num_decode_nodes.",
-        ),
-    ] = 1
-
-    router_port: Annotated[int, Field(description="Port for the vllm-router on each replica.")] = 8000
-    prefill_port: Annotated[int, Field(description="Port for prefill vLLM instances.")] = 8100
-    decode_port: Annotated[int, Field(description="Port for decode vLLM instances.")] = 8200
-    router_policy: Annotated[
-        str, Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin').")
-    ] = "consistent_hash"
-
-    prefill_env_overrides: Annotated[
-        dict[str, str],
-        Field(description="Extra environment variables exported only on prefill nodes."),
-    ] = {}
-    decode_env_overrides: Annotated[
-        dict[str, str],
-        Field(description="Extra environment variables exported only on decode nodes."),
-    ] = {}
-
-    kv_cache_offload: Annotated[
-        KVCacheOffloadConfig | None,
-        Field(description="CPU KV cache offload config for prefill nodes. None = disabled (NixlConnector only)."),
-    ] = None
-
-    @property
-    def num_nodes(self) -> int:
-        return self.num_prefill_nodes + self.num_decode_nodes
-
-    @model_validator(mode="after")
-    def validate_replicas_divide_nodes(self):
-        if self.num_prefill_nodes % self.num_prefill_replicas != 0:
-            raise ValueError(
-                f"num_prefill_replicas ({self.num_prefill_replicas}) must evenly divide "
-                f"num_prefill_nodes ({self.num_prefill_nodes})"
-            )
-        if self.num_decode_nodes % self.num_decode_replicas != 0:
-            raise ValueError(
-                f"num_decode_replicas ({self.num_decode_replicas}) must evenly divide "
-                f"num_decode_nodes ({self.num_decode_nodes})"
-            )
-        return self
-
-
 InferenceDeploymentConfig: TypeAlias = Annotated[
-    SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig | DisaggregatedInferenceDeploymentConfig,
+    SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig,
     Field(discriminator="type"),
 ]
 
@@ -395,7 +333,12 @@ class InferenceConfig(BaseConfig):
         Field(
             description="Extra arguments to pass to vLLM. These are applied as attributes on the vLLM namespace after config translation.",
         ),
-    ] = {}
+    ] = Field(default_factory=dict)
+
+    env_overrides: Annotated[
+        dict[str, Any],
+        Field(description="Environment overrides exported before launching inference."),
+    ] = Field(default_factory=lambda: dict(DEFAULT_RUNTIME_ENV_OVERRIDES))
 
     # Launcher-only fields
 
@@ -426,25 +369,6 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_disaggregated(self):
-        """Auto-configure inference for disaggregated P/D: enable EP and compute DP."""
-        if self.deployment.type == "disaggregated":
-            if "enable_expert_parallel" not in self.model_fields_set:
-                self.enable_expert_parallel = True
-            if "enable_eplb" not in self.model_fields_set:
-                self.enable_eplb = False
-            gpus_per_node = self.deployment.gpus_per_node
-            tp = self.parallel.tp
-            dp_per_node = gpus_per_node // tp
-            if self.data_parallel_size_local is None:
-                self.data_parallel_size_local = dp_per_node
-            if self.parallel.dp == 1:
-                self.parallel.dp = dp_per_node
-            if self.api_server_count == 1:
-                self.api_server_count = dp_per_node
         return self
 
     @model_validator(mode="after")

@@ -29,6 +29,7 @@ dependencies = [
     "openai>=1.106.1",
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
+    "sonic-moe",
     "uvloop>=0.21.0",
     "torchtitan",
     "verifiers",
@@ -118,6 +119,8 @@ environments = [
 # Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
+    # sonic-moe caps torch at <=2.9.1, but this repo's vLLM stack uses torch 2.10.
+    "torch==2.10.0",
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
