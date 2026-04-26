@@ -1,3 +1,4 @@
+import random
 from collections import deque
 from dataclasses import dataclass
 from typing import Iterator, Literal, TypeAlias
@@ -5,6 +6,7 @@ from typing import Iterator, Literal, TypeAlias
 import verifiers as vf
 
 from prime_rl.configs.orchestrator import EvalEnvConfig, TrainEnvConfig
+from prime_rl.utils.logger import get_logger
 
 Kind: TypeAlias = Literal["train", "eval"]
 
@@ -47,8 +49,10 @@ class Scheduler:
         eval_envs: list[EvalEnvConfig] | None = None,
         eval_interval: int | None = None,
         eval_at_zero: bool = False,
+        seed: int | None = None,
     ):
         assert train_envs, "Scheduler requires at least one train env"
+        logger = get_logger()
 
         self.tasks: list[Task] = []
         self._datasets: list[Iterator[dict]] = []
@@ -65,6 +69,19 @@ class Scheduler:
             )
             self._datasets.append(_cycle_forever(env.get_dataset()))
         self._idx = 0
+
+        # Env selection: weighted random when all envs have a ratio set
+        # (config validator enforces all-or-none), round-robin otherwise.
+        # Local Random instance keeps env-selection determinism decoupled from
+        # global random state.
+        ratios = [cfg.ratio for cfg in train_envs]
+        self._env_weights: list[float] | None = ratios if all(r is not None for r in ratios) else None  # type: ignore[assignment]
+        self._rng = random.Random(seed)
+        if self._env_weights is not None:
+            named = ", ".join(f"{cfg.resolved_name}={cfg.ratio:.2f}" for cfg in train_envs)
+            logger.info(f"Sampling train envs by ratio ({named})")
+        else:
+            logger.info(f"Sampling train envs round-robin ({len(train_envs)} env(s))")
 
         self.eval_tasks: list[Task] = []
         self._eval_datasets: list[list[dict]] = []
@@ -120,6 +137,18 @@ class Scheduler:
             if not self._eval_queue:
                 self._dispatching_eval_step = None
             return Dispatch(task=task, example=example, eval_step=eval_step)
+
+        if self._env_weights is not None:
+            # Weighted: pick by ratio; loop only as a defensive guard if an
+            # iterator is exhausted (shouldn't happen with _cycle_forever).
+            for _ in range(len(self.tasks)):
+                i = self._rng.choices(range(len(self.tasks)), weights=self._env_weights, k=1)[0]
+                try:
+                    example = next(self._datasets[i])
+                    return Dispatch(task=self.tasks[i], example=example)
+                except StopIteration:
+                    continue
+            return None
 
         for _ in range(len(self.tasks)):
             i = self._idx

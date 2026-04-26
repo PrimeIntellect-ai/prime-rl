@@ -80,6 +80,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         eval_envs=cfg.eval.env if cfg.eval else None,
         eval_interval=cfg.eval.interval if cfg.eval else None,
         eval_at_zero=(cfg.eval.eval_base_model if cfg.eval else False) and resume_step is None,
+        seed=cfg.seed,
     )
     for task in scheduler.tasks:
         logger.info(f"Train task '{task.id}' ready (rollouts/group={task.rollouts_per_group})")
