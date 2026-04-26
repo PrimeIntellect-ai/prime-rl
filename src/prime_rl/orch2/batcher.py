@@ -347,6 +347,11 @@ class TrainBatcher:
         # the engine's semaphore stops releasing. Set to a huge value to
         # benchmark orch alone (no trainer, no blocking).
         # Strict mode: wait until lead EQUALS the target (not just <=).
+        # If we block here for an unusually long time the trainer is likely
+        # gone or stuck — emit a periodic warning so it's visible in logs
+        # without changing semantics.
+        t0 = time.perf_counter()
+        warned = False
         while True:
             lead = self.step - self.policy.policy_version
             if self.strict:
@@ -354,6 +359,14 @@ class TrainBatcher:
                     return
             elif lead <= self.max_training_batches_ahead:
                 return
+            if not warned and time.perf_counter() - t0 > 30.0:
+                self.logger.warning(
+                    f"Batcher stalled at barrier for >30s: step={self.step}, "
+                    f"policy_version={self.policy.policy_version}, lead={lead} "
+                    f"(max_async_level={self.max_training_batches_ahead}). "
+                    f"Trainer may be stuck or down."
+                )
+                warned = True
             await asyncio.sleep(0.1)
 
     def _handle_eval(self, group: Group) -> None:
