@@ -324,6 +324,18 @@ class EnvConfig(BaseConfig):
         ),
     ] = -1
 
+    rollout_timeout: Annotated[
+        float | None,
+        Field(
+            gt=0,
+            description=(
+                "Per-rollout wall-clock timeout in seconds, applied to both train and eval rollouts. "
+                "When the timeout fires, the rollout task is cancelled and surfaced as a failure "
+                "(reschedule for train, counted as failed for eval). None (default) disables the timeout."
+            ),
+        ),
+    ] = None
+
     @property
     def stripped_id(self) -> str:
         """Environment ID without the @version suffix."""

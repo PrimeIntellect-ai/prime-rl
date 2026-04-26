@@ -118,7 +118,7 @@ class Env:
         cache_salt: str,
     ) -> vf.RolloutOutput:
         """Run a single rollout for an example."""
-        return await self.env.run_rollout(
+        coro = self.env.run_rollout(
             vf.RolloutInput(**example),
             client=client,
             model=model_name,
@@ -127,6 +127,7 @@ class Env:
             state_columns=REQUIRED_STATE_COLUMNS,
             env_client=self.env_client,
         )
+        return await asyncio.wait_for(coro, timeout=self.config.rollout_timeout)
 
     async def run_group(
         self,
@@ -137,7 +138,7 @@ class Env:
         cache_salt: str,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
-        return await self.env.run_group(
+        coro = self.env.run_group(
             [vf.RolloutInput(**example) for _ in range(rollouts_per_example)],
             client=client,
             model=model_name,
@@ -146,6 +147,7 @@ class Env:
             state_columns=REQUIRED_STATE_COLUMNS,
             env_client=self.env_client,
         )
+        return await asyncio.wait_for(coro, timeout=self.config.rollout_timeout)
 
     def shutdown(self) -> None:
         if self._env_server_process is None:
