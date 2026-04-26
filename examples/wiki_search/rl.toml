@@ -37,13 +37,13 @@ oversampling_factor = 2.0
 [orchestrator.model.lora]
 name = "qwen3-4b-wiki-search"
 
-[orchestrator.sampling]
-max_tokens = 512
+[orchestrator.train.sampling]
+max_completion_tokens = 512
 
 [orchestrator.buffer]
 online_difficulty_filtering = true
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "primeintellect/wiki-search"
 
 [ckpt] # Checkpoint at the end of training

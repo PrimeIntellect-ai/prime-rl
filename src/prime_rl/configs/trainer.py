@@ -139,7 +139,13 @@ class LoRAConfig(BaseConfig):
     target_modules: Annotated[
         list[str],
         Field(
-            description="Module names or regex patterns for modules to apply LoRA to. Simple names (e.g., 'q_proj') match any component in the module path. Regex patterns match anywhere in the name.",
+            description=(
+                "Module names or regex patterns for modules to apply LoRA to. Simple names (e.g., 'q_proj') "
+                "match any component in the module path. Regex patterns match anywhere in the name. "
+                "Names unknown to the current model are silently ignored, so defaults cover multiple architectures. "
+                "NemotronH note: 'experts' matches NonGatedGroupedExperts inside LatentMoE; 'fc1_latent_proj' and "
+                "'fc2_latent_proj' adapt the latent up/down projections. Add 'in_proj'/'out_proj' to also LoRA Mamba."
+            ),
         ),
     ] = [
         "q_proj",
@@ -150,6 +156,8 @@ class LoRAConfig(BaseConfig):
         "up_proj",
         "down_proj",
         "experts",
+        "fc1_latent_proj",
+        "fc2_latent_proj",
     ]
 
     modules_to_save: Annotated[
@@ -184,7 +192,7 @@ class ModelConfig(BaseModelConfig):
     attn: Annotated[
         AttnImplementation,
         Field(
-            description="The attention implementation to use. When CP is enabled, ring attention uses the matching kernel family (FA2 for flash_attention_2, FA3 for flash_attention_3).",
+            description="The attention implementation to use. When CP is enabled, ring attention uses the matching kernel family (FA2 for flash_attention_2, FA3 for flash_attention_3, FA4 for fa4).",
         ),
     ] = "flash_attention_2"
 
@@ -368,12 +376,12 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def cp_only_with_flash_attn(self):
-        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3"]:
-            raise ValueError("CP is only supported with flash attention 2 or flash attention 3")
-        if self.cp > 1 and self.attn == "flash_attention_3" and self.impl != "custom":
+        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "fa4"]:
+            raise ValueError("CP is only supported with flash attention 2, flash attention 3, or fa4")
+        if self.cp > 1 and self.attn in ("flash_attention_3", "fa4") and self.impl != "custom":
             raise ValueError(
-                "CP with flash_attention_3 requires model.impl='custom' "
-                "(the FA3 ring-attention kernel is only implemented for the custom model path)"
+                f"CP with {self.attn} requires model.impl='custom' "
+                "(the ring-attention kernel is only implemented for the custom model path)"
             )
         return self
 
@@ -719,6 +727,10 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+class TrainerExperimentalConfig(BaseConfig):
+    """Experimental features for the trainer."""
+
+
 class TrainerConfig(BaseConfig):
     """Configures the RL trainer"""
 
@@ -836,6 +848,11 @@ class TrainerConfig(BaseConfig):
             description="The maximum number of concurrent runs to allow. If 1, then only one run will be allowed at a time.",
         ),
     ] = 1
+
+    experimental: Annotated[
+        TrainerExperimentalConfig,
+        Field(description="Experimental features for the trainer."),
+    ] = TrainerExperimentalConfig()
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):

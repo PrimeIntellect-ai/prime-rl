@@ -13,6 +13,8 @@ from prime_rl.inference.vllm.server import resolve_tool_call_parser
         # GLM-4.7
         ("zai-org/GLM-4.7", "glm47"),
         ("zai-org/GLM-4.7-Flash", "glm47"),
+        # GLM-5.1
+        ("zai-org/GLM-5.1", "glm47"),
         # MiniMax
         ("MiniMaxAI/MiniMax-M2", "minimax_m2"),
         ("MiniMaxAI/MiniMax-M2.1", "minimax_m2"),

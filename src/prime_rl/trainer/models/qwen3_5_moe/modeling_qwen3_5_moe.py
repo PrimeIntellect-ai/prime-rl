@@ -255,7 +255,11 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             conv1d_kernel_size=self.conv_kernel_size,
         )
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.LongTensor | None = None,
+    ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
 
         mixed_qkv = self.in_proj_qkv(hidden_states).transpose(1, 2)
@@ -263,15 +267,32 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
-        # Causal conv1d
+        # Causal conv1d — must reset at sequence boundaries for packed batches,
+        # otherwise the kernel-1 left pad leaks state across sequences.
         if self._causal_conv1d_fn is not None:
+            seq_idx = None
+            if cu_seqlens is not None:
+                seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+                seq_idx = torch.repeat_interleave(
+                    torch.arange(seg_lens.numel(), dtype=torch.int32, device=hidden_states.device),
+                    seg_lens,
+                ).unsqueeze(0)
             mixed_qkv = self._causal_conv1d_fn(
                 x=mixed_qkv,
                 weight=self.conv1d.weight.squeeze(1),
                 bias=self.conv1d.bias,
                 activation=self.activation,
-                seq_idx=None,
+                seq_idx=seq_idx,
             )
+        elif cu_seqlens is not None:
+            cu = cu_seqlens.tolist()
+            conv_outs = []
+            for i in range(len(cu) - 1):
+                s, e = cu[i], cu[i + 1]
+                if s == e:
+                    continue
+                conv_outs.append(self.conv1d(mixed_qkv[:, :, s:e])[:, :, : e - s])
+            mixed_qkv = F.silu(torch.cat(conv_outs, dim=-1))
         else:
             mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
 
@@ -313,6 +334,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
                 initial_state=None,
                 output_final_state=False,
                 use_qk_l2norm_in_kernel=True,
+                cu_seqlens=cu_seqlens,
             )
 
         # Gated RMSNorm
@@ -606,7 +628,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
 
         # Token mixer
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(hidden_states)
+            hidden_states = self.linear_attn(hidden_states, cu_seqlens=cu_seqlens)
         elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,

@@ -185,7 +185,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
         return AsyncClient(
             base_url=base_url,
             headers=headers,
-            limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
             timeout=httpx.Timeout(None),
         )
 

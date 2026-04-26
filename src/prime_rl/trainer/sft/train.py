@@ -109,7 +109,7 @@ def train(config: SFTConfig):
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
         substitute_hf_flash_attn(cp_group, heads_k_stride=1)
         substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_hybrid_cp, setup_sparse_mla_cp
+        from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -131,6 +131,7 @@ def train(config: SFTConfig):
     if parallel_dims.cp_enabled:
         setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     if config.model.lora is not None:
         multi_run_manager = get_multi_run_manager()

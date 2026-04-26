@@ -85,7 +85,7 @@ class ModelConfig(BaseModelConfig):
             description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`. "
             'Set to "auto" to infer from the model name.',
         ),
-    ] = None
+    ] = "auto"
 
     reasoning_parser: Annotated[
         str | None,
@@ -242,6 +242,10 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
     SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig | DisaggregatedInferenceDeploymentConfig,
     Field(discriminator="type"),
 ]
+
+
+class InferenceExperimentalConfig(BaseConfig):
+    """Experimental features for inference."""
 
 
 class InferenceConfig(BaseConfig):
@@ -412,6 +416,11 @@ class InferenceConfig(BaseConfig):
     output_dir: Annotated[Path, Field(description="Directory for SLURM logs and generated scripts.")] = Path("outputs")
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+
+    experimental: Annotated[
+        InferenceExperimentalConfig,
+        Field(description="Experimental features for inference."),
+    ] = InferenceExperimentalConfig()
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):

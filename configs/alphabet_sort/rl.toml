@@ -13,10 +13,10 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 batch_size = 512
 rollouts_per_example = 16
 
-[orchestrator.sampling]
-max_tokens = 512
+[orchestrator.train.sampling]
+max_completion_tokens = 512
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "alphabet-sort"
 name = "alphabet-sort"
 args = { min_turns = 2, max_turns = 2 }

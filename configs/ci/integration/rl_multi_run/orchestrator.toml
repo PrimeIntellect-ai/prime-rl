@@ -11,10 +11,10 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 [optim]
 lr = 3e-5
 
-[sampling]
-max_tokens = 128
+[train.sampling]
+max_completion_tokens = 128
 
-[[env]]
+[[train.env]]
 id = "reverse-text"
 
 [ckpt]

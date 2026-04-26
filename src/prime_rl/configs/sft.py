@@ -159,6 +159,10 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
+class SFTExperimentalConfig(BaseConfig):
+    """Experimental features for SFT training."""
+
+
 class SFTConfig(BaseConfig):
     """Configures the SFT trainer"""
 
@@ -269,6 +273,11 @@ class SFTConfig(BaseConfig):
     ] = None
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+
+    experimental: Annotated[
+        SFTExperimentalConfig,
+        Field(description="Experimental features for SFT training."),
+    ] = SFTExperimentalConfig()
 
     ### Pre-validation normalization
 

@@ -440,7 +440,7 @@ dependencies = [
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/code-env/@905f3374/code_env-0.1.1-py3-none-any.whl", hash = "sha256:52e88748eeee933add11e3f485e2d9e4d4515cdc609acbd5789862adbd541ac8" },
+    { url = "https://hub.primeintellect.ai/primeintellect/code-env/@2e4fb479/code_env-0.1.1-py3-none-any.whl", hash = "sha256:42a5c0b9bf6d858ff1f71a779d38e5268fb03f63ed347a736eb6938859303177" },
 ]
 
 [[package]]
@@ -452,7 +452,7 @@ dependencies = [
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/color-codeword/@80a7a5ac/color_codeword-0.1.0-py3-none-any.whl", hash = "sha256:c8be97a91ca823074bfdd2756803d74833fe43b0d09c755b96fb432f9c0d3047" },
+    { url = "https://hub.primeintellect.ai/primeintellect/color-codeword/@828f24c5/color_codeword-0.1.0-py3-none-any.whl", hash = "sha256:5bf72f74d6ee001b6be96768dd269e8762617dd3644238bda7623f58a6bc069a" },
 ]
 
 [[package]]
@@ -1013,6 +1013,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/72/94/63b0fc47eb32792c7
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/61/5c78b91c3143ed5c14207f463aecfc8f9dbb5092fb2869baf37c273b2705/gitdb-4.0.12-py3-none-any.whl", hash = "sha256:67073e15955400952c6565cc3e707c554a4eea2e428946f7a4c162fab9bd9bcf", size = 62794, upload-time = "2025-01-02T07:20:43.624Z" },
 ]
+
+[[package]]
+name = "gitignore-parser"
+version = "0.1.13"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/51/e391a1a4238f18d0abb47be479b07af265ad4519022cf51b7da47ef82487/gitignore_parser-0.1.13.tar.gz", hash = "sha256:c7e10c8190accb8ae57fb3711889e73a9c0dbc04d4222b91ace8a4bf64d2f746", size = 5603, upload-time = "2025-08-25T06:33:22.704Z" }
 
 [[package]]
 name = "gitpython"
@@ -1588,7 +1594,7 @@ dependencies = [
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/logic-env/@faee829c/logic_env-0.1.0-py3-none-any.whl", hash = "sha256:789523bfbd87af97d67422b1ba6f89c181d8d33e4b6aedce629c312b0ab4ed1f" },
+    { url = "https://hub.primeintellect.ai/primeintellect/logic-env/@7bded58d/logic_env-0.1.0-py3-none-any.whl", hash = "sha256:3ecc5f31feb13fb5bd8d9a091d1d7cf0e6a8687c758f9b2a04e5f1b3b0c235a8" },
 ]
 
 [[package]]
@@ -2600,11 +2606,12 @@ wheels = [
 
 [[package]]
 name = "prime"
-version = "0.5.37"
+version = "0.5.63"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "build", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "cryptography", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "gitignore-parser", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "httpx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "prime-evals", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "prime-sandboxes", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2615,9 +2622,9 @@ dependencies = [
     { name = "typer", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/80/d6/3ee8ab09233346fd3a9b99b519126d624e44a3711b3ba4968e0d338dfadc/prime-0.5.37.tar.gz", hash = "sha256:fa9ac54e36c3b77566eba708a943a897aff63c86ad842a4caa18c62baf48d0fd", size = 294164, upload-time = "2026-02-13T12:08:07.739Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/39/d33077f9e3e0c0558c81ab0cfda07f26de84d25ea1ec267d707c1acae24a/prime-0.5.63.tar.gz", hash = "sha256:63ebb306550239f3194b44e289916db89e5381badef15495eca8ea38b91d2347", size = 327336, upload-time = "2026-04-14T22:31:21.671Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ca/1e/500239bb5d6bfaadbbbf092f09172e22c6764e81287751bb07657daf08f4/prime-0.5.37-py3-none-any.whl", hash = "sha256:d8bfa14c9c681d60f44522de031320fbc5dd1bf0ff24482016fbc806fc29c759", size = 144603, upload-time = "2026-02-13T12:08:06.723Z" },
+    { url = "https://files.pythonhosted.org/packages/31/94/015026f60bb8dbd2367883e117a7653db1fe568dd1ec4b2db9bc4388a557/prime-0.5.63-py3-none-any.whl", hash = "sha256:a60d7a61e56a2a9b426b18af7563da48bbbf37da061161bd2db2a20eb5688614", size = 166706, upload-time = "2026-04-14T22:31:20.225Z" },
 ]
 
 [[package]]
@@ -2676,6 +2683,8 @@ all = [
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "flash-attn-3", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "flash-attn-4", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "nixl", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "nixl-cu12", version = "0.10.1", source = { url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "quack-kernels", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2764,9 +2773,11 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "nvidia-ml-py", specifier = ">=12.575.51" },
     { name = "openai", specifier = ">=1.106.1" },
-    { name = "prime", specifier = ">=0.5.37" },
+    { name = "prime", specifier = ">=0.5.63" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
+    { name = "prime-rl", extras = ["flash-attn-3"], marker = "extra == 'all'" },
+    { name = "prime-rl", extras = ["flash-attn-cute"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pydantic", specifier = ">=1.10.13" },
@@ -2787,9 +2798,9 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0760204" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=77a9f28" },
     { name = "vllm", specifier = ">=0.19.0" },
-    { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.18/vllm_router-0.1.16-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
     { name = "wiki-search", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
 ]
@@ -2824,16 +2835,16 @@ wheels = [
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.5"
+version = "0.1.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2f/d2/17236f43b855a4261252d317ef230beb0571268427418c8d471d3eba195c/prime_tunnel-0.1.5.tar.gz", hash = "sha256:eec296f92abbd761edcb779db7052bf9ce9c3469641f8f17645b7ed5c478257e", size = 12609, upload-time = "2026-03-21T00:52:56.147Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d1/e8/fec186cfbcc670deed94a7b5ace67688feed38b114b1c602d35a8f8d7564/prime_tunnel-0.1.6.tar.gz", hash = "sha256:5e371bc3557d8a5257a43ef1aeea1f8918da966a8565dacd33a647b6c82a0eaa", size = 13019, upload-time = "2026-04-13T15:13:17.24Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/66/d2/26c801e0ee8ed867875a704c1fa238581f505bbd96f618c894c8dca991fc/prime_tunnel-0.1.5-py3-none-any.whl", hash = "sha256:fc24bf60d8023f53850be9602dc7d0e1be3e091a019a06c65d32a6b3d61754af", size = 14758, upload-time = "2026-03-21T00:52:55.278Z" },
+    { url = "https://files.pythonhosted.org/packages/52/35/adfac88e5880418f095758729b73e395c81be869d0be786fcd4b31938b2f/prime_tunnel-0.1.6-py3-none-any.whl", hash = "sha256:bc096bca509621379f671e2401253ab2ebe6c8c143d797b6ef85d8290c462e0d", size = 14914, upload-time = "2026-04-13T15:13:16.08Z" },
 ]
 
 [[package]]
@@ -4024,8 +4035,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.12.dev2"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0760204#07602042d6909b1d3c405d6d99aee0088c7990d2" }
+version = "0.1.12.dev6"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=77a9f28#77a9f282bdea2c09b34e726a1e6c7b5e55bab8be" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4145,8 +4156,8 @@ wheels = [
 
 [[package]]
 name = "vllm-router"
-version = "0.1.16"
-source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.18/vllm_router-0.1.16-cp38-abi3-manylinux_2_28_x86_64.whl" }
+version = "0.1.22"
+source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" }
 dependencies = [
     { name = "aiohttp", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "fastapi", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -4156,7 +4167,7 @@ dependencies = [
     { name = "uvicorn", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.18/vllm_router-0.1.16-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:8bea20e6bbb1792208204d034d68c9a88872a812af2734f27f700738c1070d89" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:6361a0387241e56932f3ba2e51af27f58d11a462e3187e58286b2f96056e4d15" },
 ]
 
 [package.metadata]

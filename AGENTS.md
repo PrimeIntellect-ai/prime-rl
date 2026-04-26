@@ -43,6 +43,9 @@ You are responsible for maintaining the skills folder. When a workflow fails and
 
 Write tests as plain functions with pytest fixtures. Don't use class-based tests.
 
+- **Conservative test additions**: don't add new tests unless the user explicitly asks for them or it's clearly necessary. Editing existing tests is fine, but adding new test files or test functions should be the exception, not the default.
+- **Test what matters**: only test code with clear, isolated logic — pure functions, abstract base classes, data transformations, well-defined algorithms. Don't test runtime-level code, framework glue, or anything that requires extensive mocking/patching just to get a test to pass. If you need to patch everything out to make it testable, it's probably not worth testing.
+
 ## Git
 
 - **Branch prefixes**: use the following prefixes for branches: `feat/`, `fix/`, `chore/`

@@ -13,10 +13,10 @@ language_model_attr = "model.language_model"
 batch_size = 16
 rollouts_per_example = 2
 
-[orchestrator.sampling]
-max_tokens = 32
+[orchestrator.train.sampling]
+max_completion_tokens = 32
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "color-codeword"
 args = { images_per_turn = 1, max_turns = 2, num_examples = 100, seed = 42 }
 

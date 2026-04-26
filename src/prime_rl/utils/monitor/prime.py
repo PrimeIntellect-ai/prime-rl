@@ -1,13 +1,13 @@
 import asyncio
 import io
 import json
+import math
 import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 import pyarrow as pa
@@ -56,8 +56,56 @@ _SAMPLE_SCHEMA = pa.schema(
 )
 
 
+_DROPPED_JSON_VALUE = object()
+
+
+def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str = "") -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        dropped_paths.append(path)
+        return _DROPPED_JSON_VALUE
+
+    if isinstance(value, dict):
+        return {
+            key: sanitized_item
+            for key, item in value.items()
+            if (
+                sanitized_item := _drop_non_finite_json_values(
+                    item,
+                    dropped_paths,
+                    f"{path}.{key}" if path else str(key),
+                )
+            )
+            is not _DROPPED_JSON_VALUE
+        }
+
+    if isinstance(value, list):
+        return [
+            sanitized_item
+            for idx, item in enumerate(value)
+            if (sanitized_item := _drop_non_finite_json_values(item, dropped_paths, f"{path}[{idx}]"))
+            is not _DROPPED_JSON_VALUE
+        ]
+
+    return value
+
+
 class PrimeMonitor(Monitor):
     """Logs to Prime Intellect API."""
+
+    def _sanitize_json_payload(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Drop non-finite floats before sending JSON payloads to the public API."""
+        dropped_paths: list[str] = []
+        sanitized_payload = _drop_non_finite_json_values(payload, dropped_paths)
+        if not dropped_paths:
+            return payload
+
+        preview = ", ".join(dropped_paths[:5])
+        suffix = " ..." if len(dropped_paths) > 5 else ""
+        self.logger.warning(
+            f"Dropping {len(dropped_paths)} non-finite value(s) from Prime monitor {endpoint} payload: "
+            f"{preview}{suffix}"
+        )
+        return sanitized_payload
 
     def __init__(
         self,
@@ -101,6 +149,11 @@ class PrimeMonitor(Monitor):
 
         self.api_key = api_key
         self.base_url = config.base_url.rstrip("/")
+        self._headers = {
+            "Authorization": f"Bearer {api_key}",
+            "x-api-key": api_key,
+            "Content-Type": "application/json",
+        }
 
         run_id = os.getenv("RUN_ID")
         if not run_id:
@@ -123,7 +176,7 @@ class PrimeMonitor(Monitor):
         os.register_at_fork(after_in_child=self._reinit_after_fork)
 
         # Optionally, initialize sample logging attributes
-        if config is not None and config.log_extras:
+        if config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
                 self._pending_sample_steps: set[int] = set()
@@ -133,14 +186,6 @@ class PrimeMonitor(Monitor):
 
     def _register_run(self, config: PrimeMonitorConfig, run_config: BaseConfig | None) -> str | None:
         """Register an external run with the platform. Returns run_id on success, None on failure."""
-        registration_api_key = self.api_key
-        if not registration_api_key:
-            self.logger.warning(
-                f"Prime Intellect API key not found. Set {config.api_key_var} environment variable or run `prime login`. "
-                "PrimeMonitor will not be able to register or upload data."
-            )
-            return None
-
         prime_config = None
         team_id = config.team_id
         frontend_url = config.frontend_url
@@ -168,13 +213,10 @@ class PrimeMonitor(Monitor):
         if wandb and getattr(wandb, "project", None):
             payload["wandb_project"] = wandb.project
 
-        parsed = urlparse(config.base_url)
-        api_base = f"{parsed.scheme}://{parsed.netloc}/api/v1/rft"
-
         try:
             response = httpx.post(
-                f"{api_base}/external-runs",
-                headers={"Authorization": f"Bearer {registration_api_key}"},
+                f"{self.base_url}/external-runs",
+                headers=self._headers,
                 json=payload,
                 timeout=30,
             )
@@ -200,21 +242,17 @@ class PrimeMonitor(Monitor):
 
     def _finalize_run(self, success: bool) -> None:
         """Mark the run as completed or failed on the platform."""
-        if not getattr(self, "_registered", False):
+        if not self._registered:
             return
 
-        registration_api_key = self.api_key
         payload: dict = {"status": "completed" if success else "failed"}
         status_label = "completed" if success else "failed"
         self.logger.info(f"Finalizing platform run {self.run_id} as {status_label}")
 
-        parsed = urlparse(self.base_url)
-        finalize_url = f"{parsed.scheme}://{parsed.netloc}/api/v1/rft/external-runs/{self.run_id}/status"
-
         try:
             response = httpx.put(
-                finalize_url,
-                headers={"Authorization": f"Bearer {registration_api_key}"},
+                f"{self.base_url}/external-runs/{self.run_id}/status",
+                headers=self._headers,
                 json=payload,
                 timeout=30,
             )
@@ -369,10 +407,6 @@ class PrimeMonitor(Monitor):
                 self.logger.warning(f"Failed to get presigned URL for samples at step {step}")
                 return
 
-            if "presigned_url" not in presign_data or "s3_key" not in presign_data:
-                self.logger.warning(f"Invalid presign response at step {step}")
-                return
-
             presigned_url = presign_data["presigned_url"]
             s3_key = presign_data["s3_key"]
 
@@ -398,15 +432,18 @@ class PrimeMonitor(Monitor):
 
     async def _request_presigned_url(self, step: int) -> dict[str, Any] | None:
         """Request a presigned URL from the backend."""
-        headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
         try:
             response = await self._client.post(
                 f"{self.base_url}/samples/presign",
-                headers=headers,
+                headers=self._headers,
                 json={"run_id": self.run_id, "step": step},
             )
             response.raise_for_status()
-            return response.json()
+            response_data = response.json()["data"]
+            return {
+                "presigned_url": response_data["presignedUrl"],
+                "s3_key": response_data["s3Key"],
+            }
         except Exception as e:
             self.logger.warning(f"Failed to request presigned URL: {type(e).__name__}: {e}")
             return None
@@ -430,12 +467,11 @@ class PrimeMonitor(Monitor):
 
     async def _confirm_samples_upload(self, step: int, s3_key: str, max_retries: int = 3) -> bool:
         """Confirm samples upload with the backend. Returns True on success."""
-        headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
         for attempt in range(max_retries):
             try:
                 response = await self._client.post(
                     f"{self.base_url}/samples/confirm",
-                    headers=headers,
+                    headers=self._headers,
                     json={"run_id": self.run_id, "step": step, "s3_key": s3_key},
                 )
                 response.raise_for_status()
@@ -493,22 +529,51 @@ class PrimeMonitor(Monitor):
             f"Logged distributions at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
+    def _submit_final_summary(self, summary: dict[str, Any]) -> bool:
+        """Submit the final summary/finalize request synchronously."""
+        payload = self._sanitize_json_payload(
+            "finalize",
+            {"run_id": self.run_id, "summary": summary},
+        )
+
+        try:
+            response = httpx.post(
+                f"{self.base_url}/finalize",
+                headers=self._headers,
+                json=payload,
+                timeout=30,
+            )
+        except httpx.HTTPError as e:
+            self.logger.warning(f"Failed to submit final summary for platform run {self.run_id}: {e}")
+            return False
+
+        if response.status_code != 200:
+            self.logger.warning(
+                f"Failed to submit final summary for platform run {self.run_id} "
+                f"(HTTP {response.status_code}): {response.text}"
+            )
+            return False
+
+        return True
+
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         """Save final summary to Prime Intellect API."""
         if not self.is_master or not self.enabled:
             return
 
         self.logger.info("Saving final summary to Prime Intellect API")
-        self._make_request(
-            "finalize",
-            {
-                "run_id": self.run_id,
-                "summary": self.history[-1] if self.history else {},
-            },
-        )
-        if os.getpid() == self._owner_pid:
-            self._finalize_run(success=True)
+        summary = self.history[-1] if self.history else {}
+        finalized_via_summary = self._submit_final_summary(summary)
+
+        if os.getpid() != self._owner_pid:
+            return
+
+        if finalized_via_summary:
             self._finalized = True
+            return
+
+        self._finalize_run(success=True)
+        self._finalized = True
 
     def close(self) -> None:
         """Close the HTTP client and stop the background event loop."""
@@ -580,18 +645,15 @@ class PrimeMonitor(Monitor):
 
     async def _make_request_async(self, endpoint: str, data: dict[str, Any], max_retries: int = 3) -> None:
         """Make an async POST request to the Prime Intellect API with retries."""
-        headers = {
-            "x-api-key": self.api_key,
-            "Content-Type": "application/json",
-        }
         full_endpoint = f"{self.base_url}/{endpoint}"
+        sanitized_data = self._sanitize_json_payload(endpoint, data)
 
         for attempt in range(max_retries):
             try:
                 response = await self._client.post(
                     full_endpoint,
-                    headers=headers,
-                    json=data,
+                    headers=self._headers,
+                    json=sanitized_data,
                 )
                 response.raise_for_status()
                 return  # Success

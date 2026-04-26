@@ -195,12 +195,15 @@ def _patch_qwen35_lora():
     from vllm.model_executor.models.qwen3_5 import (
         Qwen3_5ForCausalLMBase,
         Qwen3_5ForConditionalGeneration,
+        Qwen3_5MoeForConditionalGeneration,
     )
 
     qkvz_fix = ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z"]
 
     Qwen3_5ForCausalLMBase.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
     Qwen3_5ForConditionalGeneration.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
+
+    Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = False
 
     from vllm.lora.layers.utils import _not_fully_sharded_can_replace
 
@@ -302,10 +305,14 @@ def _patch_lora_key_prefix():
                 # is embedded: "...experts.N.down_proj".  Taking everything
                 # after ".experts" gives "experts.N.down_proj" which is
                 # never in the expected set even though "down_proj" is.
-                # Fix: always compare just the last component of the path.
+                # Qwen3-30B-A3B goes the other way: the expected set
+                # contains the fully-qualified per-expert name
+                # ("experts.N.down_proj") but not the bare suffix.
+                # Accept either form.
                 if ".experts" in module_name:
                     expert_suffix = module_name.split(".")[-1]
-                    if expert_suffix not in expected_lora_modules:
+                    experts_qualified = "experts" + module_name.split(".experts", 1)[-1]
+                    if expert_suffix not in expected_lora_modules and experts_qualified not in expected_lora_modules:
                         unexpected_modules.append(module_name)
 
                 elif module_name.rsplit(".", 1)[-1] not in expected_lora_modules:
@@ -476,6 +483,65 @@ def monkey_patch_LRUCacheWorkerLoRAManager():
 
     LRUCacheWorkerLoRAManager._apply_adapters = _patched__apply_adapters
     LRUCacheWorkerLoRAManager.add_adapter = _patched_add_adapter
+
+
+# Monkeypatch WorkerLoRAManager._load_adapter to skip the per-module regex
+# warning loop. On wide MoE models (Qwen3.5-35B-A3B) it spends minutes
+# recompiling regex patterns inside is_supported_lora_module — purely to emit
+# logger.warning_once about modules that will be ignored. Adapter validity is
+# already enforced by from_local_checkpoint, so dropping the warnings is safe.
+def monkey_patch_skip_lora_module_warnings():
+    from vllm.exceptions import LoRAAdapterNotFoundError
+    from vllm.lora.lora_model import LoRAModel
+    from vllm.lora.peft_helper import PEFTHelper
+    from vllm.lora.request import LoRARequest
+    from vllm.lora.utils import get_adapter_absolute_path
+    from vllm.lora.worker_manager import WorkerLoRAManager
+
+    def _patched_load_adapter(self: WorkerLoRAManager, lora_request: LoRARequest) -> LoRAModel:
+        try:
+            supported_lora_modules = self._adapter_manager.supported_lora_modules
+            packed_modules_mapping = self._adapter_manager.packed_modules_mapping
+            expected_lora_lst: list[str] = []
+            for module in supported_lora_modules:
+                if module in packed_modules_mapping:
+                    expected_lora_lst.extend(packed_modules_mapping[module])
+                else:
+                    expected_lora_lst.append(module)
+                if module == "experts":
+                    expected_lora_lst.append(module)
+            expected_lora_modules = set(expected_lora_lst)
+            lora_path = get_adapter_absolute_path(lora_request.lora_path)
+
+            peft_helper = PEFTHelper.from_local_dir(
+                lora_path,
+                self.max_position_embeddings,
+                lora_request.tensorizer_config_dict,
+            )
+            peft_helper.validate_legal(self.lora_config)
+
+            model = self._adapter_manager.model
+            hf_to_vllm_mapper = getattr(model, "hf_to_vllm_mapper", None)
+            lora_skip_prefixes = getattr(model, "lora_skip_prefixes", None)
+
+            lora = self._lora_model_cls.from_local_checkpoint(
+                lora_path,
+                expected_lora_modules,
+                peft_helper=peft_helper,
+                lora_model_id=lora_request.lora_int_id,
+                device="cpu",
+                dtype=self.lora_config.lora_dtype,
+                model_vocab_size=self.vocab_size,
+                tensorizer_config_dict=lora_request.tensorizer_config_dict,
+                weights_mapper=hf_to_vllm_mapper,
+                skip_prefixes=lora_skip_prefixes,
+            )
+        except FileNotFoundError as e:
+            raise LoRAAdapterNotFoundError(lora_request.lora_name, lora_request.lora_path) from e
+
+        return lora
+
+    WorkerLoRAManager._load_adapter = _patched_load_adapter
 
 
 # Monkeypatch TokenizeParams to fix overly conservative validation
@@ -957,18 +1023,15 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
 def monkey_patch_offloading_connector_cpu_block_count():
     """Fix CPU block count miscalculation in OffloadingConnector.
 
-    CPUOffloadingSpec erroneously multiplies page_size_bytes by
-    len(kv_cache_config.kv_cache_tensors) when computing kv_bytes_per_block.
-    For UniformTypeKVCacheSpecs the page_size is already the total per-block
-    size across all layers, so the extra multiplier makes num_blocks far too
-    small. When the OffloadingManager later allocates block IDs past the
-    undersized CPU tensor, swap_blocks (cuMemcpyDtoHAsync_v2) segfaults on the
-    invalid pinned address.
+    CPUOffloadingSpec derives kv_bytes_per_block from page_size_bytes multiplied
+    by len(kv_cache_config.kv_cache_tensors), which double-counts: page_size is
+    already aggregated across layers in the group. The undersized CPU pool then
+    produces out-of-bounds block mappings and swap_blocks segfaults.
 
-    Fix: remove the num_tensors multiplier.
+    Fix: derive kv_bytes_per_block from the actual total GPU KV tensor size
+    divided by num_blocks, matching the upstream PR.
 
-    Upstream: https://github.com/vllm-project/vllm/pull/38395
-    Related: https://github.com/vllm-project/vllm/issues/39500
+    Upstream: https://github.com/vllm-project/vllm/pull/39617
     """
     from vllm.v1.kv_offload.cpu.spec import CPUOffloadingSpec
 
@@ -977,18 +1040,18 @@ def monkey_patch_offloading_connector_cpu_block_count():
     def _patched_init(self, vllm_config, kv_cache_config):
         _original_init(self, vllm_config, kv_cache_config)
 
-        # Recalculate num_blocks WITHOUT the erroneous num_tensors multiplier.
         cpu_bytes_to_use = self.extra_config.get("cpu_bytes_to_use")
         if not cpu_bytes_to_use:
             return
 
-        page_sizes = {g.kv_cache_spec.page_size_bytes for g in kv_cache_config.kv_cache_groups}
-        assert len(page_sizes) == 1
-        page_size_bytes = page_sizes.pop()
+        if kv_cache_config.num_blocks > 0:
+            total_gpu_kv_bytes = sum(t.size for t in kv_cache_config.kv_cache_tensors)
+            kv_bytes_per_block = (
+                total_gpu_kv_bytes // kv_cache_config.num_blocks
+            ) * vllm_config.parallel_config.world_size
+        else:
+            kv_bytes_per_block = 0
 
-        # page_size_bytes already covers all layers in the group.
-        # Only multiply by world_size (each TP rank stores its own copy).
-        kv_bytes_per_block = page_size_bytes * vllm_config.parallel_config.world_size
         kv_bytes_per_offloaded_block = kv_bytes_per_block * self.block_size_factor
         self.num_blocks = (
             int(cpu_bytes_to_use) // kv_bytes_per_offloaded_block if kv_bytes_per_offloaded_block > 0 else 0

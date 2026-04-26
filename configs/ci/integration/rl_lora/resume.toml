@@ -23,10 +23,10 @@ rollouts_per_example = 16
 [orchestrator.model.lora]
 name = "r8-1e-4"
 
-[orchestrator.sampling]
-max_tokens = 128
+[orchestrator.train.sampling]
+max_completion_tokens = 128
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "reverse-text"
 
 [inference]

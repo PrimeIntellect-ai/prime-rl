@@ -2,6 +2,6 @@ max_steps = 5
 max_async_level = 5
 batch_size = 16
 
-[sampling]
-max_tokens = 16
+[train.sampling]
+max_completion_tokens = 16
 

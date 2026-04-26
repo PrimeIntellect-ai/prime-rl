@@ -196,6 +196,7 @@ class Scheduler:
         env_name = group.example["env_name"]
         env = self.train_envs.get(env_name)
 
+        cache_salt = str(self.ckpt_step)
         if env.requires_group_scoring:
             rollout_count = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0
@@ -205,6 +206,7 @@ class Scheduler:
                     example=group.example,
                     model_name=self.model_name,
                     rollouts_per_example=rollout_count,
+                    cache_salt=cache_salt,
                 )
             )
         else:
@@ -215,6 +217,7 @@ class Scheduler:
                     client=client_config,
                     example=group.example,
                     model_name=self.model_name,
+                    cache_salt=cache_salt,
                 )
             )
         self.inflight_requests[task] = InflightRequest(
@@ -429,20 +432,20 @@ class Scheduler:
                     valid_rollouts = []
                     has_failures = False
                     for rollout in rollouts:
-                        if len(rollout["trajectory"]) == 0:
-                            self.empty_rollouts_by_env[env_name] += 1
-                            has_failures = True
-                            self.logger.warning(
-                                f"Empty trajectory in group {group_id} ({env_name}), re-scheduling "
-                                f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
-                            )
-                        elif rollout["error"] is not None:
+                        if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
                             has_failures = True
                             self.logger.warning(
                                 f"Rollout error in group {group_id} ({env_name}), re-scheduling "
                                 f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
                                 f"{rollout['error']['error_chain_repr']}"
+                            )
+                        elif len(rollout["trajectory"]) == 0:
+                            self.empty_rollouts_by_env[env_name] += 1
+                            has_failures = True
+                            self.logger.warning(
+                                f"Empty trajectory in group {group_id} ({env_name}), re-scheduling "
+                                f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
                             )
                         else:
                             rollout["env_name"] = env_name
