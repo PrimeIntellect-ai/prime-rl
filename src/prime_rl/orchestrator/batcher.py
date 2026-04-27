@@ -237,6 +237,13 @@ class PostProcessor:
         t0 = time.perf_counter()
         samples = await asyncio.to_thread(self._convert, trainable)
         convert_time = time.perf_counter() - t0
+        if not samples:
+            # Trainer needs at least one sample per step. Step-mode can produce
+            # fully-filtered cohorts on small models; surface clearly.
+            self.logger.warning(
+                f"Step {step}: shipping empty batch ({len(filtered)} filtered, 0 trainable). "
+                f"Trainer may fail on this step — consider relaxing filters or batch_size."
+            )
 
         t1 = time.perf_counter()
         batch = TrainingBatch(examples=samples, step=step)
@@ -294,11 +301,16 @@ class PostProcessor:
         }
         get_monitor().log(metrics, step=step)
 
+        # reward/mean and seq_len/mean are only present when trainable is
+        # non-empty (see _rollout_metrics short-circuit). Step-mode batches can
+        # come out fully filtered — log placeholders instead of crashing.
+        reward_str = f"{metrics['reward/mean']:.4f}" if "reward/mean" in metrics else "n/a"
+        seqlen_str = f"{metrics['seq_len/mean']:.1f} tokens/sample" if "seq_len/mean" in metrics else "n/a"
         self.logger.success(
             f"Step {step} | "
             f"Time: {step_time:.2f}s | "
-            f"Reward: {metrics['reward/mean']:.4f} | "
-            f"Seq. Length: {metrics['seq_len/mean']:.1f} tokens/sample | "
+            f"Reward: {reward_str} | "
+            f"Seq. Length: {seqlen_str} | "
             f"Async Level: {async_level} | "
             f"Max. Off-Policy Level: {max_off_policy_level} | "
             f"Filtered: {len(filtered)}/{len(cohort)}"
@@ -351,10 +363,11 @@ class TrainBatcher:
         # benchmark orch alone (no trainer, no blocking).
         # Strict mode: wait until lead EQUALS the target (not just <=).
         # If we block here for an unusually long time the trainer is likely
-        # gone or stuck — emit a periodic warning so it's visible in logs
-        # without changing semantics.
+        # gone or stuck. We re-warn every 60s so the stall stays visible in
+        # logs; the launcher's process supervision is what hard-fails on
+        # actual trainer subprocess exit.
         t0 = time.perf_counter()
-        warned = False
+        next_warn = 30.0
         while True:
             lead = self.step - self.policy.policy_version
             if self.strict:
@@ -362,14 +375,15 @@ class TrainBatcher:
                     return
             elif lead <= self.max_training_batches_ahead:
                 return
-            if not warned and time.perf_counter() - t0 > 30.0:
+            elapsed = time.perf_counter() - t0
+            if elapsed >= next_warn:
                 self.logger.warning(
-                    f"Batcher stalled at barrier for >30s: step={self.step}, "
+                    f"Batcher stalled at barrier for {int(elapsed)}s: step={self.step}, "
                     f"policy_version={self.policy.policy_version}, lead={lead} "
                     f"(max_async_level={self.max_training_batches_ahead}). "
                     f"Trainer may be stuck or down."
                 )
-                warned = True
+                next_warn = elapsed + 60.0
             await asyncio.sleep(0.1)
 
     def _handle_eval(self, group: Group) -> None:

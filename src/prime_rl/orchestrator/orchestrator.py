@@ -214,6 +214,7 @@ async def run(cfg: OrchestratorConfig) -> None:
             tg.create_task(engine.run())
             tg.create_task(batcher.run())
             tg.create_task(watcher.run())
+            tg.create_task(admin.watch_health())
     except* Done:
         logger.success(f"Orchestrator finished: reached max_steps={cfg.max_steps}")
 

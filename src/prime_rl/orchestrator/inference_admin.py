@@ -6,9 +6,16 @@ from typing import Literal
 import httpx
 
 from prime_rl.utils.client import NCCL_READY_MARKER
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_step_path
 
 Mode = Literal["filesystem", "nccl"]
+
+
+class InferenceUnhealthy(RuntimeError):
+    """Raised by InferenceAdmin.watch_health when the inference server has
+    been unreachable / unhealthy for long enough that we'd rather crash the
+    orchestrator than keep blasting failing requests at a dead server."""
 
 
 class InferenceAdmin:
@@ -24,6 +31,13 @@ class InferenceAdmin:
     initialized.
     """
 
+    # Health-watcher tunables. ~60s of unhealth → abort. Aggressive enough to
+    # surface dead/hung vLLM quickly, lenient enough to ride out a transient
+    # reload (vLLM occasionally takes >30s to come back from a pause).
+    HEALTH_INTERVAL = 10.0
+    HEALTH_MAX_FAILURES = 6
+    HEALTH_PROBE_TIMEOUT = 5.0
+
     def __init__(self, base_url: str, api_key: str | None, broadcast_dir: Path, mode: Mode = "filesystem"):
         base_url = base_url.rstrip("/").removesuffix("/v1")
         headers = {}
@@ -38,6 +52,7 @@ class InferenceAdmin:
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
             timeout=httpx.Timeout(None),
         )
+        self.logger = get_logger()
 
     async def wait_healthy(self, timeout: float = 1800.0, interval: float = 1.0) -> None:
         deadline = time.perf_counter() + timeout
@@ -50,6 +65,35 @@ class InferenceAdmin:
                 pass
             await asyncio.sleep(interval)
         raise TimeoutError(f"Inference server {self.base_url} not healthy after {timeout}s")
+
+    async def watch_health(self) -> None:
+        """Periodic /health probe. Raises InferenceUnhealthy after enough
+        consecutive failures to crash the orchestrator deterministically;
+        otherwise rollouts pile up retrying against a dead/hung server."""
+        consecutive = 0
+        while True:
+            await asyncio.sleep(self.HEALTH_INTERVAL)
+            ok = False
+            reason = ""
+            try:
+                r = await self.client.get("/health", timeout=self.HEALTH_PROBE_TIMEOUT)
+                ok = r.status_code == 200
+                if not ok:
+                    reason = f"status {r.status_code}"
+            except (httpx.HTTPError, asyncio.TimeoutError) as e:
+                reason = repr(e)
+            if ok:
+                consecutive = 0
+                continue
+            consecutive += 1
+            self.logger.warning(
+                f"Inference health probe failed ({reason}); consecutive={consecutive}/{self.HEALTH_MAX_FAILURES}"
+            )
+            if consecutive >= self.HEALTH_MAX_FAILURES:
+                raise InferenceUnhealthy(
+                    f"Inference server {self.base_url} unhealthy for "
+                    f"~{int(consecutive * self.HEALTH_INTERVAL)}s — aborting orchestrator"
+                )
 
     async def check_model(self, model_name: str) -> None:
         r = await self.client.get("/v1/models")
