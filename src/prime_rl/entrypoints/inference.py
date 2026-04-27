@@ -33,6 +33,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
 
+    is_disaggregated = config.deployment.type == "disaggregated"
     dp_per_node = config.deployment.gpus_per_node // config.parallel.tp
 
     template_vars = dict(
@@ -43,11 +44,31 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         dp_per_node=dp_per_node,
         num_nodes=getattr(config.deployment, "num_nodes", 1),
         port=config.server.port,
-        disaggregated=False,
+        disaggregated=is_disaggregated,
     )
 
     is_multi_node = config.deployment.type == "multi_node"
-    if is_multi_node:
+
+    if is_disaggregated:
+        template_vars.update(
+            num_prefill_nodes=config.deployment.num_prefill_nodes,
+            num_decode_nodes=config.deployment.num_decode_nodes,
+            num_prefill_replicas=config.deployment.num_prefill_replicas,
+            num_decode_replicas=config.deployment.num_decode_replicas,
+            prefill_port=config.deployment.prefill_port,
+            decode_port=config.deployment.decode_port,
+            router_port=config.deployment.router_port,
+            router_policy=config.deployment.router_policy,
+            data_parallel_rpc_port=config.data_parallel_rpc_port,
+            use_deep_gemm=config.use_deep_gemm,
+            prefill_env_overrides=config.deployment.prefill_env_overrides,
+            decode_env_overrides=config.deployment.decode_env_overrides,
+            kv_offload=config.deployment.kv_cache_offload is not None,
+            kv_offload_cpu_bytes=int(config.deployment.kv_cache_offload.cpu_bytes)
+            if config.deployment.kv_cache_offload
+            else 0,
+        )
+    elif is_multi_node:
         template_vars.update(
             router_port=config.deployment.router_port,
             backend_port=config.deployment.backend_port,
@@ -67,7 +88,11 @@ def inference_slurm(config: InferenceConfig):
     logger = setup_logger("info")
 
     config_dir = get_config_dir(config.output_dir)
-    exclude = {"deployment", "slurm", "dry_run"} if config.deployment.type == "multi_node" else {"slurm", "dry_run"}
+    exclude = (
+        {"deployment", "slurm", "dry_run"}
+        if config.deployment.type in ("multi_node", "disaggregated")
+        else {"slurm", "dry_run"}
+    )
     config_path = write_config(config, config_dir, exclude=exclude)
     logger.info(f"Wrote config to {config_path}")
 
