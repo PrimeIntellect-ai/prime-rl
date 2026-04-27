@@ -2,14 +2,11 @@ from dataclasses import dataclass
 
 import torch
 from deep_ep import Buffer
-from deep_ep.utils import EventHandle, EventOverlap
 from torch.distributed import ProcessGroup
 
 _buffer: Buffer | None = None
 _handle_cache: dict[int, object] = {}
-_pending_dispatch_events: dict[int, EventOverlap] = {}
 _handle_counter = 0
-_pending_combine_event: EventOverlap | None = None
 _deepep_cuda_ops_registered = False
 _deepep_cuda_lib: torch.library.Library | None = None
 
@@ -18,10 +15,6 @@ def _get_next_handle_id() -> torch.Tensor:
     global _handle_counter
     _handle_counter += 1
     return torch.tensor([_handle_counter], dtype=torch.int64, device="cpu")
-
-
-def _new_event_overlap() -> EventOverlap:
-    return EventOverlap(EventHandle())
 
 
 def register_deepep_cuda_ops() -> None:
@@ -56,8 +49,7 @@ def _dispatch_op_impl(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     assert _buffer is not None, "DeepEP buffer must be initialized before dispatch."
 
-    previous_event = _new_event_overlap()
-    recv_x, recv_indices, recv_scores, recv_num_tokens_per_expert_list, handle, after_event = _buffer.dispatch(
+    recv_x, recv_indices, recv_scores, recv_num_tokens_per_expert_list, handle, _ = _buffer.dispatch(
         x=x,
         topk_idx=topk_idx,
         topk_weights=topk_weights.to(torch.float32),
@@ -65,13 +57,9 @@ def _dispatch_op_impl(
         num_tokens_per_rdma_rank=num_tokens_per_rdma_rank,
         is_token_in_rank=is_token_in_rank,
         num_tokens_per_expert=num_tokens_per_expert,
-        previous_event=previous_event,
-        async_finish=True,
-        allocate_on_comm_stream=True,
     )
     handle_id = _get_next_handle_id()
     _handle_cache[handle_id.item()] = handle
-    _pending_dispatch_events[handle_id.item()] = after_event
     recv_num_tokens_per_expert = torch.tensor(recv_num_tokens_per_expert_list, dtype=torch.int32, device="cpu")
     return recv_x, recv_indices, recv_scores, recv_num_tokens_per_expert, handle_id
 
@@ -97,16 +85,11 @@ def _dispatch_backward(
     handle = ctx.saved_handle
     assert handle is not None
 
-    previous_event = _new_event_overlap()
-    grad_x, grad_scores, after_event = _buffer.combine(
+    grad_x, grad_scores, _ = _buffer.combine(
         x=grad_recv_x,
         handle=handle,
         topk_weights=grad_recv_scores.float() if grad_recv_scores is not None else None,
-        previous_event=previous_event,
-        async_finish=True,
-        allocate_on_comm_stream=True,
     )
-    after_event.current_stream_wait()
 
     grad_x = grad_x.to(ctx.input_dtype)
     grad_topk_weights = grad_scores.to(ctx.input_dtype) if grad_scores is not None else None
@@ -116,21 +99,14 @@ def _dispatch_backward(
 class _DeepEPCombine(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, handle_id: torch.Tensor) -> torch.Tensor:
-        global _pending_combine_event
-
         assert _buffer is not None, "DeepEP buffer must be initialized before combine."
         handle = _handle_cache.pop(handle_id.item(), None)
         assert handle is not None, f"Handle not found for handle_id={handle_id.item()}"
 
-        previous_event = _new_event_overlap()
-        combined, _, after_event = _buffer.combine(
+        combined, _, _ = _buffer.combine(
             x=x,
             handle=handle,
-            previous_event=previous_event,
-            async_finish=True,
-            allocate_on_comm_stream=True,
         )
-        _pending_combine_event = after_event
         ctx.handle = handle
         return combined
 
@@ -139,8 +115,7 @@ class _DeepEPCombine(torch.autograd.Function):
         handle = ctx.handle
         assert handle is not None, "Handle not found in DeepEP combine backward."
 
-        previous_event = _new_event_overlap()
-        grad_x, _, _, _, _, after_event = _buffer.dispatch(
+        grad_x, _, _, _, _, _ = _buffer.dispatch(
             x=grad_combined,
             topk_idx=None,
             topk_weights=None,
@@ -149,29 +124,8 @@ class _DeepEPCombine(torch.autograd.Function):
             is_token_in_rank=None,
             num_tokens_per_expert=None,
             handle=handle,
-            previous_event=previous_event,
-            async_finish=True,
-            allocate_on_comm_stream=True,
         )
-        after_event.current_stream_wait()
         return grad_x, None
-
-
-@torch.compiler.disable()
-def sync_combine() -> None:
-    global _pending_combine_event
-
-    if _pending_combine_event is not None:
-        _pending_combine_event.current_stream_wait()
-        _pending_combine_event = None
-
-
-@torch.compiler.disable()
-def _sync_dispatch(handle_id: torch.Tensor | int) -> None:
-    handle_key = handle_id if isinstance(handle_id, int) else handle_id.item()
-    pending_event = _pending_dispatch_events.pop(handle_key, None)
-    if pending_event is not None:
-        pending_event.current_stream_wait()
 
 
 def configure_num_sms(num_sms: int) -> None:
@@ -243,17 +197,7 @@ class _DispatchState:
     permuted_scores: torch.Tensor | None = None
 
 
-@dataclass
-class _PendingDispatchState:
-    hidden_states: torch.Tensor
-    dispatched_indices: torch.Tensor
-    dispatched_scores: torch.Tensor
-    num_tokens_per_expert: torch.Tensor
-    handle_id: torch.Tensor
-    score_before_experts: bool
-
-
-def dispatch_tokens_async(
+def dispatch_tokens(
     hidden_states: torch.Tensor,
     selected_experts_indices: torch.Tensor,
     top_scores: torch.Tensor,
@@ -261,7 +205,7 @@ def dispatch_tokens_async(
     group: ProcessGroup,
     *,
     score_before_experts: bool = True,
-) -> _PendingDispatchState:
+) -> tuple[torch.Tensor, torch.Tensor, _DispatchState]:
     selected_experts_indices = selected_experts_indices.contiguous()
     top_scores = top_scores.contiguous()
     selected_experts_indices = selected_experts_indices.masked_fill(top_scores == 0, -1)
@@ -285,29 +229,15 @@ def dispatch_tokens_async(
         )
     )
 
-    return _PendingDispatchState(
-        hidden_states=hidden_states,
-        dispatched_indices=dispatched_indices,
-        dispatched_scores=dispatched_expert_scores,
-        num_tokens_per_expert=num_tokens_per_expert,
-        handle_id=handle_id,
-        score_before_experts=score_before_experts,
-    )
-
-
-def finalize_dispatch_tokens(pending_state: _PendingDispatchState) -> tuple[torch.Tensor, torch.Tensor, _DispatchState]:
-    _sync_dispatch(pending_state.handle_id)
-
-    hidden_states = pending_state.hidden_states
     num_recv_tokens = hidden_states.shape[0]
     hidden_states, permuted_scores, permuted_indices = _permute_tokens(
         hidden_states,
-        pending_state.dispatched_indices,
-        pending_state.dispatched_scores,
+        dispatched_indices,
+        dispatched_expert_scores,
     )
-    num_tokens_per_expert = pending_state.num_tokens_per_expert.to(hidden_states.device)
+    num_tokens_per_expert = num_tokens_per_expert.to(hidden_states.device)
 
-    if pending_state.score_before_experts and permuted_scores is not None:
+    if score_before_experts and permuted_scores is not None:
         hidden_states = (hidden_states.to(torch.float32) * permuted_scores.to(torch.float32).reshape(-1, 1)).to(
             hidden_states.dtype
         )
@@ -316,7 +246,7 @@ def finalize_dispatch_tokens(pending_state: _PendingDispatchState) -> tuple[torc
         permuted_scores_for_state = permuted_scores
 
     state = _DispatchState(
-        handle_id=pending_state.handle_id,
+        handle_id=handle_id,
         permuted_indices=permuted_indices,
         num_recv_tokens=num_recv_tokens,
         permuted_scores=permuted_scores_for_state,
@@ -338,7 +268,5 @@ register_deepep_cuda_ops()
 __all__ = [
     "combine_tokens",
     "configure_num_sms",
-    "dispatch_tokens_async",
-    "finalize_dispatch_tokens",
-    "sync_combine",
+    "dispatch_tokens",
 ]

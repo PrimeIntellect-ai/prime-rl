@@ -120,15 +120,12 @@ class GroupedExperts(nn.Module):
         self.w2 = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
         self.w3 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
         self.ep_comm_backend: EPCommBackend = "torch"
-
-        if self.ep_comm_backend == "deepep":
-            self._forward_fn = _run_experts_grouped_mm_impl
-        else:
-            self._forward_fn = expert_parallel(_run_experts_grouped_mm_impl)
-
+        self._forward_fn = expert_parallel(_run_experts_grouped_mm_impl)
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
+        if self.ep_comm_backend == "deepep":
+            self._forward_fn = _run_experts_grouped_mm_impl
 
     def forward(
         self,
@@ -143,11 +140,8 @@ class GroupedExperts(nn.Module):
             w1 = self.w1
             w2 = self.w2
             w3 = self.w3
-        
+
         return self._forward_fn(w1, w2, w3, x, num_tokens_per_expert)
-        
-
-
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
@@ -339,7 +333,6 @@ class MoE(nn.Module):
             else None
         )
         self.score_before_experts = moe_args.score_before_experts
-        self.deepep_token_chunk_size: int | None = None
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
@@ -365,9 +358,6 @@ class MoE(nn.Module):
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
         self.experts.set_ep_comm_backend(backend)
-
-    def set_deepep_token_chunk_size(self, chunk_size: int | None) -> None:
-        self.deepep_token_chunk_size = chunk_size
 
     def _run_local_routed_experts(
         self,
@@ -405,9 +395,7 @@ class MoE(nn.Module):
     ) -> torch.Tensor:
         from prime_rl.trainer.distributed.deepep import (
             combine_tokens,
-            dispatch_tokens_async,
-            finalize_dispatch_tokens,
-            sync_combine,
+            dispatch_tokens,
         )
         from prime_rl.trainer.distributed.expert_parallel import get_ep_group
 
@@ -416,40 +404,20 @@ class MoE(nn.Module):
             return x.new_zeros(x.shape) if shared_output is None else shared_output
 
         group = get_ep_group(self.experts)
-        chunk_size = min(self.deepep_token_chunk_size or x.shape[0], x.shape[0])
-
-        def dispatch_chunk(start: int, end: int):
-            return dispatch_tokens_async(
-                x[start:end],
-                selected_experts_indices[start:end],
-                top_scores[start:end],
-                num_experts=self.experts.num_experts,
-                group=group,
-                score_before_experts=self.score_before_experts,
-            )
-
-        def run_pending_chunk(pending_state):
-            hidden_states, num_tokens_per_expert, dispatch_state = finalize_dispatch_tokens(pending_state)
-            routed_output = self._run_local_routed_experts(hidden_states, num_tokens_per_expert)
-            # Keep combine outside the checkpointed routed-expert region so
-            # selective AC only recomputes local expert matmuls.
-            return combine_tokens(routed_output, dispatch_state)
-
-        pending_state = dispatch_chunk(0, chunk_size)
-        routed_outputs: list[torch.Tensor] = []
-
-        for chunk_start in range(chunk_size, x.shape[0], chunk_size):
-            chunk_end = min(chunk_start + chunk_size, x.shape[0])
-            next_pending_state = dispatch_chunk(chunk_start, chunk_end)
-            routed_outputs.append(run_pending_chunk(pending_state))
-            pending_state = next_pending_state
-
-        routed_outputs.append(run_pending_chunk(pending_state))
-
-        shared_output = self.shared_expert(x) if self.shared_expert is not None else None
-        sync_combine()
-        routed_output = routed_outputs[0] if len(routed_outputs) == 1 else torch.cat(routed_outputs, dim=0)
-        return routed_output if shared_output is None else shared_output + routed_output
+        hidden_states, num_tokens_per_expert, dispatch_state = dispatch_tokens(
+            x,
+            selected_experts_indices,
+            top_scores,
+            num_experts=self.experts.num_experts,
+            group=group,
+            score_before_experts=self.score_before_experts,
+        )
+        routed_output = self._run_local_routed_experts(hidden_states, num_tokens_per_expert)
+        routed_output = combine_tokens(routed_output, dispatch_state)
+        if self.shared_expert is not None:
+            routed_output = routed_output + self.shared_expert(x)
+        
+        return routed_output
 
     def forward(
         self,
@@ -779,7 +747,6 @@ class LatentMoE(nn.Module):
         self.experts.set_ep_comm_backend(self.ep_comm_backend)
         self.reorderer = TokenReorderer(num_experts=num_experts, top_k=top_k)
         self.shared_expert = BCNonGatedFeedForward(dim=dim, hidden_dim=shared_expert_intermediate_size)
-        self.deepep_token_chunk_size: int | None = None
 
         if latent_dim is not None:
             self.fc1_latent_proj = nn.Linear(dim, latent_dim, bias=False)
@@ -808,9 +775,6 @@ class LatentMoE(nn.Module):
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
         self.experts.set_ep_comm_backend(backend)
-
-    def set_deepep_token_chunk_size(self, chunk_size: int | None) -> None:
-        self.deepep_token_chunk_size = chunk_size
 
     def _run_local_routed_experts(
         self,
@@ -847,9 +811,7 @@ class LatentMoE(nn.Module):
     ) -> torch.Tensor:
         from prime_rl.trainer.distributed.deepep import (
             combine_tokens,
-            dispatch_tokens_async,
-            finalize_dispatch_tokens,
-            sync_combine,
+            dispatch_tokens,
         )
         from prime_rl.trainer.distributed.expert_parallel import get_ep_group
 
@@ -859,37 +821,17 @@ class LatentMoE(nn.Module):
         group = get_ep_group(self.experts)
         # Project before dispatch so DeepEP communicates the smaller latent activations.
         latent_x = self.fc1_latent_proj(x)
-        chunk_size = min(self.deepep_token_chunk_size or latent_x.shape[0], latent_x.shape[0])
-
-        def dispatch_chunk(start: int, end: int):
-            return dispatch_tokens_async(
-                latent_x[start:end],
-                selected_experts_indices[start:end],
-                top_scores[start:end],
-                num_experts=self.experts.num_experts,
-                group=group,
-                score_before_experts=False,
-            )
-
-        def run_pending_chunk(pending_state):
-            hidden_states, num_tokens_per_expert, dispatch_state = finalize_dispatch_tokens(pending_state)
-            routed_output = self._run_local_routed_experts(hidden_states, num_tokens_per_expert)
-            return combine_tokens(routed_output, dispatch_state)
-
-        pending_state = dispatch_chunk(0, chunk_size)
-        routed_outputs: list[torch.Tensor] = []
-
-        for chunk_start in range(chunk_size, latent_x.shape[0], chunk_size):
-            chunk_end = min(chunk_start + chunk_size, latent_x.shape[0])
-            next_pending_state = dispatch_chunk(chunk_start, chunk_end)
-            routed_outputs.append(run_pending_chunk(pending_state))
-            pending_state = next_pending_state
-
-        routed_outputs.append(run_pending_chunk(pending_state))
-
+        hidden_states, num_tokens_per_expert, dispatch_state = dispatch_tokens(
+            latent_x,
+            selected_experts_indices,
+            top_scores,
+            num_experts=self.experts.num_experts,
+            group=group,
+            score_before_experts=False,
+        )
+        routed_output = self._run_local_routed_experts(hidden_states, num_tokens_per_expert)
+        routed_output = combine_tokens(routed_output, dispatch_state)
         shared_output = self.shared_expert(x)
-        sync_combine()
-        routed_output = routed_outputs[0] if len(routed_outputs) == 1 else torch.cat(routed_outputs, dim=0)
         routed_output = routed_output * self.routed_scaling_factor
         routed_output = self.fc2_latent_proj(routed_output)
         return shared_output + routed_output

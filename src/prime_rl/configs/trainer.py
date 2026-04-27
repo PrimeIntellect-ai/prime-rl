@@ -273,18 +273,6 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = 20
 
-    deepep_token_chunk_size: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description=(
-                "Optional token chunk size for DeepEP MoE pipelining. "
-                "When set, DeepEP dispatch for chunk i+1 is launched while experts compute chunk i. "
-                "Only used when ep_comm_backend='deepep'."
-            ),
-        ),
-    ] = None
-
     cp: Annotated[
         int,
         Field(
