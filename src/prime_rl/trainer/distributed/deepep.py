@@ -293,7 +293,11 @@ def dispatch_tokens_for_sonic(
         device=hidden_states.device,
         dtype=torch.int32,
     ).repeat_interleave(mask.sum(dim=1))
-    expert_indices = dispatched_indices[mask].to(torch.int32)
+    if num_experts % group.size() != 0:
+        raise ValueError(f"num_experts ({num_experts}) must be divisible by EP group size ({group.size()}).")
+    local_num_experts = num_experts // group.size()
+    # Sonic routes into local DTensor expert shards, while DeepEP may return global expert ids.
+    expert_indices = torch.remainder(dispatched_indices[mask], local_num_experts).to(torch.int32)
     expert_scores = dispatched_scores[mask]
     state = _DispatchState(handle_id=handle_id, num_recv_tokens=hidden_states.shape[0])
     return hidden_states, expert_scores, token_indices, expert_indices, state

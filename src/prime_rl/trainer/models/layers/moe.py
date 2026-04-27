@@ -205,7 +205,11 @@ class GroupedExperts(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor | None = None,
+        *,
+        top_scores: torch.Tensor | None = None,
+        token_indices: torch.Tensor | None = None,
+        expert_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.ep_comm_backend == "deepep":
             w1 = self.w1.to_local()
@@ -216,6 +220,15 @@ class GroupedExperts(nn.Module):
             w2 = self.w2
             w3 = self.w3
 
+        if top_scores is not None or token_indices is not None or expert_indices is not None:
+            if self.ep_comm_backend != "deepep":
+                raise ValueError("Sonic expert compute is only supported with model.ep_comm_backend='deepep'.")
+            if top_scores is None or token_indices is None or expert_indices is None:
+                raise ValueError("Sonic expert compute requires top_scores, token_indices, and expert_indices.")
+            return _run_experts_sonic_impl(w1, w2, w3, x, top_scores, token_indices, expert_indices)
+
+        if num_tokens_per_expert is None:
+            raise ValueError("num_tokens_per_expert is required for grouped-mm expert compute.")
         return self._forward_fn(w1, w2, w3, x, num_tokens_per_expert)
 
     def init_weights(self, init_std: float):
@@ -475,14 +488,11 @@ class MoE(nn.Module):
         token_indices: torch.Tensor,
         expert_indices: torch.Tensor,
     ) -> torch.Tensor:
-        return _run_experts_sonic_impl(
-            self.experts.w1.to_local(),
-            self.experts.w2.to_local(),
-            self.experts.w3.to_local(),
+        return self.experts(
             x,
-            top_scores,
-            token_indices,
-            expert_indices,
+            top_scores=top_scores,
+            token_indices=token_indices,
+            expert_indices=expert_indices,
         )
 
     def _run_deepep_routed_experts(

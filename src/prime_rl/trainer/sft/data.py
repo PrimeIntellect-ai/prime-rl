@@ -221,9 +221,9 @@ class SFTDataset(StatefulIterableDataset):
 
         # If EOS token is not found, manually append it
         if not self.tokenizer.eos_token_id in input_ids:
-            self.logger.warning(
-                f"Did not find EOS token ID {self.tokenizer.eos_token_id} in input_ids. Is something wrong with the chat template? Manually appending EOS token..."
-            )
+            # self.logger.warning(
+            #     f"Did not find EOS token ID {self.tokenizer.eos_token_id} in input_ids. Is something wrong with the chat template? Manually appending EOS token..."
+            # )
             input_ids.append(cast(int, self.tokenizer.eos_token_id))
             loss_mask.append(True)
 
