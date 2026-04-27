@@ -18,6 +18,7 @@ from prime_rl.orchestrator.buffer import DifficultyBuffer
 from prime_rl.orchestrator.ckpt import CkptManager, OrchState
 from prime_rl.orchestrator.engine import Group
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
+from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.trajectories import interleave_rollout, pretokenize_rollout_trajectory
 from prime_rl.orchestrator.vf_utils import get_completion_len
 from prime_rl.transport import TrainingBatch, TrainingSample
@@ -340,6 +341,7 @@ class TrainBatcher:
         ckpt_interval: int | None = None,
         buffer: DifficultyBuffer | None = None,
         heartbeat: Heartbeat | None = None,
+        inference_metrics: InferenceMetricsCollector | None = None,
     ):
         self.in_q = in_q
         self.policy = policy
@@ -357,6 +359,7 @@ class TrainBatcher:
         self.ckpt_interval = ckpt_interval
         self.buffer = buffer
         self.heartbeat = heartbeat
+        self.inference_metrics = inference_metrics
         self.logger = get_logger()
 
     async def _wait_barrier(self) -> None:
@@ -464,6 +467,10 @@ class TrainBatcher:
                 await self.post.process(trainable, filtered, self.step)
                 if self.buffer is not None:
                     get_monitor().log(self.buffer.metrics(), step=self.step)
+                if self.inference_metrics is not None:
+                    inf_metrics = await self.inference_metrics.collect()
+                    if inf_metrics:
+                        get_monitor().log(inf_metrics, step=self.step)
                 if self.heartbeat is not None:
                     self.heartbeat.beat()
                 self.step += 1

@@ -954,7 +954,7 @@ class OrchestratorConfig(BaseConfig):
     # The prime monitor configuration
     prime_monitor: PrimeMonitorConfig | None = None
 
-    # Whether to collect inference server metrics (not yet wired in the new orchestrator)
+    # Whether to scrape vLLM /metrics each step and forward to monitor under inference/*
     collect_inference_metrics: bool = True
 
     # The checkpoint configuration

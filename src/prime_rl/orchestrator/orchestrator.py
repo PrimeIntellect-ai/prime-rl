@@ -12,6 +12,7 @@ from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.engine import Group, RolloutEngine
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_admin import InferenceAdmin
+from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
@@ -146,6 +147,21 @@ async def run(cfg: OrchestratorConfig) -> None:
     if heartbeat is not None:
         logger.info(f"Heartbeat enabled ({cfg.heartbeat.url})")
 
+    broadcast_dir = get_broadcast_dir(cfg.output_dir)
+    admin = InferenceAdmin(
+        cfg.client.base_url[0],
+        os.getenv(cfg.client.api_key_var, "EMPTY"),
+        broadcast_dir,
+        mode=cfg.weight_broadcast.type,
+    )
+    logger.info(f"Admin client ready ({admin.base_url})")
+    logger.info(f"Weight broadcast mode: {cfg.weight_broadcast.type}")
+
+    inference_metrics = None
+    if cfg.collect_inference_metrics:
+        inference_metrics = InferenceMetricsCollector(admin.client)
+        logger.info("Inference metrics collection enabled")
+
     batcher = TrainBatcher(
         groups_q,
         tokenizer,
@@ -162,18 +178,9 @@ async def run(cfg: OrchestratorConfig) -> None:
         ckpt_interval=cfg.ckpt.interval if cfg.ckpt else None,
         buffer=buffer,
         heartbeat=heartbeat,
+        inference_metrics=inference_metrics,
     )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
-
-    broadcast_dir = get_broadcast_dir(cfg.output_dir)
-    admin = InferenceAdmin(
-        cfg.client.base_url[0],
-        os.getenv(cfg.client.api_key_var, "EMPTY"),
-        broadcast_dir,
-        mode=cfg.weight_broadcast.type,
-    )
-    logger.info(f"Admin client ready ({admin.base_url})")
-    logger.info(f"Weight broadcast mode: {cfg.weight_broadcast.type}")
 
     logger.info("Waiting for inference server to be healthy...")
     t0 = time.perf_counter()
