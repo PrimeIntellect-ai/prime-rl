@@ -192,20 +192,18 @@ def _unpermute_tokens(
 @dataclass
 class _DispatchState:
     handle_id: torch.Tensor
-    permuted_indices: torch.Tensor
     num_recv_tokens: int
+    permuted_indices: torch.Tensor | None = None
     permuted_scores: torch.Tensor | None = None
 
 
-def dispatch_tokens(
+def _dispatch_tokens(
     hidden_states: torch.Tensor,
     selected_experts_indices: torch.Tensor,
     top_scores: torch.Tensor,
     num_experts: int,
     group: ProcessGroup,
-    *,
-    score_before_experts: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor, _DispatchState]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     selected_experts_indices = selected_experts_indices.contiguous()
     top_scores = top_scores.contiguous()
     selected_experts_indices = selected_experts_indices.masked_fill(top_scores == 0, -1)
@@ -229,6 +227,26 @@ def dispatch_tokens(
         )
     )
 
+    return hidden_states, dispatched_indices, dispatched_expert_scores, num_tokens_per_expert, handle_id
+
+
+def dispatch_tokens(
+    hidden_states: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+    group: ProcessGroup,
+    *,
+    score_before_experts: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, _DispatchState]:
+    hidden_states, dispatched_indices, dispatched_expert_scores, num_tokens_per_expert, handle_id = _dispatch_tokens(
+        hidden_states,
+        selected_experts_indices,
+        top_scores,
+        num_experts,
+        group,
+    )
+
     num_recv_tokens = hidden_states.shape[0]
     hidden_states, permuted_scores, permuted_indices = _permute_tokens(
         hidden_states,
@@ -247,19 +265,47 @@ def dispatch_tokens(
 
     state = _DispatchState(
         handle_id=handle_id,
-        permuted_indices=permuted_indices,
         num_recv_tokens=num_recv_tokens,
+        permuted_indices=permuted_indices,
         permuted_scores=permuted_scores_for_state,
     )
     return hidden_states, num_tokens_per_expert, state
 
 
+def dispatch_tokens_for_sonic(
+    hidden_states: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+    group: ProcessGroup,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, _DispatchState]:
+    hidden_states, dispatched_indices, dispatched_scores, _, handle_id = _dispatch_tokens(
+        hidden_states,
+        selected_experts_indices,
+        top_scores,
+        num_experts,
+        group,
+    )
+
+    mask = dispatched_indices != -1
+    token_indices = torch.arange(
+        hidden_states.shape[0],
+        device=hidden_states.device,
+        dtype=torch.int32,
+    ).repeat_interleave(mask.sum(dim=1))
+    expert_indices = dispatched_indices[mask].to(torch.int32)
+    expert_scores = dispatched_scores[mask]
+    state = _DispatchState(handle_id=handle_id, num_recv_tokens=hidden_states.shape[0])
+    return hidden_states, expert_scores, token_indices, expert_indices, state
+
+
 def combine_tokens(hidden_states: torch.Tensor, state: _DispatchState) -> torch.Tensor:
-    if state.permuted_scores is not None:
-        hidden_states = (hidden_states.to(torch.float32) * state.permuted_scores.to(torch.float32).reshape(-1, 1)).to(
-            hidden_states.dtype
-        )
-    hidden_states = _unpermute_tokens(hidden_states, state.permuted_indices, state.num_recv_tokens)
+    if state.permuted_indices is not None:
+        if state.permuted_scores is not None:
+            hidden_states = (
+                hidden_states.to(torch.float32) * state.permuted_scores.to(torch.float32).reshape(-1, 1)
+            ).to(hidden_states.dtype)
+        hidden_states = _unpermute_tokens(hidden_states, state.permuted_indices, state.num_recv_tokens)
     return _DeepEPCombine.apply(hidden_states, state.handle_id)
 
 
@@ -269,4 +315,5 @@ __all__ = [
     "combine_tokens",
     "configure_num_sms",
     "dispatch_tokens",
+    "dispatch_tokens_for_sonic",
 ]

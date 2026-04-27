@@ -19,6 +19,7 @@ from prime_rl.utils.config import BaseConfig
 
 AttnImplementation: TypeAlias = Literal["eager", "sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
 EPCommBackend: TypeAlias = Literal["torch", "deepep"]
+DeepEPExpertBackend: TypeAlias = Literal["grouped_mm", "sonic"]
 
 # User-facing name -> internal name. Users set `flash_attention_4` in configs,
 # which gets rewritten to `fa4` before pydantic validation.
@@ -272,6 +273,17 @@ class ModelConfig(BaseModelConfig):
             ),
         ),
     ] = 20
+
+    deepep_expert_backend: Annotated[
+        DeepEPExpertBackend,
+        Field(
+            description=(
+                "Local expert compute backend for trainer-side DeepEP. "
+                "`grouped_mm` uses torch grouped matrix multiplication and `sonic` uses sonic-moe kernels. "
+                "Only used when ep_comm_backend='deepep'."
+            ),
+        ),
+    ] = "grouped_mm"
 
     cp: Annotated[
         int,

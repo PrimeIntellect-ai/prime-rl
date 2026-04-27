@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from dataclasses import dataclass
+from functools import wraps
 from typing import Literal
 
 import torch
@@ -12,7 +13,38 @@ import torch.nn.functional as F
 from torch import nn
 from torchtitan.distributed.expert_parallel import expert_parallel
 
-from prime_rl.configs.trainer import EPCommBackend
+from prime_rl.configs.trainer import DeepEPExpertBackend, EPCommBackend
+
+
+_sonic_quack_autotune_disabled = False
+
+
+def _force_quack_default_config(fn):
+    if getattr(fn, "_prime_rl_force_quack_default_config", False):
+        return fn
+
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        kwargs["tuned"] = False
+        return fn(*args, **kwargs)
+
+    wrapped._prime_rl_force_quack_default_config = True
+    return wrapped
+
+
+def _disable_sonic_quack_autotune() -> None:
+    global _sonic_quack_autotune_disabled
+    if _sonic_quack_autotune_disabled:
+        return
+
+    import sonicmoe.functional.backward as sonic_backward
+    import sonicmoe.functional.forward as sonic_forward
+
+    sonic_forward.gemm = _force_quack_default_config(sonic_forward.gemm)
+    sonic_forward.gemm_gated = _force_quack_default_config(sonic_forward.gemm_gated)
+    sonic_backward.gemm = _force_quack_default_config(sonic_backward.gemm)
+    sonic_backward.gemm_dgated = _force_quack_default_config(sonic_backward.gemm_dgated)
+    _sonic_quack_autotune_disabled = True
 
 
 @dataclass
@@ -104,6 +136,49 @@ def _run_experts_grouped_mm_impl(
     out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
 
     return out
+
+
+def _run_experts_sonic_impl(
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    x: torch.Tensor,
+    top_scores: torch.Tensor,
+    token_indices: torch.Tensor,
+    expert_indices: torch.Tensor,
+) -> torch.Tensor:
+    if expert_indices.numel() == 0:
+        return x.new_zeros(x.shape)
+
+    from sonicmoe.enums import ActivationType
+    from sonicmoe.functional import moe_general_routing_inputs
+
+    _disable_sonic_quack_autotune()
+
+    compute_x = x.bfloat16()
+    gate_up_proj = torch.stack(
+        [
+            w1.bfloat16().transpose(-2, -1),
+            w3.bfloat16().transpose(-2, -1),
+        ],
+        dim=-1,
+    ).flatten(-2)
+    out, _ = moe_general_routing_inputs(
+        compute_x,
+        top_scores,
+        token_indices,
+        expert_indices,
+        gate_up_proj.permute(2, 1, 0),
+        None,
+        w2.bfloat16().permute(1, 2, 0),
+        None,
+        w1.shape[0],
+        torch.cuda.current_stream().cuda_stream,
+        ActivationType.SWIGLU,
+        False,
+        False,
+    )
+    return out.type_as(x)
 
 
 class GroupedExperts(nn.Module):
@@ -333,6 +408,7 @@ class MoE(nn.Module):
             else None
         )
         self.score_before_experts = moe_args.score_before_experts
+        self.deepep_expert_backend: DeepEPExpertBackend = "grouped_mm"
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
@@ -358,6 +434,11 @@ class MoE(nn.Module):
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
         self.experts.set_ep_comm_backend(backend)
+
+    def set_deepep_expert_backend(self, backend: DeepEPExpertBackend) -> None:
+        if backend == "sonic" and self.score_before_experts:
+            raise ValueError("model.deepep_expert_backend='sonic' requires MoE score_before_experts=False.")
+        self.deepep_expert_backend = backend
 
     def _run_local_routed_experts(
         self,
@@ -387,6 +468,23 @@ class MoE(nn.Module):
 
         return routed_output
 
+    def _run_sonic_routed_experts(
+        self,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        token_indices: torch.Tensor,
+        expert_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        return _run_experts_sonic_impl(
+            self.experts.w1.to_local(),
+            self.experts.w2.to_local(),
+            self.experts.w3.to_local(),
+            x,
+            top_scores,
+            token_indices,
+            expert_indices,
+        )
+
     def _run_deepep_routed_experts(
         self,
         x: torch.Tensor,
@@ -396,6 +494,7 @@ class MoE(nn.Module):
         from prime_rl.trainer.distributed.deepep import (
             combine_tokens,
             dispatch_tokens,
+            dispatch_tokens_for_sonic,
         )
         from prime_rl.trainer.distributed.expert_parallel import get_ep_group
 
@@ -404,19 +503,34 @@ class MoE(nn.Module):
             return x.new_zeros(x.shape) if shared_output is None else shared_output
 
         group = get_ep_group(self.experts)
-        hidden_states, num_tokens_per_expert, dispatch_state = dispatch_tokens(
-            x,
-            selected_experts_indices,
-            top_scores,
-            num_experts=self.experts.num_experts,
-            group=group,
-            score_before_experts=self.score_before_experts,
-        )
-        routed_output = self._run_local_routed_experts(hidden_states, num_tokens_per_expert)
+        if self.deepep_expert_backend == "sonic":
+            hidden_states, expert_scores, token_indices, expert_indices, dispatch_state = dispatch_tokens_for_sonic(
+                x,
+                selected_experts_indices,
+                top_scores,
+                num_experts=self.experts.num_experts,
+                group=group,
+            )
+            routed_output = self._run_sonic_routed_experts(
+                hidden_states,
+                expert_scores,
+                token_indices,
+                expert_indices,
+            )
+        else:
+            hidden_states, num_tokens_per_expert, dispatch_state = dispatch_tokens(
+                x,
+                selected_experts_indices,
+                top_scores,
+                num_experts=self.experts.num_experts,
+                group=group,
+                score_before_experts=self.score_before_experts,
+            )
+            routed_output = self._run_local_routed_experts(hidden_states, num_tokens_per_expert)
         routed_output = combine_tokens(routed_output, dispatch_state)
         if self.shared_expert is not None:
             routed_output = routed_output + self.shared_expert(x)
-        
+
         return routed_output
 
     def forward(
@@ -775,6 +889,10 @@ class LatentMoE(nn.Module):
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
         self.experts.set_ep_comm_backend(backend)
+
+    def set_deepep_expert_backend(self, backend: DeepEPExpertBackend) -> None:
+        if backend != "grouped_mm":
+            raise ValueError("LatentMoE only supports model.deepep_expert_backend='grouped_mm'.")
 
     def _run_local_routed_experts(
         self,

@@ -361,11 +361,16 @@ def configure_moe_ep_backend(model: nn.Module, config: ModelConfig) -> None:
         from prime_rl.trainer.distributed.deepep import configure_num_sms
 
         configure_num_sms(config.deepep_num_sms)
+        if config.deepep_expert_backend == "sonic" and "QUACK_COMPILE_WORKERS" not in os.environ:
+            os.environ["QUACK_COMPILE_WORKERS"] = "1"
+            get_logger().info("Set QUACK_COMPILE_WORKERS=1 for sonic MoE backend")
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
         if not isinstance(transformer_block.mlp, (MoE, LatentMoE)):
             continue
         transformer_block.mlp.set_ep_comm_backend(backend)
+        if backend == "deepep":
+            transformer_block.mlp.set_deepep_expert_backend(config.deepep_expert_backend)
 
 
 def get_load_balance_stats(
