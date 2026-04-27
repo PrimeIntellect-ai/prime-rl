@@ -1,7 +1,8 @@
 import shutil
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -19,6 +20,7 @@ class OrchState:
 
     step: int = 0
     last_eval_step: int = 0
+    buffer_state: dict[str, Any] = field(default_factory=dict)
 
 
 class CkptManager:

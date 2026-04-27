@@ -1,12 +1,15 @@
 import random
 from collections import deque
 from dataclasses import dataclass
-from typing import Iterator, Literal, TypeAlias
+from typing import TYPE_CHECKING, Iterator, Literal, TypeAlias
 
 import verifiers as vf
 
 from prime_rl.configs.orchestrator import EvalEnvConfig, TrainEnvConfig
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.buffer import DifficultyBuffer
 
 Kind: TypeAlias = Literal["train", "eval"]
 
@@ -50,10 +53,12 @@ class Scheduler:
         eval_interval: int | None = None,
         eval_at_zero: bool = False,
         seed: int | None = None,
+        buffer: "DifficultyBuffer | None" = None,
     ):
         assert train_envs, "Scheduler requires at least one train env"
         logger = get_logger()
 
+        self.buffer = buffer
         self.tasks: list[Task] = []
         self._datasets: list[Iterator[dict]] = []
         for cfg in train_envs:
@@ -67,7 +72,7 @@ class Scheduler:
                     rollouts_per_group=train_rollouts_per_example,
                 )
             )
-            self._datasets.append(_cycle_forever(env.get_dataset()))
+            self._datasets.append(_cycle_forever(env.get_dataset(), env_id=cfg.resolved_name, buffer=buffer))
         self._idx = 0
 
         # Env selection: weighted random when all envs have a ratio set
@@ -177,11 +182,30 @@ class Scheduler:
         self.last_eval_step = step
 
 
-def _cycle_forever(ds) -> Iterator[dict]:
+def _cycle_forever(ds, env_id: str | None = None, buffer: "DifficultyBuffer | None" = None) -> Iterator[dict]:
+    """Cycle the dataset forever, skipping examples evicted into the buffer's
+    easy/hard pools. If every remaining example in a full pass is evicted we
+    yield anyway as a fallback — better to over-train on hard ones than stall."""
     i = 0
     while True:
+        yielded_this_pass = False
         for row in ds:
             r = dict(row)
             r["example_id"] = i
             i += 1
+            if buffer is not None and env_id is not None and buffer.is_evicted(env_id, r):
+                continue
+            yielded_this_pass = True
             yield r
+        if not yielded_this_pass:
+            # Entire dataset is evicted; fall back to yielding without filtering
+            # so the engine doesn't deadlock waiting for tasks. Single warning,
+            # then we keep streaming raw rows until something un-evicts.
+            get_logger().warning(
+                f"Dataset for env={env_id!r} fully evicted; yielding evicted examples to avoid deadlock"
+            )
+            for row in ds:
+                r = dict(row)
+                r["example_id"] = i
+                i += 1
+                yield r

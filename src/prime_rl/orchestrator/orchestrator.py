@@ -7,6 +7,7 @@ import verifiers as vf
 
 from prime_rl.configs.orchestrator import DefaultAdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.batcher import Done, TrainBatcher, build_strategy
+from prime_rl.orchestrator.buffer import setup_buffer
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.engine import Group, RolloutEngine
 from prime_rl.orchestrator.filters import setup_filters
@@ -74,6 +75,16 @@ async def run(cfg: OrchestratorConfig) -> None:
         else:
             resume_step = cfg.ckpt.resume_step
 
+    train_env_names = [e.resolved_name for e in cfg.train.env]
+    buffer = setup_buffer(cfg.buffer, train_env_names, seed=cfg.seed)
+    if buffer is not None:
+        thresholds = []
+        if cfg.buffer.easy_threshold is not None:
+            thresholds.append(f"easy>={cfg.buffer.easy_threshold}")
+        if cfg.buffer.hard_threshold is not None:
+            thresholds.append(f"hard<={cfg.buffer.hard_threshold}")
+        logger.info(f"Difficulty buffer enabled ({', '.join(thresholds)})")
+
     scheduler = Scheduler(
         train_envs=cfg.train.env,
         train_rollouts_per_example=cfg.rollouts_per_example,
@@ -81,6 +92,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         eval_interval=cfg.eval.interval if cfg.eval else None,
         eval_at_zero=(cfg.eval.eval_base_model if cfg.eval else False) and resume_step is None,
         seed=cfg.seed,
+        buffer=buffer,
     )
     for task in scheduler.tasks:
         logger.info(f"Train task '{task.id}' ready (rollouts/group={task.rollouts_per_group})")
@@ -143,6 +155,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         eval_counter=scheduler,
         ckpt_manager=ckpt_manager,
         ckpt_interval=cfg.ckpt.interval if cfg.ckpt else None,
+        buffer=buffer,
     )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
 
@@ -183,6 +196,8 @@ async def run(cfg: OrchestratorConfig) -> None:
         state = ckpt_manager.load(resume_step)
         batcher.step = state.step
         scheduler.last_eval_step = state.last_eval_step
+        if buffer is not None and state.buffer_state and not (cfg.ckpt and cfg.ckpt.skip_buffer):
+            buffer.load_state_dict(state.buffer_state)
         if cfg.eval and cfg.eval.skip_eval_on_resume:
             # bump last_eval_step past current so the next interval boundary
             # is the first eval the resumed run sees

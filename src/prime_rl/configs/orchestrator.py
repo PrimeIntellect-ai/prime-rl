@@ -663,13 +663,6 @@ class BufferConfig(BaseConfig):
         ),
     ] = 0.0
 
-    online_difficulty_filtering: Annotated[
-        bool,
-        Field(
-            description="Whether to filter rollouts based on difficulty. If True, rollouts with average reward 0.0 or 1.0 are not added to the buffer.",
-        ),
-    ] = False
-
     hash_keys: Annotated[
         list[str],
         Field(
@@ -942,8 +935,8 @@ class OrchestratorConfig(BaseConfig):
     # The evaluation configuration
     eval: EvalConfig | None = None
 
-    # Data buffer configuration (not yet wired in the new orchestrator;
-    # round-robin / weighted env sampling is used instead)
+    # Difficulty-based example pool tracking. Train groups whose mean reward
+    # crosses easy_threshold / hard_threshold are evicted from sampling.
     buffer: BufferConfig = BufferConfig()
 
     # The advantage configuration
