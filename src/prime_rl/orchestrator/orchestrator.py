@@ -77,8 +77,8 @@ from prime_rl.utils.utils import (
 SHUTDOWN_TIMEOUT_S = 300
 
 # Maximum number of times to attempt generating a training batch when all
-# rollouts are filtered out. After this many attempts, the orchestrator
-# crashes (or early stops for zero advantages) rather than silently skipping training steps.
+# rollouts are filtered out. After this many attempts, the orchestrator crashes
+# (or early stops for zero advantages) rather than silently skipping training steps.
 MAX_EMPTY_BATCH_ATTEMPTS = 3
 
 
@@ -104,6 +104,10 @@ async def orchestrate(config: OrchestratorConfig):
     # Save configs to output directory
     config_dir = config.output_dir / "control"
     config_dir.mkdir(parents=True, exist_ok=True)
+    evicted_path = config_dir / "evicted.txt"
+    early_stopped_path = config_dir / "early_stopped.txt"
+    if early_stopped_path.exists():
+        early_stopped_path.unlink()
     with open(config_dir / "orch.toml", "wb") as f:
         tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
@@ -326,13 +330,10 @@ async def orchestrate(config: OrchestratorConfig):
     early_stopped = False
 
     while True:
-        # Check if this run has been evicted by the trainer (skip early-stop
-        # markers so the run can be resumed with different data/config)
-        evicted_path = config.output_dir / "control" / "evicted.txt"
+        # Check if this run has been evicted by the trainer.
         if evicted_path.exists():
             reason = evicted_path.read_text().strip()
-            if not reason.startswith("early_stopped:"):
-                raise RuntimeError(f"Run evicted by trainer: {reason}")
+            raise RuntimeError(f"Run evicted by trainer: {reason}")
 
         # Capture ckpt_step once for consistency (it's updated inside the scheduler)
         ckpt_step = scheduler.ckpt_step
@@ -447,14 +448,11 @@ async def orchestrate(config: OrchestratorConfig):
                 )
 
                 # Check for zero advantages for early stopping
-                all_zero_advantage = train_rollouts and all(r.get("advantage") == 0.0 for r in train_rollouts)
-
-                evicted_path = config.output_dir / "control" / "evicted.txt"
-                evicted_path.parent.mkdir(parents=True, exist_ok=True)
+                all_zero_advantage = len(train_rollouts) > 0 and all(r.get("advantage") == 0.0 for r in train_rollouts)
 
                 if all_zero_advantage:
                     logger.warning(f"Early stopping: {reason}")
-                    evicted_path.write_text(f"early_stopped: {reason}")
+                    early_stopped_path.write_text(reason)
                     early_stopped = True
                     break
 
