@@ -5,7 +5,7 @@ import time
 import tomli_w
 import verifiers as vf
 
-from prime_rl.configs.orchestrator import DefaultAdvantageConfig, OrchestratorConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.batcher import Done, TrainBatcher, build_strategy
 from prime_rl.orchestrator.buffer import setup_buffer
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
@@ -27,7 +27,7 @@ from prime_rl.utils.utils import get_env_ids_to_install, install_env
 
 async def run(cfg: OrchestratorConfig) -> None:
     assert cfg.max_inflight_rollouts is not None
-    assert isinstance(cfg.advantage, DefaultAdvantageConfig), "only DefaultAdvantageConfig is supported"
+    assert cfg.advantage is not None, "advantage config required"
     assert len(cfg.client.base_url) == 1, "single inference endpoint only"
 
     logger = get_logger()

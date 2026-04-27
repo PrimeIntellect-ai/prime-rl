@@ -7,13 +7,13 @@ import torch
 import verifiers as vf
 
 from prime_rl.configs.orchestrator import (
+    AdvantageConfig,
     BatchingConfig,
-    DefaultAdvantageConfig,
     SamplesBatching,
     StepBatching,
     TokensBatching,
 )
-from prime_rl.orchestrator.advantage import AdvantageInputs, default_advantage_fn
+from prime_rl.orchestrator.advantage import AdvantageInputs, setup_advantage_fn
 from prime_rl.orchestrator.buffer import DifficultyBuffer
 from prime_rl.orchestrator.ckpt import CkptManager, OrchState
 from prime_rl.orchestrator.engine import Group
@@ -51,18 +51,18 @@ class EvalCounter(Protocol):
 
 
 class Advantage:
-    """Scores groups in place: computes GRPO advantages and attaches them to rollouts."""
+    """Scores groups in place: computes advantages and attaches them to rollouts.
+    Dispatches between DefaultAdvantageConfig (built-in GRPO + optional length
+    shaping) and CustomAdvantageConfig (user-imported function) via
+    setup_advantage_fn."""
 
-    def __init__(self, cfg: DefaultAdvantageConfig):
-        self.cfg = cfg
+    def __init__(self, cfg: AdvantageConfig):
+        self.advantage_fn = setup_advantage_fn(cfg)
 
     def score(self, group: Group) -> None:
         rewards = torch.tensor([[r.get("reward", 0.0) for r in group.rollouts]], dtype=torch.float32)
         lens = torch.tensor([[get_completion_len(r) for r in group.rollouts]], dtype=torch.int64)
-        out = default_advantage_fn(
-            AdvantageInputs(rewards=rewards, completion_lengths=lens),
-            length_shaping=self.cfg.length_shaping,
-        )
+        out = self.advantage_fn(AdvantageInputs(rewards=rewards, completion_lengths=lens))
         for r, a in zip(group.rollouts, out.advantages[0].tolist()):
             r["advantage"] = a
 
@@ -331,7 +331,7 @@ class TrainBatcher:
         sender: TrainingBatchSender,
         policy: PolicyState,
         strategy: BatchingStrategy,
-        advantage_cfg: DefaultAdvantageConfig,
+        advantage_cfg: AdvantageConfig,
         filters: list[RolloutFilter] | None = None,
         max_steps: int | None = None,
         max_training_batches_ahead: int = 1,
