@@ -38,7 +38,14 @@ class InferenceAdmin:
     HEALTH_MAX_FAILURES = 6
     HEALTH_PROBE_TIMEOUT = 5.0
 
-    def __init__(self, base_url: str, api_key: str | None, broadcast_dir: Path, mode: Mode = "filesystem"):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str | None,
+        broadcast_dir: Path,
+        mode: Mode = "filesystem",
+        lora_name: str | None = None,
+    ):
         base_url = base_url.rstrip("/").removesuffix("/v1")
         headers = {}
         if api_key and api_key != "EMPTY":
@@ -46,6 +53,10 @@ class InferenceAdmin:
         self.base_url = base_url
         self.broadcast_dir = broadcast_dir
         self.mode = mode
+        # When set, on_new_version routes through /load_lora_adapter (hot-swap
+        # adapter weights by name) instead of the full-model /update_weights
+        # path. NCCL broadcast doesn't support LoRA — caller validates upstream.
+        self.lora_name = lora_name
         self.client = httpx.AsyncClient(
             base_url=base_url,
             headers=headers,
@@ -130,6 +141,19 @@ class InferenceAdmin:
         # fallback. Resolve to absolute here.
         step_dir = get_step_path(self.broadcast_dir, step)
         path = step_dir.resolve().as_posix()
+
+        if self.lora_name is not None:
+            # LoRA hot-swap: no pause/resume — vLLM adds the adapter to its
+            # registry and serves it under the requested name on subsequent
+            # /v1/chat/completions calls. Re-loading the same name updates the
+            # adapter path in place.
+            r = await self.client.post(
+                "/load_lora_adapter",
+                json={"lora_name": self.lora_name, "lora_path": path},
+            )
+            r.raise_for_status()
+            return
+
         (await self.client.post("/pause", params={"mode": "keep", "clear_cache": "false"})).raise_for_status()
         try:
             if self.mode == "nccl":

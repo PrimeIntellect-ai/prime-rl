@@ -36,11 +36,16 @@ class RolloutEngine:
         concurrency: int,
         tasks_per_minute: int | None = None,
         max_rollout_time_seconds: float | None = None,
+        lora_name: str | None = None,
     ):
         self.scheduler = scheduler
         self.out_q = out_q
         self.client = client
         self.model = model
+        # When set, swap rollouts to the LoRA adapter name on the first
+        # successful weight update (step 0 rollouts always use the base model
+        # since no adapter is loaded yet).
+        self.lora_name = lora_name
         self.max_off_policy = max_off_policy
         self.concurrency = concurrency
         self.rate_limiter = AsyncLimiter(max_rate=tasks_per_minute, time_period=60) if tasks_per_minute else None
@@ -138,6 +143,12 @@ class RolloutEngine:
 
     async def on_new_version(self, step: int) -> None:
         self.policy_version = step
+        # First successful adapter load: switch rollout target from the base
+        # model to the LoRA adapter name so future rollouts hit the trained
+        # adapter on vLLM.
+        if self.lora_name and self.model != self.lora_name:
+            self.logger.info(f"Switching rollouts to LoRA adapter '{self.lora_name}' (was '{self.model}')")
+            self.model = self.lora_name
         for inflight in list(self._inflight):
             if inflight.kind == "eval":
                 continue  # never cancel eval; it's tagged with its trigger step

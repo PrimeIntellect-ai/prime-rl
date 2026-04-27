@@ -34,6 +34,14 @@ async def run(cfg: OrchestratorConfig) -> None:
     logger.info(f"Output dir: {cfg.output_dir}")
     logger.info(f"Model: {cfg.model.name}")
 
+    # LoRA: until the trainer broadcasts an adapter (step >= 1), no adapter is
+    # loaded on vLLM, so step-0 rollouts must use the base model name. After
+    # the first /load_lora_adapter call, RolloutEngine swaps to the adapter
+    # name so subsequent rollouts use the trained adapter.
+    lora_name = cfg.model.lora.name if cfg.model.lora else None
+    if cfg.model.lora:
+        logger.info(f"LoRA active: adapter '{lora_name}' (rank={cfg.model.lora.rank}, alpha={cfg.model.lora.alpha})")
+
     # Trainer reads orchestrator config from output_dir/control/orch.toml
     # (see prime_rl.trainer.runs.RunManager.get_orchestrator_config).
     control_dir = cfg.output_dir / "control"
@@ -135,6 +143,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         concurrency=concurrency,
         tasks_per_minute=cfg.tasks_per_minute,
         max_rollout_time_seconds=(cfg.max_rollout_time_minutes * 60.0) if cfg.max_rollout_time_minutes else None,
+        lora_name=lora_name,
     )
     if cfg.tasks_per_minute is not None:
         logger.info(f"Rate limit: {cfg.tasks_per_minute} tasks/min")
@@ -147,12 +156,16 @@ async def run(cfg: OrchestratorConfig) -> None:
     if heartbeat is not None:
         logger.info(f"Heartbeat enabled ({cfg.heartbeat.url})")
 
+    if lora_name and cfg.weight_broadcast.type == "nccl":
+        raise ValueError("NCCL weight broadcast does not support LoRA — use filesystem broadcast")
+
     broadcast_dir = get_broadcast_dir(cfg.output_dir)
     admin = InferenceAdmin(
         cfg.client.base_url[0],
         os.getenv(cfg.client.api_key_var, "EMPTY"),
         broadcast_dir,
         mode=cfg.weight_broadcast.type,
+        lora_name=lora_name,
     )
     logger.info(f"Admin client ready ({admin.base_url})")
     logger.info(f"Weight broadcast mode: {cfg.weight_broadcast.type}")
