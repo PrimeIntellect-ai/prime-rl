@@ -22,6 +22,7 @@ from prime_rl.orchestrator.trajectories import interleave_rollout, pretokenize_r
 from prime_rl.orchestrator.vf_utils import get_completion_len
 from prime_rl.transport import TrainingBatch, TrainingSample
 from prime_rl.transport.base import TrainingBatchSender
+from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor import get_monitor
 
@@ -338,6 +339,7 @@ class TrainBatcher:
         ckpt_manager: CkptManager | None = None,
         ckpt_interval: int | None = None,
         buffer: DifficultyBuffer | None = None,
+        heartbeat: Heartbeat | None = None,
     ):
         self.in_q = in_q
         self.policy = policy
@@ -354,6 +356,7 @@ class TrainBatcher:
         self.ckpt_manager = ckpt_manager
         self.ckpt_interval = ckpt_interval
         self.buffer = buffer
+        self.heartbeat = heartbeat
         self.logger = get_logger()
 
     async def _wait_barrier(self) -> None:
@@ -461,6 +464,8 @@ class TrainBatcher:
                 await self.post.process(trainable, filtered, self.step)
                 if self.buffer is not None:
                     get_monitor().log(self.buffer.metrics(), step=self.step)
+                if self.heartbeat is not None:
+                    self.heartbeat.beat()
                 self.step += 1
                 await self._maybe_save_ckpt()
                 if self.max_steps is not None and self.step >= self.max_steps:

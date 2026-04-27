@@ -1087,7 +1087,7 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: Annotated[
         HeartbeatConfig | None,
-        Field(description="Heartbeat config for monitoring training progress (not yet wired in the new orchestrator)."),
+        Field(description="Heartbeat config for monitoring training progress (BetterStack)."),
     ] = None
 
     use_token_client: Annotated[

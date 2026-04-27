@@ -17,6 +17,7 @@ from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import setup_training_batch_sender
 from prime_rl.utils.config import cli
+from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pathing import get_broadcast_dir
@@ -141,6 +142,10 @@ async def run(cfg: OrchestratorConfig) -> None:
     training_sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
     rollout_filters = setup_filters(cfg.filters, vocab_size=tokenizer.vocab_size)
     strategy = build_strategy(cfg.batch_size)
+    heartbeat = Heartbeat(cfg.heartbeat.url) if cfg.heartbeat else None
+    if heartbeat is not None:
+        logger.info(f"Heartbeat enabled ({cfg.heartbeat.url})")
+
     batcher = TrainBatcher(
         groups_q,
         tokenizer,
@@ -156,6 +161,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         ckpt_manager=ckpt_manager,
         ckpt_interval=cfg.ckpt.interval if cfg.ckpt else None,
         buffer=buffer,
+        heartbeat=heartbeat,
     )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
 
