@@ -2608,7 +2608,7 @@ wheels = [
 
 [[package]]
 name = "prime"
-version = "0.5.63"
+version = "0.5.73"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "build", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2624,9 +2624,9 @@ dependencies = [
     { name = "typer", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0e/39/d33077f9e3e0c0558c81ab0cfda07f26de84d25ea1ec267d707c1acae24a/prime-0.5.63.tar.gz", hash = "sha256:63ebb306550239f3194b44e289916db89e5381badef15495eca8ea38b91d2347", size = 327336, upload-time = "2026-04-14T22:31:21.671Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/c9/36ad6f85aebfab3767e2b837a40e75fbfac65d3f2d00aabc5cd139973215/prime-0.5.73.tar.gz", hash = "sha256:2ce07e2a41eaabbb96e3e2cf4d18545413a5fcdd5806489345a7e7c5c41ba3e3", size = 349341, upload-time = "2026-04-25T23:19:40.098Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/31/94/015026f60bb8dbd2367883e117a7653db1fe568dd1ec4b2db9bc4388a557/prime-0.5.63-py3-none-any.whl", hash = "sha256:a60d7a61e56a2a9b426b18af7563da48bbbf37da061161bd2db2a20eb5688614", size = 166706, upload-time = "2026-04-14T22:31:20.225Z" },
+    { url = "https://files.pythonhosted.org/packages/55/8f/2d1cead03c4bc9be60c61e968efef9359725457af266ce3c585b32b8bca9/prime-0.5.73-py3-none-any.whl", hash = "sha256:5267d43d6d3ae02098b3a59919fb9b3cbb83b737d0ef05fa69bed69aaabdb2d0", size = 178264, upload-time = "2026-04-25T23:19:38.721Z" },
 ]
 
 [[package]]
@@ -2776,7 +2776,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "nvidia-ml-py", specifier = ">=12.575.51" },
     { name = "openai", specifier = ">=1.106.1" },
-    { name = "prime", specifier = ">=0.5.63" },
+    { name = "prime", specifier = ">=0.5.73" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn-3"], marker = "extra == 'all'" },

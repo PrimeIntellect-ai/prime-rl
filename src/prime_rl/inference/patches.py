@@ -195,12 +195,15 @@ def _patch_qwen35_lora():
     from vllm.model_executor.models.qwen3_5 import (
         Qwen3_5ForCausalLMBase,
         Qwen3_5ForConditionalGeneration,
+        Qwen3_5MoeForConditionalGeneration,
     )
 
     qkvz_fix = ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z"]
 
     Qwen3_5ForCausalLMBase.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
     Qwen3_5ForConditionalGeneration.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
+
+    Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = False
 
     from vllm.lora.layers.utils import _not_fully_sharded_can_replace
 
@@ -480,6 +483,65 @@ def monkey_patch_LRUCacheWorkerLoRAManager():
 
     LRUCacheWorkerLoRAManager._apply_adapters = _patched__apply_adapters
     LRUCacheWorkerLoRAManager.add_adapter = _patched_add_adapter
+
+
+# Monkeypatch WorkerLoRAManager._load_adapter to skip the per-module regex
+# warning loop. On wide MoE models (Qwen3.5-35B-A3B) it spends minutes
+# recompiling regex patterns inside is_supported_lora_module — purely to emit
+# logger.warning_once about modules that will be ignored. Adapter validity is
+# already enforced by from_local_checkpoint, so dropping the warnings is safe.
+def monkey_patch_skip_lora_module_warnings():
+    from vllm.exceptions import LoRAAdapterNotFoundError
+    from vllm.lora.lora_model import LoRAModel
+    from vllm.lora.peft_helper import PEFTHelper
+    from vllm.lora.request import LoRARequest
+    from vllm.lora.utils import get_adapter_absolute_path
+    from vllm.lora.worker_manager import WorkerLoRAManager
+
+    def _patched_load_adapter(self: WorkerLoRAManager, lora_request: LoRARequest) -> LoRAModel:
+        try:
+            supported_lora_modules = self._adapter_manager.supported_lora_modules
+            packed_modules_mapping = self._adapter_manager.packed_modules_mapping
+            expected_lora_lst: list[str] = []
+            for module in supported_lora_modules:
+                if module in packed_modules_mapping:
+                    expected_lora_lst.extend(packed_modules_mapping[module])
+                else:
+                    expected_lora_lst.append(module)
+                if module == "experts":
+                    expected_lora_lst.append(module)
+            expected_lora_modules = set(expected_lora_lst)
+            lora_path = get_adapter_absolute_path(lora_request.lora_path)
+
+            peft_helper = PEFTHelper.from_local_dir(
+                lora_path,
+                self.max_position_embeddings,
+                lora_request.tensorizer_config_dict,
+            )
+            peft_helper.validate_legal(self.lora_config)
+
+            model = self._adapter_manager.model
+            hf_to_vllm_mapper = getattr(model, "hf_to_vllm_mapper", None)
+            lora_skip_prefixes = getattr(model, "lora_skip_prefixes", None)
+
+            lora = self._lora_model_cls.from_local_checkpoint(
+                lora_path,
+                expected_lora_modules,
+                peft_helper=peft_helper,
+                lora_model_id=lora_request.lora_int_id,
+                device="cpu",
+                dtype=self.lora_config.lora_dtype,
+                model_vocab_size=self.vocab_size,
+                tensorizer_config_dict=lora_request.tensorizer_config_dict,
+                weights_mapper=hf_to_vllm_mapper,
+                skip_prefixes=lora_skip_prefixes,
+            )
+        except FileNotFoundError as e:
+            raise LoRAAdapterNotFoundError(lora_request.lora_name, lora_request.lora_path) from e
+
+        return lora
+
+    WorkerLoRAManager._load_adapter = _patched_load_adapter
 
 
 # Monkeypatch TokenizeParams to fix overly conservative validation
