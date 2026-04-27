@@ -942,7 +942,8 @@ class OrchestratorConfig(BaseConfig):
     # The evaluation configuration
     eval: EvalConfig | None = None
 
-    # Data buffer configuration
+    # Data buffer configuration (not yet wired in the new orchestrator;
+    # round-robin / weighted env sampling is used instead)
     buffer: BufferConfig = BufferConfig()
 
     # The advantage configuration
@@ -960,7 +961,7 @@ class OrchestratorConfig(BaseConfig):
     # The prime monitor configuration
     prime_monitor: PrimeMonitorConfig | None = None
 
-    # Whether to collect inference server metrics (requires wandb)
+    # Whether to collect inference server metrics (not yet wired in the new orchestrator)
     collect_inference_metrics: bool = True
 
     # The checkpoint configuration
@@ -1092,7 +1093,8 @@ class OrchestratorConfig(BaseConfig):
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
     heartbeat: Annotated[
-        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
+        HeartbeatConfig | None,
+        Field(description="Heartbeat config for monitoring training progress (not yet wired in the new orchestrator)."),
     ] = None
 
     use_token_client: Annotated[

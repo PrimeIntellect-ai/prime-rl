@@ -360,13 +360,6 @@ class RLConfig(BaseConfig):
 
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
-    use_orch2: Annotated[
-        bool,
-        Field(
-            description="Use the experimental orch2 orchestrator (src/prime_rl/orch2) instead of the default orchestrator."
-        ),
-    ] = False
-
     experimental: Annotated[
         RLExperimentalConfig,
         Field(description="Experimental features for RL training."),

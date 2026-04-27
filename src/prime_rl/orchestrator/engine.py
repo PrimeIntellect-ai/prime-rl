@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import verifiers as vf
 from aiolimiter import AsyncLimiter
 
-from prime_rl.orch2.scheduler import Kind, Scheduler, Task
+from prime_rl.orchestrator.scheduler import Kind, Scheduler, Task
 from prime_rl.utils.logger import get_logger
 
 
