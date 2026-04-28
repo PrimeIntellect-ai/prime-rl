@@ -16,6 +16,10 @@ rollouts_per_example = 16
 [orchestrator.train.sampling]
 max_completion_tokens = 64
 
+[[orchestrator.filters]]
+type = "zero_advantage"
+enforce = false
+
 [[orchestrator.train.env]]
 id = "color-codeword"
 args = { images_per_turn = 1, max_turns = 3, num_examples = 1000, seed = 42 }

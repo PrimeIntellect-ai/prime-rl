@@ -199,3 +199,7 @@ debug_I2_zero_band
 .idea
 
 outputs/
+
+# BlenderGym dataset + reference codes (large binaries / models, kept locally)
+data/blendergym/
+_reference_codes/

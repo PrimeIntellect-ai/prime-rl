@@ -1,0 +1,65 @@
+# BlenderGym RL training config (phase 6).
+#
+# GPU layout (single-node default deployment):
+#   GPU 0           - vLLM inference server (auto-started by `uv run rl`)
+#   GPU 1           - trainer (FSDP rank 0)
+#   GPU 6, 7        - env worker pool: Blender Cycles + CLIP rubric
+#
+# IMPORTANT: ``orchestrator.train.env.args.work_root`` MUST track the top-level
+# ``output_dir`` because prime-rl does not auto-inject output_dir into env args
+# (plan §"new-run checklist"). Update both whenever you change ``output_dir``.
+
+output_dir = "outputs/blendergym_v2"
+seq_len = 8192
+max_steps = 15
+
+[model]
+name = "Qwen/Qwen3.5-0.8B"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+
+[orchestrator]
+batch_size = 32
+rollouts_per_example = 4
+
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
+
+[[orchestrator.filters]]
+type = "zero_advantage"
+enforce = false
+
+[[orchestrator.train.env]]
+id = "blendergym"
+num_workers = 2
+args = { data_root = "data/blendergym", task_types = ["placement"], max_turns = 3, blender_bin = "_reference_codes/VIGA/utils/third_party/infinigen/blender/blender", gpu_id_pool = [6, 7], work_root = "outputs/blendergym_v2/blendergym_work", keep_failed_only = false, split = "train", eval_split = "eval", eval_holdout = 5, cycles_samples = 16, cycles_denoiser = "OPENIMAGEDENOISE", cycles_compute_device = "OPTIX" }
+
+[[orchestrator.eval.env]]
+id = "blendergym"
+name = "blendergym-eval"
+num_workers = 1
+num_examples = 5
+rollouts_per_example = 1
+args = { data_root = "data/blendergym", task_types = ["placement"], max_turns = 3, blender_bin = "_reference_codes/VIGA/utils/third_party/infinigen/blender/blender", gpu_id_pool = [7], work_root = "outputs/blendergym_v2/blendergym_work", keep_failed_only = false, split = "eval", eval_split = "eval", eval_holdout = 5, cycles_samples = 16, cycles_denoiser = "OPENIMAGEDENOISE", cycles_compute_device = "OPTIX" }
+
+[trainer]
+
+[trainer.model]
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+max_model_len = 16384
+enforce_eager = true
+trust_remote_code = true
+
+[inference.parallel]
+dp = 1

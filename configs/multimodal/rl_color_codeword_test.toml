@@ -10,11 +10,15 @@ vision_encoder_attr = "model.visual"
 language_model_attr = "model.language_model"
 
 [orchestrator]
-batch_size = 16
-rollouts_per_example = 2
+batch_size = 32
+rollouts_per_example = 8
 
 [orchestrator.train.sampling]
-max_completion_tokens = 32
+max_completion_tokens = 128
+
+[[orchestrator.filters]]
+type = "zero_advantage"
+enforce = false
 
 [[orchestrator.train.env]]
 id = "color-codeword"
