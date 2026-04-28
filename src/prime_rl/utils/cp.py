@@ -8,14 +8,18 @@ from ring_flash_attn import update_ring_flash_attn_params
 
 
 def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-    """Configure DeltaNet modules in Qwen3.5 hybrid models for native fla CP."""
-    layers = None
+    """Configure DeltaNet modules in Qwen3.5 hybrid models for native fla CP.
+
+    Also stashes cp_group on the inner text model so that its forward() can
+    all-gather position_ids and compute a global cu_seqlens for the GDN
+    all-to-all path (needed when packed batches contain multiple segments).
+    """
+    inner = None
     if hasattr(model, "model"):
         inner = model.model
         if hasattr(inner, "language_model"):
             inner = inner.language_model
-        if hasattr(inner, "layers"):
-            layers = inner.layers
+    layers = getattr(inner, "layers", None) if inner is not None else None
 
     if layers is None:
         return
@@ -31,6 +35,11 @@ def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int,
                 count += 1
 
     if count > 0:
+        # The inner text model needs cp_group to all-gather position_ids
+        # in its forward(); see Qwen3_5MoeModel.forward().
+        inner.cp_group = cp_group
+        inner.cp_rank = cp_rank
+        inner.cp_world_size = cp_world_size
         from prime_rl.utils.logger import get_logger
 
         get_logger().info(f"Configured hybrid CP on {count} DeltaNet modules (fla native state passing)")

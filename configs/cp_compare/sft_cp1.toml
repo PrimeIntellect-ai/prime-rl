@@ -1,0 +1,9 @@
+# cp=1 baseline. Run via:
+#   uv run sft @ configs/cp_compare/sft_base.toml @ configs/cp_compare/sft_cp1.toml
+output_dir = "outputs/qwen35-cp-sft-cp1"
+
+[model]
+cp = 1
+
+[wandb]
+name = "cp1"

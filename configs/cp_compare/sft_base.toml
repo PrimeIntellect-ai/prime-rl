@@ -1,0 +1,31 @@
+# Shared SFT settings for cp=1 vs cp=2 loss-pattern comparison.
+# Both runs use identical batch_size/lr/seed; only [model].cp differs.
+max_steps = 30
+clean_output_dir = true
+
+[slurm]
+job_name = "qwen35-cp-sft"
+
+[deployment]
+type = "single_node"
+num_gpus = 8
+
+[model]
+name = "/home/konstantin/renderers/prime-rl/outputs/mini-qwen35-moe-text-vfull"
+impl = "custom"
+attn = "flash_attention_3"
+
+[data]
+type = "sft"
+name = "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"
+seq_len = 4096
+batch_size = 16
+micro_batch_size = 1
+seed = 42
+
+[optim]
+type = "adamw"
+lr = 2e-5
+
+[wandb]
+project = "qwen35-cp"

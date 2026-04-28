@@ -1,0 +1,9 @@
+# cp=2 — exercises GDN all-to-all. Run via:
+#   uv run sft @ configs/cp_compare/sft_base.toml @ configs/cp_compare/sft_cp2.toml
+output_dir = "outputs/qwen35-cp-sft-cp2"
+
+[model]
+cp = 2
+
+[wandb]
+name = "cp2"

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch import Tensor, nn
 from transformers.cache_utils import Cache
@@ -259,6 +260,25 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor | None = None,
+        global_cu_seqlens: torch.LongTensor | None = None,
+    ) -> torch.Tensor:
+        cp_size = getattr(self, "cp_world_size", 1)
+        cp_group = getattr(self, "cp_group", None)
+        cp_enabled = cp_size > 1 and cp_group is not None
+
+        if cp_enabled:
+            return self._forward_cp_all_to_all(
+                hidden_states,
+                global_cu_seqlens=global_cu_seqlens,
+                cp_group=cp_group,
+                cp_size=cp_size,
+            )
+        return self._forward_no_cp(hidden_states, cu_seqlens=cu_seqlens)
+
+    def _forward_no_cp(
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -310,38 +330,194 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        # Use fla's native CP when available, otherwise fall back to PyTorch kernel
-        cp_context = self._build_cp_context(seq_len, hidden_states.device)
-        if cp_context is not None:
-            cu_seqlens = cp_context.cu_seqlens
-            core_attn_out, _ = self._chunk_gated_delta_rule(
-                query,
-                key,
-                value,
-                g=g,
-                beta=beta,
-                use_qk_l2norm_in_kernel=True,
-                cu_seqlens=cu_seqlens,
-                cp_context=cp_context,
-            )
-        else:
-            core_attn_out, _ = self._chunk_gated_delta_rule(
-                query,
-                key,
-                value,
-                g=g,
-                beta=beta,
-                initial_state=None,
-                output_final_state=False,
-                use_qk_l2norm_in_kernel=True,
-                cu_seqlens=cu_seqlens,
-            )
+        core_attn_out, _ = self._chunk_gated_delta_rule(
+            query,
+            key,
+            value,
+            g=g,
+            beta=beta,
+            initial_state=None,
+            output_final_state=False,
+            use_qk_l2norm_in_kernel=True,
+            cu_seqlens=cu_seqlens,
+        )
 
         # Gated RMSNorm
         core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
         z = z.reshape(-1, self.head_v_dim)
         core_attn_out = self.norm(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
+
+        return self.out_proj(core_attn_out)
+
+    def _forward_cp_all_to_all(
+        self,
+        hidden_states: torch.Tensor,
+        global_cu_seqlens: torch.LongTensor | None,
+        cp_group: dist.ProcessGroup,
+        cp_size: int,
+    ) -> torch.Tensor:
+        """Context-parallel forward via all-to-all head partitioning.
+
+        Convert the per-rank seq slice into a head slice, run conv1d +
+        chunk_gated_delta_rule on the FULL sequence with LOCAL heads, then
+        convert back. This avoids cross-rank state passing AND the kernel-1
+        conv1d boundary issue — each rank sees the full packed sequence on its
+        own subset of heads.
+
+        `global_cu_seqlens` describes segment boundaries in the FULL sequence
+        (computed in Qwen3_5MoeModel.forward by all-gathering position_ids).
+        We thread it into both the conv1d (via `seq_idx`) and the SSM scan to
+        prevent state from leaking across packed-sequence boundaries — same
+        pattern NVIDIA Megatron uses with `packed_seq_params.seq_idx`.
+
+        Required: num_v_heads, num_k_heads, key_dim, value_dim divisible by cp_size.
+        """
+        from prime_rl.trainer.models.layers.cp_mamba import head_to_seq_parallel, seq_to_head_parallel
+
+        batch_size, local_seq_len, _ = hidden_states.shape
+        cp_rank = self.cp_rank
+
+        # ── 1. in_proj on the local seq slice (token-parallel, no comm) ──
+        mixed_qkv = self.in_proj_qkv(hidden_states)  # [B, S/cp, 2*key_dim + value_dim]
+        z = self.in_proj_z(hidden_states)  # [B, S/cp, value_dim]
+        b = self.in_proj_b(hidden_states)  # [B, S/cp, num_v_heads]
+        a = self.in_proj_a(hidden_states)  # [B, S/cp, num_v_heads]
+
+        # ── 2. Splits before all-to-all so each piece shards along its head dim ──
+        # mixed_qkv concatenates Q (key_dim), K (key_dim), V (value_dim). All
+        # three have head structure that maps onto cp ranks identically when
+        # num_k_heads % cp_size == 0 and num_v_heads % cp_size == 0.
+        q_local, k_local, v_local = torch.split(
+            mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1
+        )
+
+        # ── 3. all-to-all seq → head ──
+        q_local = seq_to_head_parallel(q_local, cp_group, cp_size)  # [B, S, key_dim/cp]
+        k_local = seq_to_head_parallel(k_local, cp_group, cp_size)
+        v_local = seq_to_head_parallel(v_local, cp_group, cp_size)
+        z = seq_to_head_parallel(z, cp_group, cp_size)              # [B, S, value_dim/cp]
+        b = seq_to_head_parallel(b, cp_group, cp_size)              # [B, S, num_v_heads/cp]
+        a = seq_to_head_parallel(a, cp_group, cp_size)              # [B, S, num_v_heads/cp]
+
+        full_seq_len = q_local.shape[1]
+        local_num_v_heads = self.num_v_heads // cp_size
+        local_num_k_heads = self.num_k_heads // cp_size
+        local_key_dim = self.key_dim // cp_size
+        local_value_dim = self.value_dim // cp_size
+
+        # Fall back to a single-segment global cu_seqlens if the model's forward
+        # didn't compute one (e.g. CP disabled but somehow reaching this path).
+        if global_cu_seqlens is None:
+            global_cu_seqlens = torch.tensor(
+                [0, full_seq_len], dtype=torch.int32, device=hidden_states.device
+            )
+
+        # ── 4. Slice conv1d weight to local Q/K/V channels ──
+        # conv_dim layout in the original weight: [Q (key_dim), K (key_dim), V (value_dim)].
+        # Each block partitions cleanly because num_k/num_v are divisible by cp_size.
+        device = mixed_qkv.device
+        q_idx = torch.arange(cp_rank * local_key_dim, (cp_rank + 1) * local_key_dim, device=device)
+        k_idx = self.key_dim + torch.arange(
+            cp_rank * local_key_dim, (cp_rank + 1) * local_key_dim, device=device
+        )
+        v_idx = 2 * self.key_dim + torch.arange(
+            cp_rank * local_value_dim, (cp_rank + 1) * local_value_dim, device=device
+        )
+        conv_indices = torch.cat([q_idx, k_idx, v_idx])
+        local_conv_weight = self.conv1d.weight[conv_indices]
+        local_conv_bias = self.conv1d.bias[conv_indices] if self.conv1d.bias is not None else None
+
+        # ── 5. Slice per-head SSM params ──
+        head_lo = cp_rank * local_num_v_heads
+        head_hi = head_lo + local_num_v_heads
+        local_A_log = self.A_log[head_lo:head_hi]
+        local_dt_bias = self.dt_bias[head_lo:head_hi]
+
+        # ── 6. Conv1d on FULL sequence with LOCAL channels ──
+        mixed_qkv = torch.cat([q_local, k_local, v_local], dim=-1).transpose(1, 2)
+        # mixed_qkv: [B, local_conv_dim, S]
+
+        if self._causal_conv1d_fn is not None:
+            seq_idx = None
+            if global_cu_seqlens is not None:
+                seg_lens = global_cu_seqlens[1:] - global_cu_seqlens[:-1]
+                seq_idx = torch.repeat_interleave(
+                    torch.arange(seg_lens.numel(), dtype=torch.int32, device=device),
+                    seg_lens,
+                ).unsqueeze(0)
+            mixed_qkv = self._causal_conv1d_fn(
+                x=mixed_qkv,
+                weight=local_conv_weight.squeeze(1),
+                bias=local_conv_bias,
+                activation=self.activation,
+                seq_idx=seq_idx,
+            )
+        elif global_cu_seqlens is not None:
+            cu = global_cu_seqlens.tolist()
+            conv_outs = []
+            for i in range(len(cu) - 1):
+                s, e = cu[i], cu[i + 1]
+                if s == e:
+                    continue
+                local_conv = nn.functional.conv1d(
+                    mixed_qkv[:, :, s:e],
+                    local_conv_weight,
+                    bias=local_conv_bias,
+                    groups=local_conv_weight.shape[0],
+                    padding=self.conv_kernel_size - 1,
+                )[:, :, : e - s]
+                conv_outs.append(local_conv)
+            mixed_qkv = F.silu(torch.cat(conv_outs, dim=-1))
+        else:
+            mixed_qkv = F.silu(
+                nn.functional.conv1d(
+                    mixed_qkv,
+                    local_conv_weight,
+                    bias=local_conv_bias,
+                    groups=local_conv_weight.shape[0],
+                    padding=self.conv_kernel_size - 1,
+                )[:, :, :full_seq_len]
+            )
+
+        mixed_qkv = mixed_qkv.transpose(1, 2)  # [B, S, local_conv_dim]
+        query, key, value = torch.split(
+            mixed_qkv, [local_key_dim, local_key_dim, local_value_dim], dim=-1
+        )
+        query = query.reshape(batch_size, full_seq_len, local_num_k_heads, self.head_k_dim)
+        key = key.reshape(batch_size, full_seq_len, local_num_k_heads, self.head_k_dim)
+        value = value.reshape(batch_size, full_seq_len, local_num_v_heads, self.head_v_dim)
+
+        beta = b.sigmoid()
+        g = -local_A_log.float().exp() * F.softplus(a.float() + local_dt_bias)
+
+        if self.num_v_heads // self.num_k_heads > 1:
+            query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+            key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+
+        # ── 7. chunk_gated_delta_rule on full sequence, local heads — no CP context ──
+        core_attn_out, _ = self._chunk_gated_delta_rule(
+            query,
+            key,
+            value,
+            g=g,
+            beta=beta,
+            initial_state=None,
+            output_final_state=False,
+            use_qk_l2norm_in_kernel=True,
+            cu_seqlens=global_cu_seqlens,
+        )
+
+        # ── 8. Gated RMSNorm (per-head, no comm) ──
+        core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
+        z_flat = z.reshape(-1, self.head_v_dim)
+        core_attn_out = self.norm(core_attn_out, z_flat)
+        core_attn_out = core_attn_out.reshape(batch_size, full_seq_len, -1)
+        # core_attn_out: [B, S, local_value_dim]
+
+        # ── 9. all-to-all head → seq, then out_proj on full value_dim ──
+        core_attn_out = head_to_seq_parallel(core_attn_out, cp_group, cp_size)
+        # [B, S/cp, value_dim]
 
         return self.out_proj(core_attn_out)
 
@@ -621,6 +797,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        global_cu_seqlens: torch.LongTensor | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
@@ -628,7 +805,11 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
 
         # Token mixer
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(hidden_states, cu_seqlens=cu_seqlens)
+            hidden_states = self.linear_attn(
+                hidden_states,
+                cu_seqlens=cu_seqlens,
+                global_cu_seqlens=global_cu_seqlens,
+            )
         elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
@@ -770,6 +951,30 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
             max_seqlen = None
             cu_seqlens = None
 
+        # When CP is active and the model has linear-attention layers, those
+        # layers (in their all-to-all forward) need GLOBAL cu_seqlens — the
+        # local one above only describes this rank's slice. We all-gather
+        # position_ids once here and recompute. NVIDIA's Megatron Mamba CP
+        # threads the same global descriptor (`packed_seq_params.seq_idx`) into
+        # the SSM scan + conv1d for the same reason.
+        global_cu_seqlens = cu_seqlens
+        cp_group = getattr(self, "cp_group", None)
+        cp_world_size = getattr(self, "cp_world_size", 1)
+        if cp_group is not None and cp_world_size > 1 and position_ids is not None:
+            gathered = [torch.empty_like(position_ids) for _ in range(cp_world_size)]
+            torch.distributed.all_gather(gathered, position_ids.contiguous(), group=cp_group)
+            global_position_ids = torch.cat(gathered, dim=1)
+            flat = global_position_ids.view(-1)
+            global_seqlens = torch.cat(
+                [
+                    flat[0:1],
+                    flat[:-1][(flat == 0)[1:]] + 1,
+                    flat[-1:] + 1,
+                ]
+            )
+            global_cu_seqlens = global_seqlens.cumsum(dim=0, dtype=torch.int32)
+            torch._dynamo.mark_dynamic(global_cu_seqlens, 0)
+
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
@@ -780,6 +985,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                global_cu_seqlens=global_cu_seqlens,
                 routed_experts=routed_experts_layer,
             )
 

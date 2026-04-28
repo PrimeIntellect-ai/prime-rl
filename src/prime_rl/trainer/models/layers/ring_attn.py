@@ -30,7 +30,7 @@ def _fa3_varlen_forward(
             "max_seqlen_q": max_seqlen_q,
             "max_seqlen_k": max_seqlen_k,
             "softmax_scale": softmax_scale,
-            "is_causal": causal,
+            "causal": causal,
             "window_size_left": window_size[0],
             "window_size_right": window_size[1],
         }

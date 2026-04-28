@@ -1,0 +1,31 @@
+# Tiny Qwen3.5-MoE text repro for the GDN all-to-all CP=2 crash.
+# Uses fake data + a tiny model saved by scripts/mini_qwen3_5_moe_text.py.
+# Run: uv run sft @ configs/debug/moe/sft/qwen35_gdn_cp2.toml --slurm
+output_dir = "outputs/dbg-qwen35-gdn-cp2"
+max_steps = 5
+clean_output_dir = true
+
+[slurm]
+job_name = "dbg-qwen35-gdn-cp2"
+
+[deployment]
+type = "single_node"
+num_gpus = 2
+
+[log]
+level = "debug"
+
+[model]
+name = "/home/konstantin/renderers/prime-rl/outputs/mini-qwen35-moe-text"
+impl = "custom"
+attn = "flash_attention_3"
+cp = 2
+
+[model.debug]
+random_init = true
+
+[data]
+type = "fake"
+batch_size = 4
+seq_len = 4096
+micro_batch_size = 1
