@@ -424,7 +424,7 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Compute advantages (in-place)
             num_rollouts = len(train_rollouts)
-            num_unique_examples = len({r["example_id"] for r in train_rollouts})
+            num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
             compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
@@ -603,13 +603,13 @@ async def orchestrate(config: OrchestratorConfig):
 
         def compute_solve_rates(df):
             """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
-            reward_per_problem = df.groupby("example_id").reward.sum()
+            reward_per_problem = df.groupby(["env_name", "example_id"]).reward.sum()
             solve_none = (reward_per_problem == 0).mean()
             solve_all = (reward_per_problem == config.rollouts_per_example).mean()
             return solve_none, solve_all, 1 - solve_none - solve_all
 
-        # Group by example_id to average across rollouts within each problem
-        by_example = results_df.groupby("example_id")
+        # Group by (env_name, example_id) to average across rollouts within each problem
+        by_example = results_df.groupby(["env_name", "example_id"])
 
         solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
         to_log = {
