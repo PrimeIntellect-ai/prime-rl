@@ -60,9 +60,10 @@ class GroupedExperts(nn.Module):
             w2 = self.w2
             w3 = self.w3
 
-        args = (w1, w2, w3, x, num_tokens_per_expert)
         if self.expert_backend == "sonic":
-            args += (top_scores, token_indices, expert_indices)
+            args = (w1, w2, w3, x, top_scores, token_indices, expert_indices)
+        else:
+            args = (w1, w2, w3, x, num_tokens_per_expert)
 
         return self._forward_fn(*args)
 

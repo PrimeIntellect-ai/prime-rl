@@ -7,7 +7,14 @@ from sonicmoe.functional import moe_general_routing_inputs
 from torchtitan.distributed.expert_parallel import expert_parallel
 
 
+_sonic_autotune_disabled = False
+
+
 def _disable_sonic_autotune() -> None:
+    global _sonic_autotune_disabled
+    if _sonic_autotune_disabled:
+        return
+
     import sonicmoe.functional.backward as sonic_backward
     import sonicmoe.functional.forward as sonic_forward
 
@@ -23,6 +30,7 @@ def _disable_sonic_autotune() -> None:
     sonic_forward.gemm_gated = force_no_autotune(sonic_forward.gemm_gated)
     sonic_backward.gemm = force_no_autotune(sonic_backward.gemm)
     sonic_backward.gemm_dgated = force_no_autotune(sonic_backward.gemm_dgated)
+    _sonic_autotune_disabled = True
 
 
 def relu2(x: torch.Tensor) -> torch.Tensor:

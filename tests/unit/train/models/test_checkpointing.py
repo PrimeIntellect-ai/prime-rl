@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 from prime_rl.trainer.models.layers.checkpointing import (
@@ -38,10 +39,14 @@ class DummyMambaLayer(nn.Module):
 
 
 class DummyMoEMlp(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("tokens_per_expert", torch.zeros(1), persistent=False)
+
     def forward(self, hidden_states):
         return hidden_states
 
-    def _run_routed_experts(self, hidden_states, *args):
+    def run_experts_for_torch_a2a(self, hidden_states, *args):
         return hidden_states
 
     def run_experts_for_deepep(self, hidden_states, **expert_kwargs):
@@ -73,4 +78,6 @@ def test_routed_experts_checkpointing_patches_local_and_global_helpers():
 
     set_selective_activation_checkpointing(layer, ["routed_experts"])
 
-    assert getattr(layer.mlp, _PATCHED_METHODS_ATTR) == frozenset({"_run_local_routed_experts", "_run_routed_experts"})
+    assert getattr(layer.mlp, _PATCHED_METHODS_ATTR) == frozenset(
+        {"run_experts_for_torch_a2a", "run_experts_for_deepep"}
+    )
