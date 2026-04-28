@@ -67,3 +67,10 @@ class MultiMonitor(Monitor):
                 monitor.close()
             except Exception as e:
                 self.logger.warning(f"Failed to close {monitor.__class__.__name__}: {e}")
+
+    def prune_history(self) -> None:
+        for monitor in self.monitors:
+            try:
+                monitor.prune_history()
+            except Exception as e:
+                self.logger.warning(f"Failed to prune history on {monitor.__class__.__name__}: {e}")

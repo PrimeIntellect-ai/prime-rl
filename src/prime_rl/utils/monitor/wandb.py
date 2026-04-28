@@ -5,7 +5,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 import verifiers as vf
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -105,7 +104,6 @@ class WandbMonitor(Monitor):
                     log_mode="INCREMENTAL",
                 )
                 self.tokenizer = tokenizer
-                self.samples = []
                 self.eval_samples_cols = ["step", "env", "task", "example_id", "completion", "reward"]
                 self.eval_samples_table = wandb.Table(
                     columns=self.eval_samples_cols,
@@ -176,7 +174,6 @@ class WandbMonitor(Monitor):
                 "Order of columns in the table must be the same as order of the keys here"
             )
             self.samples_table.add_data(*sample.values())
-            self.samples.append(sample)
 
         wandb.log({"samples": self.samples_table, "step": step})
         self.last_log_samples_step = step
@@ -216,21 +213,10 @@ class WandbMonitor(Monitor):
         wandb.log({"eval/samples": self.eval_samples_table, "step": step})
 
     def log_final_samples(self) -> None:
-        """Log final samples to W&B table."""
-        if not self.is_master:
-            return
-        if (
-            not self.config
-            or not isinstance(self.config, WandbWithExtrasConfig)
-            or not self.config.log_extras
-            or not self.config.log_extras.samples
-        ):
-            return
-
-        self.logger.info("Logging final samples to W&B table")
-        df = pd.DataFrame(self.samples)
-        table = wandb.Table(dataframe=df)
-        wandb.log({"final-samples": table})
+        # Per-step samples are already streamed to the incremental `samples` table,
+        # so no separate end-of-run dump is needed and the previous duplicate kept
+        # every sample alive in a Python list for the lifetime of the run.
+        pass
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         """Log distributions (no-op for W&B)."""

@@ -736,6 +736,13 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
+        # The orchestrator only reads monitor.history for the end-of-run benchmark
+        # table; outside --bench, holding every step's metrics dict is a slow leak
+        # that grows linearly with run length. Keep only the most recent entry so
+        # PrimeMonitor.save_final_summary's `history[-1]` access still works.
+        if not config.bench:
+            monitor.prune_history()
+
         if usage_reporter and run_id:
             usage_reporter.report_training_usage(
                 run_id=run_id,

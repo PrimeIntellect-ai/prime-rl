@@ -62,6 +62,14 @@ class Monitor(ABC):
         """Close any resources held by the monitor. Override in subclasses that need cleanup."""
         pass
 
+    def prune_history(self) -> None:
+        """Drop all but the most recent history entry. Callers that don't need the full
+        per-step trajectory (e.g. the orchestrator outside of --bench mode) should call
+        this between steps to bound memory."""
+        history = getattr(self, "history", None)
+        if history:
+            self.history = history[-1:]
+
 
 class NoOpMonitor(Monitor):
     """Monitor that does nothing. Used when no monitors are configured."""
