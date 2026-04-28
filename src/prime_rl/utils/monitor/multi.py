@@ -70,7 +70,4 @@ class MultiMonitor(Monitor):
 
     def prune_history(self) -> None:
         for monitor in self.monitors:
-            try:
-                monitor.prune_history()
-            except Exception as e:
-                self.logger.warning(f"Failed to prune history on {monitor.__class__.__name__}: {e}")
+            monitor.prune_history()
