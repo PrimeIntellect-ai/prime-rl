@@ -152,7 +152,6 @@ async def orchestrate(config: OrchestratorConfig):
         rollout_client_config=rollout_client_config,
         rollout_model_name=rollout_model_name,
         tokenizer=tokenizer,
-        is_vlm=is_vlm,
         logger=logger,
     )
 
@@ -528,7 +527,6 @@ async def orchestrate(config: OrchestratorConfig):
                 vlm_cache=vlm_cache,
                 cache_key=rollout_idx,
                 mm_token_type_ids_mapping=mm_token_type_ids_mapping,
-                processor=processor,
             )
 
         results = await asyncio.gather(
@@ -875,7 +873,6 @@ async def setup_rollout_inference_pool(
     rollout_client_config,
     rollout_model_name: str,
     tokenizer,
-    is_vlm: bool,
     logger,
 ):
     """Set up rollout inference.
@@ -905,9 +902,6 @@ async def setup_rollout_inference_pool(
         return None, inference_pool
 
     if config.use_renderer:
-        # Config validator already blocks use_renderer=True for VLMs; the
-        # is_vlm arg is kept for explicitness.
-        assert not is_vlm, "config validator should have rejected use_renderer=True for a VLM"
         renderer = create_renderer(
             tokenizer,
             renderer=config.model.renderer,
