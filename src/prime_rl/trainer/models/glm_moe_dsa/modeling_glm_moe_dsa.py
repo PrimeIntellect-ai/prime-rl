@@ -98,8 +98,6 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        # Attention runs with CP-sharded Q (length S_local) and gathers KV internally
-        # to length S_full. No gather/scatter wrapper needed at the layer boundary.
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
@@ -251,9 +249,6 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids_full)
 
         if cp_world_size > 1:
-            assert S_full % cp_world_size == 0, (
-                f"Full sequence length {S_full} must be divisible by cp_world_size {cp_world_size}"
-            )
             s_local = S_full // cp_world_size
             ks = ks_full[cp_rank * s_local : (cp_rank + 1) * s_local].contiguous()
             ke = ke_full[cp_rank * s_local : (cp_rank + 1) * s_local].contiguous()

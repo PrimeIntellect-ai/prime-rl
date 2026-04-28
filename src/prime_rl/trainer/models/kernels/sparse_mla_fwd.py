@@ -104,7 +104,6 @@ def sparse_mla_fwd(
 
             b_i, g_i = by, bz
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
-            q_i = s_i
             # The indexer pre-filters indices using per-token `ke` and replaces out-of-range
             # entries with the sentinel value `seq_len_kv - 1` (the last KV slot is a
             # zero sentinel; valid K indices live in [0, seq_len_kv - 1)). This single

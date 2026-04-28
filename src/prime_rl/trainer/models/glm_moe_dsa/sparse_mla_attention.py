@@ -51,10 +51,9 @@ class _SparseMLA(torch.autograd.Function):
         return dq, dkv, None, None
 
 
-def _apply_rope_interleave_single(
+def apply_rope_interleave_single(
     t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsqueeze_dim: int = 1
 ) -> torch.Tensor:
-    """Interleaved RoPE on a single tensor (Q or K), matching apply_rotary_pos_emb_interleave."""
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
     b, h, s, d = t.shape
@@ -96,11 +95,9 @@ class Indexer(nn.Module):
         w = self.weights_proj(hidden_states_local[0])
 
         if cp_world_size > 1:
-            # Gather K-side projections across CP. Smaller than gathering raw hidden_states.
             k_idx = gather_for_cp(k_idx_local.unsqueeze(0), cp_group).squeeze(0)
         else:
             k_idx = k_idx_local
-        s_full = k_idx.shape[0]
 
         cos_full, sin_full = position_embeddings_full
         if cp_world_size > 1:
@@ -115,11 +112,11 @@ class Indexer(nn.Module):
         k_nope = k_idx[..., self.rope_dim :]
 
         q_pe = q_pe.unsqueeze(0).transpose(1, 2)  # [1, H, S_local, rope_dim]
-        q_pe = _apply_rope_interleave_single(q_pe, cos_local, sin_local)
+        q_pe = apply_rope_interleave_single(q_pe, cos_local, sin_local)
         q_pe = q_pe.transpose(1, 2).squeeze(0)
 
         k_pe = k_pe.unsqueeze(0).unsqueeze(1)  # [1, 1, S_full, rope_dim]
-        k_pe = _apply_rope_interleave_single(k_pe, cos_full, sin_full)
+        k_pe = apply_rope_interleave_single(k_pe, cos_full, sin_full)
         k_pe = k_pe.squeeze(1).squeeze(0)
 
         q_idx = torch.cat([q_pe, q_nope], dim=-1)
@@ -202,11 +199,11 @@ class GlmMoeDsaAttention(nn.Module):
             cos_local, sin_local = cos_full, sin_full
 
         q_rope_r = q_rope.transpose(1, 2)  # [B, H, S_local, rope_dim]
-        q_rope_r = _apply_rope_interleave_single(q_rope_r, cos_local, sin_local)
+        q_rope_r = apply_rope_interleave_single(q_rope_r, cos_local, sin_local)
         q_rope = q_rope_r.transpose(1, 2)
 
         k_rope_r = k_rope_full.unsqueeze(1)  # [B, 1, S_full, rope_dim]
-        k_rope_r = _apply_rope_interleave_single(k_rope_r, cos_full, sin_full)
+        k_rope_r = apply_rope_interleave_single(k_rope_r, cos_full, sin_full)
         k_rope_full = k_rope_r.squeeze(1)
 
         kv_b_w = self.kv_b_proj.weight.view(self.num_heads, self.qk_nope_head_dim + self.v_head_dim, self.kv_lora_rank)
@@ -238,18 +235,6 @@ class GlmMoeDsaAttention(nn.Module):
         ks: torch.Tensor | None = None,
         ke: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Sharded-Q sparse MLA.
-
-        Inputs are CP-sharded along the sequence dimension; KV is gathered to full length
-        inside this module so the tilelang fwd/bwd kernels execute on Q of length S_local
-        and KV of length S_full + 1, keeping per-rank attention compute proportional to
-        S_local * S_full instead of S_full ** 2.
-
-        Args:
-            hidden_states: [B, S_local, hidden_size] CP-sharded along seq.
-            position_embeddings: (cos, sin) over the full sequence length S_full.
-            ks, ke: [S_local] int32, sequence-start and causal-end in K's global coordinates.
-        """
         q_latent, k_compressed_normed, k_rope = self.attn_projections(hidden_states)
 
         if self.cp_enabled:
