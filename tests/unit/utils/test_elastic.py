@@ -9,6 +9,8 @@ import verifiers as vf
 from prime_rl.utils.elastic import (
     AdapterState,
     ElasticInferencePool,
+    LORA_ADMIN_HEALTHCHECK_ADAPTER,
+    LORA_ADMIN_HEALTHCHECK_TIMEOUT,
     ServerState,
     check_server_model,
     discover_ready_servers,
@@ -459,6 +461,64 @@ def _make_elastic_pool(max_sync_failures: int = 5) -> ElasticInferencePool:
     mock_config.elastic.max_sync_failures = max_sync_failures
     mock_config.router_url = None
     return ElasticInferencePool(client_config=mock_config, model_name="base-model")
+
+
+def _mock_response(status_code: int = 200, json_data: dict | None = None) -> MagicMock:
+    response = MagicMock()
+    response.status_code = status_code
+    response.raise_for_status = MagicMock()
+    response.json.return_value = json_data or {}
+    return response
+
+
+def test_check_server_health_probes_lora_admin_path():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        pool = _make_elastic_pool()
+        admin_client = AsyncMock()
+        admin_client.get.side_effect = [
+            _mock_response(),
+            _mock_response(json_data={"data": [{"id": "base-model"}]}),
+        ]
+        admin_client.post.return_value = _mock_response(status_code=404)
+
+        result = asyncio.run(pool._check_server_health(admin_client, "10.0.0.1"))
+
+        assert result is True
+        admin_client.post.assert_awaited_once_with(
+            "/v1/unload_lora_adapter",
+            json={"lora_name": LORA_ADMIN_HEALTHCHECK_ADAPTER},
+            timeout=LORA_ADMIN_HEALTHCHECK_TIMEOUT,
+        )
+
+
+def test_check_server_health_fails_when_lora_admin_probe_times_out():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        pool = _make_elastic_pool()
+        admin_client = AsyncMock()
+        admin_client.get.side_effect = [
+            _mock_response(),
+            _mock_response(json_data={"data": [{"id": "base-model"}]}),
+        ]
+        admin_client.post.side_effect = httpx.ReadTimeout("timed out")
+
+        result = asyncio.run(pool._check_server_health(admin_client, "10.0.0.1"))
+
+        assert result is False
+
+
+def test_check_server_health_fails_on_lora_admin_probe_server_error():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        pool = _make_elastic_pool()
+        admin_client = AsyncMock()
+        admin_client.get.side_effect = [
+            _mock_response(),
+            _mock_response(json_data={"data": [{"id": "base-model"}]}),
+        ]
+        admin_client.post.return_value = _mock_response(status_code=500)
+
+        result = asyncio.run(pool._check_server_health(admin_client, "10.0.0.1"))
+
+        assert result is False
 
 
 def test_sync_evicts_server_after_max_sync_failures():

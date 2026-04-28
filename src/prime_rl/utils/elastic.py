@@ -25,6 +25,9 @@ from prime_rl.utils.logger import get_logger
 
 # --- Shared discovery functions ---
 
+LORA_ADMIN_HEALTHCHECK_ADAPTER = "__prime_rl_healthcheck_probe_does_not_exist__"
+LORA_ADMIN_HEALTHCHECK_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+
 
 def discover_server_ips(hostname: str) -> list[str]:
     """Discover server IPs via DNS lookup."""
@@ -382,6 +385,25 @@ class ElasticInferencePool:
                 return False
         except Exception as e:
             self.logger.debug(f"Server {ip} model check failed: {e}")
+            return False
+
+        try:
+            response = await admin_client.post(
+                "/v1/unload_lora_adapter",
+                json={"lora_name": LORA_ADMIN_HEALTHCHECK_ADAPTER},
+                timeout=LORA_ADMIN_HEALTHCHECK_TIMEOUT,
+            )
+            if response.status_code >= 500:
+                self.logger.debug(f"Server {ip} LoRA admin probe failed with status {response.status_code}")
+                return False
+        except httpx.TimeoutException as e:
+            self.logger.debug(f"Server {ip} LoRA admin probe timed out: {type(e).__name__}: {e!r}")
+            return False
+        except httpx.TransportError as e:
+            self.logger.debug(f"Server {ip} LoRA admin probe transport error: {type(e).__name__}: {e!r}")
+            return False
+        except Exception as e:
+            self.logger.debug(f"Server {ip} LoRA admin probe failed: {type(e).__name__}: {e!r}")
             return False
 
         return True
