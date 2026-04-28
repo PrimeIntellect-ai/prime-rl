@@ -2,6 +2,8 @@
 
 Documenting **breaking** configuration changes — renamed, removed, or moved fields that require users to update existing configs.
 
+- **`model.expert_backend` (NEW)**: Added local expert compute backend selection. Accepted values are `grouped_mm` (default) and `sonic`; `sonic` uses sonic-moe kernels for gated SwiGLU MoE layers. (2026-04-27)
+- **`model.deepep_token_chunk_size` removed**: Trainer-side DeepEP no longer supports token chunk pipelining. Existing trainer/SFT configs using this field must delete it. `model.ep_comm_backend = "deepep"` and `model.deepep_num_sms` remain supported. (2026-04-27)
 - **`orchestrator.teacher_rollout_model` now requires `orchestrator.use_sft_loss = true`**: External teacher rollout configs no longer rely on `trainer.loss.type = "sft"` to select SFT loss. Existing hard-distill configs must set `orchestrator.use_sft_loss = true` alongside `orchestrator.teacher_rollout_model`; the orchestrator validates the pair and stamps training samples with the per-batch SFT loss bool. (2026-04-26)
 - **`model.attn = "eager"` (NEW option)**: Added `eager` as a valid value for the `model.attn` field. Required for GPT-OSS models on non-Hopper GPUs, since the only flash attention kernel GPT-OSS supports (`kernels-community/vllm-flash-attn3`) is Hopper-only. A clear error message is raised at model load time if GPT-OSS is used without `eager` on unsupported hardware. Also added `kernels` as a core dependency. (2026-04-05)
 - **`[[orchestrator.env]]` → `[[orchestrator.train.env]]`**: Training environments and sampling are now configured under `[orchestrator.train]`. The old `[[orchestrator.env]]` and `[orchestrator.sampling]` paths are auto-translated with a deprecation warning and will be removed in a future release. (2026-04-09)

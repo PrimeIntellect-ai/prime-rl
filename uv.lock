@@ -14,6 +14,7 @@ supported-markers = [
 overrides = [
     { name = "nvidia-cudnn-cu12", specifier = ">=9.15" },
     { name = "nvidia-cutlass-dsl", specifier = ">=4.4.1" },
+    { name = "torch", specifier = "==2.10.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
 ]
 
@@ -886,6 +887,7 @@ dependencies = [
     { name = "einops", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "nvidia-cutlass-dsl", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "quack-kernels", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "torch", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "torch-c-dlpack-ext", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "typing-extensions", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -2664,6 +2666,7 @@ dependencies = [
     { name = "rich", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "ring-flash-attn", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "setproctitle", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "sonic-moe", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tilelang", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tomli", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2789,6 +2792,7 @@ requires-dist = [
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
     { name = "science-env", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "setproctitle", specifier = ">=1.3.0" },
+    { name = "sonic-moe" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tilelang", specifier = ">=0.1.8" },
     { name = "tomli", specifier = ">=2.2.1" },
@@ -3207,7 +3211,7 @@ wheels = [
 
 [[package]]
 name = "quack-kernels"
-version = "0.3.6"
+version = "0.3.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "apache-tvm-ffi", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3215,9 +3219,9 @@ dependencies = [
     { name = "torch", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "torch-c-dlpack-ext", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/75/af/5b77f565d4268905eb7e7fe3367f877ae98d0cae920c6d9f2d019a39f214/quack_kernels-0.3.6.tar.gz", hash = "sha256:43af5a1f31099682cb1c53aa835fcdfebeb88d917c08aa342b959af88c6e8749", size = 192593, upload-time = "2026-03-24T13:30:00.923Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/73/34/bcc87d1ee53cf245bf58ea563b276b9bd86a405bda5a42e7bd1386db9941/quack_kernels-0.3.11.tar.gz", hash = "sha256:d589417476030fb62e70730c4bd0732339a04b8bb91fd49bf4cc70e20a27170b", size = 246675, upload-time = "2026-04-20T01:08:12.269Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8e/28/e688da97806474963b2983a8231572733de11ed48f8899410c0afc8bdf15/quack_kernels-0.3.6-py3-none-any.whl", hash = "sha256:973d974ccca816014006af8f136294ba0f15b1c324197f8b54ffc6500666e0e5", size = 198865, upload-time = "2026-03-24T13:29:59.107Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/63/e80a50a1af53f102535fd701abaeb8f1d5c294223027b794fd5279b30a9e/quack_kernels-0.3.11-py3-none-any.whl", hash = "sha256:9a0fb71fd5f1efd909b2aef3d4965df831328fbbe6f57641f77ffd0da90fee3b", size = 240043, upload-time = "2026-04-20T01:08:10.747Z" },
 ]
 
 [[package]]
@@ -3460,6 +3464,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc", size = 20372, upload-time = "2024-02-25T23:20:04.057Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2", size = 10235, upload-time = "2024-02-25T23:20:01.196Z" },
+]
+
+[[package]]
+name = "sonic-moe"
+version = "0.1.2.post1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-cutlass-dsl", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "quack-kernels", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "torch", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/42/710f29935d71356a46a128e05fc0e72d948b1bcbca5a9199b0a3177bb21a/sonic_moe-0.1.2.post1.tar.gz", hash = "sha256:0bebfd7355998fc60b6b1a944e450c290e7fd2c2d954f0def1e6d68c6f434816", size = 32939, upload-time = "2026-04-20T20:19:27.382Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/df/d2c226105528c509ac62678302cb61c41acf8cec0e5f024e230425506357/sonic_moe-0.1.2.post1-py3-none-any.whl", hash = "sha256:de103b91c3e5fab09c10b45c989d38b5204ce0fe1e97bec596359b59aed76932", size = 38255, upload-time = "2026-04-20T20:19:26.244Z" },
 ]
 
 [[package]]

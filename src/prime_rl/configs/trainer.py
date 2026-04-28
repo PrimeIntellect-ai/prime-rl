@@ -19,6 +19,7 @@ from prime_rl.utils.config import BaseConfig
 
 AttnImplementation: TypeAlias = Literal["eager", "sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
 EPCommBackend: TypeAlias = Literal["torch", "deepep"]
+ExpertBackend: TypeAlias = Literal["grouped_mm", "sonic"]
 
 # User-facing name -> internal name. Users set `flash_attention_4` in configs,
 # which gets rewritten to `fa4` before pydantic validation.
@@ -273,17 +274,16 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = 20
 
-    deepep_token_chunk_size: Annotated[
-        int | None,
+    expert_backend: Annotated[
+        ExpertBackend,
         Field(
-            ge=1,
             description=(
-                "Optional token chunk size for DeepEP MoE pipelining. "
-                "When set, DeepEP dispatch for chunk i+1 is launched while experts compute chunk i. "
+                "Local expert compute backend for trainer-side DeepEP. "
+                "`grouped_mm` uses torch grouped matrix multiplication and `sonic` uses sonic-moe kernels. "
                 "Only used when ep_comm_backend='deepep'."
             ),
         ),
-    ] = None
+    ] = "grouped_mm"
 
     cp: Annotated[
         int,

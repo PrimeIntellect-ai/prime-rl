@@ -16,8 +16,8 @@ New model integration contract:
 - `mlp`: expose a dense `layer.mlp.forward(...)`. A module is treated as dense
   when it does not define `_run_routed_experts` or `tokens_per_expert`.
 - `routed_experts`: expose `layer.mlp._run_routed_experts(...)` for the MoE
-  expert path, and optionally `layer.mlp._run_local_routed_experts(...)` when
-  local expert compute is separated from dispatch/combine.
+  expert path, and optionally local expert helpers when local expert compute is
+  separated from dispatch/combine.
 - `linear_attn`: expose a token-mixer module on `layer.linear_attn` or
   `layer.mamba`, or reuse `layer.self_attn` when
   `layer.attention_type == "sliding_attention"`.
@@ -109,7 +109,7 @@ def get_supported_targets(layer: nn.Module) -> frozenset[str]:
         supported_targets.add("mla_up_proj")
     if mlp is not None and _is_dense_mlp(mlp):
         supported_targets.add("mlp")
-    if mlp is not None and (hasattr(mlp, "_run_routed_experts") or hasattr(mlp, "_run_local_routed_experts")):
+    if mlp is not None and (hasattr(mlp, "run_experts_for_torch_a2a") or hasattr(mlp, "run_experts_for_deepep")):
         supported_targets.add("routed_experts")
     if linear_attn is not None:
         supported_targets.add("linear_attn")
@@ -137,10 +137,10 @@ def set_selective_activation_checkpointing(layer: nn.Module, targets: Iterable[s
     if mlp is not None and "mlp" in enabled_targets:
         checkpoint_method(mlp, "forward")
     if mlp is not None and "routed_experts" in enabled_targets:
-        if hasattr(mlp, "_run_routed_experts"):
-            checkpoint_method(mlp, "_run_routed_experts")
-        if hasattr(mlp, "_run_local_routed_experts"):
-            checkpoint_method(mlp, "_run_local_routed_experts")
+        if hasattr(mlp, "run_experts_for_torch_a2a"):
+            checkpoint_method(mlp, "run_experts_for_torch_a2a")
+        if hasattr(mlp, "run_experts_for_deepep"):
+            checkpoint_method(mlp, "run_experts_for_deepep")
     if linear_attn is not None and "linear_attn" in enabled_targets:
         checkpoint_method(linear_attn, "forward")
     if "norm" in enabled_targets:
