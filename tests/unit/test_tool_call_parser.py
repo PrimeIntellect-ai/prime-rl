@@ -1,6 +1,28 @@
+import asyncio
+import json
+from types import SimpleNamespace
+
 import pytest
 
-from prime_rl.inference.vllm.server import resolve_tool_call_parser
+from prime_rl.inference.vllm.server import liveness, resolve_tool_call_parser
+
+
+class ResponsiveEngine:
+    async def collective_rpc(self, method):
+        assert method == "liveness_probe"
+        return []
+
+
+class HangingEngine:
+    async def collective_rpc(self, method):
+        assert method == "liveness_probe"
+        await asyncio.sleep(60)
+
+
+def request_with_engine(engine):
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(engine_client=engine)),
+    )
 
 
 @pytest.mark.parametrize(
@@ -47,3 +69,18 @@ def test_auto_unknown_model():
 
 def test_none_skips_resolution():
     assert resolve_tool_call_parser("Qwen/Qwen3-0.6B", None) is None
+
+
+def test_liveness_returns_ok_when_engine_responds():
+    response = asyncio.run(liveness(request_with_engine(ResponsiveEngine())))
+
+    assert response == {"status": "ok"}
+
+
+def test_liveness_returns_503_when_engine_times_out(monkeypatch):
+    monkeypatch.setattr("prime_rl.inference.vllm.server.LIVENESS_TIMEOUT_SECONDS", 0.001)
+
+    response = asyncio.run(liveness(request_with_engine(HangingEngine())))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"status": "engine_unresponsive"}
