@@ -324,6 +324,16 @@ class EnvConfig(BaseConfig):
         ),
     ] = -1
 
+    timeout_seconds: Annotated[
+        float | None,
+        Field(
+            description=(
+                "Per-rollout wall-clock timeout in seconds. Set to None (default) to disable. "
+                "Auto-populated into extra_env_kwargs and read by MultiTurnEnv as the rollout cap."
+            ),
+        ),
+    ] = None
+
     @property
     def stripped_id(self) -> str:
         """Environment ID without the @version suffix."""
@@ -344,6 +354,12 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_max_total_completion_tokens(self):
         self.extra_env_kwargs["max_total_completion_tokens"] = self.max_total_completion_tokens
+        return self
+
+    @model_validator(mode="after")
+    def resolve_timeout_seconds(self):
+        if self.timeout_seconds is not None:
+            self.extra_env_kwargs["timeout_seconds"] = self.timeout_seconds
         return self
 
 
