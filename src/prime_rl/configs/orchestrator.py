@@ -324,6 +324,14 @@ class EnvConfig(BaseConfig):
         ),
     ] = -1
 
+    timeout: Annotated[
+        float | None,
+        Field(
+            validation_alias=AliasChoices("timeout", "timeout_seconds"),
+            description="Per-rollout wall-clock timeout in seconds. Set to None (default) to disable.",
+        ),
+    ] = None
+
     @property
     def stripped_id(self) -> str:
         """Environment ID without the @version suffix."""
@@ -344,6 +352,12 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_max_total_completion_tokens(self):
         self.extra_env_kwargs["max_total_completion_tokens"] = self.max_total_completion_tokens
+        return self
+
+    @model_validator(mode="after")
+    def resolve_timeout(self):
+        if self.timeout is not None:
+            self.extra_env_kwargs["timeout_seconds"] = self.timeout
         return self
 
 
@@ -880,6 +894,17 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = None
 
+    # When True, trainer uses SFT loss instead of RL loss (per-run override for hosted multi-tenant training)
+    use_sft_loss: Annotated[
+        bool,
+        Field(
+            description=(
+                "When True, use SFT masked NLL loss instead of the trainer's configured RL loss. "
+                "Requires a teacher_rollout_model to be configured."
+            ),
+        ),
+    ] = False
+
     # The evaluation configuration
     eval: EvalConfig | None = None
 
@@ -1032,9 +1057,24 @@ class OrchestratorConfig(BaseConfig):
     use_token_client: Annotated[
         bool,
         Field(
-            description="Whether to use the token-in-token-out (TITO) client for training across all environments. WARNING: Only use this if your environment has a linear history and the chat template has the extension property (i.e. no tokens are ever removed or inserted by the chat template)"
+            description="Whether to use the token-in-token-out (TITO) client for training across all environments. "
+            "WARNING: Only use this if your environment has a linear history and the chat template has the extension "
+            "property (i.e. no tokens are ever removed or inserted by the chat template). Mutually exclusive with "
+            "``use_renderer``."
         ),
     ] = True
+
+    use_renderer: Annotated[
+        bool,
+        Field(
+            description="Whether to use the renderer client (client-side tokenization via the ``renderers`` package, "
+            "served by ``/v1/generate``). Mutually exclusive with ``use_token_client``. When True, the "
+            "``model.renderer`` / ``model.tool_parser`` / ``model.reasoning_parser`` / "
+            "``model.renderer_pool_size`` knobs apply; when False they must be left at their defaults. "
+            "Not supported for VLMs — VLMs must use the token client (TITO) so image preprocessing and chat "
+            "templating stay server-side."
+        ),
+    ] = False
 
     env_install_prerelease: Annotated[
         bool,
@@ -1084,6 +1124,90 @@ class OrchestratorConfig(BaseConfig):
         types = [f.type for f in self.filters]
         if len(types) != len(set(types)):
             raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_sft_distill_mode(self):
+        """Enforce the SFT hard distill invariants that involve only orchestrator fields.
+
+        Runs at ``OrchestratorConfig`` level so hosted deployments (which load this
+        config standalone via the ``orchestrator`` entrypoint) get the same guarantees
+        as the combined ``rl`` entrypoint.
+        """
+        has_teacher = self.teacher_rollout_model is not None
+        if self.use_sft_loss and not has_teacher:
+            raise ValueError(
+                "orchestrator.use_sft_loss = true requires orchestrator.teacher_rollout_model to be configured."
+            )
+        if has_teacher and not self.use_sft_loss:
+            raise ValueError("orchestrator.teacher_rollout_model requires orchestrator.use_sft_loss = true.")
+        if has_teacher and self.use_token_client:
+            raise ValueError(
+                "orchestrator.use_token_client must be false when orchestrator.teacher_rollout_model is configured."
+            )
+        if has_teacher and self.use_renderer:
+            raise ValueError(
+                "orchestrator.use_renderer must be false when orchestrator.teacher_rollout_model is configured "
+                "(external rollout uses MITO)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_client_mode(self):
+        """The two client toggles select among three exclusive modes:
+
+        - ``use_token_client=True``  + ``use_renderer=False`` → TITO  (default)
+        - ``use_token_client=False`` + ``use_renderer=True``  → renderer
+        - ``use_token_client=False`` + ``use_renderer=False`` → MITO
+
+        Both True is invalid: TITO and renderer are different wire protocols
+        (server-side templating vs client-side tokenization).
+        """
+        if self.use_token_client and self.use_renderer:
+            raise ValueError(
+                "orchestrator.use_token_client and orchestrator.use_renderer are mutually exclusive. "
+                "Pick one: token client (TITO, server-side templating) or renderer client (client-side "
+                "tokenization)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_renderer_vs_vlm(self):
+        """The renderer client takes plain message dicts and tokenizes
+        them client-side. VLMs need server-side image preprocessing and
+        chat templating, so they must use the token client (TITO) — fail
+        loudly when both are set."""
+        if self.use_renderer and self.model.vlm is not None:
+            raise ValueError(
+                "orchestrator.use_renderer is not supported for VLMs. Use the token client "
+                "(``use_token_client=true``, the default) so image preprocessing and chat "
+                "templating stay on the inference server."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_renderer_args(self):
+        """Renderer-specific knobs on ``model`` are only meaningful when
+        ``use_renderer=True``. Reject otherwise so callers don't silently
+        pass them and wonder why they're ignored."""
+        if self.use_renderer:
+            return self
+
+        renderer_args_set = []
+        if self.model.renderer != "auto":
+            renderer_args_set.append(f"model.renderer={self.model.renderer!r}")
+        if self.model.tool_parser is not None:
+            renderer_args_set.append(f"model.tool_parser={self.model.tool_parser!r}")
+        if self.model.reasoning_parser is not None:
+            renderer_args_set.append(f"model.reasoning_parser={self.model.reasoning_parser!r}")
+        if self.model.renderer_pool_size is not None:
+            renderer_args_set.append(f"model.renderer_pool_size={self.model.renderer_pool_size!r}")
+
+        if renderer_args_set:
+            raise ValueError(
+                "Renderer-specific args set without orchestrator.use_renderer=True: "
+                f"{', '.join(renderer_args_set)}. Either enable the renderer client or remove these knobs."
+            )
         return self
 
     @model_validator(mode="after")

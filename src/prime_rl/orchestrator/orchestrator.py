@@ -426,7 +426,7 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Compute advantages (in-place)
             num_rollouts = len(train_rollouts)
-            num_unique_examples = len({r["example_id"] for r in train_rollouts})
+            num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
             compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
@@ -552,6 +552,8 @@ async def orchestrate(config: OrchestratorConfig):
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
+                if config.use_sft_loss:
+                    sample.sft_loss = True
                 sample_decode_tokens = sum(sample.completion_mask)
                 sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                 rollout_decode_tokens += sample_decode_tokens
@@ -624,13 +626,13 @@ async def orchestrate(config: OrchestratorConfig):
 
         def compute_solve_rates(df):
             """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
-            reward_per_problem = df.groupby("example_id").reward.sum()
+            reward_per_problem = df.groupby(["env_name", "example_id"]).reward.sum()
             solve_none = (reward_per_problem == 0).mean()
             solve_all = (reward_per_problem == config.rollouts_per_example).mean()
             return solve_none, solve_all, 1 - solve_none - solve_all
 
-        # Group by example_id to average across rollouts within each problem
-        by_example = results_df.groupby("example_id")
+        # Group by (env_name, example_id) to average across rollouts within each problem
+        by_example = results_df.groupby(["env_name", "example_id"])
 
         solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
         to_log = {
@@ -765,7 +767,7 @@ async def orchestrate(config: OrchestratorConfig):
             )
 
         reward_mean = by_example.reward.mean().mean()
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | Seq. Length: {by_example.seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | Seq. Length: {by_example.seq_len.mean().mean():.1f} tokens/sample | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
         # Increment step
@@ -878,14 +880,22 @@ async def setup_rollout_inference_pool(
 ):
     """Set up rollout inference.
 
-    Routing policy:
-      - external teacher rollout → MITO (openai_chat_completions), no renderer
-      - VLM → MITO (openai_chat_completions), no renderer. Image preprocessing
-        and chat templating live server-side; the client never tokenizes images.
-      - plain LM → renderer client (TITO via /v1/generate).
+    Routing policy is driven by ``config.use_token_client`` and
+    ``config.use_renderer`` (mutually exclusive — config-level validators
+    block both being True):
+
+      - external teacher rollout → MITO (``openai_chat_completions``),
+        forced regardless of the toggles (config-level validator
+        rejects ``use_token_client`` / ``use_renderer`` in that case)
+      - ``use_renderer=True``  → renderer client (``/v1/generate``).
+        Not allowed for VLMs (validated at config time).
+      - ``use_token_client=True`` → TITO
+        (``openai_chat_completions_token``, ``/v1/chat/completions/tokens``).
+        Default. VLMs land here too.
+      - both False → MITO (``openai_chat_completions``).
     """
     if config.teacher_rollout_model is not None:
-        logger.info("Using external rollout model without renderer client")
+        logger.info("Using external rollout model (MITO) without renderer client")
         inference_pool = await setup_inference_pool(
             rollout_client_config,
             model_name=rollout_model_name,
@@ -894,41 +904,42 @@ async def setup_rollout_inference_pool(
         )
         return None, inference_pool
 
-    if is_vlm:
-        if config.model.renderer != "auto":
-            raise ValueError(
-                f"VLM models must use MITO (server-side chat templating), "
-                f"but model.renderer={config.model.renderer!r} was set explicitly. "
-                f"Remove the renderer field or leave it as 'auto' for VLMs."
-            )
-        logger.info("VLM detected — using MITO (openai_chat_completions) rollout client")
+    if config.use_renderer:
+        # Config validator already blocks use_renderer=True for VLMs; the
+        # is_vlm arg is kept for explicitness.
+        assert not is_vlm, "config validator should have rejected use_renderer=True for a VLM"
+        renderer = create_renderer(
+            tokenizer,
+            renderer=config.model.renderer,
+            tool_parser=config.model.tool_parser,
+            reasoning_parser=config.model.reasoning_parser,
+        )
+        logger.info(f"Initialized {type(renderer).__name__} for {config.model.name}")
         inference_pool = await setup_inference_pool(
             rollout_client_config,
             model_name=rollout_model_name,
-            train_client_type="openai_chat_completions",
+            train_client_type="renderer",
             eval_client_type="openai_chat_completions",
+            renderer_name=config.model.renderer,
+            tool_parser=config.model.tool_parser,
+            reasoning_parser=config.model.reasoning_parser,
+            renderer_pool_size=config.model.renderer_pool_size,
         )
-        return None, inference_pool
+        logger.info("Using direct renderer rollout client")
+        return renderer, inference_pool
 
-    renderer = create_renderer(
-        tokenizer,
-        renderer=config.model.renderer,
-        tool_parser=config.model.tool_parser,
-        reasoning_parser=config.model.reasoning_parser,
-    )
-    logger.info(f"Initialized {type(renderer).__name__} for {config.model.name}")
+    train_client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
+    if config.use_token_client:
+        logger.info("Using token client (TITO) for rollouts — server-side templating, /v1/chat/completions/tokens")
+    else:
+        logger.info("Using MITO (openai_chat_completions) for rollouts")
     inference_pool = await setup_inference_pool(
         rollout_client_config,
         model_name=rollout_model_name,
-        train_client_type="renderer",
+        train_client_type=train_client_type,
         eval_client_type="openai_chat_completions",
-        renderer_name=config.model.renderer,
-        tool_parser=config.model.tool_parser,
-        reasoning_parser=config.model.reasoning_parser,
-        renderer_pool_size=config.model.renderer_pool_size,
     )
-    logger.info("Using direct renderer rollout client")
-    return renderer, inference_pool
+    return None, inference_pool
 
 
 if __name__ == "__main__":

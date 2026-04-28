@@ -351,6 +351,27 @@ def freeze_moe_router(model: nn.Module) -> None:
     logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
+def apply_force_balanced_routing(model: nn.Module) -> None:
+    """Force MoE token-choice routers into round-robin assignment for fake-data smoke tests."""
+    logger = get_logger()
+    language_model = get_language_model(model)
+    num_routers = 0
+
+    for layer in language_model.layers:
+        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        if isinstance(mlp, (MoE, LatentMoE)):
+            mlp.router.force_balanced = True
+            num_routers += 1
+
+    if num_routers == 0:
+        raise ValueError("No MoE routers found to force-balance. Is this a custom-impl MoE model?")
+
+    logger.warning(
+        f"Forced balanced routing on {num_routers} MoE layers (debug.force_balanced_routing=True). "
+        "Expert assignment is round-robin; gradient flow through the router is broken."
+    )
+
+
 def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
@@ -1026,6 +1047,9 @@ def setup_model(
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
+
+    if config.debug.force_balanced_routing:
+        apply_force_balanced_routing(model)
 
     if parallel_dims.ep_enabled:
         apply_ep(model, config, parallel_dims)

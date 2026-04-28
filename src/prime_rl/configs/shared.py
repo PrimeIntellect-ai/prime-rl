@@ -229,6 +229,14 @@ class ClientConfig(BaseConfig):
         ),
     ] = 30.0
 
+    wait_for_ready_timeout: Annotated[
+        int,
+        Field(
+            description="Timeout in seconds for waiting for the inference pool to become ready at startup. "
+            "Applies to both the static health check and elastic DNS-based discovery. Defaults to 1800 seconds.",
+        ),
+    ] = 1800
+
     base_url: Annotated[
         list[str],
         Field(
@@ -399,10 +407,31 @@ class WandbConfig(BaseConfig):
     # Shared configs (May be overwritten by WandbConfig from `rl.py`)
     project: Annotated[str, Field(description="The W&B project to log to.")] = "prime-rl"
 
+    entity: Annotated[
+        str | None,
+        Field(
+            description="The W&B entity to log to.",
+        ),
+    ] = None
+
     name: Annotated[
         str | None,
         Field(
             description="The W&B name to to use for logging.",
+        ),
+    ] = None
+
+    group: Annotated[
+        str | None,
+        Field(
+            description="The W&B group to use for logging.",
+        ),
+    ] = None
+
+    tags: Annotated[
+        list[str] | None,
+        Field(
+            description="The W&B tags to attach to the run.",
         ),
     ] = None
 

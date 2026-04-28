@@ -97,6 +97,29 @@ def test_sft_loss_matches_masked_nll():
     assert "nll" in metrics
 
 
+def test_sft_loss_override_uses_masked_nll_with_default_loss_config():
+    trainer_logprobs = [torch.tensor([-0.1, -0.5, -0.2], dtype=torch.float32).cuda()]
+    inference_logprobs = [torch.zeros(3, dtype=torch.float32).cuda()]
+    advantages = [torch.ones(3, dtype=torch.float32).cuda()]
+    loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
+
+    loss_fn = setup_loss_fn(DefaultLossConfig())
+    loss, metrics = compute_loss(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=inference_logprobs,
+        teacher_logprobs=None,
+        advantages=advantages,
+        loss_mask=loss_mask,
+        loss_fn=loss_fn,
+        loss_scale=2,
+        sft_loss=True,
+    )
+
+    assert torch.isclose(loss, torch.tensor(0.15, device=loss.device), atol=1e-6)
+    assert "nll" in metrics
+    assert "mismatch_kl" not in metrics
+
+
 def _dummy_custom_loss(inputs: LossInputs, multiplier: float = 1.0) -> LossOutputs:
     """A simple custom loss for testing."""
     loss = (inputs.trainer_logprobs[inputs.loss_mask].sum() * multiplier).abs()

@@ -22,7 +22,7 @@ dependencies = [
     "vllm>=0.19.0",
     "wandb>=0.24.2",
     "ring-flash-attn>=0.1.8",
-    "prime>=0.5.63",
+    "prime>=0.5.73",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
@@ -125,6 +125,7 @@ override-dependencies = [
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "17358ee" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
@@ -150,7 +151,6 @@ deep-gemm = { url = "https://github.com/samsja/research-pre-built-wheels/release
 nixl-cu12 = { url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 flash_attn_3 = { index = "pytorch-cu128-test" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "17358ee" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

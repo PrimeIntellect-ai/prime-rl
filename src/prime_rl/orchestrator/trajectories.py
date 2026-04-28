@@ -824,7 +824,7 @@ def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMIma
     Caches per rollout to keep images aligned with divergent multi-turn trajectories.
     """
     examples = [(idx, rollout) for idx, rollout in enumerate(rollouts)]
-    unique_example_ids = {rollout["example_id"] for rollout in rollouts}
+    unique_example_ids = {(rollout.get("env_name"), rollout["example_id"]) for rollout in rollouts}
 
     # Extract images (also strips base64 data from rollout prompts to free memory)
     extract_start = time.perf_counter()

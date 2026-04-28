@@ -77,7 +77,13 @@ class SharedWandbConfig(BaseConfig):
 
     project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
 
+    entity: Annotated[str | None, Field(description="The W&B entity to use.")] = None
+
     name: Annotated[str | None, Field(description="The W&B run name to use.")] = None
+
+    group: Annotated[str | None, Field(description="The W&B group to use.")] = None
+
+    tags: Annotated[list[str] | None, Field(description="The W&B tags to attach to the run.")] = None
 
     offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
 
@@ -443,19 +449,18 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_external_rollout_mode(self):
-        if self.orchestrator.teacher_rollout_model is None:
-            return self
+    def validate_external_rollout_inference(self):
+        """Forbid configuring a local inference server when rollouts come from an external teacher.
 
-        if self.trainer.loss.type != "sft":
-            raise ValueError('orchestrator.teacher_rollout_model is only supported when trainer.loss.type = "sft".')
-
-        if self.inference is not None:
+        Orchestrator-only invariants (``use_sft_loss`` paired with ``teacher_rollout_model``,
+        and ``use_token_client`` coupling) live on ``OrchestratorConfig`` so the hosted
+        orchestrator entrypoint also enforces them.
+        """
+        if self.orchestrator.teacher_rollout_model is not None and self.inference is not None:
             raise ValueError(
                 "inference must be omitted when orchestrator.teacher_rollout_model is configured. "
                 "External rollout mode does not use the local inference server."
             )
-
         return self
 
     ### Auto-setup and validate shared configs
@@ -532,6 +537,10 @@ class RLConfig(BaseConfig):
                 self.trainer.wandb.project = self.wandb.project
                 self.orchestrator.wandb.project = self.wandb.project
 
+            if self.wandb.entity:
+                self.trainer.wandb.entity = self.wandb.entity
+                self.orchestrator.wandb.entity = self.wandb.entity
+
             if self.wandb.shared:
                 if self.wandb.name:
                     self.trainer.wandb.name = self.wandb.name
@@ -540,6 +549,14 @@ class RLConfig(BaseConfig):
                 if self.wandb.name:
                     self.trainer.wandb.name = f"{self.wandb.name}-trainer"
                     self.orchestrator.wandb.name = f"{self.wandb.name}-orchestrator"
+
+            if self.wandb.group:
+                self.trainer.wandb.group = self.wandb.group
+                self.orchestrator.wandb.group = self.wandb.group
+
+            if self.wandb.tags:
+                self.trainer.wandb.tags = self.wandb.tags.copy()
+                self.orchestrator.wandb.tags = self.wandb.tags.copy()
 
             if self.wandb.offline:
                 self.trainer.wandb.offline = self.wandb.offline
