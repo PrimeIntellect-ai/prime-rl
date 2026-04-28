@@ -2306,17 +2306,17 @@ wheels = [
 
 [[package]]
 name = "openai-harmony"
-version = "0.0.4"
+version = "0.0.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/92/94/01509d510bebf6606614e51113e5a415ced15b8f34aa98a8bf2539314650/openai_harmony-0.0.4.tar.gz", hash = "sha256:5c67ac6df349236fb7b64f57c3dbb0273efcdca24314daa108f2a482c427106c", size = 279848, upload-time = "2025-08-09T01:43:24.974Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/92/2d038d096f29179c7c9571b431f9e739f87a487121901725e23fe338dd9d/openai_harmony-0.0.8.tar.gz", hash = "sha256:6e43f98e6c242fa2de6f8ea12eab24af63fa2ed3e89c06341fb9d92632c5cbdf", size = 284777, upload-time = "2025-11-05T19:07:06.727Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/05/88/ade63bd8f36603610040e7cc086bc134d57a99a742e05f7fcddfdf822ee1/openai_harmony-0.0.4-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3cf2344366f10981bbc0f6d9949a0b2bb87151d209ed295943ed6ad8eda37932", size = 2963206, upload-time = "2025-08-09T01:43:02.433Z" },
-    { url = "https://files.pythonhosted.org/packages/1f/ec/dcdcace0ffcf3a532cca910e0c351b62d3a7decf0b091ea8cf856d2a67a6/openai_harmony-0.0.4-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:31e9bcac0902a309e2fc688e52f247eec7fffcd00d17e958b9a83a8fea6519c2", size = 3049306, upload-time = "2025-08-09T01:43:11.019Z" },
-    { url = "https://files.pythonhosted.org/packages/ad/39/172f1048d935db1523a82b45fee5231ad6c622645e566706e6bcf3731da8/openai_harmony-0.0.4-cp38-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:96a63199c0d81095b5d5d1ae8ca82b64c1c13d18d4e30323ae9e8ab31bc80a3d", size = 3121347, upload-time = "2025-08-09T01:43:16.705Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/bd/aa9e6e5cf140716dbcae17402fac2a81a9ebb3f934059ac0eec61cb447fc/openai_harmony-0.0.4-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:15e6d53a66502491a3675a536df30e271f976e6c5efe68250a65191efcb85c4f", size = 3221129, upload-time = "2025-08-09T01:43:23.146Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/d2/ce6953ca87db9cae3e775024184da7d1c5cb88cead19a2d75b42f00a959c/openai_harmony-0.0.8-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e4f709815924ec325b9a890e6ab2bbb0ceec8e319a4e257328eb752cf36b2efc", size = 2948463, upload-time = "2025-11-05T19:06:48.17Z" },
+    { url = "https://files.pythonhosted.org/packages/25/3f/1a192b93bb47c6b44cd98ba8cc1d3d2a9308f1bb700c3017e6352da11bda/openai_harmony-0.0.8-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c007d277218a50db8839e599ed78e0fffe5130f614c3f6d93ae257f282071a29", size = 2953260, upload-time = "2025-11-05T19:06:55.406Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/f8/93b582cad3531797c3db7c2db5400fd841538ccddfd9f5e3df61be99a630/openai_harmony-0.0.8-cp38-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:8565d4f5a0638da1bffde29832ed63c9e695c558611053add3b2dc0b56c92dbc", size = 3127044, upload-time = "2025-11-05T19:06:59.553Z" },
+    { url = "https://files.pythonhosted.org/packages/60/c3/3d1e01e2dba517a91760e4a03e4f20ffc75039a6fe584d0e6f9b5c78fd15/openai_harmony-0.0.8-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:007b0476a1f331f8130783f901f1da6f5a7057af1a4891f1b6a31dec364189b5", size = 3205080, upload-time = "2025-11-05T19:07:05.078Z" },
 ]
 
 [[package]]
@@ -2798,7 +2798,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=7b86d14" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=17358ee" },
     { name = "vllm", specifier = ">=0.19.0" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.24.2" },
@@ -3249,8 +3249,9 @@ wheels = [
 [[package]]
 name = "renderers"
 version = "0.1.0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?subdirectory=packages%2Frenderers&rev=7b86d14#7b86d14e73955caecd897af965f9f024ee8b235b" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?subdirectory=packages%2Frenderers&rev=17358ee#17358eef8f158696804c4ddde129963b360b71aa" }
 dependencies = [
+    { name = "openai-harmony", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "transformers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
@@ -4044,7 +4045,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.13.dev7"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=7b86d14#7b86d14e73955caecd897af965f9f024ee8b235b" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=17358ee#17358eef8f158696804c4ddde129963b360b71aa" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
