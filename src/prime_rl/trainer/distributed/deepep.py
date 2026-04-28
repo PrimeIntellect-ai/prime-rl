@@ -1,8 +1,8 @@
-from dataclasses import dataclass
-
 import torch
 from deep_ep import Buffer
 from torch.distributed import ProcessGroup
+
+from prime_rl.configs.trainer import ExpertBackend
 
 _buffer: Buffer | None = None
 _handle_cache: dict[int, object] = {}
@@ -189,14 +189,6 @@ def _unpermute_tokens(
     return output_hidden_states
 
 
-@dataclass
-class _DispatchState:
-    handle_id: torch.Tensor
-    num_recv_tokens: int
-    permuted_indices: torch.Tensor | None = None
-    permuted_scores: torch.Tensor | None = None
-
-
 def _dispatch_tokens(
     hidden_states: torch.Tensor,
     selected_experts_indices: torch.Tensor,
@@ -237,80 +229,76 @@ def dispatch_tokens(
     num_experts: int,
     group: ProcessGroup,
     *,
+    expert_backend: ExpertBackend = "grouped_mm",
     score_before_experts: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor, _DispatchState]:
-    hidden_states, dispatched_indices, dispatched_expert_scores, num_tokens_per_expert, handle_id = _dispatch_tokens(
+) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, torch.Tensor | int | None]]:
+    hidden_states, dispatched_indices, dispatched_scores, num_tokens_per_expert, handle_id = _dispatch_tokens(
         hidden_states,
         selected_experts_indices,
         top_scores,
         num_experts,
         group,
     )
-
     num_recv_tokens = hidden_states.shape[0]
+
+    if expert_backend == "sonic":
+        mask = dispatched_indices != -1
+        token_indices = torch.arange(
+            num_recv_tokens,
+            device=hidden_states.device,
+            dtype=torch.int32,
+        ).repeat_interleave(mask.sum(dim=1))
+        local_num_experts = num_experts // group.size()
+        expert_indices = torch.remainder(dispatched_indices[mask], local_num_experts).to(torch.int32)
+        expert_scores = dispatched_scores[mask]
+        expert_kwargs = {
+            "top_scores": expert_scores,
+            "token_indices": token_indices,
+            "expert_indices": expert_indices,
+        }
+        combine_kwargs = {"handle_id": handle_id}
+        return hidden_states, expert_kwargs, combine_kwargs
+
     hidden_states, permuted_scores, permuted_indices = _permute_tokens(
         hidden_states,
         dispatched_indices,
-        dispatched_expert_scores,
+        dispatched_scores,
     )
     num_tokens_per_expert = num_tokens_per_expert.to(hidden_states.device)
 
-    if score_before_experts and permuted_scores is not None:
+    if score_before_experts:
         hidden_states = (hidden_states.to(torch.float32) * permuted_scores.to(torch.float32).reshape(-1, 1)).to(
             hidden_states.dtype
         )
-        permuted_scores_for_state = None
+        permuted_scores_for_combine = None
     else:
-        permuted_scores_for_state = permuted_scores
+        permuted_scores_for_combine = permuted_scores
 
-    state = _DispatchState(
-        handle_id=handle_id,
-        num_recv_tokens=num_recv_tokens,
-        permuted_indices=permuted_indices,
-        permuted_scores=permuted_scores_for_state,
-    )
-    return hidden_states, num_tokens_per_expert, state
+    expert_kwargs = {"num_tokens_per_expert": num_tokens_per_expert}
+    combine_kwargs = {
+        "handle_id": handle_id,
+        "permuted_indices": permuted_indices,
+        "permuted_scores": permuted_scores_for_combine,
+        "num_recv_tokens": num_recv_tokens,
+    }
+    return hidden_states, expert_kwargs, combine_kwargs
 
 
-def dispatch_tokens_for_sonic(
+def combine_tokens(
     hidden_states: torch.Tensor,
-    selected_experts_indices: torch.Tensor,
-    top_scores: torch.Tensor,
-    num_experts: int,
-    group: ProcessGroup,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, _DispatchState]:
-    hidden_states, dispatched_indices, dispatched_scores, _, handle_id = _dispatch_tokens(
-        hidden_states,
-        selected_experts_indices,
-        top_scores,
-        num_experts,
-        group,
-    )
-
-    mask = dispatched_indices != -1
-    token_indices = torch.arange(
-        hidden_states.shape[0],
-        device=hidden_states.device,
-        dtype=torch.int32,
-    ).repeat_interleave(mask.sum(dim=1))
-    if num_experts % group.size() != 0:
-        raise ValueError(f"num_experts ({num_experts}) must be divisible by EP group size ({group.size()}).")
-    local_num_experts = num_experts // group.size()
-    # Sonic routes into local DTensor expert shards, while DeepEP may return global expert ids.
-    expert_indices = torch.remainder(dispatched_indices[mask], local_num_experts).to(torch.int32)
-    expert_scores = dispatched_scores[mask]
-    state = _DispatchState(handle_id=handle_id, num_recv_tokens=hidden_states.shape[0])
-    return hidden_states, expert_scores, token_indices, expert_indices, state
-
-
-def combine_tokens(hidden_states: torch.Tensor, state: _DispatchState) -> torch.Tensor:
-    if state.permuted_indices is not None:
-        if state.permuted_scores is not None:
+    handle_id: torch.Tensor,
+    *,
+    permuted_indices: torch.Tensor | None = None,
+    permuted_scores: torch.Tensor | None = None,
+    num_recv_tokens: int | None = None,
+) -> torch.Tensor:
+    if permuted_indices is not None:
+        if permuted_scores is not None:
             hidden_states = (
-                hidden_states.to(torch.float32) * state.permuted_scores.to(torch.float32).reshape(-1, 1)
+                hidden_states.to(torch.float32) * permuted_scores.to(torch.float32).reshape(-1, 1)
             ).to(hidden_states.dtype)
-        hidden_states = _unpermute_tokens(hidden_states, state.permuted_indices, state.num_recv_tokens)
-    return _DeepEPCombine.apply(hidden_states, state.handle_id)
+        hidden_states = _unpermute_tokens(hidden_states, permuted_indices, num_recv_tokens)
+    return _DeepEPCombine.apply(hidden_states, handle_id)
 
 
 register_deepep_cuda_ops()
@@ -319,5 +307,4 @@ __all__ = [
     "combine_tokens",
     "configure_num_sms",
     "dispatch_tokens",
-    "dispatch_tokens_for_sonic",
 ]
