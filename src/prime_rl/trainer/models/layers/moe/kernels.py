@@ -6,7 +6,6 @@ from sonicmoe.enums import ActivationType
 from sonicmoe.functional import moe_general_routing_inputs
 from torchtitan.distributed.expert_parallel import expert_parallel
 
-
 _sonic_autotune_disabled = False
 
 
