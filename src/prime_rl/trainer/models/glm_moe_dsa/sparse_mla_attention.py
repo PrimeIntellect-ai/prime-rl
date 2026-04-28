@@ -51,7 +51,9 @@ class _SparseMLA(torch.autograd.Function):
         return dq, dkv, None, None
 
 
-def _apply_rope_interleave_single(t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsqueeze_dim: int = 1) -> torch.Tensor:
+def _apply_rope_interleave_single(
+    t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsqueeze_dim: int = 1
+) -> torch.Tensor:
     """Interleaved RoPE on a single tensor (Q or K), matching apply_rotary_pos_emb_interleave."""
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
@@ -164,9 +166,7 @@ class GlmMoeDsaAttention(nn.Module):
         self._cp_rank: int = 0
         self._cp_world_size: int = 1
 
-    def set_context_parallel_attributes(
-        self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int
-    ) -> None:
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
         self._cp_group = cp_group
         self._cp_rank = cp_rank
         self._cp_world_size = cp_world_size
