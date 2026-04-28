@@ -294,9 +294,9 @@ def combine_tokens(
 ) -> torch.Tensor:
     if permuted_indices is not None:
         if permuted_scores is not None:
-            hidden_states = (
-                hidden_states.to(torch.float32) * permuted_scores.to(torch.float32).reshape(-1, 1)
-            ).to(hidden_states.dtype)
+            hidden_states = (hidden_states.to(torch.float32) * permuted_scores.to(torch.float32).reshape(-1, 1)).to(
+                hidden_states.dtype
+            )
         hidden_states = _unpermute_tokens(hidden_states, permuted_indices, num_recv_tokens)
     return _DeepEPCombine.apply(hidden_states, handle_id)
 

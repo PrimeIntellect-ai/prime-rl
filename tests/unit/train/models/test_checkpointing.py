@@ -44,7 +44,7 @@ class DummyMoEMlp(nn.Module):
     def _run_routed_experts(self, hidden_states, *args):
         return hidden_states
 
-    def _run_local_routed_experts(self, hidden_states, num_tokens_per_expert):
+    def run_experts_for_deepep(self, hidden_states, **expert_kwargs):
         return hidden_states
 
 

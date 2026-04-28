@@ -109,9 +109,7 @@ def get_supported_targets(layer: nn.Module) -> frozenset[str]:
         supported_targets.add("mla_up_proj")
     if mlp is not None and _is_dense_mlp(mlp):
         supported_targets.add("mlp")
-    if mlp is not None and (
-        hasattr(mlp, "run_experts_for_torch_a2a") or hasattr(mlp, "run_experts_for_deepep")
-    ):
+    if mlp is not None and (hasattr(mlp, "run_experts_for_torch_a2a") or hasattr(mlp, "run_experts_for_deepep")):
         supported_targets.add("routed_experts")
     if linear_attn is not None:
         supported_targets.add("linear_attn")
