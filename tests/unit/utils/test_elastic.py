@@ -9,6 +9,7 @@ import verifiers as vf
 from prime_rl.utils.elastic import (
     AdapterState,
     ElasticInferencePool,
+    ServerState,
     check_server_model,
     discover_ready_servers,
     discover_server_ips,
@@ -448,3 +449,61 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
                 extra_headers_from_state={},
             )
         ]
+
+
+def _make_elastic_pool(max_sync_failures: int = 5) -> ElasticInferencePool:
+    mock_config = MagicMock()
+    mock_config.elastic.hostname = "test.hostname"
+    mock_config.elastic.port = 8000
+    mock_config.elastic.sync_interval = 5.0
+    mock_config.elastic.max_sync_failures = max_sync_failures
+    mock_config.router_url = None
+    return ElasticInferencePool(client_config=mock_config, model_name="base-model")
+
+
+def test_sync_evicts_server_after_max_sync_failures():
+    with (
+        patch("prime_rl.utils.elastic.get_logger"),
+        patch("prime_rl.utils.elastic.discover_server_ips", return_value=["10.0.0.1"]),
+    ):
+        pool = _make_elastic_pool(max_sync_failures=2)
+        admin_client = AsyncMock()
+        pool._admin_clients["10.0.0.1"] = admin_client
+        pool._servers["10.0.0.1"] = ServerState(
+            ip="10.0.0.1",
+            url="http://10.0.0.1:8000",
+            status="unhealthy",
+            sync_failures=2,
+        )
+
+        with patch.object(pool, "_check_server_health", new_callable=AsyncMock) as mock_health:
+            added, removed = asyncio.run(pool.sync())
+
+        assert added == 0
+        assert removed == 1
+        assert "10.0.0.1" not in pool._servers
+        assert "10.0.0.1" not in pool._admin_clients
+        admin_client.aclose.assert_awaited_once()
+        mock_health.assert_not_called()
+
+
+def test_sync_server_adapter_resets_failures_when_adapter_matches_desired():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        pool = _make_elastic_pool()
+        pool._desired.name = "my-lora"
+        pool._desired.path = Path("/weights/step_10")
+        pool._desired.step = 10
+        pool._servers["10.0.0.1"] = ServerState(
+            ip="10.0.0.1",
+            url="http://10.0.0.1:8000",
+            status="unhealthy",
+            sync_failures=3,
+        )
+
+        loaded = AdapterState(name="my-lora", path=Path("/weights/step_10"), step=10)
+        with patch.object(pool, "_get_loaded_adapter", new_callable=AsyncMock, return_value=loaded):
+            result = asyncio.run(pool._sync_server_adapter("10.0.0.1"))
+
+        assert result is True
+        assert pool._servers["10.0.0.1"].status == "ready"
+        assert pool._servers["10.0.0.1"].sync_failures == 0

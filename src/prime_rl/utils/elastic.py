@@ -119,6 +119,7 @@ class ElasticInferencePool:
         self.hostname = client_config.elastic.hostname
         self.port = client_config.elastic.port
         self.sync_interval = client_config.elastic.sync_interval
+        self.max_sync_failures = client_config.elastic.max_sync_failures
         self.train_client_type = train_client_type
         self.eval_client_type = eval_client_type
         self.renderer_name = renderer_name
@@ -323,6 +324,7 @@ class ElasticInferencePool:
 
         if self._adapter_matches_desired(loaded):
             server.status = "ready"
+            server.sync_failures = 0
             return True
 
         # Debug: log why pre-check failed (before attempting load)
@@ -428,11 +430,19 @@ class ElasticInferencePool:
             for ip in list(self._servers.keys()):
                 if ip not in self._admin_clients:
                     continue
+                server = self._servers[ip]
+                if server.sync_failures >= self.max_sync_failures:
+                    self.logger.warning(
+                        f"Evicting inference server {ip} after {server.sync_failures} adapter sync failures"
+                    )
+                    await self._remove_server(ip)
+                    removed += 1
+                    continue
                 if not await self._check_server_health(self._admin_clients[ip], ip):
                     self.logger.debug(f"Server {ip} failed health check, removing")
                     await self._remove_server(ip)
                     removed += 1
-                elif self._servers[ip].status != "ready":
+                elif server.status != "ready":
                     await self._sync_server_adapter(ip)
 
             return added, removed
