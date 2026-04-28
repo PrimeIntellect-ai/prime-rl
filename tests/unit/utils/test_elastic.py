@@ -7,10 +7,10 @@ import httpx
 import verifiers as vf
 
 from prime_rl.utils.elastic import (
-    AdapterState,
-    ElasticInferencePool,
     LORA_ADMIN_HEALTHCHECK_ADAPTER,
     LORA_ADMIN_HEALTHCHECK_TIMEOUT,
+    AdapterState,
+    ElasticInferencePool,
     ServerState,
     check_server_model,
     discover_ready_servers,
