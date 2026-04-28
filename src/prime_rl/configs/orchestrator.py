@@ -880,6 +880,17 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = None
 
+    # When True, trainer uses SFT loss instead of RL loss (per-run override for hosted multi-tenant training)
+    use_sft_loss: Annotated[
+        bool,
+        Field(
+            description=(
+                "When True, use SFT masked NLL loss instead of the trainer's configured RL loss. "
+                "Requires a teacher_rollout_model to be configured."
+            ),
+        ),
+    ] = False
+
     # The evaluation configuration
     eval: EvalConfig | None = None
 
@@ -1084,6 +1095,27 @@ class OrchestratorConfig(BaseConfig):
         types = [f.type for f in self.filters]
         if len(types) != len(set(types)):
             raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_sft_distill_mode(self):
+        """Enforce the SFT hard distill invariants that involve only orchestrator fields.
+
+        Runs at ``OrchestratorConfig`` level so hosted deployments (which load this
+        config standalone via the ``orchestrator`` entrypoint) get the same guarantees
+        as the combined ``rl`` entrypoint.
+        """
+        has_teacher = self.teacher_rollout_model is not None
+        if self.use_sft_loss and not has_teacher:
+            raise ValueError(
+                "orchestrator.use_sft_loss = true requires orchestrator.teacher_rollout_model to be configured."
+            )
+        if has_teacher and not self.use_sft_loss:
+            raise ValueError("orchestrator.teacher_rollout_model requires orchestrator.use_sft_loss = true.")
+        if has_teacher and self.use_token_client:
+            raise ValueError(
+                "orchestrator.use_token_client must be false when orchestrator.teacher_rollout_model is configured."
+            )
         return self
 
     @model_validator(mode="after")

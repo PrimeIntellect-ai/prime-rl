@@ -19,9 +19,6 @@ name = "qwen3-4b-hard-distill"
 [trainer.optim]
 lr = 1e-5
 
-[trainer.loss]
-type = "sft"
-
 [trainer.model.lora]
 rank = 16
 alpha = 32
@@ -33,6 +30,7 @@ save_adapter_separately = true
 batch_size = 256
 rollouts_per_example = 4
 use_token_client = false
+use_sft_loss = true
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512

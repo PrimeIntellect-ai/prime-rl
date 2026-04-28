@@ -7,6 +7,8 @@ from prime_rl.trainer.models.layers.moe.kernels import (
     _disable_sonic_autotune,
     _run_experts_grouped_mm_impl,
     _run_experts_sonic_impl,
+    _run_gpt_oss_experts_grouped_mm,
+    _run_gpt_oss_experts_grouped_mm_impl,
     _run_nongated_experts_grouped_mm,
     _run_nongated_experts_grouped_mm_impl,
 )
@@ -113,3 +115,57 @@ class NonGatedGroupedExperts(nn.Module):
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
+
+
+class GptOssGroupedExperts(nn.Module):
+    """GPT-OSS-style grouped experts.
+
+    Mirrors HF's `GptOssExperts` parameter naming (gate_up_proj/down_proj plus per-expert
+    biases, fused interleaved gate/up channels) so the unsloth BF16 checkpoint loads with
+    no key conversion. Forward signature matches `GroupedExperts` (`x`, `num_tokens_per_expert`)
+    so the surrounding MoE plumbing and LoRA wrapper follow the same convention.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        num_experts: int,
+        use_grouped_mm: bool,
+    ):
+        super().__init__()
+        assert use_grouped_mm, "GptOssGroupedExperts only supports use_grouped_mm=True"
+        self.num_experts = num_experts
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.gate_up_proj = nn.Parameter(torch.empty(num_experts, hidden_size, 2 * intermediate_size))
+        self.gate_up_proj_bias = nn.Parameter(torch.empty(num_experts, 2 * intermediate_size))
+        self.down_proj = nn.Parameter(torch.empty(num_experts, intermediate_size, hidden_size))
+        self.down_proj_bias = nn.Parameter(torch.empty(num_experts, hidden_size))
+        self.ep_comm_backend: EPCommBackend = "torch"
+
+    def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
+        self.ep_comm_backend = backend
+
+    def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        gate_up_proj = self.gate_up_proj.to_local()
+        gate_up_proj_bias = self.gate_up_proj_bias.to_local()
+        down_proj = self.down_proj.to_local()
+        down_proj_bias = self.down_proj_bias.to_local()
+        return _run_gpt_oss_experts_grouped_mm_impl(
+            gate_up_proj, gate_up_proj_bias, down_proj, down_proj_bias, x, num_tokens_per_expert
+        )
+
+    def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        if self.ep_comm_backend == "deepep":
+            return self._forward_deepep(x, num_tokens_per_expert)
+
+        return _run_gpt_oss_experts_grouped_mm(
+            self.gate_up_proj, self.gate_up_proj_bias, self.down_proj, self.down_proj_bias, x, num_tokens_per_expert
+        )
+
+    def init_weights(self, init_std: float):
+        nn.init.trunc_normal_(self.gate_up_proj, mean=0.0, std=0.02)
+        nn.init.zeros_(self.gate_up_proj_bias)
+        nn.init.trunc_normal_(self.down_proj, mean=0.0, std=init_std)
+        nn.init.zeros_(self.down_proj_bias)
