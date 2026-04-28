@@ -183,6 +183,13 @@ class DebugModelConfig(BaseConfig):
         ),
     ] = False
 
+    force_balanced_routing: Annotated[
+        bool,
+        Field(
+            description="If True, override MoE token-choice routing with a round-robin assignment so every expert receives an equal share of tokens. Intended for fake-data smoke tests where untrained routing would otherwise produce severe expert imbalance and OOM. Gating scores are still gathered from the override indices so the forward pass stays consistent.",
+        ),
+    ] = False
+
 
 class ModelConfig(BaseModelConfig):
     """Configures the model for training."""

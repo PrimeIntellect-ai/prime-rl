@@ -392,6 +392,7 @@ class TokenChoiceTopKRouter(nn.Module):
         self.score_func = score_func
         self.route_norm = route_norm
         self.route_scale = route_scale
+        self.force_balanced = False
 
     def forward(
         self, x: torch.Tensor, expert_bias: torch.Tensor | None = None, routed_experts: torch.Tensor | None = None
@@ -433,6 +434,11 @@ class TokenChoiceTopKRouter(nn.Module):
         if routed_experts is not None:
             top_scores = scores.gather(dim=1, index=routed_experts)
             selected_experts_indices = routed_experts
+        elif self.force_balanced:
+            num_tokens = scores.shape[0]
+            arange = torch.arange(num_tokens * self.top_k, device=scores.device)
+            selected_experts_indices = (arange % self.num_experts).view(num_tokens, self.top_k)
+            top_scores = scores.gather(dim=1, index=selected_experts_indices)
         elif expert_bias is not None:
             _, selected_experts_indices = torch.topk(scores + expert_bias, k=self.top_k, dim=1)
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
