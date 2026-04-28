@@ -40,13 +40,6 @@ class MultiMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to log eval samples to {monitor.__class__.__name__}: {e}")
 
-    def log_final_samples(self) -> None:
-        for monitor in self.monitors:
-            try:
-                monitor.log_final_samples()
-            except Exception as e:
-                self.logger.warning(f"Failed to log final samples to {monitor.__class__.__name__}: {e}")
-
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         for monitor in self.monitors:
             try:
@@ -67,7 +60,3 @@ class MultiMonitor(Monitor):
                 monitor.close()
             except Exception as e:
                 self.logger.warning(f"Failed to close {monitor.__class__.__name__}: {e}")
-
-    def prune_history(self) -> None:
-        for monitor in self.monitors:
-            monitor.prune_history()

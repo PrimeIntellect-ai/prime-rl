@@ -26,10 +26,12 @@ class WandbMonitor(Monitor):
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseConfig | None = None,
+        keep_full_history: bool = True,
     ):
         self.config = config
         self.logger = get_logger()
         self.history: list[dict[str, Any]] = []
+        self._keep_full_history = keep_full_history
         self.output_dir = output_dir
 
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
@@ -118,7 +120,10 @@ class WandbMonitor(Monitor):
             sys.argv = json.loads(wandb_args)
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        self.history.append(metrics)
+        if self._keep_full_history:
+            self.history.append(metrics)
+        else:
+            self.history = [metrics]
         if not self.is_master:
             return
         if not self.enabled:
@@ -211,12 +216,6 @@ class WandbMonitor(Monitor):
             self.eval_samples_table.add_data(*sample.values())
 
         wandb.log({"eval/samples": self.eval_samples_table, "step": step})
-
-    def log_final_samples(self) -> None:
-        # Per-step samples are already streamed to the incremental `samples` table,
-        # so no separate end-of-run dump is needed and the previous duplicate kept
-        # every sample alive in a Python list for the lifetime of the run.
-        pass
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         """Log distributions (no-op for W&B)."""

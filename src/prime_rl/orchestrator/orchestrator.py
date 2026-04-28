@@ -162,6 +162,7 @@ async def orchestrate(config: OrchestratorConfig):
         output_dir=config.output_dir,
         tokenizer=tokenizer,
         run_config=config,
+        keep_full_history=config.bench,
     )
 
     # Read run_id AFTER setup_monitor so that newly registered runs are captured
@@ -736,13 +737,6 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        # The orchestrator only reads monitor.history for the end-of-run benchmark
-        # table; outside --bench, holding every step's metrics dict is a slow leak
-        # that grows linearly with run length. Keep only the most recent entry so
-        # PrimeMonitor.save_final_summary's `history[-1]` access still works.
-        if not config.bench:
-            monitor.prune_history()
-
         if usage_reporter and run_id:
             usage_reporter.report_training_usage(
                 run_id=run_id,
@@ -792,8 +786,6 @@ async def orchestrate(config: OrchestratorConfig):
                 save_rollouts, eval_rollouts, step_path / "eval_rollouts.jsonl", exclude_keys={"trajectory"}
             )
 
-    # Log final (immutable) samples and distributions to monitor(s)
-    monitor.log_final_samples()
     monitor.save_final_summary()
 
     # Write final checkpoint

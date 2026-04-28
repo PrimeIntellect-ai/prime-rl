@@ -47,10 +47,6 @@ class Monitor(ABC):
         pass
 
     @abstractmethod
-    def log_final_samples(self) -> None:
-        pass
-
-    @abstractmethod
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         pass
 
@@ -62,31 +58,24 @@ class Monitor(ABC):
         """Close any resources held by the monitor. Override in subclasses that need cleanup."""
         pass
 
-    def prune_history(self) -> None:
-        """Drop all but the most recent history entry. Callers that don't need the full
-        per-step trajectory (e.g. the orchestrator outside of --bench mode) should call
-        this between steps to bound memory."""
-        history = getattr(self, "history", None)
-        if history:
-            self.history = history[-1:]
-
 
 class NoOpMonitor(Monitor):
     """Monitor that does nothing. Used when no monitors are configured."""
 
-    def __init__(self):
+    def __init__(self, keep_full_history: bool = True):
         self.history: list[dict[str, Any]] = []
+        self._keep_full_history = keep_full_history
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        self.history.append(metrics)
+        if self._keep_full_history:
+            self.history.append(metrics)
+        else:
+            self.history = [metrics]
 
     def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
         pass
 
     def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
-        pass
-
-    def log_final_samples(self) -> None:
         pass
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
