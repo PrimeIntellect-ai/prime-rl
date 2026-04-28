@@ -27,7 +27,6 @@ from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.utils.cp import gather_for_cp, shard_for_cp
 
 
 def _sparse_mla_attention_args(config: GlmMoeDsaConfig) -> SparseMlaAttentionArgs:
@@ -86,22 +85,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         self._cp_group = cp_group
         self._cp_rank = cp_rank
         self._cp_world_size = cp_world_size
-
-    @property
-    def cp_enabled(self) -> bool:
-        return hasattr(self, "_cp_group") and hasattr(self, "_cp_rank") and hasattr(self, "_cp_world_size")
-
-    def shard_to_cp(self, t: torch.Tensor) -> torch.Tensor:
-        if not self.cp_enabled:
-            return t
-
-        return shard_for_cp(t, self._cp_rank, self._cp_world_size)
-
-    def gather_for_cp(self, t: torch.Tensor) -> torch.Tensor:
-        if not self.cp_enabled:
-            return t
-
-        return gather_for_cp(t, self._cp_group)
+        self.self_attn.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
@@ -114,14 +98,14 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.gather_for_cp(hidden_states)
+        # Attention runs with CP-sharded Q (length S_local) and gathers KV internally
+        # to length S_full. No gather/scatter wrapper needed at the layer boundary.
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             ks=ks,
             ke=ke,
         )
-        hidden_states = self.shard_to_cp(hidden_states)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -246,19 +230,35 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
-        cp_group, _, cp_world_size = self._context_parallel_state()
+        cp_group, cp_rank, cp_world_size = self._context_parallel_state()
         if cp_group is not None and cp_world_size > 1:
-            position_ids_for_attn = self._gather_position_ids_for_cp(position_ids, cp_group, cp_world_size)
+            position_ids_full = self._gather_position_ids_for_cp(position_ids, cp_group, cp_world_size)
         else:
-            position_ids_for_attn = position_ids
+            position_ids_full = position_ids
 
-        flat_position_ids = position_ids_for_attn.view(-1)
-        S = flat_position_ids.shape[0]
-        ks = torch.arange(S, dtype=torch.int32, device=flat_position_ids.device) - flat_position_ids.to(torch.int32)
-        ke = torch.arange(1, S + 1, dtype=torch.int32, device=flat_position_ids.device)
+        flat_position_ids = position_ids_full.view(-1)
+        S_full = flat_position_ids.shape[0]
+        ks_full = torch.arange(S_full, dtype=torch.int32, device=flat_position_ids.device) - flat_position_ids.to(
+            torch.int32
+        )
+        ke_full = torch.arange(1, S_full + 1, dtype=torch.int32, device=flat_position_ids.device)
 
+        # Position embeddings are computed over the full sequence: K uses cos/sin[0:S_full]
+        # while Q uses the local CP slice. ks/ke are computed in K's global coordinate
+        # system and then sharded to the local Q range so the indexer's per-token
+        # causal/varlen mask aligns with the gathered K.
         hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids_for_attn)
+        position_embeddings = self.rotary_emb(hidden_states, position_ids_full)
+
+        if cp_world_size > 1:
+            assert S_full % cp_world_size == 0, (
+                f"Full sequence length {S_full} must be divisible by cp_world_size {cp_world_size}"
+            )
+            s_local = S_full // cp_world_size
+            ks = ks_full[cp_rank * s_local : (cp_rank + 1) * s_local].contiguous()
+            ke = ke_full[cp_rank * s_local : (cp_rank + 1) * s_local].contiguous()
+        else:
+            ks, ke = ks_full, ke_full
 
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None

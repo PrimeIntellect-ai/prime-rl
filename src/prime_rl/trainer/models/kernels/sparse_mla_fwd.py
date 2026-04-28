@@ -105,7 +105,12 @@ def sparse_mla_fwd(
             b_i, g_i = by, bz
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
             q_i = s_i
-            max_kv_i = q_i
+            # The indexer pre-filters indices using per-token `ke` and replaces out-of-range
+            # entries with the sentinel value `seq_len_kv - 1` (the last KV slot is a
+            # zero sentinel; valid K indices live in [0, seq_len_kv - 1)). This single
+            # bound preserves causality + varlen masking for both full and CP-sharded Q
+            # (where local q_i no longer matches the global K position).
+            max_kv_i = seq_len_kv - 2
 
             H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
             H1 = H0 + H_per_block
