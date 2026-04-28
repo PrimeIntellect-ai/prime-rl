@@ -162,6 +162,7 @@ async def orchestrate(config: OrchestratorConfig):
         output_dir=config.output_dir,
         tokenizer=tokenizer,
         run_config=config,
+        keep_full_history=config.bench,
     )
 
     # Read run_id AFTER setup_monitor so that newly registered runs are captured
@@ -785,8 +786,6 @@ async def orchestrate(config: OrchestratorConfig):
                 save_rollouts, eval_rollouts, step_path / "eval_rollouts.jsonl", exclude_keys={"trajectory"}
             )
 
-    # Log final (immutable) samples and distributions to monitor(s)
-    monitor.log_final_samples()
     monitor.save_final_summary()
 
     # Write final checkpoint
