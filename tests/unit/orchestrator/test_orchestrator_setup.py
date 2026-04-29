@@ -42,7 +42,15 @@ def test_setup_rollout_inference_pool_uses_direct_renderer_client_for_local_vllm
         tokenizer = object()
         config = SimpleNamespace(
             teacher_rollout_model=None,
-            model=SimpleNamespace(renderer="qwen3_vl", name="student-model"),
+            use_renderer=True,
+            use_token_client=False,
+            model=SimpleNamespace(
+                renderer="qwen3_vl",
+                name="student-model",
+                tool_parser=None,
+                reasoning_parser=None,
+                renderer_pool_size=None,
+            ),
         )
         rollout_client_config = SimpleNamespace(base_url=["http://localhost:8000/v1"])
         logger = MagicMock()
@@ -66,13 +74,21 @@ def test_setup_rollout_inference_pool_uses_direct_renderer_client_for_local_vllm
 
         assert returned_renderer is renderer
         assert returned_pool is inference_pool
-        create_renderer_mock.assert_called_once_with(tokenizer, renderer="qwen3_vl")
+        create_renderer_mock.assert_called_once_with(
+            tokenizer,
+            renderer="qwen3_vl",
+            tool_parser=None,
+            reasoning_parser=None,
+        )
         setup_pool_mock.assert_awaited_once_with(
             rollout_client_config,
             model_name="student-model",
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_name="qwen3_vl",
+            tool_parser=None,
+            reasoning_parser=None,
+            renderer_pool_size=None,
         )
 
     asyncio.run(run())
