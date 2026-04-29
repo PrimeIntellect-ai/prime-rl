@@ -1,3 +1,5 @@
+import time
+
 import torch
 from torch import nn
 from transformers import PretrainedConfig
@@ -10,19 +12,22 @@ from prime_rl.utils.logger import get_logger
 
 class PerfCounter:
     """
-    Computes throughput (tokens/s) and MFU from forward+backward time.
+    Computes throughput (tokens/s) and MFU.
 
     Two modes:
-    - Sliding window: call `count_tokens(tokens, fwd_bwd_time)` each step,
-      then read smoothed values via `get_tokens_per_second()` / `get_mfu()`.
-    - Single point: call `get_step_tokens_per_second(tokens, fwd_bwd_time)`
-      / `get_step_mfu(tokens, fwd_bwd_time)` directly each step.
+    - Sliding window over full-step wall time: `count_tokens(tokens)` each step,
+      read smoothed values via `get_tokens_per_second()` / `get_mfu()`.
+      Time is measured between successive `count_tokens` calls (full step).
+    - Single point on a caller-provided duration: `get_step_tokens_per_second(tokens, fwd_bwd_time)`
+      / `get_step_mfu(tokens, fwd_bwd_time)`. No smoothing.
+
+    Sliding window inspired by https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
     """
 
     def __init__(self, model: nn.Module, seq_len: int, window_size: int = 10):
         self.window_size = window_size
         self.tokens: list[int] = []
-        self.fwd_bwd_times: list[float] = []
+        self.times: list[float] = []
         self.model = model
 
         self._world = get_world()
@@ -37,22 +42,18 @@ class PerfCounter:
         self.num_params = self._get_num_params(model, exclude_embedding=not model.config.tie_word_embeddings)
         self.num_flop_per_token = self._get_num_flop_per_token(model.config, seq_len=seq_len)
 
-    def count_tokens(self, tokens: int, fwd_bwd_time: float) -> None:
-        """Record a step for the sliding window."""
+    def count_tokens(self, tokens: int) -> None:
+        """Push a step into the sliding window. Time is recorded internally."""
         self.tokens.append(tokens)
-        self.fwd_bwd_times.append(fwd_bwd_time)
+        self.times.append(time.perf_counter())
         if len(self.tokens) > self.window_size:
             self.tokens.pop(0)
-            self.fwd_bwd_times.pop(0)
+            self.times.pop(0)
 
     def get_tokens_per_second(self) -> float | None:
-        """Sliding-window throughput. None until `count_tokens` has been called."""
-        if not self.tokens:
+        if len(self.tokens) < 2:
             return None
-        total_time = sum(self.fwd_bwd_times)
-        if total_time <= 0:
-            return None
-        return sum(self.tokens) / total_time
+        return sum(self.tokens[1:]) / (self.times[-1] - self.times[0])
 
     def get_mfu(self) -> float | None:
         tokens_per_second = self.get_tokens_per_second()
@@ -61,7 +62,7 @@ class PerfCounter:
         return self._mfu_from_tps(tokens_per_second)
 
     def get_step_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
-        """Single-step throughput, no smoothing."""
+        """Single-step throughput from a caller-provided duration."""
         return tokens / fwd_bwd_time
 
     def get_step_mfu(self, tokens: int, fwd_bwd_time: float) -> float:
