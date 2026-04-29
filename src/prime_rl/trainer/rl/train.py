@@ -492,11 +492,11 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        # compute_loss divided by global_token_count so multiplying by fsdp_gradient_divide_factor to recover the true
-        # mean per-token gradient.
+        # compute_loss already divides by the global token count. FSDP averages across DP and CP,
+        # but differentiable CP gathers already contribute the CP factor, so only undo DP averaging.
         for param in model.parameters():
             if param.grad is not None:
-                param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
+                param.grad.mul_(dp_world_size)
 
         # All-reduce over the per-rank loss sums over DP ranks to get the mean per-token loss for logging.
         dist.all_reduce(step_local_loss_sum, op=dist.ReduceOp.SUM, group=dp_group)
