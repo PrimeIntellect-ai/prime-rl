@@ -148,21 +148,6 @@ class SharedModelConfig(BaseConfig):
         Field(description="VLM configuration. Set to enable vision-language model support."),
     ] = None
 
-    tool_parser: Annotated[
-        str | None,
-        Field(description="Tool parser name (propagates to orchestrator/trainer/inference model configs)."),
-    ] = None
-
-    reasoning_parser: Annotated[
-        str | None,
-        Field(description="Reasoning parser name (propagates to orchestrator/trainer/inference model configs)."),
-    ] = None
-
-    renderer_pool_size: Annotated[
-        int | None,
-        Field(ge=1, description="Renderer pool size (propagates to orchestrator/trainer/inference)."),
-    ] = None
-
 
 class SharedWeightBroadcastConfig(BaseConfig):
     """Configures shared weight broadcast settings."""
