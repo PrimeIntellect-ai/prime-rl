@@ -124,7 +124,24 @@ class BaseModelConfig(BaseConfig):
         ),
     ] = False
 
-    renderer: Annotated[
+    vlm: Annotated[
+        "VLMConfig | None",
+        Field(
+            description="VLM configuration. Set this to enable vision-language model support.",
+        ),
+    ] = None
+
+
+class RendererConfig(BaseConfig):
+    """Configures the client-side renderer (chat-template + response parsing).
+
+    Only consumed when ``orchestrator.use_renderer = true``. The renderer
+    owns both directions: render messages → token ids on the client, and
+    parse model output tokens → structured ``content`` / ``reasoning_content``
+    / ``tool_calls``.
+    """
+
+    name: Annotated[
         str,
         Field(
             description=(
@@ -157,7 +174,7 @@ class BaseModelConfig(BaseConfig):
         ),
     ] = None
 
-    renderer_pool_size: Annotated[
+    pool_size: Annotated[
         int | None,
         Field(
             ge=1,
@@ -166,13 +183,6 @@ class BaseModelConfig(BaseConfig):
                 "None keeps the verifiers default (1). Bump for long multi-turn "
                 "prompts where client-side jinja tokenization serializes."
             ),
-        ),
-    ] = None
-
-    vlm: Annotated[
-        "VLMConfig | None",
-        Field(
-            description="VLM configuration. Set this to enable vision-language model support.",
         ),
     ] = None
 

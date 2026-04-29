@@ -11,6 +11,7 @@ from prime_rl.configs.shared import (
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
+    RendererConfig,
     TransportConfig,
     WandbWithExtrasConfig,
 )
@@ -870,6 +871,9 @@ class OrchestratorConfig(BaseConfig):
     # The tokenizer configuration
     tokenizer: TokenizerConfig = TokenizerConfig()
 
+    # The renderer configuration (only used when use_renderer=True)
+    renderer: RendererConfig = RendererConfig()
+
     # The optimizer configuration (per-run LR for multi-run training)
     optim: OptimizerConfig = OptimizerConfig()
 
@@ -1069,10 +1073,9 @@ class OrchestratorConfig(BaseConfig):
         Field(
             description="Whether to use the renderer client (client-side tokenization via the ``renderers`` package, "
             "served by ``/v1/generate``). Mutually exclusive with ``use_token_client``. When True, the "
-            "``model.renderer`` / ``model.tool_parser`` / ``model.reasoning_parser`` / "
-            "``model.renderer_pool_size`` knobs apply; when False they must be left at their defaults. "
-            "Not supported for VLMs — VLMs must use the token client (TITO) so image preprocessing and chat "
-            "templating stay server-side."
+            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) "
+            "applies; when False those fields must be left at their defaults. Not supported for VLMs — "
+            "VLMs must use the token client (TITO) so image preprocessing and chat templating stay server-side."
         ),
     ] = False
 
@@ -1187,21 +1190,21 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_renderer_args(self):
-        """Renderer-specific knobs on ``model`` are only meaningful when
+        """``[orchestrator.renderer]`` knobs are only meaningful when
         ``use_renderer=True``. Reject otherwise so callers don't silently
         pass them and wonder why they're ignored."""
         if self.use_renderer:
             return self
 
         renderer_args_set = []
-        if self.model.renderer != "auto":
-            renderer_args_set.append(f"model.renderer={self.model.renderer!r}")
-        if self.model.tool_parser is not None:
-            renderer_args_set.append(f"model.tool_parser={self.model.tool_parser!r}")
-        if self.model.reasoning_parser is not None:
-            renderer_args_set.append(f"model.reasoning_parser={self.model.reasoning_parser!r}")
-        if self.model.renderer_pool_size is not None:
-            renderer_args_set.append(f"model.renderer_pool_size={self.model.renderer_pool_size!r}")
+        if self.renderer.name != "auto":
+            renderer_args_set.append(f"renderer.name={self.renderer.name!r}")
+        if self.renderer.tool_parser is not None:
+            renderer_args_set.append(f"renderer.tool_parser={self.renderer.tool_parser!r}")
+        if self.renderer.reasoning_parser is not None:
+            renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
+        if self.renderer.pool_size is not None:
+            renderer_args_set.append(f"renderer.pool_size={self.renderer.pool_size!r}")
 
         if renderer_args_set:
             raise ValueError(

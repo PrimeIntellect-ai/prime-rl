@@ -44,12 +44,12 @@ def test_setup_rollout_inference_pool_uses_direct_renderer_client_for_local_vllm
             teacher_rollout_model=None,
             use_renderer=True,
             use_token_client=False,
-            model=SimpleNamespace(
-                renderer="qwen3_vl",
-                name="student-model",
+            model=SimpleNamespace(name="student-model"),
+            renderer=SimpleNamespace(
+                name="qwen3_vl",
                 tool_parser=None,
                 reasoning_parser=None,
-                renderer_pool_size=None,
+                pool_size=None,
             ),
         )
         rollout_client_config = SimpleNamespace(base_url=["http://localhost:8000/v1"])

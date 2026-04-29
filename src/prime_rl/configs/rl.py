@@ -589,24 +589,6 @@ class RLConfig(BaseConfig):
                 if self.inference is not None:
                     self.inference.model.vlm = self.model.vlm
 
-            if self.model.tool_parser is not None:
-                self.trainer.model.tool_parser = self.model.tool_parser
-                self.orchestrator.model.tool_parser = self.model.tool_parser
-                if self.inference is not None:
-                    self.inference.model.tool_parser = self.model.tool_parser
-
-            if self.model.reasoning_parser is not None:
-                self.trainer.model.reasoning_parser = self.model.reasoning_parser
-                self.orchestrator.model.reasoning_parser = self.model.reasoning_parser
-                if self.inference is not None:
-                    self.inference.model.reasoning_parser = self.model.reasoning_parser
-
-            if self.model.renderer_pool_size is not None:
-                self.trainer.model.renderer_pool_size = self.model.renderer_pool_size
-                self.orchestrator.model.renderer_pool_size = self.model.renderer_pool_size
-                if self.inference is not None:
-                    self.inference.model.renderer_pool_size = self.model.renderer_pool_size
-
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
 
         return self

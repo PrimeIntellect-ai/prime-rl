@@ -904,9 +904,9 @@ async def setup_rollout_inference_pool(
     if config.use_renderer:
         renderer = create_renderer(
             tokenizer,
-            renderer=config.model.renderer,
-            tool_parser=config.model.tool_parser,
-            reasoning_parser=config.model.reasoning_parser,
+            renderer=config.renderer.name,
+            tool_parser=config.renderer.tool_parser,
+            reasoning_parser=config.renderer.reasoning_parser,
         )
         logger.info(f"Initialized {type(renderer).__name__} for {config.model.name}")
         inference_pool = await setup_inference_pool(
@@ -914,10 +914,10 @@ async def setup_rollout_inference_pool(
             model_name=rollout_model_name,
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
-            renderer_name=config.model.renderer,
-            tool_parser=config.model.tool_parser,
-            reasoning_parser=config.model.reasoning_parser,
-            renderer_pool_size=config.model.renderer_pool_size,
+            renderer_name=config.renderer.name,
+            tool_parser=config.renderer.tool_parser,
+            reasoning_parser=config.renderer.reasoning_parser,
+            renderer_pool_size=config.renderer.pool_size,
         )
         logger.info("Using direct renderer rollout client")
         return renderer, inference_pool
