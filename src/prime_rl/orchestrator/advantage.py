@@ -7,7 +7,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from prime_rl.configs.orchestrator import AdvantageConfig, CustomAdvantageConfig
-from prime_rl.orchestrator.vf_utils import get_model_completion_len
+from prime_rl.orchestrator.vf_utils import get_model_completion_len, get_tool_response_len
 from prime_rl.utils.utils import import_object
 
 
@@ -17,6 +17,7 @@ class AdvantageInputs:
 
     rewards: Float[Tensor, "num_problems rollouts_per_example"]
     completion_lengths: Int[Tensor, "num_problems rollouts_per_example"]
+    tool_response_lengths: Int[Tensor, "num_problems rollouts_per_example"] | None = None
 
 
 @dataclass
@@ -38,13 +39,26 @@ Expected signature:
 def default_advantage_fn(
     inputs: AdvantageInputs,
     length_shaping: bool = False,
+    completion_weight: float = 1.0,
+    tool_response_weight: float = 0.0,
 ) -> AdvantageOutputs:
-    """Default GRPO advantage: reward minus per-problem baseline."""
+    """Default GRPO advantage: reward minus per-problem baseline.
+
+    When `length_shaping` is enabled, the brevity bonus is computed against an
+    effective length `completion_weight * completion_lengths +
+    tool_response_weight * tool_response_lengths`, letting callers penalize
+    model output and tool-response tokens independently.
+    """
     rewards = inputs.rewards
 
     if length_shaping:
         completion_lengths = inputs.completion_lengths.to(dtype=rewards.dtype)
-        return AdvantageOutputs(advantages=_efficiency_length_shaping(rewards, completion_lengths))
+        if inputs.tool_response_lengths is None:
+            tool_response_lengths = torch.zeros_like(completion_lengths)
+        else:
+            tool_response_lengths = inputs.tool_response_lengths.to(dtype=rewards.dtype)
+        effective_lengths = completion_weight * completion_lengths + tool_response_weight * tool_response_lengths
+        return AdvantageOutputs(advantages=_efficiency_length_shaping(rewards, effective_lengths))
 
     baseline = rewards.mean(dim=1, keepdim=True)
     return AdvantageOutputs(advantages=rewards - baseline)
@@ -52,7 +66,7 @@ def default_advantage_fn(
 
 def _efficiency_length_shaping(
     rewards: Float[Tensor, "num_problems rollouts_per_example"],
-    completion_lengths: Float[Tensor, "num_problems rollouts_per_example"],
+    effective_lengths: Float[Tensor, "num_problems rollouts_per_example"],
 ) -> Float[Tensor, "num_problems rollouts_per_example"]:
     """Correctness-gated length shaping with bounded advantages.
 
@@ -70,11 +84,11 @@ def _efficiency_length_shaping(
     has_correct = max_reward > 0
 
     # Mean length of correct rollouts per problem
-    correct_lengths = completion_lengths * correct_mask
+    correct_lengths = effective_lengths * correct_mask
     mean_correct_len = correct_lengths.sum(dim=1, keepdim=True) / num_correct.clamp(min=1)
 
     # Bounded brevity bonus: [0, 1], positive for below-average length, zero for above
-    bonus = (1 - completion_lengths / mean_correct_len).clamp(0, 1)
+    bonus = (1 - effective_lengths / mean_correct_len).clamp(0, 1)
 
     # Shape rewards: correct rollouts amplified by up to 2x, incorrect untouched
     shaped_rewards = rewards * (1 + bonus * correct_mask)
@@ -100,6 +114,8 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
         return default_advantage_fn(
             inputs,
             length_shaping=config.length_shaping,
+            completion_weight=config.length_shaping_completion_weight,
+            tool_response_weight=config.length_shaping_tool_response_weight,
         )
 
     return advantage_fn
@@ -128,10 +144,12 @@ def compute_advantages(
 
     advantage_fn = setup_advantage_fn(advantage_config)
     completion_lengths = [get_model_completion_len(r) for r in rollouts]
+    tool_response_lengths = [get_tool_response_len(r) for r in rollouts]
 
     inputs = AdvantageInputs(
         rewards=torch.tensor(rewards).view(-1, samples_per_problem),
         completion_lengths=torch.tensor(completion_lengths).view(-1, samples_per_problem),
+        tool_response_lengths=torch.tensor(tool_response_lengths).view(-1, samples_per_problem),
     )
 
     result = advantage_fn(inputs)

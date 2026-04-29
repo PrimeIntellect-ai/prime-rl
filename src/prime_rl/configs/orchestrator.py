@@ -686,6 +686,25 @@ class DefaultAdvantageConfig(BaseModel):
             )
         ),
     ] = False
+    length_shaping_completion_weight: Annotated[
+        float,
+        Field(
+            description=(
+                "Weight on model completion tokens in the effective length used by length_shaping. "
+                "Effective length = completion_weight * completion_tokens + tool_response_weight * tool_response_tokens."
+            )
+        ),
+    ] = 1.0
+    length_shaping_tool_response_weight: Annotated[
+        float,
+        Field(
+            description=(
+                "Weight on tool-response tokens in the effective length used by length_shaping. "
+                "Tool-response tokens are read from the rollout's harness metric "
+                "`*_total_tool_response_tokens` (e.g. `rlm_total_tool_response_tokens`); 0 if absent."
+            )
+        ),
+    ] = 0.0
 
 
 class CustomAdvantageConfig(BaseModel):
