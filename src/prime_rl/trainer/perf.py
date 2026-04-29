@@ -1,5 +1,3 @@
-import time
-
 import torch
 from torch import nn
 from transformers import PretrainedConfig
@@ -12,16 +10,11 @@ from prime_rl.utils.logger import get_logger
 
 class PerfCounter:
     """
-    A class to count throughput (tokens/s) with a rolling window to obtain
-    precise throughput and MFU estimates.
-
-    Inspired from https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
+    Computes per-step throughput (tokens/s) and MFU from the forward+backward
+    time of the current step.
     """
 
-    def __init__(self, model: nn.Module, seq_len: int, window_size: int):
-        self.window_size = window_size
-        self.tokens = []
-        self.times = []
+    def __init__(self, model: nn.Module, seq_len: int):
         self.model = model
 
         self._world = get_world()
@@ -36,22 +29,11 @@ class PerfCounter:
         self.num_params = self._get_num_params(model, exclude_embedding=not model.config.tie_word_embeddings)
         self.num_flop_per_token = self._get_num_flop_per_token(model.config, seq_len=seq_len)
 
-    def count_tokens(self, tokens: int):
-        self.tokens.append(tokens)
-        self.times.append(time.perf_counter())
-        if len(self.tokens) > self.window_size:
-            self.tokens.pop(0)
-            self.times.pop(0)
+    def get_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
+        return tokens / fwd_bwd_time
 
-    def get_tokens_per_second(self) -> float | None:
-        if len(self.tokens) < 2:
-            return None
-        return sum(self.tokens[1:]) / (self.times[-1] - self.times[0])
-
-    def get_mfu(self) -> float | None:
-        tokens_per_second = self.get_tokens_per_second()
-        if tokens_per_second is None:
-            return None
+    def get_mfu(self, tokens: int, fwd_bwd_time: float) -> float:
+        tokens_per_second = self.get_tokens_per_second(tokens, fwd_bwd_time)
         return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world.world_size
 
     def _get_peak_flops(self, device_name: str) -> float:
@@ -234,9 +216,9 @@ class PerfCounter:
 _PERF_COUNTER: PerfCounter | None = None
 
 
-def get_perf_counter(model: nn.Module, seq_len: int, window_size: int = 10) -> PerfCounter:
+def get_perf_counter(model: nn.Module, seq_len: int) -> PerfCounter:
     global _PERF_COUNTER
     if _PERF_COUNTER is None:
-        _PERF_COUNTER = PerfCounter(model, seq_len, window_size)
+        _PERF_COUNTER = PerfCounter(model, seq_len)
 
     return _PERF_COUNTER

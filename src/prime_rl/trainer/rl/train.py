@@ -475,6 +475,8 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
+        forward_backward_time = time.perf_counter() - forward_backward_start_time
+
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
@@ -497,7 +499,6 @@ def train(config: TrainerConfig):
             current_lr = optimizer.param_groups[0]["lr"]
         else:
             current_lr = optimizer.get_current_lr()
-        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
@@ -512,9 +513,8 @@ def train(config: TrainerConfig):
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
-        perf_counter.count_tokens(num_tokens)
-        throughput = perf_counter.get_tokens_per_second() or 0
-        mfu = perf_counter.get_mfu() or 0
+        throughput = perf_counter.get_tokens_per_second(num_tokens, forward_backward_time)
+        mfu = perf_counter.get_mfu(num_tokens, forward_backward_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
 
         # Log step metrics
