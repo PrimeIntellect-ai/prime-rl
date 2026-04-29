@@ -1,3 +1,4 @@
+import asyncio
 from argparse import Namespace
 from http import HTTPStatus
 from typing import Any
@@ -158,6 +159,7 @@ logger = init_logger("vllm.entrypoints.openai.api_server")
 
 # Create our own router for custom endpoints
 router = APIRouter()
+LIVENESS_TIMEOUT_SECONDS = 5.0
 
 
 def engine_client(request: Request) -> EngineClient:
@@ -208,6 +210,19 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     response = await handler.load_lora_adapter(lora_request)
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    return {"status": "ok"}
+
+
+@router.get("/liveness")
+async def liveness(raw_request: Request):
+    """Check that the engine event loop can service a no-op worker RPC."""
+    try:
+        await asyncio.wait_for(
+            engine_client(raw_request).collective_rpc("liveness_probe"),
+            timeout=LIVENESS_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse({"status": "engine_unresponsive"}, status_code=503)
     return {"status": "ok"}
 
 
