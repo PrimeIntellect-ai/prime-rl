@@ -324,8 +324,9 @@ def train(config: TrainerConfig):
 
         # Gather loss_scale across DP ranks
         local = torch.tensor([loss_scale], dtype=torch.float64, device="cuda")
-        dp_group = parallel_dims.world_mesh["dp"].get_group()
-        dp_world_size = dist.get_world_size(dp_group)
+        dp_mesh = parallel_dims.get_mesh("dp")
+        dp_group = dp_mesh.get_group()
+        dp_world_size = dp_mesh.size()
         gathered = [torch.zeros_like(local) for _ in range(dp_world_size)]
         dist.all_gather(gathered, local, group=dp_group)
         scales = torch.stack(gathered).squeeze()  # shape: [dp_world_size]
