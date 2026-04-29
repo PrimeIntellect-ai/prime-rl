@@ -368,8 +368,6 @@ def train(config: SFTConfig):
                     dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
                     batch_max_vio += max_vio / grad_accum_steps
 
-        forward_backward_time = time.perf_counter() - forward_backward_start_time
-
         # All-reduce token counts and rescale gradients to get a global token-weighted mean.
         # FSDP already divided grads by fsdp_gradient_divide_factor, so we undo that and
         # divide by the true global token count instead.
@@ -417,6 +415,7 @@ def train(config: SFTConfig):
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
+        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:

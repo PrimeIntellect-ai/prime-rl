@@ -475,8 +475,6 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        forward_backward_time = time.perf_counter() - forward_backward_start_time
-
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
@@ -499,6 +497,7 @@ def train(config: TrainerConfig):
             current_lr = optimizer.param_groups[0]["lr"]
         else:
             current_lr = optimizer.get_current_lr()
+        forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
