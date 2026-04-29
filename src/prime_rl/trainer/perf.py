@@ -10,11 +10,19 @@ from prime_rl.utils.logger import get_logger
 
 class PerfCounter:
     """
-    Computes per-step throughput (tokens/s) and MFU from the forward+backward
-    time of the current step.
+    Computes throughput (tokens/s) and MFU from forward+backward time.
+
+    Two modes:
+    - Sliding window: call `count_tokens(tokens, fwd_bwd_time)` each step,
+      then read smoothed values via `get_tokens_per_second()` / `get_mfu()`.
+    - Single point: call `get_step_tokens_per_second(tokens, fwd_bwd_time)`
+      / `get_step_mfu(tokens, fwd_bwd_time)` directly each step.
     """
 
-    def __init__(self, model: nn.Module, seq_len: int):
+    def __init__(self, model: nn.Module, seq_len: int, window_size: int = 10):
+        self.window_size = window_size
+        self.tokens: list[int] = []
+        self.fwd_bwd_times: list[float] = []
         self.model = model
 
         self._world = get_world()
@@ -29,11 +37,37 @@ class PerfCounter:
         self.num_params = self._get_num_params(model, exclude_embedding=not model.config.tie_word_embeddings)
         self.num_flop_per_token = self._get_num_flop_per_token(model.config, seq_len=seq_len)
 
-    def get_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
+    def count_tokens(self, tokens: int, fwd_bwd_time: float) -> None:
+        """Record a step for the sliding window."""
+        self.tokens.append(tokens)
+        self.fwd_bwd_times.append(fwd_bwd_time)
+        if len(self.tokens) > self.window_size:
+            self.tokens.pop(0)
+            self.fwd_bwd_times.pop(0)
+
+    def get_tokens_per_second(self) -> float | None:
+        """Sliding-window throughput. None until `count_tokens` has been called."""
+        if not self.tokens:
+            return None
+        total_time = sum(self.fwd_bwd_times)
+        if total_time <= 0:
+            return None
+        return sum(self.tokens) / total_time
+
+    def get_mfu(self) -> float | None:
+        tokens_per_second = self.get_tokens_per_second()
+        if tokens_per_second is None:
+            return None
+        return self._mfu_from_tps(tokens_per_second)
+
+    def get_step_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
+        """Single-step throughput, no smoothing."""
         return tokens / fwd_bwd_time
 
-    def get_mfu(self, tokens: int, fwd_bwd_time: float) -> float:
-        tokens_per_second = self.get_tokens_per_second(tokens, fwd_bwd_time)
+    def get_step_mfu(self, tokens: int, fwd_bwd_time: float) -> float:
+        return self._mfu_from_tps(self.get_step_tokens_per_second(tokens, fwd_bwd_time))
+
+    def _mfu_from_tps(self, tokens_per_second: float) -> float:
         return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world.world_size
 
     def _get_peak_flops(self, device_name: str) -> float:
@@ -216,9 +250,9 @@ class PerfCounter:
 _PERF_COUNTER: PerfCounter | None = None
 
 
-def get_perf_counter(model: nn.Module, seq_len: int) -> PerfCounter:
+def get_perf_counter(model: nn.Module, seq_len: int, window_size: int = 10) -> PerfCounter:
     global _PERF_COUNTER
     if _PERF_COUNTER is None:
-        _PERF_COUNTER = PerfCounter(model, seq_len)
+        _PERF_COUNTER = PerfCounter(model, seq_len, window_size)
 
     return _PERF_COUNTER
