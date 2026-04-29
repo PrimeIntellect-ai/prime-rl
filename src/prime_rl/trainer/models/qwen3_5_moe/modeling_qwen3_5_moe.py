@@ -480,11 +480,19 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
             self._flash_attn_call = torch._dynamo.disable(self.func)
 
     def _compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
-        args = [q, k, v, cu_seqlens, cu_seqlens]
-        if self._flash_attn_version != 4:
-            args.extend([max_seqlen, max_seqlen])
+        """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
         kwargs: dict = {"causal": True}
-        out = self._flash_attn_call(*args, **kwargs)
+        sliding_window = getattr(self, "sliding_window", None)
+        if sliding_window is not None:
+            kwargs["window_size"] = (sliding_window - 1, 0)
+        if self._flash_attn_version == 4:
+            # FA4's flash_attn_varlen_func has qv as the 4th positional arg,
+            # so cu_seqlens must be passed as keyword args to avoid misalignment.
+            kwargs["cu_seqlens_q"] = cu_seqlens
+            kwargs["cu_seqlens_k"] = cu_seqlens
+            out = self._flash_attn_call(q, k, v, **kwargs)
+        else:
+            out = self._flash_attn_call(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
         if isinstance(out, tuple):
             out = out[0]
         return out
