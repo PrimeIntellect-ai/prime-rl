@@ -6,9 +6,10 @@ Coverage:
 * ``TurnRecord.extract_error_hint`` extracts the right line / returns None.
 * ``TurnRecord.fill_from_render`` covers success / failure / timeout.
 * ``TurnRecord.to_timeline_row`` emits the expected flat dict.
-* ``_render_turn_section`` reads response.txt / blender.log into <details>.
-* ``write_trajectory_artifacts`` lays down meta / json / md and uses the
-  per-turn fields correctly (uses a synthetic Rollout, no Blender).
+* ``write_trajectory_artifacts`` lays down meta / json / html and uses the
+  per-turn fields correctly (uses a synthetic Rollout, no Blender). Image
+  files only need to *exist* on disk — HTML refs them by relative path,
+  so a 0-byte ``Path.touch()`` is enough fixture.
 
 Tests deliberately avoid importing the env / rubric, so they run without
 torch / open_clip / verifiers fakes (the existing test suite covers those).
@@ -20,7 +21,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from blendergym.render import RenderResult
 from blendergym.schema import (
     SCHEMA_VERSION,
@@ -30,7 +30,6 @@ from blendergym.schema import (
     require_rollout,
 )
 from blendergym.trajectory_writer import (
-    _render_turn_section,
     completion_to_text,
     write_trajectory_artifacts,
 )
@@ -82,6 +81,15 @@ def _make_rollout(
         turns=list(turns or []),
         final_reward=final_reward,
     )
+
+
+def _seed_inputs(work_dir: Path) -> Path:
+    inputs = work_dir / "inputs"
+    inputs.mkdir(parents=True, exist_ok=True)
+    (inputs / "goal.png").touch()
+    (inputs / "init.png").touch()
+    (inputs / "start.py").write_text("# start.py", encoding="utf-8")
+    return inputs
 
 
 # ---- completion_to_text ----------------------------------------------------
@@ -312,63 +320,18 @@ def test_to_timeline_row_for_xml_parse_failure():
     assert row["error_hint"].startswith("XMLParser")
 
 
-# ---- _render_turn_section --------------------------------------------------
-
-
-def test_render_turn_section_render_failed_includes_response_details(tmp_path):
-    turn_dir = tmp_path / "turn_1"
-    turn_dir.mkdir()
-    (turn_dir / "response.txt").write_text(
-        "I will move the chair...\n<code>fake.code()</code>", encoding="utf-8"
-    )
-    (turn_dir / "code.py").write_text("fake.code()", encoding="utf-8")
-
-    r = TurnRecord.for_turn(1)
-    r.fill_from_render(
-        _make_render_result(
-            success=False,
-            stderr="KeyError: 'plant'\n",
-            duration_s=4.5,
-            returncode=1,
-        )
-    )
-    md = _render_turn_section(tmp_path, r)
-    assert "## Turn 1" in md
-    assert "_No render image produced._" in md
-    assert "KeyError" in md
-    assert "<details><summary>response.txt</summary>" in md
-    assert "<details><summary>code.py</summary>" in md
-    # blender.log doesn't exist on disk so it should not appear in <details>.
-    assert "<details><summary>blender.log</summary>" not in md
-
-
-def test_render_turn_section_success_embeds_render_image(tmp_path):
-    turn_dir = tmp_path / "turn_0"
-    turn_dir.mkdir()
-    (turn_dir / "render1.png").touch()
-
-    r = TurnRecord.for_turn(0)
-    r.fill_from_render(
-        _make_render_result(
-            success=True, image_paths=[turn_dir / "render1.png"], duration_s=2.0
-        )
-    )
-    md = _render_turn_section(tmp_path, r)
-    assert "![](./turn_0/render1.png)" in md
-    assert "_No render image produced._" not in md
-
-
 # ---- write_trajectory_artifacts (integration on synthetic state) ----------
 
 
-def test_write_trajectory_artifacts_emits_three_files(tmp_path):
+def test_write_trajectory_artifacts_emits_meta_json_html(tmp_path):
     work_dir = tmp_path / "placement1__abcd1234"
     work_dir.mkdir()
-    (work_dir / "inputs").mkdir()
+    _seed_inputs(work_dir)
     turn_dir = work_dir / "turn_0"
     turn_dir.mkdir()
     (turn_dir / "render1.png").touch()
     (turn_dir / "response.txt").write_text("I will move...", encoding="utf-8")
+    (turn_dir / "code.py").write_text("import bpy", encoding="utf-8")
 
     record = TurnRecord.for_turn(0)
     record.fill_from_render(
@@ -409,13 +372,32 @@ def test_write_trajectory_artifacts_emits_three_files(tmp_path):
     assert "session_id" not in traj
     assert "agents" not in traj
 
-    md = (work_dir / "trajectory.md").read_text(encoding="utf-8")
-    assert "placement1__abcd1234" in md
-    assert "GOAL" in md
-    assert "INIT" in md
-    assert "Turn 0" in md
-    assert "## Timeline" in md
-    assert "![](./turn_0/render1.png)" in md
+    html_path = work_dir / "trajectory.html"
+    assert html_path.is_file()
+    page = html_path.read_text(encoding="utf-8")
+    assert page.startswith("<!DOCTYPE html>")
+    assert 'name="generator" content="blendergym-trajectory-html-v1"' in page
+    assert "placement1__abcd1234" in page
+    # Relative image refs (no base64 / data URI inlining).
+    assert '<img src="./inputs/goal.png"' in page
+    assert '<img src="./inputs/init.png"' in page
+    assert '<img src="./turn_0/render1.png"' in page
+    assert "data:image/png;base64," not in page
+    # Per-file <details> sections collapse response/code/log.
+    assert "<details><summary>response.txt</summary>" in page
+    assert "<details><summary>code.py</summary>" in page
+    # blender.log doesn't exist, so no entry for it.
+    assert "<details><summary>blender.log</summary>" not in page
+    # Top nav links to sibling artifacts.
+    assert 'href="./meta.json"' in page
+    assert 'href="./trajectory.json"' in page
+    assert 'href="./inputs/start.py"' in page
+    # Timeline table is present.
+    assert "<h2>Timeline</h2>" in page
+    assert "<table>" in page
+
+    # No leftover .tmp files from atomic write.
+    assert not list(work_dir.glob("*.tmp"))
 
 
 def test_write_trajectory_artifacts_handles_missing_work_dir(tmp_path, caplog):
@@ -433,5 +415,159 @@ def test_write_trajectory_artifacts_with_empty_turns(tmp_path):
     meta = json.loads((work_dir / "meta.json").read_text(encoding="utf-8"))
     assert meta["num_turns"] == 0
     assert meta["exit_statuses"] == []
-    md = (work_dir / "trajectory.md").read_text(encoding="utf-8")
-    assert "_No turns recorded._" in md
+    page = (work_dir / "trajectory.html").read_text(encoding="utf-8")
+    assert "_No turns recorded._" in page
+    # No turn images / no per-turn <details>.
+    assert "<details>" not in page
+
+
+def test_write_trajectory_artifacts_render_failed_turn(tmp_path):
+    work_dir = tmp_path / "placement1__failbeef"
+    work_dir.mkdir()
+    _seed_inputs(work_dir)
+    turn_dir = work_dir / "turn_0"
+    turn_dir.mkdir()
+    (turn_dir / "response.txt").write_text("oops", encoding="utf-8")
+    (turn_dir / "code.py").write_text("bad code", encoding="utf-8")
+    (turn_dir / "blender.log").write_text(
+        "AttributeError: missing attr\n", encoding="utf-8"
+    )
+
+    record = TurnRecord.for_turn(0)
+    record.fill_from_render(
+        _make_render_result(
+            success=False,
+            stderr="AttributeError: missing attr\n",
+            duration_s=1.0,
+            returncode=1,
+        )
+    )
+    rollout = _make_rollout(work_dir=work_dir, turns=[record], final_reward=0.0)
+    write_trajectory_artifacts(rollout)
+
+    page = (work_dir / "trajectory.html").read_text(encoding="utf-8")
+    assert "_No render image produced._" in page
+    # No <img src="./turn_0/render1.png"> for the failed turn.
+    assert '<img src="./turn_0/render1.png"' not in page
+    # Error hint surfaced as a pill.
+    assert 'class="pill error"' in page
+    assert "AttributeError" in page
+    # Log file is rendered as <details>.
+    assert "<details><summary>blender.log</summary>" in page
+
+
+def test_write_trajectory_artifacts_escapes_user_content(tmp_path):
+    work_dir = tmp_path / "placement1__escbeef"
+    work_dir.mkdir()
+    _seed_inputs(work_dir)
+    turn_dir = work_dir / "turn_0"
+    turn_dir.mkdir()
+    (turn_dir / "render1.png").touch()
+    payload = "before</pre><script>alert(1)</script>after"
+    (turn_dir / "response.txt").write_text(payload, encoding="utf-8")
+    (turn_dir / "code.py").write_text(
+        "x = '<script>alert(2)</script>'", encoding="utf-8"
+    )
+
+    record = TurnRecord.for_turn(0)
+    record.fill_from_render(
+        _make_render_result(
+            success=True, image_paths=[turn_dir / "render1.png"], duration_s=1.0
+        )
+    )
+    record.error_hint = "Error <bad>"
+    rollout = _make_rollout(work_dir=work_dir, turns=[record])
+    write_trajectory_artifacts(rollout)
+
+    page = (work_dir / "trajectory.html").read_text(encoding="utf-8")
+    # User content escaped — no raw <script> tag injected anywhere in body.
+    assert "<script>alert(1)</script>" not in page
+    assert "<script>alert(2)</script>" not in page
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+    assert "&lt;script&gt;alert(2)&lt;/script&gt;" in page
+    # The naive `</pre>` injection that would close our <pre> early is escaped.
+    assert "before&lt;/pre&gt;" in page
+
+
+def test_write_trajectory_artifacts_truncates_large_log(tmp_path):
+    work_dir = tmp_path / "placement1__bigbeef"
+    work_dir.mkdir()
+    _seed_inputs(work_dir)
+    turn_dir = work_dir / "turn_0"
+    turn_dir.mkdir()
+    (turn_dir / "render1.png").touch()
+    (turn_dir / "response.txt").write_text("ok", encoding="utf-8")
+    (turn_dir / "code.py").write_text("ok", encoding="utf-8")
+    huge = ("X" * 1000 + "\n") * 200  # ~200 KB
+    (turn_dir / "blender.log").write_text(huge, encoding="utf-8")
+
+    record = TurnRecord.for_turn(0)
+    record.fill_from_render(
+        _make_render_result(
+            success=True, image_paths=[turn_dir / "render1.png"], duration_s=1.0
+        )
+    )
+    rollout = _make_rollout(work_dir=work_dir, turns=[record])
+    write_trajectory_artifacts(rollout)
+
+    page = (work_dir / "trajectory.html").read_text(encoding="utf-8")
+    assert "truncated, showing last" in page
+    # Cap is 80_000 chars + 60-char prefix + boilerplate; should never embed
+    # the whole 200 KB log.
+    assert len(page) < 200_000
+
+
+def test_write_trajectory_artifacts_removes_old_markdown(tmp_path):
+    work_dir = tmp_path / "placement1__legacybeef"
+    work_dir.mkdir()
+    _seed_inputs(work_dir)
+    (work_dir / "trajectory.md").write_text("legacy markdown", encoding="utf-8")
+
+    rollout = _make_rollout(work_dir=work_dir)
+    write_trajectory_artifacts(rollout)
+
+    assert not (work_dir / "trajectory.md").exists()
+    assert (work_dir / "trajectory.html").is_file()
+
+
+def test_write_trajectory_artifacts_xml_parse_failure_renders_dash_not_none(tmp_path):
+    """XML-parse-failure leaves duration_s/render_path as None; HTML must show '-'."""
+    work_dir = tmp_path / "placement1__xmlbeef"
+    work_dir.mkdir()
+    _seed_inputs(work_dir)
+    turn_dir = work_dir / "turn_0"
+    turn_dir.mkdir()
+    (turn_dir / "response.txt").write_text("no <code> block here", encoding="utf-8")
+
+    record = TurnRecord.for_turn(0)
+    record.fill_xml_parse_failure()
+    rollout = _make_rollout(work_dir=work_dir, turns=[record], final_reward=0.0)
+    write_trajectory_artifacts(rollout)
+
+    page = (work_dir / "trajectory.html").read_text(encoding="utf-8")
+    assert "duration_s:</strong> None" not in page
+    assert "duration_s:</strong> -" in page
+
+
+def test_completion_to_text_handles_pydantic_assistant_message():
+    """verifiers runtime wraps the assistant response in a Pydantic AssistantMessage,
+    not a dict — completion_to_text must extract .content via attribute access too."""
+    import verifiers as vf  # noqa: F401  -- imported only to make the model class available
+    from verifiers.types import AssistantMessage, TextContentPart
+
+    msg_str_content = AssistantMessage(content="plain text reply with <code>...</code>")
+    assert completion_to_text([msg_str_content]) == (
+        "plain text reply with <code>...</code>"
+    )
+
+    msg_list_content = AssistantMessage(
+        content=[
+            TextContentPart(text="part one"),
+            TextContentPart(text="part two"),
+        ]
+    )
+    assert completion_to_text([msg_list_content]) == "part one\npart two"
+
+    # AssistantMessage with content=None (e.g. tool-only response) should yield "".
+    msg_none = AssistantMessage(content=None)
+    assert completion_to_text([msg_none]) == ""
