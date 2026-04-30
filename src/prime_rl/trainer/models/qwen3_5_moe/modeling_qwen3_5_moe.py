@@ -59,6 +59,11 @@ except ImportError:
     FLACPContext = None  # type: ignore
     build_cp_context = None  # type: ignore
 
+try:
+    from flash_qla import chunk_gated_delta_rule as flash_qla_chunk_gated_delta_rule
+except ImportError:
+    flash_qla_chunk_gated_delta_rule = None  # type: ignore
+
 logger = logging.get_logger(__name__)
 
 
@@ -310,7 +315,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        # Use fla's native CP when available, otherwise fall back to PyTorch kernel
+        # Use fla's native CP when available; otherwise prefer FlashQLA, then fla/torch.
         cp_context = self._build_cp_context(seq_len, hidden_states.device)
         if cp_context is not None:
             cu_seqlens = cp_context.cu_seqlens
@@ -323,6 +328,18 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
                 use_qk_l2norm_in_kernel=True,
                 cu_seqlens=cu_seqlens,
                 cp_context=cp_context,
+            )
+        elif flash_qla_chunk_gated_delta_rule is not None:
+            # FlashQLA has no fused l2norm and no scale inference; apply both here.
+            core_attn_out, _ = flash_qla_chunk_gated_delta_rule(
+                q=l2norm(query),
+                k=l2norm(key),
+                v=value,
+                g=g,
+                beta=beta,
+                scale=self.head_k_dim**-0.5,
+                cu_seqlens=cu_seqlens,
+                output_final_state=False,
             )
         else:
             core_attn_out, _ = self._chunk_gated_delta_rule(
