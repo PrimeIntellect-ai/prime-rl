@@ -36,6 +36,7 @@ def sparse_mla_fwd(
     block_I=64,
     num_stages=2,
     threads=256,
+    skip_invalid_blocks=False,
 ):
     assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
     assert tail_dim == tilelang.math.next_power_of_2(tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
@@ -131,46 +132,47 @@ def sparse_mla_fwd(
             T.copy(Q[b_i, s_i, H0:H1, D:], Q_tail_shared)
 
             for i_i in T.Pipelined(NI, num_stages=num_stages):
-                for bi_i in T.Parallel(BI):
-                    mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] <= max_kv_i
+                if (not skip_invalid_blocks) or (Indices[b_i, s_i, g_i, i_i * BI] <= max_kv_i):
+                    for bi_i in T.Parallel(BI):
+                        mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] <= max_kv_i
 
-                for bi_i, d_i in T.Parallel(BI, D):
-                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]
-                for bi_i, d_i in T.Parallel(BI, D_tail):
-                    K_tail_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, D + d_i]
+                    for bi_i, d_i in T.Parallel(BI, D):
+                        KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]
+                    for bi_i, d_i in T.Parallel(BI, D_tail):
+                        K_tail_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, D + d_i]
 
-                for h_i, bi_i in T.Parallel(H_per_block, BI):
-                    acc_s[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_s.dtype))
-                T.gemm(
-                    Q_shared,
-                    KV_shared,
-                    acc_s,
-                    transpose_B=True,
-                    policy=T.GemmWarpPolicy.FullRow,
-                )
-                T.gemm(
-                    Q_tail_shared,
-                    K_tail_shared,
-                    acc_s,
-                    transpose_B=True,
-                    policy=T.GemmWarpPolicy.FullRow,
-                )
-                T.copy(m_i, m_i_prev)
-                T.reduce_max(acc_s, m_i, dim=1, clear=False)
-                for h_i in T.Parallel(H_per_block):
-                    m_i[h_i] = T.max(m_i[h_i], m_i_prev[h_i])
-                for h_i in T.Parallel(H_per_block):
-                    alpha[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
-                for h_i, bi_i in T.Parallel(H_per_block, BI):
-                    acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
-                T.reduce_sum(acc_s, sumexp_i, dim=1)
-                for h_i in T.Parallel(H_per_block):
-                    sumexp[h_i] = sumexp[h_i] * alpha[h_i] + sumexp_i[h_i]
-                for h_i, d_i in T.Parallel(H_per_block, D):
-                    acc_o[h_i, d_i] = acc_o[h_i, d_i] * alpha[h_i]
+                    for h_i, bi_i in T.Parallel(H_per_block, BI):
+                        acc_s[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_s.dtype))
+                    T.gemm(
+                        Q_shared,
+                        KV_shared,
+                        acc_s,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullRow,
+                    )
+                    T.gemm(
+                        Q_tail_shared,
+                        K_tail_shared,
+                        acc_s,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullRow,
+                    )
+                    T.copy(m_i, m_i_prev)
+                    T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                    for h_i in T.Parallel(H_per_block):
+                        m_i[h_i] = T.max(m_i[h_i], m_i_prev[h_i])
+                    for h_i in T.Parallel(H_per_block):
+                        alpha[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
+                    for h_i, bi_i in T.Parallel(H_per_block, BI):
+                        acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
+                    T.reduce_sum(acc_s, sumexp_i, dim=1)
+                    for h_i in T.Parallel(H_per_block):
+                        sumexp[h_i] = sumexp[h_i] * alpha[h_i] + sumexp_i[h_i]
+                    for h_i, d_i in T.Parallel(H_per_block, D):
+                        acc_o[h_i, d_i] = acc_o[h_i, d_i] * alpha[h_i]
 
-                T.copy(acc_s, S_shared)
-                T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    T.copy(acc_s, S_shared)
+                    T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
             for h_i, d_i in T.Parallel(H_per_block, D):
                 acc_o[h_i, d_i] /= sumexp[h_i]
@@ -183,7 +185,17 @@ def sparse_mla_fwd(
     return main
 
 
-def sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, d_v=512, block_I=64, num_stages=2, threads=256):
+def sparse_mla_fwd_interface(
+    q,
+    kv,
+    indices,
+    sm_scale=None,
+    d_v=512,
+    block_I=64,
+    num_stages=2,
+    threads=256,
+    skip_invalid_blocks=False,
+):
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
     batch, seq_len, heads, dim_plus_tail_dim = q.shape
     _, seq_len_kv, kv_group, _ = kv.shape
@@ -207,6 +219,7 @@ def sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, d_v=512, block_I=64,
         block_I=block_I,
         num_stages=num_stages,
         threads=threads,
+        skip_invalid_blocks=skip_invalid_blocks,
     )
     out, lse = kernel(q, kv, indices)
     return out, lse
