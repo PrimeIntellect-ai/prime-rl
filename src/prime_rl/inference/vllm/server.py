@@ -21,6 +21,7 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.inference.vllm.serving_generate import GenerateRequest
 from prime_rl.utils.logger import get_logger
 
 MODEL_TOOL_CALL_PARSER: dict[str, str] = {
@@ -180,8 +181,60 @@ WORKER_EXTENSION_CLS = {
 }
 
 
+def generate_handler(request: Request):
+    return request.app.state.openai_serving_generate
+
+
 def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
     return request.app.state.openai_serving_chat_with_tokens
+
+
+@router.post(
+    "/v1/generate",
+    dependencies=[Depends(validate_json_request)],
+    responses={
+        HTTPStatus.OK.value: {"content": {"application/json": {}}},
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.NOT_FOUND.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+@with_cancellation
+@load_aware_call
+async def _generate(request: GenerateRequest, raw_request: Request):
+    handler = generate_handler(raw_request)
+    if handler is None:
+        return JSONResponse({"error": "generate endpoint not available"}, status_code=503)
+    result = await handler.generate(request, raw_request)
+    if isinstance(result, dict) and "error" in result:
+        return JSONResponse(result, status_code=500)
+    return JSONResponse(content=result.model_dump())
+
+
+@router.post(
+    "/v1/chat/completions/tokens",
+    dependencies=[Depends(validate_json_request)],
+    responses={
+        HTTPStatus.OK.value: {"content": {"text/event-stream": {}}},
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.NOT_FOUND.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+@with_cancellation
+@load_aware_call
+async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_request: Request):
+    handler = chat_with_tokens(raw_request)
+    if handler is None:
+        return base(raw_request).create_error_response(message="The model does not support Chat Completions API")
+    generator = await handler.create_chat_completion_with_tokens(request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
+
+    elif isinstance(generator, ChatCompletionResponse):
+        return JSONResponse(content=generator.model_dump())
+
+    return StreamingResponse(content=generator, media_type="text/event-stream")
 
 
 @router.post("/pause")
@@ -242,32 +295,6 @@ async def init_broadcaster(request: Request):
     return {"status": "ok"}
 
 
-@router.post(
-    "/v1/chat/completions/tokens",
-    dependencies=[Depends(validate_json_request)],
-    responses={
-        HTTPStatus.OK.value: {"content": {"text/event-stream": {}}},
-        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
-        HTTPStatus.NOT_FOUND.value: {"model": ErrorResponse},
-        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
-    },
-)
-@with_cancellation
-@load_aware_call
-async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_request: Request):
-    handler = chat_with_tokens(raw_request)
-    if handler is None:
-        return base(raw_request).create_error_response(message="The model does not support Chat Completions API")
-    generator = await handler.create_chat_completion_with_tokens(request, raw_request)
-    if isinstance(generator, ErrorResponse):
-        return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
-
-    elif isinstance(generator, ChatCompletionResponse):
-        return JSONResponse(content=generator.model_dump())
-
-    return StreamingResponse(content=generator, media_type="text/event-stream")
-
-
 async def custom_init_app_state(
     engine_client: EngineClient,
     state: State,
@@ -277,10 +304,16 @@ async def custom_init_app_state(
     """
     Modifies init_app_state:
     1. Call the original init_app_state to set up standard state.
-    2. Replace the serving_chat with our OpenAIServingChatWithTokens wrapper.
+    2. Replace ``serving_chat`` with our ``OpenAIServingChatWithTokens`` wrapper
+       so the ``/v1/chat/completions/tokens`` (TITO) endpoint can stream
+       token IDs alongside the rendered chat completion.
+    3. Add ``/v1/generate`` endpoint for renderer-based token-level inference.
     """
     await init_app_state(engine_client, state, args, supported_tasks)
 
+    state.reset_prefix_cache_after_update = getattr(args, "reset_prefix_cache_after_update", True)
+
+    # TITO: server-side chat templating + token IDs.
     if "generate" in supported_tasks and state.openai_serving_chat is not None:
         original_chat = state.openai_serving_chat
         serving_chat = object.__new__(OpenAIServingChatWithTokens)
@@ -289,6 +322,12 @@ async def custom_init_app_state(
         state.openai_serving_chat_with_tokens = serving_chat
     else:
         state.openai_serving_chat_with_tokens = None
+
+    # /v1/generate endpoint — tokens + optional images, no chat template
+    from prime_rl.inference.vllm.serving_generate import OpenAIServingGenerate
+
+    chat_handler = state.openai_serving_chat if "generate" in supported_tasks else None
+    state.openai_serving_generate = OpenAIServingGenerate(engine_client, chat_handler=chat_handler)
 
 
 import vllm.entrypoints.openai.api_server

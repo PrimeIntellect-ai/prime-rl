@@ -31,6 +31,7 @@ monkey_patch_chat_completion_logprobs()
 
 import pandas as pd
 import verifiers as vf
+from renderers.base import create_renderer
 from transformers import AutoProcessor
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -118,14 +119,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup rollout inference pool (handles both static and elastic modes)
     rollout_client_config, rollout_model_name, enable_policy_updates = setup_external_rollout_model(config, logger)
 
-    train_client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
-    inference_pool = await setup_inference_pool(
-        rollout_client_config,
-        model_name=rollout_model_name,
-        train_client_type=train_client_type,
-        eval_client_type="openai_chat_completions",
-    )
-
     # Setup teacher inference pool if configured
     if config.teacher_model:
         logger.info(
@@ -153,6 +146,14 @@ async def orchestrate(config: OrchestratorConfig):
         processor = AutoProcessor.from_pretrained(
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
         )
+
+    renderer, inference_pool = await setup_rollout_inference_pool(
+        config=config,
+        rollout_client_config=rollout_client_config,
+        rollout_model_name=rollout_model_name,
+        tokenizer=tokenizer,
+        logger=logger,
+    )
 
     # Setup monitor (may register the run and set RUN_ID in the environment)
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -480,33 +481,53 @@ async def orchestrate(config: OrchestratorConfig):
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # Pretokenize before VLM image cache build (which strips image data from messages)
-        for rollout in train_rollouts:
-            pretokenize_rollout_trajectory(rollout, tokenizer, processor=processor)
+        # Stage 1: pretokenize + (for VLM) build image cache concurrently.
+        # Pretokenize is a no-op when the renderer client already populated
+        # `tokens` on each trajectory step, but the fallback-tokenizer path
+        # and image-cache build are both CPU-heavy. Running them on threads
+        # and awaiting a single gather lets whichever finishes first free
+        # the event loop immediately and, with max_async_level >= 2, overlaps
+        # this whole stage with inference for the next batch.
+        async def _pretokenize_all() -> None:
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        pretokenize_rollout_trajectory,
+                        rollout,
+                        tokenizer,
+                        processor=processor,
+                        renderer=renderer,
+                    )
+                    for rollout in train_rollouts
+                )
+            )
 
-        # VLM: build image cache in a thread so it doesn't block the event loop.
-        # This lets the scheduler continue servicing inflight rollout requests
-        # and — with max_async_level >= 2 — overlap with the next batch's inference.
         if is_vlm:
-            vlm_cache = await asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor)
             mm_token_type_ids_mapping = {}
             if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
                 mm_token_type_ids_mapping[processor.image_token_id] = 1
             if hasattr(processor, "video_token_id") and processor.video_token_id is not None:
                 mm_token_type_ids_mapping[processor.video_token_id] = 2
-
+            _, vlm_cache = await asyncio.gather(
+                _pretokenize_all(),
+                asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor),
+            )
             logger.info(
                 f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
                 f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
             )
         else:
+            await _pretokenize_all()
             vlm_cache = None
             mm_token_type_ids_mapping = None
 
         # Process rollouts in parallel
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
             return interleave_rollout(
-                rollout, vlm_cache=vlm_cache, cache_key=rollout_idx, mm_token_type_ids_mapping=mm_token_type_ids_mapping
+                rollout,
+                vlm_cache=vlm_cache,
+                cache_key=rollout_idx,
+                mm_token_type_ids_mapping=mm_token_type_ids_mapping,
             )
 
         results = await asyncio.gather(
@@ -862,6 +883,75 @@ def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
     set_proc_title("Orchestrator")
     asyncio.run(orchestrate(cli(OrchestratorConfig)))
+
+
+async def setup_rollout_inference_pool(
+    *,
+    config: OrchestratorConfig,
+    rollout_client_config,
+    rollout_model_name: str,
+    tokenizer,
+    logger,
+):
+    """Set up rollout inference.
+
+    Routing policy is driven by ``config.use_token_client`` and
+    ``config.use_renderer`` (mutually exclusive — config-level validators
+    block both being True):
+
+      - external teacher rollout → MITO (``openai_chat_completions``),
+        forced regardless of the toggles (config-level validator
+        rejects ``use_token_client`` / ``use_renderer`` in that case)
+      - ``use_renderer=True``  → renderer client (``/v1/generate``).
+        Not allowed for VLMs (validated at config time).
+      - ``use_token_client=True`` → TITO
+        (``openai_chat_completions_token``, ``/v1/chat/completions/tokens``).
+        Default. VLMs land here too.
+      - both False → MITO (``openai_chat_completions``).
+    """
+    if config.teacher_rollout_model is not None:
+        logger.info("Using external rollout model (MITO) without renderer client")
+        inference_pool = await setup_inference_pool(
+            rollout_client_config,
+            model_name=rollout_model_name,
+            train_client_type="openai_chat_completions",
+            eval_client_type="openai_chat_completions",
+        )
+        return None, inference_pool
+
+    if config.use_renderer:
+        renderer = create_renderer(
+            tokenizer,
+            renderer=config.renderer.name,
+            tool_parser=config.renderer.tool_parser,
+            reasoning_parser=config.renderer.reasoning_parser,
+        )
+        logger.info(f"Initialized {type(renderer).__name__} for {config.model.name}")
+        inference_pool = await setup_inference_pool(
+            rollout_client_config,
+            model_name=rollout_model_name,
+            train_client_type="renderer",
+            eval_client_type="openai_chat_completions",
+            renderer_name=config.renderer.name,
+            tool_parser=config.renderer.tool_parser,
+            reasoning_parser=config.renderer.reasoning_parser,
+            renderer_pool_size=config.renderer.pool_size,
+        )
+        logger.info("Using direct renderer rollout client")
+        return renderer, inference_pool
+
+    train_client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
+    if config.use_token_client:
+        logger.info("Using token client (TITO) for rollouts — server-side templating, /v1/chat/completions/tokens")
+    else:
+        logger.info("Using MITO (openai_chat_completions) for rollouts")
+    inference_pool = await setup_inference_pool(
+        rollout_client_config,
+        model_name=rollout_model_name,
+        train_client_type=train_client_type,
+        eval_client_type="openai_chat_completions",
+    )
+    return None, inference_pool
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from prime_rl.configs.shared import (
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
+    RendererConfig,
     TransportConfig,
     WandbWithExtrasConfig,
 )
@@ -870,6 +871,9 @@ class OrchestratorConfig(BaseConfig):
     # The tokenizer configuration
     tokenizer: TokenizerConfig = TokenizerConfig()
 
+    # The renderer configuration (only used when use_renderer=True)
+    renderer: RendererConfig = RendererConfig()
+
     # The optimizer configuration (per-run LR for multi-run training)
     optim: OptimizerConfig = OptimizerConfig()
 
@@ -1057,9 +1061,23 @@ class OrchestratorConfig(BaseConfig):
     use_token_client: Annotated[
         bool,
         Field(
-            description="Whether to use the token-in-token-out (TITO) client for training across all environments. WARNING: Only use this if your environment has a linear history and the chat template has the extension property (i.e. no tokens are ever removed or inserted by the chat template)"
+            description="Whether to use the token-in-token-out (TITO) client for training across all environments. "
+            "WARNING: Only use this if your environment has a linear history and the chat template has the extension "
+            "property (i.e. no tokens are ever removed or inserted by the chat template). Mutually exclusive with "
+            "``use_renderer``."
         ),
     ] = True
+
+    use_renderer: Annotated[
+        bool,
+        Field(
+            description="Whether to use the renderer client (client-side tokenization via the ``renderers`` package, "
+            "served by ``/v1/generate``). Mutually exclusive with ``use_token_client``. When True, the "
+            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) "
+            "applies; when False those fields must be left at their defaults. Not supported for VLMs — "
+            "VLMs must use the token client (TITO) so image preprocessing and chat templating stay server-side."
+        ),
+    ] = False
 
     env_install_prerelease: Annotated[
         bool,
@@ -1129,6 +1147,69 @@ class OrchestratorConfig(BaseConfig):
         if has_teacher and self.use_token_client:
             raise ValueError(
                 "orchestrator.use_token_client must be false when orchestrator.teacher_rollout_model is configured."
+            )
+        if has_teacher and self.use_renderer:
+            raise ValueError(
+                "orchestrator.use_renderer must be false when orchestrator.teacher_rollout_model is configured "
+                "(external rollout uses MITO)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_client_mode(self):
+        """The two client toggles select among three exclusive modes:
+
+        - ``use_token_client=True``  + ``use_renderer=False`` → TITO  (default)
+        - ``use_token_client=False`` + ``use_renderer=True``  → renderer
+        - ``use_token_client=False`` + ``use_renderer=False`` → MITO
+
+        Both True is invalid: TITO and renderer are different wire protocols
+        (server-side templating vs client-side tokenization).
+        """
+        if self.use_token_client and self.use_renderer:
+            raise ValueError(
+                "orchestrator.use_token_client and orchestrator.use_renderer are mutually exclusive. "
+                "Pick one: token client (TITO, server-side templating) or renderer client (client-side "
+                "tokenization)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_renderer_vs_vlm(self):
+        """The renderer client takes plain message dicts and tokenizes
+        them client-side. VLMs need server-side image preprocessing and
+        chat templating, so they must use the token client (TITO) — fail
+        loudly when both are set."""
+        if self.use_renderer and self.model.vlm is not None:
+            raise ValueError(
+                "orchestrator.use_renderer is not supported for VLMs. Use the token client "
+                "(``use_token_client=true``, the default) so image preprocessing and chat "
+                "templating stay on the inference server."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_renderer_args(self):
+        """``[orchestrator.renderer]`` knobs are only meaningful when
+        ``use_renderer=True``. Reject otherwise so callers don't silently
+        pass them and wonder why they're ignored."""
+        if self.use_renderer:
+            return self
+
+        renderer_args_set = []
+        if self.renderer.name != "auto":
+            renderer_args_set.append(f"renderer.name={self.renderer.name!r}")
+        if self.renderer.tool_parser is not None:
+            renderer_args_set.append(f"renderer.tool_parser={self.renderer.tool_parser!r}")
+        if self.renderer.reasoning_parser is not None:
+            renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
+        if self.renderer.pool_size is not None:
+            renderer_args_set.append(f"renderer.pool_size={self.renderer.pool_size!r}")
+
+        if renderer_args_set:
+            raise ValueError(
+                "Renderer-specific args set without orchestrator.use_renderer=True: "
+                f"{', '.join(renderer_args_set)}. Either enable the renderer client or remove these knobs."
             )
         return self
 

@@ -132,6 +132,61 @@ class BaseModelConfig(BaseConfig):
     ] = None
 
 
+class RendererConfig(BaseConfig):
+    """Configures the client-side renderer (chat-template + response parsing).
+
+    Only consumed when ``orchestrator.use_renderer = true``. The renderer
+    owns both directions: render messages → token ids on the client, and
+    parse model output tokens → structured ``content`` / ``reasoning_content``
+    / ``tool_calls``.
+    """
+
+    name: Annotated[
+        str,
+        Field(
+            description=(
+                "Renderer to use for chat template tokenization. "
+                "Options: 'auto' (detect from tokenizer), 'qwen3', 'qwen3_vl', "
+                "'qwen3.5', 'glm5', 'glm4.5', 'minimax-m2', 'deepseek_v3', "
+                "'kimi_k2', 'kimi_k25', 'nemotron3', 'gpt_oss', 'default'."
+            ),
+        ),
+    ] = "auto"
+
+    tool_parser: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Name of a tool parser in renderers.parsers. Only consumed by "
+                "DefaultRenderer (model-specific renderers bake their own parsing "
+                "in). Options today: 'qwen3', 'qwen3.5', 'glm', 'deepseek_v3'."
+            ),
+        ),
+    ] = None
+
+    reasoning_parser: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Name of a reasoning parser in renderers.parsers. Only consumed "
+                "by DefaultRenderer. Options today: 'think'."
+            ),
+        ),
+    ] = None
+
+    pool_size: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description=(
+                "Number of renderer slots shared across concurrent rollouts. "
+                "None keeps the verifiers default (1). Bump for long multi-turn "
+                "prompts where client-side jinja tokenization serializes."
+            ),
+        ),
+    ] = None
+
+
 class ElasticConfig(BaseConfig):
     """Configures elastic inference pool with DNS-based service discovery.
 

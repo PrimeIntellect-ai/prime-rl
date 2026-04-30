@@ -1096,6 +1096,24 @@ def setup_model(
     return model
 
 
+def _get_qwen3_vl_mm_token_type_ids(model: nn.Module, input_ids: Tensor) -> Tensor | None:
+    config = getattr(model, "config", None)
+    if getattr(config, "model_type", None) != "qwen3_vl":
+        return None
+
+    mm_token_type_ids = torch.zeros_like(input_ids)
+
+    image_token_id = getattr(config, "image_token_id", None)
+    if image_token_id is not None:
+        mm_token_type_ids = mm_token_type_ids.masked_fill(input_ids == image_token_id, 1)
+
+    video_token_id = getattr(config, "video_token_id", None)
+    if video_token_id is not None:
+        mm_token_type_ids = mm_token_type_ids.masked_fill(input_ids == video_token_id, 2)
+
+    return mm_token_type_ids
+
+
 @jaxtyped(typechecker=typechecker)
 def forward(
     model: nn.Module,
@@ -1122,7 +1140,9 @@ def forward(
         assert image_grid_thw is not None, "pixel_values requires image_grid_thw for MRoPE computation"
         kwargs["pixel_values"] = pixel_values
         kwargs["image_grid_thw"] = image_grid_thw
-        kwargs["mm_token_type_ids"] = mm_token_type_ids
+        mm_token_type_ids = _get_qwen3_vl_mm_token_type_ids(model, input_ids)
+        if mm_token_type_ids is not None:
+            kwargs["mm_token_type_ids"] = mm_token_type_ids
     else:
         kwargs["position_ids"] = position_ids
 
