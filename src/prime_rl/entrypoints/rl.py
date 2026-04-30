@@ -441,6 +441,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_tp=config.inference.parallel.tp,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
             use_deep_gemm=config.inference.use_deep_gemm,
+            torch_profiler_dir=config.inference.torch_profiler_dir,
             prefill_env_overrides=infer_deploy.prefill_env_overrides,
             decode_env_overrides=infer_deploy.decode_env_overrides,
             dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,

@@ -388,6 +388,18 @@ class InferenceConfig(BaseConfig):
         ),
     ] = False
 
+    torch_profiler_dir: Annotated[
+        str | None,
+        Field(
+            description=(
+                "If set, pass --profiler-config '{\"profiler\": \"torch\", "
+                "\"torch_profiler_dir\": <this>}' to vLLM so each worker wires the torch profiler. "
+                "Capture traces at runtime by POST-ing to the inference server's /start_profile and "
+                "/stop_profile endpoints. See https://docs.vllm.ai/en/stable/contributing/profiling/."
+            ),
+        ),
+    ] = None
+
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )

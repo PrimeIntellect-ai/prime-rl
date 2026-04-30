@@ -134,6 +134,12 @@ srun bash -c '
 {%- if use_deep_gemm %}
     export VLLM_USE_DEEP_GEMM=1
 {%- endif %}
+{%- if torch_profiler_dir %}
+    # Torch profiler enabled via --profiler-config on vLLM. Ensure the dump
+    # dir exists on every inference node. Trigger captures at runtime via
+    # POST /start_profile and /stop_profile on the inference server.
+    mkdir -p "{{ torch_profiler_dir }}"
+{%- endif %}
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     export GLOO_SOCKET_IFNAME=bond0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
@@ -207,6 +213,10 @@ srun bash -c '
             VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $DECODE_KV_CFG, $ROLE_EXTRA}"
         fi
     fi
+
+    # Consumed by prime_rl.inference.vllm.server when torch_profiler_dir is set:
+    # appends "-prefill" / "-decode" so the two roles dump into separate dirs.
+    export PRIME_RL_TORCH_PROFILER_ROLE_SUFFIX="-$ROLE"
 
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK EP=$EP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log

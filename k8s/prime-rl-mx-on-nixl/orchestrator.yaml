@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prime-rl-mx-on-nixl-orchestrator
+  namespace: kavin
+  labels:
+    app: prime-rl-mx-on-nixl-orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prime-rl-mx-on-nixl-orchestrator
+  template:
+    metadata:
+      labels:
+        app: prime-rl-mx-on-nixl-orchestrator
+    spec:
+      containers:
+      - name: orchestrator
+        image: nvcr.io/nvidian/dynamo-dev/prime-rl-mx-on-nixl:v0.1
+        imagePullPolicy: Always
+        command:
+        - /bin/bash
+        - /config/run_orchestrator.sh
+        resources:
+          requests:
+            memory: 4Gi
+            cpu: '2'
+          limits:
+            memory: 8Gi
+            cpu: '4'
+        env:
+        - name: HF_HOME
+          value: /models/hf_home
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: token
+              optional: true
+        volumeMounts:
+        - name: shared-model-cache
+          mountPath: /models
+        - name: config
+          mountPath: /config
+        - name: output
+          mountPath: /output
+      volumes:
+      - name: shared-model-cache
+        persistentVolumeClaim:
+          claimName: shared-model-cache
+      - name: config
+        configMap:
+          name: prime-rl-mx-on-nixl-config
+          defaultMode: 493
+      - name: output
+        persistentVolumeClaim:
+          claimName: prime-rl-mx-run-output
+      imagePullSecrets:
+      - name: nvcr-imagepullsecret
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: cloud.google.com/gke-nodepool
+                operator: In
+                values:
+                - customer-gpu-o7v
+                - customer-gpu-mh2
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      - key: dedicated
+        operator: Equal
+        value: user-workload
+        effect: NoSchedule
+      - key: dedicated
+        operator: Equal
+        value: user-workload
+        effect: NoExecute
+      - key: kubernetes.io/arch
+        operator: Exists
+        effect: NoSchedule
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch

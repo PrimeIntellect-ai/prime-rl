@@ -61,6 +61,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             router_policy=config.deployment.router_policy,
             data_parallel_rpc_port=config.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
+            torch_profiler_dir=config.torch_profiler_dir,
             prefill_env_overrides=config.deployment.prefill_env_overrides,
             decode_env_overrides=config.deployment.decode_env_overrides,
             kv_offload=config.deployment.kv_cache_offload is not None,

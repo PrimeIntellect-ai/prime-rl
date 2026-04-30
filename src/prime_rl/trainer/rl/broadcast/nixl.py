@@ -30,6 +30,10 @@ from prime_rl.trainer.rl.broadcast.transport_plan import TransportPlan
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.mx_rendezvous import (
+    discover_spg_coordinator,
+    mx_rendezvous_enabled,
+)
 from prime_rl.utils.nixl_transfer import NixlAgentWrapper, make_agent_name
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
@@ -76,9 +80,31 @@ class NIXLWeightBroadcast(WeightBroadcast):
         # Non-primary replicas are absent from the SPG entirely.
         trainer_ws_per_replica = parallel_dims.dp_shard * parallel_dims.cp
         spg_rank = parallel_dims.get_mesh("dp_shard_cp").get_local_rank() if dist.is_initialized() else 0
+
+        # ModelExpress overlay: when PRIME_RL_MX_RENDEZVOUS is set, discover
+        # the SPG coordinator host/port via MX Server instead of using the
+        # hard-coded config values. Default (unset) preserves the exact
+        # upstream PI behavior.
+        if mx_rendezvous_enabled():
+            endpoint = discover_spg_coordinator(
+                role="trainer",
+                rank=spg_rank,
+                expected_trainer_ws=trainer_ws_per_replica,
+                expected_inference_ws=config.inference_world_size,
+                fallback_host=config.host,
+                fallback_port=config.port,
+            )
+            spg_host, spg_port = endpoint.host, endpoint.port
+            self.logger.info(
+                f"[mx-rendezvous] trainer rank={spg_rank} using discovered "
+                f"SPG coordinator {spg_host}:{spg_port} (source_id={endpoint.source_id})"
+            )
+        else:
+            spg_host, spg_port = config.host, config.port
+
         self._spg = StatelessProcessGroup.create(
-            host=config.host,
-            port=config.port,
+            host=spg_host,
+            port=spg_port,
             rank=spg_rank,
             world_size=trainer_ws_per_replica + config.inference_world_size,
             store_timeout=config.timeout,

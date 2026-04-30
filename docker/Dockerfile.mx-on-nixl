@@ -1,0 +1,234 @@
+# Overlay image: PI's prime-rl @ nixl-weight-transfer + UCX/NIXL from source
+# + MX client (for rendezvous/pipeline-replication overlay, scenarios B+).
+#
+# Extends PI's Dockerfile.cuda. Build from the prime-rl repo root so both
+# Dockerfiles see the same build context.
+#
+# Usage (ARM64 / GB200):
+#   docker buildx build --platform linux/arm64 \
+#     -f docker/Dockerfile.mx-on-nixl \
+#     -t nvcr.io/nvidian/dynamo-dev/prime-rl-mx-on-nixl:v0.1 \
+#     --push .
+#
+# Scenario A (pure PI) uses this image with NIXL enabled in the config but
+# no MX env-vars set. Scenarios B/C layer MX Server rendezvous + pipeline
+# replication by setting PRIME_RL_MX_RENDEZVOUS=1 at runtime.
+
+#####################################################################
+# Stage 1: PI's builder (unchanged — we don't touch their layer)
+#####################################################################
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS builder
+LABEL maintainer="kavin@nvidia.com"
+LABEL repository="prime-rl-mx-on-nixl"
+LABEL base-pr="PrimeIntellect-ai/prime-rl#2326"
+
+RUN echo "LC_ALL=en_US.UTF-8" >> /etc/environment
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=$PATH:/usr/local/cuda/bin
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+# PI's deps + UCX build-time requirements
+RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
+    build-essential \
+    curl \
+    sudo \
+    git \
+    ninja-build \
+    software-properties-common \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    libnuma-dev \
+    libibverbs-dev \
+    librdmacm-dev \
+    libmlx5-1 \
+    ibverbs-providers \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends python3.12 python3.12-dev python3.12-venv \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python \
+    && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# uv
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
+ENV PATH="/usr/local/bin:$PATH"
+ENV UV_PYTHON_INSTALL_DIR="/usr/local/share/uv/python"
+ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
+
+WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+
+COPY pyproject.toml /app/pyproject.toml
+COPY uv.lock /app/uv.lock
+COPY README.md /app/README.md
+COPY src/ /app/src/
+COPY configs /app/configs
+COPY examples /app/examples
+COPY benchmarks/scripts /app/benchmarks/scripts
+
+# PI's Python deps. We deliberately exclude --extra flash-attn / flash-attn-3
+# / flash-attn-cute / gpt-oss because:
+# - flash-attn arm64 must be built from source (60+ min on QEMU; not worth
+#   it for our scenario A target model Qwen3-0.6B which falls back to SDPA).
+# - gpt-oss kernels are not in our scenario surface.
+# - mamba-ssm is also skipped — Qwen3 is plain decoder, no SSM.
+# This trims the build by ~3-5 hours on QEMU. Production runs targeting
+# GLM-FP8/MoE should re-add flash-attn via PI's docker-arm64-post-install.sh
+# (we keep the script in /app/scripts/ for future use).
+RUN --mount=type=cache,target=/app/.cache/uv \
+    uv sync --extra envs --locked --no-dev
+
+ARG TARGETARCH
+COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
+COPY scripts/install_nixl_from_source.sh /app/scripts/install_nixl_from_source.sh
+# Skip arm64-post-install (flash-attn from source) — see comment above.
+# To enable: uncomment the next line.
+# RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
+
+# Build UCX 1.19.x + NIXL 0.10.1 into /app/third_party/ucx + /app/deps/nixl*.whl
+# (PI's canonical install script).
+RUN /app/scripts/install_nixl_from_source.sh \
+    && NIXL_WHEEL=$(ls /app/deps/nixl*.whl | head -1) \
+    && /app/.venv/bin/pip install --no-deps "$NIXL_WHEEL"
+
+# PI's nixl_transfer.py imports `from nixl_cu13._api import ...` but our
+# install script produces a `nixl_cu12` package name. Install lightweight
+# `nixl_cu13` and `nixl` shim packages that re-export from `nixl_cu12` so
+# existing import sites work without patching upstream code.
+COPY docker/nixl_shim.py /tmp/nixl_shim.py
+RUN SP="/app/.venv/lib/python3.12/site-packages" \
+    && mkdir -p "$SP/nixl_cu13" "$SP/nixl" \
+    && cp /tmp/nixl_shim.py "$SP/nixl_cu13/__init__.py" \
+    && cp /tmp/nixl_shim.py "$SP/nixl/__init__.py" \
+    && rm /tmp/nixl_shim.py
+
+# Install sitecustomize.py — auto-imported at every Python startup, before
+# any user module. Preloads real libcudart with RTLD_GLOBAL so TileLang's
+# libcudart_stub.so doesn't win dlsym(RTLD_DEFAULT) lookups in vLLM
+# WorkerProc subprocs that use that path. Belt-and-suspenders w/ the next
+# step.
+COPY docker/sitecustomize.py /tmp/sitecustomize.py
+RUN install -m 644 /tmp/sitecustomize.py /app/.venv/lib/python3.12/site-packages/sitecustomize.py \
+    && rm /tmp/sitecustomize.py
+
+# FlashInfer's cuda_ipc.CudaRTLibrary uses `find_loaded_library("libcudart")`
+# to scan /proc/self/maps for any loaded libcudart — and tilelang's stub
+# (an incomplete libcudart_stub.so shipped for tilelang's own compilation
+# flow) gets found first, then .cudaDeviceReset fails with "undefined
+# symbol". Nothing in vLLM's inference path actually imports tilelang
+# (verified: no `import tilelang` in vllm site-packages). Replace the
+# stub with a symlink to the real CUDA runtime so anyone dlopening that
+# path gets a full libcudart. This is the only reliable fix for the
+# WorkerProc subprocess path — LD_PRELOAD and sitecustomize both fail
+# here because FlashInfer loads the library *by explicit path*, not via
+# RTLD_DEFAULT.
+RUN set -eux; \
+    stub="/app/.venv/lib/python3.12/site-packages/tilelang/lib/libcudart_stub.so"; \
+    real="/usr/local/cuda/lib64/libcudart.so.12"; \
+    if [ -f "$stub" ] && [ -f "$real" ]; then \
+        mv "$stub" "${stub}.orig"; \
+        ln -s "$real" "$stub"; \
+        echo "tilelang libcudart_stub.so -> $real"; \
+    fi
+
+# Stub flash_attn as a proper pip-installed package so that:
+#   (a) eager importers like ring_flash_attn succeed at module load, and
+#   (b) transformers' PACKAGE_DISTRIBUTION_MAPPING["flash_attn"] lookup
+#       finds our stub via importlib.metadata — failing this bugs out
+#       `is_flash_attn_2_available()`.
+# Real flash-attn arm64 is a 3-5 hr QEMU build; the stub is enough for
+# scenarios without MoE/CP. To enable real flash-attn: uncomment the
+# docker-arm64-post-install.sh run above.
+COPY docker/flash_attn_pkg /tmp/flash_attn_pkg
+RUN /app/.venv/bin/pip install --no-deps /tmp/flash_attn_pkg \
+    && rm -rf /tmp/flash_attn_pkg
+
+# MX client — install from our kavink/RL branch so the overlay code can use
+# `from modelexpress import MxClient, MxTrainingPublisher, MxRefitReceiver`
+ARG MX_BRANCH=kavink/RL
+ARG MX_REPO=https://github.com/ai-dynamo/modelexpress.git
+RUN git clone --depth=1 --branch ${MX_BRANCH} ${MX_REPO} /tmp/modelexpress \
+    && /app/.venv/bin/pip install --no-deps /tmp/modelexpress/modelexpress_client/python \
+    && rm -rf /tmp/modelexpress
+
+#####################################################################
+# Stage 2: Runtime image (PI's pattern)
+#####################################################################
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y \
+    --no-install-recommends \
+    --force-yes \
+    build-essential \
+    wget \
+    clang \
+    tmux \
+    iperf \
+    openssh-server \
+    git-lfs \
+    gpg \
+    sudo \
+    iputils-ping \
+    net-tools \
+    curl \
+    vim \
+    libibverbs1 \
+    ibverbs-providers \
+    libnuma1 \
+    librdmacm1 \
+    && apt-get clean autoclean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+RUN groupadd --gid $GROUP_ID appuser && \
+    useradd --uid $USER_ID --gid appuser --create-home --shell /bin/bash appuser && \
+    usermod -aG sudo appuser && \
+    echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
+
+# Copy CUDA from the devel builder so runtime has nvcc + /usr/local/cuda
+# for torch.utils.cpp_extension load_inline (required by
+# prime_rl.utils.classic_cuda_pool and vLLM's JIT compile path).
+COPY --from=builder /usr/local/cuda /usr/local/cuda
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/usr/local/cuda/bin:$PATH
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+
+USER appuser
+ENV PATH="/usr/local/bin:/usr/local/cuda/bin:$PATH"
+WORKDIR /app
+COPY --from=builder --chown=appuser:appuser /app /app
+
+COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+RUN rm /app/.venv/bin/python && ln -s /usr/local/bin/python /app/.venv/bin/python
+RUN rm /app/.venv/bin/python3 && ln -s /usr/local/bin/python /app/.venv/bin/python3
+RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/python3.12
+
+# UCX libs live under /app/third_party/ucx (from install_nixl_from_source.sh).
+# Prepend them to LD_LIBRARY_PATH so NIXL finds the matching libs at load time.
+ENV LD_LIBRARY_PATH="/app/third_party/ucx/lib:/app/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH}"
+ENV PATH="/app/.venv/bin:$PATH"
+
+# PI's HF timeouts
+ENV HF_HUB_ETAG_TIMEOUT=500
+ENV HF_HUB_DOWNLOAD_TIMEOUT=300
+
+# GB200 / RoCE known-good UCX tuning (from our verl + prime-rl POCs).
+# Can be overridden at pod-spec level.
+ENV UCX_TLS="self,sm,rc,cuda_copy,gdr_copy,tcp"
+ENV UCX_IB_GID_INDEX=3
+ENV OMPI_MCA_pml=ob1
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["sleep", "infinity"]

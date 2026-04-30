@@ -313,8 +313,37 @@ from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server
 def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None):
     """
     Wrap build_app to include our custom router.
+
+    vLLM >= 0.19 auto-attaches a built-in RLHF router (via
+    ``attach_rlhf_router`` inside ``build_app``) which registers its own
+    ``/update_weights`` route that expects a different JSON schema
+    (``{"update_info": ...}``). Since FastAPI resolves routes in insertion
+    order, that built-in wins and our ``/update_weights`` (which takes
+    ``{"weight_dir": ...}`` and dispatches to the NIXL
+    ``update_weights_from_path`` worker RPC) never runs.
+
+    Strip the conflicting built-in routes *before* including our router so
+    ours is the one that handles the POST. We target only the three paths
+    PI's NIXL flow overrides (``/update_weights``, ``/init_nixl_transfer``,
+    ``/init_broadcaster``) and leave the rest of the rlhf router intact
+    (e.g. ``/collective_rpc``, ``/pause``, ``/resume``).
     """
     app = _original_build_app(args, supported_tasks, model_config)
+
+    _OVERRIDES = {"/update_weights", "/init_nixl_transfer", "/init_broadcaster"}
+    try:
+        from fastapi.routing import APIRoute
+
+        app.router.routes = [
+            r for r in app.router.routes
+            if not (isinstance(r, APIRoute) and r.path in _OVERRIDES)
+        ]
+    except Exception:
+        # If the vLLM router shape ever changes such that we can't filter,
+        # fall back to the previous behavior (duplicate routes). Our
+        # /update_weights will still lose but the server will boot.
+        pass
+
     app.include_router(router)
     return app
 
@@ -351,6 +380,25 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     if vllm_extra:
         for key, value in vllm_extra.items():
             setattr(namespace, key, value)
+
+    if config.torch_profiler_dir is not None:
+        # vLLM's --profiler-config (v0.13+). Injected onto the args namespace
+        # so it survives make_arg_parser().parse_args(args=[], namespace=...).
+        # At runtime, POST /start_profile and /stop_profile on the inference
+        # server to capture traces into this dir (per PyTorch worker).
+        #
+        # In disaggregated PD, each role gets its own dump dir via a suffix
+        # env var set by the sbatch template ("-prefill" / "-decode") so
+        # prefill and decode traces don't stomp on each other's files.
+        from vllm.config import ProfilerConfig
+
+        role_suffix = os.environ.get("PRIME_RL_TORCH_PROFILER_ROLE_SUFFIX", "")
+        dump_dir = config.torch_profiler_dir + role_suffix
+        os.makedirs(dump_dir, exist_ok=True)
+        setattr(namespace, "profiler_config", ProfilerConfig(
+            profiler="torch",
+            torch_profiler_dir=dump_dir,
+        ))
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)
