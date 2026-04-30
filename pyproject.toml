@@ -71,7 +71,7 @@ envs = [
     "math500",
     "aime2024",
     "aime2025",
-    "mini_swe_agent_plus",
+    "mini_swe_agent_plus == 0.2.21",
     "deepdive"
 ]
 disagg = [

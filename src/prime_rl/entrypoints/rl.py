@@ -436,9 +436,11 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_decode_replicas=infer_deploy.num_decode_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
             router_port=infer_deploy.router_port,
+            router_policy=infer_deploy.router_policy,
             prefill_port=infer_deploy.prefill_port,
             decode_port=infer_deploy.decode_port,
             inference_tp=config.inference.parallel.tp,
+            inference_dp=config.inference.parallel.dp,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
             use_deep_gemm=config.inference.use_deep_gemm,
             prefill_env_overrides=infer_deploy.prefill_env_overrides,
@@ -451,6 +453,13 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
         )
     else:
+        infer_deploy = config.inference.deployment if config.inference is not None else None
+        nodes_per_infer_replica = (
+            infer_deploy.num_nodes
+            if infer_deploy is not None and infer_deploy.type == "multi_node"
+            else config.deployment.num_infer_nodes
+        )
+
         script = template.render(
             **config.slurm.template_vars,
             is_disaggregated=False,
@@ -458,17 +467,22 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
-            num_infer_nodes=config.deployment.total_infer_nodes,
-            nodes_per_infer_replica=config.deployment.num_infer_nodes,
+            num_infer_nodes=nodes_per_infer_replica * config.deployment.num_infer_replicas,
+            nodes_per_infer_replica=nodes_per_infer_replica,
             num_infer_replicas=config.deployment.num_infer_replicas,
             num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
             router_port=getattr(config.inference.deployment, "router_port", 8000) if config.inference else 8000,
+            router_policy=getattr(config.inference.deployment, "router_policy", "consistent_hash")
+            if config.inference
+            else "consistent_hash",
             backend_port=getattr(config.inference.deployment, "backend_port", 8100) if config.inference else 8100,
             inference_tp=config.inference.parallel.tp if config.inference else 1,
+            inference_dp=config.inference.parallel.dp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
             dp_per_node=(config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
+            use_deep_gemm=config.inference.use_deep_gemm if config.inference else False,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),

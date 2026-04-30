@@ -1771,7 +1771,7 @@ wheels = [
 
 [[package]]
 name = "mini-swe-agent-plus"
-version = "0.2.17"
+version = "0.2.22"
 source = { registry = "https://hub.primeintellect.ai/primeintellect/simple/" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1780,7 +1780,7 @@ dependencies = [
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://hub.primeintellect.ai/primeintellect/mini-swe-agent-plus/@aa6f9500/mini_swe_agent_plus-0.2.17-py3-none-any.whl", hash = "sha256:af4f6e10412b86dd4be0623393fc35275fe95080c95ac032bf39e109a2dd390b" },
+    { url = "https://hub.primeintellect.ai/primeintellect/mini-swe-agent-plus/@9f0cc82a/mini_swe_agent_plus-0.2.22-py3-none-any.whl", hash = "sha256:31a4410ab3a929def687a53162f6eb5cd4a1908f91f716cf3b5966ba6ade9fb8" },
 ]
 
 [[package]]
@@ -2767,7 +2767,7 @@ requires-dist = [
     { name = "math-env", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "math-python", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "math500", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "mini-swe-agent-plus", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
+    { name = "mini-swe-agent-plus", marker = "extra == 'envs'", specifier = ">=0.2.22", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "nixl", marker = "extra == 'disagg'" },
     { name = "nixl-cu12", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" },
     { name = "numpy", specifier = ">=2.2.6" },

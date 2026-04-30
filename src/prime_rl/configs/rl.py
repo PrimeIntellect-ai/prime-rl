@@ -420,6 +420,12 @@ class RLConfig(BaseConfig):
         if self.trainer.model.impl != "custom":
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires trainer.model.impl = 'custom'.")
 
+        if not self.inference.enable_expert_parallel:
+            raise ValueError("weight_broadcast.quantize_in_weight_transfer requires inference.enable_expert_parallel.")
+
+        if self.inference.enable_eplb:
+            raise ValueError("weight_broadcast.quantize_in_weight_transfer does not support inference.enable_eplb.")
+
         return self
 
     @model_validator(mode="after")
@@ -822,12 +828,24 @@ class RLConfig(BaseConfig):
                     )
 
                 inferred_dp_local = self.deployment.gpus_per_node // inference_tp
-                total_infer_gpus = self.deployment.num_infer_nodes * self.deployment.gpus_per_node
-                expected_global_world_size = self.inference.parallel.dp * inference_tp
-                if expected_global_world_size != total_infer_gpus:
+                if self.inference.parallel.dp == 1 and inferred_dp_local > 1:
+                    self.inference.parallel.dp = inferred_dp_local
+
+                server_world_size = self.inference.parallel.dp * inference_tp
+                if server_world_size % self.deployment.gpus_per_node != 0:
                     raise ValueError(
                         "For multi-node expert parallel inference, inference.parallel.dp * inference.parallel.tp "
-                        f"must match total inference GPUs ({total_infer_gpus}), got {expected_global_world_size}."
+                        "must use a whole number of inference nodes, got "
+                        f"{server_world_size} GPUs with {self.deployment.gpus_per_node} GPUs per node."
+                    )
+
+                nodes_per_vllm_server = server_world_size // self.deployment.gpus_per_node
+                if self.deployment.num_infer_nodes % nodes_per_vllm_server != 0:
+                    raise ValueError(
+                        "deployment.num_infer_nodes must be divisible by the number of nodes used by each "
+                        "vLLM server. Got "
+                        f"{self.deployment.num_infer_nodes} inference nodes and "
+                        f"{nodes_per_vllm_server} nodes per vLLM server."
                     )
 
                 if self.inference.data_parallel_size_local is None:
@@ -838,7 +856,10 @@ class RLConfig(BaseConfig):
                         f"({inferred_dp_local}) when inference.enable_expert_parallel is enabled in multi-node deployment."
                     )
 
-                if not self.inference.enable_lora and self.inference.api_server_count == self.inference.parallel.dp:
+                if not self.inference.enable_lora and self.inference.api_server_count in {
+                    1,
+                    self.inference.parallel.dp,
+                }:
                     self.inference.api_server_count = inferred_dp_local
 
             # Auto-infer DP and api_server_count for standard multi-node inference.
@@ -895,6 +916,23 @@ class RLConfig(BaseConfig):
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
             assert self.orchestrator.weight_broadcast.type == "nccl"
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_multi_node_inference_deployment(self):
+        """Keep RL and inference multi-node allocation counts in sync."""
+        if self.inference is None or self.inference.deployment.type != "multi_node":
+            return self
+        if self.deployment.type != "multi_node":
+            return self
+
+        infer_deploy = self.inference.deployment
+        if self.deployment.num_infer_nodes != infer_deploy.num_nodes:
+            raise ValueError(
+                f"deployment.num_infer_nodes ({self.deployment.num_infer_nodes}) must equal "
+                f"inference.deployment.num_nodes ({infer_deploy.num_nodes}) for multi-node inference."
+            )
 
         return self
 
