@@ -35,6 +35,7 @@ dependencies = [
     "dion",
     "tilelang>=0.1.8",
     "flash-linear-attention",
+    "flash-qla",
     "nvidia-ml-py>=12.575.51",
 ]
 
@@ -150,6 +151,7 @@ deep-ep = { url = "https://github.com/samsja/research-pre-built-wheels/releases/
 deep-gemm = { url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/deep_gemm-2.3.0+477618c-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
+flash-qla = { git = "https://github.com/QwenLM/FlashQLA.git", rev = "c9b9827" }
 flash_attn_3 = { index = "pytorch-cu128-test" }
 
 [tool.uv.extra-build-dependencies]
