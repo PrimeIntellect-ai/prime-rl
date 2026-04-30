@@ -10,6 +10,39 @@ supported-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 
+[options]
+exclude-newer = "2026-04-23T20:00:49.639641409Z"
+exclude-newer-span = "P7D"
+
+[options.exclude-newer-package]
+verifiers = false
+vllm-router = false
+dion = false
+torch = false
+alphabet-sort = false
+science-env = false
+color-codeword = false
+nixl-cu12 = false
+flash-attn-3 = false
+prime-tunnel = false
+prime = false
+deep-gemm = false
+aime2024 = false
+prime-evals = false
+deepdive = false
+reverse-text = false
+code-env = false
+mini-swe-agent-plus = false
+deep-ep = false
+pydantic-config = false
+math-env = false
+logic-env = false
+wiki-search = false
+math-python = false
+math500 = false
+aime2025 = false
+prime-sandboxes = false
+
 [manifest]
 overrides = [
     { name = "nvidia-cudnn-cu12", specifier = ">=9.15" },
