@@ -19,6 +19,8 @@ from vllm.entrypoints.utils import load_aware_call, with_cancellation
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
+from prime_rl.inference.vllm.serving_generate import GenerateRequest
+
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.logger import get_logger
 
@@ -186,14 +188,19 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
     return request.app.state.openai_serving_chat_with_tokens
 
 
-@router.post("/v1/generate")
+@router.post(
+    "/v1/generate",
+    dependencies=[Depends(validate_json_request)],
+    responses={
+        HTTPStatus.OK.value: {"content": {"application/json": {}}},
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.NOT_FOUND.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
 @with_cancellation
 @load_aware_call
-async def _generate(raw_request: Request):
-    from prime_rl.inference.vllm.serving_generate import GenerateRequest
-
-    body = await raw_request.json()
-    request = GenerateRequest(**body)
+async def _generate(request: GenerateRequest, raw_request: Request):
     handler = generate_handler(raw_request)
     if handler is None:
         return JSONResponse({"error": "generate endpoint not available"}, status_code=503)
