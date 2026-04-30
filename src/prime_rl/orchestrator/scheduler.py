@@ -197,6 +197,7 @@ class Scheduler:
         env = self.train_envs.get(env_name)
 
         cache_salt = str(self.ckpt_step)
+        training_context = {"step": self.step, "ckpt_step": self.ckpt_step}
         if env.requires_group_scoring:
             rollout_count = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0
@@ -207,6 +208,7 @@ class Scheduler:
                     model_name=self.model_name,
                     rollouts_per_example=rollout_count,
                     cache_salt=cache_salt,
+                    training_context=training_context,
                 )
             )
         else:
@@ -218,6 +220,7 @@ class Scheduler:
                     example=group.example,
                     model_name=self.model_name,
                     cache_salt=cache_salt,
+                    training_context=training_context,
                 )
             )
         self.inflight_requests[task] = InflightRequest(
