@@ -163,6 +163,7 @@ async def orchestrate(config: OrchestratorConfig):
         output_dir=config.output_dir,
         tokenizer=tokenizer,
         run_config=config,
+        keep_full_history=config.bench,
     )
 
     # Read run_id AFTER setup_monitor so that newly registered runs are captured
@@ -607,14 +608,27 @@ async def orchestrate(config: OrchestratorConfig):
                 "decode_len": rollout_decode_lens,
                 "samples_per_rollout": rollout_samples_per_rollout,
                 "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
-                "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
-                "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
             }
         )
 
-        # Separate DataFrames for env reward function metrics and filter flags to avoid column name collisions
+        # Separate DataFrames for env reward function metrics, filter flags, and per-rollout timings
+        # to avoid column name collisions
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
         filter_df = pd.DataFrame([rollout["filters"] for rollout in train_rollouts])
+        timing_df = pd.DataFrame(
+            [
+                {
+                    "total": rollout["timing"]["total"],
+                    "setup": rollout["timing"]["setup"]["duration"],
+                    "generation": rollout["timing"]["generation"]["duration"],
+                    "model": rollout["timing"]["model"]["duration"],
+                    "env": rollout["timing"]["env"]["duration"],
+                    "scoring": rollout["timing"]["scoring"]["duration"],
+                    "overhead": rollout["timing"]["overhead"],
+                }
+                for rollout in train_rollouts
+            ]
+        )
 
         # Update progress metrics
         num_tokens = int(results_df.seq_len.sum())
@@ -669,12 +683,14 @@ async def orchestrate(config: OrchestratorConfig):
             "num_turns/all/mean": by_example.num_turns.mean().mean(),
             "num_turns/all/max": by_example.num_turns.mean().max(),
             "num_turns/all/min": by_example.num_turns.mean().min(),
-            "generation_ms/all/mean": by_example.generation_ms.mean().mean(),
-            "generation_ms/all/max": by_example.generation_ms.mean().max(),
-            "generation_ms/all/min": by_example.generation_ms.mean().min(),
-            "scoring_ms/all/mean": by_example.scoring_ms.mean().mean(),
-            "scoring_ms/all/max": by_example.scoring_ms.mean().max(),
-            "scoring_ms/all/min": by_example.scoring_ms.mean().min(),
+            **{
+                f"timing/all/{key}/{stat}": getattr(
+                    timing_df[key].groupby([results_df.env_name, results_df.example_id]).mean(),
+                    stat,
+                )()
+                for key in timing_df.columns
+                for stat in ("mean", "max", "min")
+            },
             # Train reward
             "reward/all/mean": by_example.reward.mean().mean(),
             "reward/all/max": by_example.reward.mean().max(),
@@ -711,8 +727,6 @@ async def orchestrate(config: OrchestratorConfig):
             "is_truncated",
             "samples_per_rollout",
             "num_turns",
-            "generation_ms",
-            "scoring_ms",
         ]
 
         for env, env_df in results_df.groupby("env_name"):
@@ -722,6 +736,12 @@ async def orchestrate(config: OrchestratorConfig):
                 to_log[f"{col}/{env}/max"] = env_by_example[col].mean().max()
                 if col != "is_truncated":
                     to_log[f"{col}/{env}/min"] = env_by_example[col].mean().min()
+            env_timing_df = timing_df.loc[env_df.index]
+            for key in timing_df.columns:
+                per_example = env_timing_df.groupby(env_df["example_id"])[key].mean()
+                to_log[f"timing/{env}/{key}/mean"] = per_example.mean()
+                to_log[f"timing/{env}/{key}/max"] = per_example.max()
+                to_log[f"timing/{env}/{key}/min"] = per_example.min()
             to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
@@ -806,8 +826,6 @@ async def orchestrate(config: OrchestratorConfig):
                 save_rollouts, eval_rollouts, step_path / "eval_rollouts.jsonl", exclude_keys={"trajectory"}
             )
 
-    # Log final (immutable) samples and distributions to monitor(s)
-    monitor.log_final_samples()
     monitor.save_final_summary()
 
     # Write final checkpoint
