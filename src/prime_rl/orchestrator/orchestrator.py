@@ -587,8 +587,13 @@ async def orchestrate(config: OrchestratorConfig):
                 "decode_len": rollout_decode_lens,
                 "samples_per_rollout": rollout_samples_per_rollout,
                 "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
-                "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
-                "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
+                "timing_total": [rollout["timing"]["total"] for rollout in train_rollouts],
+                "timing_setup": [rollout["timing"]["setup"]["duration"] for rollout in train_rollouts],
+                "timing_generation": [rollout["timing"]["generation"]["duration"] for rollout in train_rollouts],
+                "timing_model": [rollout["timing"]["model"]["duration"] for rollout in train_rollouts],
+                "timing_env": [rollout["timing"]["env"]["duration"] for rollout in train_rollouts],
+                "timing_scoring": [rollout["timing"]["scoring"]["duration"] for rollout in train_rollouts],
+                "timing_overhead": [rollout["timing"]["overhead"] for rollout in train_rollouts],
             }
         )
 
@@ -649,12 +654,11 @@ async def orchestrate(config: OrchestratorConfig):
             "num_turns/all/mean": by_example.num_turns.mean().mean(),
             "num_turns/all/max": by_example.num_turns.mean().max(),
             "num_turns/all/min": by_example.num_turns.mean().min(),
-            "generation_ms/all/mean": by_example.generation_ms.mean().mean(),
-            "generation_ms/all/max": by_example.generation_ms.mean().max(),
-            "generation_ms/all/min": by_example.generation_ms.mean().min(),
-            "scoring_ms/all/mean": by_example.scoring_ms.mean().mean(),
-            "scoring_ms/all/max": by_example.scoring_ms.mean().max(),
-            "scoring_ms/all/min": by_example.scoring_ms.mean().min(),
+            **{
+                f"timing/all/{key}/{stat}": getattr(by_example[f"timing_{key}"].mean(), stat)()
+                for key in ("total", "setup", "generation", "model", "env", "scoring", "overhead")
+                for stat in ("mean", "max", "min")
+            },
             # Train reward
             "reward/all/mean": by_example.reward.mean().mean(),
             "reward/all/max": by_example.reward.mean().max(),
@@ -691,9 +695,8 @@ async def orchestrate(config: OrchestratorConfig):
             "is_truncated",
             "samples_per_rollout",
             "num_turns",
-            "generation_ms",
-            "scoring_ms",
         ]
+        per_env_timing_keys = ("total", "setup", "generation", "model", "env", "scoring", "overhead")
 
         for env, env_df in results_df.groupby("env_name"):
             env_by_example = env_df.groupby("example_id")
@@ -702,6 +705,12 @@ async def orchestrate(config: OrchestratorConfig):
                 to_log[f"{col}/{env}/max"] = env_by_example[col].mean().max()
                 if col != "is_truncated":
                     to_log[f"{col}/{env}/min"] = env_by_example[col].mean().min()
+            for key in per_env_timing_keys:
+                col = f"timing_{key}"
+                per_example = env_by_example[col].mean()
+                to_log[f"timing/{env}/{key}/mean"] = per_example.mean()
+                to_log[f"timing/{env}/{key}/max"] = per_example.max()
+                to_log[f"timing/{env}/{key}/min"] = per_example.min()
             to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
