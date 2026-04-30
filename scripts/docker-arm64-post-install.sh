@@ -14,7 +14,7 @@ export FLASH_ATTENTION_SKIP_CUDA_BUILD=FALSE
 
 echo "=== reinstalling flash-attn-cute (flash-attn overwrites it with a stub) ==="
 uv pip install --reinstall --no-deps \
-    "flash-attn-cute @ git+https://github.com/Dao-AILab/flash-attention.git@96bd151#subdirectory=flash_attn/cute"
+    "flash-attn-4 @ git+https://github.com/Dao-AILab/flash-attention.git@96bd151#subdirectory=flash_attn/cute"
 
 # TODO: remove once flash-attn gates the ampere_helpers import or cutlass-dsl re-adds it.
 echo "=== copying ampere_helpers.py from flashinfer vendor ==="
