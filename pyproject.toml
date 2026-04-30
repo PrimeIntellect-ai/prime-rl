@@ -143,6 +143,14 @@ aime2024 = false
 aime2025 = false
 deepdive = false
 mini_swe_agent_plus = false
+# Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
+verifiers = false
+vllm-router = false
+dion = false
+pydantic-config = false
+deep-ep = false
+deep-gemm = false
+nixl-cu12 = false
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
