@@ -83,15 +83,21 @@ class WandbMonitor(Monitor):
                         config=run_config.model_dump() if run_config else None,
                         settings=settings,
                     )
-                except CommError:
+                except CommError as e:
                     if attempt + 1 == max_retries:
                         raise
-                    self.logger.info(
-                        f"Shared W&B run not yet created by primary, retrying in 10s ({attempt + 1}/{max_retries})"
-                    )
+                    if shared_mode and not primary:
+                        msg = (
+                            f"Shared W&B run not yet created by primary - retrying in 10s ({attempt + 1}/{max_retries})"
+                        )
+                    else:
+                        msg = f"Transient W&B init error ({e}) - retrying in 10s ({attempt + 1}/{max_retries})"
+                    self.logger.info(msg)
                     time.sleep(10)
 
-        max_retries = 1 if not shared_mode or primary else 30
+        # Non-primary processes in shared mode wait for the primary to create the run.
+        # Everyone else still retries to absorb transient W&B server errors (e.g. 404 on upsertBucket).
+        max_retries = 30 if shared_mode and not primary else 5
         self.wandb = init_wandb(max_retries)
 
         wandb.define_metric("*", step_metric="step")
