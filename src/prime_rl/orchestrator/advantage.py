@@ -10,7 +10,6 @@ from prime_rl.configs.orchestrator import AdvantageConfig, CustomAdvantageConfig
 from prime_rl.orchestrator.vf_utils import get_model_completion_len, get_num_turns
 from prime_rl.utils.utils import import_object
 
-
 ShapingMetric = Literal["length", "num_turns"]
 
 
