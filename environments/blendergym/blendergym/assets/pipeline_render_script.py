@@ -24,10 +24,11 @@ import bpy
 
 
 def _enable_gpu_cycles(resolution: int = 512) -> None:
-    """Configure Cycles via env vars (samples / denoiser / compute device).
+    """Configure Cycles via env vars (resolution / samples / denoiser / device).
 
-    Reads three optional environment variables:
+    Reads four optional environment variables:
 
+    * ``BLENDERGYM_RENDER_RESOLUTION`` (default ``"512"``) — square render size.
     * ``BLENDERGYM_CYCLES_SAMPLES`` (default ``"16"``) — Cycles samples per pixel.
     * ``BLENDERGYM_CYCLES_DENOISER`` (default ``"OPENIMAGEDENOISE"``) — Cycles
       denoiser. Infinigen's bundled Blender 4.2 only ships ``OPENIMAGEDENOISE``;
@@ -40,6 +41,7 @@ def _enable_gpu_cycles(resolution: int = 512) -> None:
     ``blender ... --python pipeline_render_script.py`` works standalone for
     micro-benchmarks (see ``scripts/bench_render.py``).
     """
+    resolution = int(os.environ.get("BLENDERGYM_RENDER_RESOLUTION", str(resolution)))
     samples = int(os.environ.get("BLENDERGYM_CYCLES_SAMPLES", "16"))
     denoiser = os.environ.get("BLENDERGYM_CYCLES_DENOISER", "OPENIMAGEDENOISE")
     compute = os.environ.get("BLENDERGYM_CYCLES_COMPUTE_DEVICE", "OPTIX")

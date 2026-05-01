@@ -7,9 +7,9 @@ The flow per rollout is:
 1. ``init_state`` (verifiers default) sets up ``trajectory_id`` etc.
 2. ``setup_state`` builds ``state["rollout"]`` (a
    :class:`~blendergym.schema.Rollout`) and carves out a per-rollout work dir
-   (``<work_root>/<task_id>__<traj_id[:8]>``), populates ``inputs/`` symlinks
-   to the dataset, picks a GPU from the pool, and base64-encodes the goal /
-   init reference images.
+   (``<work_root>/<split>/example_<id>__<task_id>/<traj_id[:8]>``), populates
+   ``inputs/`` symlinks to the dataset, picks a GPU from the pool, and
+   base64-encodes the goal / init reference images.
 3. ``get_prompt_messages``:
      - turn 0: system prompt + goal image + init image + ``start.py`` source.
      - turn N: previous prompt + previous completion + most-recent render.
@@ -74,10 +74,12 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         gpu_id_pool: Sequence[int] = (0,),
         work_root: str | Path = "outputs/blendergym_v1/blendergym_work",
         keep_failed_only: bool = False,
+        env_name: str = "blendergym",
         split: str = "train",
         eval_split: str = "eval",
         eval_holdout: int = 5,
         render_timeout_s: int = 120,
+        cycles_resolution: int = 512,
         cycles_samples: int = 16,
         cycles_denoiser: str = "OPENIMAGEDENOISE",
         cycles_compute_device: str = "OPTIX",
@@ -95,6 +97,7 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         # so the public Python signature of run_blender stays unchanged).
         # ``os.environ`` is process-local; each prime-rl env worker is its own
         # Python process, so workers don't fight over these vars.
+        os.environ["BLENDERGYM_RENDER_RESOLUTION"] = str(cycles_resolution)
         os.environ["BLENDERGYM_CYCLES_SAMPLES"] = str(cycles_samples)
         os.environ["BLENDERGYM_CYCLES_DENOISER"] = cycles_denoiser
         os.environ["BLENDERGYM_CYCLES_COMPUTE_DEVICE"] = cycles_compute_device
@@ -106,6 +109,11 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         self.work_root = Path(work_root).expanduser().resolve()
         self.work_root.mkdir(parents=True, exist_ok=True)
         self.keep_failed_only = keep_failed_only
+        # ``env_name`` mirrors the orchestrator's resolved env name so that
+        # local metadata matches wandb sample tables (e.g. ``"blendergym"`` for
+        # train, ``"blendergym-eval"`` for eval). Should be set per-env in the
+        # toml ``args`` block — see ``configs/multimodal/rl_blendergym.toml``.
+        self.env_name = env_name
         self.split = split
         self.eval_split = eval_split
         self.eval_holdout = eval_holdout
@@ -210,7 +218,23 @@ class BlenderGymEnv(vf.MultiTurnEnv):
     async def setup_state(self, state: vf.State) -> vf.State:
         info = state.get("info") or {}
         task = Task.from_info(info)
-        work_dir = self._make_work_dir(state["trajectory_id"], task.task_id)
+        env_name = state.get("env_name", self.env_name)
+        example_id = state.get("example_id", info.get("example_id"))
+        split = self.split
+        metadata = {
+            "env": env_name,
+            "split": split,
+            "example_id": example_id,
+            "task_id": task.task_id,
+            "task_type": task.task_type,
+            "trajectory_id": state["trajectory_id"],
+        }
+        work_dir = self._make_work_dir(
+            traj_id=state["trajectory_id"],
+            task_id=task.task_id,
+            split=split,
+            example_id=example_id,
+        )
 
         rollout = Rollout(
             task=task,
@@ -218,6 +242,7 @@ class BlenderGymEnv(vf.MultiTurnEnv):
             work_dir=work_dir,
             gpu_id=self._next_gpu(),
             max_turns=self.max_turns,
+            metadata=metadata,
             start_code_text=task.start_code_path.read_text(encoding="utf-8"),
             goal_image_data_url=_png_to_data_url(task.goal_image),
             init_image_data_url=_png_to_data_url(task.init_image),
@@ -226,8 +251,22 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         state["rollout"] = rollout
         return state
 
-    def _make_work_dir(self, traj_id: str, task_id: str) -> Path:
-        work_dir = self.work_root / f"{task_id}__{traj_id[:8]}"
+    def _make_work_dir(
+        self,
+        traj_id: str,
+        task_id: str,
+        split: str | None = None,
+        example_id: object | None = None,
+    ) -> Path:
+        if split is not None and isinstance(example_id, int):
+            work_dir = (
+                self.work_root
+                / split
+                / f"example_{example_id:04d}__{task_id}"
+                / traj_id[:8]
+            )
+        else:
+            work_dir = self.work_root / f"{task_id}__{traj_id[:8]}"
         work_dir.mkdir(parents=True, exist_ok=True)
         return work_dir
 

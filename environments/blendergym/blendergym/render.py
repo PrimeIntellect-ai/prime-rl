@@ -255,6 +255,12 @@ def _build_argparser() -> argparse.ArgumentParser:
     # already inherits dict(os.environ), so a CLI flag → env var → child process
     # path keeps the public Python API stable.
     parser.add_argument(
+        "--resolution",
+        type=int,
+        default=None,
+        help="Square render resolution; sets BLENDERGYM_RENDER_RESOLUTION.",
+    )
+    parser.add_argument(
         "--samples",
         type=int,
         default=None,
@@ -283,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
 
     code_text = _read_code(args.code, args.code_file)
 
+    if args.resolution is not None:
+        os.environ["BLENDERGYM_RENDER_RESOLUTION"] = str(args.resolution)
     if args.samples is not None:
         os.environ["BLENDERGYM_CYCLES_SAMPLES"] = str(args.samples)
     if args.denoiser is not None:

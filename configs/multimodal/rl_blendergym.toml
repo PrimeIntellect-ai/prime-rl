@@ -1,28 +1,55 @@
-# BlenderGym RL training config (phase 6).
+# BlenderGym RL training config (phase 10 - Qwen3.5-9B + dp=6 + train=2 + bs=64 + NCCL + wandb).
 #
-# GPU layout (single-node default deployment):
-#   GPU 0           - vLLM inference server (auto-started by `uv run rl`)
-#   GPU 1           - trainer (FSDP rank 0)
-#   GPU 6, 7        - env worker pool: Blender Cycles + CLIP rubric
+# GPU layout (single-node deployment):
+#   GPU 0,1,2,3,4,5 - vLLM inference servers (dp=6 via num_infer_gpus=6)
+#                     + Blender Cycles env workers (100% cohost via gpu_id_pool)
+#   GPU 6,7         - trainer FSDP shard=2 (Qwen3.5-9B requires multi-GPU)
 #
-# IMPORTANT: ``orchestrator.train.env.args.work_root`` MUST track the top-level
-# ``output_dir`` because prime-rl does not auto-inject output_dir into env args
-# (plan §"new-run checklist"). Update both whenever you change ``output_dir``.
+# Model: Qwen3.5-9B (9.65B Dense VLM, Gated Delta Networks). num_train_gpus=2
+# + activation checkpointing (mode=full, default) to fit.
+#
+# Long-run config: bs=64 to balance trainer/rollout, NCCL broadcast to drop the
+# filesystem pause between steps, max_steps=20000 (run forever, kill via wandb).
+#
+# IMPORTANT: ``orchestrator.train.env.args.work_root`` MUST point to
+# ``output_dir/run_default/blendergym_work`` so trajectory artifacts land
+# next to rollout JSONL files under ``run_default/``.
+# Update both whenever you change ``output_dir``.
 
-output_dir = "outputs/blendergym_v2"
+output_dir = "outputs/blendergym_v3_9b_dp6_long"
 seq_len = 8192
-max_steps = 15
+max_steps = 20000
+
+[deployment]
+type = "single_node"
+num_infer_gpus = 6
+num_train_gpus = 2
+
+[ckpt]
+interval = 25
+keep_last = 2
 
 [model]
-name = "Qwen/Qwen3.5-0.8B"
+name = "Qwen/Qwen3.5-9B"
 
 [model.vlm]
 vision_encoder_attr = "model.visual"
 language_model_attr = "model.language_model"
 
+[weight_broadcast]
+type = "nccl"
+
+[wandb]
+project = "blendergym-rl"
+name = "9b-dp6-bs64-cohost"
+
 [orchestrator]
-batch_size = 32
-rollouts_per_example = 4
+batch_size = 64
+rollouts_per_example = 8
+max_async_level = 1
+
+[orchestrator.eval]
+interval = 10
 
 [orchestrator.train.sampling]
 max_completion_tokens = 1024
@@ -33,8 +60,24 @@ enforce = false
 
 [[orchestrator.train.env]]
 id = "blendergym"
-num_workers = 2
-args = { data_root = "data/blendergym", task_types = ["placement"], max_turns = 3, blender_bin = "_reference_codes/VIGA/utils/third_party/infinigen/blender/blender", gpu_id_pool = [6, 7], work_root = "outputs/blendergym_v2/blendergym_work", keep_failed_only = false, split = "train", eval_split = "eval", eval_holdout = 5, cycles_samples = 16, cycles_denoiser = "OPENIMAGEDENOISE", cycles_compute_device = "OPTIX" }
+num_workers = 6
+
+[orchestrator.train.env.args]
+data_root = "data/blendergym"
+task_types = ["placement"]
+max_turns = 3
+blender_bin = "_reference_codes/VIGA/utils/third_party/infinigen/blender/blender"
+gpu_id_pool = [0, 1, 2, 3, 4, 5]
+work_root = "outputs/blendergym_v3_9b_dp6_long/run_default/blendergym_work"
+keep_failed_only = false
+env_name = "blendergym"
+split = "train"
+eval_split = "eval"
+eval_holdout = 5
+cycles_resolution = 256
+cycles_samples = 8
+cycles_denoiser = "OPENIMAGEDENOISE"
+cycles_compute_device = "OPTIX"
 
 [[orchestrator.eval.env]]
 id = "blendergym"
@@ -42,24 +85,41 @@ name = "blendergym-eval"
 num_workers = 1
 num_examples = 5
 rollouts_per_example = 1
-args = { data_root = "data/blendergym", task_types = ["placement"], max_turns = 3, blender_bin = "_reference_codes/VIGA/utils/third_party/infinigen/blender/blender", gpu_id_pool = [7], work_root = "outputs/blendergym_v2/blendergym_work", keep_failed_only = false, split = "eval", eval_split = "eval", eval_holdout = 5, cycles_samples = 16, cycles_denoiser = "OPENIMAGEDENOISE", cycles_compute_device = "OPTIX" }
+
+[orchestrator.eval.env.args]
+data_root = "data/blendergym"
+task_types = ["placement"]
+max_turns = 3
+blender_bin = "_reference_codes/VIGA/utils/third_party/infinigen/blender/blender"
+gpu_id_pool = [5]
+work_root = "outputs/blendergym_v3_9b_dp6_long/run_default/blendergym_work"
+keep_failed_only = false
+env_name = "blendergym-eval"
+split = "eval"
+eval_split = "eval"
+eval_holdout = 5
+cycles_resolution = 256
+cycles_samples = 8
+cycles_denoiser = "OPENIMAGEDENOISE"
+cycles_compute_device = "OPTIX"
 
 [trainer]
+max_async_level = 1
 
 [trainer.model]
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 
+[trainer.model.ac]
+
 [trainer.optim]
 lr = 3e-6
 
 [inference]
-gpu_memory_utilization = 0.85
+gpu_memory_utilization = 0.30
+enable_prefix_caching = true
 
 [inference.model]
 max_model_len = 16384
 enforce_eager = true
 trust_remote_code = true
-
-[inference.parallel]
-dp = 1

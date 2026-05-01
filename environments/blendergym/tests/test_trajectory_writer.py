@@ -71,6 +71,7 @@ def _make_rollout(
     turns: list[TurnRecord] | None = None,
     final_reward: float | None = None,
     trajectory_id: str = "abcd1234deadbeef",
+    metadata: dict[str, object] | None = None,
 ) -> Rollout:
     return Rollout(
         task=_make_task(),
@@ -80,6 +81,7 @@ def _make_rollout(
         max_turns=3,
         turns=list(turns or []),
         final_reward=final_reward,
+        metadata=metadata,
     )
 
 
@@ -340,7 +342,20 @@ def test_write_trajectory_artifacts_emits_meta_json_html(tmp_path):
         )
     )
 
-    rollout = _make_rollout(work_dir=work_dir, turns=[record], final_reward=0.7321)
+    metadata = {
+        "env": "blendergym",
+        "split": "train",
+        "example_id": 3,
+        "task_id": "placement1",
+        "task_type": "placement",
+        "trajectory_id": "abcd1234deadbeef",
+    }
+    rollout = _make_rollout(
+        work_dir=work_dir,
+        turns=[record],
+        final_reward=0.7321,
+        metadata=metadata,
+    )
     metrics = {"xml_parse_success": 1.0, "render_success": 1.0}
     write_trajectory_artifacts(rollout, metrics=metrics)
 
@@ -351,12 +366,14 @@ def test_write_trajectory_artifacts_emits_meta_json_html(tmp_path):
     assert meta["first_error_hint"] is None
     assert meta["num_turns"] == 1
     assert meta["max_turns"] == 3
+    assert meta["metadata"] == metadata
     assert "render_success_per_turn" not in meta
     assert "paths" not in meta
 
     traj = json.loads((work_dir / "trajectory.json").read_text(encoding="utf-8"))
     assert traj["schema_version"] == SCHEMA_VERSION
     assert traj["trajectory_id"] == "abcd1234deadbeef"
+    assert traj["metadata"] == metadata
     assert traj["task"]["task_id"] == "placement1"
     assert traj["task"]["task_type"] == "placement"
     assert traj["task"]["blend_file"] == "/data/blendergym/placement1/blender_file.blend"
@@ -378,6 +395,11 @@ def test_write_trajectory_artifacts_emits_meta_json_html(tmp_path):
     assert page.startswith("<!DOCTYPE html>")
     assert 'name="generator" content="blendergym-trajectory-html-v1"' in page
     assert "placement1__abcd1234" in page
+    assert "<strong>env:</strong> blendergym" in page
+    assert "<strong>split:</strong> train" in page
+    assert "<strong>example_id:</strong> 3" in page
+    assert "<strong>task_id:</strong> placement1" in page
+    assert "<code>abcd1234deadbeef</code>" in page
     # Relative image refs (no base64 / data URI inlining).
     assert '<img src="./inputs/goal.png"' in page
     assert '<img src="./inputs/init.png"' in page

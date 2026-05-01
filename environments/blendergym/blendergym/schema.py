@@ -169,6 +169,28 @@ class Rollout:
     # ---- evaluation ----
     final_reward: float | None = None
 
+    # ---- artifact metadata ----
+    # Fixed-schema dict that is mirrored into ``meta.json`` / ``trajectory.json``
+    # / ``trajectory.html`` and is intentionally aligned with the columns
+    # used by ``log_eval_samples`` in ``src/prime_rl/utils/monitor/wandb.py``,
+    # so a wandb sample row can be matched 1:1 to a local artifact directory:
+    #
+    #   {
+    #     "env": str,            # mirrors wandb sample table column ``env``
+    #     "split": "train" | "eval",
+    #     "example_id": int | None,
+    #     "task_id": str,
+    #     "task_type": str,
+    #     "trajectory_id": str,  # extra (not in wandb table) — needed because
+    #                            # one (env, example_id) can produce multiple
+    #                            # rollouts (rollouts_per_example > 1).
+    #   }
+    #
+    # Do not stuff debug-only fields, absolute paths, or per-step state in here;
+    # path/state is already captured by ``work_dir`` and ``turns``. Keeping the
+    # schema stable is what makes the wandb<->local mapping useful.
+    metadata: dict[str, object] | None = None
+
     # ---- prompt caches (not part of JSON artifacts) ----
     start_code_text: str | None = None
     goal_image_data_url: str | None = None

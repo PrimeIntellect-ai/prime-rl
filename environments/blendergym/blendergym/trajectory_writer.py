@@ -190,11 +190,13 @@ def write_trajectory_artifacts(
         "first_error_hint": next((r.error_hint for r in turns if r.error_hint), None),
         "num_turns": len(turns),
         "max_turns": rollout.max_turns,
+        "metadata": rollout.metadata,
     }
 
     trajectory = {
         "schema_version": SCHEMA_VERSION,
         "trajectory_id": rollout.trajectory_id,
+        "metadata": rollout.metadata,
         "task": {
             "task_id": rollout.task.task_id,
             "task_type": rollout.task.task_type,
@@ -326,9 +328,21 @@ def _render_html_header(rollout: Rollout) -> str:
         if first_err
         else ""
     )
+    meta_block = ""
+    metadata = rollout.metadata
+    if metadata:
+        meta_block = (
+            f'<div class="kv"><strong>env:</strong> {_html_escape(metadata.get("env"))}</div>\n'
+            f'<div class="kv"><strong>split:</strong> {_html_escape(metadata.get("split"))}</div>\n'
+            f'<div class="kv"><strong>example_id:</strong> {_html_escape(metadata.get("example_id"))}</div>\n'
+            f'<div class="kv"><strong>task_id:</strong> {_html_escape(metadata.get("task_id"))}</div>\n'
+            f'<div class="kv"><strong>trajectory_id:</strong> '
+            f'<code>{_html_escape(metadata.get("trajectory_id"))}</code></div>\n'
+        )
 
     return (
         f"<h1>{task_id}__{short}</h1>\n"
+        f"{meta_block}"
         f'<div class="kv"><strong>final_reward:</strong> {_html_escape(reward_txt)}</div>\n'
         f'<div class="kv"><strong>exit_statuses:</strong> {pills_html}</div>\n'
         f"{err_block}"
