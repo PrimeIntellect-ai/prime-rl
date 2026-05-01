@@ -109,6 +109,7 @@ dev = [
 
 
 [tool.uv]
+exclude-newer = "7 days"
 preview = true
 no-build-isolation-package = ["flash-attn"]
 environments = [
@@ -122,6 +123,39 @@ override-dependencies = [
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
 ]
+
+[tool.uv.exclude-newer-package]
+# pytorch-cu128 / pytorch-cu128-test indexes don't publish upload dates
+torch = false
+flash_attn_3 = false
+# Self-vendored packages on our primeintellect index
+reverse-text = false
+alphabet-sort = false
+wiki-search = false
+math-python = false
+math-env = false
+code-env = false
+science-env = false
+logic-env = false
+color-codeword = false
+math500 = false
+aime2024 = false
+aime2025 = false
+deepdive = false
+mini_swe_agent_plus = false
+# PrimeIntellect-published on PyPI (trusted publisher)
+prime = false
+prime-sandboxes = false
+prime-tunnel = false
+prime-evals = false
+# Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
+verifiers = false
+vllm-router = false
+dion = false
+pydantic-config = false
+deep-ep = false
+deep-gemm = false
+nixl-cu12 = false
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
