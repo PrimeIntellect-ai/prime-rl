@@ -17,6 +17,8 @@ from prime_rl.configs.sft import (
     CaterpillarPerBranchDataConfig,
     DataConfig,
     LossMaskConfig,
+    SFTCaterpillarDataConfig,
+    SFTCaterpillarPerBranchDataConfig,
     SFTDataConfig,
 )
 from prime_rl.trainer.tree import build_caterpillar, pack_tree
@@ -256,6 +258,185 @@ class CaterpillarPerBranchDataset(StatefulIterableDataset):
             sample = self._build_sample(self.step - 1)
             self.num_samples["caterpillar_per_branch"] += 1
             self.num_tokens["caterpillar_per_branch"] += len(sample["input_ids"])
+            yield sample
+
+
+def _find_subsequence(haystack: list[int], needle: list[int]) -> int:
+    """Return the start index of the first occurrence of `needle` in `haystack`, or -1."""
+    if not needle or len(haystack) < len(needle):
+        return -1
+    n = len(needle)
+    for i in range(len(haystack) - n + 1):
+        if haystack[i : i + n] == needle:
+            return i
+    return -1
+
+
+def _split_real_caterpillar_ids(
+    tokenizer: PreTrainedTokenizer,
+    user_messages: list[dict],
+    assistant_message: dict,
+) -> tuple[list[int], list[int], list[int]] | None:
+    """Render messages via chat template and split tokens into (prefix, think, response).
+
+    Returns None when the assistant content does not contain a ``<think>...</think>`` pair
+    or when the resulting segments cannot be located in the rendered token stream.
+    """
+    full_text = tokenizer.apply_chat_template(list(user_messages) + [assistant_message], tokenize=False)
+    all_ids = tokenizer.encode(full_text, add_special_tokens=False)
+
+    open_ids = tokenizer.encode("<think>", add_special_tokens=False)
+    close_ids = tokenizer.encode("</think>", add_special_tokens=False)
+
+    open_pos = _find_subsequence(all_ids, open_ids)
+    if open_pos < 0:
+        return None
+    close_search_start = open_pos + len(open_ids)
+    close_offset = _find_subsequence(all_ids[close_search_start:], close_ids)
+    if close_offset < 0:
+        return None
+    close_pos = close_search_start + close_offset
+    close_end = close_pos + len(close_ids)
+
+    prefix_ids = all_ids[:open_pos]
+    think_ids = all_ids[open_pos:close_end]
+    response_ids = all_ids[close_end:]
+    if not prefix_ids or not think_ids or not response_ids:
+        return None
+    return prefix_ids, think_ids, response_ids
+
+
+class _SFTCaterpillarBase(StatefulIterableDataset):
+    """Common loader for the realistic SFT caterpillar datasets.
+
+    Wraps an HF dataset of (prompt, completion) examples where the assistant's
+    ``content`` carries a ``<think>...</think>`` segment. Each example yields a
+    1-turn caterpillar tree (or its per-branch unrolled samples in the subclass).
+    """
+
+    def __init__(
+        self,
+        config: SFTCaterpillarDataConfig | SFTCaterpillarPerBranchDataConfig,
+        tokenizer: PreTrainedTokenizer,
+    ):
+        super().__init__()
+        self.config = config
+        self.tokenizer = tokenizer
+        self.logger = get_logger()
+        ds = load_dataset(config.name, config.subset, split=config.split)
+        self.dataset = cast(Dataset, ds)
+        self.num_examples = len(self.dataset)
+        self.K = 2  # 1-turn caterpillar has exactly 2 leaves: think and response
+
+    def _build_tree(self, example_idx: int):
+        example = cast(dict, self.dataset[example_idx])
+        prompt = example["prompt"]
+        completion = example["completion"]
+        if not isinstance(prompt, list) or not isinstance(completion, list) or not completion:
+            return None
+        assistant_msg = completion[0]
+        if assistant_msg.get("role") != "assistant" or not isinstance(assistant_msg.get("content"), str):
+            return None
+        assistant_msg = {"role": "assistant", "content": assistant_msg["content"]}
+        split = _split_real_caterpillar_ids(self.tokenizer, prompt, assistant_msg)
+        if split is None:
+            return None
+        prefix_ids, think_ids, response_ids = split
+        if len(prefix_ids) + len(think_ids) + len(response_ids) > self.config.seq_len:
+            return None
+        return build_caterpillar(
+            turns=[(prefix_ids, think_ids, response_ids)],
+            train_response=self.config.train_response,
+            train_think=self.config.train_think,
+        )
+
+    def _example_index(self, draw_idx: int) -> int:
+        if not self.config.shuffle:
+            return draw_idx % self.num_examples
+        # Deterministic shuffle keyed by epoch + seed; advances every full pass.
+        epoch = draw_idx // self.num_examples
+        within = draw_idx % self.num_examples
+        g = torch.Generator().manual_seed(self.config.seed + epoch)
+        perm = torch.randperm(self.num_examples, generator=g).tolist()
+        return perm[within]
+
+
+class SFTCaterpillarDataset(_SFTCaterpillarBase):
+    """Yields one packed caterpillar tree per example."""
+
+    def __init__(self, config: SFTCaterpillarDataConfig, tokenizer: PreTrainedTokenizer):
+        super().__init__(config, tokenizer)
+
+    def _build_sample(self, draw_idx: int) -> TreeSample | None:
+        tree = self._build_tree(self._example_index(draw_idx))
+        if tree is None:
+            return None
+        packed = pack_tree(tree)
+        input_ids = packed.input_ids.tolist()
+        return {
+            "input_ids": input_ids,
+            "target_ids": input_ids,
+            "position_ids": packed.position_ids.tolist(),
+            "loss_mask": packed.loss_mask.tolist(),
+            "attn_mask": packed.attn_mask.tolist(),
+            "prev_map": packed.prev_map.tolist(),
+            "loss_weights": packed.loss_weights.tolist(),
+        }
+
+    def __iter__(self):
+        while True:
+            self.step += 1
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+            sample = self._build_sample(self.step - 1)
+            if sample is None:
+                continue
+            self.num_samples["sft_caterpillar"] += 1
+            self.num_tokens["sft_caterpillar"] += len(sample["input_ids"])
+            yield sample
+
+
+class SFTCaterpillarPerBranchDataset(_SFTCaterpillarBase):
+    """Per-branch counterpart of SFTCaterpillarDataset.
+
+    Yields each leaf's root-to-leaf path as a flat SFT sample. K = 2 samples per tree.
+    """
+
+    def __init__(self, config: SFTCaterpillarPerBranchDataConfig, tokenizer: PreTrainedTokenizer):
+        super().__init__(config, tokenizer)
+
+    def _build_sample(self, draw_idx: int) -> Sample | None:
+        tree_idx = draw_idx // self.K
+        leaf_position = draw_idx % self.K
+        tree = self._build_tree(self._example_index(tree_idx))
+        if tree is None:
+            return None
+        leaves = tree.leaves()
+        if leaf_position >= len(leaves):
+            return None
+        leaf_idx = leaves[leaf_position]
+        path = tree.root_path(leaf_idx)
+        ids = [t for n in path for t in tree.nodes[n].token_ids]
+        masks = [m for n in path for m in tree.nodes[n].loss_mask]
+        if len(ids) < 2:
+            return None
+        return {
+            "input_ids": ids[:-1],
+            "target_ids": ids[1:],
+            "position_ids": list(range(len(ids) - 1)),
+            "loss_mask": masks[1:],
+        }
+
+    def __iter__(self):
+        while True:
+            self.step += 1
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+            sample = self._build_sample(self.step - 1)
+            if sample is None:
+                continue
+            self.num_samples["sft_caterpillar_per_branch"] += 1
+            self.num_tokens["sft_caterpillar_per_branch"] += len(sample["input_ids"])
             yield sample
 
 
@@ -703,6 +884,10 @@ def setup_dataset(
         return CaterpillarFakeDataset(config, tokenizer.vocab_size)
     elif config.type == "caterpillar_per_branch":
         return CaterpillarPerBranchDataset(config, tokenizer.vocab_size)
+    elif config.type == "sft_caterpillar":
+        return SFTCaterpillarDataset(config, tokenizer)
+    elif config.type == "sft_caterpillar_per_branch":
+        return SFTCaterpillarPerBranchDataset(config, tokenizer)
     elif config.type == "sft":
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
@@ -721,7 +906,12 @@ def setup_dataset(
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
-    if config.type in ("caterpillar_fake", "caterpillar_per_branch"):
+    if config.type in (
+        "caterpillar_fake",
+        "caterpillar_per_branch",
+        "sft_caterpillar",
+        "sft_caterpillar_per_branch",
+    ):
         return StatefulDataLoader(dataset, batch_size=1, collate_fn=cat_collate)
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, config.seq_len * config.micro_batch_size)

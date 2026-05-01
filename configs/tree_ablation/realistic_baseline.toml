@@ -1,0 +1,36 @@
+max_steps = 200
+output_dir = "outputs/tree_ablation/realistic_baseline"
+clean_output_dir = true
+matmul_precision = "highest"
+
+[wandb]
+project = "prime-rl-tree-ablation"
+group = "qwen3-0.6b-realistic-200step-v1"
+name = "baseline-realistic-per-branch"
+tags = ["tree-training", "v1", "realistic", "intellect-3-sft", "ablation", "baseline"]
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+attn = "sdpa"
+impl = "hf"
+
+[data]
+type = "sft_caterpillar_per_branch"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+subset = "default"
+split = "math"
+# 4 trees per step (matching realistic_tree.toml) * 2 leaves = 8 branches
+batch_size = 8
+micro_batch_size = 1
+pack_function = "cat"
+seq_len = 4096
+seed = 0
+shuffle = true
+train_response = true
+train_think = true
+
+[optim]
+lr = 2e-5
+
+[scheduler]
+type = "constant"

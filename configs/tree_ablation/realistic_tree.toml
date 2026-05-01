@@ -1,0 +1,35 @@
+max_steps = 200
+output_dir = "outputs/tree_ablation/realistic_tree"
+clean_output_dir = true
+matmul_precision = "highest"
+
+[wandb]
+project = "prime-rl-tree-ablation"
+group = "qwen3-0.6b-realistic-200step-v1"
+name = "tree-realistic"
+tags = ["tree-training", "v1", "realistic", "intellect-3-sft", "ablation"]
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+attn = "sdpa"
+impl = "hf"
+
+[data]
+type = "sft_caterpillar"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+subset = "default"
+split = "math"
+batch_size = 4
+micro_batch_size = 1
+pack_function = "cat"
+seq_len = 4096
+seed = 0
+shuffle = true
+train_response = true
+train_think = true
+
+[optim]
+lr = 2e-5
+
+[scheduler]
+type = "constant"
