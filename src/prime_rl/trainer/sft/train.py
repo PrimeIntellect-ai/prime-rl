@@ -505,6 +505,8 @@ def train(config: SFTConfig):
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
+            "loss/sum": step_loss_sum.item(),
+            "loss/token_count": global_token_count_val,
             "loss/nan_count": nan_loss_count,
             "step": progress.step,
         }

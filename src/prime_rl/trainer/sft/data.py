@@ -12,7 +12,13 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import CaterpillarFakeDataConfig, DataConfig, LossMaskConfig, SFTDataConfig
+from prime_rl.configs.sft import (
+    CaterpillarFakeDataConfig,
+    CaterpillarPerBranchDataConfig,
+    DataConfig,
+    LossMaskConfig,
+    SFTDataConfig,
+)
 from prime_rl.trainer.tree import build_caterpillar, pack_tree
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import (
@@ -181,6 +187,74 @@ class CaterpillarFakeDataset(StatefulIterableDataset):
             sample = self._build_sample(self.step - 1)
             self.num_samples["caterpillar_fake"] += 1
             self.num_tokens["caterpillar_fake"] += len(sample["input_ids"])
+            yield sample
+
+
+class CaterpillarPerBranchDataset(StatefulIterableDataset):
+    """Per-branch counterpart of CaterpillarFakeDataset.
+
+    Builds the same caterpillar trees with the same seed and per-tree turns, then
+    yields each leaf's root-to-leaf path as an independent flat SFT sample. K
+    consecutive samples (K = num_turns) come from the same tree before moving on
+    to the next.
+    """
+
+    def __init__(
+        self,
+        config: CaterpillarPerBranchDataConfig,
+        tokenizer_vocab_size: int,
+    ):
+        super().__init__()
+        self.config = config
+        self.vocab_size = config.vocab_size or tokenizer_vocab_size
+        self.K = config.num_turns
+
+    def _rand_len(self, bounds: tuple[int, int], generator: torch.Generator) -> int:
+        low, high = bounds
+        return int(torch.randint(low, high + 1, (1,), generator=generator).item())
+
+    def _rand_ids(self, length: int, generator: torch.Generator) -> list[int]:
+        return torch.randint(0, self.vocab_size, (length,), generator=generator).tolist()
+
+    def _build_tree(self, tree_idx: int):
+        generator = torch.Generator().manual_seed(self.config.seed + tree_idx)
+        turns = []
+        for _ in range(self.config.num_turns):
+            user_ids = self._rand_ids(self._rand_len(self.config.user_len, generator), generator)
+            think_ids = self._rand_ids(self._rand_len(self.config.think_len, generator), generator)
+            response_ids = self._rand_ids(self._rand_len(self.config.response_len, generator), generator)
+            turns.append((user_ids, think_ids, response_ids))
+        return build_caterpillar(
+            turns,
+            train_response=self.config.train_response,
+            train_think=self.config.train_think,
+        )
+
+    def _build_sample(self, sample_idx: int) -> Sample:
+        tree_idx = sample_idx // self.K
+        leaf_position = sample_idx % self.K
+        tree = self._build_tree(tree_idx)
+        leaf_idx = tree.leaves()[leaf_position]
+        path = tree.root_path(leaf_idx)
+        ids = [t for n in path for t in tree.nodes[n].token_ids]
+        masks = [m for n in path for m in tree.nodes[n].loss_mask]
+        return {
+            "input_ids": ids[:-1],
+            "target_ids": ids[1:],
+            "position_ids": list(range(len(ids) - 1)),
+            "loss_mask": masks[1:],
+        }
+
+    def __iter__(self):
+        while True:
+            self.step += 1
+
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+
+            sample = self._build_sample(self.step - 1)
+            self.num_samples["caterpillar_per_branch"] += 1
+            self.num_tokens["caterpillar_per_branch"] += len(sample["input_ids"])
             yield sample
 
 
@@ -626,6 +700,8 @@ def setup_dataset(
         )
     elif config.type == "caterpillar_fake":
         return CaterpillarFakeDataset(config, tokenizer.vocab_size)
+    elif config.type == "caterpillar_per_branch":
+        return CaterpillarPerBranchDataset(config, tokenizer.vocab_size)
     elif config.type == "sft":
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)

@@ -80,6 +80,41 @@ class CaterpillarFakeDataConfig(BaseDataConfig):
         return self
 
 
+class CaterpillarPerBranchDataConfig(BaseDataConfig):
+    """Per-branch baseline counterpart of CaterpillarFakeDataConfig.
+
+    Builds the same caterpillar trees (same seed, same turns), then yields each
+    leaf's root-to-leaf token path as an independent flat SFT sample. Pair with
+    CaterpillarFakeDataConfig (same fields) to form a tree-vs-baseline ablation.
+    """
+
+    type: Literal["caterpillar_per_branch"] = "caterpillar_per_branch"
+
+    vocab_size: Annotated[int | None, Field(ge=1)] = None
+    num_turns: Annotated[int, Field(ge=1)] = 3
+    turns: Annotated[int | None, Field(ge=1)] = None
+    user_len: tuple[int, int] = (4, 4)
+    think_len: tuple[int, int] = (6, 6)
+    response_len: tuple[int, int] = (6, 6)
+    seed: int = 0
+    train_response: bool = True
+    train_think: bool = True
+
+    @model_validator(mode="after")
+    def validate_caterpillar_per_branch(self):
+        if self.turns is not None:
+            self.num_turns = self.turns
+        for name in ("user_len", "think_len", "response_len"):
+            low, high = getattr(self, name)
+            if low < 1 or high < 1:
+                raise ValueError(f"{name} bounds must be at least 1")
+            if low > high:
+                raise ValueError(f"{name} lower bound must be <= upper bound")
+        if not (self.train_response or self.train_think):
+            raise ValueError("At least one of train_response or train_think must be true")
+        return self
+
+
 class LossMaskConfig(BaseConfig):
     """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
 
@@ -145,7 +180,8 @@ class SFTValConfig(BaseConfig):
 
 
 DataConfig: TypeAlias = Annotated[
-    FakeDataConfig | CaterpillarFakeDataConfig | SFTDataConfig, Field(discriminator="type")
+    FakeDataConfig | CaterpillarFakeDataConfig | CaterpillarPerBranchDataConfig | SFTDataConfig,
+    Field(discriminator="type"),
 ]
 
 

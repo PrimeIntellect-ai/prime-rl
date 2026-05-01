@@ -1,0 +1,38 @@
+max_steps = 1000
+output_dir = "outputs/tree_ablation/tree"
+clean_output_dir = true
+matmul_precision = "highest"
+
+[wandb]
+project = "prime-rl-tree-ablation"
+group = "qwen3-0.6b-1000step-v1"
+name = "tree"
+tags = ["tree-training", "v1", "caterpillar", "ablation"]
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+attn = "sdpa"
+impl = "hf"
+
+[data]
+type = "caterpillar_fake"
+batch_size = 8
+micro_batch_size = 1
+pack_function = "cat"
+seq_len = 512
+num_turns = 4
+user_len = [6, 8]
+think_len = [10, 14]
+response_len = [12, 16]
+seed = 0
+train_response = true
+train_think = true
+
+[optim]
+lr = 2e-5
+
+[scheduler]
+type = "constant"
+
+[ckpt]
+interval = 500
