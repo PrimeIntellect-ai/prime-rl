@@ -1,21 +1,14 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: "Branch, tag, or commit to build"
-        required: false
-        default: "main"
-        type: string
-
+  push:
+    branches: [main]
+    tags:
+      - "*"
 jobs:
   cuda:
     name: Push CUDA image to Docker
     runs-on: image-builder
-    permissions:
-      contents: read
-      packages: write
     steps:
       - name: Remove unnecessary packages
         run: |
@@ -31,15 +24,12 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v3
-        with:
-          ref: ${{ inputs.ref || github.ref }}
       - name: Docker meta
         id: meta
         uses: crazy-max/ghaction-docker-meta@v2
         with:
           images: |
             primeintellect/prime-rl
-            ghcr.io/primeintellect-ai/prime-rl
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -58,14 +48,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-
-      - name: Login to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v1
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
         id: docker_build
