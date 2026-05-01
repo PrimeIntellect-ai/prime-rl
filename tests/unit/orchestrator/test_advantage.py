@@ -70,7 +70,8 @@ def test_efficiency_mixed_group():
     assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(1), atol=1e-6)
 
     # All correct rollouts have positive advantage
-    correct_mask = inputs.rewards[0] >= 1.0
+    rewards = torch.tensor([r["reward"] for r in inputs.rollouts[0]])
+    correct_mask = rewards >= 1.0
     assert (result.advantages[0][correct_mask] > 0).all()
 
 
@@ -253,4 +254,5 @@ def test_setup_advantage_fn_with_custom_config():
 
 def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> AdvantageOutputs:
     """A simple custom advantage for testing."""
-    return AdvantageOutputs(advantages=inputs.rewards * scale)
+    rewards = torch.tensor([[r["reward"] for r in group] for group in inputs.rollouts])
+    return AdvantageOutputs(advantages=rewards * scale)

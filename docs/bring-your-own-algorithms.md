@@ -88,9 +88,6 @@ def my_custom_advantage(inputs: AdvantageInputs, **kwargs) -> AdvantageOutputs:
 class AdvantageInputs:
     # Rollouts grouped by problem: rollouts[i][j] is the j-th rollout for problem i.
     rollouts: list[list[vf.RolloutOutput]]
-
-    @property
-    def rewards(self) -> Float[Tensor, "num_examples rollouts_per_example"]: ...
 ```
 
 Each `vf.RolloutOutput` carries the full rollout (`reward`, `trajectory`, etc.), so custom advantages can read any metadata they need (e.g. completion-token counts, turn counts, tool calls).
@@ -111,9 +108,10 @@ from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs
 
 def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
     """Normalize advantages to zero mean and unit variance per example."""
-    mean = inputs.rewards.mean(dim=1, keepdim=True)
-    std = inputs.rewards.std(dim=1, keepdim=True)
-    advantages = (inputs.rewards - mean) / (std + eps)
+    rewards = torch.tensor([[r["reward"] for r in group] for group in inputs.rollouts])
+    mean = rewards.mean(dim=1, keepdim=True)
+    std = rewards.std(dim=1, keepdim=True)
+    advantages = (rewards - mean) / (std + eps)
     return AdvantageOutputs(advantages=advantages)
 ```
 

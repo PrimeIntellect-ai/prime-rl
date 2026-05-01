@@ -23,10 +23,6 @@ class AdvantageInputs:
 
     rollouts: list[list[vf.RolloutOutput]]
 
-    @property
-    def rewards(self) -> Float[Tensor, "num_problems rollouts_per_example"]:
-        return torch.tensor([[r["reward"] for r in group] for group in self.rollouts])
-
 
 @dataclass
 class AdvantageOutputs:
@@ -49,7 +45,7 @@ def default_advantage_fn(
     length_penalty: LengthPenalty | None = None,
 ) -> AdvantageOutputs:
     """Default GRPO advantage: reward minus per-problem baseline."""
-    rewards = inputs.rewards
+    rewards = torch.tensor([[r["reward"] for r in group] for group in inputs.rollouts])
 
     if length_penalty == "tokens":
         costs = torch.tensor(
