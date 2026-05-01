@@ -86,9 +86,14 @@ def my_custom_advantage(inputs: AdvantageInputs, **kwargs) -> AdvantageOutputs:
 ```python
 @dataclass
 class AdvantageInputs:
-    rewards: Float[Tensor, "num_examples rollouts_per_example"]
-    completion_lengths: Int[Tensor, "num_examples rollouts_per_example"]
+    # Rollouts grouped by problem: rollouts[i][j] is the j-th rollout for problem i.
+    rollouts: list[list[vf.RolloutOutput]]
+
+    @property
+    def rewards(self) -> Float[Tensor, "num_examples rollouts_per_example"]: ...
 ```
+
+Each `vf.RolloutOutput` carries the full rollout (`reward`, `trajectory`, etc.), so custom advantages can read any metadata they need (e.g. completion-token counts, turn counts, tool calls).
 
 #### AdvantageOutputs
 

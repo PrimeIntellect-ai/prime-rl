@@ -10,10 +10,38 @@ from prime_rl.orchestrator.advantage import (
 )
 
 
+def _make_rollout(reward: float, completion_len: int = 0, num_turns: int = 1) -> dict:
+    """Create a minimal rollout dict for advantage testing.
+
+    `completion_len` tokens are split across `num_turns` trajectory steps.
+    """
+    per_turn, rem = divmod(completion_len, max(num_turns, 1))
+    trajectory = [
+        {"tokens": {"prompt_ids": [0], "completion_ids": list(range(per_turn + (rem if i == 0 else 0)))}}
+        for i in range(num_turns)
+    ]
+    return {"reward": reward, "trajectory": trajectory}
+
+
+def _make_inputs(rewards, completion_lengths=None, num_turns=None) -> AdvantageInputs:
+    """Build AdvantageInputs from 2D arrays of rewards/lengths/turns."""
+    rewards_t = torch.as_tensor(rewards, dtype=torch.float32)
+    num_problems, rollouts_per_example = rewards_t.shape
+    rollouts = []
+    for i in range(num_problems):
+        group = []
+        for j in range(rollouts_per_example):
+            cl = int(completion_lengths[i][j]) if completion_lengths is not None else 0
+            nt = int(num_turns[i][j]) if num_turns is not None else 1
+            group.append(_make_rollout(float(rewards_t[i, j]), cl, nt))
+        rollouts.append(group)
+    return AdvantageInputs(rollouts=rollouts)
+
+
 def test_default_advantage_fn_simple_mean():
-    inputs = AdvantageInputs(
-        rewards=torch.tensor([[1.0, 0.5, 0.8], [0.2, 0.9, 0.1]]),
-        completion_lengths=torch.tensor([[10, 12, 8], [15, 11, 9]]),
+    inputs = _make_inputs(
+        rewards=[[1.0, 0.5, 0.8], [0.2, 0.9, 0.1]],
+        completion_lengths=[[10, 12, 8], [15, 11, 9]],
     )
     result = default_advantage_fn(inputs)
 
@@ -24,9 +52,9 @@ def test_default_advantage_fn_simple_mean():
 
 def test_efficiency_mixed_group():
     """Mixed group: reward shaping preserves zero-mean, shorter correct gets higher advantage."""
-    inputs = AdvantageInputs(
-        rewards=torch.tensor([[1.0, 1.0, 0.0, 1.0]]),
-        completion_lengths=torch.tensor([[10, 30, 20, 20]]),
+    inputs = _make_inputs(
+        rewards=[[1.0, 1.0, 0.0, 1.0]],
+        completion_lengths=[[10, 30, 20, 20]],
     )
     result = default_advantage_fn(inputs, length_penalty="tokens")
 
@@ -48,9 +76,9 @@ def test_efficiency_mixed_group():
 
 def test_efficiency_all_correct_group():
     """All-correct group: zero-mean, shorter gets higher advantage."""
-    inputs = AdvantageInputs(
-        rewards=torch.tensor([[1.0, 1.0, 1.0]]),
-        completion_lengths=torch.tensor([[10, 20, 40]]),
+    inputs = _make_inputs(
+        rewards=[[1.0, 1.0, 1.0]],
+        completion_lengths=[[10, 20, 40]],
     )
     result = default_advantage_fn(inputs, length_penalty="tokens")
 
@@ -73,9 +101,9 @@ def test_efficiency_all_correct_group():
 
 def test_efficiency_all_zero_rewards():
     """When all rewards are 0, no length shaping — falls back to standard GRPO."""
-    inputs = AdvantageInputs(
-        rewards=torch.tensor([[0.0, 0.0, 0.0]]),
-        completion_lengths=torch.tensor([[10, 20, 15]]),
+    inputs = _make_inputs(
+        rewards=[[0.0, 0.0, 0.0]],
+        completion_lengths=[[10, 20, 15]],
     )
     result_with = default_advantage_fn(inputs, length_penalty="tokens")
     result_without = default_advantage_fn(inputs)
@@ -85,9 +113,9 @@ def test_efficiency_all_zero_rewards():
 
 def test_efficiency_single_correct():
     """Single correct rollout: bonus=0 (at its own mean), same as standard GRPO."""
-    inputs = AdvantageInputs(
-        rewards=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
-        completion_lengths=torch.tensor([[100, 50, 200, 150]]),
+    inputs = _make_inputs(
+        rewards=[[1.0, 0.0, 0.0, 0.0]],
+        completion_lengths=[[100, 50, 200, 150]],
     )
     result = default_advantage_fn(inputs, length_penalty="tokens")
 
@@ -97,9 +125,9 @@ def test_efficiency_single_correct():
 
 def test_efficiency_shorter_correct_higher_advantage():
     """Among correct rollouts in a mixed group, shorter always gets higher advantage."""
-    inputs = AdvantageInputs(
-        rewards=torch.tensor([[1.0, 1.0, 1.0, 0.0, 0.0]]),
-        completion_lengths=torch.tensor([[50, 100, 200, 80, 120]]),
+    inputs = _make_inputs(
+        rewards=[[1.0, 1.0, 1.0, 0.0, 0.0]],
+        completion_lengths=[[50, 100, 200, 80, 120]],
     )
     result = default_advantage_fn(inputs, length_penalty="tokens")
 
@@ -111,19 +139,15 @@ def test_efficiency_shorter_correct_higher_advantage():
 
 def test_efficiency_zero_mean_per_group():
     """Reward shaping preserves zero-mean advantages per group."""
-    inputs = AdvantageInputs(
-        rewards=torch.tensor(
-            [
-                [1.0, 1.0, 0.0, 1.0],  # mixed
-                [1.0, 1.0, 1.0, 1.0],  # all correct
-            ]
-        ),
-        completion_lengths=torch.tensor(
-            [
-                [10, 30, 20, 20],
-                [10, 20, 40, 80],
-            ]
-        ),
+    inputs = _make_inputs(
+        rewards=[
+            [1.0, 1.0, 0.0, 1.0],  # mixed
+            [1.0, 1.0, 1.0, 1.0],  # all correct
+        ],
+        completion_lengths=[
+            [10, 30, 20, 20],
+            [10, 20, 40, 80],
+        ],
     )
     result = default_advantage_fn(inputs, length_penalty="tokens")
 
@@ -132,9 +156,9 @@ def test_efficiency_zero_mean_per_group():
 
 def test_efficiency_amplification_bounded():
     """Even with extreme length outliers, reward amplification is capped at 2x."""
-    inputs = AdvantageInputs(
-        rewards=torch.tensor([[1.0, 1.0, 0.0]]),
-        completion_lengths=torch.tensor([[1, 10000, 5000]]),
+    inputs = _make_inputs(
+        rewards=[[1.0, 1.0, 0.0]],
+        completion_lengths=[[1, 10000, 5000]],
     )
     result = default_advantage_fn(inputs, length_penalty="tokens")
 
@@ -146,19 +170,15 @@ def test_efficiency_amplification_bounded():
 
 def test_efficiency_multiple_problems():
     """Handles multiple problems independently."""
-    inputs = AdvantageInputs(
-        rewards=torch.tensor(
-            [
-                [1.0, 1.0, 0.0],  # mixed
-                [1.0, 1.0, 1.0],  # all correct
-            ]
-        ),
-        completion_lengths=torch.tensor(
-            [
-                [10, 20, 15],
-                [10, 20, 40],
-            ]
-        ),
+    inputs = _make_inputs(
+        rewards=[
+            [1.0, 1.0, 0.0],  # mixed
+            [1.0, 1.0, 1.0],  # all correct
+        ],
+        completion_lengths=[
+            [10, 20, 15],
+            [10, 20, 40],
+        ],
     )
     result = default_advantage_fn(inputs, length_penalty="tokens")
 
@@ -174,12 +194,20 @@ def test_efficiency_multiple_problems():
     assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
 
 
-def _make_rollout(reward: float, completion_len: int) -> dict:
-    """Create a minimal rollout dict for advantage testing."""
-    return {
-        "reward": reward,
-        "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(completion_len))}}],
-    }
+def test_efficiency_turns_penalty():
+    """`length_penalty='turns'` shapes by trajectory turn count rather than token count."""
+    inputs = _make_inputs(
+        rewards=[[1.0, 1.0, 0.0, 1.0]],
+        # token counts identical, but turns differ — turns penalty should still differentiate
+        completion_lengths=[[100, 100, 100, 100]],
+        num_turns=[[1, 3, 2, 2]],
+    )
+    result = default_advantage_fn(inputs, length_penalty="turns")
+
+    # mean_correct_turns = (1+3+2)/3 = 2
+    # bonus = clamp(1 - [1,3,2,2]/2, 0, 1) = [0.5, 0, 0, 0]
+    expected = torch.tensor([[0.625, 0.125, -0.875, 0.125]])
+    assert torch.allclose(result.advantages, expected, atol=1e-6)
 
 
 def test_compute_advantages_with_config():
@@ -213,9 +241,9 @@ def test_setup_advantage_fn_with_custom_config():
     )
     advantage_fn = setup_advantage_fn(config)
 
-    inputs = AdvantageInputs(
-        rewards=torch.tensor([[1.0, 0.5, 0.8]]),
-        completion_lengths=torch.tensor([[10, 12, 8]]),
+    inputs = _make_inputs(
+        rewards=[[1.0, 0.5, 0.8]],
+        completion_lengths=[[10, 12, 8]],
     )
 
     result = advantage_fn(inputs)

@@ -3,7 +3,7 @@ from typing import Callable, Literal
 
 import torch
 import verifiers as vf
-from jaxtyping import Float, Int
+from jaxtyping import Float
 from torch import Tensor
 
 from prime_rl.configs.orchestrator import AdvantageConfig, CustomAdvantageConfig
@@ -15,11 +15,17 @@ LengthPenalty = Literal["tokens", "turns"]
 
 @dataclass
 class AdvantageInputs:
-    """Inputs for advantage computation."""
+    """Inputs for advantage computation.
 
-    rewards: Float[Tensor, "num_problems rollouts_per_example"]
-    completion_lengths: Int[Tensor, "num_problems rollouts_per_example"]
-    num_turns: Int[Tensor, "num_problems rollouts_per_example"] | None = None
+    `rollouts` is grouped by problem: `rollouts[i][j]` is the j-th rollout for problem i,
+    so `len(rollouts) == num_problems` and `len(rollouts[0]) == rollouts_per_example`.
+    """
+
+    rollouts: list[list[vf.RolloutOutput]]
+
+    @property
+    def rewards(self) -> Float[Tensor, "num_problems rollouts_per_example"]:
+        return torch.tensor([[r["reward"] for r in group] for group in self.rollouts])
 
 
 @dataclass
@@ -46,11 +52,16 @@ def default_advantage_fn(
     rewards = inputs.rewards
 
     if length_penalty == "tokens":
-        costs = inputs.completion_lengths.to(dtype=rewards.dtype)
+        costs = torch.tensor(
+            [[get_model_completion_len(r) for r in group] for group in inputs.rollouts],
+            dtype=rewards.dtype,
+        )
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs))
     if length_penalty == "turns":
-        assert inputs.num_turns is not None, "num_turns required for turns length penalty"
-        costs = inputs.num_turns.to(dtype=rewards.dtype)
+        costs = torch.tensor(
+            [[get_num_turns(r) for r in group] for group in inputs.rollouts],
+            dtype=rewards.dtype,
+        )
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs))
 
     baseline = rewards.mean(dim=1, keepdim=True)
@@ -135,14 +146,8 @@ def compute_advantages(
         return
 
     advantage_fn = setup_advantage_fn(advantage_config)
-    completion_lengths = [get_model_completion_len(r) for r in rollouts]
-    num_turns = [get_num_turns(r) for r in rollouts]
-
-    inputs = AdvantageInputs(
-        rewards=torch.tensor(rewards).view(-1, samples_per_problem),
-        completion_lengths=torch.tensor(completion_lengths).view(-1, samples_per_problem),
-        num_turns=torch.tensor(num_turns).view(-1, samples_per_problem),
-    )
+    grouped = [rollouts[i : i + samples_per_problem] for i in range(0, len(rollouts), samples_per_problem)]
+    inputs = AdvantageInputs(rollouts=grouped)
 
     result = advantage_fn(inputs)
     advantages = result.advantages.flatten().tolist()
