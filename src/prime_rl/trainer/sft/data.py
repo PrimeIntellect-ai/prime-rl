@@ -1,7 +1,7 @@
 import json
 import uuid
 from collections import defaultdict
-from typing import Literal, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast
 
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
@@ -12,7 +12,8 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
+from prime_rl.configs.sft import CaterpillarFakeDataConfig, DataConfig, LossMaskConfig, SFTDataConfig
+from prime_rl.trainer.tree import build_caterpillar, pack_tree
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import (
     IncrementalTokenizationError,
@@ -31,6 +32,15 @@ class Sample(TypedDict):
     position_ids: list[int]
     loss_mask: list[bool]
     target_ids: list[int]
+    attn_mask: NotRequired[list[list[bool]]]
+    prev_map: NotRequired[list[int]]
+    loss_weights: NotRequired[list[float]]
+
+
+class TreeSample(Sample):
+    attn_mask: list[list[bool]]
+    prev_map: list[int]
+    loss_weights: list[float]
 
 
 class Batch(TypedDict):
@@ -38,6 +48,9 @@ class Batch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
+    attn_mask: NotRequired[Bool[Tensor, "batch seq seq"]]
+    prev_map: NotRequired[Int[Tensor, "batch seq"]]
+    loss_weights: NotRequired[Tensor]
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -111,6 +124,64 @@ class FakeDataset(StatefulIterableDataset):
             self.num_samples["fake"] += 1
             self.num_tokens["fake"] += len(input_ids)
             yield fake_sample
+
+
+class CaterpillarFakeDataset(StatefulIterableDataset):
+    """A deterministic stream of synthetic caterpillar trees."""
+
+    def __init__(
+        self,
+        config: CaterpillarFakeDataConfig,
+        tokenizer_vocab_size: int,
+    ):
+        super().__init__()
+        self.config = config
+        self.vocab_size = config.vocab_size or tokenizer_vocab_size
+
+    def _rand_len(self, bounds: tuple[int, int], generator: torch.Generator) -> int:
+        low, high = bounds
+        return int(torch.randint(low, high + 1, (1,), generator=generator).item())
+
+    def _rand_ids(self, length: int, generator: torch.Generator) -> list[int]:
+        return torch.randint(0, self.vocab_size, (length,), generator=generator).tolist()
+
+    def _build_sample(self, sample_idx: int) -> TreeSample:
+        generator = torch.Generator().manual_seed(self.config.seed + sample_idx)
+        turns = []
+        for _ in range(self.config.num_turns):
+            user_ids = self._rand_ids(self._rand_len(self.config.user_len, generator), generator)
+            think_ids = self._rand_ids(self._rand_len(self.config.think_len, generator), generator)
+            response_ids = self._rand_ids(self._rand_len(self.config.response_len, generator), generator)
+            turns.append((user_ids, think_ids, response_ids))
+
+        tree = build_caterpillar(
+            turns,
+            train_response=self.config.train_response,
+            train_think=self.config.train_think,
+        )
+        packed = pack_tree(tree)
+        input_ids = packed.input_ids.tolist()
+        return {
+            "input_ids": input_ids,
+            "target_ids": input_ids,
+            "position_ids": packed.position_ids.tolist(),
+            "loss_mask": packed.loss_mask.tolist(),
+            "attn_mask": packed.attn_mask.tolist(),
+            "prev_map": packed.prev_map.tolist(),
+            "loss_weights": packed.loss_weights.tolist(),
+        }
+
+    def __iter__(self):
+        while True:
+            self.step += 1
+
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+
+            sample = self._build_sample(self.step - 1)
+            self.num_samples["caterpillar_fake"] += 1
+            self.num_tokens["caterpillar_fake"] += len(sample["input_ids"])
+            yield sample
 
 
 class SFTDataset(StatefulIterableDataset):
@@ -452,7 +523,7 @@ def stack_collate(samples: list[Sample]) -> Batch:
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
-    return {
+    batch = {
         "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to("cuda"),
         "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0)
         .long()
@@ -460,6 +531,17 @@ def cat_collate(samples: list[Sample]) -> Batch:
         "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
         "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
     }
+    if "attn_mask" in samples[0]:
+        batch["attn_mask"] = (
+            torch.stack([torch.tensor(sample["attn_mask"]) for sample in samples], dim=0).bool().to("cuda")
+        )
+        batch["prev_map"] = (
+            torch.stack([torch.tensor(sample["prev_map"]) for sample in samples], dim=0).long().to("cuda")
+        )
+        batch["loss_weights"] = (
+            torch.stack([torch.tensor(sample["loss_weights"]) for sample in samples], dim=0).float().to("cuda")
+        )
+    return batch
 
 
 def setup_and_interleave_datasets(
@@ -542,6 +624,8 @@ def setup_dataset(
         return FakeDataset(
             vocab_size=tokenizer.vocab_size, seq_len=config.seq_len, length=config.length, input_ids=config.input_ids
         )
+    elif config.type == "caterpillar_fake":
+        return CaterpillarFakeDataset(config, tokenizer.vocab_size)
     elif config.type == "sft":
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
@@ -560,6 +644,8 @@ def setup_dataset(
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
+    if config.type == "caterpillar_fake":
+        return StatefulDataLoader(dataset, batch_size=1, collate_fn=cat_collate)
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, config.seq_len * config.micro_batch_size)
         return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)

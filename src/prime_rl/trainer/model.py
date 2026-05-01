@@ -1120,6 +1120,7 @@ def forward(
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
+    attn_mask: Tensor | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     # Multimodal fields (Qwen3-VL)
@@ -1148,6 +1149,10 @@ def forward(
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
+    if attn_mask is not None:
+        if attn_mask.ndim == 3:
+            attn_mask = attn_mask.unsqueeze(1)
+        kwargs["attention_mask"] = attn_mask
 
     out = model(**kwargs)
 

@@ -33,6 +33,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
+from prime_rl.trainer.tree import tree_nll_loss
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -211,8 +212,11 @@ def train(config: SFTConfig):
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
+        tree_batch = "attn_mask" in micro_batch
 
         if cp_enabled:
+            if tree_batch:
+                raise ValueError("Tree Training v1 does not support context parallelism")
             input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
@@ -220,10 +224,23 @@ def train(config: SFTConfig):
         if config.model.lora is not None:
             set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
 
-        token_count = loss_mask.sum(dtype=torch.int64)
+        prev_map = None
+        if tree_batch:
+            prev_map = micro_batch["prev_map"].to("cuda")
+            token_count = (loss_mask & (prev_map >= 0)).sum(dtype=torch.int64)
+        else:
+            token_count = loss_mask.sum(dtype=torch.int64)
 
         with maybe_activation_offloading(config.model.ac_offloading):
-            if config.loss_impl in ("liger_fused", "quack_fused"):
+            if tree_batch:
+                attn_mask = micro_batch["attn_mask"].to("cuda").unsqueeze(1)
+                loss_weights = micro_batch["loss_weights"].to("cuda")
+                out = forward(model, input_ids, position_ids, attn_mask=attn_mask)
+                logits = out["logits"]
+                assert prev_map is not None
+                loss_sum = tree_nll_loss(logits, input_ids, prev_map, loss_mask, loss_weights)
+                del logits
+            elif config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
                 out = forward(model, input_ids, position_ids, labels=masked_target_ids)

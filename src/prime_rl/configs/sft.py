@@ -50,6 +50,36 @@ class FakeDataConfig(BaseDataConfig):
     input_ids: Literal["increasing", "random"] = "increasing"
 
 
+class CaterpillarFakeDataConfig(BaseDataConfig):
+    """Configures synthetic tree data for Tree Training v1 validation."""
+
+    type: Literal["caterpillar_fake"] = "caterpillar_fake"
+
+    vocab_size: Annotated[int | None, Field(ge=1)] = None
+    num_turns: Annotated[int, Field(ge=1)] = 3
+    turns: Annotated[int | None, Field(ge=1)] = None
+    user_len: tuple[int, int] = (4, 4)
+    think_len: tuple[int, int] = (6, 6)
+    response_len: tuple[int, int] = (6, 6)
+    seed: int = 0
+    train_response: bool = True
+    train_think: bool = True
+
+    @model_validator(mode="after")
+    def validate_caterpillar_fake(self):
+        if self.turns is not None:
+            self.num_turns = self.turns
+        for name in ("user_len", "think_len", "response_len"):
+            low, high = getattr(self, name)
+            if low < 1 or high < 1:
+                raise ValueError(f"{name} bounds must be at least 1")
+            if low > high:
+                raise ValueError(f"{name} lower bound must be <= upper bound")
+        if not (self.train_response or self.train_think):
+            raise ValueError("At least one of train_response or train_think must be true")
+        return self
+
+
 class LossMaskConfig(BaseConfig):
     """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
 
@@ -114,7 +144,9 @@ class SFTValConfig(BaseConfig):
     data: SFTDataConfig
 
 
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
+DataConfig: TypeAlias = Annotated[
+    FakeDataConfig | CaterpillarFakeDataConfig | SFTDataConfig, Field(discriminator="type")
+]
 
 
 class BaseDeploymentConfig(BaseModel):
@@ -309,6 +341,27 @@ class SFTConfig(BaseConfig):
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_tree_training_v1(self):
+        if self.data.type != "caterpillar_fake":
+            return self
+
+        if self.model.cp != 1:
+            raise ValueError("Tree Training v1 requires model.cp == 1")
+        if self.model.ep != 1:
+            raise ValueError("Tree Training v1 requires model.ep == 1")
+        if self.model.attn != "sdpa":
+            raise ValueError("Tree Training v1 requires model.attn == 'sdpa'")
+        if self.model.impl not in ("hf", "auto"):
+            raise ValueError("Tree Training v1 requires model.impl in {'hf', 'auto'}")
+        if self.loss_impl not in ("torch", "liger"):
+            raise ValueError("Tree Training v1 requires loss_impl in {'torch', 'liger'}")
+        if self.data.pack_function != "cat":
+            raise ValueError("Tree Training v1 requires data.pack_function == 'cat'")
+        if self.data.micro_batch_size != 1:
+            raise ValueError("Tree Training v1 requires data.micro_batch_size == 1")
         return self
 
     @model_validator(mode="after")
