@@ -691,12 +691,12 @@ class DefaultAdvantageConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["default"] = "default"
-    shaping_metric: Annotated[
-        Literal["length", "num_turns"] | None,
+    length_penalty: Annotated[
+        Literal["tokens", "turns"] | None,
         Field(
             description=(
-                "Cost metric for correctness-gated efficiency shaping. `length` shapes by completion-token "
-                "count, `num_turns` shapes by trajectory turn count, `None` disables shaping. In mixed "
+                "Cost metric for correctness-gated length penalty. `tokens` shapes by completion-token "
+                "count, `turns` shapes by trajectory turn count, `None` disables shaping. In mixed "
                 "groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct "
                 "rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost "
                 "rollouts get advantage in [0, 1], others get 0."

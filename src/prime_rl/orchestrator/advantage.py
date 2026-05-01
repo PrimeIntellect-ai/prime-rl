@@ -10,7 +10,7 @@ from prime_rl.configs.orchestrator import AdvantageConfig, CustomAdvantageConfig
 from prime_rl.orchestrator.vf_utils import get_model_completion_len, get_num_turns
 from prime_rl.utils.utils import import_object
 
-ShapingMetric = Literal["length", "num_turns"]
+LengthPenalty = Literal["tokens", "turns"]
 
 
 @dataclass
@@ -40,16 +40,16 @@ Expected signature:
 
 def default_advantage_fn(
     inputs: AdvantageInputs,
-    shaping_metric: ShapingMetric | None = None,
+    length_penalty: LengthPenalty | None = None,
 ) -> AdvantageOutputs:
     """Default GRPO advantage: reward minus per-problem baseline."""
     rewards = inputs.rewards
 
-    if shaping_metric == "length":
+    if length_penalty == "tokens":
         costs = inputs.completion_lengths.to(dtype=rewards.dtype)
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs))
-    if shaping_metric == "num_turns":
-        assert inputs.num_turns is not None, "num_turns required for num_turns shaping"
+    if length_penalty == "turns":
+        assert inputs.num_turns is not None, "num_turns required for turns length penalty"
         costs = inputs.num_turns.to(dtype=rewards.dtype)
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs))
 
@@ -107,7 +107,7 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
     def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
         return default_advantage_fn(
             inputs,
-            shaping_metric=config.shaping_metric,
+            length_penalty=config.length_penalty,
         )
 
     return advantage_fn

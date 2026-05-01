@@ -28,7 +28,7 @@ def test_efficiency_mixed_group():
         rewards=torch.tensor([[1.0, 1.0, 0.0, 1.0]]),
         completion_lengths=torch.tensor([[10, 30, 20, 20]]),
     )
-    result = default_advantage_fn(inputs, shaping_metric="length")
+    result = default_advantage_fn(inputs, length_penalty="tokens")
 
     # mean_correct_len = (10+30+20)/3 = 20
     # bonus = clamp(1 - [10,30,20,20]/20, 0, 1) = [0.5, 0, 0, 0]
@@ -52,7 +52,7 @@ def test_efficiency_all_correct_group():
         rewards=torch.tensor([[1.0, 1.0, 1.0]]),
         completion_lengths=torch.tensor([[10, 20, 40]]),
     )
-    result = default_advantage_fn(inputs, shaping_metric="length")
+    result = default_advantage_fn(inputs, length_penalty="tokens")
 
     # mean_len = 70/3 ≈ 23.33
     # bonus = clamp(1 - [10, 20, 40] / (70/3), 0, 1) = [4/7, 1/7, 0]
@@ -77,7 +77,7 @@ def test_efficiency_all_zero_rewards():
         rewards=torch.tensor([[0.0, 0.0, 0.0]]),
         completion_lengths=torch.tensor([[10, 20, 15]]),
     )
-    result_with = default_advantage_fn(inputs, shaping_metric="length")
+    result_with = default_advantage_fn(inputs, length_penalty="tokens")
     result_without = default_advantage_fn(inputs)
 
     assert torch.allclose(result_with.advantages, result_without.advantages, atol=1e-6)
@@ -89,7 +89,7 @@ def test_efficiency_single_correct():
         rewards=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
         completion_lengths=torch.tensor([[100, 50, 200, 150]]),
     )
-    result = default_advantage_fn(inputs, shaping_metric="length")
+    result = default_advantage_fn(inputs, length_penalty="tokens")
 
     expected = torch.tensor([[0.75, -0.25, -0.25, -0.25]])
     assert torch.allclose(result.advantages, expected, atol=1e-6)
@@ -101,7 +101,7 @@ def test_efficiency_shorter_correct_higher_advantage():
         rewards=torch.tensor([[1.0, 1.0, 1.0, 0.0, 0.0]]),
         completion_lengths=torch.tensor([[50, 100, 200, 80, 120]]),
     )
-    result = default_advantage_fn(inputs, shaping_metric="length")
+    result = default_advantage_fn(inputs, length_penalty="tokens")
 
     advs = result.advantages[0]
     assert advs[0] > advs[1] > advs[2]
@@ -125,7 +125,7 @@ def test_efficiency_zero_mean_per_group():
             ]
         ),
     )
-    result = default_advantage_fn(inputs, shaping_metric="length")
+    result = default_advantage_fn(inputs, length_penalty="tokens")
 
     assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
 
@@ -136,7 +136,7 @@ def test_efficiency_amplification_bounded():
         rewards=torch.tensor([[1.0, 1.0, 0.0]]),
         completion_lengths=torch.tensor([[1, 10000, 5000]]),
     )
-    result = default_advantage_fn(inputs, shaping_metric="length")
+    result = default_advantage_fn(inputs, length_penalty="tokens")
 
     # Shortest correct gets bonus ≈ 1, so shaped_reward ≈ 2
     # Standard reward = 1, so amplification ≈ 2x
@@ -160,7 +160,7 @@ def test_efficiency_multiple_problems():
             ]
         ),
     )
-    result = default_advantage_fn(inputs, shaping_metric="length")
+    result = default_advantage_fn(inputs, length_penalty="tokens")
 
     # Row 0: mixed group — shorter correct > longer correct
     assert result.advantages[0, 0] > result.advantages[0, 1]
