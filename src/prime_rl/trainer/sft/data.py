@@ -207,7 +207,8 @@ class CaterpillarPerBranchDataset(StatefulIterableDataset):
         super().__init__()
         self.config = config
         self.vocab_size = config.vocab_size or tokenizer_vocab_size
-        self.K = config.num_turns
+        # Caterpillar has num_turns think leaves + 1 final response leaf.
+        self.K = config.num_turns + 1
 
     def _rand_len(self, bounds: tuple[int, int], generator: torch.Generator) -> int:
         low, high = bounds
@@ -720,7 +721,7 @@ def setup_dataset(
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
-    if config.type == "caterpillar_fake":
+    if config.type in ("caterpillar_fake", "caterpillar_per_branch"):
         return StatefulDataLoader(dataset, batch_size=1, collate_fn=cat_collate)
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, config.seq_len * config.micro_batch_size)

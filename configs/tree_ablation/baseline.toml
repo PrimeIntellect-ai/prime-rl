@@ -16,7 +16,8 @@ impl = "hf"
 
 [data]
 type = "caterpillar_per_branch"
-batch_size = 32
+# 8 trees per step (matching tree.toml) * (num_turns think leaves + 1 final response leaf) = 8 * 5 = 40
+batch_size = 40
 micro_batch_size = 1
 pack_function = "cat"
 seq_len = 512
