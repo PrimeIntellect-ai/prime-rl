@@ -224,6 +224,25 @@ def test_compute_advantages_with_config():
     assert abs(sum(advantages[3:])) < 1e-5
 
 
+def test_compute_advantages_no_cross_group_leakage():
+    """Per-problem grouping: each problem must be centered against its own mean, in-order.
+
+    Two problems with very different reward scales — cross-group leakage would pull the
+    small-scale group's advantages toward the large-scale group's mean (and vice versa).
+    Distinct positional values also catch slicing/transpose bugs in the flat→grouped→flat
+    round-trip.
+    """
+    rewards = [10.0, 20.0, 30.0, 0.0, 0.1, 0.2]
+    rollouts = [_make_rollout(r) for r in rewards]
+
+    compute_advantages(rollouts, samples_per_problem=3, advantage_config=DefaultAdvantageConfig())
+
+    advantages = [r["advantage"] for r in rollouts]
+    expected = [-10.0, 0.0, 10.0, -0.1, 0.0, 0.1]
+    for got, want in zip(advantages, expected):
+        assert abs(got - want) < 1e-5, (advantages, expected)
+
+
 def test_compute_advantages_without_config():
     rewards = [1.0, 0.5, 0.8]
     lengths = [10, 12, 8]
