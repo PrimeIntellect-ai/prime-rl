@@ -148,7 +148,7 @@ class RendererConfig(BaseConfig):
                 "Renderer to use for chat template tokenization. "
                 "Options: 'auto' (detect from tokenizer), 'qwen3', 'qwen3_vl', "
                 "'qwen3.5', 'glm5', 'glm4.5', 'minimax-m2', 'deepseek_v3', "
-                "'kimi_k2', 'kimi_k25', 'nemotron3', 'gpt_oss', 'default'."
+                "'kimi_k2', 'kimi_k25', 'nemotron3', 'nemotron3_keep_thinking', 'gpt_oss', 'default'."
             ),
         ),
     ] = "auto"
