@@ -1,0 +1,24 @@
+services:
+  redis:
+    image: redis:8-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  modelexpress-server:
+    build:
+      context: https://github.com/ai-dynamo/modelexpress.git#b0c94ed61c65d2c2355a18508977941b9946d8b5
+    ports:
+      - "29501:29501"
+    environment:
+      - MODEL_EXPRESS_SERVER_PORT=29501
+      - MODEL_EXPRESS_LOG_LEVEL=info
+      - MX_METADATA_BACKEND=redis
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
