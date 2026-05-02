@@ -1,3 +1,4 @@
+import os
 import shutil
 import time
 from pathlib import Path
@@ -105,9 +106,23 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
     def _notify_orchestrator(self, save_dir: Path):
-        """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem."""
-        stable_file = save_dir / "STABLE"
-        stable_file.touch()
+        """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem.
+
+        On shared filesystems (NFS / CephFS / PVC-backed volumes), a write on one
+        node is not immediately visible on another. Without explicit flushing, the
+        orchestrator can see the STABLE sentinel before the adapter files
+        (``adapter_model.safetensors``, ``adapter_config.json``) are visible to
+        the inference worker — causing ``LoRAAdapterNotFoundError`` when
+        ``/v1/rl/load_lora_adapter`` is called. We fsync the adapter files and
+        the directory's dentries before touching STABLE, then fsync the
+        directory again so STABLE itself is durable.
+        """
+        for f in save_dir.iterdir():
+            if f.is_file():
+                _fsync_path(f)
+        _fsync_path(save_dir)
+        (save_dir / "STABLE").touch()
+        _fsync_path(save_dir)
 
     def maybe_clean(self, max_async_level: int, interval_to_keep: int | None):
         for idx in self.multi_run_manager.used_idxs:
@@ -117,3 +132,17 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                 max_async_level,
                 interval_to_keep,
             )
+
+
+def _fsync_path(path: Path) -> None:
+    """Best-effort fsync of a file or directory. Silent on OSError because the
+    sync is an availability-of-data hint to the kernel, not a correctness gate
+    on its own — STABLE ordering is what matters."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
