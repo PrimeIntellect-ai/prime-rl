@@ -55,21 +55,19 @@ class ConversionSpec:
         """True iff this spec produces a fused stacked-expert slot."""
         return self.dst.startswith("mlp.experts.")
 
-    def full_name(self, prefix: str = "") -> str:
-        """Full destination name for the weight buffer at ``prefix``."""
-        return f"{prefix}.{self.dst}" if prefix else self.dst
-
-    def scale_name(self, prefix: str = "") -> str:
-        """Full destination name for the paired scale buffer at ``prefix``.
+    @staticmethod
+    def scale_name(weight_name: str) -> str:
+        """Paired scale buffer name for a weight buffer.
 
         Mirrors vLLM's FP8 naming: ``.weight`` → ``.weight_scale_inv`` for
         2D linears, ``_weight`` → ``_weight_scale_inv`` for 3D stacked-expert
-        buffers. Only meaningful when the resolved conversion entry has
-        ``requires_scale=True``.
+        buffers. Caller picks the input — fused destination name (e.g.
+        ``self_attn.qkv_proj.weight``) for the inference-side scale, or a
+        per-source name (e.g. ``self_attn.q_proj.weight``) for the
+        trainer-side per-source scale buffer.
         """
-        full = self.full_name(prefix)
-        if full.endswith(".weight"):
-            return full.removesuffix(".weight") + ".weight_scale_inv"
-        if full.endswith("_weight"):
-            return full.removesuffix("_weight") + "_weight_scale_inv"
-        raise ValueError(f"cannot derive scale name from {full!r}")
+        if weight_name.endswith(".weight"):
+            return weight_name.removesuffix(".weight") + ".weight_scale_inv"
+        if weight_name.endswith("_weight"):
+            return weight_name.removesuffix("_weight") + "_weight_scale_inv"
+        raise ValueError(f"cannot derive scale name from {weight_name!r}")
