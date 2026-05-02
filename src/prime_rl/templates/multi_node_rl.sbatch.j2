@@ -20,6 +20,9 @@
 #SBATCH --exclusive
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
+{%- if use_nixl_mx_broadcast %}
+#SBATCH --signal=B:TERM@30
+{%- endif %}
 
 # Exit immediately on any failed command so a crash anywhere releases the
 # allocation instead of leaving zombie processes holding nodes.
@@ -150,6 +153,19 @@ cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
 uv sync --all-extras
+
+{% if use_nixl_mx_broadcast %}
+# Launch Model Express server (rendezvous + metadata store) on the trainer head node.
+# trap fires on normal exit, scancel/preempt/timeout (SIGTERM via #SBATCH --signal=B:TERM@30),
+# Ctrl+C (SIGINT), and shell hangup (SIGHUP). SIGKILL / node failure cannot be caught.
+export MX_COMPOSE_FILE=$PROJECT_DIR/docker/modelexpress/docker-compose.yml
+export MX_COMPOSE_PROJECT=prime-rl-mx-${SLURM_JOB_ID}
+trap 'srun --overlap --nodes=1 --ntasks=1 --nodelist=$MASTER_ADDR \
+    docker compose -f "$MX_COMPOSE_FILE" -p "$MX_COMPOSE_PROJECT" down --remove-orphans >/dev/null 2>&1 || true' EXIT INT TERM HUP
+echo "Starting Model Express server on $MASTER_ADDR"
+srun --overlap --nodes=1 --ntasks=1 --nodelist=$MASTER_ADDR \
+    docker compose -f "$MX_COMPOSE_FILE" -p "$MX_COMPOSE_PROJECT" up -d --build --wait
+{% endif %}
 
 {% if pre_run_command %}
 # Pre-run command
@@ -383,7 +399,7 @@ else
         ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
-        {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+        {% if use_nccl_broadcast or use_nixl_mx_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% endif %}{% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
     fi
@@ -411,7 +427,8 @@ else
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.toml \
-        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
+        {% if use_nixl_mx_broadcast %}--weight_broadcast.host $MASTER_ADDR \
+        {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 
 # Wait for the first background job to exit and propagate its exit code. This

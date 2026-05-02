@@ -122,6 +122,9 @@ class SharedWeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem", "nixl_mx"] = "filesystem"
     """Weight broadcast transport."""
 
+    host: str = "localhost"
+    """Host for the weight broadcast rendezvous."""
+
     port: int = 29501
     """Port for the weight broadcast rendezvous."""
 
@@ -366,12 +369,14 @@ class RLConfig(BaseConfig):
                 self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     inference_world_size=inference_world_size,
+                    host=self.weight_broadcast.host,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
                 self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
+                    host=self.weight_broadcast.host,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
                     inference_world_size=inference_world_size,
@@ -385,12 +390,14 @@ class RLConfig(BaseConfig):
                 self.trainer.weight_broadcast = TrainerNIXLMxWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     inference_world_size=inference_world_size,
+                    host=self.weight_broadcast.host,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
                 )
                 self.orchestrator.weight_broadcast = OrchestratorNIXLMxWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     inference_world_size=inference_world_size,
+                    host=self.weight_broadcast.host,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
                 )
