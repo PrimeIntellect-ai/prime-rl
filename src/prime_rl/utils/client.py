@@ -16,6 +16,106 @@ from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
+class AdminAPI(Protocol):
+    """Admin endpoints for an inference backend.
+
+    Per-method: construct one HTTP call. Per-server parallelism, retry, and
+    raise-for-status policy live in the caller.
+    """
+
+    async def health(self, client: AsyncClient) -> None: ...
+    async def list_models(self, client: AsyncClient) -> list[dict]: ...
+    async def pause(self, client: AsyncClient) -> None: ...
+    async def resume(self, client: AsyncClient) -> None: ...
+    async def update_weights(self, client: AsyncClient, weight_dir: str | None) -> None: ...
+    async def load_lora_adapter(
+        self,
+        client: AsyncClient,
+        lora_name: str,
+        lora_path: str,
+        *,
+        timeout: httpx.Timeout,
+    ) -> None: ...
+    async def init_broadcaster(
+        self,
+        client: AsyncClient,
+        *,
+        host: str,
+        port: int,
+        rank_offset: int,
+        inference_world_size: int,
+        timeout: int,
+        quantize_in_weight_transfer: bool,
+    ) -> None: ...
+
+
+class VLLMAdminAPI:
+    """vLLM admin endpoints."""
+
+    async def health(self, client: AsyncClient) -> None:
+        # No raise_for_status: any HTTP response means the server is up.
+        # Only transport errors mean "not ready yet" (caller retries).
+        await client.get("/health")
+
+    async def list_models(self, client: AsyncClient) -> list[dict]:
+        response = await client.get("/v1/models")
+        return response.json()["data"]
+
+    async def pause(self, client: AsyncClient) -> None:
+        response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
+        response.raise_for_status()
+
+    async def resume(self, client: AsyncClient) -> None:
+        response = await client.post("/resume")
+        response.raise_for_status()
+
+    async def update_weights(self, client: AsyncClient, weight_dir: str | None) -> None:
+        response = await client.post("/update_weights", json={"weight_dir": weight_dir})
+        response.raise_for_status()
+
+    async def load_lora_adapter(
+        self,
+        client: AsyncClient,
+        lora_name: str,
+        lora_path: str,
+        *,
+        timeout: httpx.Timeout,
+    ) -> None:
+        response = await client.post(
+            "/load_lora_adapter",
+            json={"lora_name": lora_name, "lora_path": lora_path},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+
+    async def init_broadcaster(
+        self,
+        client: AsyncClient,
+        *,
+        host: str,
+        port: int,
+        rank_offset: int,
+        inference_world_size: int,
+        timeout: int,
+        quantize_in_weight_transfer: bool,
+    ) -> None:
+        response = await client.post(
+            "/init_broadcaster",
+            json={
+                "host": host,
+                "port": port,
+                "rank_offset": rank_offset,
+                "inference_world_size": inference_world_size,
+                "timeout": timeout,
+                "quantize_in_weight_transfer": quantize_in_weight_transfer,
+            },
+        )
+        response.raise_for_status()
+
+
+_DEFAULT_ADMIN: AdminAPI = VLLMAdminAPI()
+
+
 @runtime_checkable
 class InferencePool(Protocol):
     """Protocol for inference pools (static or elastic)."""
@@ -240,22 +340,30 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
 
 
 async def maybe_check_has_model(
-    admin_clients: list[AsyncClient], model_name: str, skip_model_check: bool = False
+    admin_clients: list[AsyncClient],
+    model_name: str,
+    skip_model_check: bool = False,
+    *,
+    admin: AdminAPI = _DEFAULT_ADMIN,
 ) -> None:
     if skip_model_check:
         return
     logger = get_logger()
     logger.debug(f"Checking if model {model_name} is in the inference pool")
-    results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
-    for admin_client, result in zip(admin_clients, results):
-        models = result.json()["data"]
+    results = await asyncio.gather(*[admin.list_models(admin_client) for admin_client in admin_clients])
+    for admin_client, models in zip(admin_clients, results):
         if not any(model["id"] == model_name for model in models):
             raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 
 async def check_health(
-    admin_clients: list[AsyncClient], interval: int = 1, log_interval: int = 10, timeout: int = 1800
+    admin_clients: list[AsyncClient],
+    interval: int = 1,
+    log_interval: int = 10,
+    timeout: int = 1800,
+    *,
+    admin: AdminAPI = _DEFAULT_ADMIN,
 ) -> None:
     logger = get_logger()
 
@@ -264,7 +372,7 @@ async def check_health(
         logger.debug("Starting pinging /health to check health")
         while wait_time < timeout:
             try:
-                await admin_client.get("/health")
+                await admin.health(admin_client)
                 logger.debug(f"Inference pool is ready after {wait_time} seconds")
                 return
             except NotFoundError:
@@ -287,72 +395,44 @@ async def check_health(
 NCCL_READY_MARKER = "NCCL_READY"
 
 
-async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
-    """Pause all inference engines, waiting for in-flight requests to drain."""
-    logger = get_logger()
-    logger.info("Pausing inference engines for weight update")
-
-    async def _pause(client: AsyncClient) -> None:
-        response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
-        response.raise_for_status()
-
-    await asyncio.gather(*[_pause(client) for client in admin_clients])
-    logger.info("All inference engines paused")
-
-
-async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
-    """Resume all inference engines after weight update."""
-    logger = get_logger()
-
-    async def _resume(client: AsyncClient) -> None:
-        response = await client.post("/resume")
-        response.raise_for_status()
-
-    await asyncio.gather(*[_resume(client) for client in admin_clients])
-    logger.info("All inference engines resumed")
-
-
 async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    *,
+    admin: AdminAPI = _DEFAULT_ADMIN,
 ) -> None:
     """Update weights on static inference servers.
 
-    Pauses all engines first to drain in-flight requests, then performs the
-    weight update, then resumes. This ensures all DP workers are idle and can
-    participate in the collective weight transfer.
-
-    Note: The server-side /update_weights endpoint automatically resets the prefix cache
-    to invalidate any cached KV states computed with the old weights.
+    Pauses all engines to drain in-flight requests, performs the weight update,
+    then resumes. Ensures all DP workers are idle and can participate in the
+    collective weight transfer. The server-side ``/update_weights`` endpoint
+    resets the prefix cache to invalidate any KV states computed with the old
+    weights.
     """
     logger = get_logger()
 
+    if lora_name is not None and weight_dir is not None:
+        await load_lora_adapter(admin_clients, lora_name, weight_dir, admin=admin)
+        return
+
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    if lora_name is not None and weight_dir is not None:
-        await load_lora_adapter(admin_clients, lora_name, weight_dir)
-    else:
+    logger.info("Pausing inference engines for weight update")
+    await asyncio.gather(*[admin.pause(c) for c in admin_clients])
+    try:
+        # NCCL_READY marker is created before servers enter the receive path
+        if weight_dir is not None:
+            nccl_ready_file = weight_dir / NCCL_READY_MARKER
+            nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+            nccl_ready_file.touch()
+            logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
-        async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
-            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
-            response.raise_for_status()
-
-        # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients)
-
-        try:
-            # Create ready marker before servers enter receive path (used by NCCL broadcast)
-            if weight_dir is not None:
-                nccl_ready_file = weight_dir / NCCL_READY_MARKER
-                nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
-                nccl_ready_file.touch()
-                logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
-
-            await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
-        finally:
-            await _resume_engines(admin_clients)
+        await asyncio.gather(*[admin.update_weights(c, weight_dir_posix) for c in admin_clients])
+    finally:
+        await asyncio.gather(*[admin.resume(c) for c in admin_clients])
+        logger.info("Inference engines resumed")
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
@@ -379,7 +459,13 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
-async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
+async def load_lora_adapter(
+    admin_clients: list[AsyncClient],
+    lora_name: str,
+    lora_path: Path,
+    *,
+    admin: AdminAPI = _DEFAULT_ADMIN,
+) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
     Uses our wrapper endpoint that also resets the prefix cache to invalidate
@@ -390,6 +476,7 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     """
     logger = get_logger()
     lora_path_posix = lora_path.as_posix()
+    per_attempt_timeout = httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0)
 
     @retry(
         retry=retry_if_exception(_is_retryable_lora_error),
@@ -399,12 +486,7 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
-        response = await admin_client.post(
-            "/load_lora_adapter",
-            json={"lora_name": lora_name, "lora_path": lora_path_posix},
-            timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
-        )
-        response.raise_for_status()
+        await admin.load_lora_adapter(admin_client, lora_name, lora_path_posix, timeout=per_attempt_timeout)
 
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
 
@@ -429,6 +511,8 @@ async def init_nccl_broadcast(
     timeout: int,
     inference_world_size: int | None = None,
     quantize_in_weight_transfer: bool = False,
+    *,
+    admin: AdminAPI = _DEFAULT_ADMIN,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
 
@@ -453,18 +537,15 @@ async def init_nccl_broadcast(
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
         try:
-            response = await admin_client.post(
-                "/init_broadcaster",
-                json={
-                    "host": host,
-                    "port": port,
-                    "rank_offset": rank_offset,
-                    "inference_world_size": inference_world_size,
-                    "timeout": timeout,
-                    "quantize_in_weight_transfer": quantize_in_weight_transfer,
-                },
+            await admin.init_broadcaster(
+                admin_client,
+                host=host,
+                port=port,
+                rank_offset=rank_offset,
+                inference_world_size=inference_world_size,
+                timeout=timeout,
+                quantize_in_weight_transfer=quantize_in_weight_transfer,
             )
-            response.raise_for_status()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
