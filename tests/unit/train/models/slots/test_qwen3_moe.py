@@ -228,10 +228,7 @@ def test_sharded_slot_writes_target_my_rank_chunk_on_every_peer(tiny_state):
     slots = _build(config, sd, "passthrough", torch.bfloat16)
     q = next(s for s in slots if s.slot_key == "model.layers.0.self_attn.q_proj.weight")
     assert isinstance(q, ShardedSlot)
-    peers = [
-        PeerInfo(agent_name=f"inference-test-r{r}", descriptors={}, expert_map={})
-        for r in range(3)
-    ]
+    peers = [PeerInfo(agent_name=f"inference-test-r{r}", descriptors={}, expert_map={}) for r in range(3)]
     writes = q.build_writes(peers)
     # One write per (peer, buffer); single-rank trainer → my_rank=0, no scale buffer.
     assert {(w.peer_name, w.remote_chunk_idx) for w in writes} == {
