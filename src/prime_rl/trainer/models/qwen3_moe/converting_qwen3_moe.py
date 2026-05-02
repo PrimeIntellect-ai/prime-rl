@@ -160,14 +160,27 @@ _SPARSE: tuple[ConversionSpec, ...] = (
 )
 
 
-def conversion_specs(layer_idx: int, is_dense_layer: bool) -> tuple[ConversionSpec, ...]:
+def is_dense_layer(config, layer_idx: int) -> bool:
+    """True iff the given Qwen3MoE layer uses a dense MLP (vs the sparse MoE block).
+
+    Mirrors the dispatch in upstream ``Qwen3MoeDecoderLayer.__init__``.
+    """
+    if layer_idx in config.mlp_only_layers:
+        return True
+    if config.num_experts == 0:
+        return True
+    return (layer_idx + 1) % config.decoder_sparse_step != 0
+
+
+def conversion_specs(layer_idx: int, is_dense: bool) -> tuple[ConversionSpec, ...]:
     """Return the conversion specs for one transformer layer.
 
     Qwen3MoE alternates dense MLPs and sparse MoE layers depending on
-    ``mlp_only_layers`` / ``decoder_sparse_step``; ``is_dense_layer`` lets
-    the caller pick the right tail.
+    ``mlp_only_layers`` / ``decoder_sparse_step``; ``is_dense`` lets the
+    caller pick the right tail (use :func:`is_dense_layer` to derive it
+    from a config).
     """
-    return _BASE + (_DENSE if is_dense_layer else _SPARSE)
+    return _BASE + (_DENSE if is_dense else _SPARSE)
 
 
 def non_layer_conversion_specs() -> tuple[ConversionSpec, ...]:
