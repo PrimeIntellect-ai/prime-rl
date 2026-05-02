@@ -1,0 +1,27 @@
+# Prime-RL LONG smoke test: Dynamo as inference backend (20 steps)
+# Enough steps to observe training dynamics over more iterations.
+#
+# Usage: uv run orchestrator @ tools/dynamo/configs/smoke_rl_long.toml --output-dir /tmp/.../run_default
+
+max_steps = 20
+seq_len = 512
+batch_size = 16
+rollouts_per_example = 4
+use_token_client = false
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+offline = true
+
+[sampling]
+max_tokens = 64
+
+[[env]]
+id = "reverse-text"
+
+[client]
+base_url = ["http://localhost:8000/v1"]
+admin_base_url = ["http://localhost:8001"]
+skip_model_check = true

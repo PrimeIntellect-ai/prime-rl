@@ -1,0 +1,73 @@
+# Optional admin-stub Deployment + Service.
+# kubectl apply -f admin-stub.yaml -n <your-namespace>
+#
+# Only needed if your Dynamo build does NOT serve /v1/rl/* natively
+# (i.e. older builds without DYN_ENABLE_RL=true). With a recent Dynamo,
+# point `admin_base_url` directly at the Dynamo frontend and skip this
+# manifest entirely.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: admin-stub-script
+  namespace: <your-namespace>
+data:
+  admin_stub.py: |
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(n) if n else b""
+            print(f"[stub] POST {self.path} body={body[:200]}")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+    HTTPServer(("0.0.0.0", 8001), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-stub
+  namespace: <your-namespace>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-stub
+  template:
+    metadata:
+      labels:
+        app: admin-stub
+    spec:
+      containers:
+        - name: stub
+          image: python:3.12-slim
+          command: ["python3", "/scripts/admin_stub.py"]
+          ports:
+            - containerPort: 8001
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+      volumes:
+        - name: script
+          configMap:
+            name: admin-stub-script
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-stub
+  namespace: <your-namespace>
+spec:
+  selector:
+    app: admin-stub
+  ports:
+    - port: 8001
+      targetPort: 8001
