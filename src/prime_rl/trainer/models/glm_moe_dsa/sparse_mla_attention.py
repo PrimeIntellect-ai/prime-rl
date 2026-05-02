@@ -1,4 +1,3 @@
-import os
 from dataclasses import dataclass
 
 import torch
@@ -11,163 +10,11 @@ from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import gather_for_cp
 
 try:
-    from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_bwd as sparse_mla_bwd_tilelang
-    from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla_fwd_interface as sparse_mla_fwd_tilelang
+    from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_bwd
+    from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla_fwd_interface
 except ImportError:
-    sparse_mla_fwd_tilelang = None  # type: ignore
-    sparse_mla_bwd_tilelang = None  # type: ignore
-
-try:
-    from prime_rl.trainer.models.kernels.sparse_mla_bucketed import (
-        sparse_mla_bwd_bucketed,
-        sparse_mla_bwd_bucketed_sorted,
-        sparse_mla_fwd_bucketed,
-    )
-except ImportError:
-    sparse_mla_fwd_bucketed = None  # type: ignore
-    sparse_mla_bwd_bucketed = None  # type: ignore
-    sparse_mla_bwd_bucketed_sorted = None  # type: ignore
-
-try:
-    from prime_rl.trainer.models.kernels.sparse_mla_triton import sparse_mla_bwd as sparse_mla_bwd_triton
-    from prime_rl.trainer.models.kernels.sparse_mla_triton import sparse_mla_fwd_interface as sparse_mla_fwd_triton
-except ImportError:
-    sparse_mla_fwd_triton = None  # type: ignore
-    sparse_mla_bwd_triton = None  # type: ignore
-
-
-def _select_sparse_mla_kernel():
-    kernel = os.environ.get("PRIME_RL_SPARSE_MLA_KERNEL", "tilelang_bucketed_gemm_v1").lower()
-    if kernel == "triton":
-        if sparse_mla_fwd_triton is None or sparse_mla_bwd_triton is None:
-            raise ImportError("PRIME_RL_SPARSE_MLA_KERNEL=triton but Triton sparse MLA kernels are unavailable")
-        return sparse_mla_fwd_triton, sparse_mla_bwd_triton, "none"
-    if kernel == "tilelang":
-        if sparse_mla_fwd_tilelang is None or sparse_mla_bwd_tilelang is None:
-            raise ImportError("PRIME_RL_SPARSE_MLA_KERNEL=tilelang but TileLang sparse MLA kernels are unavailable")
-        return sparse_mla_fwd_tilelang, sparse_mla_bwd_tilelang, "none"
-    if kernel == "tilelang_gemm_v1":
-        if sparse_mla_fwd_tilelang is None or sparse_mla_bwd_tilelang is None:
-            raise ImportError("PRIME_RL_SPARSE_MLA_KERNEL=tilelang_gemm_v1 but TileLang sparse MLA kernels are unavailable")
-
-        def sparse_mla_bwd_tilelang_gemm_v1(q, kv, out, do, indices, lse, sm_scale=None):
-            return sparse_mla_bwd_tilelang(
-                q,
-                kv,
-                out,
-                do,
-                indices,
-                lse,
-                sm_scale=sm_scale,
-                block_size=32,
-                split_store=4,
-                use_gemm_v1=True,
-            )
-
-        return sparse_mla_fwd_tilelang, sparse_mla_bwd_tilelang_gemm_v1, "none"
-    if kernel == "tilelang_bucketed_gemm_v1":
-        if sparse_mla_fwd_bucketed is None or sparse_mla_bwd_bucketed is None:
-            raise ImportError(
-                "PRIME_RL_SPARSE_MLA_KERNEL=tilelang_bucketed_gemm_v1 but bucketed TileLang sparse MLA kernels are unavailable"
-            )
-        return sparse_mla_fwd_bucketed, sparse_mla_bwd_bucketed, "none"
-    if kernel == "tilelang_bucketed_bwd_sorted_gemm_v1":
-        if sparse_mla_fwd_bucketed is None or sparse_mla_bwd_bucketed_sorted is None:
-            raise ImportError(
-                "PRIME_RL_SPARSE_MLA_KERNEL=tilelang_bucketed_bwd_sorted_gemm_v1 but bucketed TileLang sparse MLA kernels are unavailable"
-            )
-        return sparse_mla_fwd_bucketed, sparse_mla_bwd_bucketed_sorted, "none"
-    if kernel == "tilelang_sorted_bs64":
-        if sparse_mla_fwd_tilelang is None or sparse_mla_bwd_tilelang is None:
-            raise ImportError(
-                "PRIME_RL_SPARSE_MLA_KERNEL=tilelang_sorted_bs64 but TileLang sparse MLA kernels are unavailable"
-            )
-
-        def sparse_mla_bwd_tilelang_bs64(q, kv, out, do, indices, lse, sm_scale=None):
-            return sparse_mla_bwd_tilelang(q, kv, out, do, indices, lse, sm_scale=sm_scale, block_size=64)
-
-        return sparse_mla_fwd_tilelang, sparse_mla_bwd_tilelang_bs64, "sort"
-    if kernel == "tilelang_sorted_gemm_v1":
-        if sparse_mla_fwd_tilelang is None or sparse_mla_bwd_tilelang is None:
-            raise ImportError(
-                "PRIME_RL_SPARSE_MLA_KERNEL=tilelang_sorted_gemm_v1 but TileLang sparse MLA kernels are unavailable"
-            )
-
-        def sparse_mla_bwd_tilelang_gemm_v1(q, kv, out, do, indices, lse, sm_scale=None):
-            return sparse_mla_bwd_tilelang(
-                q,
-                kv,
-                out,
-                do,
-                indices,
-                lse,
-                sm_scale=sm_scale,
-                block_size=32,
-                split_store=4,
-                use_gemm_v1=True,
-            )
-
-        return sparse_mla_fwd_tilelang, sparse_mla_bwd_tilelang_gemm_v1, "sort"
-    if kernel == "tilelang_bwd_sorted_gemm_v1":
-        if sparse_mla_fwd_tilelang is None or sparse_mla_bwd_tilelang is None:
-            raise ImportError(
-                "PRIME_RL_SPARSE_MLA_KERNEL=tilelang_bwd_sorted_gemm_v1 but TileLang sparse MLA kernels are unavailable"
-            )
-
-        def sparse_mla_bwd_tilelang_bwd_sorted(q, kv, out, do, indices, lse, sm_scale=None):
-            return sparse_mla_bwd_tilelang(
-                q,
-                kv,
-                out,
-                do,
-                indices,
-                lse,
-                sm_scale=sm_scale,
-                block_size=32,
-                split_store=4,
-                use_gemm_v1=True,
-            )
-
-        return sparse_mla_fwd_tilelang, sparse_mla_bwd_tilelang_bwd_sorted, "bwd_sort"
-    if kernel in {"tilelang_trim_gemm_v1", "tilelang_trim_bwd_sorted_gemm_v1"}:
-        if sparse_mla_fwd_tilelang is None or sparse_mla_bwd_tilelang is None:
-            raise ImportError(
-                f"PRIME_RL_SPARSE_MLA_KERNEL={kernel} but TileLang sparse MLA kernels are unavailable"
-            )
-
-        def sparse_mla_bwd_tilelang_trim(q, kv, out, do, indices, lse, sm_scale=None):
-            return sparse_mla_bwd_tilelang(
-                q,
-                kv,
-                out,
-                do,
-                indices,
-                lse,
-                sm_scale=sm_scale,
-                block_size=32,
-                split_store=4,
-                use_gemm_v1=True,
-            )
-
-        index_mode = "trim_bwd_sort" if kernel == "tilelang_trim_bwd_sorted_gemm_v1" else "trim"
-        return sparse_mla_fwd_tilelang, sparse_mla_bwd_tilelang_trim, index_mode
-    raise ValueError(
-        f"Unsupported PRIME_RL_SPARSE_MLA_KERNEL={kernel!r}; "
-        "expected 'tilelang', 'tilelang_gemm_v1', 'tilelang_bucketed_gemm_v1', "
-        "'tilelang_bucketed_bwd_sorted_gemm_v1', "
-        "'tilelang_sorted_bs64', 'tilelang_sorted_gemm_v1', "
-        "'tilelang_bwd_sorted_gemm_v1', 'tilelang_trim_gemm_v1', "
-        "'tilelang_trim_bwd_sorted_gemm_v1', or 'triton'"
-    )
-
-
-def _trim_trailing_invalid_blocks(indices: torch.Tensor, kv_seq_len: int, block_size: int = 64) -> torch.Tensor:
-    max_valid_index = kv_seq_len - 2
-    max_valid = int((indices <= max_valid_index).sum(dim=-1).max().item())
-    effective_topk = max(block_size, min(indices.shape[-1], ((max_valid + block_size - 1) // block_size) * block_size))
-    if effective_topk == indices.shape[-1]:
-        return indices
-    return indices[..., :effective_topk].contiguous()
+    sparse_mla_fwd_interface = None  # type: ignore
+    sparse_mla_bwd = None  # type: ignore
 
 
 @dataclass(frozen=True)
@@ -188,33 +35,18 @@ class SparseMlaAttentionArgs:
 
 
 class _SparseMLA(torch.autograd.Function):
-    """Autograd wrapper for sparse MLA forward/backward kernels."""
+    """Autograd wrapper for tilelang sparse MLA forward/backward kernels."""
 
     @staticmethod
     def forward(ctx, q, kv, indices, sm_scale):
-        sparse_mla_fwd_interface, sparse_mla_bwd, index_mode = _select_sparse_mla_kernel()
-        if index_mode == "sort":
-            indices = torch.sort(indices, dim=-1).values.contiguous()
-            bwd_indices = indices
-        elif index_mode in {"trim", "trim_bwd_sort"}:
-            indices = _trim_trailing_invalid_blocks(indices, kv.shape[1], block_size=64)
-            bwd_indices = indices
-            if index_mode == "trim_bwd_sort":
-                bwd_indices = torch.sort(indices, dim=-1).values.contiguous()
-        elif index_mode == "bwd_sort":
-            bwd_indices = torch.sort(indices, dim=-1).values.contiguous()
-        else:
-            bwd_indices = indices
         out, lse = sparse_mla_fwd_interface(q, kv, indices, sm_scale=sm_scale)
-        ctx.save_for_backward(q, kv, out, bwd_indices, lse)
+        ctx.save_for_backward(q, kv, out, indices, lse)
         ctx.sm_scale = sm_scale
-        ctx.sparse_mla_bwd = sparse_mla_bwd
         return out
 
     @staticmethod
     def backward(ctx, do):
         q, kv, out, indices, lse = ctx.saved_tensors
-        sparse_mla_bwd = ctx.sparse_mla_bwd
         dq, dkv = sparse_mla_bwd(q, kv, out, do.contiguous(), indices, lse, sm_scale=ctx.sm_scale)
         return dq, dkv, None, None
 
