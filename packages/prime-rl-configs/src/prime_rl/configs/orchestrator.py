@@ -538,8 +538,27 @@ class NCCLWeightBroadcastConfig(BaseConfig):
     """Total inference GPUs across all servers. Used by ``init_nccl_broadcast`` to compute per-server rank offsets."""
 
 
+class NIXLMxWeightBroadcastConfig(BaseConfig):
+    """Configures NIXL + Model Express weight broadcast."""
+
+    type: Literal["nixl_mx"] = "nixl_mx"
+
+    host: str = "localhost"
+    """Host for the Model Express rendezvous server."""
+
+    port: int = 29501
+    """Port for the Model Express rendezvous server."""
+
+    timeout: int = 1200
+    """Timeout in seconds for rendezvous and per-step transfers."""
+
+    inference_world_size: int = Field(1, ge=1)
+    """Total inference GPUs across all servers."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLMxWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
