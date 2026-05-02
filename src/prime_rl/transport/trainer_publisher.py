@@ -1,37 +1,36 @@
-"""Trainer-side per-rank publisher: allocate slots, register them with NIXL,
+"""Trainer-side per-rank publisher: build slots, register them with NIXL,
 publish the agent metadata + tensor descriptors through Model Express.
 
 Setup-time only — does not perform any transfer. After construction the
 publisher exposes its slots, NIXL agent, and rendezvous handle so the
-transport layer (next step) can build the write table and post RDMA
-WRITEs against inference peer descriptors.
+transport layer can build the write table and post RDMA WRITEs against
+inference peer descriptors.
 """
 
 from __future__ import annotations
 
-from typing import Callable, Mapping, Sequence
+from typing import Callable
 
 import torch
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
+from torch import Tensor
 
 from prime_rl.trainer.models.conversion_spec import ConversionSpec
-from prime_rl.trainer.models.slots import Slot, allocate_slots
+from prime_rl.trainer.models.slots import Slot, build_slots
+from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.transport.classic_cuda_pool import classic_cuda_alloc
 from prime_rl.transport.mx_rendezvous import MxRendezvous
 from prime_rl.transport.nixl_agent import NixlAgentWrapper, make_agent_name
 
 
 class TrainerPublisher:
-    """One trainer rank's slot table + NIXL agent + MX rendezvous handle.
+    """One trainer rank's slots + NIXL agent + MX rendezvous handle.
 
-    Construct with the rank's view of the trainer state's *shapes* and the
-    inference target's resolved conversion settings; the publisher allocates
-    slot buffers, pins them with NIXL, and is ready to call :meth:`publish`.
-
-    The publisher does not retain references to the trainer's live state
-    dict — only shapes are needed up front. The actual source tensors are
-    passed in later (transport step) when materializing slots before posting
-    RDMA WRITEs.
+    Construct with the rank's view of the trainer state dict and the
+    inference target's resolved conversion settings; the publisher builds
+    slot buffers via :func:`build_slots` (wrapped in the classic-cudaMalloc
+    pool), pins their memory with NIXL, and is ready to call :meth:`publish`.
     """
 
     def __init__(
@@ -47,24 +46,25 @@ class TrainerPublisher:
         non_layer_specs: tuple[ConversionSpec, ...],
         is_dense_fn: Callable[[int], bool],
         num_layers: int,
-        state_shapes: Mapping[str, Sequence[int]],
-        expert_parallel_size: int = 0,
+        state_dict: dict[str, Tensor],
+        parallel_dims: ParallelDims,
     ) -> None:
-        self.slots: list[Slot] = allocate_slots(
-            state_shapes,
-            layer_specs_fn=layer_specs_fn,
-            non_layer_specs=non_layer_specs,
-            is_dense_fn=is_dense_fn,
-            num_layers=num_layers,
-            default_conversion=default_conversion,
-            base_dtype=base_dtype,
-        )
+        with classic_cuda_alloc():
+            self.slots: list[Slot] = build_slots(
+                state_dict,
+                layer_specs_fn=layer_specs_fn,
+                non_layer_specs=non_layer_specs,
+                is_dense_fn=is_dense_fn,
+                num_layers=num_layers,
+                parallel_dims=parallel_dims,
+                default_conversion=default_conversion,
+                base_dtype=base_dtype,
+            )
 
         self.agent = NixlAgentWrapper(name=make_agent_name("trainer", rank))
         for slot in self.slots:
-            self.agent.register_tensor(slot.weight)
-            if slot.scale is not None:
-                self.agent.register_tensor(slot.scale)
+            for _, tensor, _ in slot.buffers:
+                self.agent.register_tensor(tensor)
 
         self.rendezvous = MxRendezvous(
             client=client,
@@ -72,7 +72,7 @@ class TrainerPublisher:
             rank=rank,
             peer_world_size=peer_world_size,
             model_name=inference_model_name,
-            expert_parallel_size=expert_parallel_size,
+            expert_parallel_size=parallel_dims.ep,
             quantization="fp8" if default_conversion == "fp8_128x128" else "",
         )
 
@@ -80,10 +80,8 @@ class TrainerPublisher:
         """Push NIXL agent metadata + slot tensor descriptors through MX. Returns the assigned ``mx_source_id``."""
         descriptors: list[p2p_pb2.TensorDescriptor] = []
         for slot in self.slots:
-            descriptors.append(self.agent.make_tensor_descriptor(slot.full_name, slot.weight))
-            if slot.scale is not None:
-                assert slot.scale_name is not None  # paired with the scale buffer
-                descriptors.append(self.agent.make_tensor_descriptor(slot.scale_name, slot.scale))
+            for buf_key, tensor, _ in slot.buffers:
+                descriptors.append(self.agent.make_tensor_descriptor(buf_key, tensor))
         return self.rendezvous.publish(
             nixl_metadata=self.agent.get_metadata(),
             tensors=descriptors,
