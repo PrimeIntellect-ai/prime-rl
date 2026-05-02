@@ -39,6 +39,7 @@ from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 
 class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
@@ -215,16 +216,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            flat_position_ids = position_ids.view(-1)
-            seqlens = torch.cat(
-                [
-                    flat_position_ids[0:1],
-                    flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
-                    flat_position_ids[-1:] + 1,
-                ]
-            )
-            max_seqlen = seqlens.max().item()
-            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None
