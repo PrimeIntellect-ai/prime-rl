@@ -68,6 +68,17 @@ class Slot(Protocol):
         """One RDMA WRITE per ``(buffer, peer-chunk)`` this slot owns."""
         ...
 
+    def peer_chunk_descs(self, peer: PeerInfo) -> dict[str, list[tuple[int, int, int]]]:
+        """Per-buffer ``(addr, size, device_id)`` tuples for ``peer``'s side.
+
+        Returns one entry per :attr:`buffers` key. The list length matches
+        the peer's chunk count for that buffer (``trainer_ws`` for sharded,
+        ``1`` for gathered, ``len(peer.expert_map[moe_prefix])`` for
+        experts). Used by the transport plan to ``prep_remote`` per
+        (peer, buffer).
+        """
+        ...
+
 
 # --- Non-expert slots ------------------------------------------------------ #
 
@@ -205,6 +216,37 @@ class ShardedSlot:
                 )
         return out
 
+    def peer_chunk_descs(self, peer: PeerInfo) -> dict[str, list[tuple[int, int, int]]]:
+        out: dict[str, list[tuple[int, int, int]]] = {}
+        # Weight: ``trainer_ws`` chunks along inference dst dim 0, each
+        # ``rows/trainer_ws`` rows wide, starting at ``offset_rows``.
+        weight_row_bytes = self.weight.numel() * self.weight.element_size() // self.weight.shape[0]
+        weight_chunk_rows = self.rows // self.trainer_ws
+        weight_base, _, weight_dev = peer.tensor_addrs[self.inference_name]
+        out[self.slot_key] = [
+            (
+                weight_base + (self.offset_rows + i * weight_chunk_rows) * weight_row_bytes,
+                weight_chunk_rows * weight_row_bytes,
+                weight_dev,
+            )
+            for i in range(self.trainer_ws)
+        ]
+        if self.scale is not None:
+            assert self.scale_key is not None and self.scale_rows is not None
+            assert self.inference_scale_name is not None and self.scale_offset_rows is not None
+            scale_row_bytes = self.scale.numel() * self.scale.element_size() // self.scale.shape[0]
+            scale_chunk_rows = self.scale_rows // self.trainer_ws
+            scale_base, _, scale_dev = peer.tensor_addrs[self.inference_scale_name]
+            out[self.scale_key] = [
+                (
+                    scale_base + (self.scale_offset_rows + i * scale_chunk_rows) * scale_row_bytes,
+                    scale_chunk_rows * scale_row_bytes,
+                    scale_dev,
+                )
+                for i in range(self.trainer_ws)
+            ]
+        return out
+
 
 @dataclass
 class GatheredSlot:
@@ -333,6 +375,33 @@ class GatheredSlot:
                         tag=f"gather:{buf_key}",
                     )
                 )
+        return out
+
+    def peer_chunk_descs(self, peer: PeerInfo) -> dict[str, list[tuple[int, int, int]]]:
+        out: dict[str, list[tuple[int, int, int]]] = {}
+        # Single chunk on the peer side, covering this slot's full row range
+        # (``rows`` rows starting at ``offset_rows``).
+        weight_row_bytes = self.weight.numel() * self.weight.element_size() // self.weight.shape[0]
+        weight_base, _, weight_dev = peer.tensor_addrs[self.inference_name]
+        out[self.slot_key] = [
+            (
+                weight_base + self.offset_rows * weight_row_bytes,
+                self.rows * weight_row_bytes,
+                weight_dev,
+            )
+        ]
+        if self.scale is not None:
+            assert self.scale_key is not None and self.scale_rows is not None
+            assert self.inference_scale_name is not None and self.scale_offset_rows is not None
+            scale_row_bytes = self.scale.numel() * self.scale.element_size() // self.scale.shape[0]
+            scale_base, _, scale_dev = peer.tensor_addrs[self.inference_scale_name]
+            out[self.scale_key] = [
+                (
+                    scale_base + self.scale_offset_rows * scale_row_bytes,
+                    self.scale_rows * scale_row_bytes,
+                    scale_dev,
+                )
+            ]
         return out
 
 
@@ -472,6 +541,26 @@ class ExpertSlot:
                             tag=f"expert:{buf_key}:E{global_id}",
                         )
                     )
+        return out
+
+    def peer_chunk_descs(self, peer: PeerInfo) -> dict[str, list[tuple[int, int, int]]]:
+        # Peer's chunks = peer's local experts (one per ``expert_map[moe_prefix]`` entry),
+        # each one global-expert-sized row of the 3D buffer.
+        peer_local_experts = len(peer.expert_map.get(self.moe_prefix, []))
+        out: dict[str, list[tuple[int, int, int]]] = {}
+
+        per_expert_bytes_w = self.weight.numel() * self.weight.element_size() // self.weight.shape[0]
+        weight_base, _, weight_dev = peer.tensor_addrs[self.slot_key]
+        out[self.slot_key] = [
+            (weight_base + i * per_expert_bytes_w, per_expert_bytes_w, weight_dev) for i in range(peer_local_experts)
+        ]
+        if self.scale is not None:
+            assert self.scale_key is not None
+            per_expert_bytes_s = self.scale.numel() * self.scale.element_size() // self.scale.shape[0]
+            scale_base, _, scale_dev = peer.tensor_addrs[self.scale_key]
+            out[self.scale_key] = [
+                (scale_base + i * per_expert_bytes_s, per_expert_bytes_s, scale_dev) for i in range(peer_local_experts)
+            ]
         return out
 
 
