@@ -50,8 +50,6 @@ class InferenceReceiver:
         inference_model_name: str,
         live_tensors: dict[str, Tensor],
         expert_map: dict[str, list[int]],
-        quantization: str = "",
-        expert_parallel_size: int = 0,
     ) -> None:
         self.expert_map = expert_map
         self.live_tensors = live_tensors
@@ -66,8 +64,6 @@ class InferenceReceiver:
             rank=rank,
             peer_world_size=peer_world_size,
             model_name=inference_model_name,
-            expert_parallel_size=expert_parallel_size,
-            quantization=quantization,
         )
 
     def publish(self) -> str:

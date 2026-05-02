@@ -123,14 +123,7 @@ async def init_nixl_mx(request: Request):
     data = await request.json()
     await engine_client(request).collective_rpc(
         "init_nixl_mx",
-        args=(
-            data["host"],
-            data["port"],
-            data.get("rank_offset", 0),
-            data["inference_model_name"],
-            data.get("quantization", ""),
-            data.get("expert_parallel_size", 0),
-        ),
+        args=(data["host"], data["port"], data["rank_offset"]),
     )
     return {"status": "ok"}
 

@@ -37,9 +37,6 @@ class MxRendezvous:
             are visible.
         model_name: Inference model identifier (e.g.,
             ``"Qwen/Qwen3-235B-A22B-Thinking-2507-FP8"``).
-        expert_parallel_size: Inference EP degree, mirrored on the
-            trainer's identity so they hash compatibly.
-        quantization: ``"fp8"`` or ``""`` — passed through to identity.
         worker_id: Unique handle for this worker, defaulting to a fresh
             UUID. Two ranks must NOT share a ``worker_id``.
     """
@@ -49,8 +46,6 @@ class MxRendezvous:
     rank: int
     peer_world_size: int
     model_name: str
-    expert_parallel_size: int = 0
-    quantization: str = ""
     worker_id: str = ""
 
     def __post_init__(self) -> None:
@@ -75,8 +70,6 @@ class MxRendezvous:
             mx_source_type=p2p_pb2.MX_SOURCE_TYPE_WEIGHTS,
             model_name=self.model_name,
             backend_framework=p2p_pb2.BACKEND_FRAMEWORK_VLLM,
-            expert_parallel_size=self.expert_parallel_size,
-            quantization=self.quantization,
             dtype="bfloat16",
             extra_parameters={"role": role},
         )

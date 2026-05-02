@@ -74,8 +74,6 @@ class TrainerPublisher:
             rank=rank,
             peer_world_size=peer_world_size,
             model_name=inference_model_name,
-            expert_parallel_size=parallel_dims.ep,
-            quantization="fp8" if default_conversion == "fp8_128x128" else "",
         )
 
     def publish(self) -> str:
