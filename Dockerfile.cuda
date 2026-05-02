@@ -1,7 +1,9 @@
 #inspired from https://github.com/astral-sh/uv-docker-example/blob/main/multistage.Dockerfile
 
 # Build stage - multi-arch base (supports amd64 + arm64)
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS builder
+# Ubuntu 24.04 (noble) ships python3.12 in its default repos, so we avoid the
+# deadsnakes PPA — Launchpad has been a recurring flake for our image-builder runner.
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
 LABEL maintainer="prime intellect"
 LABEL repository="prime-rl"
 
@@ -22,10 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
     sudo \
     git \
     ninja-build \
-    software-properties-common \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends python3.12 python3.12-dev python3.12-venv \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
     && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.12 /usr/bin/python \
     && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
