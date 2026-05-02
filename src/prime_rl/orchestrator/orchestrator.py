@@ -9,7 +9,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.batcher import Done, TrainBatcher, build_strategy
 from prime_rl.orchestrator.buffer import setup_buffer
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.engine import Group, RolloutEngine
+from prime_rl.orchestrator.engine import Group, setup_rollout_engine
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_admin import InferenceAdmin
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
@@ -143,15 +143,12 @@ async def run(cfg: OrchestratorConfig) -> None:
         connect_timeout=cfg.client.connect_timeout,
     )
 
-    engine = RolloutEngine(
+    engine = setup_rollout_engine(
+        cfg,
         scheduler=scheduler,
         out_q=groups_q,
         client=client,
-        model=cfg.model.name,
-        max_off_policy=cfg.max_off_policy_steps,
         concurrency=concurrency,
-        tasks_per_minute=cfg.tasks_per_minute,
-        max_rollout_time_seconds=(cfg.max_rollout_time_minutes * 60.0) if cfg.max_rollout_time_minutes else None,
         lora_name=lora_name,
     )
     if cfg.tasks_per_minute is not None:

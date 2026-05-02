@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import verifiers as vf
 from aiolimiter import AsyncLimiter
 
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.scheduler import Kind, Scheduler, Task
 from prime_rl.utils.logger import get_logger
 
@@ -25,31 +26,38 @@ class Inflight:
     kind: Kind
 
 
+@dataclass
+class EngineInputs:
+    """Pre-built inputs for the RolloutEngine. `setup_rollout_engine` produces
+    this from config; tests construct it directly with stub scheduler + env."""
+
+    scheduler: Scheduler
+    out_q: asyncio.Queue[Group]
+    client: vf.ClientConfig
+    model: str
+    max_off_policy: int
+    concurrency: int
+    tasks_per_minute: int | None = None
+    max_rollout_time_seconds: float | None = None
+    lora_name: str | None = None
+
+
 class RolloutEngine:
-    def __init__(
-        self,
-        scheduler: Scheduler,
-        out_q: asyncio.Queue[Group],
-        client: vf.ClientConfig,
-        model: str,
-        max_off_policy: int,
-        concurrency: int,
-        tasks_per_minute: int | None = None,
-        max_rollout_time_seconds: float | None = None,
-        lora_name: str | None = None,
-    ):
-        self.scheduler = scheduler
-        self.out_q = out_q
-        self.client = client
-        self.model = model
+    def __init__(self, inputs: EngineInputs):
+        self.scheduler = inputs.scheduler
+        self.out_q = inputs.out_q
+        self.client = inputs.client
+        self.model = inputs.model
         # When set, swap rollouts to the LoRA adapter name on the first
         # successful weight update (step 0 rollouts always use the base model
         # since no adapter is loaded yet).
-        self.lora_name = lora_name
-        self.max_off_policy = max_off_policy
-        self.concurrency = concurrency
-        self.rate_limiter = AsyncLimiter(max_rate=tasks_per_minute, time_period=60) if tasks_per_minute else None
-        self.max_rollout_time_seconds = max_rollout_time_seconds
+        self.lora_name = inputs.lora_name
+        self.max_off_policy = inputs.max_off_policy
+        self.concurrency = inputs.concurrency
+        self.rate_limiter = (
+            AsyncLimiter(max_rate=inputs.tasks_per_minute, time_period=60) if inputs.tasks_per_minute else None
+        )
+        self.max_rollout_time_seconds = inputs.max_rollout_time_seconds
         self.policy_version = 0
         self._inflight: list[Inflight] = []
         self.logger = get_logger()
@@ -161,3 +169,30 @@ class RolloutEngine:
         if not train:
             return 0
         return max(self.policy_version - i.version for i in train)
+
+
+def setup_rollout_engine(
+    cfg: OrchestratorConfig,
+    *,
+    scheduler: Scheduler,
+    out_q: asyncio.Queue[Group],
+    client: vf.ClientConfig,
+    concurrency: int,
+    lora_name: str | None = None,
+) -> RolloutEngine:
+    """Translate config → RolloutEngine. `concurrency` is computed by the
+    caller because it's also needed to size out_q. Tests should construct
+    `RolloutEngine(EngineInputs(...))` directly."""
+    return RolloutEngine(
+        EngineInputs(
+            scheduler=scheduler,
+            out_q=out_q,
+            client=client,
+            model=cfg.model.name,
+            max_off_policy=cfg.max_off_policy_steps,
+            concurrency=concurrency,
+            tasks_per_minute=cfg.tasks_per_minute,
+            max_rollout_time_seconds=(cfg.max_rollout_time_minutes * 60.0) if cfg.max_rollout_time_minutes else None,
+            lora_name=lora_name,
+        )
+    )
