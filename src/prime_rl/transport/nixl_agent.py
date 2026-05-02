@@ -22,7 +22,6 @@ from __future__ import annotations
 import socket
 from typing import Sequence
 
-import torch
 from modelexpress import p2p_pb2
 from torch import Tensor
 

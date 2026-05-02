@@ -14,6 +14,8 @@ from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
 )
 from prime_rl.trainer.models.slots import allocate_slots
 
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="slot allocation lives on CUDA")
+
 
 def _make_tiny_config(num_layers: int = 2) -> Qwen3MoeConfig:
     return Qwen3MoeConfig(
@@ -96,7 +98,6 @@ def _allocate(config, state_dict, default_conversion, base_dtype):
         num_layers=config.num_hidden_layers,
         default_conversion=default_conversion,
         base_dtype=base_dtype,
-        device="cpu",
     )
 
 
@@ -192,10 +193,9 @@ def test_fp8_scale_buffer_shape(tiny_qwen3_state):
 def test_materialize_passthrough(tiny_qwen3_state):
     """End-to-end roundtrip: allocate slots, materialize from sources, check values."""
     config, sd = tiny_qwen3_state
-    # Fill the source state dict with deterministic values
-    g = torch.Generator().manual_seed(0)
+    g = torch.Generator(device="cuda").manual_seed(0)
     for k, v in sd.items():
-        sd[k] = torch.randn(v.shape, generator=g, dtype=torch.float32)
+        sd[k] = torch.randn(v.shape, generator=g, dtype=torch.float32, device="cuda")
 
     slots = _allocate(config, sd, "passthrough", torch.bfloat16)
     by_name = {s.full_name: s for s in slots}
