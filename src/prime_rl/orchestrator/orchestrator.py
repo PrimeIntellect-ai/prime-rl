@@ -96,7 +96,7 @@ async def run(cfg: OrchestratorConfig) -> None:
             thresholds.append(f"hard<={cfg.buffer.hard_threshold}")
         logger.info(f"Difficulty buffer enabled ({', '.join(thresholds)})")
 
-    scheduler = Scheduler(
+    scheduler = Scheduler.from_config(
         train_envs=cfg.train.env,
         train_rollouts_per_example=cfg.rollouts_per_example,
         eval_envs=cfg.eval.env if cfg.eval else None,

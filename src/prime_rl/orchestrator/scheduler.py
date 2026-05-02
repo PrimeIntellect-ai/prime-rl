@@ -47,66 +47,35 @@ class Scheduler:
 
     def __init__(
         self,
-        train_envs: list[TrainEnvConfig],
-        train_rollouts_per_example: int,
-        eval_envs: list[EvalEnvConfig] | None = None,
+        train_tasks: list[Task],
+        train_datasets: list[Iterator[dict]],
+        eval_tasks: list[Task] | None = None,
+        eval_datasets: list[list[dict]] | None = None,
+        env_weights: list[float] | None = None,
         eval_interval: int | None = None,
         eval_at_zero: bool = False,
         seed: int | None = None,
-        buffer: "DifficultyBuffer | None" = None,
     ):
-        assert train_envs, "Scheduler requires at least one train env"
-        logger = get_logger()
+        assert train_tasks, "Scheduler requires at least one train task"
+        assert len(train_tasks) == len(train_datasets), "train_tasks and train_datasets must have equal length"
+        if env_weights is not None:
+            assert len(env_weights) == len(train_tasks), "env_weights length must match train_tasks"
+        eval_tasks = eval_tasks or []
+        eval_datasets = eval_datasets or []
+        assert len(eval_tasks) == len(eval_datasets), "eval_tasks and eval_datasets must have equal length"
 
-        self.buffer = buffer
-        self.tasks: list[Task] = []
-        self._datasets: list[Iterator[dict]] = []
-        for cfg in train_envs:
-            env = vf.load_environment(cfg.stripped_id, **cfg.args)
-            self.tasks.append(
-                Task(
-                    id=cfg.resolved_name,
-                    env=env,
-                    sampling_args=cfg.sampling.to_sampling_args(),
-                    kind="train",
-                    rollouts_per_group=train_rollouts_per_example,
-                )
-            )
-            self._datasets.append(_cycle_forever(env.get_dataset(), env_id=cfg.resolved_name, buffer=buffer))
+        self.tasks = train_tasks
+        self._datasets = train_datasets
         self._idx = 0
 
-        # Env selection: weighted random when all envs have a ratio set
-        # (config validator enforces all-or-none), round-robin otherwise.
-        # Local Random instance keeps env-selection determinism decoupled from
-        # global random state.
-        ratios = [cfg.ratio for cfg in train_envs]
-        self._env_weights: list[float] | None = ratios if all(r is not None for r in ratios) else None  # type: ignore[assignment]
+        # Env selection: weighted random when env_weights is set, round-robin
+        # otherwise. Local Random instance keeps env-selection determinism
+        # decoupled from global random state.
+        self._env_weights = env_weights
         self._rng = random.Random(seed)
-        if self._env_weights is not None:
-            named = ", ".join(f"{cfg.resolved_name}={cfg.ratio:.2f}" for cfg in train_envs)
-            logger.info(f"Sampling train envs by ratio ({named})")
-        else:
-            logger.info(f"Sampling train envs round-robin ({len(train_envs)} env(s))")
 
-        self.eval_tasks: list[Task] = []
-        self._eval_datasets: list[list[dict]] = []
-        if eval_envs:
-            for cfg in eval_envs:
-                env = vf.load_environment(cfg.stripped_id, **cfg.args)
-                self.eval_tasks.append(
-                    Task(
-                        id=cfg.resolved_name,
-                        env=env,
-                        sampling_args=cfg.sampling.to_sampling_args(),
-                        kind="eval",
-                        rollouts_per_group=cfg.rollouts_per_example,
-                    )
-                )
-                ds = env.get_eval_dataset() if hasattr(env, "get_eval_dataset") else env.get_dataset()
-                rows = list(ds)
-                if cfg.num_examples != -1:
-                    rows = rows[: cfg.num_examples]
-                self._eval_datasets.append([dict(r) for r in rows])
+        self.eval_tasks = eval_tasks
+        self._eval_datasets = eval_datasets
 
         self.eval_interval = eval_interval
         self._eval_queue: deque[tuple[Task, dict, int]] = deque()
@@ -119,6 +88,78 @@ class Scheduler:
 
         if eval_at_zero and self.eval_tasks:
             self._start_eval_epoch(0)
+
+    @classmethod
+    def from_config(
+        cls,
+        train_envs: list[TrainEnvConfig],
+        train_rollouts_per_example: int,
+        eval_envs: list[EvalEnvConfig] | None = None,
+        eval_interval: int | None = None,
+        eval_at_zero: bool = False,
+        seed: int | None = None,
+        buffer: "DifficultyBuffer | None" = None,
+    ) -> "Scheduler":
+        """Load verifiers envs + datasets, then build a Scheduler.
+
+        Tests should construct Scheduler directly with handcrafted tasks +
+        datasets — this factory exists for the production callsite that needs
+        the verifiers loader.
+        """
+        logger = get_logger()
+
+        train_tasks: list[Task] = []
+        train_datasets: list[Iterator[dict]] = []
+        for cfg in train_envs:
+            env = vf.load_environment(cfg.stripped_id, **cfg.args)
+            train_tasks.append(
+                Task(
+                    id=cfg.resolved_name,
+                    env=env,
+                    sampling_args=cfg.sampling.to_sampling_args(),
+                    kind="train",
+                    rollouts_per_group=train_rollouts_per_example,
+                )
+            )
+            train_datasets.append(_cycle_forever(env.get_dataset(), env_id=cfg.resolved_name, buffer=buffer))
+
+        ratios = [cfg.ratio for cfg in train_envs]
+        env_weights: list[float] | None = ratios if all(r is not None for r in ratios) else None  # type: ignore[assignment]
+        if env_weights is not None:
+            named = ", ".join(f"{cfg.resolved_name}={cfg.ratio:.2f}" for cfg in train_envs)
+            logger.info(f"Sampling train envs by ratio ({named})")
+        else:
+            logger.info(f"Sampling train envs round-robin ({len(train_envs)} env(s))")
+
+        eval_tasks: list[Task] = []
+        eval_datasets: list[list[dict]] = []
+        for cfg in eval_envs or []:
+            env = vf.load_environment(cfg.stripped_id, **cfg.args)
+            eval_tasks.append(
+                Task(
+                    id=cfg.resolved_name,
+                    env=env,
+                    sampling_args=cfg.sampling.to_sampling_args(),
+                    kind="eval",
+                    rollouts_per_group=cfg.rollouts_per_example,
+                )
+            )
+            ds = env.get_eval_dataset() if hasattr(env, "get_eval_dataset") else env.get_dataset()
+            rows = list(ds)
+            if cfg.num_examples != -1:
+                rows = rows[: cfg.num_examples]
+            eval_datasets.append([dict(r) for r in rows])
+
+        return cls(
+            train_tasks=train_tasks,
+            train_datasets=train_datasets,
+            eval_tasks=eval_tasks,
+            eval_datasets=eval_datasets,
+            env_weights=env_weights,
+            eval_interval=eval_interval,
+            eval_at_zero=eval_at_zero,
+            seed=seed,
+        )
 
     def _start_eval_epoch(self, step: int) -> None:
         entries: list[tuple[Task, dict, int]] = []
