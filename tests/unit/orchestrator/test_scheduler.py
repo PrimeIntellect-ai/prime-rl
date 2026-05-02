@@ -169,6 +169,37 @@ def test_eval_queue_drained_exclusively_before_train():
     assert d3.task.kind == "train" and d3.eval_step is None  # type: ignore[union-attr]
 
 
+def test_eval_preempts_train_then_train_resumes():
+    """Full lifecycle: train dispatching → weight rotation triggers eval →
+    eval pre-empts the dispatch stream → eval queue drains → train resumes
+    seamlessly (no manual reset needed)."""
+    sched = _build(
+        eval_tasks=[_task("eval_env", kind="eval")],
+        eval_datasets=[[{"p": "a"}, {"p": "b"}]],
+        eval_interval=5,
+    )
+
+    # Phase 1 — train is running, no eval queued
+    d1 = sched.next_task()
+    d2 = sched.next_task()
+    assert d1.task.kind == "train" and d2.task.kind == "train"  # type: ignore[union-attr]
+
+    # Phase 2 — weight watcher hits an eval boundary mid-stream
+    _run(sched.on_new_version(5))
+
+    # Phase 3 — eval pre-empts; the next two dispatches are eval@step=5
+    d3 = sched.next_task()
+    d4 = sched.next_task()
+    assert d3.task.kind == "eval" and d3.eval_step == 5  # type: ignore[union-attr]
+    assert d4.task.kind == "eval" and d4.eval_step == 5  # type: ignore[union-attr]
+
+    # Phase 4 — eval drained, train resumes without further intervention
+    d5 = sched.next_task()
+    d6 = sched.next_task()
+    assert d5.task.kind == "train" and d5.eval_step is None  # type: ignore[union-attr]
+    assert d6.task.kind == "train"  # type: ignore[union-attr]
+
+
 def test_eval_dispatching_step_clears_when_queue_empties():
     sched = _eval_setup(eval_at_zero=True)
     assert sched._dispatching_eval_step == 0
