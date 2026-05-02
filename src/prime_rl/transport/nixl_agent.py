@@ -59,6 +59,23 @@ class NixlAgentWrapper:
             dtype=str(tensor.dtype).removeprefix("torch."),
         )
 
+    def make_xfer_desc(self, tensor: Tensor):
+        """Build a 1-entry NIXL xfer dlist for a (possibly narrowed) tensor view.
+
+        The view's underlying memory must already be registered via
+        :meth:`register_tensor` on the parent tensor.
+        """
+        return self._agent.get_xfer_descs(
+            [(tensor.data_ptr(), tensor.numel() * tensor.element_size(), tensor.get_device())],
+            mem_type="cuda",
+        )
+
+    def serialize_descs(self, descs) -> bytes:
+        return self._agent.get_serialized_descs(descs)
+
+    def deserialize_descs(self, serialized: bytes):
+        return self._agent.deserialize_descs(serialized)
+
 
 def make_agent_name(role: str, global_rank: int) -> str:
     return f"{role}-{socket.gethostname()}-r{global_rank}"
