@@ -13,7 +13,7 @@ from prime_rl.orchestrator.engine import Group, RolloutEngine
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_admin import InferenceAdmin
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.scheduler import Scheduler
+from prime_rl.orchestrator.scheduler import setup_scheduler
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import setup_training_batch_sender
@@ -96,15 +96,7 @@ async def run(cfg: OrchestratorConfig) -> None:
             thresholds.append(f"hard<={cfg.buffer.hard_threshold}")
         logger.info(f"Difficulty buffer enabled ({', '.join(thresholds)})")
 
-    scheduler = Scheduler.from_config(
-        train_envs=cfg.train.env,
-        train_rollouts_per_example=cfg.rollouts_per_example,
-        eval_envs=cfg.eval.env if cfg.eval else None,
-        eval_interval=cfg.eval.interval if cfg.eval else None,
-        eval_at_zero=(cfg.eval.eval_base_model if cfg.eval else False) and resume_step is None,
-        seed=cfg.seed,
-        buffer=buffer,
-    )
+    scheduler = setup_scheduler(cfg, buffer=buffer, resume_step=resume_step)
     for task in scheduler.tasks:
         logger.info(f"Train task '{task.id}' ready (rollouts/group={task.rollouts_per_group})")
     for task in scheduler.eval_tasks:

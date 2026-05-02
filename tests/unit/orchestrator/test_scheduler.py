@@ -1,14 +1,14 @@
 """Tests for Scheduler — env selection, eval epoch triggering, dataset cycling.
 
-The Scheduler is constructed directly here (not via from_config) so we can
-hand it stub Tasks + in-memory datasets without touching verifiers.
+We construct Scheduler with SchedulerInputs directly here, bypassing
+setup_scheduler so we don't need to touch verifiers or the config layer.
 """
 
 import asyncio
 from collections import Counter
 from itertools import islice
 
-from prime_rl.orchestrator.scheduler import Dispatch, Scheduler, Task, _cycle_forever
+from prime_rl.orchestrator.scheduler import Dispatch, Scheduler, SchedulerInputs, Task, _cycle_forever
 
 
 def _run(coro):
@@ -26,13 +26,28 @@ def _stream(rows: list[dict]):
     return iter(_cycle_forever(rows, env_id=None, buffer=None))
 
 
+def _build(**overrides) -> Scheduler:
+    """Build a Scheduler with sensible defaults, overrides supplied as kwargs."""
+    return Scheduler(
+        SchedulerInputs(
+            train_tasks=overrides.pop("train_tasks", [_task("a")]),
+            train_datasets=overrides.pop("train_datasets", [_stream([{"x": 1}])]),
+            eval_tasks=overrides.pop("eval_tasks", []),
+            eval_datasets=overrides.pop("eval_datasets", []),
+            env_weights=overrides.pop("env_weights", None),
+            eval_interval=overrides.pop("eval_interval", None),
+            eval_at_zero=overrides.pop("eval_at_zero", False),
+            seed=overrides.pop("seed", None),
+        )
+    )
+
+
 # --- _cycle_forever ----------------------------------------------------------
 
 
 def test_cycle_forever_loops_back():
     rows = [{"a": 1}, {"a": 2}]
-    it = _cycle_forever(rows)
-    seen = list(islice(it, 5))
+    seen = list(islice(_cycle_forever(rows), 5))
     assert [r["a"] for r in seen] == [1, 2, 1, 2, 1]
 
 
@@ -46,7 +61,6 @@ def test_cycle_forever_does_not_mutate_source_rows():
     rows = [{"a": 1}]
     list(islice(_cycle_forever(rows), 3))
     assert rows == [{"a": 1}], "source list mutated"
-    assert "example_id" not in rows[0]
 
 
 class _StubBuffer:
@@ -77,8 +91,6 @@ def test_cycle_forever_falls_back_when_fully_evicted():
     # all subsequent rows raw).
     buf = _StubBuffer(evicted_ids={0, 1})
     seen = list(islice(_cycle_forever(rows, env_id="env", buffer=buf), 4))
-    # Pass 1: skip 0, skip 1 — fully evicted → fallback
-    # Fallback yields raw rows starting from id 2
     assert [r["example_id"] for r in seen] == [2, 3, 4, 5]
 
 
@@ -86,17 +98,17 @@ def test_cycle_forever_falls_back_when_fully_evicted():
 
 
 def test_next_task_round_robin_cycles_through_envs():
-    tasks = [_task("a"), _task("b"), _task("c")]
-    streams = [_stream([{"x": "a1"}]), _stream([{"x": "b1"}]), _stream([{"x": "c1"}])]
-    sched = Scheduler(train_tasks=tasks, train_datasets=streams)
-
+    sched = _build(
+        train_tasks=[_task("a"), _task("b"), _task("c")],
+        train_datasets=[_stream([{"x": "a1"}]), _stream([{"x": "b1"}]), _stream([{"x": "c1"}])],
+    )
     seen_ids = [sched.next_task().task.id for _ in range(6)]  # type: ignore[union-attr]
     assert seen_ids == ["a", "b", "c", "a", "b", "c"]
 
 
 def test_next_task_returns_dispatch_with_train_marker():
     """Train dispatches have eval_step=None; that's how the engine distinguishes."""
-    sched = Scheduler(train_tasks=[_task("a")], train_datasets=[_stream([{"x": 1}])])
+    sched = _build()
     d = sched.next_task()
     assert isinstance(d, Dispatch)
     assert d.eval_step is None
@@ -108,15 +120,12 @@ def test_next_task_returns_dispatch_with_train_marker():
 
 def test_next_task_weighted_distribution_matches_ratios():
     """With weights [0.9, 0.1], env 'a' should dominate over many draws."""
-    tasks = [_task("a"), _task("b")]
-    streams = [_stream([{"x": "a"}]), _stream([{"x": "b"}])]
-    sched = Scheduler(
-        train_tasks=tasks,
-        train_datasets=streams,
+    sched = _build(
+        train_tasks=[_task("a"), _task("b")],
+        train_datasets=[_stream([{"x": "a"}]), _stream([{"x": "b"}])],
         env_weights=[0.9, 0.1],
         seed=42,
     )
-
     counts = Counter(sched.next_task().task.id for _ in range(1000))  # type: ignore[union-attr]
     # 90/10 split; allow ±5pp slack at n=1000
     assert 850 < counts["a"] < 950, counts
@@ -125,11 +134,9 @@ def test_next_task_weighted_distribution_matches_ratios():
 
 def test_next_task_weighted_is_deterministic_under_same_seed():
     def run_once():
-        tasks = [_task("a"), _task("b"), _task("c")]
-        streams = [_stream([{"x": t.id}]) for t in tasks]
-        sched = Scheduler(
-            train_tasks=tasks,
-            train_datasets=streams,
+        sched = _build(
+            train_tasks=[_task("a"), _task("b"), _task("c")],
+            train_datasets=[_stream([{"x": "a"}]), _stream([{"x": "b"}]), _stream([{"x": "c"}])],
             env_weights=[0.5, 0.3, 0.2],
             seed=123,
         )
@@ -142,15 +149,9 @@ def test_next_task_weighted_is_deterministic_under_same_seed():
 
 
 def _eval_setup(eval_at_zero: bool = True, eval_interval: int | None = None):
-    train_tasks = [_task("train_env")]
-    train_streams = [_stream([{"x": "t"}])]
-    eval_tasks = [_task("eval_env", kind="eval", rollouts_per_group=2)]
-    eval_data = [[{"prompt": "p1"}, {"prompt": "p2"}]]
-    return Scheduler(
-        train_tasks=train_tasks,
-        train_datasets=train_streams,
-        eval_tasks=eval_tasks,
-        eval_datasets=eval_data,
+    return _build(
+        eval_tasks=[_task("eval_env", kind="eval", rollouts_per_group=2)],
+        eval_datasets=[[{"prompt": "p1"}, {"prompt": "p2"}]],
         eval_interval=eval_interval,
         eval_at_zero=eval_at_zero,
     )
@@ -160,7 +161,6 @@ def test_eval_queue_drained_exclusively_before_train():
     """While the eval queue has items, every dispatch must be eval — never
     interleave train into the middle of an eval epoch."""
     sched = _eval_setup(eval_at_zero=True)
-    # 2 eval examples queued at step 0
     d1 = sched.next_task()
     d2 = sched.next_task()
     d3 = sched.next_task()  # eval drained, should now return train
@@ -189,33 +189,17 @@ def test_eval_entries_have_example_id_per_position():
 def test_eval_entries_are_cartesian_product_env_x_examples():
     """Two eval envs × two examples each = 4 dispatches, ordered by env then
     example."""
-    train_tasks = [_task("t")]
-    train_streams = [_stream([{}])]
-    eval_tasks = [_task("e1", kind="eval"), _task("e2", kind="eval")]
-    eval_data = [
-        [{"p": "a"}, {"p": "b"}],
-        [{"p": "c"}, {"p": "d"}],
-    ]
-    sched = Scheduler(
-        train_tasks=train_tasks,
-        train_datasets=train_streams,
-        eval_tasks=eval_tasks,
-        eval_datasets=eval_data,
+    sched = _build(
+        eval_tasks=[_task("e1", kind="eval"), _task("e2", kind="eval")],
+        eval_datasets=[
+            [{"p": "a"}, {"p": "b"}],
+            [{"p": "c"}, {"p": "d"}],
+        ],
         eval_at_zero=True,
     )
-    seen = [(sched.next_task().task.id, sched.next_task().task.id)]  # type: ignore[union-attr]
-    # Drain all 4
-    sched2 = Scheduler(
-        train_tasks=[_task("t")],
-        train_datasets=[_stream([{}])],
-        eval_tasks=eval_tasks,
-        eval_datasets=eval_data,
-        eval_at_zero=True,
-    )
-    drained = [sched2.next_task() for _ in range(4)]
+    drained = [sched.next_task() for _ in range(4)]
     assert [d.task.id for d in drained] == ["e1", "e1", "e2", "e2"]  # type: ignore[union-attr]
     assert [d.example["p"] for d in drained] == ["a", "b", "c", "d"]  # type: ignore[union-attr]
-    assert seen  # silence unused warning
 
 
 def test_eval_at_zero_false_does_not_populate_queue():
@@ -228,7 +212,7 @@ def test_eval_at_zero_false_does_not_populate_queue():
 
 
 def test_on_new_version_noop_without_eval_tasks():
-    sched = Scheduler(train_tasks=[_task("t")], train_datasets=[_stream([{}])], eval_interval=2)
+    sched = _build(eval_interval=2)
     _run(sched.on_new_version(10))
     assert sched.last_eval_step == 0
     assert not sched._eval_queue
@@ -266,7 +250,6 @@ def test_on_new_version_skips_when_previous_epoch_still_dispatching():
     """If an eval epoch is mid-dispatch (queue non-empty), don't start a new
     one even if we've passed another interval boundary."""
     sched = _eval_setup(eval_at_zero=True, eval_interval=5)
-    # epoch is dispatching at step 0 already (eval_at_zero=True)
     assert sched._dispatching_eval_step == 0
     _run(sched.on_new_version(10))  # would normally trigger
     # still dispatching the original epoch — no new entries appended
