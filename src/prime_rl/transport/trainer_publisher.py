@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+import msgspec
 import torch
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
@@ -22,6 +23,7 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.transport.classic_cuda_pool import classic_cuda_alloc
 from prime_rl.transport.mx_rendezvous import MxRendezvous
 from prime_rl.transport.nixl_agent import NixlAgentWrapper, make_agent_name
+from prime_rl.transport.wire import RendezvousPayload
 
 
 class TrainerPublisher:
@@ -77,12 +79,27 @@ class TrainerPublisher:
         )
 
     def publish(self) -> str:
-        """Push NIXL agent metadata + slot tensor descriptors through MX. Returns the assigned ``mx_source_id``."""
+        """Push NIXL agent metadata + slot tensor descriptors + the layout
+        manifest through MX. The layout rides inside the
+        :class:`RendezvousPayload` packed into ``WorkerMetadata.nixl_metadata``
+        so inference can narrow + chunk its destinations after one
+        ``GetMetadata`` call. Returns the assigned ``mx_source_id``.
+        """
         descriptors: list[p2p_pb2.TensorDescriptor] = []
         for slot in self.slots:
             for buf_key, tensor, _ in slot.buffers:
                 descriptors.append(self.agent.make_tensor_descriptor(buf_key, tensor))
+
+        layout = []
+        for slot in self.slots:
+            layout.extend(slot.layout_payload())
+
+        payload = RendezvousPayload(
+            agent_metadata=self.agent.get_metadata(),
+            agent_name=self.agent.name,
+            layout=layout,
+        )
         return self.rendezvous.publish(
-            nixl_metadata=self.agent.get_metadata(),
+            nixl_metadata=msgspec.msgpack.encode(payload),
             tensors=descriptors,
         )

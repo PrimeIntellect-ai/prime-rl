@@ -208,7 +208,8 @@ def test_expert_slot_buffer_layout_and_writes(tiny_state):
     # Build writes against a fake peer that owns experts 1 and 2.
     peer = PeerInfo(
         agent_name="inference-test-r0",
-        descriptors={},
+        agent_metadata=b"",
+        tensor_addrs={},
         expert_map={"model.layers.0.mlp.experts": [1, 2]},
     )
     writes = w13.build_writes([peer])
@@ -228,7 +229,10 @@ def test_sharded_slot_writes_target_my_rank_chunk_on_every_peer(tiny_state):
     slots = _build(config, sd, "passthrough", torch.bfloat16)
     q = next(s for s in slots if s.slot_key == "model.layers.0.self_attn.q_proj.weight")
     assert isinstance(q, ShardedSlot)
-    peers = [PeerInfo(agent_name=f"inference-test-r{r}", descriptors={}, expert_map={}) for r in range(3)]
+    peers = [
+        PeerInfo(agent_name=f"inference-test-r{r}", agent_metadata=b"", tensor_addrs={}, expert_map={})
+        for r in range(3)
+    ]
     writes = q.build_writes(peers)
     # One write per (peer, buffer); single-rank trainer → my_rank=0, no scale buffer.
     assert {(w.peer_name, w.remote_chunk_idx) for w in writes} == {
@@ -244,7 +248,7 @@ def test_gathered_slot_round_robin_writes_when_single_rank(tiny_state):
     slots = _build(config, sd, "passthrough", torch.bfloat16)
     norm = next(s for s in slots if s.slot_key == "model.layers.0.input_layernorm.weight")
     assert isinstance(norm, GatheredSlot)
-    peers = [PeerInfo(agent_name=f"inf-r{r}", descriptors={}, expert_map={}) for r in range(4)]
+    peers = [PeerInfo(agent_name=f"inf-r{r}", agent_metadata=b"", tensor_addrs={}, expert_map={}) for r in range(4)]
     writes = norm.build_writes(peers)
     # One write per peer; remote_chunk_idx=0 (gathered → single chunk).
     assert {w.peer_name for w in writes} == {"inf-r0", "inf-r1", "inf-r2", "inf-r3"}
