@@ -44,7 +44,7 @@ jobs:
           if [ -n "$INPUT_TAG" ]; then
             TAG="$INPUT_TAG"
           else
-            TAG=$(echo "$INPUT_REF" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-50)
+            TAG=$(echo "$INPUT_REF" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g' | sed 's/--*/-/g' | cut -c1-50 | sed 's/^-//;s/-$//')
           fi
           SHA=$(git rev-parse --short HEAD)
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
