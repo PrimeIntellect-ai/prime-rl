@@ -6,7 +6,7 @@ services:
       interval: 5s
       retries: 3
       start_period: 5s
-    restart: unless-stopped
+    restart: "no"
 
   modelexpress-server:
     build:
@@ -18,7 +18,12 @@ services:
       - MODEL_EXPRESS_LOG_LEVEL=info
       - MX_METADATA_BACKEND=redis
       - REDIS_URL=redis://redis:6379
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/localhost/29501"]
+      interval: 5s
+      retries: 12
+      start_period: 5s
     depends_on:
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
