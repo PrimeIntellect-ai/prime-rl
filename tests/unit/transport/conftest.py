@@ -2,19 +2,22 @@
 
 Skips the test session entirely if Docker isn't on the PATH so transport
 tests don't false-fail in environments without Docker.
+
+Uses a fixed compose project name (``prime-rl-mx-test``) so a previous
+session that crashed before teardown doesn't leak port 29501 — ``up -d
+--wait`` is idempotent against an already-healthy stack.
 """
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
-import uuid
 from pathlib import Path
 
 import pytest
 
 COMPOSE_FILE = Path(__file__).resolve().parents[3] / "docker" / "modelexpress" / "docker-compose.yml"
+COMPOSE_PROJECT = "prime-rl-mx-test"
 
 
 @pytest.fixture(scope="session")
@@ -25,9 +28,8 @@ def mx_server() -> str:
     if not COMPOSE_FILE.is_file():
         pytest.skip(f"compose file not found at {COMPOSE_FILE}")
 
-    project = f"prime-rl-mx-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     up = subprocess.run(
-        ["docker", "compose", "-f", str(COMPOSE_FILE), "-p", project, "up", "-d", "--build", "--wait"],
+        ["docker", "compose", "-f", str(COMPOSE_FILE), "-p", COMPOSE_PROJECT, "up", "-d", "--build", "--wait"],
         capture_output=True,
         text=True,
     )
@@ -38,7 +40,7 @@ def mx_server() -> str:
         yield "localhost:29501"
     finally:
         subprocess.run(
-            ["docker", "compose", "-f", str(COMPOSE_FILE), "-p", project, "down", "--remove-orphans"],
+            ["docker", "compose", "-f", str(COMPOSE_FILE), "-p", COMPOSE_PROJECT, "down", "--remove-orphans"],
             capture_output=True,
             text=True,
         )

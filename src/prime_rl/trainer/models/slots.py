@@ -6,16 +6,16 @@ scale buffer for quantized conversions. The slot owns the bound conversion
 function from the registry; calling :meth:`Slot.materialize` writes a fused
 source tensor (concatenated from the spec's ``sources``) into the buffers.
 
-This module is model-agnostic. The caller supplies a layer-iterator
-(``layer_specs_fn``, ``is_dense_fn``, ``num_layers``) so that per-model
-tables (e.g. :func:`prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe.conversion_specs`)
-plug in cleanly.
+Allocation takes only the shapes of trainer-side source tensors — no actual
+tensor data — so a publisher can size its registered buffers without holding
+references to the live state dict.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Callable, Iterator, Mapping, Sequence
 
 import torch
 from torch import Tensor
@@ -24,11 +24,33 @@ from prime_rl.trainer.models.conversion_spec import ConversionSpec
 from prime_rl.trainer.models.conversions import ConversionEntry, resolve
 from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
 
+Shape = Sequence[int]
+
+
+@contextmanager
+def _alloc_context(device: torch.device | str) -> Iterator[None]:
+    """Allocate inside the classic-cudaMalloc pool when on CUDA.
+
+    Required for NIXL-registered buffers under
+    ``PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"`` (the default in
+    prime-rl trainer launches): VMM-backed allocations span multiple
+    ``cuMemCreate`` handles which ``nvidia_peermem`` cannot pin.
+    """
+    if torch.device(device).type != "cuda":
+        with nullcontext():
+            yield
+        return
+    from prime_rl.transport.classic_cuda_pool import classic_cuda_alloc
+
+    with classic_cuda_alloc():
+        yield
+
 
 @dataclass
 class Slot:
     spec: ConversionSpec
     full_name: str  # e.g. "model.layers.0.self_attn.qkv_proj.weight"
+    scale_name: str | None  # full destination name for scale, or None
     weight: Tensor
     scale: Tensor | None
     conversion: ConversionEntry
@@ -39,7 +61,7 @@ class Slot:
         self.conversion.fn(src, self.weight, self.scale)
 
 
-def _dst_shape(spec: ConversionSpec, src_shapes: Sequence[tuple[int, ...]]) -> tuple[int, ...]:
+def _dst_shape(spec: ConversionSpec, src_shapes: Sequence[Shape]) -> tuple[int, ...]:
     if len(src_shapes) == 1:
         return tuple(src_shapes[0])
     base = list(src_shapes[0])
@@ -50,39 +72,49 @@ def _dst_shape(spec: ConversionSpec, src_shapes: Sequence[tuple[int, ...]]) -> t
 def allocate_slot(
     spec: ConversionSpec,
     *,
-    full_name: str,
-    src_shapes: Sequence[tuple[int, ...]],
+    prefix: str,
+    src_shapes: Sequence[Shape],
     default_conversion: str,
     base_dtype: torch.dtype,
-    device: torch.device | str = "cpu",
+    device: torch.device | str = "cuda",
 ) -> Slot:
     """Allocate the destination buffers for one spec.
 
-    For quantized conversions, ``weight`` is :data:`torch.float8_e4m3fn`
-    and a paired ``scale`` buffer is allocated with shape
-    ``(*leading, ceil_div(rows, 128), ceil_div(cols, 128))`` in
-    :data:`torch.float32`. For non-quantized conversions, ``weight`` uses
-    ``base_dtype`` (typically the inference model's ``torch_dtype``) and
-    ``scale`` is ``None``.
+    For quantized conversions, ``weight`` is :data:`torch.float8_e4m3fn`,
+    ``scale`` is :data:`torch.float32` with shape
+    ``(*leading, ceil_div(rows, 128), ceil_div(cols, 128))``, and
+    ``scale_name`` follows :meth:`ConversionSpec.scale_name`. For
+    non-quantized conversions, ``weight`` uses ``base_dtype`` and ``scale``
+    / ``scale_name`` are ``None``.
     """
     entry = resolve(spec.conversion.conversion_type, default_conversion)
     dst_shape = _dst_shape(spec, src_shapes)
 
-    if entry.requires_scale:
-        rows, cols = dst_shape[-2], dst_shape[-1]
-        leading = dst_shape[:-2]
-        scale_shape = (*leading, ceil_div(rows, BLOCK_SIZE), ceil_div(cols, BLOCK_SIZE))
-        weight = torch.empty(dst_shape, dtype=torch.float8_e4m3fn, device=device)
-        scale = torch.empty(scale_shape, dtype=torch.float32, device=device)
-    else:
-        weight = torch.empty(dst_shape, dtype=base_dtype, device=device)
-        scale = None
+    with _alloc_context(device):
+        if entry.requires_scale:
+            rows, cols = dst_shape[-2], dst_shape[-1]
+            leading = dst_shape[:-2]
+            scale_shape = (*leading, ceil_div(rows, BLOCK_SIZE), ceil_div(cols, BLOCK_SIZE))
+            weight = torch.empty(dst_shape, dtype=torch.float8_e4m3fn, device=device)
+            scale = torch.empty(scale_shape, dtype=torch.float32, device=device)
+            scale_name = spec.scale_name(prefix)
+        else:
+            weight = torch.empty(dst_shape, dtype=base_dtype, device=device)
+            scale = None
+            scale_name = None
 
-    return Slot(spec=spec, full_name=full_name, weight=weight, scale=scale, conversion=entry)
+    return Slot(
+        spec=spec,
+        full_name=spec.full_name(prefix),
+        scale_name=scale_name,
+        weight=weight,
+        scale=scale,
+        conversion=entry,
+    )
 
 
 def allocate_slots(
-    src_state_dict: dict[str, Tensor],
+    state_shapes: Mapping[str, Shape],
     *,
     layer_specs_fn: Callable[[int, bool], tuple[ConversionSpec, ...]],
     non_layer_specs: tuple[ConversionSpec, ...],
@@ -90,24 +122,23 @@ def allocate_slots(
     num_layers: int,
     default_conversion: str,
     base_dtype: torch.dtype,
-    device: torch.device | str = "cpu",
+    device: torch.device | str = "cuda",
 ) -> list[Slot]:
     """Allocate one slot per spec for every transformer layer plus the non-layer specs.
 
-    ``default_conversion`` and ``base_dtype`` come from the inference target
-    (use :func:`select_default_conversion` and ``AutoConfig.torch_dtype`` on
-    the caller side). Source shapes are read from ``src_state_dict``.
+    ``state_shapes`` maps trainer-side source tensor names to their shapes.
+    The slot allocator never holds references to the live state dict.
     """
     slots: list[Slot] = []
 
     for i in range(num_layers):
-        prefix = f"model.layers.{i}."
+        prefix = f"model.layers.{i}"
         for spec in layer_specs_fn(i, is_dense_fn(i)):
-            src_shapes = [src_state_dict[f"{prefix}{s}"].shape for s in spec.sources]
+            src_shapes = [state_shapes[f"{prefix}.{s}"] for s in spec.sources]
             slots.append(
                 allocate_slot(
                     spec,
-                    full_name=f"{prefix}{spec.dst}",
+                    prefix=prefix,
                     src_shapes=src_shapes,
                     default_conversion=default_conversion,
                     base_dtype=base_dtype,
@@ -116,11 +147,11 @@ def allocate_slots(
             )
 
     for spec in non_layer_specs:
-        src_shapes = [src_state_dict[s].shape for s in spec.sources]
+        src_shapes = [state_shapes[s] for s in spec.sources]
         slots.append(
             allocate_slot(
                 spec,
-                full_name=spec.dst,
+                prefix="",
                 src_shapes=src_shapes,
                 default_conversion=default_conversion,
                 base_dtype=base_dtype,
