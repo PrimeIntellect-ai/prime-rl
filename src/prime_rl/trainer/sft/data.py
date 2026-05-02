@@ -43,12 +43,16 @@ class Sample(TypedDict):
     attn_mask: NotRequired[list[list[bool]]]
     prev_map: NotRequired[list[int]]
     loss_weights: NotRequired[list[float]]
+    node_of_token: NotRequired[list[int]]
+    is_ancestor_node: NotRequired[list[list[bool]]]
 
 
 class TreeSample(Sample):
     attn_mask: list[list[bool]]
     prev_map: list[int]
     loss_weights: list[float]
+    node_of_token: list[int]
+    is_ancestor_node: list[list[bool]]
 
 
 class Batch(TypedDict):
@@ -59,6 +63,8 @@ class Batch(TypedDict):
     attn_mask: NotRequired[Bool[Tensor, "batch seq seq"]]
     prev_map: NotRequired[Int[Tensor, "batch seq"]]
     loss_weights: NotRequired[Tensor]
+    node_of_token: NotRequired[Int[Tensor, "batch seq"]]
+    is_ancestor_node: NotRequired[Bool[Tensor, "batch nodes nodes"]]
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -177,6 +183,8 @@ class CaterpillarFakeDataset(StatefulIterableDataset):
             "attn_mask": packed.attn_mask.tolist(),
             "prev_map": packed.prev_map.tolist(),
             "loss_weights": packed.loss_weights.tolist(),
+            "node_of_token": packed.node_of_token.tolist(),
+            "is_ancestor_node": packed.is_ancestor_node.tolist(),
         }
 
     def __iter__(self):
@@ -381,6 +389,8 @@ class SFTCaterpillarDataset(_SFTCaterpillarBase):
             "attn_mask": packed.attn_mask.tolist(),
             "prev_map": packed.prev_map.tolist(),
             "loss_weights": packed.loss_weights.tolist(),
+            "node_of_token": packed.node_of_token.tolist(),
+            "is_ancestor_node": packed.is_ancestor_node.tolist(),
         }
 
     def __iter__(self):
@@ -796,6 +806,12 @@ def cat_collate(samples: list[Sample]) -> Batch:
         )
         batch["loss_weights"] = (
             torch.stack([torch.tensor(sample["loss_weights"]) for sample in samples], dim=0).float().to("cuda")
+        )
+        batch["node_of_token"] = (
+            torch.stack([torch.tensor(sample["node_of_token"]) for sample in samples], dim=0).long().to("cuda")
+        )
+        batch["is_ancestor_node"] = (
+            torch.stack([torch.tensor(sample["is_ancestor_node"]) for sample in samples], dim=0).bool().to("cuda")
         )
     return batch
 

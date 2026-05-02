@@ -425,8 +425,8 @@ class SFTConfig(BaseConfig):
             raise ValueError("Tree Training v1 requires model.cp == 1")
         if self.model.ep != 1:
             raise ValueError("Tree Training v1 requires model.ep == 1")
-        if self.model.attn != "sdpa":
-            raise ValueError("Tree Training v1 requires model.attn == 'sdpa'")
+        if self.model.attn not in ("sdpa", "flex_attention"):
+            raise ValueError("Tree Training requires model.attn in {'sdpa', 'flex_attention'}")
         if self.model.impl not in ("hf", "auto"):
             raise ValueError("Tree Training v1 requires model.impl in {'hf', 'auto'}")
         if self.loss_impl not in ("torch", "liger"):

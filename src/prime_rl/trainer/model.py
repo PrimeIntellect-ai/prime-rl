@@ -22,6 +22,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor.parallel import parallelize_module
+from torch.nn.attention.flex_attention import BlockMask
 from torchtitan.distributed.expert_parallel import ExpertParallel
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -1120,7 +1121,7 @@ def forward(
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
-    attn_mask: Tensor | None = None,
+    attn_mask: Tensor | BlockMask | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     # Multimodal fields (Qwen3-VL)
@@ -1150,7 +1151,7 @@ def forward(
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
     if attn_mask is not None:
-        if attn_mask.ndim == 3:
+        if isinstance(attn_mask, Tensor) and attn_mask.ndim == 3:
             attn_mask = attn_mask.unsqueeze(1)
         kwargs["attention_mask"] = attn_mask
 

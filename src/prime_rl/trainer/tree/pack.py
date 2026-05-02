@@ -13,6 +13,8 @@ class PackedTree:
     loss_mask: torch.BoolTensor
     loss_weights: torch.Tensor
     prev_map: torch.LongTensor
+    node_of_token: torch.LongTensor
+    is_ancestor_node: torch.BoolTensor
     node_token_range: list[tuple[int, int]]
     K: int
 
@@ -61,6 +63,7 @@ def pack_tree(
     loss_mask = torch.empty(num_tokens, dtype=torch.bool, device=device)
     loss_weights = torch.empty(num_tokens, dtype=dtype, device=device)
     prev_map = torch.empty(num_tokens, dtype=torch.long, device=device)
+    node_of_token = torch.empty(num_tokens, dtype=torch.long, device=device)
     node_token_range = [(0, 0)] * len(tree.nodes)
 
     depths = _node_depths(tree)
@@ -80,6 +83,7 @@ def pack_tree(
         position_ids[start:end] = torch.arange(depths[node_idx], depths[node_idx] + node_len, device=device)
         loss_mask[start:end] = torch.tensor(node.loss_mask, dtype=torch.bool, device=device)
         loss_weights[start:end] = leaf_counts[node_idx] / K
+        node_of_token[start:end] = node_idx
         cursor = end
 
     prev_map[0] = -1
@@ -93,11 +97,15 @@ def pack_tree(
 
     loss_weights = loss_weights * loss_mask.to(dtype)
 
-    attn_mask = torch.zeros((num_tokens, num_tokens), dtype=torch.bool, device=device)
     ancestors = _ancestor_sets(tree)
+    is_ancestor_node = torch.zeros((len(tree.nodes), len(tree.nodes)), dtype=torch.bool, device=device)
+    for node_idx, ancestor_nodes in enumerate(ancestors):
+        is_ancestor_node[node_idx, list(ancestor_nodes)] = True
+
+    attn_mask = torch.zeros((num_tokens, num_tokens), dtype=torch.bool, device=device)
     for query_node_idx in range(len(tree.nodes)):
         query_start, query_end = node_token_range[query_node_idx]
-        for key_node_idx in ancestors[query_node_idx]:
+        for key_node_idx in torch.nonzero(is_ancestor_node[query_node_idx], as_tuple=False).flatten().tolist():
             key_start, key_end = node_token_range[key_node_idx]
             if key_node_idx == query_node_idx:
                 for query_pos in range(query_start, query_end):
@@ -119,6 +127,8 @@ def pack_tree(
         loss_mask=loss_mask,
         loss_weights=loss_weights,
         prev_map=prev_map,
+        node_of_token=node_of_token,
+        is_ancestor_node=is_ancestor_node,
         node_token_range=node_token_range,
         K=K,
     )

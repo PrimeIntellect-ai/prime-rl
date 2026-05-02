@@ -2,6 +2,7 @@ import math
 
 import torch
 import torch.nn as nn
+from torch.nn.attention.flex_attention import BlockMask, flex_attention
 
 
 class TinyTransformerBlock(nn.Module):
@@ -30,17 +31,27 @@ class TinyTransformerBlock(nn.Module):
         batch, seq_len, _ = x.shape
         return x.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-    def forward(self, hidden_states: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, attn_mask: torch.Tensor | BlockMask) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
         query = self._split_heads(self.q_proj(hidden_states))
         key = self._split_heads(self.k_proj(hidden_states))
         value = self._split_heads(self.v_proj(hidden_states))
 
-        scores = torch.matmul(query, key.transpose(-1, -2)) / math.sqrt(self.head_dim)
-        scores = scores.masked_fill(~attn_mask, torch.finfo(scores.dtype).min)
-        attn = torch.softmax(scores, dim=-1)
-        hidden_states = torch.matmul(attn, value).transpose(1, 2).contiguous()
+        if isinstance(attn_mask, BlockMask):
+            hidden_states = flex_attention(
+                query,
+                key,
+                value,
+                block_mask=attn_mask,
+                scale=1 / math.sqrt(self.head_dim),
+            )
+            hidden_states = hidden_states.transpose(1, 2).contiguous()
+        else:
+            scores = torch.matmul(query, key.transpose(-1, -2)) / math.sqrt(self.head_dim)
+            scores = scores.masked_fill(~attn_mask, torch.finfo(scores.dtype).min)
+            attn = torch.softmax(scores, dim=-1)
+            hidden_states = torch.matmul(attn, value).transpose(1, 2).contiguous()
         hidden_states = hidden_states.view(hidden_states.shape[0], hidden_states.shape[1], self.hidden_size)
         hidden_states = residual + self.o_proj(hidden_states)
         hidden_states = hidden_states + self.mlp(self.ln_2(hidden_states))
@@ -67,15 +78,15 @@ class TinyTransformer(nn.Module):
         self,
         input_ids: torch.Tensor,
         position_ids: torch.Tensor,
-        attn_mask: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | BlockMask | None = None,
     ) -> torch.Tensor:
         hidden_states = self.token_embed(input_ids) + self.position_embed(position_ids)
         if attn_mask is None:
             seq_len = input_ids.shape[1]
             attn_mask = torch.ones((seq_len, seq_len), dtype=torch.bool, device=input_ids.device).tril()
-        if attn_mask.ndim == 2:
+        if isinstance(attn_mask, torch.Tensor) and attn_mask.ndim == 2:
             attn_mask = attn_mask.unsqueeze(0).unsqueeze(0)
-        elif attn_mask.ndim == 3:
+        elif isinstance(attn_mask, torch.Tensor) and attn_mask.ndim == 3:
             attn_mask = attn_mask.unsqueeze(1)
 
         for layer in self.layers:

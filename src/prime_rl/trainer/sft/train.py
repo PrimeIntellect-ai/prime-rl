@@ -33,7 +33,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
-from prime_rl.trainer.tree import tree_nll_loss
+from prime_rl.trainer.tree import build_tree_block_mask, tree_nll_loss
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -233,7 +233,17 @@ def train(config: SFTConfig):
 
         with maybe_activation_offloading(config.model.ac_offloading):
             if tree_batch:
-                attn_mask = micro_batch["attn_mask"].to("cuda").unsqueeze(1)
+                if config.model.attn == "flex_attention":
+                    if input_ids.shape[0] != 1:
+                        raise ValueError("Tree Training v1.1 FlexAttention requires one tree per micro-batch")
+                    attn_mask = build_tree_block_mask(
+                        micro_batch["node_of_token"].to("cuda")[0],
+                        micro_batch["is_ancestor_node"].to("cuda")[0],
+                        seq_len=input_ids.shape[1],
+                        device=input_ids.device,
+                    )
+                else:
+                    attn_mask = micro_batch["attn_mask"].to("cuda").unsqueeze(1)
                 loss_weights = micro_batch["loss_weights"].to("cuda")
                 out = forward(model, input_ids, position_ids, attn_mask=attn_mask)
                 logits = out["logits"]

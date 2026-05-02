@@ -21,6 +21,7 @@ def test_simple_y_tree():
     assert packed.input_ids.tolist() == [1, 2, 3, 4, 5]
     assert packed.position_ids.tolist() == [0, 1, 2, 3, 2]
     assert packed.prev_map.tolist() == [-1, 0, 1, 2, 1]
+    assert packed.node_of_token.tolist() == [0, 0, 1, 1, 2]
     assert packed.node_token_range == [(0, 2), (2, 4), (4, 5)]
     torch.testing.assert_close(packed.loss_weights, torch.tensor([1.0, 1.0, 0.5, 0.0, 0.5]))
 
@@ -34,6 +35,15 @@ def test_simple_y_tree():
         ]
     )
     torch.testing.assert_close(packed.attn_mask, expected_mask)
+
+    expected_ancestor_nodes = torch.tensor(
+        [
+            [True, False, False],
+            [True, True, False],
+            [True, False, True],
+        ]
+    )
+    torch.testing.assert_close(packed.is_ancestor_node, expected_ancestor_nodes)
 
 
 def test_caterpillar_topology():
@@ -65,21 +75,21 @@ def test_mask_ancestor_only():
     )
     packed = pack_tree(tree)
 
-    token_to_node = {}
-    for node_idx, (start, end) in enumerate(packed.node_token_range):
-        for pos in range(start, end):
-            token_to_node[pos] = node_idx
-
     ancestors = {
         0: {0},
         1: {0, 1},
         2: {0, 1, 2},
         3: {0, 3},
     }
+    for node_idx, ancestor_nodes in ancestors.items():
+        assert (
+            set(torch.nonzero(packed.is_ancestor_node[node_idx], as_tuple=False).flatten().tolist()) == ancestor_nodes
+        )
+
     for query_pos in range(len(packed.input_ids)):
-        query_node = token_to_node[query_pos]
+        query_node = packed.node_of_token[query_pos].item()
         for key_pos in range(len(packed.input_ids)):
-            key_node = token_to_node[key_pos]
+            key_node = packed.node_of_token[key_pos].item()
             same_node_causal = key_node == query_node and key_pos <= query_pos
             ancestor_block = key_node != query_node and key_node in ancestors[query_node]
             assert packed.attn_mask[query_pos, key_pos].item() == (same_node_causal or ancestor_block)
@@ -146,3 +156,11 @@ def test_tree_config_rejects_unsupported_combinations(model_updates, data_kwargs
 
     with pytest.raises(ValueError, match=message):
         SFTConfig(model=model, data=data, loss_impl=loss_impl)
+
+
+def test_tree_config_accepts_flex_attention():
+    SFTConfig(
+        model=ModelConfig(attn="flex_attention", impl="hf"),
+        data=CaterpillarFakeDataConfig(),
+        loss_impl="torch",
+    )
