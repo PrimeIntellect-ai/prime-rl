@@ -387,12 +387,14 @@ class RLConfig(BaseConfig):
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
             elif self.weight_broadcast.type == "nixl_mx":
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+                inference_model_name = self.inference.model.name if self.inference else self.trainer.model.name
                 self.trainer.weight_broadcast = TrainerNIXLMxWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     inference_world_size=inference_world_size,
                     host=self.weight_broadcast.host,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
+                    inference_model_name=inference_model_name,
                 )
                 self.orchestrator.weight_broadcast = OrchestratorNIXLMxWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
