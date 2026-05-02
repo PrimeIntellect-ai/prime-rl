@@ -113,6 +113,29 @@ class VLLMAdminAPI:
         response.raise_for_status()
 
 
+class DynamoAdminAPI(VLLMAdminAPI):
+    """NVIDIA Dynamo admin endpoints (DYN_ENABLE_RL=true).
+
+    Inherits all relative-path endpoints from VLLMAdminAPI -- with
+    ``admin_base_url`` pointed at ``…/v1/rl``, httpx joins them onto the right
+    place. Only ``list_models`` differs: Dynamo serves ``/v1/models`` at the
+    OpenAI-compat root, not under ``/v1/rl/``, so we send an absolute URL to
+    bypass the admin prefix.
+    """
+
+    async def list_models(self, client: AsyncClient) -> list[dict]:
+        url = httpx.URL(client.base_url).copy_with(path="/v1/models")
+        response = await client.get(str(url))
+        return response.json()["data"]
+
+
+def setup_admin_api(client_config: ClientConfig) -> AdminAPI:
+    """Pick the AdminAPI implementation that matches ``client_config.backend``."""
+    if client_config.backend == "dynamo":
+        return DynamoAdminAPI()
+    return VLLMAdminAPI()
+
+
 _DEFAULT_ADMIN: AdminAPI = VLLMAdminAPI()
 
 
@@ -181,6 +204,7 @@ class StaticInferencePool:
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
+        self._admin_api = setup_admin_api(client_config)
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
@@ -206,12 +230,16 @@ class StaticInferencePool:
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         await check_health(
-            self._admin_clients, timeout=timeout if timeout is not None else self._wait_for_ready_timeout
+            self._admin_clients,
+            timeout=timeout if timeout is not None else self._wait_for_ready_timeout,
+            admin=self._admin_api,
         )
-        await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
+        await maybe_check_has_model(
+            self._admin_clients, model_name, skip_model_check=self._skip_model_check, admin=self._admin_api
+        )
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step, admin=self._admin_api)
 
     def get_metrics(self) -> dict[str, float]:
         return {}
