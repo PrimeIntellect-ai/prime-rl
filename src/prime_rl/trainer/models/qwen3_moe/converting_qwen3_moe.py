@@ -1,6 +1,8 @@
 import torch
 from torch import Tensor
 
+from prime_rl.trainer.models.conversion_spec import ConversionSpec, MaybeQuantize
+
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
     """Get the maximum number of layers in the model."""
@@ -98,3 +100,93 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
     num_layers = get_max_layer_num(state_dict)
     for i in range(num_layers):
         convert_tt_layer_to_hf(state_dict, i)
+
+
+# Conversion specs for Qwen3MoE (NIXL + Model Express weight transfer).
+#
+# Most specs leave ``conversion`` at its default: the registry picks
+# ``passthrough`` (plain dtype cast) when the inference variant is bf16
+# and ``fp8_128x128`` (block quantize, 128x128) when it is FP8. Tensors
+# that must stay in their native precision regardless of the inference
+# variant — every layernorm and the MoE router gate — pin
+# ``MaybeQuantize("passthrough")`` explicitly. vLLM fuses qkv into
+# ``self_attn.qkv_proj`` and (for dense layers) gate+up into
+# ``mlp.gate_up_proj``; MoE layers use FusedMoE's ``w13_weight`` /
+# ``w2_weight`` 3D stacked buffers.
+
+_BASE: tuple[ConversionSpec, ...] = (
+    ConversionSpec(
+        "input_layernorm.weight",
+        ("input_layernorm.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "post_attention_layernorm.weight",
+        ("post_attention_layernorm.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "self_attn.q_norm.weight",
+        ("self_attn.q_norm.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "self_attn.k_norm.weight",
+        ("self_attn.k_norm.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "self_attn.qkv_proj.weight",
+        ("self_attn.q_proj.weight", "self_attn.k_proj.weight", "self_attn.v_proj.weight"),
+    ),
+    ConversionSpec("self_attn.o_proj.weight", ("self_attn.o_proj.weight",)),
+)
+
+
+_DENSE: tuple[ConversionSpec, ...] = (
+    ConversionSpec("mlp.gate_up_proj.weight", ("mlp.gate_proj.weight", "mlp.up_proj.weight")),
+    ConversionSpec("mlp.down_proj.weight", ("mlp.down_proj.weight",)),
+)
+
+
+_SPARSE: tuple[ConversionSpec, ...] = (
+    ConversionSpec(
+        "mlp.gate.weight",
+        ("mlp.router.gate.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec("mlp.experts.w13_weight", ("mlp.experts.w1", "mlp.experts.w3"), cat_dim=1),
+    ConversionSpec("mlp.experts.w2_weight", ("mlp.experts.w2",)),
+)
+
+
+def conversion_specs(layer_idx: int, is_dense_layer: bool) -> tuple[ConversionSpec, ...]:
+    """Return the conversion specs for one transformer layer.
+
+    Qwen3MoE alternates dense MLPs and sparse MoE layers depending on
+    ``mlp_only_layers`` / ``decoder_sparse_step``; ``is_dense_layer`` lets
+    the caller pick the right tail.
+    """
+    return _BASE + (_DENSE if is_dense_layer else _SPARSE)
+
+
+def non_layer_conversion_specs() -> tuple[ConversionSpec, ...]:
+    """Conversion specs for tensors outside the transformer-layer loop
+    (embed_tokens, final norm, lm_head).
+
+    ``model.norm`` and ``lm_head`` are always non-quantized — the latter
+    matches the upstream Qwen3-FP8 ``modules_to_not_convert`` list.
+    """
+    return (
+        ConversionSpec("model.embed_tokens.weight", ("model.embed_tokens.weight",)),
+        ConversionSpec(
+            "model.norm.weight",
+            ("model.norm.weight",),
+            conversion=MaybeQuantize("passthrough"),
+        ),
+        ConversionSpec(
+            "lm_head.weight",
+            ("lm_head.weight",),
+            conversion=MaybeQuantize("passthrough"),
+        ),
+    )
