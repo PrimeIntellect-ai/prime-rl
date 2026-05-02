@@ -46,12 +46,8 @@ def test_publish_nixl_agent_metadata_through_mx(client, model_name):
     assert descriptor.size == weight.numel() * weight.element_size()
     assert descriptor.dtype == "bfloat16"
 
-    trainer = MxRendezvous(
-        client=client, role="trainer", rank=0, peer_world_size=1, model_name=model_name
-    )
-    inference = MxRendezvous(
-        client=client, role="inference", rank=0, peer_world_size=1, model_name=model_name
-    )
+    trainer = MxRendezvous(client=client, role="trainer", rank=0, peer_world_size=1, model_name=model_name)
+    inference = MxRendezvous(client=client, role="inference", rank=0, peer_world_size=1, model_name=model_name)
     trainer.publish(nixl_metadata=metadata, tensors=[descriptor])
     inference.publish(nixl_metadata=b"inference-side-stub", tensors=[])
 

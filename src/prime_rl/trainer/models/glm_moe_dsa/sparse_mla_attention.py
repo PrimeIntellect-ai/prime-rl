@@ -18,9 +18,11 @@ except ImportError:
     sparse_mla_bwd_tilelang = None  # type: ignore
 
 try:
-    from prime_rl.trainer.models.kernels.sparse_mla_bucketed import sparse_mla_bwd_bucketed
-    from prime_rl.trainer.models.kernels.sparse_mla_bucketed import sparse_mla_bwd_bucketed_sorted
-    from prime_rl.trainer.models.kernels.sparse_mla_bucketed import sparse_mla_fwd_bucketed
+    from prime_rl.trainer.models.kernels.sparse_mla_bucketed import (
+        sparse_mla_bwd_bucketed,
+        sparse_mla_bwd_bucketed_sorted,
+        sparse_mla_fwd_bucketed,
+    )
 except ImportError:
     sparse_mla_fwd_bucketed = None  # type: ignore
     sparse_mla_bwd_bucketed = None  # type: ignore

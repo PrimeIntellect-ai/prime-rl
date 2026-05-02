@@ -29,48 +29,38 @@ def client(mx_server: str) -> MxClient:
     c.close()
 
 
-def _td(name: str, addr: int = 0, size: int = 0) -> p2p_pb2.TensorDescriptor:
-    return p2p_pb2.TensorDescriptor(
-        name=name, addr=addr, size=size, device_id=0, dtype="bfloat16"
-    )
-
-
-def _rendezvous(client: MxClient, model_name: str, role, rank, peer_world_size) -> MxRendezvous:
-    return MxRendezvous(
-        client=client,
-        role=role,
-        rank=rank,
-        peer_world_size=peer_world_size,
-        model_name=model_name,
-    )
-
-
 def test_publish_returns_stable_mx_source_id(client, model_name):
-    rdz = _rendezvous(client, model_name, role="trainer", rank=0, peer_world_size=1)
-    sid = rdz.publish(nixl_metadata=b"trainer-md", tensors=[_td("w0")])
+    rdz = MxRendezvous(client=client, role="trainer", rank=0, peer_world_size=1, model_name=model_name)
+    descriptor = p2p_pb2.TensorDescriptor(name="w0", addr=0, size=0, device_id=0, dtype="bfloat16")
+    sid = rdz.publish(nixl_metadata=b"trainer-md", tensors=[descriptor])
     assert sid
     assert rdz.mx_source_id == sid
-    # Re-publishing the same identity returns the same hash
-    assert rdz.publish(nixl_metadata=b"trainer-md", tensors=[_td("w0")]) == sid
+    # Re-publishing the same identity returns the same hash.
+    assert rdz.publish(nixl_metadata=b"trainer-md", tensors=[descriptor]) == sid
 
 
 def test_trainer_and_inference_have_distinct_mx_source_ids(client, model_name):
     """Role lives in extra_parameters, so the two roles hash to different ids."""
-    trainer = _rendezvous(client, model_name, role="trainer", rank=0, peer_world_size=1)
-    inference = _rendezvous(client, model_name, role="inference", rank=0, peer_world_size=1)
-    t_sid = trainer.publish(nixl_metadata=b"t", tensors=[_td("t0")])
-    i_sid = inference.publish(nixl_metadata=b"i", tensors=[_td("i0")])
+    trainer = MxRendezvous(client=client, role="trainer", rank=0, peer_world_size=1, model_name=model_name)
+    inference = MxRendezvous(client=client, role="inference", rank=0, peer_world_size=1, model_name=model_name)
+    t_sid = trainer.publish(nixl_metadata=b"t", tensors=[])
+    i_sid = inference.publish(nixl_metadata=b"i", tensors=[])
     assert t_sid != i_sid
 
 
 def test_cross_role_discovery(client, model_name):
     """2 trainers + 2 inference workers each find the other side and only the other side."""
-    trainers = [_rendezvous(client, model_name, "trainer", r, peer_world_size=2) for r in range(2)]
-    inferences = [_rendezvous(client, model_name, "inference", r, peer_world_size=2) for r in range(2)]
+    trainers = [
+        MxRendezvous(client=client, role="trainer", rank=r, peer_world_size=2, model_name=model_name) for r in range(2)
+    ]
+    inferences = [
+        MxRendezvous(client=client, role="inference", rank=r, peer_world_size=2, model_name=model_name)
+        for r in range(2)
+    ]
     for t in trainers:
-        t.publish(nixl_metadata=f"t-{t.rank}".encode(), tensors=[_td(f"t-{t.rank}")])
+        t.publish(nixl_metadata=f"t-{t.rank}".encode(), tensors=[])
     for i in inferences:
-        i.publish(nixl_metadata=f"i-{i.rank}".encode(), tensors=[_td(f"i-{i.rank}")])
+        i.publish(nixl_metadata=f"i-{i.rank}".encode(), tensors=[])
 
     t_peers = trainers[0].wait_for_peers(timeout=5)
     i_peers = inferences[0].wait_for_peers(timeout=5)
@@ -82,10 +72,11 @@ def test_cross_role_discovery(client, model_name):
 
 
 def test_fetch_peer_preserves_nixl_metadata(client, model_name):
-    trainer = _rendezvous(client, model_name, "trainer", 0, peer_world_size=1)
-    inference = _rendezvous(client, model_name, "inference", 0, peer_world_size=1)
-    trainer.publish(nixl_metadata=b"agent-bytes-from-trainer", tensors=[_td("w")])
-    inference.publish(nixl_metadata=b"agent-bytes-from-inference", tensors=[_td("v")])
+    trainer = MxRendezvous(client=client, role="trainer", rank=0, peer_world_size=1, model_name=model_name)
+    inference = MxRendezvous(client=client, role="inference", rank=0, peer_world_size=1, model_name=model_name)
+    descriptor = p2p_pb2.TensorDescriptor(name="w", addr=0, size=0, device_id=0, dtype="bfloat16")
+    trainer.publish(nixl_metadata=b"agent-bytes-from-trainer", tensors=[descriptor])
+    inference.publish(nixl_metadata=b"agent-bytes-from-inference", tensors=[])
 
     [t_ref] = inference.wait_for_peers(timeout=5)
     t_meta = inference.fetch_peer(t_ref)
@@ -94,7 +85,7 @@ def test_fetch_peer_preserves_nixl_metadata(client, model_name):
 
 
 def test_wait_for_peers_times_out_when_none_arrive(client, model_name):
-    rdz = _rendezvous(client, model_name, "trainer", 0, peer_world_size=1)
+    rdz = MxRendezvous(client=client, role="trainer", rank=0, peer_world_size=1, model_name=model_name)
     rdz.publish(nixl_metadata=b"x", tensors=[])
     with pytest.raises(TimeoutError, match="inference"):
         rdz.wait_for_peers(timeout=1.5, poll_interval=0.5)
@@ -102,10 +93,10 @@ def test_wait_for_peers_times_out_when_none_arrive(client, model_name):
 
 def test_status_filter_gates_discovery(client, model_name):
     """Inference only counts trainers in READY status."""
-    trainer = _rendezvous(client, model_name, "trainer", 0, peer_world_size=1)
-    inference = _rendezvous(client, model_name, "inference", 0, peer_world_size=1)
-    trainer.publish(nixl_metadata=b"t", tensors=[_td("w")])
-    inference.publish(nixl_metadata=b"i", tensors=[_td("v")])
+    trainer = MxRendezvous(client=client, role="trainer", rank=0, peer_world_size=1, model_name=model_name)
+    inference = MxRendezvous(client=client, role="inference", rank=0, peer_world_size=1, model_name=model_name)
+    trainer.publish(nixl_metadata=b"t", tensors=[])
+    inference.publish(nixl_metadata=b"i", tensors=[])
 
     # Trainer hasn't called set_status(READY) yet — inference should time out
     # when it filters on READY.
@@ -118,6 +109,6 @@ def test_status_filter_gates_discovery(client, model_name):
 
 
 def test_set_status_before_publish_raises(client, model_name):
-    rdz = _rendezvous(client, model_name, "trainer", 0, peer_world_size=1)
+    rdz = MxRendezvous(client=client, role="trainer", rank=0, peer_world_size=1, model_name=model_name)
     with pytest.raises(RuntimeError, match="publish"):
         rdz.set_status(p2p_pb2.SOURCE_STATUS_READY)

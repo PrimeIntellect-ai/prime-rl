@@ -9,14 +9,14 @@ WRITEs against inference peer descriptors.
 
 from __future__ import annotations
 
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 
 import torch
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
 
 from prime_rl.trainer.models.conversion_spec import ConversionSpec
-from prime_rl.trainer.models.slots import Shape, Slot, allocate_slots
+from prime_rl.trainer.models.slots import Slot, allocate_slots
 from prime_rl.transport.mx_rendezvous import MxRendezvous
 from prime_rl.transport.nixl_agent import NixlAgentWrapper, make_agent_name
 
@@ -47,7 +47,7 @@ class TrainerPublisher:
         non_layer_specs: tuple[ConversionSpec, ...],
         is_dense_fn: Callable[[int], bool],
         num_layers: int,
-        state_shapes: Mapping[str, Shape],
+        state_shapes: Mapping[str, Sequence[int]],
         expert_parallel_size: int = 0,
     ) -> None:
         self.slots: list[Slot] = allocate_slots(
@@ -76,18 +76,15 @@ class TrainerPublisher:
             quantization="fp8" if default_conversion == "fp8_128x128" else "",
         )
 
-    def _tensor_descriptors(self) -> list[p2p_pb2.TensorDescriptor]:
-        descs: list[p2p_pb2.TensorDescriptor] = []
-        for slot in self.slots:
-            descs.append(self.agent.make_tensor_descriptor(slot.full_name, slot.weight))
-            if slot.scale is not None:
-                assert slot.scale_name is not None  # paired with the scale buffer
-                descs.append(self.agent.make_tensor_descriptor(slot.scale_name, slot.scale))
-        return descs
-
     def publish(self) -> str:
         """Push NIXL agent metadata + slot tensor descriptors through MX. Returns the assigned ``mx_source_id``."""
+        descriptors: list[p2p_pb2.TensorDescriptor] = []
+        for slot in self.slots:
+            descriptors.append(self.agent.make_tensor_descriptor(slot.full_name, slot.weight))
+            if slot.scale is not None:
+                assert slot.scale_name is not None  # paired with the scale buffer
+                descriptors.append(self.agent.make_tensor_descriptor(slot.scale_name, slot.scale))
         return self.rendezvous.publish(
             nixl_metadata=self.agent.get_metadata(),
-            tensors=self._tensor_descriptors(),
+            tensors=descriptors,
         )

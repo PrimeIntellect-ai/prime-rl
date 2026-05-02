@@ -38,7 +38,6 @@ except OSError:
 import torch  # noqa: E402
 from torch.utils.cpp_extension import load_inline  # noqa: E402
 
-
 _SOURCE = r"""
 #include <cuda_runtime.h>
 #include <cstddef>

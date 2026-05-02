@@ -8,14 +8,15 @@ source tensor (concatenated from the spec's ``sources``) into the buffers.
 
 Allocation takes only the shapes of trainer-side source tensors — no actual
 tensor data — so a publisher can size its registered buffers without holding
-references to the live state dict.
+references to the live state dict. All buffers land on CUDA via the
+classic-``cudaMalloc`` MemPool so they can be pinned for NIXL RDMA under
+``PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"``.
 """
 
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
-from typing import Callable, Iterator, Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import torch
 from torch import Tensor
@@ -23,27 +24,7 @@ from torch import Tensor
 from prime_rl.trainer.models.conversion_spec import ConversionSpec
 from prime_rl.trainer.models.conversions import ConversionEntry, resolve
 from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
-
-Shape = Sequence[int]
-
-
-@contextmanager
-def _alloc_context(device: torch.device | str) -> Iterator[None]:
-    """Allocate inside the classic-cudaMalloc pool when on CUDA.
-
-    Required for NIXL-registered buffers under
-    ``PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"`` (the default in
-    prime-rl trainer launches): VMM-backed allocations span multiple
-    ``cuMemCreate`` handles which ``nvidia_peermem`` cannot pin.
-    """
-    if torch.device(device).type != "cuda":
-        with nullcontext():
-            yield
-        return
-    from prime_rl.transport.classic_cuda_pool import classic_cuda_alloc
-
-    with classic_cuda_alloc():
-        yield
+from prime_rl.transport.classic_cuda_pool import classic_cuda_alloc
 
 
 @dataclass
@@ -61,24 +42,15 @@ class Slot:
         self.conversion.fn(src, self.weight, self.scale)
 
 
-def _dst_shape(spec: ConversionSpec, src_shapes: Sequence[Shape]) -> tuple[int, ...]:
-    if len(src_shapes) == 1:
-        return tuple(src_shapes[0])
-    base = list(src_shapes[0])
-    base[spec.cat_dim] = sum(s[spec.cat_dim] for s in src_shapes)
-    return tuple(base)
-
-
 def allocate_slot(
     spec: ConversionSpec,
     *,
     prefix: str,
-    src_shapes: Sequence[Shape],
+    src_shapes: Sequence[Sequence[int]],
     default_conversion: str,
     base_dtype: torch.dtype,
-    device: torch.device | str = "cuda",
 ) -> Slot:
-    """Allocate the destination buffers for one spec.
+    """Allocate the destination buffers for one spec on CUDA.
 
     For quantized conversions, ``weight`` is :data:`torch.float8_e4m3fn`,
     ``scale`` is :data:`torch.float32` with shape
@@ -88,18 +60,24 @@ def allocate_slot(
     / ``scale_name`` are ``None``.
     """
     entry = resolve(spec.conversion.conversion_type, default_conversion)
-    dst_shape = _dst_shape(spec, src_shapes)
 
-    with _alloc_context(device):
+    if len(src_shapes) == 1:
+        dst_shape = tuple(src_shapes[0])
+    else:
+        first = list(src_shapes[0])
+        first[spec.cat_dim] = sum(s[spec.cat_dim] for s in src_shapes)
+        dst_shape = tuple(first)
+
+    with classic_cuda_alloc():
         if entry.requires_scale:
             rows, cols = dst_shape[-2], dst_shape[-1]
             leading = dst_shape[:-2]
             scale_shape = (*leading, ceil_div(rows, BLOCK_SIZE), ceil_div(cols, BLOCK_SIZE))
-            weight = torch.empty(dst_shape, dtype=torch.float8_e4m3fn, device=device)
-            scale = torch.empty(scale_shape, dtype=torch.float32, device=device)
+            weight = torch.empty(dst_shape, dtype=torch.float8_e4m3fn, device="cuda")
+            scale = torch.empty(scale_shape, dtype=torch.float32, device="cuda")
             scale_name = spec.scale_name(prefix)
         else:
-            weight = torch.empty(dst_shape, dtype=base_dtype, device=device)
+            weight = torch.empty(dst_shape, dtype=base_dtype, device="cuda")
             scale = None
             scale_name = None
 
@@ -114,7 +92,7 @@ def allocate_slot(
 
 
 def allocate_slots(
-    state_shapes: Mapping[str, Shape],
+    state_shapes: Mapping[str, Sequence[int]],
     *,
     layer_specs_fn: Callable[[int, bool], tuple[ConversionSpec, ...]],
     non_layer_specs: tuple[ConversionSpec, ...],
@@ -122,7 +100,6 @@ def allocate_slots(
     num_layers: int,
     default_conversion: str,
     base_dtype: torch.dtype,
-    device: torch.device | str = "cuda",
 ) -> list[Slot]:
     """Allocate one slot per spec for every transformer layer plus the non-layer specs.
 
@@ -142,7 +119,6 @@ def allocate_slots(
                     src_shapes=src_shapes,
                     default_conversion=default_conversion,
                     base_dtype=base_dtype,
-                    device=device,
                 )
             )
 
@@ -155,7 +131,6 @@ def allocate_slots(
                 src_shapes=src_shapes,
                 default_conversion=default_conversion,
                 base_dtype=base_dtype,
-                device=device,
             )
         )
 

@@ -3,7 +3,6 @@ import torch
 from prime_rl.trainer.models.kernels.sparse_mla_bwd import bwd, postprocess, preprocess
 from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla_fwd_interface
 
-
 DEFAULT_BUCKET_SIZES = (256, 512, 1024, 1536, 2048)
 
 
