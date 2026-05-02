@@ -495,3 +495,28 @@ async def init_nccl_broadcast(
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )
+
+
+async def init_nixl_mx_broadcast(
+    admin_clients: list[AsyncClient],
+    host: str,
+    port: int,
+    inference_world_size: int,
+) -> None:
+    """Initialize NIXL+MX receivers on all inference servers."""
+    logger = get_logger()
+    gpus_per_server = inference_world_size // len(admin_clients)
+
+    logger.info(
+        f"Initializing NIXL+MX broadcast: {len(admin_clients)} servers, "
+        f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}"
+    )
+
+    async def _init(admin_client: AsyncClient, rank_offset: int) -> None:
+        response = await admin_client.post(
+            "/init_nixl_mx",
+            json={"host": host, "port": port, "rank_offset": rank_offset},
+        )
+        response.raise_for_status()
+
+    await asyncio.gather(*[_init(admin_client, i * gpus_per_server) for i, admin_client in enumerate(admin_clients)])

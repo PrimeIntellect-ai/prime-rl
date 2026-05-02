@@ -33,15 +33,7 @@ logger = init_logger("vllm.inference.vllm.worker_nixl_mx")
 class NIXLMxWeightUpdateWorker(Worker):
     """vLLM worker extension for in-place weight updates over NIXL + MX."""
 
-    def init_nixl_mx(
-        self,
-        host: str,
-        port: int,
-        rank_offset: int,
-        inference_model_name: str,
-        quantization: str,
-        expert_parallel_size: int,
-    ) -> None:
+    def init_nixl_mx(self, host: str, port: int, rank_offset: int) -> None:
         local_rank = self.device.index
         global_rank = rank_offset + local_rank
 
@@ -64,6 +56,8 @@ class NIXLMxWeightUpdateWorker(Worker):
 
         expert_map = {k: v.cpu().tolist() for k, v in build_expert_map(model).items()}
 
+        inference_model_name = model_runner.model_config.model
+
         from modelexpress.client import MxClient
 
         client = MxClient(server_url=f"{host}:{port}")
@@ -74,27 +68,18 @@ class NIXLMxWeightUpdateWorker(Worker):
             inference_model_name=inference_model_name,
             live_tensors=live_tensors,
             expert_map=expert_map,
-            quantization=quantization,
-            expert_parallel_size=expert_parallel_size,
         )
         self._receiver.publish()
         self._receiver.mark_ready()
 
         logger.info(
-            f"NIXL+MX init: rank={global_rank} tensors={len(live_tensors)} experts={sum(len(v) for v in expert_map.values())}"
+            f"NIXL+MX init: rank={global_rank} tensors={len(live_tensors)} "
+            f"experts={sum(len(v) for v in expert_map.values())} model={inference_model_name}"
         )
 
     @torch.no_grad()
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
-        """Post-RDMA housekeeping: flush GPUDirect writes and recompute derived weights.
-
-        By the time the orchestrator calls this endpoint the trainer has
-        already posted all RDMA WRITEs and set ``SOURCE_STATUS_READY`` on
-        MX. The data is in our registered buffers; we just need to make it
-        visible to CUDA (since GPUDirect RDMA bypasses stream ordering)
-        and re-derive any weights that are computed from the transferred
-        ones (e.g. MLA absorbed ``W_UV`` / ``W_UK_T``).
-        """
+        """Post-RDMA housekeeping: flush GPUDirect writes and recompute derived weights."""
         torch.cuda.synchronize(self.device)
         update_mla_absorbed_weights(self._model)
         logger.info("Weight update applied (NIXL+MX)")

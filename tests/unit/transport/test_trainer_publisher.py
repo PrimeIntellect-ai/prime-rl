@@ -164,8 +164,6 @@ def test_two_pass_rendezvous_over_mx(mx_server):
             inference_model_name=model_name,
             live_tensors=inference_params,
             expert_map=expert_map,
-            quantization=publisher.rendezvous.quantization,
-            expert_parallel_size=publisher.rendezvous.expert_parallel_size,
         )
 
         publisher.publish()
