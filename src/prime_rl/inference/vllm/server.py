@@ -167,6 +167,7 @@ def models(request: Request) -> OpenAIServingModels:
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+    "nixl_mx": "prime_rl.inference.vllm.worker.nixl_mx.NIXLMxWeightUpdateWorker",
 }
 
 
@@ -224,6 +225,23 @@ async def init_broadcaster(request: Request):
     await engine_client(request).collective_rpc(
         "init_broadcaster",
         args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer),
+    )
+    return {"status": "ok"}
+
+
+@router.post("/init_nixl_mx")
+async def init_nixl_mx(request: Request):
+    data = await request.json()
+    await engine_client(request).collective_rpc(
+        "init_nixl_mx",
+        args=(
+            data["host"],
+            data["port"],
+            data.get("rank_offset", 0),
+            data["inference_model_name"],
+            data.get("quantization", ""),
+            data.get("expert_parallel_size", 0),
+        ),
     )
     return {"status": "ok"}
 
