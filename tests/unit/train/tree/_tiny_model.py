@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
 
+_COMPILED_FLEX_ATTENTION = torch.compile(flex_attention)
+
 
 class TinyTransformerBlock(nn.Module):
     def __init__(self, hidden_size: int, num_heads: int):
@@ -39,7 +41,7 @@ class TinyTransformerBlock(nn.Module):
         value = self._split_heads(self.v_proj(hidden_states))
 
         if isinstance(attn_mask, BlockMask):
-            hidden_states = flex_attention(
+            hidden_states = _COMPILED_FLEX_ATTENTION(
                 query,
                 key,
                 value,
