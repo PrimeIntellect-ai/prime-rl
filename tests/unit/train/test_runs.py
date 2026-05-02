@@ -215,7 +215,7 @@ def test_config_loading(tmp_path: Path) -> None:
     # Access config as OrchestratorConfig object
     config = multi_run_manager.config[run_idx]
     assert config.model.name == "test-model"
-    assert config.batch_size == 32
+    assert config.batch_size.size == 32
     assert config.max_steps == 1000
 
 

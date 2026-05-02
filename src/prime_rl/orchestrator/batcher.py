@@ -180,11 +180,31 @@ def _key(prefix: str, name: str) -> str:
     return f"{prefix}/{name}" if prefix else name
 
 
+_TIMING_FIELDS = ("total", "setup", "generation", "model", "env", "scoring", "overhead")
+
+
+def _rollout_timing(r: vf.RolloutOutput) -> dict[str, float]:
+    """Pull a flat {field: seconds} dict out of one rollout's TimeSpan-shaped
+    timing block. `total`/`overhead` are scalars; the rest carry a `duration`
+    derived from start/end timestamps."""
+    t = r.get("timing")
+    if not t:
+        return {}
+    out: dict[str, float] = {}
+    for k in _TIMING_FIELDS:
+        v = t.get(k)
+        if isinstance(v, dict):
+            out[k] = float(v.get("duration", 0.0))
+        elif v is not None:
+            out[k] = float(v)
+    return out
+
+
 def _rollout_metrics(prefix: str, rollouts: list[vf.RolloutOutput]) -> dict:
     """Flat per-rollout stats, keyed under `prefix` (empty for top-level).
     Shared by train (trainable + cohort views) and eval (per-env + overall
     views). Filter rates + drop rate only emitted when filter annotations are
-    present."""
+    present. Timing keys come out as `timing/{field}/mean`."""
     if not rollouts:
         return {}
     rewards = [r.get("reward", 0.0) for r in rollouts]
@@ -202,6 +222,13 @@ def _rollout_metrics(prefix: str, rollouts: list[vf.RolloutOutput]) -> dict:
         for name in rollouts[0]["filters"]:
             hits = sum(1 for r in rollouts if r["filters"].get(name))
             m[_key(prefix, f"filters/{name}/rate")] = hits / len(rollouts)
+    timings = [_rollout_timing(r) for r in rollouts]
+    timings = [t for t in timings if t]
+    if timings:
+        for field in _TIMING_FIELDS:
+            vals = [t[field] for t in timings if field in t]
+            if vals:
+                m[_key(prefix, f"timing/{field}/mean")] = sum(vals) / len(vals)
     return m
 
 

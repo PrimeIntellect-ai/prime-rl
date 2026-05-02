@@ -69,6 +69,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         tokenizer=tokenizer,
         run_config=cfg,
         prime_config=cfg.prime_monitor,
+        keep_full_history=cfg.bench,
     )
     if cfg.wandb is not None:
         logger.info(f"Wandb monitor ready (project={cfg.wandb.project}, name={cfg.wandb.name})")
@@ -126,8 +127,24 @@ async def run(cfg: OrchestratorConfig) -> None:
     # batch size, since token/step modes don't have a fixed batch size.
     groups_q: asyncio.Queue[Group] = asyncio.Queue(maxsize=concurrency * (cfg.max_async_level + 1))
 
+    if cfg.use_renderer:
+        raise NotImplementedError(
+            "orchestrator.use_renderer is not yet supported by the new async orchestrator. "
+            "Set use_renderer=false (use_token_client=true for TITO, both false for MITO)."
+        )
+    if cfg.teacher_rollout_model is not None:
+        raise NotImplementedError(
+            "orchestrator.teacher_rollout_model is not yet supported by the new async orchestrator. "
+            "Remove the teacher_rollout_model field to proceed."
+        )
+    client_type = "openai_chat_completions_token" if cfg.use_token_client else "openai_chat_completions"
+    if cfg.use_token_client:
+        logger.warning(
+            "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a "
+            "linear history and the chat template has the extension property."
+        )
     client = vf.ClientConfig(
-        client_type="openai_chat_completions",
+        client_type=client_type,
         api_base_url=cfg.client.base_url[0],
         api_key_var=cfg.client.api_key_var,
         timeout=cfg.client.timeout,
@@ -195,9 +212,9 @@ async def run(cfg: OrchestratorConfig) -> None:
     )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
 
-    logger.info("Waiting for inference server to be healthy...")
+    logger.info(f"Waiting for inference server to be healthy (timeout={cfg.client.wait_for_ready_timeout}s)...")
     t0 = time.perf_counter()
-    await admin.wait_healthy()
+    await admin.wait_healthy(timeout=cfg.client.wait_for_ready_timeout)
     logger.success(f"Inference server ready ({time.perf_counter() - t0:.1f}s)")
 
     await admin.check_model(cfg.model.name)
