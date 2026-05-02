@@ -474,8 +474,26 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
+class NIXLMxWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    type: Literal["nixl_mx"] = "nixl_mx"
+
+    host: str = "localhost"
+    """Host for the Model Express rendezvous server."""
+
+    port: int = 29501
+    """Port for the Model Express rendezvous server."""
+
+    timeout: int = 1200
+    """Timeout in seconds for rendezvous and per-step transfers."""
+
+    # TODO: Should not be configurable, but auto-inferred
+    inference_world_size: int = 1
+    """Number of GPUs used for inference."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLMxWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
