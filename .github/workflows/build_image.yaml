@@ -37,11 +37,14 @@ jobs:
 
       - name: Resolve image tag
         id: vars
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            TAG="${{ inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
           else
-            TAG=$(echo "${{ inputs.ref }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-50)
+            TAG=$(echo "$INPUT_REF" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-50)
           fi
           SHA=$(git rev-parse --short HEAD)
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
@@ -69,12 +72,19 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:commit-${{ steps.vars.outputs.sha }}
 
       - name: Summary
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          IMAGE_TAG: ${{ steps.vars.outputs.tag }}
+          IMAGE_SHA: ${{ steps.vars.outputs.sha }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Ref** | \`${{ inputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Image** | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Commit** | \`${{ steps.vars.outputs.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Digest** | \`${{ steps.build.outputs.digest }}\` |" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Build Summary"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| **Ref** | \`${INPUT_REF}\` |"
+            echo "| **Image** | \`${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}\` |"
+            echo "| **Commit** | \`${IMAGE_SHA}\` |"
+            echo "| **Digest** | \`${IMAGE_DIGEST}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
