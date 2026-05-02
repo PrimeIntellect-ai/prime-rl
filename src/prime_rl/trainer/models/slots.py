@@ -605,12 +605,15 @@ def build_slots_for_spec(
     for src_name in spec.sources:
         full_src = f"{prefix}.{src_name}" if prefix else src_name
         raw = state_dict[full_src]
-        src = raw.to_local() if isinstance(raw, DTensor) else raw
-        src_rows = src.shape[0]
+        # Pass the RAW tensor (possibly DTensor) to from_spec — it needs the
+        # global shape[0] to compute rows_per_shard = global_rows // fsdp_total.
+        # Dispatch uses the global shape too: divisibility, FP8-block alignment,
+        # and size threshold are all properties of the full (unfragmented) tensor.
+        src_rows = raw.shape[0]
         per_shard = (
             src_rows % fsdp_total == 0
             and (not conversion.requires_scale or (src_rows // fsdp_total) % BLOCK_SIZE == 0)
-            and src.numel() * src.element_size() >= SMALL_NON_EXPERT_BYTES
+            and raw.numel() * raw.element_size() >= SMALL_NON_EXPERT_BYTES
         )
         cls = ShardedSlot if per_shard else GatheredSlot
         slots.append(
@@ -619,16 +622,16 @@ def build_slots_for_spec(
                 conversion,
                 prefix=prefix,
                 src_name=src_name,
-                src=src,
+                src=raw,
                 parallel_dims=parallel_dims,
                 base_dtype=base_dtype,
                 offset_rows=row_off,
                 scale_offset_rows=scale_row_off,
             )
         )
-        row_off += src.shape[0]
+        row_off += raw.shape[0]
         if conversion.requires_scale:
-            scale_row_off += ceil_div(src.shape[0], BLOCK_SIZE)
+            scale_row_off += ceil_div(raw.shape[0], BLOCK_SIZE)
     return slots
 
 
