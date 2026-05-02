@@ -268,7 +268,12 @@ def train(config: TrainerConfig):
                 ckpt_interval = config.ckpt and config.ckpt.interval
                 interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
                 if config.weight_broadcast.type == "filesystem":
-                    weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
+                    retention = (
+                        config.weight_broadcast.keep_recent
+                        if config.weight_broadcast.keep_recent is not None
+                        else config.max_async_level
+                    )
+                    weight_broadcast.maybe_clean(retention, interval_to_keep)
             else:
                 broadcast_weights_time = 0
                 # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
