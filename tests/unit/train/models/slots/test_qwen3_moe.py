@@ -87,14 +87,16 @@ def inference_target(request) -> tuple[str, torch.dtype]:
 
 
 def _allocate(config, state_dict, default_conversion, base_dtype):
+    state_shapes = {k: v.shape for k, v in state_dict.items()}
     return allocate_slots(
-        state_dict,
+        state_shapes,
         layer_specs_fn=conversion_specs,
         non_layer_specs=non_layer_conversion_specs(),
         is_dense_fn=lambda i: is_dense_layer(config, i),
         num_layers=config.num_hidden_layers,
         default_conversion=default_conversion,
         base_dtype=base_dtype,
+        device="cpu",
     )
 
 

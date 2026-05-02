@@ -54,3 +54,22 @@ class ConversionSpec:
     def is_expert_spec(self) -> bool:
         """True iff this spec produces a fused stacked-expert slot."""
         return self.dst.startswith("mlp.experts.")
+
+    def full_name(self, prefix: str = "") -> str:
+        """Full destination name for the weight buffer at ``prefix``."""
+        return f"{prefix}.{self.dst}" if prefix else self.dst
+
+    def scale_name(self, prefix: str = "") -> str:
+        """Full destination name for the paired scale buffer at ``prefix``.
+
+        Mirrors vLLM's FP8 naming: ``.weight`` → ``.weight_scale_inv`` for
+        2D linears, ``_weight`` → ``_weight_scale_inv`` for 3D stacked-expert
+        buffers. Only meaningful when the resolved conversion entry has
+        ``requires_scale=True``.
+        """
+        full = self.full_name(prefix)
+        if full.endswith(".weight"):
+            return full.removesuffix(".weight") + ".weight_scale_inv"
+        if full.endswith("_weight"):
+            return full.removesuffix("_weight") + "_weight_scale_inv"
+        raise ValueError(f"cannot derive scale name from {full!r}")
