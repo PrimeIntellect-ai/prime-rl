@@ -384,6 +384,7 @@ def train(config: TrainerConfig):
             )
 
             labels = shift_tensor_left(input_ids)
+            label_loss_mask = shift_tensor_left(loss_mask)
 
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
             if cp_enabled and pixel_values is not None:
@@ -394,6 +395,7 @@ def train(config: TrainerConfig):
                     input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
                 )
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
+                label_loss_mask = shard_for_cp(label_loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
@@ -424,6 +426,7 @@ def train(config: TrainerConfig):
                     input_ids,
                     forward_position_ids,
                     labels=labels,
+                    loss_mask=label_loss_mask,
                     temperature=temperatures,
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
@@ -468,6 +471,9 @@ def train(config: TrainerConfig):
                 loss_scale=loss_scale,
                 sft_loss=micro_batch["sft_loss"],
             )
+            if out.get("mtp_loss") is not None:
+                mtp_weight = loss_mask.sum().clamp_min(1) / loss_scale
+                loss = loss + out["mtp_loss"] * mtp_weight
 
             # Backward pass
             with maybe_record_function("backward"):
@@ -476,6 +482,10 @@ def train(config: TrainerConfig):
             # Add relevant tensors to tensor dict for logging purposes
             tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+            if out.get("mtp_loss") is not None:
+                tensors["mtp_loss"].append(out["mtp_loss"].detach().to("cpu").unsqueeze(0))
+            if out.get("mtp_token_count") is not None:
+                tensors["mtp_token_count"].append(out["mtp_token_count"].detach().to("cpu").unsqueeze(0))
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)

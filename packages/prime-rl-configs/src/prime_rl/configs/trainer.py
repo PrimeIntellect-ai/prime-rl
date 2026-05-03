@@ -191,6 +191,36 @@ class DebugModelConfig(BaseConfig):
     ] = False
 
 
+class MTPConfig(BaseConfig):
+    """Configures online multi-token prediction training for supported custom models."""
+
+    enabled: Annotated[
+        bool,
+        Field(description="Whether to add the MTP auxiliary loss during training."),
+    ] = True
+
+    loss_scale: Annotated[
+        float,
+        Field(ge=0, description="Scale applied to the mean MTP CE loss before adding it to the main loss."),
+    ] = 0.2
+
+    enable_rollout: Annotated[
+        bool,
+        Field(description="Whether the paired inference server should enable MTP speculative decoding."),
+    ] = False
+
+    num_speculative_tokens: Annotated[
+        int | None,
+        Field(ge=1, description="Number of speculative tokens to request from vLLM. If unset, defaults to 1."),
+    ] = None
+
+    @model_validator(mode="after")
+    def rollout_requires_training(self):
+        if self.enable_rollout and not self.enabled:
+            raise ValueError("model.mtp.enable_rollout requires model.mtp.enabled=true.")
+        return self
+
+
 class ModelConfig(BaseModelConfig):
     """Configures the model for training."""
 
@@ -374,6 +404,13 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = DebugModelConfig()
 
+    mtp: Annotated[
+        MTPConfig | None,
+        Field(
+            description="MTP auxiliary-loss training config. Currently only supported for Qwen3.5 MoE custom models."
+        ),
+    ] = None
+
     fused_lm_head_token_chunk_size: Annotated[
         int | Literal["auto", "disabled"],
         Field(
@@ -417,6 +454,18 @@ class ModelConfig(BaseModelConfig):
                 f"CP with {self.attn} requires model.impl='custom' "
                 "(FA3/FA4 paths are only implemented for the custom model attention class)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def mtp_only_supported_without_cp_or_vlm(self):
+        if self.mtp is None or not self.mtp.enabled:
+            return self
+        if self.impl not in ("custom", "auto"):
+            raise ValueError("MTP training requires model.impl='custom' or 'auto'.")
+        if self.cp > 1:
+            raise ValueError("MTP training does not support context parallelism yet.")
+        if self.vlm is not None:
+            raise ValueError("MTP training is only supported for text-only Qwen3.5 MoE models.")
         return self
 
     @model_validator(mode="after")
@@ -960,6 +1009,13 @@ class TrainerConfig(BaseConfig):
     def validate_weight_broadcast_type(self):
         if self.weight_broadcast.type == "nccl" and self.max_async_level != 1:
             raise ValueError("NCCL weight broadcast only works with async level 1")
+        if (
+            self.weight_broadcast.type == "nccl"
+            and self.weight_broadcast.quantize_in_weight_transfer
+            and self.model.mtp is not None
+            and self.model.mtp.enabled
+        ):
+            raise ValueError("MTP with quantize_in_weight_transfer is not supported yet; use non-quantized NCCL.")
         return self
 
     @model_validator(mode="after")
