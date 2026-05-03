@@ -649,15 +649,30 @@ class CheckpointConfig(BaseConfig):
 
 
 class DefaultLossConfig(BaseModel):
-    """Config for the default loss."""
+    """Config for the default loss (IcePop, INTELLECT-3 / arXiv:2512.16144)."""
 
     type: Literal["default"] = "default"
 
-    dppo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for masking tokens.")] = 0.2
-    dppo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for masking tokens.")] = 0.2
+    icepop_ratio_low: Annotated[
+        float,
+        Field(ge=0, description="Lower bound α on the trainer/inference importance ratio. Tokens below are masked."),
+    ] = 0.5
+    icepop_ratio_high: Annotated[
+        float,
+        Field(ge=0, description="Upper bound β on the trainer/inference importance ratio. Tokens above are masked."),
+    ] = 5.0
+    icepop_rollout_min_ratio: Annotated[
+        float,
+        Field(
+            ge=0,
+            description=(
+                "If any trainable token in a rollout has importance ratio below this threshold, "
+                "the whole rollout's policy-gradient contribution is zeroed."
+            ),
+        ),
+    ] = 1e-5
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
-    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
 
 
 class SFTLossConfig(BaseModel):

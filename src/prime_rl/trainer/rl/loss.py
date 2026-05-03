@@ -106,15 +106,21 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 
 def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
     """
-    DPPO+KL loss, combining:
-    - DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879)
-    - Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)
+    IcePop loss (INTELLECT-3, https://arxiv.org/abs/2512.16144).
 
-    The mask is conditioned on the advantage sign: for positive advantages,
-    we mask tokens whose probability increased too much (trust region violation
-    in the upweight direction); for negative advantages, we mask tokens whose
-    probability decreased too much (trust region violation in the downweight
-    direction).
+    Token-level masked importance sampling:
+
+        J(θ) = E_{x, y ~ π_infer} [ (1 / Σ|y|) Σ_t M(r_t; α, β) · Â_t ]
+        M(k; α, β) = k if k ∈ [α, β] else 0
+        r_t = π_train(y_t | x, y_<t; θ) / π_infer(y_t | x, y_<t; θ_old)
+
+    Tokens whose importance ratio falls outside [α, β] receive zero policy-gradient
+    weight (they are dropped, not clipped). Whole rollouts whose minimum trainable-token
+    ratio falls below `icepop_rollout_min_ratio` are zeroed entirely — a guard against
+    catastrophic trainer/inference divergence.
+
+    There is no separate KL penalty term: the double-sided ratio mask is what keeps the
+    update inside the trust region.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
@@ -122,21 +128,21 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    trainer_probs = torch.exp(trainer_logprobs)
-    inference_probs = torch.exp(inference_logprobs)
-    probs_diff = trainer_probs - inference_probs
-    dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
-    dppo_invalid_mask_low = probs_diff < -loss_config.dppo_mask_low
-    dppo_invalid_mask = torch.where(advantages > 0, dppo_invalid_mask_high, dppo_invalid_mask_low)
-
-    is_masked = dppo_invalid_mask
-    is_masked_high = (advantages > 0) & dppo_invalid_mask_high
-    is_masked_low = (advantages < 0) & dppo_invalid_mask_low
-    keep_mask = loss_mask & ~is_masked
-
     log_importance_ratio = trainer_logprobs - inference_logprobs
     importance_ratio = torch.exp(log_importance_ratio)
     mismatch_kl = importance_ratio - log_importance_ratio - 1
+
+    detached_ratio = importance_ratio.detach()
+    in_range = (detached_ratio >= loss_config.icepop_ratio_low) & (detached_ratio <= loss_config.icepop_ratio_high)
+    is_masked_low = detached_ratio < loss_config.icepop_ratio_low
+    is_masked_high = detached_ratio > loss_config.icepop_ratio_high
+    is_masked = ~in_range
+    keep_mask = loss_mask & in_range
+
+    # Whole-rollout drop: any trainable token below the min-ratio floor kills the rollout.
+    trainable_ratios = detached_ratio.masked_fill(~loss_mask, 1.0)
+    rollout_dropped = (trainable_ratios < loss_config.icepop_rollout_min_ratio).any()
+    rollout_keep = (~rollout_dropped).to(importance_ratio.dtype)
 
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:
@@ -145,9 +151,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     else:
         teacher_kl = None
 
-    pg_loss = keep_mask * advantages * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
+    pg_loss = rollout_keep * keep_mask * advantages * importance_ratio
+    loss = (-pg_loss).sum()
 
     metrics = {
         "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),  # all trainable tokens
@@ -156,6 +161,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         "is_masked": _safe_mean(is_masked, loss_mask),
         "is_masked_low": _safe_mean(is_masked_low, loss_mask),
         "is_masked_high": _safe_mean(is_masked_high, loss_mask),
+        "rollout_dropped": rollout_dropped.to(importance_ratio.dtype),
     }
     if teacher_kl is not None:
         metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
