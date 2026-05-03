@@ -70,9 +70,10 @@ class TransportPlan:
             self.writes.extend(slot.build_writes(peers))
 
     def setup_remote_agents(self) -> None:
-        """Import every peer's NIXL agent metadata."""
+        """Import every peer's NIXL agent metadata and establish connections."""
         for peer in self.peers:
-            self.publisher.agent.add_remote_agent(peer.agent_metadata)
+            name = self.publisher.agent.add_remote_agent(peer.agent_metadata)
+            self.publisher.agent.make_connection(name)
 
     def prepare(self) -> None:
         """Build local + remote prepped dlists for every slot × peer × buffer."""
@@ -95,15 +96,7 @@ class TransportPlan:
                     )
 
     def push_once(self, state_dict: dict[str, Tensor]) -> None:
-        """One end-to-end push: convert sources into slots, post all WRITEs, wait.
-
-        The state_dict values are cast to bfloat16 before conversion — the
-        optimizer may keep parameters in float32 (optimization_dtype), but
-        the FP8 block quantization must match the precision the checkpoint
-        was originally quantized from (bfloat16). Without this cast, the
-        per-block scales differ from what vLLM's FP8 kernels expect and KL
-        drifts monotonically.
-        """
+        """One end-to-end push: convert sources into slots, post all WRITEs, wait."""
         from torch.distributed.tensor import DTensor
 
         bf16_state: dict[str, Tensor] = {}
@@ -115,12 +108,18 @@ class TransportPlan:
 
         for slot in self.publisher.slots:
             slot.convert(bf16_state)
-        # Ensure conversions are visible before remote agents pick up the bytes
-        # over GPUDirect RDMA (writes bypass CUDA stream ordering).
+
         torch.cuda.synchronize()
 
+        flush_every = 100
         handles: list[tuple[Any, str]] = []
-        for entry in self.writes:
+
+        def _drain():
+            for h, ctx in handles:
+                self.publisher.agent.wait(h, context=ctx)
+            handles.clear()
+
+        for i, entry in enumerate(self.writes):
             local_prep = self.local_preps[entry.local_buffer_key]
             remote_prep = self.remote_preps[(entry.peer_name, entry.remote_buffer_key)]
             handle = self.publisher.agent.post_write(
@@ -130,6 +129,7 @@ class TransportPlan:
                 remote_idx=entry.remote_chunk_idx,
             )
             handles.append((handle, entry.tag))
-
-        for handle, tag in handles:
-            self.publisher.agent.wait(handle, context=tag)
+            if (i + 1) % flush_every == 0:
+                _drain()
+        if handles:
+            _drain()

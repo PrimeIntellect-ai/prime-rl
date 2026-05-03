@@ -547,7 +547,7 @@ class NIXLMxWeightBroadcastConfig(BaseConfig):
     host: str = "localhost"
     """Host for the Model Express rendezvous server."""
 
-    port: int = 29503
+    port: int = 29501
     """Port for the Model Express rendezvous server."""
 
     timeout: int = 1200

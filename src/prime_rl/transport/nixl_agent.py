@@ -61,6 +61,14 @@ class NixlAgentWrapper:
         """Import a peer's serialized agent metadata. Returns the peer's agent name."""
         return self._agent.add_remote_agent(peer_metadata)
 
+    def make_connection(self, peer_name: str) -> None:
+        """Eagerly establish the UCX connection to a peer.
+
+        Without this, the first WRITE to each peer includes the full UCX
+        endpoint creation + RDMA handshake overhead (~seconds per peer).
+        """
+        self._agent.make_connection(peer_name)
+
     def prep_local(self, descs: Sequence[tuple[int, int, int]]) -> Any:
         """Prepare a local-side dlist (no peer binding).
 

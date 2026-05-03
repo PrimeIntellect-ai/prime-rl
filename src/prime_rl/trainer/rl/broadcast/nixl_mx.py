@@ -102,9 +102,11 @@ class NIXLMxWeightBroadcast(WeightBroadcast):
             parallel_dims=self.parallel_dims,
         )
         self._publisher.publish()
+        self.logger.info("Published to MX. Starting negotiate.")
 
         self._plan = TransportPlan(self._publisher)
         self._plan.negotiate(timeout=self.config.timeout)
+        self.logger.info(f"Negotiate done ({len(self._plan.peers)} peers)")
         self._plan.setup_remote_agents()
         self._plan.prepare()
 
@@ -115,39 +117,25 @@ class NIXLMxWeightBroadcast(WeightBroadcast):
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
-        if not self._is_primary:
-            dist.barrier()
-            return
+        if self._is_primary:
+            self._lazy_init(model)
+            assert self._plan is not None and self._publisher is not None
+            self._publisher.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
-        self._lazy_init(model)
-        assert self._plan is not None and self._publisher is not None
-
-        start = time.perf_counter()
-        self.logger.debug("Starting NIXL+MX weight push")
-
-        # Clear previous READY so inference's wait_for_peers(status=READY)
-        # in update_weights_from_path doesn't see a stale signal from the
-        # prior step. Must happen BEFORE STABLE so the orchestrator's
-        # /update_weights call lands while we're still INITIALIZING.
-        self._publisher.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-
-        # Same handshake as NCCL: STABLE → orchestrator pauses inference →
-        # orchestrator creates NCCL_READY marker → trainer pushes (inference
-        # is safely idle). Without this, RDMA writes land in live serving
-        # buffers and corrupt mid-request weights.
-        notified_runs = self._compute_notified_runs()
         if self.world.is_master:
+            notified_runs = self._compute_notified_runs()
             self._notify_orchestrator(notified_runs)
-        self._wait_for_ready(notified_runs)
+            self._wait_for_ready(notified_runs)
 
-        self._plan.push_once(model.state_dict())
+        dist.barrier()
 
-        # Inference's update_weights_from_path blocks until this flip.
-        self._publisher.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
-        self.logger.debug(f"NIXL+MX push done in {time.perf_counter() - start:.2f}s")
+        if self._is_primary:
+            start = time.perf_counter()
+            self._plan.push_once(model.state_dict())
+            self._publisher.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+            self.logger.info(f"NIXL+MX push completed in {time.perf_counter() - start:.2f}s")
 
-        if self.parallel_dims.dp_replicate_enabled:
-            dist.barrier()
+        dist.barrier()
 
     def _compute_notified_runs(self) -> list[tuple[int, Path]]:
         notified: list[tuple[int, Path]] = []
