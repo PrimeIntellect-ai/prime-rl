@@ -31,10 +31,6 @@ from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
 from prime_rl.transport.trainer_publisher import TrainerPublisher
 from prime_rl.transport.transport_plan import TransportPlan
-from prime_rl.utils.pathing import sync_wait_for_path
-from prime_rl.utils.utils import get_broadcast_dir, get_step_path
-
-NIXL_MX_READY_MARKER = "NCCL_READY"
 
 
 def _get_qwen3_moe_spec_fns(hf_config):
@@ -123,9 +119,10 @@ class NIXLMxWeightBroadcast(WeightBroadcast):
             self._publisher.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
         if self.world.is_master:
-            notified_runs = self._compute_notified_runs()
-            self._notify_orchestrator(notified_runs)
-            self._wait_for_ready(notified_runs)
+            for idx in self._multi_run_manager.used_idxs:
+                if self._multi_run_manager.ready_to_update[idx]:
+                    self._multi_run_manager.ready_to_update[idx] = False
+            self._publisher.rendezvous.wait_for_all_peers_ready(role="orchestrator", timeout=self.config.timeout)
 
         dist.barrier()
 
@@ -136,28 +133,3 @@ class NIXLMxWeightBroadcast(WeightBroadcast):
             self.logger.info(f"NIXL+MX push completed in {time.perf_counter() - start:.2f}s")
 
         dist.barrier()
-
-    def _compute_notified_runs(self) -> list[tuple[int, Path]]:
-        notified: list[tuple[int, Path]] = []
-        for idx in self._multi_run_manager.used_idxs:
-            if not self._multi_run_manager.ready_to_update[idx]:
-                continue
-            save_dir = get_step_path(
-                get_broadcast_dir(self._multi_run_manager.get_run_dir(idx)),
-                self._multi_run_manager.progress[idx].step,
-            )
-            notified.append((idx, save_dir))
-        return notified
-
-    def _wait_for_ready(self, notified_runs: list[tuple[int, Path]]) -> None:
-        """Wait for the orchestrator to pause inference and create the ready marker."""
-        for _, save_dir in notified_runs:
-            ready_file = save_dir / NIXL_MX_READY_MARKER
-            self.logger.debug(f"Waiting for ready marker at {ready_file}")
-            sync_wait_for_path(ready_file, interval=0.1, log_interval=10)
-
-    def _notify_orchestrator(self, notified_runs: list[tuple[int, Path]]) -> None:
-        for idx, save_dir in notified_runs:
-            save_dir.mkdir(parents=True, exist_ok=True)
-            (save_dir / "STABLE").touch()
-            self._multi_run_manager.ready_to_update[idx] = False
