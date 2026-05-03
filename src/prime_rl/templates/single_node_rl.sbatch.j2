@@ -41,6 +41,7 @@ export MX_COMPOSE_PROJECT=prime-rl-mx-${SLURM_JOB_ID}
 trap 'docker compose -f "$MX_COMPOSE_FILE" -p "$MX_COMPOSE_PROJECT" down --remove-orphans >/dev/null 2>&1 || true' EXIT INT TERM HUP
 docker compose -f "$MX_COMPOSE_FILE" -p "$MX_COMPOSE_PROJECT" up -d --build --wait
 export MX_RDMA_NIC_PIN=auto
+export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
 {% endif %}
 
 {% if pre_run_command %}
