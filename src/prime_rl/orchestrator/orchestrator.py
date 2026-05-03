@@ -1,6 +1,14 @@
+"""Async-pipelined RL orchestrator.
+
+The interesting story lives in `run()`: five long-lived coroutines
+(scheduler, admin, engine, batcher, watcher) cooperating through one
+asyncio.Queue and a weight-rotation observer chain. Setup helpers below
+the main flow handle config translation, env install, resume — fluf so
+`run()` stays narrative.
+"""
+
 import asyncio
 import os
-import time
 
 import tomli_w
 import verifiers as vf
@@ -8,58 +16,27 @@ import verifiers as vf
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.batcher import Done, setup_batcher
 from prime_rl.orchestrator.buffer import setup_buffer
-from prime_rl.orchestrator.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator.ckpt import CkptManager, setup_ckpt_manager
 from prime_rl.orchestrator.engine import Group, setup_rollout_engine
-from prime_rl.orchestrator.inference_admin import InferenceAdmin
+from prime_rl.orchestrator.inference_admin import setup_admin
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.scheduler import setup_scheduler
+from prime_rl.orchestrator.scheduler import Scheduler, setup_scheduler
 from prime_rl.orchestrator.watcher import setup_watcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pathing import get_broadcast_dir
 from prime_rl.utils.utils import get_env_ids_to_install, install_env
 
 
 async def run(cfg: OrchestratorConfig) -> None:
-    assert cfg.max_inflight_rollouts is not None
-    assert cfg.advantage is not None, "advantage config required"
-    assert len(cfg.client.base_url) == 1, "single inference endpoint only"
-
+    _validate(cfg)
     logger = get_logger()
-    logger.info(f"Output dir: {cfg.output_dir}")
-    logger.info(f"Model: {cfg.model.name}")
+    logger.info(f"Output dir: {cfg.output_dir} | Model: {cfg.model.name}")
 
-    # LoRA: until the trainer broadcasts an adapter (step >= 1), no adapter is
-    # loaded on vLLM, so step-0 rollouts must use the base model name. After
-    # the first /load_lora_adapter call, RolloutEngine swaps to the adapter
-    # name so subsequent rollouts use the trained adapter.
-    lora_name = cfg.model.lora.name if cfg.model.lora else None
-    if cfg.model.lora:
-        logger.info(f"LoRA active: adapter '{lora_name}' (rank={cfg.model.lora.rank}, alpha={cfg.model.lora.alpha})")
-
-    # Trainer reads orchestrator config from output_dir/control/orch.toml
-    # (see prime_rl.trainer.runs.RunManager.get_orchestrator_config).
-    control_dir = cfg.output_dir / "control"
-    control_dir.mkdir(parents=True, exist_ok=True)
-    with open(control_dir / "orch.toml", "wb") as f:
-        tomli_w.dump(cfg.model_dump(exclude_none=True, mode="json"), f)
-    logger.info(f"Wrote orch config to {control_dir / 'orch.toml'}")
-    logger.info(
-        f"Batching: {cfg.batch_size.type} | Rollouts/example: {cfg.rollouts_per_example} | "
-        f"Max in-flight: {cfg.max_inflight_rollouts} | Max off-policy: {cfg.max_off_policy_steps}"
-    )
-
-    env_ids_to_install = set(get_env_ids_to_install(cfg.train.env))
-    if cfg.eval is not None:
-        env_ids_to_install.update(get_env_ids_to_install(cfg.eval.env))
-    for env_id in env_ids_to_install:
-        install_env(env_id, prerelease=cfg.env_install_prerelease)
-
+    _install_envs(cfg)
+    _write_orch_config(cfg)
     tokenizer = setup_tokenizer(cfg.tokenizer)
-    logger.info(f"Tokenizer ready: {cfg.tokenizer.name}")
-
     setup_monitor(
         wandb_config=cfg.wandb,
         output_dir=cfg.output_dir,
@@ -68,112 +45,24 @@ async def run(cfg: OrchestratorConfig) -> None:
         prime_config=cfg.prime_monitor,
         keep_full_history=cfg.bench,
     )
-    if cfg.wandb is not None:
-        logger.info(f"Wandb monitor ready (project={cfg.wandb.project}, name={cfg.wandb.name})")
 
-    # Resolve the resume step early so we can suppress eval_at_zero on resume
-    # (the original run already evaluated the base model).
     ckpt_manager = setup_ckpt_manager(cfg.output_dir, cfg.ckpt)
-    resume_step: int | None = None
-    if cfg.ckpt and cfg.ckpt.resume_step is not None and ckpt_manager is not None:
-        if cfg.ckpt.resume_step == -1:
-            resume_step = ckpt_manager.latest_step()
-            if resume_step is None:
-                logger.warning("ckpt.resume_step=-1 set but no orch checkpoints found; starting fresh")
-        else:
-            resume_step = cfg.ckpt.resume_step
+    resume_step = _resolve_resume_step(cfg, ckpt_manager)
+    buffer = setup_buffer(cfg.buffer, [e.resolved_name for e in cfg.train.env], seed=cfg.seed)
+    lora_name = cfg.model.lora.name if cfg.model.lora else None
 
-    train_env_names = [e.resolved_name for e in cfg.train.env]
-    buffer = setup_buffer(cfg.buffer, train_env_names, seed=cfg.seed)
-    if buffer is not None:
-        thresholds = []
-        if cfg.buffer.easy_threshold is not None:
-            thresholds.append(f"easy>={cfg.buffer.easy_threshold}")
-        if cfg.buffer.hard_threshold is not None:
-            thresholds.append(f"hard<={cfg.buffer.hard_threshold}")
-        logger.info(f"Difficulty buffer enabled ({', '.join(thresholds)})")
-
+    # ── The five long-lived coroutines ──
     scheduler = setup_scheduler(cfg, buffer=buffer, resume_step=resume_step)
-    for task in scheduler.tasks:
-        logger.info(f"Train task '{task.id}' ready (rollouts/group={task.rollouts_per_group})")
-    for task in scheduler.eval_tasks:
-        logger.info(f"Eval task '{task.id}' ready (rollouts/group={task.rollouts_per_group})")
-    if cfg.eval is not None:
-        logger.info(
-            f"Eval interval: {cfg.eval.interval} | eval_base_model: {cfg.eval.eval_base_model} | "
-            f"eval envs: {len(scheduler.eval_tasks)}"
-        )
-
-    # Engine-wide cap: total concurrent groups across all tasks. Each group
-    # fans out to rollouts_per_example rollouts, so divide to match the old
-    # orch's semantics where max_inflight_rollouts counts individual rollouts.
-    concurrency = max(1, cfg.max_inflight_rollouts // cfg.rollouts_per_example)
-    logger.info(f"Engine concurrency: {concurrency} groups across {len(scheduler.tasks)} task(s)")
-
-    # Bounded so the batcher's async-level barrier cascades backpressure into
-    # the engine instead of letting it accumulate unbounded in-flight rollouts.
-    # Sized from concurrency (upper bound on in-flight groups) rather than
-    # batch size, since token/step modes don't have a fixed batch size.
-    groups_q: asyncio.Queue[Group] = asyncio.Queue(maxsize=concurrency * (cfg.max_async_level + 1))
-
-    if cfg.use_renderer:
-        raise NotImplementedError(
-            "orchestrator.use_renderer is not yet supported by the new async orchestrator. "
-            "Set use_renderer=false (use_token_client=true for TITO, both false for MITO)."
-        )
-    if cfg.teacher_rollout_model is not None:
-        raise NotImplementedError(
-            "orchestrator.teacher_rollout_model is not yet supported by the new async orchestrator. "
-            "Remove the teacher_rollout_model field to proceed."
-        )
-    client_type = "openai_chat_completions_token" if cfg.use_token_client else "openai_chat_completions"
-    if cfg.use_token_client:
-        logger.warning(
-            "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a "
-            "linear history and the chat template has the extension property."
-        )
-    client = vf.ClientConfig(
-        client_type=client_type,
-        api_base_url=cfg.client.base_url[0],
-        api_key_var=cfg.client.api_key_var,
-        timeout=cfg.client.timeout,
-        connect_timeout=cfg.client.connect_timeout,
-    )
-
+    admin = setup_admin(cfg, lora_name=lora_name)
+    groups_q, concurrency = _make_groups_queue(cfg, scheduler)
     engine = setup_rollout_engine(
         cfg,
         scheduler=scheduler,
         out_q=groups_q,
-        client=client,
+        client=_make_client(cfg),
         concurrency=concurrency,
         lora_name=lora_name,
     )
-    if cfg.tasks_per_minute is not None:
-        logger.info(f"Rate limit: {cfg.tasks_per_minute} tasks/min")
-    if cfg.max_rollout_time_minutes is not None:
-        logger.info(f"Rollout time cap: {cfg.max_rollout_time_minutes} min/group")
-    if cfg.heartbeat is not None:
-        logger.info(f"Heartbeat enabled ({cfg.heartbeat.url})")
-
-    if lora_name and cfg.weight_broadcast.type == "nccl":
-        raise ValueError("NCCL weight broadcast does not support LoRA — use filesystem broadcast")
-
-    broadcast_dir = get_broadcast_dir(cfg.output_dir)
-    admin = InferenceAdmin(
-        cfg.client.base_url[0],
-        os.getenv(cfg.client.api_key_var, "EMPTY"),
-        broadcast_dir,
-        mode=cfg.weight_broadcast.type,
-        lora_name=lora_name,
-    )
-    logger.info(f"Admin client ready ({admin.base_url})")
-    logger.info(f"Weight broadcast mode: {cfg.weight_broadcast.type}")
-
-    inference_metrics = None
-    if cfg.collect_inference_metrics:
-        inference_metrics = InferenceMetricsCollector(admin.client)
-        logger.info("Inference metrics collection enabled")
-
     batcher = setup_batcher(
         cfg,
         in_q=groups_q,
@@ -182,48 +71,12 @@ async def run(cfg: OrchestratorConfig) -> None:
         eval_counter=scheduler,
         ckpt_manager=ckpt_manager,
         buffer=buffer,
-        inference_metrics=inference_metrics,
+        inference_metrics=InferenceMetricsCollector(admin.client) if cfg.collect_inference_metrics else None,
     )
-    logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
-
-    logger.info(f"Waiting for inference server to be healthy (timeout={cfg.client.wait_for_ready_timeout}s)...")
-    t0 = time.perf_counter()
-    await admin.wait_healthy(timeout=cfg.client.wait_for_ready_timeout)
-    logger.success(f"Inference server ready ({time.perf_counter() - t0:.1f}s)")
-
-    await admin.check_model(cfg.model.name)
-    logger.success(f"Model '{cfg.model.name}' loaded on inference server")
-
-    if cfg.weight_broadcast.type == "nccl":
-        await admin.init_nccl_broadcaster(
-            host=cfg.weight_broadcast.host,
-            port=cfg.weight_broadcast.port,
-            timeout=cfg.weight_broadcast.timeout,
-            inference_world_size=cfg.weight_broadcast.inference_world_size,
-            quantize_in_weight_transfer=cfg.weight_broadcast.quantize_in_weight_transfer,
-        )
-        logger.success(
-            f"NCCL broadcast initialized (host={cfg.weight_broadcast.host}, port={cfg.weight_broadcast.port}, "
-            f"inference_world_size={cfg.weight_broadcast.inference_world_size})"
-        )
-
     watcher = setup_watcher(cfg, observers=[admin, engine, scheduler])
 
-    if resume_step is not None and ckpt_manager is not None:
-        state = ckpt_manager.load(resume_step)
-        batcher.step = state.step
-        scheduler.last_eval_step = state.last_eval_step
-        if buffer is not None and state.buffer_state and not (cfg.ckpt and cfg.ckpt.skip_buffer):
-            buffer.load_state_dict(state.buffer_state)
-        if cfg.eval and cfg.eval.skip_eval_on_resume:
-            # bump last_eval_step past current so the next interval boundary
-            # is the first eval the resumed run sees
-            scheduler.last_eval_step = state.step
-            logger.info(f"Skipping next eval on resume (last_eval_step={state.step})")
-        await admin.on_new_version(state.step)
-        await engine.on_new_version(state.step)
-        watcher.current_step = state.step
-        logger.success(f"Resumed orch from step {state.step} (eval cursor at {scheduler.last_eval_step})")
+    await admin.start(cfg)
+    await _maybe_resume(cfg, resume_step, ckpt_manager, scheduler, engine, batcher, admin, watcher, buffer)
 
     logger.success("Orchestrator starting — producing rollouts")
     try:
@@ -234,6 +87,118 @@ async def run(cfg: OrchestratorConfig) -> None:
             tg.create_task(admin.watch_health())
     except* Done:
         logger.success(f"Orchestrator finished: reached max_steps={cfg.max_steps}")
+
+
+# ───── Setup helpers (config translation, validation, resume) ─────
+
+
+def _validate(cfg: OrchestratorConfig) -> None:
+    """Top-level invariants. Things the new orch doesn't yet support raise
+    NotImplementedError up front rather than half-running."""
+    assert cfg.max_inflight_rollouts is not None
+    assert cfg.advantage is not None, "advantage config required"
+    assert len(cfg.client.base_url) == 1, "single inference endpoint only"
+    if cfg.use_renderer:
+        raise NotImplementedError(
+            "orchestrator.use_renderer is not yet supported by the new async orchestrator. "
+            "Set use_renderer=false (use_token_client=true for TITO, both false for MITO)."
+        )
+    if cfg.teacher_rollout_model is not None:
+        raise NotImplementedError(
+            "orchestrator.teacher_rollout_model is not yet supported by the new async orchestrator. "
+            "Remove the teacher_rollout_model field to proceed."
+        )
+    if cfg.model.lora and cfg.weight_broadcast.type == "nccl":
+        raise ValueError("NCCL weight broadcast does not support LoRA — use filesystem broadcast")
+
+
+def _install_envs(cfg: OrchestratorConfig) -> None:
+    env_ids = set(get_env_ids_to_install(cfg.train.env))
+    if cfg.eval is not None:
+        env_ids.update(get_env_ids_to_install(cfg.eval.env))
+    for env_id in env_ids:
+        install_env(env_id, prerelease=cfg.env_install_prerelease)
+
+
+def _write_orch_config(cfg: OrchestratorConfig) -> None:
+    """Trainer reads this from output_dir/control/orch.toml at startup
+    (see prime_rl.trainer.runs.RunManager.get_orchestrator_config)."""
+    control_dir = cfg.output_dir / "control"
+    control_dir.mkdir(parents=True, exist_ok=True)
+    with open(control_dir / "orch.toml", "wb") as f:
+        tomli_w.dump(cfg.model_dump(exclude_none=True, mode="json"), f)
+
+
+def _resolve_resume_step(cfg: OrchestratorConfig, ckpt_manager: CkptManager | None) -> int | None:
+    if not (cfg.ckpt and cfg.ckpt.resume_step is not None and ckpt_manager is not None):
+        return None
+    if cfg.ckpt.resume_step != -1:
+        return cfg.ckpt.resume_step
+    latest = ckpt_manager.latest_step()
+    if latest is None:
+        get_logger().warning("ckpt.resume_step=-1 set but no orch checkpoints found; starting fresh")
+    return latest
+
+
+def _make_groups_queue(cfg: OrchestratorConfig, scheduler: Scheduler) -> tuple[asyncio.Queue[Group], int]:
+    """Engine concurrency cap + bounded queue between engine and batcher.
+    Concurrency is in *groups*; max_inflight_rollouts is the legacy per-rollout
+    figure, so divide. Queue is sized so the batcher's async-level barrier
+    cascades backpressure into the engine's semaphore (rather than letting
+    in-flight rollouts pile up unbounded)."""
+    concurrency = max(1, cfg.max_inflight_rollouts // cfg.rollouts_per_example)
+    get_logger().info(f"Engine concurrency: {concurrency} groups across {len(scheduler.tasks)} task(s)")
+    return asyncio.Queue(maxsize=concurrency * (cfg.max_async_level + 1)), concurrency
+
+
+def _make_client(cfg: OrchestratorConfig) -> vf.ClientConfig:
+    """Verifiers ClientConfig for the rollout engine. TITO (token-in-token-out)
+    bypasses server-side chat templating — only safe for linear-history envs."""
+    client_type = "openai_chat_completions_token" if cfg.use_token_client else "openai_chat_completions"
+    if cfg.use_token_client:
+        get_logger().warning(
+            "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a "
+            "linear history and the chat template has the extension property."
+        )
+    return vf.ClientConfig(
+        client_type=client_type,
+        api_base_url=cfg.client.base_url[0],
+        api_key_var=cfg.client.api_key_var,
+        timeout=cfg.client.timeout,
+        connect_timeout=cfg.client.connect_timeout,
+    )
+
+
+async def _maybe_resume(
+    cfg: OrchestratorConfig,
+    resume_step: int | None,
+    ckpt_manager: CkptManager | None,
+    scheduler,
+    engine,
+    batcher,
+    admin,
+    watcher,
+    buffer,
+) -> None:
+    """Restore state from the last orch checkpoint and prime each component
+    with the resumed step so rollouts produced after this point are tagged
+    correctly."""
+    if resume_step is None or ckpt_manager is None:
+        return
+    state = ckpt_manager.load(resume_step)
+    batcher.step = state.step
+    scheduler.last_eval_step = state.last_eval_step
+    if buffer is not None and state.buffer_state and not (cfg.ckpt and cfg.ckpt.skip_buffer):
+        buffer.load_state_dict(state.buffer_state)
+    if cfg.eval and cfg.eval.skip_eval_on_resume:
+        # bump last_eval_step past current so the next interval boundary is
+        # the first eval the resumed run sees
+        scheduler.last_eval_step = state.step
+        get_logger().info(f"Skipping next eval on resume (last_eval_step={state.step})")
+    await admin.on_new_version(state.step)
+    await engine.on_new_version(state.step)
+    watcher.current_step = state.step
+    get_logger().success(f"Resumed orch from step {state.step} (eval cursor at {scheduler.last_eval_step})")
 
 
 def main() -> None:
