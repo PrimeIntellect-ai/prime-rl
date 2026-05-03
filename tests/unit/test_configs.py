@@ -260,7 +260,7 @@ def test_rl_config_auto_sets_non_conflicting_teacher_inference_ports():
 
 
 def test_rl_config_rejects_teacher_inference_backend_port_collisions():
-    with pytest.raises(ValidationError, match="must not reuse inference router/backend ports"):
+    with pytest.raises(ValidationError, match=r"must not reuse inference router/backend(?:/RPC)? ports"):
         cli(
             RLConfig,
             args=[
