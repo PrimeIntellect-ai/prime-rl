@@ -63,11 +63,17 @@ class TrainerPublisher:
                 base_dtype=base_dtype,
             )
 
+        import logging
+
+        _log = logging.getLogger("prime_rl.transport.trainer_publisher")
         pin_ucx_rail(torch.cuda.current_device())
         self.agent = NixlAgentWrapper(name=make_agent_name("trainer", rank))
+        buf_count = sum(len(list(s.buffers)) for s in self.slots)
+        _log.info(f"Registering {buf_count} buffers with NIXL agent")
         for slot in self.slots:
             for _, tensor, _ in slot.buffers:
                 self.agent.register_tensor(tensor)
+        _log.info("NIXL registration complete")
 
         self.rendezvous = MxRendezvous(
             client=client,

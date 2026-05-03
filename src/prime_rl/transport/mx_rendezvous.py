@@ -103,10 +103,22 @@ class MxRendezvous:
             timeout: Wall-clock seconds to wait before raising :class:`TimeoutError`.
             poll_interval: Seconds between ``ListSources`` polls.
         """
+        import logging
+
+        _log = logging.getLogger("prime_rl.transport.mx_rendezvous")
         deadline = time.monotonic() + timeout
         peer_id = self._identity(self.peer_role)
+        _logged = False
         while True:
             resp = self.client.list_sources(peer_id, status_filter=status)
+            if not _logged:
+                all_resp = self.client.list_sources(peer_id)
+                _log.info(
+                    f"wait_for_peers: role={self.peer_role} need={self.peer_world_size} "
+                    f"found_with_status={len(resp.instances)} found_any={len(all_resp.instances)} "
+                    f"status_filter={status} model={peer_id.model_name}"
+                )
+                _logged = True
             if len(resp.instances) >= self.peer_world_size:
                 return list(resp.instances)
             if time.monotonic() >= deadline:

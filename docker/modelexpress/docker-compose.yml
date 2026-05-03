@@ -15,12 +15,13 @@ services:
       context: https://github.com/ai-dynamo/modelexpress.git#b0c94ed61c65d2c2355a18508977941b9946d8b5
     network_mode: host
     environment:
-      - MODEL_EXPRESS_SERVER_PORT=29503
+      - MODEL_EXPRESS_SERVER_PORT=29501
       - MODEL_EXPRESS_LOG_LEVEL=info
       - MX_METADATA_BACKEND=redis
       - REDIS_URL=redis://localhost:29502
+      - MX_HEARTBEAT_TIMEOUT_SECS=86400
     healthcheck:
-      test: ["CMD", "bash", "-c", "</dev/tcp/localhost/29503"]
+      test: ["CMD", "bash", "-c", "</dev/tcp/localhost/29501"]
       interval: 5s
       retries: 12
       start_period: 5s
