@@ -691,10 +691,11 @@ class RLConfig(BaseConfig):
             return self
         if self.inference is None:
             raise ValueError("model.mtp.enable_rollout requires an inference config.")
-        if self.trainer.model.impl not in ("custom", "auto"):
-            raise ValueError("model.mtp.enable_rollout requires trainer.model.impl='custom' or 'auto'.")
+        if self.trainer.model.impl not in ("hf", "custom", "auto"):
+            raise ValueError("model.mtp.enable_rollout requires trainer.model.impl='hf', 'custom', or 'auto'.")
+        model_name = self.trainer.model.name.lower()
         speculative_config = {
-            "method": "mtp",
+            "method": "qwen3_next_mtp" if "qwen3.5" in model_name or "qwen3_5" in model_name else "mtp",
             "num_speculative_tokens": mtp.num_speculative_tokens or 1,
         }
         if self.inference.model.speculative_config is None:

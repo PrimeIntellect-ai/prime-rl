@@ -192,7 +192,7 @@ class DebugModelConfig(BaseConfig):
 
 
 class MTPConfig(BaseConfig):
-    """Configures online multi-token prediction training for supported custom models."""
+    """Configures online multi-token prediction training for supported models."""
 
     enabled: Annotated[
         bool,
@@ -383,9 +383,7 @@ class ModelConfig(BaseModelConfig):
 
     mtp: Annotated[
         MTPConfig | None,
-        Field(
-            description="MTP auxiliary-loss training config. Currently only supported for Qwen3.5 MoE custom models."
-        ),
+        Field(description="MTP auxiliary-loss training config. Currently supported for Qwen3.5 dense and MoE models."),
     ] = None
 
     fused_lm_head_token_chunk_size: Annotated[
@@ -433,12 +431,12 @@ class ModelConfig(BaseModelConfig):
     def mtp_only_supported_without_cp_or_vlm(self):
         if self.mtp is None or not self.mtp.enabled:
             return self
-        if self.impl not in ("custom", "auto"):
-            raise ValueError("MTP training requires model.impl='custom' or 'auto'.")
+        if self.impl not in ("hf", "custom", "auto"):
+            raise ValueError("MTP training requires model.impl='hf', 'custom', or 'auto'.")
         if self.cp > 1:
             raise ValueError("MTP training does not support context parallelism yet.")
         if self.vlm is not None:
-            raise ValueError("MTP training is only supported for text-only Qwen3.5 MoE models.")
+            raise ValueError("MTP training is only supported for text-only Qwen3.5 models.")
         return self
 
     @model_validator(mode="after")
