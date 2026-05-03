@@ -31,7 +31,10 @@ from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
 from prime_rl.transport.trainer_publisher import TrainerPublisher
 from prime_rl.transport.transport_plan import TransportPlan
+from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
+
+NIXL_MX_READY_MARKER = "NCCL_READY"
 
 
 def _get_qwen3_moe_spec_fns(hf_config):
@@ -123,9 +126,14 @@ class NIXLMxWeightBroadcast(WeightBroadcast):
         start = time.perf_counter()
         self.logger.debug("Starting NIXL+MX weight push")
 
+        # Same handshake as NCCL: STABLE → orchestrator pauses inference →
+        # orchestrator creates NCCL_READY marker → trainer pushes (inference
+        # is safely idle). Without this, RDMA writes land in live serving
+        # buffers and corrupt mid-request weights.
         notified_runs = self._compute_notified_runs()
         if self.world.is_master:
             self._notify_orchestrator(notified_runs)
+        self._wait_for_ready(notified_runs)
 
         state_dict = dict(model.named_parameters())
         state_dict.update({k: v for k, v in model.named_buffers() if k not in state_dict})
@@ -148,6 +156,13 @@ class NIXLMxWeightBroadcast(WeightBroadcast):
             )
             notified.append((idx, save_dir))
         return notified
+
+    def _wait_for_ready(self, notified_runs: list[tuple[int, Path]]) -> None:
+        """Wait for the orchestrator to pause inference and create the ready marker."""
+        for _, save_dir in notified_runs:
+            ready_file = save_dir / NIXL_MX_READY_MARKER
+            self.logger.debug(f"Waiting for ready marker at {ready_file}")
+            sync_wait_for_path(ready_file, interval=0.1, log_interval=10)
 
     def _notify_orchestrator(self, notified_runs: list[tuple[int, Path]]) -> None:
         for idx, save_dir in notified_runs:

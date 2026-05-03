@@ -204,7 +204,9 @@ srun bash -c '
     # Infiniband setup
     IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
     export NCCL_IB_HCA=$IB_HCA
-
+{% if use_nixl_mx_broadcast %}
+    export MX_RDMA_NIC_PIN=auto
+{% endif %}
 {% if num_infer_nodes > 0 -%}
 
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then

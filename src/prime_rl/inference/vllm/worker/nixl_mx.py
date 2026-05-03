@@ -19,6 +19,7 @@ from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import build_expert_map, update_mla_absorbed_weights
 from prime_rl.transport.inference_receiver import InferenceReceiver
+from prime_rl.transport.nixl_agent import pin_ucx_rail
 
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
@@ -57,6 +58,8 @@ class NIXLMxWeightUpdateWorker(Worker):
         expert_map = {k: v.cpu().tolist() for k, v in build_expert_map(model).items()}
 
         inference_model_name = model_runner.model_config.model
+
+        pin_ucx_rail(local_rank)
 
         from modelexpress.client import MxClient
 
