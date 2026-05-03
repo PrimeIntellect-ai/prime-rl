@@ -83,8 +83,7 @@ class NIXLMxWeightBroadcast(WeightBroadcast):
         default_conversion = select_default_conversion(self.config.inference_model_name)
         layer_specs_fn, non_layer_specs, is_dense_fn = _get_qwen3_moe_spec_fns(hf_config)
 
-        state_dict = dict(model.named_parameters())
-        state_dict.update({k: v for k, v in model.named_buffers() if k not in state_dict})
+        state_dict = model.state_dict()
 
         client = MxClient(server_url=f"{self.config.host}:{self.config.port}")
 
@@ -135,9 +134,7 @@ class NIXLMxWeightBroadcast(WeightBroadcast):
             self._notify_orchestrator(notified_runs)
         self._wait_for_ready(notified_runs)
 
-        state_dict = dict(model.named_parameters())
-        state_dict.update({k: v for k, v in model.named_buffers() if k not in state_dict})
-        self._plan.push_once(state_dict)
+        self._plan.push_once(model.state_dict())
 
         self._publisher.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
         self.logger.debug(f"NIXL+MX push done in {time.perf_counter() - start:.2f}s")
