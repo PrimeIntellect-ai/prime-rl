@@ -13,10 +13,15 @@ from prime_rl.utils.process import set_proc_title
 
 INFERENCE_TOML = "inference.toml"
 INFERENCE_SBATCH = "inference.sbatch"
+BACKEND_ONLY_ENV_VAR = "PRIME_RL_INFERENCE_BACKEND_ONLY"
 
 
 def _log_level() -> str:
     return os.environ.get("PRIME_LOG_LEVEL", "info")
+
+
+def _backend_only() -> bool:
+    return os.environ.get(BACKEND_ONLY_ENV_VAR) == "1"
 
 
 def _router_bind_host(host: str | None) -> str:
@@ -60,6 +65,10 @@ def build_single_node_backend_config(config: InferenceConfig) -> InferenceConfig
     backend_config = config.model_copy(deep=True)
     backend_config.server.port = config.deployment.backend_port
     return backend_config
+
+
+def should_use_local_router(config: InferenceConfig) -> bool:
+    return config.deployment.type == "single_node" and not _backend_only()
 
 
 def write_config(config: InferenceConfig, output_dir: Path, exclude: set[str] | None = None) -> Path:
@@ -180,7 +189,7 @@ def inference_local(config: InferenceConfig):
 
     from prime_rl.inference.vllm.server import server  # pyright: ignore
 
-    if config.deployment.type != "single_node":
+    if not should_use_local_router(config):
         host = config.server.host or "0.0.0.0"
         port = config.server.port
         logger.info(f"Starting inference on http://{host}:{port}/v1\n")

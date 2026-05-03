@@ -76,3 +76,4 @@ def test_write_slurm_script_passes_top_level_log_level_to_router(tmp_path):
     assert 'export ROUTER_POLICY="consistent_hash"' in script
     assert '--log-level "$PRIME_LOG_LEVEL"' in script
     assert '--policy "$ROUTER_POLICY"' in script
+    assert script.count("PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference") == 2

@@ -253,7 +253,7 @@ srun bash -c '
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference \
         @ $CONFIG_PATH \
         --server.host 0.0.0.0 \
         --server.port $PORT \
@@ -283,7 +283,7 @@ srun bash -c '
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference \
         @ $CONFIG_PATH \
         --server.host 0.0.0.0 \
         --server.port $BACKEND_PORT \

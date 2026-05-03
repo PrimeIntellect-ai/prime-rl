@@ -1,5 +1,10 @@
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.entrypoints.inference import build_single_node_backend_config, build_single_node_router_cmd
+from prime_rl.entrypoints.inference import (
+    build_single_node_backend_config,
+    build_single_node_router_cmd,
+    should_use_local_router,
+    write_slurm_script,
+)
 
 
 def test_build_single_node_router_cmd_uses_internal_backend_port():
@@ -35,3 +40,26 @@ def test_build_single_node_router_cmd_uses_prime_log_level_env(monkeypatch):
     cmd = build_single_node_router_cmd(config)
 
     assert cmd[cmd.index("--log-level") + 1] == "warning"
+
+
+def test_should_use_local_router_for_single_node_default():
+    config = InferenceConfig.model_validate({"server": {"port": 9000}})
+
+    assert should_use_local_router(config) is True
+
+
+def test_should_not_use_local_router_in_backend_only_mode(monkeypatch):
+    monkeypatch.setenv("PRIME_RL_INFERENCE_BACKEND_ONLY", "1")
+    config = InferenceConfig.model_validate({"server": {"port": 9000}})
+
+    assert should_use_local_router(config) is False
+
+
+def test_write_slurm_script_runs_multi_node_workers_in_backend_only_mode(tmp_path):
+    config = InferenceConfig.model_validate({"deployment": {"type": "multi_node"}, "slurm": {}})
+    script_path = tmp_path / "inference.sbatch"
+
+    write_slurm_script(config, tmp_path / "inference.toml", script_path)
+
+    script = script_path.read_text()
+    assert script.count("PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference") == 1

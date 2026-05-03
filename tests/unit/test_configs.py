@@ -181,6 +181,14 @@ def test_single_node_inference_custom_public_port_updates_router_port():
     assert config.deployment.backend_port == 9100
 
 
+def test_single_node_inference_offsets_rpc_port_for_multiple_local_servers():
+    config_a = InferenceConfig.model_validate({"server": {"port": 8000}})
+    config_b = InferenceConfig.model_validate({"server": {"port": 8001}})
+
+    assert config_a.data_parallel_rpc_port == 13345
+    assert config_b.data_parallel_rpc_port == 13346
+
+
 def test_single_node_inference_rejects_mismatched_public_and_router_ports():
     with pytest.raises(ValidationError, match="must match deployment.router.port"):
         InferenceConfig.model_validate(
@@ -246,6 +254,7 @@ def test_rl_config_auto_sets_non_conflicting_teacher_inference_ports():
     assert config.teacher_inference.server.port == 9001
     assert config.teacher_inference.deployment.router.port == 9001
     assert config.teacher_inference.deployment.backend_port == 9101
+    assert config.teacher_inference.data_parallel_rpc_port == config.inference.data_parallel_rpc_port + 1
     assert config.orchestrator.teacher_model is not None
     assert config.orchestrator.teacher_model.client.base_url == ["http://localhost:9001/v1"]
 
@@ -270,7 +279,9 @@ def test_rl_config_rejects_teacher_inference_backend_port_collisions():
 
 
 def test_rl_config_rejects_disaggregated_inference_for_single_node_deployment():
-    with pytest.raises(ValidationError, match="single-node RL only supports inference.deployment.type = 'single_node'"):
+    with pytest.raises(
+        ConfigFileError, match="single-node RL only supports inference.deployment.type = 'single_node'"
+    ):
         cli(
             RLConfig,
             args=[

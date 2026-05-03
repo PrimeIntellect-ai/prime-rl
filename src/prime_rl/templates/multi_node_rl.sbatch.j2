@@ -306,7 +306,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference \
         @ $CONFIG_DIR/inference.toml \
         --server.host 0.0.0.0 \
         --server.port $PORT \
@@ -344,7 +344,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             VLLM_EXTRA="{\"data_parallel_address\": \"$REPLICA_HEAD_HOST\", \"data_parallel_start_rank\": $INFER_DP_START_RANK}"
         fi
 
-        uv run inference \
+        PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
@@ -352,7 +352,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --vllm-extra "$VLLM_EXTRA" \
             2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
     else
-        uv run inference \
+        PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \

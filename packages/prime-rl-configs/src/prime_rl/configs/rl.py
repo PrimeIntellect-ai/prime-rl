@@ -978,6 +978,7 @@ class RLConfig(BaseConfig):
                     )
                 self.teacher_inference.deployment.router.port = teacher_public_port
                 self.teacher_inference.deployment.backend_port = teacher_backend_port
+                self.teacher_inference.data_parallel_rpc_port = 13345 + (teacher_public_port - 8000)
         elif self.inference is not None and self.teacher_inference.server.port == self.inference.server.port:
             raise ValueError(
                 f"teacher_inference.server.port ({self.teacher_inference.server.port}) conflicts with "
@@ -998,15 +999,17 @@ class RLConfig(BaseConfig):
             primary_ports = {
                 self.inference.deployment.router.port,
                 self.inference.deployment.backend_port,
+                self.inference.data_parallel_rpc_port,
             }
             teacher_ports = {
                 self.teacher_inference.deployment.router.port,
                 self.teacher_inference.deployment.backend_port,
+                self.teacher_inference.data_parallel_rpc_port,
             }
             collisions = sorted(primary_ports & teacher_ports)
             if collisions:
                 raise ValueError(
-                    "teacher_inference single-node ports must not reuse inference router/backend ports. "
+                    "teacher_inference single-node ports must not reuse inference router/backend/RPC ports. "
                     f"Conflicting port(s): {collisions}."
                 )
 

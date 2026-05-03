@@ -545,6 +545,21 @@ class InferenceConfig(BaseConfig):
         if self.deployment.backend_port == self.deployment.router.port:
             raise ValueError("deployment.backend_port must differ from deployment.router.port for single-node.")
 
+        if "data_parallel_rpc_port" not in self.model_fields_set:
+            rpc_port = 13345 + (self.deployment.router.port - 8000)
+            if not (1 <= rpc_port <= 65535):
+                raise ValueError(
+                    "data_parallel_rpc_port was not set and deployment.router.port "
+                    f"({self.deployment.router.port}) does not allow choosing a default RPC port within the valid range."
+                )
+            self.data_parallel_rpc_port = rpc_port
+
+        if self.data_parallel_rpc_port in {self.deployment.router.port, self.deployment.backend_port}:
+            raise ValueError(
+                "data_parallel_rpc_port must differ from deployment.router.port and deployment.backend_port "
+                "for single-node deployments."
+            )
+
         return self
 
     @model_validator(mode="after")
