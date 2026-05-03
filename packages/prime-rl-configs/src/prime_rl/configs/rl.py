@@ -134,6 +134,12 @@ class SharedWeightBroadcastConfig(BaseConfig):
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. Only applies when type is ``nccl``."""
 
+    @model_validator(mode="after")
+    def set_backend_defaults(self):
+        if self.type == "nixl_mx" and "port" not in self.model_fields_set:
+            self.port = 29503
+        return self
+
 
 class BaseDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
