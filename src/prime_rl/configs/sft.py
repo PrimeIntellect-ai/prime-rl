@@ -196,6 +196,12 @@ class SFTRawToolCaterpillarGroupedBranchesDataConfig(_SFTRawToolCaterpillarBaseC
     type: Literal["sft_raw_tool_caterpillar_grouped_branches"] = "sft_raw_tool_caterpillar_grouped_branches"
 
 
+class SFTRawToolCurrentRLBaselineDataConfig(_SFTRawToolCaterpillarBaseConfig):
+    """Raw tool-trajectory baseline matching the current RL interleaved sample path."""
+
+    type: Literal["sft_raw_tool_current_rl_baseline"] = "sft_raw_tool_current_rl_baseline"
+
+
 class LossMaskConfig(BaseConfig):
     """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
 
@@ -269,6 +275,7 @@ DataConfig: TypeAlias = Annotated[
     | SFTRawToolCaterpillarDataConfig
     | SFTRawToolCaterpillarPerBranchDataConfig
     | SFTRawToolCaterpillarGroupedBranchesDataConfig
+    | SFTRawToolCurrentRLBaselineDataConfig
     | SFTDataConfig,
     Field(discriminator="type"),
 ]

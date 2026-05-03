@@ -3,7 +3,11 @@ import torch
 
 from prime_rl.configs.sft import CaterpillarFakeDataConfig, SFTConfig, SFTRawToolCaterpillarDataConfig
 from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.sft.data import _raw_tool_selection_metrics_batch, _raw_tool_tree_fits_limits
+from prime_rl.trainer.sft.data import (
+    _raw_tool_current_rl_samples_from_messages,
+    _raw_tool_selection_metrics_batch,
+    _raw_tool_tree_fits_limits,
+)
 from prime_rl.trainer.tree import (
     Tree,
     TreeNode,
@@ -200,6 +204,51 @@ def test_raw_tool_branching_score_counts_reasoning_turns():
     assert metrics["final_token_estimate"] == [15.0]
     assert metrics["branching_score"] == [6.0]
     assert metrics["cheap_ok"] == [True]
+
+
+class _CharTokenizer:
+    def encode(self, text, add_special_tokens=False):
+        return [ord(char) for char in text]
+
+
+def test_raw_tool_current_rl_baseline_breaks_after_reasoning_strip():
+    messages = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1", "reasoning_content": "r1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2", "reasoning_content": "r2"},
+    ]
+
+    samples = _raw_tool_current_rl_samples_from_messages(
+        _CharTokenizer(),
+        messages,
+        seq_len=4096,
+        train_response=True,
+        train_reasoning=True,
+    )
+
+    assert len(samples) == 2
+    assert all(len(sample["input_ids"]) == len(sample["target_ids"]) == len(sample["loss_mask"]) for sample in samples)
+
+
+def test_raw_tool_current_rl_baseline_extends_when_reasoning_not_stripped():
+    messages = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+
+    samples = _raw_tool_current_rl_samples_from_messages(
+        _CharTokenizer(),
+        messages,
+        seq_len=4096,
+        train_response=True,
+        train_reasoning=True,
+    )
+
+    assert len(samples) == 1
+    assert len(samples[0]["input_ids"]) == len(samples[0]["target_ids"]) == len(samples[0]["loss_mask"])
 
 
 @pytest.mark.parametrize(

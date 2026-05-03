@@ -23,6 +23,7 @@ from prime_rl.configs.sft import (
     SFTRawToolCaterpillarDataConfig,
     SFTRawToolCaterpillarGroupedBranchesDataConfig,
     SFTRawToolCaterpillarPerBranchDataConfig,
+    SFTRawToolCurrentRLBaselineDataConfig,
 )
 from prime_rl.trainer.tree import Tree, TreeNode, build_caterpillar, pack_tree
 from prime_rl.trainer.world import get_world
@@ -608,6 +609,7 @@ class _SFTRawToolCaterpillarBase(StatefulIterableDataset):
             SFTRawToolCaterpillarDataConfig
             | SFTRawToolCaterpillarPerBranchDataConfig
             | SFTRawToolCaterpillarGroupedBranchesDataConfig
+            | SFTRawToolCurrentRLBaselineDataConfig
         ),
         tokenizer: PreTrainedTokenizer,
     ):
@@ -785,6 +787,10 @@ def _branch_sample_from_tree(tree: Tree, leaf_idx: int, seq_len: int) -> Sample 
     path = tree.root_path(leaf_idx)
     ids = [token for node_idx in path for token in tree.nodes[node_idx].token_ids]
     masks = [mask for node_idx in path for mask in tree.nodes[node_idx].loss_mask]
+    return _sample_from_ids_and_masks(ids, masks, seq_len)
+
+
+def _sample_from_ids_and_masks(ids: list[int], masks: list[bool], seq_len: int) -> Sample | None:
     if len(ids) < 2 or len(ids) - 1 > seq_len:
         return None
     return {
@@ -793,6 +799,90 @@ def _branch_sample_from_tree(tree: Tree, leaf_idx: int, seq_len: int) -> Sample 
         "position_ids": list(range(len(ids) - 1)),
         "loss_mask": masks[1:],
     }
+
+
+def _starts_with(values: list[int], prefix: list[int]) -> bool:
+    return len(values) >= len(prefix) and values[: len(prefix)] == prefix
+
+
+def _raw_tool_current_rl_samples_from_messages(
+    tokenizer: PreTrainedTokenizer,
+    messages: list[dict],
+    seq_len: int,
+    train_response: bool,
+    train_reasoning: bool,
+) -> list[Sample]:
+    steps = []
+    visible_prompt_ids: list[int] = []
+    for idx, message in enumerate(messages):
+        role = message.get("role")
+        if role == "assistant":
+            response_ids = tokenizer.encode(_assistant_visible_text(message), add_special_tokens=False)
+            reasoning = (message.get("reasoning_content") or "").strip()
+            reasoning_ids = (
+                tokenizer.encode(f"<think>{reasoning}</think>", add_special_tokens=False) if reasoning else []
+            )
+            if not visible_prompt_ids or not response_ids:
+                return []
+            steps.append(
+                {
+                    "prompt_ids": list(visible_prompt_ids),
+                    "completion_ids": reasoning_ids + response_ids,
+                    "completion_mask": [train_reasoning] * len(reasoning_ids) + [train_response] * len(response_ids),
+                }
+            )
+            visible_prompt_ids.extend(response_ids)
+        else:
+            previous_message = messages[idx - 1] if idx > 0 else None
+            next_message = messages[idx + 1] if idx + 1 < len(messages) else None
+            text = _nonassistant_text(message, previous_message, next_message)
+            if next_message is not None and next_message.get("role") == "assistant":
+                text += "<|im_start|>assistant\n"
+            visible_prompt_ids.extend(tokenizer.encode(text, add_special_tokens=False))
+
+    active_samples: list[dict[str, list[int] | list[bool]]] = []
+    for step in steps:
+        prompt_ids = step["prompt_ids"]
+        completion_ids = step["completion_ids"]
+        completion_mask = step["completion_mask"]
+        matched_sample = None
+        for active_sample in active_samples:
+            prefix_ids = cast(list[int], active_sample["prefix_ids"])
+            if _starts_with(prompt_ids, prefix_ids):
+                matched_sample = active_sample
+                break
+
+        if matched_sample is None:
+            active_samples.append(
+                {
+                    "prefix_ids": prompt_ids + completion_ids,
+                    "ids": prompt_ids + completion_ids,
+                    "masks": [False] * len(prompt_ids) + completion_mask,
+                }
+            )
+            continue
+
+        prefix_ids = cast(list[int], matched_sample["prefix_ids"])
+        new_prompt_ids = prompt_ids[len(prefix_ids) :]
+        ids = cast(list[int], matched_sample["ids"])
+        masks = cast(list[bool], matched_sample["masks"])
+        ids.extend(new_prompt_ids)
+        masks.extend([False] * len(new_prompt_ids))
+        ids.extend(completion_ids)
+        masks.extend(completion_mask)
+        matched_sample["prefix_ids"] = prompt_ids + completion_ids
+
+    samples = []
+    for active_sample in active_samples:
+        sample = _sample_from_ids_and_masks(
+            cast(list[int], active_sample["ids"]),
+            cast(list[bool], active_sample["masks"]),
+            seq_len,
+        )
+        if sample is None:
+            return []
+        samples.append(sample)
+    return samples
 
 
 class SFTRawToolCaterpillarPerBranchDataset(_SFTRawToolCaterpillarBase):
@@ -829,6 +919,64 @@ class SFTRawToolCaterpillarPerBranchDataset(_SFTRawToolCaterpillarBase):
                 continue
             self.num_samples["sft_raw_tool_caterpillar_per_branch"] += 1
             self.num_tokens["sft_raw_tool_caterpillar_per_branch"] += len(sample["input_ids"])
+            yield sample
+
+
+class SFTRawToolCurrentRLBaselineDataset(_SFTRawToolCaterpillarBase):
+    """Baseline matching current RL's flat-sample interleaving after reasoning stripping."""
+
+    def __init__(self, config: SFTRawToolCurrentRLBaselineDataConfig, tokenizer: PreTrainedTokenizer):
+        if config.max_examples is None:
+            raise ValueError("sft_raw_tool_current_rl_baseline requires max_examples to bound sample expansion")
+        super().__init__(config, tokenizer)
+        self._sample_cache: dict[int, list[Sample]] = {}
+        self.sample_refs: list[tuple[int, int]] = []
+        for example_idx in range(self.num_examples):
+            samples = self._build_samples(example_idx)
+            for sample_idx in range(len(samples)):
+                self.sample_refs.append((example_idx, sample_idx))
+        if not self.sample_refs:
+            raise ValueError("No current-RL raw tool samples remain after sample construction")
+
+    def _build_samples(self, example_idx: int) -> list[Sample]:
+        if example_idx in self._sample_cache:
+            return self._sample_cache[example_idx]
+
+        example = cast(dict, self.dataset[example_idx])
+        prompt = example.get("prompt")
+        completion = example.get("completion")
+        if not isinstance(prompt, list) or not isinstance(completion, list) or not completion:
+            self._sample_cache[example_idx] = []
+            return []
+
+        messages = _normalize_raw_tool_messages(prompt, completion)
+        samples = _raw_tool_current_rl_samples_from_messages(
+            self.tokenizer,
+            messages,
+            self.config.seq_len,
+            self.config.train_response,
+            self.config.train_reasoning,
+        )
+        self._sample_cache[example_idx] = samples
+        return samples
+
+    def _build_sample(self, draw_idx: int) -> Sample | None:
+        example_idx, sample_idx = self.sample_refs[draw_idx % len(self.sample_refs)]
+        samples = self._build_samples(example_idx)
+        if sample_idx >= len(samples):
+            return None
+        return samples[sample_idx]
+
+    def __iter__(self):
+        while True:
+            self.step += 1
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+            sample = self._build_sample(self.step - 1)
+            if sample is None:
+                continue
+            self.num_samples["sft_raw_tool_current_rl_baseline"] += 1
+            self.num_tokens["sft_raw_tool_current_rl_baseline"] += len(sample["input_ids"])
             yield sample
 
 
@@ -1356,6 +1504,8 @@ def setup_dataset(
         return SFTRawToolCaterpillarDataset(config, tokenizer)
     elif config.type == "sft_raw_tool_caterpillar_per_branch":
         return SFTRawToolCaterpillarPerBranchDataset(config, tokenizer)
+    elif config.type == "sft_raw_tool_current_rl_baseline":
+        return SFTRawToolCurrentRLBaselineDataset(config, tokenizer)
     elif config.type == "sft_raw_tool_caterpillar_grouped_branches":
         return SFTRawToolCaterpillarGroupedBranchesDataset(config, tokenizer)
     elif config.type == "sft":
@@ -1383,6 +1533,7 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> St
         "sft_caterpillar_per_branch",
         "sft_raw_tool_caterpillar",
         "sft_raw_tool_caterpillar_per_branch",
+        "sft_raw_tool_current_rl_baseline",
     ):
         return StatefulDataLoader(dataset, batch_size=1, collate_fn=cat_collate)
     if config.type == "sft_raw_tool_caterpillar_grouped_branches":
