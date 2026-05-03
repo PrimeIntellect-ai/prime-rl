@@ -191,7 +191,11 @@ def non_layer_conversion_specs() -> tuple[ConversionSpec, ...]:
     matches the upstream Qwen3-FP8 ``modules_to_not_convert`` list.
     """
     return (
-        ConversionSpec("model.embed_tokens.weight", ("model.embed_tokens.weight",)),
+        ConversionSpec(
+            "model.embed_tokens.weight",
+            ("model.embed_tokens.weight",),
+            conversion=MaybeQuantize("passthrough"),
+        ),
         ConversionSpec(
             "model.norm.weight",
             ("model.norm.weight",),
