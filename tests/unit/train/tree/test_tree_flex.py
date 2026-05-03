@@ -32,7 +32,7 @@ def test_flex_attention_matches_sdpa_path_fp32():
     torch.manual_seed(1)
     model = TinyTransformer(
         vocab_size=128,
-        hidden_size=32,
+        hidden_size=64,
         num_heads=4,
         num_layers=1,
         max_position_embeddings=128,
