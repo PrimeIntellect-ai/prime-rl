@@ -14,7 +14,7 @@ import asyncio
 import base64
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 from uuid import uuid4
 
@@ -204,6 +204,10 @@ class OpenAIServingGenerate:
             response,
             request=request,
             data_parallel_rank=data_parallel_rank,
+            tokenizer_getter=lambda: _get_diagnostic_tokenizer(
+                self.chat_handler,
+                self.engine_client,
+            ),
         )
         if nonfinite is not None:
             return _non_finite_generate_error(nonfinite)
@@ -241,6 +245,7 @@ def _find_non_finite_generate_value(
     *,
     request: GenerateRequest,
     data_parallel_rank: int | None,
+    tokenizer_getter: Callable[[], Any | None],
 ) -> dict[str, Any] | None:
     prompt_len = len(response.prompt_token_ids)
     common = {
@@ -262,7 +267,12 @@ def _find_non_finite_generate_value(
         for token_offset, logprob in enumerate(choice.logprobs):
             if math.isfinite(logprob):
                 continue
-            token_id = choice.token_ids[token_offset] if token_offset < completion_len else None
+            token_id = (
+                choice.token_ids[token_offset]
+                if token_offset < completion_len
+                else None
+            )
+            tokenizer = tokenizer_getter()
             return {
                 **common,
                 "field": "choices.logprobs",
@@ -271,6 +281,18 @@ def _find_non_finite_generate_value(
                 "token_id": token_id,
                 "completion_len": completion_len,
                 "finish_reason": choice.finish_reason,
+                **_token_window_context(
+                    "completion",
+                    choice.token_ids,
+                    token_offset,
+                    tokenizer=tokenizer,
+                ),
+                **_short_sequence_context(
+                    "completion",
+                    choice.token_ids,
+                    tokenizer=tokenizer,
+                ),
+                **_prompt_tail_context(response.prompt_token_ids, tokenizer=tokenizer),
                 "value": repr(logprob),
             }
 
@@ -278,16 +300,148 @@ def _find_non_finite_generate_value(
         for token_offset, logprob in enumerate(response.prompt_logprobs):
             if logprob is None or math.isfinite(logprob):
                 continue
-            token_id = response.prompt_token_ids[token_offset] if token_offset < prompt_len else None
+            token_id = (
+                response.prompt_token_ids[token_offset]
+                if token_offset < prompt_len
+                else None
+            )
+            tokenizer = tokenizer_getter()
             return {
                 **common,
                 "field": "prompt_logprobs",
                 "token_offset": token_offset,
                 "token_id": token_id,
+                **_token_window_context(
+                    "prompt",
+                    response.prompt_token_ids,
+                    token_offset,
+                    tokenizer=tokenizer,
+                ),
+                **_prompt_tail_context(response.prompt_token_ids, tokenizer=tokenizer),
                 "value": repr(logprob),
             }
 
     return None
+
+
+def _get_diagnostic_tokenizer(*objects: Any | None) -> Any | None:
+    for obj in objects:
+        tokenizer = _find_tokenizer_on_object(obj)
+        if tokenizer is not None:
+            return tokenizer
+    return None
+
+
+def _find_tokenizer_on_object(obj: Any | None) -> Any | None:
+    if obj is None:
+        return None
+    if _can_decode_tokens(obj):
+        return obj
+
+    for attr in ("tokenizer", "_tokenizer"):
+        tokenizer = getattr(obj, attr, None)
+        if _can_decode_tokens(tokenizer):
+            return tokenizer
+
+    renderer = getattr(obj, "renderer", None)
+    if renderer is not None:
+        tokenizer = _find_tokenizer_on_object(renderer)
+        if tokenizer is not None:
+            return tokenizer
+
+    get_tokenizer = getattr(obj, "get_tokenizer", None)
+    if callable(get_tokenizer):
+        try:
+            tokenizer = get_tokenizer()
+        except Exception:
+            return None
+        if _can_decode_tokens(tokenizer):
+            return tokenizer
+
+    return None
+
+
+def _can_decode_tokens(tokenizer: Any | None) -> bool:
+    return tokenizer is not None and callable(getattr(tokenizer, "decode", None))
+
+
+def _token_window_context(
+    prefix: str,
+    token_ids: list[int],
+    token_offset: int,
+    *,
+    tokenizer: Any | None,
+    radius: int = 16,
+) -> dict[str, Any]:
+    start = max(0, token_offset - radius)
+    end = min(len(token_ids), token_offset + radius + 1)
+    window_ids = token_ids[start:end]
+    return {
+        f"{prefix}_token_window_start": start,
+        f"{prefix}_token_window_end": end,
+        f"{prefix}_token_window_token_ids": window_ids,
+        **_decode_token_context(
+            f"{prefix}_token_window",
+            window_ids,
+            tokenizer=tokenizer,
+        ),
+    }
+
+
+def _short_sequence_context(
+    prefix: str,
+    token_ids: list[int],
+    *,
+    tokenizer: Any | None,
+    max_tokens: int = 128,
+) -> dict[str, Any]:
+    if len(token_ids) > max_tokens:
+        return {}
+    return {
+        f"{prefix}_token_ids": token_ids,
+        **_decode_token_context(prefix, token_ids, tokenizer=tokenizer),
+    }
+
+
+def _prompt_tail_context(
+    prompt_token_ids: list[int],
+    *,
+    tokenizer: Any | None,
+    max_tokens: int = 64,
+) -> dict[str, Any]:
+    tail_ids = prompt_token_ids[-max_tokens:]
+    return {
+        "prompt_tail_token_start": len(prompt_token_ids) - len(tail_ids),
+        "prompt_tail_token_ids": tail_ids,
+        **_decode_token_context("prompt_tail", tail_ids, tokenizer=tokenizer),
+    }
+
+
+def _decode_token_context(
+    prefix: str,
+    token_ids: list[int],
+    *,
+    tokenizer: Any | None,
+) -> dict[str, Any]:
+    if not _can_decode_tokens(tokenizer):
+        return {}
+
+    context: dict[str, Any] = {}
+    try:
+        context[f"{prefix}_text"] = tokenizer.decode(
+            token_ids,
+            skip_special_tokens=False,
+        )
+    except Exception as exc:
+        context[f"{prefix}_decode_error"] = repr(exc)
+
+    convert_ids_to_tokens = getattr(tokenizer, "convert_ids_to_tokens", None)
+    if callable(convert_ids_to_tokens):
+        try:
+            context[f"{prefix}_tokens"] = list(convert_ids_to_tokens(token_ids))
+        except Exception as exc:
+            context[f"{prefix}_tokens_error"] = repr(exc)
+    return context
 
 
 def _non_finite_generate_error(context: dict[str, Any]) -> ErrorResponse:
