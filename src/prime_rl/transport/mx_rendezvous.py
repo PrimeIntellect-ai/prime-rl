@@ -19,7 +19,7 @@ from typing import Iterable, Literal
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
 
-Role = Literal["trainer", "inference"]
+Role = Literal["trainer", "inference", "orchestrator"]
 
 
 @dataclass
@@ -55,7 +55,11 @@ class MxRendezvous:
 
     @property
     def peer_role(self) -> Role:
-        return "inference" if self.role == "trainer" else "trainer"
+        if self.role == "trainer":
+            return "inference"
+        if self.role == "orchestrator":
+            return "trainer"
+        return "trainer"
 
     @property
     def mx_source_id(self) -> str:
@@ -77,8 +81,8 @@ class MxRendezvous:
     def publish(
         self,
         *,
-        nixl_metadata: bytes,
-        tensors: Iterable[p2p_pb2.TensorDescriptor],
+        nixl_metadata: bytes = b"",
+        tensors: Iterable[p2p_pb2.TensorDescriptor] = (),
     ) -> str:
         """Publish this worker's metadata. Returns the assigned ``mx_source_id``."""
         worker = p2p_pb2.WorkerMetadata(
@@ -131,10 +135,12 @@ class MxRendezvous:
     def wait_for_all_peers_ready(
         self,
         *,
+        role: Role | None = None,
+        status: int = p2p_pb2.SOURCE_STATUS_READY,
         timeout: float = 1200.0,
         poll_interval: float = 0.05,
     ) -> list[p2p_pb2.SourceInstanceRef]:
-        """Discover peer count from MX, then block until ALL of them are ``READY``.
+        """Discover peer count from MX, then block until ALL of them reach ``status``.
 
         Unlike :meth:`wait_for_peers` (which requires a pre-known
         ``peer_world_size``), this method first counts how many peer-role
@@ -142,23 +148,26 @@ class MxRendezvous:
         Each side publishes one entry per rank, so the count equals the
         peer's world size — no config plumbing needed.
         """
-        peer_id = self._identity(self.peer_role)
+        target_role = role or self.peer_role
+        peer_id = self._identity(target_role)
         deadline = time.monotonic() + timeout
 
-        # Discover how many peers exist (any status).
-        all_peers = self.client.list_sources(peer_id)
-        peer_count = len(all_peers.instances)
-        if peer_count == 0:
-            raise RuntimeError(f"no {self.peer_role!r} peers found in MX — trainer may not have published yet")
+        peer_count = 0
+        while peer_count == 0:
+            peer_count = len(self.client.list_sources(peer_id).instances)
+            if peer_count == 0:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"timed out waiting for {target_role!r} peers to appear in MX")
+                time.sleep(poll_interval)
 
         while True:
-            ready = self.client.list_sources(peer_id, status_filter=p2p_pb2.SOURCE_STATUS_READY)
-            if len(ready.instances) >= peer_count:
-                return list(ready.instances)
+            matched = self.client.list_sources(peer_id, status_filter=status)
+            if len(matched.instances) >= peer_count:
+                return list(matched.instances)
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"timed out after {timeout}s waiting for {peer_count} "
-                    f"{self.peer_role!r} peers to reach READY (saw {len(ready.instances)})"
+                    f"{target_role!r} peers to reach status {status} (saw {len(matched.instances)})"
                 )
             time.sleep(poll_interval)
 

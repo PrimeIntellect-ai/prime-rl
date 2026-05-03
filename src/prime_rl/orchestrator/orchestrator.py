@@ -32,6 +32,7 @@ monkey_patch_chat_completion_logprobs()
 
 import pandas as pd
 import verifiers as vf
+from modelexpress.client import MxClient
 from renderers.base import create_renderer
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -52,6 +53,7 @@ from prime_rl.orchestrator.vf_utils import (
     save_rollouts,
 )
 from prime_rl.trainer.model import setup_tokenizer
+from prime_rl.transport.mx_rendezvous import MxRendezvous
 from prime_rl.utils.client import (
     init_nccl_broadcast,
     init_nixl_mx_broadcast,
@@ -288,6 +290,15 @@ async def orchestrate(config: OrchestratorConfig):
             config.weight_broadcast.port,
             inference_world_size=config.weight_broadcast.inference_world_size,
         )
+        mx_orchestrator = MxRendezvous(
+            client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
+            role="orchestrator",
+            rank=0,
+            peer_world_size=1,
+            model_name=config.student.model.name,
+        )
+        mx_orchestrator.publish()
+        scheduler.mx_orchestrator = mx_orchestrator
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
