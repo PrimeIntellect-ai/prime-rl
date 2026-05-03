@@ -82,7 +82,21 @@ class NIXLMxWeightUpdateWorker(Worker):
 
     @torch.no_grad()
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
-        """Post-RDMA housekeeping: flush GPUDirect writes and recompute derived weights."""
+        """Block until the trainer's RDMA push completes, then flush and recompute.
+
+        The trainer flips MX status from INITIALIZING → READY after
+        ``push_once`` completes. We poll for that transition here so the
+        orchestrator's HTTP call blocks until the data has actually
+        landed — without this, the orchestrator would resume inference
+        on partially-written buffers.
+        """
+        from modelexpress import p2p_pb2
+
+        self._receiver.rendezvous.wait_for_peers(
+            status=p2p_pb2.SOURCE_STATUS_READY,
+            timeout=1200,
+            poll_interval=0.05,
+        )
         torch.cuda.synchronize(self.device)
         update_mla_absorbed_weights(self._model)
         logger.info("Weight update applied (NIXL+MX)")

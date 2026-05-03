@@ -125,6 +125,12 @@ class NIXLMxWeightBroadcast(WeightBroadcast):
         start = time.perf_counter()
         self.logger.debug("Starting NIXL+MX weight push")
 
+        # Clear previous READY so inference's wait_for_peers(status=READY)
+        # in update_weights_from_path doesn't see a stale signal from the
+        # prior step. Must happen BEFORE STABLE so the orchestrator's
+        # /update_weights call lands while we're still INITIALIZING.
+        self._publisher.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+
         # Same handshake as NCCL: STABLE → orchestrator pauses inference →
         # orchestrator creates NCCL_READY marker → trainer pushes (inference
         # is safely idle). Without this, RDMA writes land in live serving
@@ -136,6 +142,7 @@ class NIXLMxWeightBroadcast(WeightBroadcast):
 
         self._plan.push_once(model.state_dict())
 
+        # Inference's update_weights_from_path blocks until this flip.
         self._publisher.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
         self.logger.debug(f"NIXL+MX push done in {time.perf_counter() - start:.2f}s")
 
