@@ -279,9 +279,7 @@ def test_rl_config_rejects_teacher_inference_backend_port_collisions():
 
 
 def test_rl_config_rejects_disaggregated_inference_for_single_node_deployment():
-    with pytest.raises(
-        ConfigFileError, match="single-node RL only supports inference.deployment.type = 'single_node'"
-    ):
+    with pytest.raises(ConfigFileError, match="single-node RL only supports inference.deployment.type = 'single_node'"):
         cli(
             RLConfig,
             args=[
