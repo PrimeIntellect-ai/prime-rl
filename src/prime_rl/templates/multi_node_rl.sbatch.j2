@@ -222,6 +222,7 @@ srun --kill-on-bad-exit=1 bash -c '
     export NCCL_IB_HCA=$IB_HCA
 {% if use_nixl_mx_broadcast %}
     export MX_RDMA_NIC_PIN=auto
+    export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
 {% endif %}
 {% if num_infer_nodes > 0 -%}
 
