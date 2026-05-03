@@ -11,6 +11,7 @@ NIXL installed; only construction of :class:`NixlAgentWrapper` requires it.
 
 from __future__ import annotations
 
+import os
 import socket
 import time
 from typing import Any, Sequence
@@ -111,3 +112,25 @@ class NixlAgentWrapper:
 
 def make_agent_name(role: str, global_rank: int) -> str:
     return f"{role}-{socket.gethostname()}-r{global_rank}"
+
+
+def pin_ucx_rail(local_rank: int) -> None:
+    """Set per-rank UCX env vars before the NIXL agent is created.
+
+    NIC pinning is delegated to Model Express's
+    :func:`modelexpress.ucx_utils.apply_nic_pin_for_device` (sysfs-based
+    topology probe, rate-filtered, bond-aware, load-balanced); gated on
+    ``MX_RDMA_NIC_PIN`` env var (default: off). UCX transport defaults
+    are set here.
+
+    Call once per process before constructing :class:`NixlAgentWrapper`.
+    """
+    from modelexpress.ucx_utils import apply_nic_pin_for_device
+
+    apply_nic_pin_for_device(local_rank)
+    os.environ.setdefault("UCX_TLS", "rc_mlx5,ud,cuda_copy")
+    os.environ.setdefault("UCX_IB_GPU_DIRECT_RDMA", "y")
+    os.environ.setdefault("UCX_RNDV_SCHEME", "put_zcopy")
+    os.environ.setdefault("UCX_RNDV_THRESH", "8192")
+    os.environ.setdefault("UCX_MEMTYPE_CACHE", "n")
+    os.environ.setdefault("UCX_WARN_UNUSED_ENV_VARS", "n")

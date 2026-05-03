@@ -22,7 +22,7 @@ from prime_rl.trainer.models.slots import Slot, build_slots
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.transport.classic_cuda_pool import classic_cuda_alloc
 from prime_rl.transport.mx_rendezvous import MxRendezvous
-from prime_rl.transport.nixl_agent import NixlAgentWrapper, make_agent_name
+from prime_rl.transport.nixl_agent import NixlAgentWrapper, make_agent_name, pin_ucx_rail
 from prime_rl.transport.wire import RendezvousPayload
 
 
@@ -63,6 +63,7 @@ class TrainerPublisher:
                 base_dtype=base_dtype,
             )
 
+        pin_ucx_rail(torch.cuda.current_device())
         self.agent = NixlAgentWrapper(name=make_agent_name("trainer", rank))
         for slot in self.slots:
             for _, tensor, _ in slot.buffers:
