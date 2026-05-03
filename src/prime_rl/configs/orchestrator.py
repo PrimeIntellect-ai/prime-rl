@@ -1216,6 +1216,48 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_single_endpoint(self):
+        """The async orchestrator supports a single inference endpoint;
+        multi-endpoint config from orch1 is dropped (use an upstream load
+        balancer if you need it)."""
+        if len(self.client.base_url) != 1:
+            raise ValueError(
+                f"orchestrator.client.base_url must contain exactly one endpoint, got {len(self.client.base_url)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_renderer_not_implemented(self):
+        """The async orchestrator doesn't yet support per-model client-side
+        renderers (the `[orchestrator.renderer]` block + ``/v1/generate`` path).
+        Raise up front so users don't get a confusing failure later."""
+        if self.use_renderer:
+            raise ValueError(
+                "orchestrator.use_renderer is not yet supported by the new async orchestrator. "
+                "Set use_renderer=false (use_token_client=true for TITO, both false for MITO)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_teacher_not_implemented(self):
+        """The async orchestrator doesn't yet support teacher-model rollouts."""
+        if self.teacher_rollout_model is not None:
+            raise ValueError(
+                "orchestrator.teacher_rollout_model is not yet supported by the new async orchestrator. "
+                "Remove the teacher_rollout_model field to proceed."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_lora_not_with_nccl(self):
+        """LoRA hot-swap goes through ``/load_lora_adapter`` (filesystem-only on
+        the inference side). NCCL broadcast pushes full-model weights, which
+        doesn't apply to adapters."""
+        if self.model.lora and self.weight_broadcast.type == "nccl":
+            raise ValueError("NCCL weight broadcast does not support LoRA — use filesystem broadcast")
+        return self
+
+    @model_validator(mode="after")
     def validate_renderer_vs_vlm(self):
         """The renderer client takes plain message dicts and tokenizes
         them client-side. VLMs need server-side image preprocessing and
