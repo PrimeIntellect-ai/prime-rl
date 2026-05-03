@@ -186,6 +186,15 @@ class RendererConfig(BaseConfig):
         ),
     ] = None
 
+    keep_thinking: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to preserve historical assistant reasoning blocks for renderers that support keep_thinking."
+            ),
+        ),
+    ] = False
+
 
 class ElasticConfig(BaseConfig):
     """Configures elastic inference pool with DNS-based service discovery.

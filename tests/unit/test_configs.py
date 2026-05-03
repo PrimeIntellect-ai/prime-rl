@@ -156,6 +156,26 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_renderer_keep_thinking_requires_renderer_client():
+    with pytest.raises(ValidationError, match="renderer.keep_thinking=True"):
+        OrchestratorConfig.model_validate({"renderer": {"keep_thinking": True}})
+
+
+def test_renderer_keep_thinking_is_accepted_with_renderer_client():
+    config = OrchestratorConfig.model_validate(
+        {
+            "use_token_client": False,
+            "use_renderer": True,
+            "renderer": {
+                "name": "nemotron3",
+                "keep_thinking": True,
+            },
+        }
+    )
+
+    assert config.renderer.keep_thinking is True
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})

@@ -1075,7 +1075,7 @@ class OrchestratorConfig(BaseConfig):
         Field(
             description="Whether to use the renderer client (client-side tokenization via the ``renderers`` package, "
             "served by ``/v1/generate``). Mutually exclusive with ``use_token_client``. When True, the "
-            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) "
+            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size / keep_thinking) "
             "applies; when False those fields must be left at their defaults. Not supported for VLMs — "
             "VLMs must use the token client (TITO) so image preprocessing and chat templating stay server-side."
         ),
@@ -1207,6 +1207,8 @@ class OrchestratorConfig(BaseConfig):
             renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
         if self.renderer.pool_size is not None:
             renderer_args_set.append(f"renderer.pool_size={self.renderer.pool_size!r}")
+        if self.renderer.keep_thinking:
+            renderer_args_set.append(f"renderer.keep_thinking={self.renderer.keep_thinking!r}")
 
         if renderer_args_set:
             raise ValueError(

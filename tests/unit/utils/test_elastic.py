@@ -423,6 +423,7 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
             model_name="Qwen/Qwen3-VL-4B-Instruct",
             train_client_type="renderer",
             renderer_name="qwen3_vl",
+            renderer_keep_thinking=True,
         )
         pool._servers = {
             "10.0.0.1": MagicMock(status="ready"),
@@ -437,6 +438,7 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
                 client_type="renderer",
                 renderer="qwen3_vl",
                 renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
+                renderer_keep_thinking=True,
                 api_key_var="PRIME_API_KEY",
                 api_base_url="http://10.0.0.1:8000/v1",
                 timeout=1200,
