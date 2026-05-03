@@ -389,7 +389,7 @@ class SFTCaterpillarDataset(_SFTCaterpillarBase):
     def __init__(self, config: SFTCaterpillarDataConfig, tokenizer: PreTrainedTokenizer):
         super().__init__(config, tokenizer)
 
-    def _build_sample(self, draw_idx: int) -> TreeSample | None:
+    def _build_sample(self, draw_idx: int) -> Sample | None:
         tree = self._build_tree(self._example_index(draw_idx))
         if tree is None:
             return None
@@ -672,17 +672,19 @@ class SFTRawToolCaterpillarDataset(_SFTRawToolCaterpillarBase):
             return None
         packed = pack_tree(tree)
         input_ids = packed.input_ids.tolist()
-        return {
+        sample = {
             "input_ids": input_ids,
             "target_ids": input_ids,
             "position_ids": packed.position_ids.tolist(),
             "loss_mask": packed.loss_mask.tolist(),
-            "attn_mask": packed.attn_mask.tolist(),
             "prev_map": packed.prev_map.tolist(),
             "loss_weights": packed.loss_weights.tolist(),
             "node_of_token": packed.node_of_token.tolist(),
             "is_ancestor_node": packed.is_ancestor_node.tolist(),
         }
+        if self.config.include_attn_mask:
+            sample["attn_mask"] = packed.attn_mask.tolist()
+        return sample
 
     def __iter__(self):
         while True:
@@ -1144,6 +1146,7 @@ def cat_collate(samples: list[Sample]) -> Batch:
         batch["attn_mask"] = (
             torch.stack([torch.tensor(sample["attn_mask"]) for sample in samples], dim=0).bool().to("cuda")
         )
+    if "prev_map" in samples[0]:
         batch["prev_map"] = (
             torch.stack([torch.tensor(sample["prev_map"]) for sample in samples], dim=0).long().to("cuda")
         )

@@ -218,7 +218,7 @@ def train(config: SFTConfig):
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
-        tree_batch = "attn_mask" in micro_batch
+        tree_batch = "prev_map" in micro_batch
         branch_group_batch = "branch_loss_weights" in micro_batch
 
         if cp_enabled:
@@ -256,6 +256,8 @@ def train(config: SFTConfig):
                         device=input_ids.device,
                     )
                 else:
+                    if "attn_mask" not in micro_batch:
+                        raise ValueError("Tree SDPA path requires dense attn_mask in the micro-batch")
                     attn_mask = micro_batch["attn_mask"].to("cuda").unsqueeze(1)
                 out = forward(model, input_ids, position_ids, attn_mask=attn_mask)
                 logits = out["logits"]

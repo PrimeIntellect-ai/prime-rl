@@ -166,6 +166,7 @@ class _SFTRawToolCaterpillarBaseConfig(BaseDataConfig):
     seed: int = 0
     train_response: bool = True
     train_reasoning: bool = True
+    include_attn_mask: bool = True
 
 
 class SFTRawToolCaterpillarDataConfig(_SFTRawToolCaterpillarBaseConfig):

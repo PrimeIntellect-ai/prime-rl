@@ -3,6 +3,8 @@ from functools import lru_cache
 import torch
 from torch.nn.attention.flex_attention import BlockMask, create_block_mask
 
+_COMPILED_CREATE_BLOCK_MASK = torch.compile(create_block_mask)
+
 
 def _device_cache_key(device: torch.device | str) -> tuple[str, int | None]:
     torch_device = torch.device(device)
@@ -37,7 +39,7 @@ def _build_tree_block_mask_cached(
         ancestor = is_ancestor_node[q_node, kv_node]
         return q_valid & kv_valid & causal & ancestor
 
-    return create_block_mask(
+    return _COMPILED_CREATE_BLOCK_MASK(
         tree_mask_mod,
         B=None,
         H=None,
@@ -45,7 +47,6 @@ def _build_tree_block_mask_cached(
         KV_LEN=seq_len,
         device=device,
         BLOCK_SIZE=block_size,
-        _compile=device.type == "cuda",
     )
 
 
