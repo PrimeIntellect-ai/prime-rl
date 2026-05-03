@@ -3,7 +3,14 @@ import torch
 
 from prime_rl.configs.sft import CaterpillarFakeDataConfig, SFTConfig
 from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.tree import Tree, TreeNode, build_caterpillar, pack_tree, tree_nll_loss
+from prime_rl.trainer.tree import (
+    Tree,
+    TreeNode,
+    build_caterpillar,
+    pack_tree,
+    tree_nll_loss,
+    tree_nll_weighted_token_count,
+)
 
 
 def test_simple_y_tree():
@@ -134,6 +141,27 @@ def test_k_equals_one_reduces_to_sft():
     ce = torch.nn.functional.cross_entropy(logits[0, :-1], packed.input_ids[1:], reduction="none")
     sft_loss = (ce * packed.loss_mask[1:].to(torch.float64)).sum()
     torch.testing.assert_close(tree_loss, sft_loss)
+
+
+def test_tree_nll_token_count_uses_weighted_denominator():
+    tree = build_caterpillar(
+        [
+            ([1, 2], [3], [4, 5]),
+            ([6], [7, 8], [9]),
+        ]
+    )
+    packed = pack_tree(tree)
+
+    unweighted_count = (packed.loss_mask & (packed.prev_map >= 0)).sum()
+    weighted_count = tree_nll_weighted_token_count(
+        packed.prev_map,
+        packed.loss_mask,
+        packed.loss_weights,
+    )
+
+    assert unweighted_count.item() == 6
+    torch.testing.assert_close(weighted_count, torch.tensor(8.0 / 3.0))
+    assert weighted_count.item() != unweighted_count.item()
 
 
 @pytest.mark.parametrize(

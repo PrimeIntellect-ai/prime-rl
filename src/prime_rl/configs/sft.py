@@ -147,6 +147,39 @@ class SFTCaterpillarPerBranchDataConfig(_SFTCaterpillarBaseConfig):
     type: Literal["sft_caterpillar_per_branch"] = "sft_caterpillar_per_branch"
 
 
+class _SFTRawToolCaterpillarBaseConfig(BaseDataConfig):
+    """Shared fields for raw tool-trajectory caterpillar datasets.
+
+    Wraps raw multi-turn SFT trajectories whose assistant messages carry
+    ``reasoning_content`` separately from visible content/tool calls. Each assistant
+    turn adds a visible trunk continuation and, when non-empty, a reasoning side leaf.
+    """
+
+    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
+        "PrimeIntellect/INTELLECT-5-SFT-Raw"
+    )
+    subset: Annotated[str | None, Field(description="HF subset (config) name.")] = "rlm_science"
+    split: Annotated[str, Field(description="HF split name.")] = "train"
+    sort_by_num_turns: bool = True
+    max_examples: Annotated[int | None, Field(ge=1)] = None
+    filter_by_final_token_estimate: bool = True
+    seed: int = 0
+    train_response: bool = True
+    train_reasoning: bool = True
+
+
+class SFTRawToolCaterpillarDataConfig(_SFTRawToolCaterpillarBaseConfig):
+    """Raw tool-trajectory tree-mode counterpart for reasoning_content ablations."""
+
+    type: Literal["sft_raw_tool_caterpillar"] = "sft_raw_tool_caterpillar"
+
+
+class SFTRawToolCaterpillarPerBranchDataConfig(_SFTRawToolCaterpillarBaseConfig):
+    """Raw tool-trajectory per-branch baseline."""
+
+    type: Literal["sft_raw_tool_caterpillar_per_branch"] = "sft_raw_tool_caterpillar_per_branch"
+
+
 class LossMaskConfig(BaseConfig):
     """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
 
@@ -217,6 +250,8 @@ DataConfig: TypeAlias = Annotated[
     | CaterpillarPerBranchDataConfig
     | SFTCaterpillarDataConfig
     | SFTCaterpillarPerBranchDataConfig
+    | SFTRawToolCaterpillarDataConfig
+    | SFTRawToolCaterpillarPerBranchDataConfig
     | SFTDataConfig,
     Field(discriminator="type"),
 ]
@@ -418,7 +453,7 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_tree_training_v1(self):
-        if self.data.type not in ("caterpillar_fake", "sft_caterpillar"):
+        if self.data.type not in ("caterpillar_fake", "sft_caterpillar", "sft_raw_tool_caterpillar"):
             return self
 
         if self.model.cp != 1:

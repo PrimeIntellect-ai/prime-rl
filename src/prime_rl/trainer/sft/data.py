@@ -20,8 +20,10 @@ from prime_rl.configs.sft import (
     SFTCaterpillarDataConfig,
     SFTCaterpillarPerBranchDataConfig,
     SFTDataConfig,
+    SFTRawToolCaterpillarDataConfig,
+    SFTRawToolCaterpillarPerBranchDataConfig,
 )
-from prime_rl.trainer.tree import build_caterpillar, pack_tree
+from prime_rl.trainer.tree import Tree, TreeNode, build_caterpillar, pack_tree
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import (
     IncrementalTokenizationError,
@@ -447,6 +449,282 @@ class SFTCaterpillarPerBranchDataset(_SFTCaterpillarBase):
                 continue
             self.num_samples["sft_caterpillar_per_branch"] += 1
             self.num_tokens["sft_caterpillar_per_branch"] += len(sample["input_ids"])
+            yield sample
+
+
+def _convert_raw_tool_call(tool_call: str | dict) -> dict:
+    raw_tool_call = json.loads(tool_call) if isinstance(tool_call, str) else dict(tool_call)
+    function = raw_tool_call.get("function") or {}
+    arguments = raw_tool_call.get("arguments", function.get("arguments", {}))
+    if isinstance(arguments, str):
+        arguments = json.loads(arguments)
+    return {
+        "id": raw_tool_call.get("id"),
+        "function": {
+            "name": raw_tool_call.get("name", function.get("name")),
+            "arguments": arguments,
+        },
+    }
+
+
+def _normalize_raw_tool_messages(prompt: list[dict], completion: list[dict]) -> list[dict]:
+    messages = normalize_messages(prompt, default_role="user") + normalize_messages(
+        completion, default_role="assistant"
+    )
+    normalized = []
+    for message in messages:
+        normalized_message = {
+            key: value for key, value in dict(message).items() if value is not None and key != "thinking_blocks"
+        }
+        if normalized_message.get("tool_calls"):
+            normalized_message["tool_calls"] = [
+                _convert_raw_tool_call(tool_call) for tool_call in normalized_message["tool_calls"]
+            ]
+        normalized.append(normalized_message)
+    return strip_message_content(normalized)
+
+
+def _tool_argument_text(value) -> str:
+    if isinstance(value, dict | list):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _tool_call_text(tool_call: dict) -> str:
+    function = tool_call.get("function", tool_call)
+    text = f"<tool_call>\n<function={function['name']}>\n"
+    for name, value in (function.get("arguments") or {}).items():
+        text += f"<parameter={name}>\n{_tool_argument_text(value)}\n</parameter>\n"
+    return text + "</function>\n</tool_call>"
+
+
+def _assistant_visible_text(message: dict) -> str:
+    content = (message.get("content") or "").strip()
+    tool_calls = message.get("tool_calls") or []
+    if tool_calls:
+        parts = []
+        if content:
+            parts.append(content)
+        parts.extend(_tool_call_text(tool_call) for tool_call in tool_calls)
+        return "\n".join(parts) + "<|im_end|>\n"
+    return ((content + "\n") if content else "") + "<|im_end|>\n"
+
+
+def _nonassistant_text(message: dict, previous_message: dict | None, next_message: dict | None) -> str:
+    role = message["role"]
+    if role in ("system", "user"):
+        return f"<|im_start|>{role}\n{message.get('content') or ''}<|im_end|>\n"
+    if role == "tool":
+        text = ""
+        if previous_message is None or previous_message.get("role") != "tool":
+            text += "<|im_start|>user\n"
+        text += f"<tool_response>\n{message.get('content') or ''}\n</tool_response>\n"
+        if next_message is None or next_message.get("role") != "tool":
+            text += "<|im_end|>\n"
+        return text
+    raise ValueError(f"Unexpected non-assistant role: {role}")
+
+
+def _raw_tool_tree_path_len(tree: Tree, leaf_idx: int) -> int:
+    return sum(len(tree.nodes[node_idx].token_ids) for node_idx in tree.root_path(leaf_idx))
+
+
+class _SFTRawToolCaterpillarBase(StatefulIterableDataset):
+    """Common loader for raw tool trajectories with reasoning_content side branches."""
+
+    def __init__(
+        self,
+        config: SFTRawToolCaterpillarDataConfig | SFTRawToolCaterpillarPerBranchDataConfig,
+        tokenizer: PreTrainedTokenizer,
+    ):
+        super().__init__()
+        self.config = config
+        self.tokenizer = tokenizer
+        self.logger = get_logger()
+        ds = load_dataset(config.name, config.subset, split=config.split)
+        dataset = cast(Dataset, ds)
+
+        indices = list(range(len(dataset)))
+        if config.filter_by_final_token_estimate:
+            indices = [idx for idx in indices if self._final_token_estimate(cast(dict, dataset[idx])) <= config.seq_len]
+        if config.sort_by_num_turns:
+            indices.sort(
+                key=lambda idx: (
+                    cast(float | int | None, dataset[idx].get("num_turns")) or 0,
+                    cast(int | None, dataset[idx].get("example_id")) or idx,
+                ),
+                reverse=True,
+            )
+        if config.max_examples is not None:
+            indices = indices[: config.max_examples]
+        if not indices:
+            raise ValueError("No raw tool examples remain after sorting/filtering")
+
+        self.dataset = dataset.select(indices)
+        self.num_examples = len(self.dataset)
+        self._tree_cache: dict[int, Tree | None] = {}
+
+    def _final_token_estimate(self, example: dict) -> float:
+        token_usage = example.get("token_usage") or {}
+        final_input = token_usage.get("final_input_tokens") or example.get("rlm_final_input_tokens") or 0
+        final_output = token_usage.get("final_output_tokens") or example.get("rlm_final_output_tokens") or 0
+        if final_input <= 0 or final_output <= 0:
+            return float("inf")
+        return float(final_input + final_output)
+
+    def _build_tree(self, example_idx: int) -> Tree | None:
+        if example_idx in self._tree_cache:
+            return self._tree_cache[example_idx]
+
+        example = cast(dict, self.dataset[example_idx])
+        prompt = example.get("prompt")
+        completion = example.get("completion")
+        if not isinstance(prompt, list) or not isinstance(completion, list) or not completion:
+            self._tree_cache[example_idx] = None
+            return None
+
+        messages = _normalize_raw_tool_messages(prompt, completion)
+        nodes: list[TreeNode] = []
+        trunk_parent = -1
+        pending_user_ids: list[int] = []
+
+        for idx, message in enumerate(messages):
+            role = message.get("role")
+            if role == "assistant":
+                response_ids = self.tokenizer.encode(_assistant_visible_text(message), add_special_tokens=False)
+                reasoning = (message.get("reasoning_content") or "").strip()
+                reasoning_ids = (
+                    self.tokenizer.encode(f"<think>{reasoning}</think>", add_special_tokens=False) if reasoning else []
+                )
+                if not pending_user_ids or not response_ids:
+                    self._tree_cache[example_idx] = None
+                    return None
+
+                user_idx = len(nodes)
+                nodes.append(
+                    TreeNode(parent=trunk_parent, token_ids=pending_user_ids, loss_mask=[False] * len(pending_user_ids))
+                )
+                if reasoning_ids:
+                    nodes.append(
+                        TreeNode(
+                            parent=user_idx,
+                            token_ids=reasoning_ids,
+                            loss_mask=[self.config.train_reasoning] * len(reasoning_ids),
+                        )
+                    )
+                response_idx = len(nodes)
+                nodes.append(
+                    TreeNode(
+                        parent=user_idx,
+                        token_ids=response_ids,
+                        loss_mask=[self.config.train_response] * len(response_ids),
+                    )
+                )
+                trunk_parent = response_idx
+                pending_user_ids = []
+            else:
+                previous_message = messages[idx - 1] if idx > 0 else None
+                next_message = messages[idx + 1] if idx + 1 < len(messages) else None
+                text = _nonassistant_text(message, previous_message, next_message)
+                if next_message is not None and next_message.get("role") == "assistant":
+                    text += "<|im_start|>assistant\n"
+                pending_user_ids.extend(self.tokenizer.encode(text, add_special_tokens=False))
+
+        if not nodes:
+            self._tree_cache[example_idx] = None
+            return None
+        tree = Tree(nodes)
+        packed_len = sum(len(node.token_ids) for node in tree.nodes)
+        max_path_len = max(_raw_tool_tree_path_len(tree, leaf_idx) for leaf_idx in tree.leaves())
+        if packed_len > self.config.seq_len or max_path_len > self.config.seq_len:
+            self._tree_cache[example_idx] = None
+            return None
+
+        self._tree_cache[example_idx] = tree
+        return tree
+
+
+class SFTRawToolCaterpillarDataset(_SFTRawToolCaterpillarBase):
+    """Yields one raw tool trajectory packed as a caterpillar tree."""
+
+    def __init__(self, config: SFTRawToolCaterpillarDataConfig, tokenizer: PreTrainedTokenizer):
+        super().__init__(config, tokenizer)
+
+    def _build_sample(self, draw_idx: int) -> TreeSample | None:
+        tree = self._build_tree(draw_idx % self.num_examples)
+        if tree is None:
+            return None
+        packed = pack_tree(tree)
+        input_ids = packed.input_ids.tolist()
+        return {
+            "input_ids": input_ids,
+            "target_ids": input_ids,
+            "position_ids": packed.position_ids.tolist(),
+            "loss_mask": packed.loss_mask.tolist(),
+            "attn_mask": packed.attn_mask.tolist(),
+            "prev_map": packed.prev_map.tolist(),
+            "loss_weights": packed.loss_weights.tolist(),
+            "node_of_token": packed.node_of_token.tolist(),
+            "is_ancestor_node": packed.is_ancestor_node.tolist(),
+        }
+
+    def __iter__(self):
+        while True:
+            self.step += 1
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+            sample = self._build_sample(self.step - 1)
+            if sample is None:
+                continue
+            self.num_samples["sft_raw_tool_caterpillar"] += 1
+            self.num_tokens["sft_raw_tool_caterpillar"] += len(sample["input_ids"])
+            yield sample
+
+
+class SFTRawToolCaterpillarPerBranchDataset(_SFTRawToolCaterpillarBase):
+    """Per-branch baseline for raw tool-trajectory caterpillar trees."""
+
+    def __init__(self, config: SFTRawToolCaterpillarPerBranchDataConfig, tokenizer: PreTrainedTokenizer):
+        if config.max_examples is None:
+            raise ValueError("sft_raw_tool_caterpillar_per_branch requires max_examples to bound branch expansion")
+        super().__init__(config, tokenizer)
+        self.branch_refs: list[tuple[int, int]] = []
+        for tree_idx in range(self.num_examples):
+            tree = self._build_tree(tree_idx)
+            if tree is None:
+                continue
+            for leaf_idx in tree.leaves():
+                self.branch_refs.append((tree_idx, leaf_idx))
+        if not self.branch_refs:
+            raise ValueError("No per-branch raw tool samples remain after tree construction")
+
+    def _build_sample(self, draw_idx: int) -> Sample | None:
+        tree_idx, leaf_idx = self.branch_refs[draw_idx % len(self.branch_refs)]
+        tree = self._build_tree(tree_idx)
+        if tree is None:
+            return None
+        path = tree.root_path(leaf_idx)
+        ids = [token for node_idx in path for token in tree.nodes[node_idx].token_ids]
+        masks = [mask for node_idx in path for mask in tree.nodes[node_idx].loss_mask]
+        if len(ids) < 2 or len(ids) - 1 > self.config.seq_len:
+            return None
+        return {
+            "input_ids": ids[:-1],
+            "target_ids": ids[1:],
+            "position_ids": list(range(len(ids) - 1)),
+            "loss_mask": masks[1:],
+        }
+
+    def __iter__(self):
+        while True:
+            self.step += 1
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+            sample = self._build_sample(self.step - 1)
+            if sample is None:
+                continue
+            self.num_samples["sft_raw_tool_caterpillar_per_branch"] += 1
+            self.num_tokens["sft_raw_tool_caterpillar_per_branch"] += len(sample["input_ids"])
             yield sample
 
 
@@ -904,6 +1182,10 @@ def setup_dataset(
         return SFTCaterpillarDataset(config, tokenizer)
     elif config.type == "sft_caterpillar_per_branch":
         return SFTCaterpillarPerBranchDataset(config, tokenizer)
+    elif config.type == "sft_raw_tool_caterpillar":
+        return SFTRawToolCaterpillarDataset(config, tokenizer)
+    elif config.type == "sft_raw_tool_caterpillar_per_branch":
+        return SFTRawToolCaterpillarPerBranchDataset(config, tokenizer)
     elif config.type == "sft":
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
@@ -927,6 +1209,8 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> St
         "caterpillar_per_branch",
         "sft_caterpillar",
         "sft_caterpillar_per_branch",
+        "sft_raw_tool_caterpillar",
+        "sft_raw_tool_caterpillar_per_branch",
     ):
         return StatefulDataLoader(dataset, batch_size=1, collate_fn=cat_collate)
     if config.pack_function == "stack":

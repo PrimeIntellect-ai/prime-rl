@@ -1,0 +1,38 @@
+max_steps = 10
+output_dir = "outputs/tree_ablation/intellect5_rlm_science_tree_flex"
+clean_output_dir = true
+matmul_precision = "highest"
+
+[wandb]
+project = "prime-rl-tree-ablation"
+group = "qwen3-0.6b-intellect5-rlm-science-top-turns"
+name = "tree-flex-intellect5-rlm-science-top-turns"
+tags = ["tree-training", "v1.1", "flex-attention", "intellect-5", "rlm-science", "top-turns"]
+offline = true
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+attn = "flex_attention"
+impl = "hf"
+
+[data]
+type = "sft_raw_tool_caterpillar"
+name = "PrimeIntellect/INTELLECT-5-SFT-Raw"
+subset = "rlm_science"
+split = "train"
+batch_size = 4
+micro_batch_size = 1
+pack_function = "cat"
+seq_len = 8192
+sort_by_num_turns = true
+max_examples = 16
+filter_by_final_token_estimate = true
+seed = 0
+train_response = true
+train_reasoning = true
+
+[optim]
+lr = 2e-5
+
+[scheduler]
+type = "constant"

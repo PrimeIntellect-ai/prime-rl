@@ -157,6 +157,22 @@ If you wish to configure values of the default variant, you don't need to set th
 
 For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fixed, the orchestrator exposes a per-run override that forces SFT loss on every micro-batch without rebuilding the trainer. Set `orchestrator.use_sft_loss = true` alongside `orchestrator.teacher_rollout_model`; both must be configured together (the orchestrator validator enforces this). The orchestrator stamps each `TrainingSample.sft_loss = True`, which the trainer's `compute_loss` honors by dispatching to `sft_loss_fn` per batch — independent of the trainer's configured default loss.
 
+### SFT tree training
+
+Tree Training is exposed through synthetic and real caterpillar SFT data:
+
+```toml
+[data]
+type = "caterpillar_fake"
+pack_function = "cat"
+micro_batch_size = 1
+num_turns = 3
+```
+
+It is intentionally narrow: SFT NLL only, one tree per micro-batch, HF/auto model implementation, `model.cp = 1`, `model.ep = 1`, and `loss_impl` must be `"torch"` or `"liger"`. Use `model.attn = "sdpa"` for the canonical materialized-mask reference path, or `model.attn = "flex_attention"` for the v1.1 FlexAttention BlockMask fast path. The config validator rejects unsupported combinations instead of silently changing them.
+
+For raw tool trajectories such as `PrimeIntellect/INTELLECT-5-SFT-Raw`, use `data.type = "sft_raw_tool_caterpillar"` or `data.type = "sft_raw_tool_caterpillar_per_branch"`. The loader sorts by `num_turns` when requested and treats assistant `reasoning_content` as reasoning side leaves while visible content/tool calls stay on the trunk. Always set `max_examples` on the per-branch baseline to bound branch expansion.
+
 ### Model fields
 
 For `BaseModel | None` fields (like `[ckpt]`, `[wandb]`, `[compile]`), a bare flag enables them with defaults:
