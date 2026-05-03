@@ -68,7 +68,7 @@ class StaticInferencePool:
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
         renderer_pool_size: int | None = None,
-        renderer_keep_thinking: bool = False,
+        renderer_keep_thinking: bool | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
@@ -131,7 +131,7 @@ async def setup_inference_pool(
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
     renderer_pool_size: int | None = None,
-    renderer_keep_thinking: bool = False,
+    renderer_keep_thinking: bool | None = None,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
@@ -184,7 +184,7 @@ def setup_clients(
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
     renderer_pool_size: int | None = None,
-    renderer_keep_thinking: bool = False,
+    renderer_keep_thinking: bool | None = None,
 ) -> list[vf.ClientConfig]:
     clients = []
     client_idx = 0

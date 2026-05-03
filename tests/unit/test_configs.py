@@ -156,9 +156,10 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_renderer_keep_thinking_requires_renderer_client():
-    with pytest.raises(ValidationError, match="renderer.keep_thinking=True"):
-        OrchestratorConfig.model_validate({"renderer": {"keep_thinking": True}})
+@pytest.mark.parametrize("keep_thinking", [True, False])
+def test_renderer_keep_thinking_requires_renderer_client(keep_thinking):
+    with pytest.raises(ValidationError, match="renderer.keep_thinking"):
+        OrchestratorConfig.model_validate({"renderer": {"keep_thinking": keep_thinking}})
 
 
 def test_renderer_keep_thinking_is_accepted_with_renderer_client():

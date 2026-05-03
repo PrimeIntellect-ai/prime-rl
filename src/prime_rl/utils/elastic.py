@@ -110,7 +110,7 @@ class ElasticInferencePool:
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
         renderer_pool_size: int | None = None,
-        renderer_keep_thinking: bool = False,
+        renderer_keep_thinking: bool | None = None,
     ):
         self.logger = get_logger()
         self.client_config = client_config
@@ -154,7 +154,7 @@ class ElasticInferencePool:
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
         renderer_pool_size: int | None = None,
-        renderer_keep_thinking: bool = False,
+        renderer_keep_thinking: bool | None = None,
     ) -> ElasticInferencePool:
         if client_config.elastic is None:
             raise ValueError("Elastic inference pool requires elastic config")

@@ -67,7 +67,7 @@ def test_setup_clients_assigns_renderer_and_dp_rank_headers():
     assert [client.client_type for client in clients] == ["renderer", "renderer"]
     assert [client.renderer for client in clients] == ["qwen3_vl", "qwen3_vl"]
     assert [client.renderer_model_name for client in clients] == [None, None]
-    assert [client.renderer_keep_thinking for client in clients] == [False, False]
+    assert [client.renderer_keep_thinking for client in clients] == [None, None]
     assert [client.api_base_url for client in clients] == ["http://worker-a:8000/v1"] * 2
     assert [client.extra_headers["X-data-parallel-rank"] for client in clients] == ["0", "1"]
     assert clients[0].extra_headers["X-Test"] == "test"
@@ -120,7 +120,7 @@ def test_setup_clients_preserves_chat_client_defaults():
             client_type="openai_chat_completions",
             renderer="auto",
             renderer_model_name=None,
-            renderer_keep_thinking=False,
+            renderer_keep_thinking=None,
             api_key_var="PRIME_API_KEY",
             api_base_url="http://worker-a:8000/v1",
             timeout=client_config.timeout,

@@ -187,13 +187,15 @@ class RendererConfig(BaseConfig):
     ] = None
 
     keep_thinking: Annotated[
-        bool,
+        bool | None,
         Field(
             description=(
-                "Whether to preserve historical assistant reasoning blocks for renderers that support keep_thinking."
+                "Override historical assistant reasoning block handling for renderers that support "
+                "keep_thinking. True preserves historical thinking, False disables it, and None "
+                "uses the selected renderer's default."
             ),
         ),
-    ] = False
+    ] = None
 
 
 class ElasticConfig(BaseConfig):
