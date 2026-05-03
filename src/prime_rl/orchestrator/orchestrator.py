@@ -6,19 +6,16 @@ import tomli_w
 import verifiers as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.batcher import Done, TrainBatcher, build_strategy
+from prime_rl.orchestrator.batcher import Done, setup_batcher
 from prime_rl.orchestrator.buffer import setup_buffer
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.engine import Group, setup_rollout_engine
-from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_admin import InferenceAdmin
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.scheduler import setup_scheduler
-from prime_rl.orchestrator.watcher import WeightWatcher
+from prime_rl.orchestrator.watcher import setup_watcher
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.transport import setup_training_batch_sender
 from prime_rl.utils.config import cli
-from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pathing import get_broadcast_dir
@@ -155,11 +152,7 @@ async def run(cfg: OrchestratorConfig) -> None:
         logger.info(f"Rate limit: {cfg.tasks_per_minute} tasks/min")
     if cfg.max_rollout_time_minutes is not None:
         logger.info(f"Rollout time cap: {cfg.max_rollout_time_minutes} min/group")
-    training_sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
-    rollout_filters = setup_filters(cfg.filters, vocab_size=tokenizer.vocab_size)
-    strategy = build_strategy(cfg.batch_size)
-    heartbeat = Heartbeat(cfg.heartbeat.url) if cfg.heartbeat else None
-    if heartbeat is not None:
+    if cfg.heartbeat is not None:
         logger.info(f"Heartbeat enabled ({cfg.heartbeat.url})")
 
     if lora_name and cfg.weight_broadcast.type == "nccl":
@@ -181,22 +174,14 @@ async def run(cfg: OrchestratorConfig) -> None:
         inference_metrics = InferenceMetricsCollector(admin.client)
         logger.info("Inference metrics collection enabled")
 
-    batcher = TrainBatcher(
-        groups_q,
-        tokenizer,
-        training_sender,
-        engine,
-        strategy,
-        cfg.advantage,
-        filters=rollout_filters,
-        max_steps=cfg.max_steps,
-        max_training_batches_ahead=cfg.max_async_level,
-        strict_async_level=cfg.strict_async_level,
+    batcher = setup_batcher(
+        cfg,
+        in_q=groups_q,
+        tokenizer=tokenizer,
+        policy=engine,
         eval_counter=scheduler,
         ckpt_manager=ckpt_manager,
-        ckpt_interval=cfg.ckpt.interval if cfg.ckpt else None,
         buffer=buffer,
-        heartbeat=heartbeat,
         inference_metrics=inference_metrics,
     )
     logger.info(f"Training batch sender ready ({cfg.rollout_transport.type})")
@@ -222,7 +207,7 @@ async def run(cfg: OrchestratorConfig) -> None:
             f"inference_world_size={cfg.weight_broadcast.inference_world_size})"
         )
 
-    watcher = WeightWatcher(broadcast_dir, observers=[admin, engine, scheduler])
+    watcher = setup_watcher(cfg, observers=[admin, engine, scheduler])
 
     if resume_step is not None and ckpt_manager is not None:
         state = ckpt_manager.load(resume_step)

@@ -1,7 +1,8 @@
 import asyncio
 import time
 from collections import defaultdict
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 import torch
 import verifiers as vf
@@ -9,6 +10,7 @@ import verifiers as vf
 from prime_rl.configs.orchestrator import (
     AdvantageConfig,
     BatchingConfig,
+    OrchestratorConfig,
     SamplesBatching,
     StepBatching,
     TokensBatching,
@@ -17,11 +19,11 @@ from prime_rl.orchestrator.advantage import AdvantageInputs, setup_advantage_fn
 from prime_rl.orchestrator.buffer import DifficultyBuffer
 from prime_rl.orchestrator.ckpt import CkptManager, OrchState
 from prime_rl.orchestrator.engine import Group
-from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
+from prime_rl.orchestrator.filters import RolloutFilter, apply_filters, setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.trajectories import interleave_rollout, pretokenize_rollout_trajectory
 from prime_rl.orchestrator.vf_utils import get_completion_len
-from prime_rl.transport import TrainingBatch, TrainingSample
+from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.transport.base import TrainingBatchSender
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import get_logger
@@ -346,47 +348,51 @@ class PostProcessor:
         )
 
 
+@dataclass
+class BatcherInputs:
+    """Pre-built inputs for the TrainBatcher. `setup_batcher` produces this
+    from config; tests construct it directly with stub policy/eval/post."""
+
+    in_q: asyncio.Queue[Group]
+    post: "PostProcessor"
+    policy: PolicyState
+    strategy: BatchingStrategy
+    advantage_cfg: AdvantageConfig
+    filters: list[RolloutFilter] = field(default_factory=list)
+    max_steps: int | None = None
+    max_training_batches_ahead: int = 1
+    strict_async_level: bool = False
+    eval_counter: EvalCounter | None = None
+    ckpt_manager: CkptManager | None = None
+    ckpt_interval: int | None = None
+    buffer: DifficultyBuffer | None = None
+    heartbeat: Heartbeat | None = None
+    inference_metrics: InferenceMetricsCollector | None = None
+
+
 class TrainBatcher:
     """Wires the stages: score (Advantage) → annotate (filters) → accumulate
     (BatchingStrategy) → post-process (PostProcessor). Also routes eval groups
     into an eval aggregator keyed by the eval trigger step."""
 
-    def __init__(
-        self,
-        in_q: asyncio.Queue[Group],
-        tokenizer,
-        sender: TrainingBatchSender,
-        policy: PolicyState,
-        strategy: BatchingStrategy,
-        advantage_cfg: AdvantageConfig,
-        filters: list[RolloutFilter] | None = None,
-        max_steps: int | None = None,
-        max_training_batches_ahead: int = 1,
-        strict_async_level: bool = False,
-        eval_counter: EvalCounter | None = None,
-        ckpt_manager: CkptManager | None = None,
-        ckpt_interval: int | None = None,
-        buffer: DifficultyBuffer | None = None,
-        heartbeat: Heartbeat | None = None,
-        inference_metrics: InferenceMetricsCollector | None = None,
-    ):
-        self.in_q = in_q
-        self.policy = policy
-        self.strategy = strategy
-        self.advantage = Advantage(advantage_cfg)
-        self.filters = filters or []
-        self.post = PostProcessor(tokenizer, sender, policy)
-        self.max_steps = max_steps
-        self.max_training_batches_ahead = max_training_batches_ahead
-        self.strict = strict_async_level
+    def __init__(self, inputs: BatcherInputs):
+        self.in_q = inputs.in_q
+        self.policy = inputs.policy
+        self.strategy = inputs.strategy
+        self.advantage = Advantage(inputs.advantage_cfg)
+        self.filters = inputs.filters
+        self.post = inputs.post
+        self.max_steps = inputs.max_steps
+        self.max_training_batches_ahead = inputs.max_training_batches_ahead
+        self.strict = inputs.strict_async_level
         self.step = 0
-        self.eval_counter = eval_counter
+        self.eval_counter = inputs.eval_counter
         self._eval_buf: dict[int, list[Group]] = defaultdict(list)
-        self.ckpt_manager = ckpt_manager
-        self.ckpt_interval = ckpt_interval
-        self.buffer = buffer
-        self.heartbeat = heartbeat
-        self.inference_metrics = inference_metrics
+        self.ckpt_manager = inputs.ckpt_manager
+        self.ckpt_interval = inputs.ckpt_interval
+        self.buffer = inputs.buffer
+        self.heartbeat = inputs.heartbeat
+        self.inference_metrics = inputs.inference_metrics
         self.logger = get_logger()
 
     async def _wait_barrier(self) -> None:
@@ -504,3 +510,43 @@ class TrainBatcher:
                 await self._maybe_save_ckpt()
                 if self.max_steps is not None and self.step >= self.max_steps:
                     raise Done()
+
+
+def setup_batcher(
+    cfg: OrchestratorConfig,
+    *,
+    in_q: asyncio.Queue[Group],
+    tokenizer: Any,
+    policy: PolicyState,
+    eval_counter: EvalCounter | None = None,
+    ckpt_manager: CkptManager | None = None,
+    buffer: DifficultyBuffer | None = None,
+    inference_metrics: InferenceMetricsCollector | None = None,
+) -> TrainBatcher:
+    """Translate config → TrainBatcher. Builds the batch sender, filters,
+    strategy, heartbeat, and PostProcessor internally. Tests should construct
+    `TrainBatcher(BatcherInputs(...))` directly."""
+    sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
+    filters = setup_filters(cfg.filters, vocab_size=tokenizer.vocab_size)
+    strategy = build_strategy(cfg.batch_size)
+    heartbeat = Heartbeat(cfg.heartbeat.url) if cfg.heartbeat else None
+    post = PostProcessor(tokenizer, sender, policy)
+    return TrainBatcher(
+        BatcherInputs(
+            in_q=in_q,
+            post=post,
+            policy=policy,
+            strategy=strategy,
+            advantage_cfg=cfg.advantage,
+            filters=filters,
+            max_steps=cfg.max_steps,
+            max_training_batches_ahead=cfg.max_async_level,
+            strict_async_level=cfg.strict_async_level,
+            eval_counter=eval_counter,
+            ckpt_manager=ckpt_manager,
+            ckpt_interval=cfg.ckpt.interval if cfg.ckpt else None,
+            buffer=buffer,
+            heartbeat=heartbeat,
+            inference_metrics=inference_metrics,
+        )
+    )
