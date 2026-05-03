@@ -144,7 +144,9 @@ class NCCLWeightBroadcastSender:
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
-        if self.quantize_in_weight_transfer and any(key.startswith("mtp_layers.") for key in state_dict):
+        if self.quantize_in_weight_transfer and any(
+            key.startswith("mtp_layers.") or key.startswith("mtp.") for key in state_dict
+        ):
             raise ValueError("MTP with quantize_in_weight_transfer is not supported yet; use non-quantized NCCL.")
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
