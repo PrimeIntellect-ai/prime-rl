@@ -108,19 +108,10 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     """
     IcePop loss (INTELLECT-3, https://arxiv.org/abs/2512.16144).
 
-    Token-level masked importance sampling:
-
-        J(θ) = E_{x, y ~ π_infer} [ (1 / Σ|y|) Σ_t M(r_t; α, β) · Â_t ]
-        M(k; α, β) = k if k ∈ [α, β] else 0
-        r_t = π_train(y_t | x, y_<t; θ) / π_infer(y_t | x, y_<t; θ_old)
-
-    Tokens whose importance ratio falls outside [α, β] receive zero policy-gradient
-    weight (they are dropped, not clipped). Whole rollouts whose minimum trainable-token
-    ratio falls below `icepop_rollout_min_ratio` are zeroed entirely — a guard against
-    catastrophic trainer/inference divergence.
-
-    There is no separate KL penalty term: the double-sided ratio mask is what keeps the
-    update inside the trust region.
+    Token-level masked importance sampling: tokens whose ratio
+    π_train / π_infer falls outside [α, β] are dropped (gradient set
+    to 0), not clipped. No KL penalty — the double-sided mask is what
+    keeps the update inside the trust region.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
@@ -132,17 +123,10 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     importance_ratio = torch.exp(log_importance_ratio)
     mismatch_kl = importance_ratio - log_importance_ratio - 1
 
-    detached_ratio = importance_ratio.detach()
-    in_range = (detached_ratio >= loss_config.icepop_ratio_low) & (detached_ratio <= loss_config.icepop_ratio_high)
-    is_masked_low = detached_ratio < loss_config.icepop_ratio_low
-    is_masked_high = detached_ratio > loss_config.icepop_ratio_high
-    is_masked = ~in_range
-    keep_mask = loss_mask & in_range
-
-    # Whole-rollout drop: any trainable token below the min-ratio floor kills the rollout.
-    trainable_ratios = detached_ratio.masked_fill(~loss_mask, 1.0)
-    rollout_dropped = (trainable_ratios < loss_config.icepop_rollout_min_ratio).any()
-    rollout_keep = (~rollout_dropped).to(importance_ratio.dtype)
+    is_masked_low = importance_ratio.detach() < loss_config.icepop_ratio_low
+    is_masked_high = importance_ratio.detach() > loss_config.icepop_ratio_high
+    is_masked = is_masked_low | is_masked_high
+    keep_mask = loss_mask & ~is_masked
 
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:
@@ -151,7 +135,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     else:
         teacher_kl = None
 
-    pg_loss = rollout_keep * keep_mask * advantages * importance_ratio
+    pg_loss = keep_mask * advantages * importance_ratio
     loss = (-pg_loss).sum()
 
     metrics = {
@@ -161,7 +145,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         "is_masked": _safe_mean(is_masked, loss_mask),
         "is_masked_low": _safe_mean(is_masked_low, loss_mask),
         "is_masked_high": _safe_mean(is_masked_high, loss_mask),
-        "rollout_dropped": rollout_dropped.to(importance_ratio.dtype),
     }
     if teacher_kl is not None:
         metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)

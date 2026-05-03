@@ -654,23 +654,11 @@ class DefaultLossConfig(BaseModel):
     type: Literal["default"] = "default"
 
     icepop_ratio_low: Annotated[
-        float,
-        Field(ge=0, description="Lower bound α on the trainer/inference importance ratio. Tokens below are masked."),
-    ] = 0.5
+        float, Field(ge=0, description="Lower bound α on the importance ratio. Tokens below are dropped.")
+    ] = 0.2
     icepop_ratio_high: Annotated[
-        float,
-        Field(ge=0, description="Upper bound β on the trainer/inference importance ratio. Tokens above are masked."),
+        float, Field(ge=0, description="Upper bound β on the importance ratio. Tokens above are dropped.")
     ] = 5.0
-    icepop_rollout_min_ratio: Annotated[
-        float,
-        Field(
-            ge=0,
-            description=(
-                "If any trainable token in a rollout has importance ratio below this threshold, "
-                "the whole rollout's policy-gradient contribution is zeroed."
-            ),
-        ),
-    ] = 1e-5
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
 
