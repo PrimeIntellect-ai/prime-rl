@@ -116,6 +116,40 @@ class MxRendezvous:
                 )
             time.sleep(poll_interval)
 
+    def wait_for_all_peers_ready(
+        self,
+        *,
+        timeout: float = 1200.0,
+        poll_interval: float = 0.05,
+    ) -> list[p2p_pb2.SourceInstanceRef]:
+        """Discover peer count from MX, then block until ALL of them are ``READY``.
+
+        Unlike :meth:`wait_for_peers` (which requires a pre-known
+        ``peer_world_size``), this method first counts how many peer-role
+        entries exist in MX (any status) and uses that count as the target.
+        Each side publishes one entry per rank, so the count equals the
+        peer's world size — no config plumbing needed.
+        """
+        peer_id = self._identity(self.peer_role)
+        deadline = time.monotonic() + timeout
+
+        # Discover how many peers exist (any status).
+        all_peers = self.client.list_sources(peer_id)
+        peer_count = len(all_peers.instances)
+        if peer_count == 0:
+            raise RuntimeError(f"no {self.peer_role!r} peers found in MX — trainer may not have published yet")
+
+        while True:
+            ready = self.client.list_sources(peer_id, status_filter=p2p_pb2.SOURCE_STATUS_READY)
+            if len(ready.instances) >= peer_count:
+                return list(ready.instances)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"timed out after {timeout}s waiting for {peer_count} "
+                    f"{self.peer_role!r} peers to reach READY (saw {len(ready.instances)})"
+                )
+            time.sleep(poll_interval)
+
     def fetch_peer(self, ref: p2p_pb2.SourceInstanceRef) -> p2p_pb2.WorkerMetadata:
         """Fetch full :class:`WorkerMetadata` for one peer ref returned by
         :meth:`wait_for_peers`.
