@@ -54,6 +54,7 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
 export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
+export VLLM_COMPUTE_NANS_IN_LOGITS=${VLLM_COMPUTE_NANS_IN_LOGITS:-1}
 
 # Setup environment
 cd $PROJECT_DIR

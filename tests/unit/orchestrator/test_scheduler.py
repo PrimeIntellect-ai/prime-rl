@@ -1,11 +1,12 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import verifiers as vf
 
-from prime_rl.orchestrator.scheduler import InflightRequest, Scheduler
+from prime_rl.orchestrator.scheduler import GroupState, InflightRequest, Scheduler
 from prime_rl.utils.async_utils import safe_cancel
 
 
@@ -174,3 +175,54 @@ def test_client_identity_distinguishes_base_url_and_dp_rank():
     )
 
     assert Scheduler._client_identity(client_a) != Scheduler._client_identity(client_b)
+
+
+def test_dump_rollout_attempts_preserves_full_rollout_and_metadata(tmp_path):
+    async def run() -> None:
+        scheduler = make_scheduler()
+        scheduler.config = SimpleNamespace(output_dir=tmp_path)
+        scheduler.ckpt_step = 3
+        scheduler.groups = {
+            12: GroupState(
+                example={"example_id": 99, "env_name": "test-env", "prompt": "problem"}, rollouts_to_schedule=0
+            )
+        }
+
+        client = SimpleNamespace(
+            client_idx=7,
+            api_base_url="http://worker:8000/v1",
+            extra_headers={"X-data-parallel-rank": "4"},
+        )
+        rollout_info = InflightRequest(
+            off_policy_steps=2,
+            client_config=client,
+            env_name="test-env",
+            group_id=12,
+            rollout_count=1,
+        )
+        rollout = {
+            "example_id": 99,
+            "trajectory": [{"prompt": [{"role": "user", "content": "hello"}], "completion": []}],
+            "error": None,
+        }
+
+        await scheduler._dump_rollout_attempts(
+            step=5,
+            group_id=12,
+            rollout_info=rollout_info,
+            rollouts=[rollout],
+        )
+
+        path = tmp_path / "rollouts" / "step_5" / "train_rollout_attempts.jsonl"
+        row = json.loads(path.read_text().strip())
+
+        assert row["record_type"] == "rollout"
+        assert row["step"] == 5
+        assert row["ckpt_step"] == 3
+        assert row["group_id"] == 12
+        assert row["example_id"] == 99
+        assert row["api_base_url"] == "http://worker:8000/v1"
+        assert row["data_parallel_rank"] == "4"
+        assert row["rollout"]["trajectory"][0]["prompt"][0]["content"] == "hello"
+
+    asyncio.run(run())

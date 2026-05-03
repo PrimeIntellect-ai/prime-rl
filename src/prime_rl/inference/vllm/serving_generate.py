@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import math
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
@@ -20,6 +22,7 @@ import numpy as np
 from fastapi import Request
 from pydantic import BaseModel
 from vllm.engine.protocol import EngineClient
+from vllm.entrypoints.openai.engine.protocol import ErrorInfo, ErrorResponse
 from vllm.inputs.engine import tokens_input
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
@@ -90,7 +93,7 @@ class OpenAIServingGenerate:
         self.engine_client = engine_client
         self.chat_handler = chat_handler
 
-    async def generate(self, request: GenerateRequest, raw_request: Request) -> GenerateResponse | dict:
+    async def generate(self, request: GenerateRequest, raw_request: Request) -> GenerateResponse | ErrorResponse | dict:
         # Pre-rendered TokensInput shape (type="token") — avoids vLLM's
         # "raw prompt" deprecation that targets plain lists/strings.
         engine_prompt = tokens_input(request.prompt_token_ids, cache_salt=request.cache_salt)
@@ -185,7 +188,7 @@ class OpenAIServingGenerate:
         completion_len = sum(len(c.token_ids) for c in choices)
         prompt_logprobs = _extract_prompt_logprobs(final_output.prompt_logprobs)
 
-        return GenerateResponse(
+        response = GenerateResponse(
             id=request_id,
             model=request.model or "",
             prompt_token_ids=list(final_output.prompt_token_ids),
@@ -197,6 +200,14 @@ class OpenAIServingGenerate:
             },
             prompt_logprobs=prompt_logprobs,
         )
+        nonfinite = _find_non_finite_generate_value(
+            response,
+            request=request,
+            data_parallel_rank=data_parallel_rank,
+        )
+        if nonfinite is not None:
+            return _non_finite_generate_error(nonfinite)
+        return response
 
 
 def _encode_routed_experts(arr: np.ndarray) -> dict:
@@ -223,3 +234,70 @@ def _extract_prompt_logprobs(
         logprob = selected.logprob if hasattr(selected, "logprob") else selected.get("logprob")
         extracted.append(float(logprob) if logprob is not None else None)
     return extracted
+
+
+def _find_non_finite_generate_value(
+    response: GenerateResponse,
+    *,
+    request: GenerateRequest,
+    data_parallel_rank: int | None,
+) -> dict[str, Any] | None:
+    prompt_len = len(response.prompt_token_ids)
+    common = {
+        "request_id": response.id,
+        "model": response.model,
+        "prompt_len": prompt_len,
+        "max_tokens": request.max_tokens,
+        "temperature": request.temperature,
+        "top_p": request.top_p,
+        "top_k": request.top_k,
+        "min_p": request.min_p,
+        "n": request.n,
+        "cache_salt": request.cache_salt,
+        "data_parallel_rank": data_parallel_rank,
+    }
+
+    for choice in response.choices:
+        completion_len = len(choice.token_ids)
+        for token_offset, logprob in enumerate(choice.logprobs):
+            if math.isfinite(logprob):
+                continue
+            token_id = choice.token_ids[token_offset] if token_offset < completion_len else None
+            return {
+                **common,
+                "field": "choices.logprobs",
+                "choice_index": choice.index,
+                "token_offset": token_offset,
+                "token_id": token_id,
+                "completion_len": completion_len,
+                "finish_reason": choice.finish_reason,
+                "value": repr(logprob),
+            }
+
+    if response.prompt_logprobs is not None:
+        for token_offset, logprob in enumerate(response.prompt_logprobs):
+            if logprob is None or math.isfinite(logprob):
+                continue
+            token_id = response.prompt_token_ids[token_offset] if token_offset < prompt_len else None
+            return {
+                **common,
+                "field": "prompt_logprobs",
+                "token_offset": token_offset,
+                "token_id": token_id,
+                "value": repr(logprob),
+            }
+
+    return None
+
+
+def _non_finite_generate_error(context: dict[str, Any]) -> ErrorResponse:
+    message = "Non-finite /v1/generate response value before JSON serialization: " + json.dumps(context, sort_keys=True)
+    logger.error(message)
+    return ErrorResponse(
+        error=ErrorInfo(
+            message=message,
+            type="BadRequestError",
+            param=context["field"],
+            code=400,
+        )
+    )

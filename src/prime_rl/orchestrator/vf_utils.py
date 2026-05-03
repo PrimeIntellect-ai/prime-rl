@@ -1,6 +1,7 @@
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import verifiers as vf
 from verifiers.utils.save_utils import make_serializable
@@ -71,6 +72,15 @@ def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path, exclude_keys: se
         for rollout in rollouts:
             row = {k: v for k, v in rollout.items() if k not in exclude_keys} if exclude_keys else rollout
             json.dump(row, f, default=make_serializable)
+            f.write("\n")
+
+
+def append_rollout_records(records: list[dict[str, Any]], path: Path) -> None:
+    """Append diagnostic rollout records to JSONL using verifiers serialization."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        for record in records:
+            json.dump(record, f, default=make_serializable)
             f.write("\n")
 
 

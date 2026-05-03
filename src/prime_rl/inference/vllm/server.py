@@ -206,6 +206,8 @@ async def _generate(request: GenerateRequest, raw_request: Request):
     if handler is None:
         return JSONResponse({"error": "generate endpoint not available"}, status_code=503)
     result = await handler.generate(request, raw_request)
+    if isinstance(result, ErrorResponse):
+        return JSONResponse(content=result.model_dump(), status_code=result.error.code)
     if isinstance(result, dict) and "error" in result:
         return JSONResponse(result, status_code=500)
     return JSONResponse(content=result.model_dump())
