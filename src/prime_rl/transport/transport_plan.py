@@ -95,9 +95,26 @@ class TransportPlan:
                     )
 
     def push_once(self, state_dict: dict[str, Tensor]) -> None:
-        """One end-to-end push: convert sources into slots, post all WRITEs, wait."""
+        """One end-to-end push: convert sources into slots, post all WRITEs, wait.
+
+        The state_dict values are cast to bfloat16 before conversion — the
+        optimizer may keep parameters in float32 (optimization_dtype), but
+        the FP8 block quantization must match the precision the checkpoint
+        was originally quantized from (bfloat16). Without this cast, the
+        per-block scales differ from what vLLM's FP8 kernels expect and KL
+        drifts monotonically.
+        """
+        from torch.distributed.tensor import DTensor
+
+        bf16_state: dict[str, Tensor] = {}
+        for k, v in state_dict.items():
+            if isinstance(v, DTensor):
+                bf16_state[k] = v.to(torch.bfloat16)
+            else:
+                bf16_state[k] = v.to(torch.bfloat16) if v.is_floating_point() else v
+
         for slot in self.publisher.slots:
-            slot.convert(state_dict)
+            slot.convert(bf16_state)
         # Ensure conversions are visible before remote agents pick up the bytes
         # over GPUDirect RDMA (writes bypass CUDA stream ordering).
         torch.cuda.synchronize()
