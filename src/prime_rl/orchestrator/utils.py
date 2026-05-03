@@ -84,24 +84,40 @@ async def compute_teacher_logprobs(
     samples: list[TrainingSample],
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
-    from prime_rl.inference.vllm.serving_generate import GenerateResponse
+    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
         client = setup_openai_client(client_config)
 
+        # /inference/v1/generate is mounted at the server root, not under /v1
+        # like the OpenAI-compatible endpoints. Build an absolute URL so the
+        # AsyncOpenAI client doesn't prefix the configured /v1 onto the path.
+        base = str(client.base_url).rstrip("/").removesuffix("/v1")
         response = await client.post(
-            "/generate",
+            f"{base}/inference/v1/generate",
             cast_to=GenerateResponse,
             body={
                 "model": model_name,
-                "prompt_token_ids": sample.prompt_ids + sample.completion_ids,
-                "max_tokens": 1,
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "prompt_logprobs": True,
+                "token_ids": list(sample.prompt_ids) + list(sample.completion_ids),
+                "sampling_params": {
+                    "max_tokens": 1,
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "prompt_logprobs": 1,
+                },
             },
         )
-        return [0.0 if lp is None else float(lp) for lp in response.prompt_logprobs or []]
+        # Upstream's prompt_logprobs is list[dict[token_id, Logprob] | None];
+        # legacy /v1/generate flattened to list[float | None]. Re-flatten here.
+        flat: list[float] = []
+        for entry in response.prompt_logprobs or []:
+            if not entry:
+                flat.append(0.0)
+                continue
+            first = next(iter(entry.values()))
+            lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+            flat.append(float(lp) if lp is not None else 0.0)
+        return flat
 
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 

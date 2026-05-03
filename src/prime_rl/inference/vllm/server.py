@@ -21,7 +21,6 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.inference.vllm.serving_generate import GenerateRequest
 from prime_rl.utils.logger import get_logger
 
 MODEL_TOOL_CALL_PARSER: dict[str, str] = {
@@ -181,34 +180,8 @@ WORKER_EXTENSION_CLS = {
 }
 
 
-def generate_handler(request: Request):
-    return request.app.state.openai_serving_generate
-
-
 def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
     return request.app.state.openai_serving_chat_with_tokens
-
-
-@router.post(
-    "/v1/generate",
-    dependencies=[Depends(validate_json_request)],
-    responses={
-        HTTPStatus.OK.value: {"content": {"application/json": {}}},
-        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
-        HTTPStatus.NOT_FOUND.value: {"model": ErrorResponse},
-        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
-    },
-)
-@with_cancellation
-@load_aware_call
-async def _generate(request: GenerateRequest, raw_request: Request):
-    handler = generate_handler(raw_request)
-    if handler is None:
-        return JSONResponse({"error": "generate endpoint not available"}, status_code=503)
-    result = await handler.generate(request, raw_request)
-    if isinstance(result, dict) and "error" in result:
-        return JSONResponse(result, status_code=500)
-    return JSONResponse(content=result.model_dump())
 
 
 @router.post(
@@ -303,11 +276,14 @@ async def custom_init_app_state(
 ):
     """
     Modifies init_app_state:
-    1. Call the original init_app_state to set up standard state.
+    1. Call the original init_app_state to set up standard state, including
+       vLLM 0.20's ``serving_tokens`` for ``/inference/v1/generate``.
     2. Replace ``serving_chat`` with our ``OpenAIServingChatWithTokens`` wrapper
        so the ``/v1/chat/completions/tokens`` (TITO) endpoint can stream
        token IDs alongside the rendered chat completion.
-    3. Add ``/v1/generate`` endpoint for renderer-based token-level inference.
+    3. Replace ``serving_tokens`` with ``PrimeRlServingTokens`` so DP-rank
+       routing and ``routed_experts`` export survive the migration off the
+       legacy ``/v1/generate`` endpoint.
     """
     await init_app_state(engine_client, state, args, supported_tasks)
 
@@ -323,11 +299,16 @@ async def custom_init_app_state(
     else:
         state.openai_serving_chat_with_tokens = None
 
-    # /v1/generate endpoint — tokens + optional images, no chat template
-    from prime_rl.inference.vllm.serving_generate import OpenAIServingGenerate
+    # Swap in our ServingTokens subclass for /inference/v1/generate so the
+    # X-data-parallel-rank header and routed_experts response field — both
+    # used by prime-RL's renderer / router-replay paths — keep working.
+    if "generate" in supported_tasks and state.serving_tokens is not None:
+        from prime_rl.inference.vllm.serving_tokens import PrimeRlServingTokens
 
-    chat_handler = state.openai_serving_chat if "generate" in supported_tasks else None
-    state.openai_serving_generate = OpenAIServingGenerate(engine_client, chat_handler=chat_handler)
+        upstream = state.serving_tokens
+        prime_serving = object.__new__(PrimeRlServingTokens)
+        prime_serving.__dict__.update(upstream.__dict__)
+        state.serving_tokens = prime_serving
 
 
 import vllm.entrypoints.openai.api_server

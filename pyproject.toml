@@ -165,6 +165,7 @@ torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "3b77145" }
+renderers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", subdirectory = "packages/renderers", rev = "9c0b738e" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
