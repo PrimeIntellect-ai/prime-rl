@@ -43,6 +43,7 @@ uv sync --all-extras
 export MX_COMPOSE_FILE=$PROJECT_DIR/docker/modelexpress/docker-compose.yml
 export MX_COMPOSE_PROJECT=prime-rl-mx-${SLURM_JOB_ID}
 trap 'docker compose -f "$MX_COMPOSE_FILE" -p "$MX_COMPOSE_PROJECT" down --remove-orphans >/dev/null 2>&1 || true' EXIT INT TERM HUP
+docker ps -aq --filter "name=prime-rl-mx" | xargs -r docker rm -f >/dev/null 2>&1 || true
 docker compose -f "$MX_COMPOSE_FILE" -p "$MX_COMPOSE_PROJECT" up -d --build --wait
 export MX_RDMA_NIC_PIN=auto
 export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"

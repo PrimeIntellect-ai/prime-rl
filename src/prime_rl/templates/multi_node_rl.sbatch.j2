@@ -163,6 +163,9 @@ export MX_COMPOSE_PROJECT=prime-rl-mx-${SLURM_JOB_ID}
 trap 'srun --overlap --nodes=1 --ntasks=1 --nodelist=$MASTER_ADDR \
     docker compose -f "$MX_COMPOSE_FILE" -p "$MX_COMPOSE_PROJECT" down --remove-orphans >/dev/null 2>&1 || true' EXIT INT TERM HUP
 echo "Starting Model Express server on $MASTER_ADDR"
+# Kill ALL stale prime-rl-mx containers from previous jobs.
+srun --overlap --nodes=1 --ntasks=1 --nodelist=$MASTER_ADDR \
+    bash -c 'docker ps -aq --filter "name=prime-rl-mx" | xargs -r docker rm -f >/dev/null 2>&1 || true'
 srun --overlap --nodes=1 --ntasks=1 --nodelist=$MASTER_ADDR \
     docker compose -f "$MX_COMPOSE_FILE" -p "$MX_COMPOSE_PROJECT" up -d --build --wait
 {% endif %}
