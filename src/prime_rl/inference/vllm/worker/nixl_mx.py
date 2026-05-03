@@ -90,13 +90,7 @@ class NIXLMxWeightUpdateWorker(Worker):
         landed — without this, the orchestrator would resume inference
         on partially-written buffers.
         """
-        from modelexpress import p2p_pb2
-
-        self._receiver.rendezvous.wait_for_peers(
-            status=p2p_pb2.SOURCE_STATUS_READY,
-            timeout=1200,
-            poll_interval=0.05,
-        )
+        self._receiver.rendezvous.wait_for_all_peers_ready(timeout=1200)
         torch.cuda.synchronize(self.device)
         update_mla_absorbed_weights(self._model)
         logger.info("Weight update applied (NIXL+MX)")
