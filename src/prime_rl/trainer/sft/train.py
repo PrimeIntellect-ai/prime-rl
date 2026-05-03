@@ -33,7 +33,13 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
-from prime_rl.trainer.tree import build_tree_block_mask, tree_nll_loss, tree_nll_weighted_token_count
+from prime_rl.trainer.tree import (
+    branch_group_nll_loss,
+    branch_group_weighted_token_count,
+    build_tree_block_mask,
+    tree_nll_loss,
+    tree_nll_weighted_token_count,
+)
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -213,10 +219,11 @@ def train(config: SFTConfig):
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
         tree_batch = "attn_mask" in micro_batch
+        branch_group_batch = "branch_loss_weights" in micro_batch
 
         if cp_enabled:
-            if tree_batch:
-                raise ValueError("Tree Training v1 does not support context parallelism")
+            if tree_batch or branch_group_batch:
+                raise ValueError("Tree Training v1 and grouped branch baselines do not support context parallelism")
             input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
@@ -230,9 +237,13 @@ def train(config: SFTConfig):
             prev_map = micro_batch["prev_map"].to("cuda")
             loss_weights = micro_batch["loss_weights"].to("cuda")
             token_count = tree_nll_weighted_token_count(prev_map, loss_mask, loss_weights).to(torch.float32)
+        elif branch_group_batch:
+            branch_loss_weights = micro_batch["branch_loss_weights"].to("cuda")
+            token_count = branch_group_weighted_token_count(loss_mask, branch_loss_weights).to(torch.float32)
         else:
             token_count = loss_mask.sum(dtype=torch.float32)
 
+        out = None
         with maybe_activation_offloading(config.model.ac_offloading):
             if tree_batch:
                 if config.model.attn == "flex_attention":
@@ -252,6 +263,24 @@ def train(config: SFTConfig):
                 assert loss_weights is not None
                 loss_sum = tree_nll_loss(logits, input_ids, prev_map, loss_mask, loss_weights)
                 del logits
+            elif branch_group_batch:
+                branch_loss_weights = micro_batch["branch_loss_weights"].to("cuda")
+                branch_lengths = micro_batch["branch_lengths"].to("cuda")
+                loss_sum = torch.zeros((), dtype=torch.float32, device="cuda")
+                for branch_idx, branch_len in enumerate(branch_lengths.tolist()):
+                    branch_out = forward(
+                        model,
+                        input_ids[branch_idx : branch_idx + 1, :branch_len],
+                        position_ids[branch_idx : branch_idx + 1, :branch_len],
+                    )
+                    logits = branch_out["logits"]
+                    loss_sum = loss_sum + branch_group_nll_loss(
+                        logits,
+                        target_ids[branch_idx : branch_idx + 1, :branch_len],
+                        loss_mask[branch_idx : branch_idx + 1, :branch_len],
+                        branch_loss_weights[branch_idx : branch_idx + 1],
+                    )
+                    del logits, branch_out
             elif config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
@@ -265,7 +294,8 @@ def train(config: SFTConfig):
                 loss_sum = token_loss[loss_mask].sum()
                 del logits
 
-        del out
+        if out is not None:
+            del out
         return loss_sum, token_count
 
     maybe_record_function = nullcontext

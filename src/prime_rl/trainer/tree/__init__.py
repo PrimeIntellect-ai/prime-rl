@@ -16,7 +16,12 @@ for the FlexAttention path.
 
 from prime_rl.trainer.tree.caterpillar import build_caterpillar
 from prime_rl.trainer.tree.flex_mask import build_tree_block_mask
-from prime_rl.trainer.tree.loss import tree_nll_loss, tree_nll_weighted_token_count
+from prime_rl.trainer.tree.loss import (
+    branch_group_nll_loss,
+    branch_group_weighted_token_count,
+    tree_nll_loss,
+    tree_nll_weighted_token_count,
+)
 from prime_rl.trainer.tree.pack import PackedTree, pack_tree
 from prime_rl.trainer.tree.tree import Tree, TreeNode
 
@@ -24,6 +29,8 @@ __all__ = [
     "PackedTree",
     "Tree",
     "TreeNode",
+    "branch_group_nll_loss",
+    "branch_group_weighted_token_count",
     "build_caterpillar",
     "build_tree_block_mask",
     "pack_tree",

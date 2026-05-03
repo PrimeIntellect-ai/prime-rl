@@ -1,7 +1,14 @@
 import torch
 import torch.nn.functional as F
 
-from prime_rl.trainer.tree import build_caterpillar, pack_tree, tree_nll_loss
+from prime_rl.trainer.tree import (
+    branch_group_nll_loss,
+    branch_group_weighted_token_count,
+    build_caterpillar,
+    pack_tree,
+    tree_nll_loss,
+    tree_nll_weighted_token_count,
+)
 from tests.unit.train.tree._tiny_model import TinyTransformer, causal_mask
 
 
@@ -83,3 +90,66 @@ def test_tree_training_matches_per_branch_baseline_fp64():
         diff = (tree_grads[name] - baseline_grad).abs().max().item()
         denom = max(baseline_grad.abs().max().item(), 1e-30)
         assert diff / denom < 1e-10, f"{name}: rel diff {diff / denom:.2e}"
+
+
+def test_grouped_branch_baseline_matches_tree_loss_and_denominator_fp64():
+    generator = torch.Generator().manual_seed(3)
+    tree = build_caterpillar(
+        turns=[
+            (_rand_ids(5, generator), _rand_ids(4, generator), _rand_ids(6, generator)),
+            (_rand_ids(3, generator), _rand_ids(8, generator), _rand_ids(5, generator)),
+            (_rand_ids(4, generator), _rand_ids(3, generator), _rand_ids(7, generator)),
+        ]
+    )
+    packed = pack_tree(tree, dtype=torch.float64)
+
+    branch_ids = []
+    branch_targets = []
+    branch_masks = []
+    for leaf_idx in tree.leaves():
+        path = tree.root_path(leaf_idx)
+        ids = _concat([tree.nodes[node_idx].token_ids for node_idx in path])
+        masks = _concat([tree.nodes[node_idx].loss_mask for node_idx in path])
+        branch_ids.append(ids[:-1])
+        branch_targets.append(ids[1:])
+        branch_masks.append(masks[1:])
+
+    max_len = max(len(ids) for ids in branch_ids)
+
+    def pad(items, value):
+        return [item + [value] * (max_len - len(item)) for item in items]
+
+    input_ids = torch.tensor(pad(branch_ids, 0), dtype=torch.long)
+    target_ids = torch.tensor(pad(branch_targets, 0), dtype=torch.long)
+    loss_mask = torch.tensor(pad(branch_masks, False), dtype=torch.bool)
+    position_ids = torch.arange(max_len, dtype=torch.long).unsqueeze(0).expand(len(branch_ids), -1)
+    branch_weights = torch.full((len(branch_ids),), 1 / packed.K, dtype=torch.float64)
+
+    torch.manual_seed(5)
+    model = TinyTransformer(vocab_size=128).double()
+    model.eval()
+
+    grouped_logits = model(input_ids, position_ids)
+    grouped_loss = branch_group_nll_loss(grouped_logits, target_ids, loss_mask, branch_weights)
+    grouped_count = branch_group_weighted_token_count(loss_mask, branch_weights)
+
+    tree_logits = model(
+        packed.input_ids.unsqueeze(0),
+        packed.position_ids.unsqueeze(0),
+        packed.attn_mask.unsqueeze(0).unsqueeze(0),
+    )
+    tree_loss = tree_nll_loss(
+        tree_logits,
+        packed.input_ids.unsqueeze(0),
+        packed.prev_map.unsqueeze(0),
+        packed.loss_mask.unsqueeze(0),
+        packed.loss_weights.unsqueeze(0),
+    )
+    tree_count = tree_nll_weighted_token_count(
+        packed.prev_map.unsqueeze(0),
+        packed.loss_mask.unsqueeze(0),
+        packed.loss_weights.unsqueeze(0),
+    )
+
+    torch.testing.assert_close(grouped_loss, tree_loss, rtol=0, atol=1e-12)
+    torch.testing.assert_close(grouped_count, tree_count, rtol=0, atol=1e-12)

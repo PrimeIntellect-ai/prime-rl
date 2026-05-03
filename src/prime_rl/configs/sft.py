@@ -180,6 +180,12 @@ class SFTRawToolCaterpillarPerBranchDataConfig(_SFTRawToolCaterpillarBaseConfig)
     type: Literal["sft_raw_tool_caterpillar_per_branch"] = "sft_raw_tool_caterpillar_per_branch"
 
 
+class SFTRawToolCaterpillarGroupedBranchesDataConfig(_SFTRawToolCaterpillarBaseConfig):
+    """Raw tool-trajectory per-tree grouped branch equivalence baseline."""
+
+    type: Literal["sft_raw_tool_caterpillar_grouped_branches"] = "sft_raw_tool_caterpillar_grouped_branches"
+
+
 class LossMaskConfig(BaseConfig):
     """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
 
@@ -252,6 +258,7 @@ DataConfig: TypeAlias = Annotated[
     | SFTCaterpillarPerBranchDataConfig
     | SFTRawToolCaterpillarDataConfig
     | SFTRawToolCaterpillarPerBranchDataConfig
+    | SFTRawToolCaterpillarGroupedBranchesDataConfig
     | SFTDataConfig,
     Field(discriminator="type"),
 ]
@@ -453,7 +460,12 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_tree_training_v1(self):
-        if self.data.type not in ("caterpillar_fake", "sft_caterpillar", "sft_raw_tool_caterpillar"):
+        if self.data.type not in (
+            "caterpillar_fake",
+            "sft_caterpillar",
+            "sft_raw_tool_caterpillar",
+            "sft_raw_tool_caterpillar_grouped_branches",
+        ):
             return self
 
         if self.model.cp != 1:

@@ -21,6 +21,7 @@ from prime_rl.configs.sft import (
     SFTCaterpillarPerBranchDataConfig,
     SFTDataConfig,
     SFTRawToolCaterpillarDataConfig,
+    SFTRawToolCaterpillarGroupedBranchesDataConfig,
     SFTRawToolCaterpillarPerBranchDataConfig,
 )
 from prime_rl.trainer.tree import Tree, TreeNode, build_caterpillar, pack_tree
@@ -57,6 +58,15 @@ class TreeSample(Sample):
     is_ancestor_node: list[list[bool]]
 
 
+class BranchGroupSample(TypedDict):
+    input_ids: list[list[int]]
+    position_ids: list[list[int]]
+    loss_mask: list[list[bool]]
+    target_ids: list[list[int]]
+    branch_loss_weights: list[float]
+    branch_lengths: list[int]
+
+
 class Batch(TypedDict):
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
@@ -65,6 +75,8 @@ class Batch(TypedDict):
     attn_mask: NotRequired[Bool[Tensor, "batch seq seq"]]
     prev_map: NotRequired[Int[Tensor, "batch seq"]]
     loss_weights: NotRequired[Tensor]
+    branch_loss_weights: NotRequired[Tensor]
+    branch_lengths: NotRequired[Int[Tensor, "branches"]]
     node_of_token: NotRequired[Int[Tensor, "batch seq"]]
     is_ancestor_node: NotRequired[Bool[Tensor, "batch nodes nodes"]]
 
@@ -534,7 +546,11 @@ class _SFTRawToolCaterpillarBase(StatefulIterableDataset):
 
     def __init__(
         self,
-        config: SFTRawToolCaterpillarDataConfig | SFTRawToolCaterpillarPerBranchDataConfig,
+        config: (
+            SFTRawToolCaterpillarDataConfig
+            | SFTRawToolCaterpillarPerBranchDataConfig
+            | SFTRawToolCaterpillarGroupedBranchesDataConfig
+        ),
         tokenizer: PreTrainedTokenizer,
     ):
         super().__init__()
@@ -681,6 +697,20 @@ class SFTRawToolCaterpillarDataset(_SFTRawToolCaterpillarBase):
             yield sample
 
 
+def _branch_sample_from_tree(tree: Tree, leaf_idx: int, seq_len: int) -> Sample | None:
+    path = tree.root_path(leaf_idx)
+    ids = [token for node_idx in path for token in tree.nodes[node_idx].token_ids]
+    masks = [mask for node_idx in path for mask in tree.nodes[node_idx].loss_mask]
+    if len(ids) < 2 or len(ids) - 1 > seq_len:
+        return None
+    return {
+        "input_ids": ids[:-1],
+        "target_ids": ids[1:],
+        "position_ids": list(range(len(ids) - 1)),
+        "loss_mask": masks[1:],
+    }
+
+
 class SFTRawToolCaterpillarPerBranchDataset(_SFTRawToolCaterpillarBase):
     """Per-branch baseline for raw tool-trajectory caterpillar trees."""
 
@@ -703,17 +733,7 @@ class SFTRawToolCaterpillarPerBranchDataset(_SFTRawToolCaterpillarBase):
         tree = self._build_tree(tree_idx)
         if tree is None:
             return None
-        path = tree.root_path(leaf_idx)
-        ids = [token for node_idx in path for token in tree.nodes[node_idx].token_ids]
-        masks = [mask for node_idx in path for mask in tree.nodes[node_idx].loss_mask]
-        if len(ids) < 2 or len(ids) - 1 > self.config.seq_len:
-            return None
-        return {
-            "input_ids": ids[:-1],
-            "target_ids": ids[1:],
-            "position_ids": list(range(len(ids) - 1)),
-            "loss_mask": masks[1:],
-        }
+        return _branch_sample_from_tree(tree, leaf_idx, self.config.seq_len)
 
     def __iter__(self):
         while True:
@@ -725,6 +745,51 @@ class SFTRawToolCaterpillarPerBranchDataset(_SFTRawToolCaterpillarBase):
                 continue
             self.num_samples["sft_raw_tool_caterpillar_per_branch"] += 1
             self.num_tokens["sft_raw_tool_caterpillar_per_branch"] += len(sample["input_ids"])
+            yield sample
+
+
+class SFTRawToolCaterpillarGroupedBranchesDataset(_SFTRawToolCaterpillarBase):
+    """Groups all root-to-leaf branches from one tree into one equivalence baseline sample."""
+
+    def __init__(self, config: SFTRawToolCaterpillarGroupedBranchesDataConfig, tokenizer: PreTrainedTokenizer):
+        super().__init__(config, tokenizer)
+
+    def _build_sample(self, draw_idx: int) -> BranchGroupSample | None:
+        tree = self._build_tree(draw_idx % self.num_examples)
+        if tree is None:
+            return None
+
+        branch_samples = []
+        for leaf_idx in tree.leaves():
+            sample = _branch_sample_from_tree(tree, leaf_idx, self.config.seq_len)
+            if sample is None:
+                return None
+            branch_samples.append(sample)
+        if not branch_samples:
+            return None
+
+        branch_weight = 1.0 / len(branch_samples)
+        return {
+            "input_ids": [sample["input_ids"] for sample in branch_samples],
+            "target_ids": [sample["target_ids"] for sample in branch_samples],
+            "position_ids": [sample["position_ids"] for sample in branch_samples],
+            "loss_mask": [sample["loss_mask"] for sample in branch_samples],
+            "branch_loss_weights": [branch_weight] * len(branch_samples),
+            "branch_lengths": [len(sample["input_ids"]) for sample in branch_samples],
+        }
+
+    def __iter__(self):
+        while True:
+            self.step += 1
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+            sample = self._build_sample(self.step - 1)
+            if sample is None:
+                continue
+            self.num_samples["sft_raw_tool_caterpillar_grouped_branches"] += 1
+            self.num_tokens["sft_raw_tool_caterpillar_grouped_branches"] += sum(
+                len(branch) for branch in sample["input_ids"]
+            )
             yield sample
 
 
@@ -1094,6 +1159,26 @@ def cat_collate(samples: list[Sample]) -> Batch:
     return batch
 
 
+def branch_group_collate(samples: list[BranchGroupSample]) -> Batch:
+    if len(samples) != 1:
+        raise ValueError("Grouped branch baseline expects one tree group per micro-batch")
+
+    sample = samples[0]
+    max_len = max(len(branch) for branch in sample["input_ids"])
+
+    def pad_rows(rows: list[list[int]] | list[list[bool]], pad_value: int | bool):
+        return [row + [pad_value] * (max_len - len(row)) for row in rows]
+
+    return {
+        "input_ids": torch.tensor(pad_rows(sample["input_ids"], 0), dtype=torch.long, device="cuda"),
+        "position_ids": torch.tensor(pad_rows(sample["position_ids"], 0), dtype=torch.long, device="cuda"),
+        "loss_mask": torch.tensor(pad_rows(sample["loss_mask"], False), dtype=torch.bool, device="cuda"),
+        "target_ids": torch.tensor(pad_rows(sample["target_ids"], 0), dtype=torch.long, device="cuda"),
+        "branch_loss_weights": torch.tensor(sample["branch_loss_weights"], dtype=torch.float32, device="cuda"),
+        "branch_lengths": torch.tensor(sample["branch_lengths"], dtype=torch.long, device="cuda"),
+    }
+
+
 def setup_and_interleave_datasets(
     dataset_name: str,
     subsets_and_splits: list[tuple[str | None, str]],
@@ -1186,6 +1271,8 @@ def setup_dataset(
         return SFTRawToolCaterpillarDataset(config, tokenizer)
     elif config.type == "sft_raw_tool_caterpillar_per_branch":
         return SFTRawToolCaterpillarPerBranchDataset(config, tokenizer)
+    elif config.type == "sft_raw_tool_caterpillar_grouped_branches":
+        return SFTRawToolCaterpillarGroupedBranchesDataset(config, tokenizer)
     elif config.type == "sft":
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
@@ -1213,6 +1300,8 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> St
         "sft_raw_tool_caterpillar_per_branch",
     ):
         return StatefulDataLoader(dataset, batch_size=1, collate_fn=cat_collate)
+    if config.type == "sft_raw_tool_caterpillar_grouped_branches":
+        return StatefulDataLoader(dataset, batch_size=1, collate_fn=branch_group_collate)
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, config.seq_len * config.micro_batch_size)
         return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)

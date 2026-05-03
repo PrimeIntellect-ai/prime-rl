@@ -24,6 +24,39 @@ def tree_nll_weighted_token_count(
     return _tree_nll_weights(prev_map, loss_mask, loss_weights).sum()
 
 
+def branch_group_nll_loss(
+    logits: torch.Tensor,
+    target_ids: torch.LongTensor,
+    loss_mask: torch.BoolTensor,
+    branch_loss_weights: torch.Tensor,
+) -> torch.Tensor:
+    if logits.ndim != 3:
+        raise ValueError(f"logits must have shape [branches, seq, vocab], got {tuple(logits.shape)}")
+    if target_ids.shape != loss_mask.shape or target_ids.shape != logits.shape[:2]:
+        raise ValueError("target_ids and loss_mask must match logits' [branches, seq] shape")
+    if branch_loss_weights.shape != (logits.shape[0],):
+        raise ValueError("branch_loss_weights must have shape [branches]")
+
+    token_loss = F.cross_entropy(
+        logits.flatten(0, 1),
+        target_ids.flatten(0, 1),
+        reduction="none",
+    ).view_as(target_ids)
+    weights = branch_loss_weights.to(token_loss.dtype).unsqueeze(1) * loss_mask.to(token_loss.dtype)
+    return (token_loss * weights).sum()
+
+
+def branch_group_weighted_token_count(
+    loss_mask: torch.BoolTensor,
+    branch_loss_weights: torch.Tensor,
+) -> torch.Tensor:
+    if loss_mask.ndim != 2:
+        raise ValueError(f"loss_mask must have shape [branches, seq], got {tuple(loss_mask.shape)}")
+    if branch_loss_weights.shape != (loss_mask.shape[0],):
+        raise ValueError("branch_loss_weights must have shape [branches]")
+    return (loss_mask.to(branch_loss_weights.dtype) * branch_loss_weights.unsqueeze(1)).sum()
+
+
 def tree_nll_loss(
     logits: torch.Tensor,
     input_ids: torch.LongTensor,
