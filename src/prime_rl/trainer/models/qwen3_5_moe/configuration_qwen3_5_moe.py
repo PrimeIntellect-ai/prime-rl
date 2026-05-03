@@ -48,6 +48,10 @@ class Qwen3_5MoeConfig(PretrainedConfig):
         router_aux_loss_coef=0.001,
         # Layer type configuration
         layer_types=None,
+        mtp_num_hidden_layers=None,
+        num_nextn_predict_layers=None,
+        prime_mtp_enabled=False,
+        prime_mtp_loss_scale=0.2,
         # PrimeRL additions
         load_balance_coeff=None,
         use_grouped_mm=True,
@@ -82,6 +86,13 @@ class Qwen3_5MoeConfig(PretrainedConfig):
                 "linear_attention" if bool((i + 1) % interval_pattern) else "full_attention"
                 for i in range(self.num_hidden_layers)
             ]
+
+        if mtp_num_hidden_layers is None:
+            mtp_num_hidden_layers = num_nextn_predict_layers or 0
+        self.mtp_num_hidden_layers = mtp_num_hidden_layers
+        self.num_nextn_predict_layers = mtp_num_hidden_layers
+        self.prime_mtp_enabled = prime_mtp_enabled
+        self.prime_mtp_loss_scale = prime_mtp_loss_scale
 
         # Linear attention (GatedDeltaNet) params
         self.linear_conv_kernel_dim = linear_conv_kernel_dim

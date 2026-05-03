@@ -472,6 +472,13 @@ def get_model(
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
 
+    mtp_target_config = getattr(model_config, "text_config", model_config)
+    mtp_enabled = config.mtp is not None and config.mtp.enabled
+    mtp_target_config.prime_mtp_enabled = mtp_enabled
+    mtp_target_config.prime_mtp_loss_scale = config.mtp.loss_scale if config.mtp is not None else 0.2
+    if mtp_enabled and getattr(mtp_target_config, "model_type", None) != "qwen3_5_moe_text":
+        raise ValueError("MTP training is currently only supported for Qwen3.5 MoE custom models.")
+
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
     if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
@@ -1020,6 +1027,8 @@ def setup_model(
 
     # 1. We load to meta device by default
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    if config.mtp is not None and config.mtp.enabled and len(getattr(model, "mtp_layers", [])) == 0:
+        raise ValueError("MTP was enabled, but the selected Qwen checkpoint config does not define MTP layers.")
     configure_moe_ep_backend(model, config)
 
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
@@ -1120,6 +1129,7 @@ def forward(
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
+    loss_mask: Tensor | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     # Multimodal fields (Qwen3-VL)
@@ -1133,6 +1143,8 @@ def forward(
         "labels": labels,
         "temperature": temperature,
     }
+    if loss_mask is not None:
+        kwargs["loss_mask"] = loss_mask
 
     # For multimodal (VLM), don't pass position_ids - let the model compute MRoPE internally
     # using image_grid_thw. Qwen3-VL only computes proper MRoPE when position_ids is None.

@@ -19,6 +19,9 @@ class PrimeLmOutput(TypedDict, total=False):
     logprobs: Tensor | None
     entropy: Tensor | None
     loss: Tensor | None
+    mtp_loss: Tensor | None
+    mtp_loss_per_depth: tuple[Tensor, ...] | None
+    mtp_token_count: Tensor | None
 
 
 def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
@@ -27,12 +30,19 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
     def _float_and_contiguous(tensor: Tensor | None) -> Tensor | None:
         return tensor.float().contiguous() if tensor is not None else None
 
-    return PrimeLmOutput(
+    cast_output = PrimeLmOutput(
         logits=_float_and_contiguous(output.get("logits")),
         logprobs=_float_and_contiguous(output.get("logprobs")),
         entropy=_float_and_contiguous(output.get("entropy")),
         loss=output.get("loss"),
     )
+    if "mtp_loss" in output:
+        cast_output["mtp_loss"] = output.get("mtp_loss")
+    if "mtp_loss_per_depth" in output:
+        cast_output["mtp_loss_per_depth"] = output.get("mtp_loss_per_depth")
+    if "mtp_token_count" in output:
+        cast_output["mtp_token_count"] = output.get("mtp_token_count")
+    return cast_output
 
 
 class FusedOutputLinear(torch.nn.Linear):
@@ -350,6 +360,7 @@ def _patch_model_forward(model: nn.Module) -> None:
         position_ids: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
+        loss_mask: torch.Tensor | None = None,
         logits_to_keep: int = 0,
         temperature: torch.Tensor | None = None,
         **kwargs: object,
@@ -373,11 +384,19 @@ def _patch_model_forward(model: nn.Module) -> None:
         )
 
         # Pass through the wrapped lm_head
-        return self.lm_head(
+        out = self.lm_head(
             hidden_states[:, slice_indices, :],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature[:, slice_indices] if temperature is not None else None,
         )
+        text_config = getattr(self, "_text_config", getattr(self, "config", None))
+        if getattr(text_config, "prime_mtp_enabled", False):
+            if input_ids is None or labels is None or loss_mask is None:
+                raise ValueError("MTP training requires input_ids, labels, and loss_mask.")
+            if logits_to_keep != 0:
+                raise ValueError("MTP training requires logits_to_keep=0.")
+            out.update(self._compute_mtp_loss(hidden_states, input_ids, labels, loss_mask, position_ids))
+        return out
 
     # Bind the new forward to the model
     model.forward = types.MethodType(new_forward, model)

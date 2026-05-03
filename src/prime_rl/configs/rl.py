@@ -420,6 +420,9 @@ class RLConfig(BaseConfig):
         if self.trainer.model.impl != "custom":
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires trainer.model.impl = 'custom'.")
 
+        if self.trainer.model.mtp is not None and self.trainer.model.mtp.enabled:
+            raise ValueError("MTP with quantize_in_weight_transfer is not supported yet; use non-quantized NCCL.")
+
         return self
 
     @model_validator(mode="after")
@@ -679,6 +682,23 @@ class RLConfig(BaseConfig):
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_mtp_rollout(self):
+        mtp = self.trainer.model.mtp
+        if mtp is None or not mtp.enable_rollout:
+            return self
+        if self.inference is None:
+            raise ValueError("model.mtp.enable_rollout requires an inference config.")
+        if self.trainer.model.impl not in ("custom", "auto"):
+            raise ValueError("model.mtp.enable_rollout requires trainer.model.impl='custom' or 'auto'.")
+        speculative_config = {
+            "method": "mtp",
+            "num_speculative_tokens": mtp.num_speculative_tokens or 1,
+        }
+        if self.inference.model.speculative_config is None:
+            self.inference.model.speculative_config = speculative_config
         return self
 
     @model_validator(mode="after")

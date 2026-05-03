@@ -452,7 +452,7 @@ class TokenChoiceTopKRouter(nn.Module):
 
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
         num_tokens_per_expert = torch.histc(
-            selected_experts_indices.reshape(-1),
+            selected_experts_indices.reshape(-1).float(),
             bins=self.num_experts,
             min=0,
             max=self.num_experts,
@@ -504,11 +504,11 @@ class TokenReorderer(nn.Module):
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
         selected_experts_indices = selected_experts_indices.reshape(-1)
         num_tokens_per_expert = torch.histc(
-            selected_experts_indices,
+            selected_experts_indices.float(),
             bins=self.num_experts,
             min=0,
             max=self.num_experts,
-        )
+        ).to(torch.int64)
 
         # Reorder the token indices to match the order of the experts
         # token_indices_experts_sorted shape (bs*slen*top_k,)

@@ -205,8 +205,8 @@ def train(config: SFTConfig):
         case _:
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
-    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward pass returning loss sums and token counts over unmasked tokens."""
         input_ids = micro_batch["input_ids"].to("cuda")
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
@@ -226,18 +226,26 @@ def train(config: SFTConfig):
             if config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
+                out = forward(model, input_ids, position_ids, labels=masked_target_ids, loss_mask=loss_mask)
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids)
+                out = forward(model, input_ids, position_ids, labels=target_ids, loss_mask=loss_mask)
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
                 loss_sum = token_loss[loss_mask].sum()
                 del logits
 
+            mtp_loss_sum = torch.tensor(0.0, device=loss_sum.device)
+            mtp_token_count = torch.tensor(0, dtype=torch.int64, device=loss_sum.device)
+            if out.get("mtp_loss") is not None:
+                mtp_loss_sum = out["mtp_loss"] * token_count
+                if out.get("mtp_token_count") is not None:
+                    mtp_token_count = out["mtp_token_count"]
+                loss_sum = loss_sum + mtp_loss_sum
+
         del out
-        return loss_sum, token_count
+        return loss_sum, token_count, mtp_loss_sum, mtp_token_count
 
     maybe_record_function = nullcontext
 
@@ -249,7 +257,7 @@ def train(config: SFTConfig):
 
         with torch.no_grad():
             for micro_batch in data_iter:
-                loss_sum, token_count = compute_loss(micro_batch)
+                loss_sum, token_count, _, _ = compute_loss(micro_batch)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
                     total_token_count += token_count
@@ -334,6 +342,8 @@ def train(config: SFTConfig):
         forward_backward_start_time = time.perf_counter()
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
+        step_mtp_loss_sum = torch.tensor(0.0, device="cuda")
+        step_mtp_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
         batch_max_vio = torch.tensor(0.0, device="cuda")
@@ -346,9 +356,10 @@ def train(config: SFTConfig):
                 )
 
             with maybe_record_function("forward"):
-                local_loss_sum, local_token_count = compute_loss(micro_batch)
+                local_loss_sum, local_token_count, local_mtp_loss_sum, local_mtp_token_count = compute_loss(micro_batch)
 
             step_local_token_count += local_token_count
+            step_mtp_token_count += local_mtp_token_count
 
             if torch.isnan(local_loss_sum.detach()):
                 nan_loss_count += 1
@@ -356,6 +367,7 @@ def train(config: SFTConfig):
                 scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0) / grad_accum_steps
             else:
                 step_loss_sum += local_loss_sum.detach()
+                step_mtp_loss_sum += local_mtp_loss_sum.detach()
                 scaled_loss = local_loss_sum / grad_accum_steps
 
             with maybe_record_function("backward"):
@@ -393,6 +405,8 @@ def train(config: SFTConfig):
 
         # Compute the global mean loss for logging.
         dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        dist.all_reduce(step_mtp_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        dist.all_reduce(step_mtp_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
         if global_token_count_val > 0:
             batch_loss = (step_loss_sum / global_token_count_val).item()
@@ -491,6 +505,9 @@ def train(config: SFTConfig):
             "loss/nan_count": nan_loss_count,
             "step": progress.step,
         }
+        if step_mtp_token_count.item() > 0:
+            loss_log_metrics["loss/mtp"] = (step_mtp_loss_sum / global_step_token_count.clamp_min(1)).item()
+            loss_log_metrics["loss/mtp_token_count"] = step_mtp_token_count.item()
         # Log tensor stats
         monitor.log(loss_log_metrics, step=progress.step)
 

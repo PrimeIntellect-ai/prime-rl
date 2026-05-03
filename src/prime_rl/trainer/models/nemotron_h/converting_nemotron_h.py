@@ -14,7 +14,7 @@ Global renames:
   - HF: backbone.embeddings.weight <-> PrimeRL: model.embed_tokens.weight
   - HF: backbone.norm_f.weight <-> PrimeRL: model.norm.weight
   - HF uses "backbone." prefix, PrimeRL uses "model." prefix
-  - HF mtp.* keys (multi-token prediction) are dropped during conversion
+  - HF mtp.* keys (multi-token prediction) are intentionally dropped; Nemotron MTP is deferred
 """
 
 import torch
@@ -147,7 +147,8 @@ def convert_hf_to_prime(state_dict: dict[str, Tensor], layers_block_type: list[s
     # Handle backbone.* -> model.* prefix (HF NemotronH uses "backbone" instead of "model")
     _rename_keys(state_dict, "backbone.", "model.")
 
-    # Drop multi-token prediction keys (not used in training)
+    # Nemotron checkpoints can include MTP weights, but Nemotron MTP support is
+    # intentionally deferred. Keep dropping them until the architecture is implemented.
     for key in [k for k in state_dict if k.startswith("mtp.")]:
         del state_dict[key]
 

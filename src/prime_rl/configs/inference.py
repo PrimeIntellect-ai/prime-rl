@@ -101,6 +101,13 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = None
 
+    speculative_config: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description="vLLM speculative decoding configuration. Example: {method='mtp', num_speculative_tokens=1}."
+        ),
+    ] = None
+
 
 class WeightBroadcastConfig(BaseConfig):
     """Configures weight broadcast settings."""
@@ -509,6 +516,7 @@ class InferenceConfig(BaseConfig):
             "model.tool_call_parser": "tool_call_parser",
             "model.reasoning_parser": "reasoning_parser",
             "model.rope_scaling": "rope_scaling",
+            "model.speculative_config": "speculative_config",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "data_parallel_size_local": "data_parallel_size_local",
@@ -552,5 +560,8 @@ class InferenceConfig(BaseConfig):
         if hasattr(namespace, "rope_scaling"):
             if namespace.rope_scaling is None:
                 delattr(namespace, "rope_scaling")
+
+        if hasattr(namespace, "speculative_config") and namespace.speculative_config is None:
+            delattr(namespace, "speculative_config")
 
         return namespace
