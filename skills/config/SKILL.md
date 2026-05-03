@@ -172,6 +172,38 @@ In TOML, an empty section header does the same:
 [ckpt]  # enables checkpointing with defaults
 ```
 
+### Long-thinking RL on one trainer GPU
+
+For long reasoning runs, especially Qwen/Qwen3.5 with 8k completions, avoid the trainer's vanilla full-logit path. Set the chunked LM head on the trainer model:
+
+```toml
+[trainer.model]
+fused_lm_head_token_chunk_size = 8192
+```
+
+Without this, the trainer may materialize `[batch, seq, vocab]` logits and OOM when scaling logits by per-token temperatures.
+
+When serving long-thinking Qwen/Qwen3.5 on a single inference GPU, also cap vLLM pressure explicitly:
+
+```toml
+[orchestrator]
+max_inflight_rollouts = 64
+
+[inference]
+gpu_memory_utilization = 0.8
+
+[inference.model]
+enforce_eager = true
+
+[inference.vllm_extra]
+language_model_only = true
+max_num_seqs = 64
+```
+
+The exact values are experiment-dependent, but leaving these unconstrained can fail during vLLM startup or during the first eval/rollout fanout.
+
+For non-thinking sanity configs, keep the active config close to the proven sanity shape unless the run actually hits a resource limit: do not set `orchestrator.max_inflight_rollouts`, avoid lowering completion length, and disable eval blocks entirely when the goal is to prove training-loop viability.
+
 ## Key files
 
 - `src/prime_rl/utils/config.py` — re-exports `BaseConfig` and `cli` from pydantic_config
