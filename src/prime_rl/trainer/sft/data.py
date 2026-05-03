@@ -496,6 +496,15 @@ def _normalize_raw_tool_messages(prompt: list[dict], completion: list[dict]) -> 
     return strip_message_content(normalized)
 
 
+def _raw_tool_final_token_estimate(example: dict) -> float:
+    token_usage = example.get("token_usage") or {}
+    final_input = token_usage.get("final_input_tokens") or example.get("rlm_final_input_tokens") or 0
+    final_output = token_usage.get("final_output_tokens") or example.get("rlm_final_output_tokens") or 0
+    if final_input <= 0 or final_output <= 0:
+        return float("inf")
+    return float(final_input + final_output)
+
+
 def _tool_argument_text(value) -> str:
     if isinstance(value, dict | list):
         return json.dumps(value, ensure_ascii=False)
@@ -522,6 +531,49 @@ def _assistant_visible_text(message: dict) -> str:
     return ((content + "\n") if content else "") + "<|im_end|>\n"
 
 
+def _raw_tool_selection_metrics_batch(batch: dict, indices: list[int]) -> dict:
+    result = {
+        "row_idx": [],
+        "final_token_estimate": [],
+        "num_turns": [],
+        "assistant_turns": [],
+        "reasoning_turns": [],
+        "branching_score": [],
+        "cheap_ok": [],
+    }
+    batch_size = len(indices)
+    for batch_idx, row_idx in enumerate(indices):
+        prompt = batch.get("prompt", [None] * batch_size)[batch_idx]
+        completion = batch.get("completion", [None] * batch_size)[batch_idx]
+        num_turns = float(batch.get("num_turns", [0] * batch_size)[batch_idx] or 0)
+        example = {
+            "token_usage": batch.get("token_usage", [None] * batch_size)[batch_idx],
+            "rlm_final_input_tokens": batch.get("rlm_final_input_tokens", [0] * batch_size)[batch_idx],
+            "rlm_final_output_tokens": batch.get("rlm_final_output_tokens", [0] * batch_size)[batch_idx],
+        }
+
+        assistant_turns = 0
+        reasoning_turns = 0
+        ok = isinstance(prompt, list) and isinstance(completion, list)
+        if ok:
+            messages = _normalize_raw_tool_messages(prompt, completion)
+            for message in messages:
+                if message.get("role") != "assistant":
+                    continue
+                assistant_turns += 1
+                if (message.get("reasoning_content") or "").strip():
+                    reasoning_turns += 1
+
+        result["row_idx"].append(int(row_idx))
+        result["final_token_estimate"].append(_raw_tool_final_token_estimate(example))
+        result["num_turns"].append(num_turns)
+        result["assistant_turns"].append(assistant_turns)
+        result["reasoning_turns"].append(reasoning_turns)
+        result["branching_score"].append(float((reasoning_turns + 1) * max(num_turns, assistant_turns)))
+        result["cheap_ok"].append(ok)
+    return result
+
+
 def _nonassistant_text(message: dict, previous_message: dict | None, next_message: dict | None) -> str:
     role = message["role"]
     if role in ("system", "user"):
@@ -541,6 +593,12 @@ def _raw_tool_tree_path_len(tree: Tree, leaf_idx: int) -> int:
     return sum(len(tree.nodes[node_idx].token_ids) for node_idx in tree.root_path(leaf_idx))
 
 
+def _raw_tool_tree_fits_limits(tree: Tree, max_path_tokens: int, max_packed_tokens: int) -> bool:
+    packed_len = sum(len(node.token_ids) for node in tree.nodes)
+    max_path_len = max(_raw_tool_tree_path_len(tree, leaf_idx) for leaf_idx in tree.leaves())
+    return packed_len <= max_packed_tokens and max_path_len <= max_path_tokens
+
+
 class _SFTRawToolCaterpillarBase(StatefulIterableDataset):
     """Common loader for raw tool trajectories with reasoning_content side branches."""
 
@@ -557,20 +615,26 @@ class _SFTRawToolCaterpillarBase(StatefulIterableDataset):
         self.config = config
         self.tokenizer = tokenizer
         self.logger = get_logger()
+        self.max_packed_tokens = config.max_packed_tokens or config.seq_len
         ds = load_dataset(config.name, config.subset, split=config.split)
         dataset = cast(Dataset, ds)
 
-        indices = list(range(len(dataset)))
-        if config.filter_by_final_token_estimate:
-            indices = [idx for idx in indices if self._final_token_estimate(cast(dict, dataset[idx])) <= config.seq_len]
-        if config.sort_by_num_turns:
-            indices.sort(
-                key=lambda idx: (
-                    cast(float | int | None, dataset[idx].get("num_turns")) or 0,
-                    cast(int | None, dataset[idx].get("example_id")) or idx,
-                ),
-                reverse=True,
-            )
+        if config.selection_metric == "branching_score":
+            indices = self._select_indices_by_branching_score(dataset)
+        else:
+            indices = list(range(len(dataset)))
+            if config.filter_by_final_token_estimate:
+                indices = [
+                    idx for idx in indices if self._final_token_estimate(cast(dict, dataset[idx])) <= config.seq_len
+                ]
+            if config.sort_by_num_turns:
+                indices.sort(
+                    key=lambda idx: (
+                        cast(float | int | None, dataset[idx].get("num_turns")) or 0,
+                        cast(int | None, dataset[idx].get("example_id")) or idx,
+                    ),
+                    reverse=True,
+                )
         if config.max_examples is not None:
             indices = indices[: config.max_examples]
         if not indices:
@@ -581,12 +645,32 @@ class _SFTRawToolCaterpillarBase(StatefulIterableDataset):
         self._tree_cache: dict[int, Tree | None] = {}
 
     def _final_token_estimate(self, example: dict) -> float:
-        token_usage = example.get("token_usage") or {}
-        final_input = token_usage.get("final_input_tokens") or example.get("rlm_final_input_tokens") or 0
-        final_output = token_usage.get("final_output_tokens") or example.get("rlm_final_output_tokens") or 0
-        if final_input <= 0 or final_output <= 0:
-            return float("inf")
-        return float(final_input + final_output)
+        return _raw_tool_final_token_estimate(example)
+
+    def _select_indices_by_branching_score(self, dataset: Dataset) -> list[int]:
+        map_kwargs = {}
+        if self.config.selection_num_proc is not None:
+            map_kwargs["num_proc"] = self.config.selection_num_proc
+        metrics = dataset.map(
+            _raw_tool_selection_metrics_batch,
+            batched=True,
+            with_indices=True,
+            batch_size=2000,
+            remove_columns=dataset.column_names,
+            desc="Computing raw tool branching scores",
+            **map_kwargs,
+        )
+        if self.config.filter_by_final_token_estimate:
+            metrics = metrics.filter(
+                lambda example: example["final_token_estimate"] <= self.config.seq_len,
+                desc="Filtering raw tool examples by final token estimate",
+            )
+        metrics = metrics.filter(
+            lambda example: example["cheap_ok"] and example["assistant_turns"] > 0 and example["reasoning_turns"] > 0,
+            desc="Filtering raw tool examples by branching metadata",
+        )
+        metrics = metrics.sort("branching_score", reverse=True)
+        return [int(row_idx) for row_idx in metrics["row_idx"]]
 
     def _build_tree(self, example_idx: int) -> Tree | None:
         if example_idx in self._tree_cache:
@@ -650,9 +734,7 @@ class _SFTRawToolCaterpillarBase(StatefulIterableDataset):
             self._tree_cache[example_idx] = None
             return None
         tree = Tree(nodes)
-        packed_len = sum(len(node.token_ids) for node in tree.nodes)
-        max_path_len = max(_raw_tool_tree_path_len(tree, leaf_idx) for leaf_idx in tree.leaves())
-        if packed_len > self.config.seq_len or max_path_len > self.config.seq_len:
+        if not _raw_tool_tree_fits_limits(tree, self.config.seq_len, self.max_packed_tokens):
             self._tree_cache[example_idx] = None
             return None
 

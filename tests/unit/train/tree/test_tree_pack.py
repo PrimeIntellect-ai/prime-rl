@@ -1,8 +1,9 @@
 import pytest
 import torch
 
-from prime_rl.configs.sft import CaterpillarFakeDataConfig, SFTConfig
+from prime_rl.configs.sft import CaterpillarFakeDataConfig, SFTConfig, SFTRawToolCaterpillarDataConfig
 from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.sft.data import _raw_tool_selection_metrics_batch, _raw_tool_tree_fits_limits
 from prime_rl.trainer.tree import (
     Tree,
     TreeNode,
@@ -162,6 +163,43 @@ def test_tree_nll_token_count_uses_weighted_denominator():
     assert unweighted_count.item() == 6
     torch.testing.assert_close(weighted_count, torch.tensor(8.0 / 3.0))
     assert weighted_count.item() != unweighted_count.item()
+
+
+def test_raw_tool_tree_limit_allows_packed_tree_larger_than_path_limit():
+    tree = Tree(
+        [
+            TreeNode(parent=-1, token_ids=[1, 2], loss_mask=[False, False]),
+            TreeNode(parent=0, token_ids=[3, 4], loss_mask=[True, True]),
+            TreeNode(parent=0, token_ids=[5, 6], loss_mask=[True, True]),
+        ]
+    )
+
+    assert _raw_tool_tree_fits_limits(tree, max_path_tokens=4, max_packed_tokens=6)
+    assert not _raw_tool_tree_fits_limits(tree, max_path_tokens=4, max_packed_tokens=4)
+    assert not _raw_tool_tree_fits_limits(tree, max_path_tokens=3, max_packed_tokens=6)
+
+
+def test_raw_tool_config_rejects_packed_limit_below_path_limit():
+    with pytest.raises(ValueError, match="max_packed_tokens"):
+        SFTRawToolCaterpillarDataConfig(seq_len=8, max_packed_tokens=7)
+
+
+def test_raw_tool_branching_score_counts_reasoning_turns():
+    batch = {
+        "prompt": [[{"role": "user", "content": "question"}]],
+        "completion": [[{"role": "assistant", "content": "answer", "reasoning_content": "scratchpad"}]],
+        "num_turns": [3],
+        "token_usage": [{"final_input_tokens": 10, "final_output_tokens": 5}],
+    }
+
+    metrics = _raw_tool_selection_metrics_batch(batch, [123])
+
+    assert metrics["row_idx"] == [123]
+    assert metrics["assistant_turns"] == [1]
+    assert metrics["reasoning_turns"] == [1]
+    assert metrics["final_token_estimate"] == [15.0]
+    assert metrics["branching_score"] == [6.0]
+    assert metrics["cheap_ok"] == [True]
 
 
 @pytest.mark.parametrize(

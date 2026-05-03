@@ -161,12 +161,21 @@ class _SFTRawToolCaterpillarBaseConfig(BaseDataConfig):
     subset: Annotated[str | None, Field(description="HF subset (config) name.")] = "rlm_science"
     split: Annotated[str, Field(description="HF split name.")] = "train"
     sort_by_num_turns: bool = True
+    selection_metric: Literal["num_turns", "branching_score"] = "num_turns"
+    selection_num_proc: Annotated[int | None, Field(ge=1)] = None
     max_examples: Annotated[int | None, Field(ge=1)] = None
+    max_packed_tokens: Annotated[int | None, Field(ge=1)] = None
     filter_by_final_token_estimate: bool = True
     seed: int = 0
     train_response: bool = True
     train_reasoning: bool = True
     include_attn_mask: bool = True
+
+    @model_validator(mode="after")
+    def validate_raw_tool_tree_limits(self):
+        if self.max_packed_tokens is not None and self.max_packed_tokens < self.seq_len:
+            raise ValueError("max_packed_tokens must be greater than or equal to seq_len")
+        return self
 
 
 class SFTRawToolCaterpillarDataConfig(_SFTRawToolCaterpillarBaseConfig):
