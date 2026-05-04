@@ -17,9 +17,13 @@ dependencies = [
     "tomli-w>=1.2.0",
     "numpy>=2.2.6",
     "torch>=2.9.0",
+    # Declared explicitly so [tool.uv.sources] routes to pytorch-cu128 - vllm 0.20.1
+    # pins them in requires_dist; without this they install cu13 wheels and clash with cu128 torch.
+    "torchvision",
+    "torchaudio",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.19.0",
+    "vllm>=0.20.1",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.73",
@@ -143,6 +147,8 @@ aime2024 = false
 aime2025 = false
 deepdive = false
 mini_swe_agent_plus = false
+# vLLM 0.20.1 (released 2026-05-03) - within exclude-newer window but needed
+vllm = false
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime = false
 prime-sandboxes = false
@@ -159,6 +165,8 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "350c1604e8a944cc9c84d0bae72fecba1fd62f1c" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
