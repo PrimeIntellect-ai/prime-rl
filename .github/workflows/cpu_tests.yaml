@@ -38,3 +38,55 @@ jobs:
         run: PYTEST_OUTPUT_DIR=/tmp/outputs uv run pytest tests/unit -m "not gpu"
       - name: Cleanup output_dir
         run: rm -rf /tmp/outputs
+
+  slim-configs-install:
+    name: Slim install (prime-rl-configs only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install prime-rl-configs in a fresh venv (no extras)
+        run: |
+          uv venv --python 3.12 /tmp/slim
+          uv pip install --python /tmp/slim/bin/python ./packages/prime-rl-configs
+      - name: Verify configs import without heavy deps
+        run: |
+          /tmp/slim/bin/python - <<'PY'
+          import sys
+
+          from prime_rl.configs.rl import RLConfig
+          from prime_rl.configs.sft import SFTConfig
+          from prime_rl.configs.inference import InferenceConfig
+          from prime_rl.configs.orchestrator import OrchestratorConfig
+          from prime_rl.configs.trainer import TrainerConfig
+          from prime_rl.configs.env_server import EnvServerConfig
+          from prime_rl.utils.config import BaseConfig, find_package_resource, rgetattr, rsetattr
+          from prime_rl.utils.logger import get_logger
+          from prime_rl.utils.validation import validate_shared_ckpt_config
+
+          forbidden = ["torch", "transformers", "vllm", "wandb", "ring_flash_attn",
+                       "verifiers", "prime", "datasets", "liger_kernel"]
+          leaked = [m for m in forbidden if m in sys.modules]
+          if leaked:
+              raise SystemExit(f"slim install leaked heavy deps into sys.modules: {leaked}")
+
+          # Slim wheel does not ship the templates/ data dir; resolver returns None.
+          assert find_package_resource("templates") is None, "templates should not be in slim wheel"
+          print("slim install OK — configs import with no heavy deps loaded")
+          PY
+      - name: Verify a real config (with [slurm]) parses on slim install
+        run: |
+          /tmp/slim/bin/python - <<'PY'
+          from pydantic_config import cli
+          from prime_rl.configs.rl import RLConfig
+          rl = cli(RLConfig, args=["@", "examples/Intellect-3.1/rl.toml"])
+          assert rl.slurm is not None, "expected [slurm] in example config"
+          # On slim, template_path can't be auto-resolved (heavy wheel absent) — must stay None.
+          assert rl.slurm.template_path is None, f"unexpected template_path on slim: {rl.slurm.template_path}"
+          print("slim parse OK")
+          PY
