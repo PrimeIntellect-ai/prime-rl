@@ -15,6 +15,7 @@ _INSTALL_LOCK = threading.Lock()
 _OUTPUT_PATCHED = False
 _SCHEDULER_PATCHED = False
 _WRITE_LOCK = threading.Lock()
+_ACTIVE_STATE_DUMPED: set[str] = set()
 
 
 def install_vllm_nan_trace() -> None:
@@ -43,6 +44,18 @@ def _trace_token_id() -> int | None:
 
 def _scheduler_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_SCHEDULER", "1") != "0"
+
+
+def _active_state_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_ACTIVE_STATES", "1") != "0"
+
+
+def _active_output_token_limit() -> int:
+    value = os.environ.get("PRIME_RL_VLLM_NAN_TRACE_ACTIVE_OUTPUT_TOKENS", "4096")
+    try:
+        return int(value)
+    except ValueError:
+        return 4096
 
 
 def _patch_output_processor() -> None:
@@ -130,31 +143,78 @@ def _trace_engine_core_outputs(output_processor: Any, engine_core_outputs: list[
         if not (has_nans_in_logits or logprob_summary["events"] or generated_watch_positions):
             continue
 
+        event = {
+            "schema": "prime_rl.vllm_output_nan_trace.v1",
+            "created_unix": time.time(),
+            "engine_core_timestamp": timestamp,
+            "pid": os.getpid(),
+            "internal_request_id": output.request_id,
+            "external_request_id": req_state.external_req_id,
+            "prompt_len": req_state.prompt_len,
+            "max_tokens": req_state.max_tokens_param,
+            "temperature": req_state.temperature,
+            "top_p": req_state.top_p,
+            "n": req_state.n,
+            "num_cached_tokens": output.num_cached_tokens,
+            "num_external_computed_tokens": getattr(output, "num_external_computed_tokens", None),
+            "num_nans_in_logits": getattr(output, "num_nans_in_logits", None),
+            "output_len_before": output_len_before,
+            "output_token_ids_before": _token_ids_snapshot(
+                _request_state_output_token_ids(req_state),
+                limit=_active_output_token_limit(),
+            ),
+            "new_token_ids": list(output.new_token_ids or []),
+            "generated_watch_token_positions": generated_watch_positions,
+            "finish_reason": _json_safe(getattr(output, "finish_reason", None)),
+            "stop_reason": _json_safe(getattr(output, "stop_reason", None)),
+            "logprobs": logprob_summary,
+        }
+
         _write_jsonl(
             "output_events",
-            {
-                "schema": "prime_rl.vllm_output_nan_trace.v1",
-                "created_unix": time.time(),
-                "engine_core_timestamp": timestamp,
-                "pid": os.getpid(),
-                "internal_request_id": output.request_id,
-                "external_request_id": req_state.external_req_id,
-                "prompt_len": req_state.prompt_len,
-                "max_tokens": req_state.max_tokens_param,
-                "temperature": req_state.temperature,
-                "top_p": req_state.top_p,
-                "n": req_state.n,
-                "num_cached_tokens": output.num_cached_tokens,
-                "num_external_computed_tokens": getattr(output, "num_external_computed_tokens", None),
-                "num_nans_in_logits": getattr(output, "num_nans_in_logits", None),
-                "output_len_before": output_len_before,
-                "new_token_ids": list(output.new_token_ids or []),
-                "generated_watch_token_positions": generated_watch_positions,
-                "finish_reason": _json_safe(getattr(output, "finish_reason", None)),
-                "stop_reason": _json_safe(getattr(output, "stop_reason", None)),
-                "logprobs": logprob_summary,
-            },
+            event,
         )
+        if has_nans_in_logits and _active_state_trace_enabled():
+            _trace_active_request_states_once(output_processor, event)
+
+
+def _trace_active_request_states_once(output_processor: Any, trigger: dict[str, Any]) -> None:
+    dump_key = str(trigger.get("internal_request_id") or trigger.get("external_request_id"))
+    with _WRITE_LOCK:
+        if dump_key in _ACTIVE_STATE_DUMPED:
+            return
+        _ACTIVE_STATE_DUMPED.add(dump_key)
+
+    states = []
+    for internal_request_id, req_state in sorted(output_processor.request_states.items()):
+        states.append(
+            {
+                "internal_request_id": internal_request_id,
+                "external_request_id": getattr(req_state, "external_req_id", None),
+                "prompt_len": getattr(req_state, "prompt_len", None),
+                "max_tokens": getattr(req_state, "max_tokens_param", None),
+                "temperature": getattr(req_state, "temperature", None),
+                "top_p": getattr(req_state, "top_p", None),
+                "n": getattr(req_state, "n", None),
+                "num_cached_tokens": getattr(req_state, "num_cached_tokens", None),
+                "output_token_ids": _token_ids_snapshot(
+                    _request_state_output_token_ids(req_state),
+                    limit=_active_output_token_limit(),
+                ),
+            }
+        )
+
+    _write_jsonl(
+        "active_request_states",
+        {
+            "schema": "prime_rl.vllm_active_request_states.v1",
+            "created_unix": time.time(),
+            "pid": os.getpid(),
+            "trigger": trigger,
+            "request_count": len(states),
+            "requests": states,
+        },
+    )
 
 
 def _trace_scheduler_output(scheduler: Any, scheduler_output: Any) -> None:
@@ -221,6 +281,7 @@ def _scheduler_new_request_summary(
         "num_scheduled_tokens": num_scheduled_tokens,
         "num_computed_tokens": new_req.num_computed_tokens,
         "num_output_tokens": getattr(request, "num_output_tokens", None),
+        "output_token_ids_tail": _token_ids_tail(_request_output_token_ids(request)),
         "num_cached_tokens": getattr(request, "num_cached_tokens", None),
         "status": str(getattr(request, "status", "")) if request is not None else None,
         "block_ids": _block_ids_summary(new_req.block_ids),
@@ -246,6 +307,7 @@ def _scheduler_cached_request_summary(
         "num_scheduled_tokens": num_scheduled_tokens,
         "num_computed_tokens": num_computed_tokens,
         "num_output_tokens": num_output_tokens,
+        "output_token_ids_tail": _token_ids_tail(_request_output_token_ids(request)),
         "num_cached_tokens": getattr(request, "num_cached_tokens", None),
         "num_preemptions": getattr(request, "num_preemptions", None),
         "status": str(getattr(request, "status", "")) if request is not None else None,
@@ -302,6 +364,45 @@ def _block_ids_summary(block_ids: Any) -> Any:
         return None
     groups = list(block_ids)
     return [_block_list_summary(group) for group in groups]
+
+
+def _request_state_output_token_ids(req_state: Any) -> list[int]:
+    detokenizer = getattr(req_state, "detokenizer", None)
+    return _as_int_list(getattr(detokenizer, "output_token_ids", None))
+
+
+def _request_output_token_ids(request: Any | None) -> list[int]:
+    return _as_int_list(getattr(request, "output_token_ids", None))
+
+
+def _token_ids_tail(token_ids: list[int], limit: int = 16) -> dict[str, Any]:
+    return {
+        "count": len(token_ids),
+        "tail": token_ids[-limit:] if limit > 0 else [],
+    }
+
+
+def _token_ids_snapshot(token_ids: list[int], *, limit: int) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "count": len(token_ids),
+        "head": token_ids[:16],
+        "tail": token_ids[-64:],
+    }
+    if limit < 0 or len(token_ids) <= limit:
+        snapshot["token_ids"] = token_ids
+    else:
+        snapshot["truncated"] = True
+        snapshot["limit"] = limit
+    return snapshot
+
+
+def _as_int_list(value: Any) -> list[int]:
+    if value is None:
+        return []
+    try:
+        return [int(item) for item in list(value)]
+    except Exception:
+        return []
 
 
 def _block_list_summary(block_ids: Any) -> dict[str, Any] | None:
