@@ -12,6 +12,13 @@ from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 # TODO: Set thinking/ solution budget
 
 
+def _set_derived_field(model: BaseModel, field_name: str, value: Any) -> None:
+    """Assign a computed default without marking it as user-provided."""
+
+    setattr(model, field_name, value)
+    model.model_fields_set.discard(field_name)
+
+
 class ServerConfig(BaseConfig):
     """Configures the inference server."""
 
@@ -525,18 +532,16 @@ class InferenceConfig(BaseConfig):
         default_backend_port = default_router_port + 100
         default_rpc_port = 13345
         server_port_explicit = "port" in self.server.model_fields_set
-        stale_default_router_port = (
-            server_port_explicit
-            and self.server.port != default_router_port
-            and self.deployment.router.port == default_router_port
-        )
+        router_port_explicit = "port" in self.deployment.router.model_fields_set
+        backend_port_explicit = "backend_port" in self.deployment.model_fields_set
+        rpc_port_explicit = "data_parallel_rpc_port" in self.model_fields_set
 
         if self.deployment.router.port is None:
-            self.deployment.router.port = self.server.port
-        elif stale_default_router_port:
-            self.deployment.router.port = self.server.port
+            _set_derived_field(self.deployment.router, "port", self.server.port)
+        elif server_port_explicit and not router_port_explicit:
+            _set_derived_field(self.deployment.router, "port", self.server.port)
         elif not server_port_explicit:
-            self.server.port = self.deployment.router.port
+            _set_derived_field(self.server, "port", self.deployment.router.port)
         elif self.server.port != self.deployment.router.port:
             raise ValueError(
                 f"server.port ({self.server.port}) must match deployment.router.port "
@@ -544,7 +549,9 @@ class InferenceConfig(BaseConfig):
             )
 
         stale_default_backend_port = (
-            self.deployment.router.port != default_router_port and self.deployment.backend_port == default_backend_port
+            not backend_port_explicit
+            and self.deployment.router.port != default_router_port
+            and self.deployment.backend_port == default_backend_port
         )
         if self.deployment.backend_port is None or stale_default_backend_port:
             backend_port = self.deployment.router.port + 100
@@ -553,22 +560,24 @@ class InferenceConfig(BaseConfig):
                     f"deployment.backend_port was not set and deployment.router.port ({self.deployment.router.port}) "
                     "does not allow choosing a default backend port within the valid range."
                 )
-            self.deployment.backend_port = backend_port
+            _set_derived_field(self.deployment, "backend_port", backend_port)
 
         if self.deployment.backend_port == self.deployment.router.port:
             raise ValueError("deployment.backend_port must differ from deployment.router.port for single-node.")
 
         stale_default_rpc_port = (
-            self.deployment.router.port != default_router_port and self.data_parallel_rpc_port == default_rpc_port
+            not rpc_port_explicit
+            and self.deployment.router.port != default_router_port
+            and self.data_parallel_rpc_port == default_rpc_port
         )
-        if "data_parallel_rpc_port" not in self.model_fields_set or stale_default_rpc_port:
+        if not rpc_port_explicit or stale_default_rpc_port:
             rpc_port = default_rpc_port + (self.deployment.router.port - default_router_port)
             if not (1 <= rpc_port <= 65535):
                 raise ValueError(
                     "data_parallel_rpc_port was not set and deployment.router.port "
                     f"({self.deployment.router.port}) does not allow choosing a default RPC port within the valid range."
                 )
-            self.data_parallel_rpc_port = rpc_port
+            _set_derived_field(self, "data_parallel_rpc_port", rpc_port)
 
         if self.data_parallel_rpc_port in {self.deployment.router.port, self.deployment.backend_port}:
             raise ValueError(
