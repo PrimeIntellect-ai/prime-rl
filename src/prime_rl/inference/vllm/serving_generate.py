@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import math
 import os
+import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -32,6 +34,11 @@ from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
 
 logger = init_logger(__name__)
+
+
+_CAUSAL_LOCK = threading.Lock()
+_CAUSAL_ACTIVE: dict[str, dict[str, Any]] = {}
+_CAUSAL_COMPLETED: list[dict[str, Any]] = []
 
 
 # ── Request / Response schemas ───────────────────────────────────────
@@ -136,6 +143,13 @@ class OpenAIServingGenerate:
             trace_headers = await self.chat_handler._get_trace_headers(raw_request.headers)
             lora_request = self.chat_handler._maybe_get_adapters(request)
         replay_request_body = _generate_replay_request_body(request, max_tokens=max_tokens)
+        causal_record = _record_causal_request_start(
+            request_id=request_id,
+            request=request,
+            max_tokens=max_tokens,
+            raw_request=raw_request,
+            data_parallel_rank=data_parallel_rank,
+        )
 
         generator = self.engine_client.generate(
             engine_prompt,
@@ -161,9 +175,22 @@ class OpenAIServingGenerate:
                         routed_experts_map[comp_output.index] = _encode_routed_experts(comp_output.routed_experts)
                 final_output = output
         except asyncio.CancelledError:
+            _record_causal_request_end(
+                request_id,
+                status="cancelled",
+                error={"type": "CancelledError", "message": "client disconnected"},
+            )
             await self.engine_client.abort(request_id)
             raise
         except Exception as exc:
+            _record_causal_request_end(
+                request_id,
+                status="engine_error",
+                error={
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            )
             await _dump_generate_replay(
                 request_id=request_id,
                 request_body=replay_request_body,
@@ -179,6 +206,11 @@ class OpenAIServingGenerate:
             raise
 
         if final_output is None:
+            _record_causal_request_end(
+                request_id,
+                status="empty_output",
+                error={"type": "EmptyOutput", "message": "No output generated"},
+            )
             await _dump_generate_replay(
                 request_id=request_id,
                 request_body=replay_request_body,
@@ -245,9 +277,23 @@ class OpenAIServingGenerate:
             error=None,
             nonfinite=nonfinite,
         )
+        _record_causal_request_end(
+            request_id,
+            status="nonfinite" if nonfinite is not None else "ok",
+            response=response,
+            nonfinite=nonfinite,
+            replay_dump_path=replay_dump_path,
+        )
         if nonfinite is not None:
             if replay_dump_path is not None:
                 nonfinite["replay_dump_path"] = replay_dump_path
+            await _dump_generate_causal_incident(
+                dump_dir=os.environ.get("PRIME_RL_GENERATE_REPLAY_DIR"),
+                request_id=request_id,
+                causal_record=causal_record,
+                nonfinite=nonfinite,
+                replay_dump_path=replay_dump_path,
+            )
             return _non_finite_generate_error(nonfinite)
         return response
 
@@ -276,6 +322,243 @@ def _extract_prompt_logprobs(
         logprob = selected.logprob if hasattr(selected, "logprob") else selected.get("logprob")
         extracted.append(float(logprob) if logprob is not None else None)
     return extracted
+
+
+def _record_causal_request_start(
+    *,
+    request_id: str,
+    request: GenerateRequest,
+    max_tokens: int,
+    raw_request: Request,
+    data_parallel_rank: int | None,
+) -> dict[str, Any]:
+    if not _causal_diagnostics_enabled():
+        return {}
+
+    created_unix = time.time()
+    headers = _safe_replay_headers(raw_request)
+    record = {
+        "schema": "prime_rl.generate_causal_request.v1",
+        "request_id": request_id,
+        "created_unix": created_unix,
+        "started_unix": created_unix,
+        "status": "running",
+        "model": request.model,
+        "prompt_len": len(request.prompt_token_ids),
+        "prompt_hash": _hash_prompt_token_ids(request.prompt_token_ids),
+        "max_tokens": max_tokens,
+        "temperature": request.temperature,
+        "top_p": request.top_p,
+        "top_k": request.top_k,
+        "min_p": request.min_p,
+        "seed": request.seed,
+        "n": request.n,
+        "stop_token_ids": request.stop_token_ids or [],
+        "repetition_penalty": request.repetition_penalty,
+        "min_tokens": request.min_tokens,
+        "prompt_logprobs": request.prompt_logprobs,
+        "priority": request.priority,
+        "cache_salt": request.cache_salt,
+        "data_parallel_rank": data_parallel_rank,
+        "client": _safe_client(raw_request),
+        "headers": headers,
+        "session_id": headers.get("x-session-id"),
+    }
+
+    with _CAUSAL_LOCK:
+        record["active_request_ids_at_start"] = sorted(_CAUSAL_ACTIVE)
+        record["preceding_completed_request_ids"] = [
+            item["request_id"] for item in _CAUSAL_COMPLETED[-_causal_window_size() :]
+        ]
+        _CAUSAL_ACTIVE[request_id] = record
+    return record
+
+
+def _record_causal_request_end(
+    request_id: str,
+    *,
+    status: str,
+    response: GenerateResponse | None = None,
+    nonfinite: dict[str, Any] | None = None,
+    replay_dump_path: str | None = None,
+    error: dict[str, Any] | None = None,
+) -> None:
+    if not _causal_diagnostics_enabled():
+        return
+
+    finished_unix = time.time()
+    with _CAUSAL_LOCK:
+        record = _CAUSAL_ACTIVE.pop(request_id, {"request_id": request_id})
+        active_at_end = sorted(_CAUSAL_ACTIVE)
+
+    record.update(
+        {
+            "status": status,
+            "finished_unix": finished_unix,
+            "duration_seconds": finished_unix - record.get("started_unix", finished_unix),
+            "active_request_ids_at_end": active_at_end,
+            "replay_dump_path": replay_dump_path,
+            "error": error,
+            "nonfinite": _causal_nonfinite_summary(nonfinite),
+        }
+    )
+    if response is not None:
+        record.update(_causal_response_summary(response))
+
+    with _CAUSAL_LOCK:
+        _CAUSAL_COMPLETED.append(record)
+        max_items = _causal_window_size()
+        if len(_CAUSAL_COMPLETED) > max_items:
+            del _CAUSAL_COMPLETED[: len(_CAUSAL_COMPLETED) - max_items]
+
+
+async def _dump_generate_causal_incident(
+    *,
+    dump_dir: str | None,
+    request_id: str,
+    causal_record: dict[str, Any],
+    nonfinite: dict[str, Any],
+    replay_dump_path: str | None,
+) -> str | None:
+    if not dump_dir or not _causal_dump_on_nonfinite_enabled():
+        return None
+
+    try:
+        incident = _build_causal_incident(
+            request_id=request_id,
+            causal_record=causal_record,
+            nonfinite=nonfinite,
+            replay_dump_path=replay_dump_path,
+        )
+        return await asyncio.to_thread(_write_generate_causal_incident, Path(dump_dir), request_id, incident)
+    except Exception:
+        logger.exception("Failed to dump /v1/generate causal incident")
+        return None
+
+
+def _build_causal_incident(
+    *,
+    request_id: str,
+    causal_record: dict[str, Any],
+    nonfinite: dict[str, Any],
+    replay_dump_path: str | None,
+) -> dict[str, Any]:
+    with _CAUSAL_LOCK:
+        active = [dict(item) for item in _CAUSAL_ACTIVE.values()]
+        completed = [dict(item) for item in _CAUSAL_COMPLETED[-_causal_window_size() :]]
+
+    referenced_ids = set(causal_record.get("active_request_ids_at_start") or [])
+    referenced_ids.update(causal_record.get("active_request_ids_at_end") or [])
+    referenced_ids.update(causal_record.get("preceding_completed_request_ids") or [])
+    referenced_ids.add(request_id)
+
+    referenced = [item for item in completed + active if item.get("request_id") in referenced_ids]
+    replay_paths = {
+        str(item["request_id"]): item.get("replay_dump_path")
+        for item in referenced
+        if item.get("request_id") and item.get("replay_dump_path")
+    }
+    if replay_dump_path is not None:
+        replay_paths[request_id] = replay_dump_path
+
+    return {
+        "schema": "prime_rl.generate_causal_incident.v1",
+        "created_unix": time.time(),
+        "request_id": request_id,
+        "failing_request": causal_record,
+        "nonfinite": nonfinite,
+        "replay_dump_path": replay_dump_path,
+        "active_request_ids_at_start": causal_record.get("active_request_ids_at_start", []),
+        "active_request_ids_at_end": causal_record.get("active_request_ids_at_end", []),
+        "preceding_completed_request_ids": causal_record.get("preceding_completed_request_ids", []),
+        "referenced_request_ids": sorted(referenced_ids),
+        "referenced_requests": referenced,
+        "replay_dump_paths": replay_paths,
+        "active_requests_snapshot": active,
+        "completed_requests_snapshot": completed,
+    }
+
+
+def _write_generate_causal_incident(dump_dir: Path, request_id: str, incident: dict[str, Any]) -> str:
+    incident_dir = dump_dir.expanduser() / "incidents" / request_id
+    incident_dir.mkdir(parents=True, exist_ok=True)
+    path = incident_dir / "incident.json"
+    tmp_path = path.with_suffix(".json.tmp")
+    tmp_path.write_text(
+        json.dumps(_json_safe(incident), ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
+    return str(path)
+
+
+def _causal_response_summary(response: GenerateResponse) -> dict[str, Any]:
+    choices = []
+    for choice in response.choices:
+        zero_offsets = [idx for idx, token_id in enumerate(choice.token_ids) if token_id == 0]
+        choices.append(
+            {
+                "choice_index": choice.index,
+                "completion_len": len(choice.token_ids),
+                "finish_reason": choice.finish_reason,
+                "token_id_prefix": choice.token_ids[:64],
+                "token_0_count": len(zero_offsets),
+                "token_0_offsets": zero_offsets[:64],
+                "nonfinite_logprob_offsets": [
+                    idx for idx, logprob in enumerate(choice.logprobs) if not math.isfinite(logprob)
+                ][:64],
+            }
+        )
+
+    return {
+        "usage": dict(response.usage),
+        "completion_len": sum(choice["completion_len"] for choice in choices),
+        "choices": choices,
+    }
+
+
+def _causal_nonfinite_summary(nonfinite: dict[str, Any] | None) -> dict[str, Any] | None:
+    if nonfinite is None:
+        return None
+    keys = (
+        "field",
+        "choice_index",
+        "token_offset",
+        "token_id",
+        "completion_len",
+        "finish_reason",
+        "prompt_len",
+        "value",
+    )
+    return {key: nonfinite.get(key) for key in keys if key in nonfinite}
+
+
+def _causal_diagnostics_enabled() -> bool:
+    return bool(os.environ.get("PRIME_RL_GENERATE_REPLAY_DIR"))
+
+
+def _causal_dump_on_nonfinite_enabled() -> bool:
+    raw = os.environ.get("PRIME_RL_GENERATE_CAUSAL_DUMP_ON_NONFINITE")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _causal_window_size() -> int:
+    raw = os.environ.get("PRIME_RL_GENERATE_CAUSAL_WINDOW_SIZE")
+    if raw is None:
+        return 256
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 256
+
+
+def _hash_prompt_token_ids(prompt_token_ids: list[int]) -> str:
+    digest = hashlib.blake2b(digest_size=16)
+    for token_id in prompt_token_ids:
+        digest.update(int(token_id).to_bytes(8, byteorder="little", signed=True))
+    return digest.hexdigest()
 
 
 def _generate_replay_request_body(request: GenerateRequest, *, max_tokens: int) -> dict[str, Any]:
