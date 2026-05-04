@@ -525,8 +525,11 @@ class InferenceConfig(BaseConfig):
         default_backend_port = default_router_port + 100
         default_rpc_port = 13345
         server_port_explicit = "port" in self.server.model_fields_set
+        router_port_explicit = "port" in self.deployment.router.model_fields_set
 
         if self.deployment.router.port is None:
+            self.deployment.router.port = self.server.port
+        elif server_port_explicit and not router_port_explicit:
             self.deployment.router.port = self.server.port
         elif not server_port_explicit:
             self.server.port = self.deployment.router.port
