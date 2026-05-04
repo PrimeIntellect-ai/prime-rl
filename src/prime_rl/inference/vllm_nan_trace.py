@@ -54,6 +54,14 @@ def _model_runner_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_MODEL_RUNNER", "1") != "0"
 
 
+def _model_runner_batch_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_BATCH", "0") != "0"
+
+
+def _model_runner_batch_gpu_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_BATCH_GPU", "0") != "0"
+
+
 def _nemotron_h_layer_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_NEMOTRON_H_LAYERS", "0") != "0"
 
@@ -143,9 +151,35 @@ def _patch_model_runner() -> None:
 
     original_execute_model = GPUModelRunner.execute_model
     original_sample = GPUModelRunner._sample
+    original_determine_batch = getattr(GPUModelRunner, "_determine_batch_execution_and_padding", None)
+
+    if original_determine_batch is not None:
+
+        def _patched_determine_batch_execution_and_padding(self, *args, **kwargs):
+            result = original_determine_batch(self, *args, **kwargs)
+            if _model_runner_batch_trace_enabled():
+                try:
+                    self._prime_rl_nan_trace_batch_execution = _batch_execution_summary(result, args, kwargs)
+                except Exception:
+                    logger.exception("Failed to trace vLLM model runner batch execution decision")
+            return result
+
+        GPUModelRunner._determine_batch_execution_and_padding = _patched_determine_batch_execution_and_padding
 
     def _patched_execute_model(self, *args, **kwargs):
         result = original_execute_model(self, *args, **kwargs)
+        if _model_runner_batch_trace_enabled():
+            try:
+                state = getattr(self, "execute_model_state", None)
+                if state is not None:
+                    _trace_model_runner_batch_state(
+                        self,
+                        state,
+                        getattr(self, "_prime_rl_nan_trace_batch_execution", None),
+                    )
+            except Exception:
+                logger.exception("Failed to trace vLLM model runner batch state")
+
         if not _model_runner_trace_enabled():
             return result
 
@@ -514,6 +548,177 @@ def _trace_model_runner_logits_state(
     )
 
 
+def _batch_execution_summary(result: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    names = (
+        "num_tokens",
+        "num_reqs",
+        "num_scheduled_tokens_np",
+        "max_num_scheduled_tokens",
+        "use_cascade_attn",
+        "allow_microbatching",
+        "force_eager",
+        "force_uniform_decode",
+        "force_has_lora",
+        "force_num_active_loras",
+        "num_encoder_reqs",
+    )
+    inputs = {name: args[idx] for idx, name in enumerate(names) if idx < len(args)}
+    inputs.update(kwargs)
+
+    try:
+        cudagraph_mode, batch_desc, should_ubatch, num_tokens_across_dp, cudagraph_stats = result
+    except Exception:
+        return {
+            "result": _json_safe(result),
+            "inputs": _batch_execution_inputs_summary(inputs),
+        }
+
+    return {
+        "inputs": _batch_execution_inputs_summary(inputs),
+        "cudagraph_mode": _enum_summary(cudagraph_mode),
+        "batch_descriptor": _object_attr_summary(
+            batch_desc,
+            ("num_tokens", "num_reqs", "uniform", "has_lora", "num_active_loras"),
+        ),
+        "should_ubatch": should_ubatch,
+        "num_tokens_across_dp": _tensor_or_sequence_summary(num_tokens_across_dp),
+        "cudagraph_stats": _object_attr_summary(
+            cudagraph_stats,
+            ("num_unpadded_tokens", "num_padded_tokens", "num_paddings", "runtime_mode"),
+        ),
+    }
+
+
+def _batch_execution_inputs_summary(inputs: dict[str, Any]) -> dict[str, Any]:
+    summary = {}
+    for key, value in inputs.items():
+        if key == "num_scheduled_tokens_np":
+            summary[key] = _sequence_summary(value)
+        else:
+            summary[key] = _json_safe(value)
+    return summary
+
+
+def _trace_model_runner_batch_state(model_runner: Any, state: Any, batch_execution: dict[str, Any] | None) -> None:
+    input_batch = getattr(model_runner, "input_batch", None)
+    scheduler_output = getattr(state, "scheduler_output", None)
+    req_ids = list(getattr(input_batch, "req_ids", []) or [])
+    num_reqs = getattr(input_batch, "num_reqs", len(req_ids)) if input_batch is not None else len(req_ids)
+    try:
+        num_reqs = int(num_reqs)
+    except Exception:
+        num_reqs = len(req_ids)
+    req_ids = req_ids[:num_reqs]
+
+    scheduled_tokens_by_req = {}
+    if scheduler_output is not None:
+        scheduled_tokens = getattr(scheduler_output, "num_scheduled_tokens", {}) or {}
+        scheduled_tokens_by_req = {req_id: scheduled_tokens.get(req_id) for req_id in req_ids}
+
+    record = {
+        "schema": "prime_rl.vllm_model_runner_batch_trace.v1",
+        "created_unix": time.time(),
+        "pid": os.getpid(),
+        "num_reqs": num_reqs,
+        "req_ids": req_ids,
+        "external_request_id_guesses": [_external_request_id_from_internal(req_id) for req_id in req_ids],
+        "batch_execution": batch_execution,
+        "state_cudagraph_stats": _object_attr_summary(
+            getattr(state, "cudagraph_stats", None),
+            ("num_unpadded_tokens", "num_padded_tokens", "num_paddings", "runtime_mode"),
+        ),
+        "scheduler_output": _model_runner_scheduler_output_summary(scheduler_output, scheduled_tokens_by_req),
+        "input_batch": _input_batch_summary(input_batch, num_reqs),
+        "logits": _tensor_meta(getattr(state, "logits", None)),
+        "sample_hidden_states": _tensor_meta(getattr(state, "sample_hidden_states", None)),
+        "spec_decode": getattr(state, "spec_decode_metadata", None) is not None,
+    }
+    if _model_runner_batch_gpu_trace_enabled():
+        record["gpu_inputs"] = _model_runner_gpu_input_summary(model_runner, state)
+
+    _write_jsonl("model_runner_batches", record)
+
+
+def _model_runner_scheduler_output_summary(
+    scheduler_output: Any | None,
+    scheduled_tokens_by_req: dict[str, Any],
+) -> dict[str, Any] | None:
+    if scheduler_output is None:
+        return None
+    return {
+        "total_num_scheduled_tokens": getattr(scheduler_output, "total_num_scheduled_tokens", None),
+        "num_common_prefix_blocks": getattr(scheduler_output, "num_common_prefix_blocks", None),
+        "finished_req_ids": sorted(getattr(scheduler_output, "finished_req_ids", []) or []),
+        "preempted_req_ids": sorted(getattr(scheduler_output, "preempted_req_ids", []) or []),
+        "num_scheduled_tokens_by_active_req": scheduled_tokens_by_req,
+    }
+
+
+def _input_batch_summary(input_batch: Any | None, num_reqs: int) -> dict[str, Any] | None:
+    if input_batch is None:
+        return None
+    return {
+        "max_num_reqs": getattr(input_batch, "max_num_reqs", None),
+        "max_model_len": getattr(input_batch, "max_model_len", None),
+        "max_num_batched_tokens": getattr(input_batch, "max_num_batched_tokens", None),
+        "num_prompt_tokens": _sequence_summary(getattr(input_batch, "num_prompt_tokens", None), count=num_reqs),
+        "num_tokens_no_spec": _sequence_summary(getattr(input_batch, "num_tokens_no_spec", None), count=num_reqs),
+        "num_computed_tokens_cpu": _sequence_summary(
+            getattr(input_batch, "num_computed_tokens_cpu", None),
+            count=num_reqs,
+        ),
+        "num_accepted_tokens_cpu": _sequence_summary(
+            getattr(input_batch, "num_accepted_tokens_cpu", None),
+            count=num_reqs,
+        ),
+    }
+
+
+def _model_runner_gpu_input_summary(model_runner: Any, state: Any) -> dict[str, Any]:
+    return {
+        "input_ids": _tensor_or_sequence_summary(getattr(model_runner, "input_ids", None)),
+        "positions": _tensor_or_sequence_summary(getattr(model_runner, "positions", None)),
+        "slot_mappings": _slot_mappings_summary(getattr(state, "slot_mappings", None)),
+    }
+
+
+def _slot_mappings_summary(slot_mappings: Any) -> dict[str, Any] | None:
+    if slot_mappings is None:
+        return None
+    if isinstance(slot_mappings, list):
+        return {
+            "type": "list",
+            "count": len(slot_mappings),
+            "items": [_slot_mappings_summary(item) for item in slot_mappings[:4]],
+            "truncated": len(slot_mappings) > 4,
+        }
+    if not isinstance(slot_mappings, dict):
+        return {"type": type(slot_mappings).__name__, "value": _json_safe(slot_mappings)}
+
+    groups: dict[str, dict[str, Any]] = {}
+    for layer_name, tensor in slot_mappings.items():
+        key = _tensor_identity(tensor)
+        group = groups.setdefault(
+            key,
+            {
+                "layer_count": 0,
+                "layer_names": [],
+                "tensor": _tensor_or_sequence_summary(tensor),
+            },
+        )
+        group["layer_count"] += 1
+        if len(group["layer_names"]) < 8:
+            group["layer_names"].append(layer_name)
+
+    return {
+        "type": "dict",
+        "layer_count": len(slot_mappings),
+        "unique_tensor_count": len(groups),
+        "groups": list(groups.values())[:8],
+        "truncated": len(groups) > 8,
+    }
+
+
 def _trace_nemotron_h_layer_output(
     *,
     layer_idx: int | None,
@@ -718,6 +923,98 @@ def _tensor_meta(tensor: Any) -> dict[str, Any] | None:
         "shape": list(tensor.shape),
         "dtype": str(getattr(tensor, "dtype", "")),
     }
+
+
+def _tensor_or_sequence_summary(value: Any, *, limit: int = 16, count: int | None = None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if hasattr(value, "detach") and hasattr(value, "numel"):
+        return _tensor_vector_summary(value, limit=limit, count=count)
+    return _sequence_summary(value, limit=limit, count=count)
+
+
+def _tensor_vector_summary(tensor: Any, *, limit: int = 16, count: int | None = None) -> dict[str, Any] | None:
+    try:
+        flat = tensor.detach().reshape(-1)
+        if count is not None:
+            flat = flat[:count]
+        total = int(flat.numel())
+        head = flat[: min(limit, total)].detach().cpu().tolist()
+        tail = flat[max(0, total - limit) :].detach().cpu().tolist() if total > limit else []
+        summary = {
+            "shape": list(tensor.shape),
+            "dtype": str(getattr(tensor, "dtype", "")),
+            "count": total,
+            "head": head,
+            "tail": tail,
+        }
+        if total:
+            try:
+                summary["min"] = flat.min().detach().cpu().item()
+                summary["max"] = flat.max().detach().cpu().item()
+            except Exception:
+                pass
+            try:
+                summary["minus_one_count"] = int((flat == -1).sum().detach().cpu().item())
+            except Exception:
+                pass
+        return summary
+    except Exception:
+        return _tensor_meta(tensor)
+
+
+def _sequence_summary(value: Any, *, limit: int = 16, count: int | None = None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    try:
+        if hasattr(value, "tolist"):
+            values = value.tolist()
+        else:
+            values = list(value)
+    except Exception:
+        return {"value": _json_safe(value)}
+    if count is not None:
+        values = values[:count]
+    non_null = [item for item in values if item is not None]
+    summary: dict[str, Any] = {
+        "count": len(values),
+        "head": values[:limit],
+        "tail": values[-limit:] if len(values) > limit else [],
+    }
+    try:
+        summary["min"] = min(non_null) if non_null else None
+        summary["max"] = max(non_null) if non_null else None
+    except Exception:
+        pass
+    return summary
+
+
+def _enum_summary(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return {
+        "type": type(value).__name__,
+        "name": getattr(value, "name", None),
+        "value": getattr(value, "value", None),
+        "string": str(value),
+    }
+
+
+def _object_attr_summary(value: Any, attrs: tuple[str, ...]) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return {
+        attr: _json_safe(getattr(value, attr))
+        for attr in attrs
+        if hasattr(value, attr)
+    }
+
+
+def _tensor_identity(value: Any) -> str:
+    try:
+        return f"{value.device}:{value.data_ptr()}:{tuple(value.shape)}"
+    except Exception:
+        return str(id(value))
 
 
 def _row_count_at(counts: dict[str, list[int]], row_idx: int) -> dict[str, int | None]:
