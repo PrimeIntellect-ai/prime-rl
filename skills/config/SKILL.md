@@ -82,6 +82,8 @@ For `InferenceConfig` with `deployment.type = "single_node"`:
 - `deployment.router.port` defaults to `server.port`
 - `deployment.router.policy` controls the router policy shared across single-node, multi-node, and disaggregated inference
 - `deployment.backend_port` defaults to `server.port + 100`
+- When launching more than one local single-node inference server from the same base config, set `server.port`, `deployment.router.port`, `deployment.backend_port`, and `data_parallel_rpc_port` explicitly for each instance instead of relying on `--server.port` alone.
+- When launching more than one local single-node inference server from the same base config, set `server.port`, `deployment.router.port`, `deployment.backend_port`, and `data_parallel_rpc_port` explicitly for each instance instead of relying on `--server.port` alone.
 
 When the RL entrypoint auto-manages local inference, it routes generation traffic through `orchestrator.client.base_url` and sends admin traffic (health checks, weight updates, pause/resume) to `orchestrator.client.admin_base_url`.
 

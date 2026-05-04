@@ -189,10 +189,21 @@ def test_single_node_inference_offsets_rpc_port_for_multiple_local_servers():
     assert config_b.data_parallel_rpc_port == 13346
 
 
-def test_single_node_inference_cli_override_updates_backend_and_rpc_ports():
+def test_single_node_inference_cli_accepts_explicit_port_tuple():
     config = cli(
         InferenceConfig,
-        args=["@", "configs/ci/integration/rl_multi_run/inference.toml", "--server.port", "8001"],
+        args=[
+            "@",
+            "configs/ci/integration/rl_multi_run/inference.toml",
+            "--server.port",
+            "8001",
+            "--deployment.router.port",
+            "8001",
+            "--deployment.backend_port",
+            "8101",
+            "--data_parallel_rpc_port",
+            "13346",
+        ],
     )
 
     assert config.server.port == 8001
@@ -201,19 +212,19 @@ def test_single_node_inference_cli_override_updates_backend_and_rpc_ports():
     assert config.data_parallel_rpc_port == 13346
 
 
-def test_single_node_inference_cli_override_preserves_explicit_backend_and_rpc_ports():
+def test_single_node_inference_preserves_explicit_non_default_ports():
     config = InferenceConfig.model_validate(
         {
             "server": {"port": 8001},
-            "deployment": {"backend_port": 8100},
-            "data_parallel_rpc_port": 13345,
+            "deployment": {"router": {"port": 8001}, "backend_port": 8200},
+            "data_parallel_rpc_port": 14345,
         }
     )
 
     assert config.server.port == 8001
     assert config.deployment.router.port == 8001
-    assert config.deployment.backend_port == 8100
-    assert config.data_parallel_rpc_port == 13345
+    assert config.deployment.backend_port == 8200
+    assert config.data_parallel_rpc_port == 14345
 
 
 def test_single_node_inference_cli_override_rejects_explicit_mismatched_router_port():
