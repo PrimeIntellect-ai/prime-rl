@@ -338,7 +338,18 @@ async def custom_init_app_state(
 import vllm.entrypoints.openai.api_server
 import vllm.v1.utils
 from vllm.entrypoints.openai.api_server import build_app as _original_build_app
-from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server_worker_proc
+
+try:
+    from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server_worker_proc
+
+    _run_api_server_worker_proc_owner = vllm.v1.utils
+except ImportError:
+    # vLLM 0.18.x kept this helper in the CLI module. The dirty repro branch
+    # supports both paths so the same prime server can be compared across vLLM.
+    import vllm.entrypoints.cli.serve as _vllm_cli_serve
+
+    _original_run_api_server_worker_proc = _vllm_cli_serve.run_api_server_worker_proc
+    _run_api_server_worker_proc_owner = _vllm_cli_serve
 
 
 def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None):
@@ -362,7 +373,7 @@ def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=
 
 vllm.entrypoints.openai.api_server.init_app_state = custom_init_app_state
 vllm.entrypoints.openai.api_server.build_app = custom_build_app
-vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
+_run_api_server_worker_proc_owner.run_api_server_worker_proc = custom_run_api_server_worker_proc
 
 
 # Adapted from vllm/entrypoints/cli/serve.py
