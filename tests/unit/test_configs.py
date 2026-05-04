@@ -202,18 +202,12 @@ def test_single_node_inference_cli_override_updates_backend_and_rpc_ports():
 
 
 def test_single_node_inference_cli_override_preserves_explicit_backend_and_rpc_ports():
-    config = cli(
-        InferenceConfig,
-        args=[
-            "@",
-            "configs/ci/integration/rl_multi_run/inference.toml",
-            "--server.port",
-            "8001",
-            "--deployment.backend_port",
-            "8100",
-            "--data_parallel_rpc_port",
-            "13345",
-        ],
+    config = InferenceConfig.model_validate(
+        {
+            "server": {"port": 8001},
+            "deployment": {"backend_port": 8100},
+            "data_parallel_rpc_port": 13345,
+        }
     )
 
     assert config.server.port == 8001

@@ -29,6 +29,35 @@ def _is_derived_port(value: object) -> bool:
     return isinstance(value, _DerivedPort)
 
 
+def _raw_field_is_explicit(container: BaseModel | dict[str, Any] | None, field_name: str) -> bool:
+    if isinstance(container, BaseModel):
+        return field_name in container.model_fields_set and not _is_derived_port(getattr(container, field_name))
+    if isinstance(container, dict):
+        return field_name in container
+    return False
+
+
+def _raw_field_value(container: BaseModel | dict[str, Any] | None, field_name: str) -> Any:
+    if isinstance(container, BaseModel):
+        return getattr(container, field_name)
+    if isinstance(container, dict):
+        return container.get(field_name)
+    return None
+
+
+def _set_raw_field(container: BaseModel | dict[str, Any], field_name: str, value: Any, *, derived: bool) -> None:
+    if isinstance(container, BaseModel):
+        if derived:
+            _set_derived_field(container, field_name, value)
+        else:
+            setattr(container, field_name, value)
+        return
+
+    if derived and isinstance(value, int):
+        value = _DerivedPort(value)
+    container[field_name] = value
+
+
 class ServerConfig(BaseConfig):
     """Configures the inference server."""
 
@@ -533,6 +562,37 @@ class InferenceConfig(BaseConfig):
             raise ValueError("Must use SLURM for multi-node deployment.")
         return self
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_single_node_cli_merge_defaults(cls, data: Any):
+        if not isinstance(data, dict):
+            return data
+
+        deployment = data.get("deployment")
+        if deployment is None or _raw_field_value(deployment, "type") not in {None, "single_node"}:
+            return data
+
+        server = data.get("server")
+        server_port = _raw_field_value(server, "port")
+        server_port_explicit = _raw_field_is_explicit(server, "port")
+        if not server_port_explicit or server_port == 8000:
+            return data
+
+        router = _raw_field_value(deployment, "router")
+        router_port = _raw_field_value(router, "port")
+        if router is not None and (router_port is None or _is_derived_port(router_port)):
+            _set_raw_field(router, "port", server_port, derived=True)
+
+        backend_port = _raw_field_value(deployment, "backend_port")
+        if backend_port is None or _is_derived_port(backend_port):
+            _set_raw_field(deployment, "backend_port", server_port + 100, derived=True)
+
+        rpc_port = data.get("data_parallel_rpc_port")
+        if rpc_port is None or _is_derived_port(rpc_port):
+            _set_raw_field(data, "data_parallel_rpc_port", 13345 + (server_port - 8000), derived=True)
+
+        return data
+
     @model_validator(mode="after")
     def auto_setup_single_node_router(self):
         if self.deployment.type != "single_node":
@@ -544,8 +604,6 @@ class InferenceConfig(BaseConfig):
 
         if self.deployment.router.port is None:
             _set_derived_field(self.deployment.router, "port", self.server.port)
-        elif server_port_explicit and _is_derived_port(self.deployment.router.port):
-            _set_derived_field(self.deployment.router, "port", self.server.port)
         elif not server_port_explicit:
             _set_derived_field(self.server, "port", self.deployment.router.port)
         elif self.server.port != self.deployment.router.port:
@@ -554,7 +612,7 @@ class InferenceConfig(BaseConfig):
                 f"({self.deployment.router.port}) for single-node deployments."
             )
 
-        if self.deployment.backend_port is None or _is_derived_port(self.deployment.backend_port):
+        if self.deployment.backend_port is None:
             backend_port = self.deployment.router.port + 100
             if backend_port > 65535:
                 raise ValueError(
@@ -566,7 +624,7 @@ class InferenceConfig(BaseConfig):
         if self.deployment.backend_port == self.deployment.router.port:
             raise ValueError("deployment.backend_port must differ from deployment.router.port for single-node.")
 
-        if "data_parallel_rpc_port" not in self.model_fields_set or _is_derived_port(self.data_parallel_rpc_port):
+        if "data_parallel_rpc_port" not in self.model_fields_set:
             rpc_port = default_rpc_port + (self.deployment.router.port - default_router_port)
             if not (1 <= rpc_port <= 65535):
                 raise ValueError(
