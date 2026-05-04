@@ -12,11 +12,21 @@ from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 # TODO: Set thinking/ solution budget
 
 
+class _DerivedPort(int):
+    """Marks ports that were auto-derived from other config values."""
+
+
 def _set_derived_field(model: BaseModel, field_name: str, value: Any) -> None:
     """Assign a computed default without marking it as user-provided."""
 
+    if isinstance(value, int):
+        value = _DerivedPort(value)
     setattr(model, field_name, value)
     model.model_fields_set.discard(field_name)
+
+
+def _is_derived_port(value: object) -> bool:
+    return isinstance(value, _DerivedPort)
 
 
 class ServerConfig(BaseConfig):
@@ -529,20 +539,12 @@ class InferenceConfig(BaseConfig):
             return self
 
         default_router_port = 8000
-        default_backend_port = default_router_port + 100
         default_rpc_port = 13345
-        server_port_explicit = "port" in self.server.model_fields_set
-        backend_port_explicit = "backend_port" in self.deployment.model_fields_set
-        rpc_port_explicit = "data_parallel_rpc_port" in self.model_fields_set
-        stale_default_router_port = (
-            server_port_explicit
-            and self.server.port != default_router_port
-            and self.deployment.router.port == default_router_port
-        )
+        server_port_explicit = "port" in self.server.model_fields_set and not _is_derived_port(self.server.port)
 
         if self.deployment.router.port is None:
             _set_derived_field(self.deployment.router, "port", self.server.port)
-        elif stale_default_router_port:
+        elif server_port_explicit and _is_derived_port(self.deployment.router.port):
             _set_derived_field(self.deployment.router, "port", self.server.port)
         elif not server_port_explicit:
             _set_derived_field(self.server, "port", self.deployment.router.port)
@@ -552,12 +554,7 @@ class InferenceConfig(BaseConfig):
                 f"({self.deployment.router.port}) for single-node deployments."
             )
 
-        stale_default_backend_port = (
-            not backend_port_explicit
-            and self.deployment.router.port != default_router_port
-            and self.deployment.backend_port == default_backend_port
-        )
-        if self.deployment.backend_port is None or stale_default_backend_port:
+        if self.deployment.backend_port is None or _is_derived_port(self.deployment.backend_port):
             backend_port = self.deployment.router.port + 100
             if backend_port > 65535:
                 raise ValueError(
@@ -569,12 +566,7 @@ class InferenceConfig(BaseConfig):
         if self.deployment.backend_port == self.deployment.router.port:
             raise ValueError("deployment.backend_port must differ from deployment.router.port for single-node.")
 
-        stale_default_rpc_port = (
-            not rpc_port_explicit
-            and self.deployment.router.port != default_router_port
-            and self.data_parallel_rpc_port == default_rpc_port
-        )
-        if not rpc_port_explicit or stale_default_rpc_port:
+        if "data_parallel_rpc_port" not in self.model_fields_set or _is_derived_port(self.data_parallel_rpc_port):
             rpc_port = default_rpc_port + (self.deployment.router.port - default_router_port)
             if not (1 <= rpc_port <= 65535):
                 raise ValueError(
