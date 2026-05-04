@@ -150,6 +150,19 @@ class OpenAIServingGenerate:
             raw_request=raw_request,
             data_parallel_rank=data_parallel_rank,
         )
+        initial_replay_dump_path = await _dump_generate_replay(
+            request_id=request_id,
+            request_body=replay_request_body,
+            raw_request=raw_request,
+            data_parallel_rank=data_parallel_rank,
+            status="running",
+            response=None,
+            error=None,
+            nonfinite=None,
+        )
+        if initial_replay_dump_path is not None:
+            causal_record["replay_dump_path"] = initial_replay_dump_path
+            _record_causal_request_replay_dump_path(request_id, initial_replay_dump_path)
 
         generator = self.engine_client.generate(
             engine_prompt,
@@ -196,6 +209,7 @@ class OpenAIServingGenerate:
                 request_body=replay_request_body,
                 raw_request=raw_request,
                 data_parallel_rank=data_parallel_rank,
+                status="engine_error",
                 response=None,
                 error={
                     "type": type(exc).__name__,
@@ -216,6 +230,7 @@ class OpenAIServingGenerate:
                 request_body=replay_request_body,
                 raw_request=raw_request,
                 data_parallel_rank=data_parallel_rank,
+                status="empty_output",
                 response=None,
                 error={"type": "EmptyOutput", "message": "No output generated"},
                 nonfinite=None,
@@ -273,6 +288,7 @@ class OpenAIServingGenerate:
             request_body=replay_request_body,
             raw_request=raw_request,
             data_parallel_rank=data_parallel_rank,
+            status="nonfinite" if nonfinite is not None else "ok",
             response=response,
             error=None,
             nonfinite=nonfinite,
@@ -410,6 +426,16 @@ def _record_causal_request_end(
         max_items = _causal_window_size()
         if len(_CAUSAL_COMPLETED) > max_items:
             del _CAUSAL_COMPLETED[: len(_CAUSAL_COMPLETED) - max_items]
+
+
+def _record_causal_request_replay_dump_path(request_id: str, replay_dump_path: str) -> None:
+    if not _causal_diagnostics_enabled():
+        return
+
+    with _CAUSAL_LOCK:
+        record = _CAUSAL_ACTIVE.get(request_id)
+        if record is not None:
+            record["replay_dump_path"] = replay_dump_path
 
 
 async def _dump_generate_causal_incident(
@@ -574,6 +600,7 @@ async def _dump_generate_replay(
     request_body: dict[str, Any],
     raw_request: Request,
     data_parallel_rank: int | None,
+    status: str,
     response: GenerateResponse | None,
     error: dict[str, Any] | None,
     nonfinite: dict[str, Any] | None,
@@ -587,6 +614,7 @@ async def _dump_generate_replay(
         "created_unix": time.time(),
         "request_id": request_id,
         "endpoint": "/v1/generate",
+        "status": status,
         "client": _safe_client(raw_request),
         "headers": _safe_replay_headers(raw_request),
         "data_parallel_rank": data_parallel_rank,
