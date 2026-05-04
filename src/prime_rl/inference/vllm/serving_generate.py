@@ -14,7 +14,10 @@ import asyncio
 import base64
 import json
 import math
+import os
+import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -132,6 +135,7 @@ class OpenAIServingGenerate:
             data_parallel_rank = self.chat_handler._get_data_parallel_rank(raw_request)
             trace_headers = await self.chat_handler._get_trace_headers(raw_request.headers)
             lora_request = self.chat_handler._maybe_get_adapters(request)
+        replay_request_body = _generate_replay_request_body(request, max_tokens=max_tokens)
 
         generator = self.engine_client.generate(
             engine_prompt,
@@ -159,8 +163,31 @@ class OpenAIServingGenerate:
         except asyncio.CancelledError:
             await self.engine_client.abort(request_id)
             raise
+        except Exception as exc:
+            await _dump_generate_replay(
+                request_id=request_id,
+                request_body=replay_request_body,
+                raw_request=raw_request,
+                data_parallel_rank=data_parallel_rank,
+                response=None,
+                error={
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+                nonfinite=None,
+            )
+            raise
 
         if final_output is None:
+            await _dump_generate_replay(
+                request_id=request_id,
+                request_body=replay_request_body,
+                raw_request=raw_request,
+                data_parallel_rank=data_parallel_rank,
+                response=None,
+                error={"type": "EmptyOutput", "message": "No output generated"},
+                nonfinite=None,
+            )
             return {"error": "No output generated"}
 
         choices = []
@@ -209,7 +236,18 @@ class OpenAIServingGenerate:
                 self.engine_client,
             ),
         )
+        replay_dump_path = await _dump_generate_replay(
+            request_id=request_id,
+            request_body=replay_request_body,
+            raw_request=raw_request,
+            data_parallel_rank=data_parallel_rank,
+            response=response,
+            error=None,
+            nonfinite=nonfinite,
+        )
         if nonfinite is not None:
+            if replay_dump_path is not None:
+                nonfinite["replay_dump_path"] = replay_dump_path
             return _non_finite_generate_error(nonfinite)
         return response
 
@@ -240,6 +278,102 @@ def _extract_prompt_logprobs(
     return extracted
 
 
+def _generate_replay_request_body(request: GenerateRequest, *, max_tokens: int) -> dict[str, Any]:
+    body = request.model_dump(mode="json", exclude_none=True)
+    body["max_tokens"] = max_tokens
+    body["stop_token_ids"] = request.stop_token_ids or []
+    return body
+
+
+async def _dump_generate_replay(
+    *,
+    request_id: str,
+    request_body: dict[str, Any],
+    raw_request: Request,
+    data_parallel_rank: int | None,
+    response: GenerateResponse | None,
+    error: dict[str, Any] | None,
+    nonfinite: dict[str, Any] | None,
+) -> str | None:
+    dump_dir = os.environ.get("PRIME_RL_GENERATE_REPLAY_DIR")
+    if not dump_dir:
+        return None
+
+    record = {
+        "schema": "prime_rl.generate_replay.v1",
+        "created_unix": time.time(),
+        "request_id": request_id,
+        "endpoint": "/v1/generate",
+        "client": _safe_client(raw_request),
+        "headers": _safe_replay_headers(raw_request),
+        "data_parallel_rank": data_parallel_rank,
+        "request": request_body,
+        "response": response.model_dump(mode="python") if response is not None else None,
+        "error": error,
+        "nonfinite": nonfinite,
+    }
+
+    try:
+        return await asyncio.to_thread(_write_generate_replay, Path(dump_dir), request_id, record)
+    except Exception:
+        logger.exception("Failed to dump /v1/generate replay record")
+        return None
+
+
+def _write_generate_replay(dump_dir: Path, request_id: str, record: dict[str, Any]) -> str:
+    request_dir = dump_dir.expanduser() / "requests"
+    request_dir.mkdir(parents=True, exist_ok=True)
+    path = request_dir / f"{request_id}.json"
+    tmp_path = path.with_suffix(".json.tmp")
+    tmp_path.write_text(
+        json.dumps(_json_safe(record), ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
+    return str(path)
+
+
+def _safe_client(raw_request: Request) -> dict[str, Any] | None:
+    if raw_request.client is None:
+        return None
+    return {
+        "host": raw_request.client.host,
+        "port": raw_request.client.port,
+    }
+
+
+def _safe_replay_headers(raw_request: Request) -> dict[str, str]:
+    allowlist = {
+        "traceparent",
+        "x-request-id",
+        "x-session-id",
+        "x-trace-id",
+        "x-b3-traceid",
+    }
+    return {key: value for key, value in raw_request.headers.items() if key.lower() in allowlist}
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return {"__nonfinite_float__": repr(value)}
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        float_value = float(value)
+        if math.isfinite(float_value):
+            return float_value
+        return {"__nonfinite_float__": repr(float_value)}
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    if isinstance(value, dict):
+        return {str(key): _json_safe(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(child) for child in value]
+    return value
+
+
 def _find_non_finite_generate_value(
     response: GenerateResponse,
     *,
@@ -267,11 +401,7 @@ def _find_non_finite_generate_value(
         for token_offset, logprob in enumerate(choice.logprobs):
             if math.isfinite(logprob):
                 continue
-            token_id = (
-                choice.token_ids[token_offset]
-                if token_offset < completion_len
-                else None
-            )
+            token_id = choice.token_ids[token_offset] if token_offset < completion_len else None
             tokenizer = tokenizer_getter()
             return {
                 **common,
@@ -300,11 +430,7 @@ def _find_non_finite_generate_value(
         for token_offset, logprob in enumerate(response.prompt_logprobs):
             if logprob is None or math.isfinite(logprob):
                 continue
-            token_id = (
-                response.prompt_token_ids[token_offset]
-                if token_offset < prompt_len
-                else None
-            )
+            token_id = response.prompt_token_ids[token_offset] if token_offset < prompt_len else None
             tokenizer = tokenizer_getter()
             return {
                 **common,
