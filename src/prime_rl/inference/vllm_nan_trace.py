@@ -212,6 +212,7 @@ def _scheduler_new_request_summary(
     sampling_params = getattr(new_req, "sampling_params", None)
     return {
         "request_id": new_req.req_id,
+        "external_request_id_guess": _external_request_id_from_internal(new_req.req_id),
         "kind": "new",
         "prompt_len": len(new_req.prompt_token_ids or []),
         "max_tokens": getattr(sampling_params, "max_tokens", None),
@@ -238,6 +239,7 @@ def _scheduler_cached_request_summary(
 ) -> dict[str, Any]:
     return {
         "request_id": req_id,
+        "external_request_id_guess": _external_request_id_from_internal(req_id),
         "kind": "resumed" if resumed else "cached",
         "prompt_len": getattr(request, "num_prompt_tokens", None),
         "max_tokens": getattr(request, "max_tokens", None),
@@ -319,8 +321,12 @@ def _block_list_summary(block_ids: Any) -> dict[str, Any] | None:
 
 def _as_list(value: Any) -> list[Any]:
     if hasattr(value, "tolist"):
-        return value.tolist()
-    return list(value)
+        value = value.tolist()
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
 
 
 def _as_float(value: Any) -> float:
@@ -340,6 +346,17 @@ def _write_jsonl(stem: str, record: dict[str, Any]) -> None:
     with _WRITE_LOCK:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(line)
+
+
+def _external_request_id_from_internal(request_id: str) -> str:
+    # vLLM appends an internal child suffix for async generation; prime-rl's
+    # external /generate request id is the `gen-<hex>` prefix.
+    if not request_id.startswith("gen-"):
+        return request_id
+    parts = request_id.split("-")
+    if len(parts) >= 2:
+        return "-".join(parts[:2])
+    return request_id
 
 
 def _json_safe(value: Any) -> Any:
