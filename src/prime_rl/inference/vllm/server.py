@@ -136,7 +136,6 @@ def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> s
 logger = get_logger()
 from prime_rl.inference.patches import (
     monkey_patch_harmony_stop_token_propagation,
-    monkey_patch_load_lora_adapter,
     monkey_patch_tokenize_params_validation,
 )
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
@@ -147,11 +146,8 @@ from prime_rl.inference.vllm.serving_chat_with_tokens import (
 # NOTE: Fix harmony stop token propagation for GPT-OSS models
 # Upstream issue still open: https://github.com/vllm-project/vllm/issues/22519
 monkey_patch_harmony_stop_token_propagation()
-# NOTE: Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
-# May be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
-monkey_patch_load_lora_adapter()
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
-# Still needed in vLLM 0.19 — upstream rejects prompt_len > max_model_len - max_tokens
+# Still needed in vLLM 0.20.1 — upstream rejects prompt_len > max_model_len - max_tokens
 monkey_patch_tokenize_params_validation()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
@@ -204,6 +200,7 @@ async def update_weights(request: Request):
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
     """Wrapper around vLLM's /v1/load_lora_adapter."""
+    lora_request.load_inplace = True
     handler = models(raw_request)
     response = await handler.load_lora_adapter(lora_request)
     if isinstance(response, ErrorResponse):
