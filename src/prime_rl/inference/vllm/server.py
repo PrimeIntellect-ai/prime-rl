@@ -140,6 +140,7 @@ from prime_rl.inference.patches import (
     monkey_patch_harmony_stop_token_propagation,
     monkey_patch_load_lora_adapter,
     monkey_patch_tokenize_params_validation,
+    monkey_patch_vllm_nan_trace,
 )
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
@@ -155,6 +156,8 @@ monkey_patch_load_lora_adapter()
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
 # Still needed in vLLM 0.19 — upstream rejects prompt_len > max_model_len - max_tokens
 monkey_patch_tokenize_params_validation()
+# NOTE: Optional local diagnostics for vLLM scheduler/logprob NaN tracing.
+monkey_patch_vllm_nan_trace()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 

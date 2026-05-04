@@ -18,6 +18,7 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_ep_scatter()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_offloading_connector_cpu_block_count()
+    monkey_patch_vllm_nan_trace()
 
 
 @triton.jit
@@ -1058,6 +1059,12 @@ def monkey_patch_offloading_connector_cpu_block_count():
         )
 
     CPUOffloadingSpec.__init__ = _patched_init
+
+
+def monkey_patch_vllm_nan_trace():
+    from prime_rl.inference.vllm_nan_trace import install_vllm_nan_trace
+
+    install_vllm_nan_trace()
 
 
 def monkey_patch_no_moe_lora():
