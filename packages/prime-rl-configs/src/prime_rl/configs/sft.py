@@ -2,6 +2,8 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 from prime_rl.configs.shared import (
     HeartbeatConfig,
     SlurmConfig,
@@ -20,7 +22,6 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BaseDataConfig(BaseModel):

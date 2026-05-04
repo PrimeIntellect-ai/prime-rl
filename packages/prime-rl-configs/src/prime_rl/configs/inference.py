@@ -2,10 +2,11 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
-from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
+
+from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
+from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
 

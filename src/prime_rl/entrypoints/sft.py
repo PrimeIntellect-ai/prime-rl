@@ -7,12 +7,12 @@ from subprocess import Popen
 from threading import Event, Thread
 
 import tomli_w
-from prime_rl.configs.sft import SFTConfig
-from prime_rl.utils.config import cli
-from prime_rl.utils.logger import setup_logger
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
+from prime_rl.configs.sft import SFTConfig
 from prime_rl.trainer.model import pre_download_model
+from prime_rl.utils.config import cli
+from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process, set_proc_title
 from prime_rl.utils.utils import get_free_port

@@ -1,10 +1,11 @@
 from pathlib import Path
 from typing import Annotated
 
+from pydantic import Field, model_validator
+
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig
-from pydantic import Field, model_validator
 
 
 class EnvServerConfig(BaseConfig):

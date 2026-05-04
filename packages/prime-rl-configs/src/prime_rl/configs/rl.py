@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.orchestrator import (
@@ -48,7 +50,6 @@ from prime_rl.utils.validation import (
     validate_shared_wandb_config,
     validate_shared_weight_broadcast,
 )
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RLExperimentalConfig(BaseConfig):

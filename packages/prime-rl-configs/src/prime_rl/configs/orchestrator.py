@@ -2,6 +2,8 @@ import math
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -16,7 +18,6 @@ from prime_rl.configs.shared import (
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class OptimizerConfig(BaseConfig):

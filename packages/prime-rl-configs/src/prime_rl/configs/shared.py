@@ -2,8 +2,9 @@ import os
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from prime_rl.utils.config import BaseConfig
 from pydantic import BaseModel, Field, model_validator
+
+from prime_rl.utils.config import BaseConfig
 
 
 class SlurmConfig(BaseConfig):

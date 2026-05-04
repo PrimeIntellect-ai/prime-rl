@@ -11,12 +11,12 @@ from threading import Event, Thread
 
 import pynvml
 import tomli_w
-from prime_rl.configs.rl import RLConfig
-from prime_rl.utils.config import cli
-from prime_rl.utils.logger import get_logger, setup_logger
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
+from prime_rl.configs.rl import RLConfig
 from prime_rl.trainer.model import pre_download_model
+from prime_rl.utils.config import cli
+from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
     format_log_message,
