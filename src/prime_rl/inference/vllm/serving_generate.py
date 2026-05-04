@@ -28,7 +28,13 @@ from fastapi import Request
 from pydantic import BaseModel
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.openai.engine.protocol import ErrorInfo, ErrorResponse
-from vllm.inputs.engine import tokens_input
+
+try:
+    from vllm.inputs.engine import tokens_input
+except ImportError:
+    # vLLM 0.18.x used this name/path; keep the dirty repro branch able to
+    # compare the current generate path against the previous vLLM stack.
+    from vllm.inputs.data import token_inputs as tokens_input
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
