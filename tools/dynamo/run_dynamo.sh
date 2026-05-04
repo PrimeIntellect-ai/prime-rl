@@ -29,11 +29,17 @@ echo "[dynamo-smoke] Frontend PID: $FRONTEND_PID (log: $LOG_DIR/dynamo_frontend.
 sleep 5
 
 echo "[dynamo-smoke] Starting vLLM worker (model: $DYNAMO_MODEL)..."
+# --gpu-memory-utilization=0.45 caps vLLM at ~45% of GPU memory so the
+# colocated trainer (run via tools/dynamo/run_full_smoke.sh) has room.
+# On a single 96 GB GPU: ~43 GB to inference, ~50 GB to trainer.
+# Override with GPU_MEM_UTIL=<float> if you have headroom or constraints.
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.45}"
 DYN_SYSTEM_PORT=8081 python -m dynamo.vllm \
   --model "$DYNAMO_MODEL" \
   --enforce-eager \
   --max-model-len 2048 \
   --max-num-seqs 32 \
+  --gpu-memory-utilization "$GPU_MEM_UTIL" \
   > "$LOG_DIR/dynamo_vllm.log" 2>&1 &
 WORKER_PID=$!
 echo "[dynamo-smoke] Worker PID: $WORKER_PID (log: $LOG_DIR/dynamo_vllm.log)"
