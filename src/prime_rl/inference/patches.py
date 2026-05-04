@@ -1034,7 +1034,10 @@ def monkey_patch_offloading_connector_cpu_block_count():
 
     Upstream: https://github.com/vllm-project/vllm/pull/39617
     """
-    from vllm.v1.kv_offload.cpu.spec import CPUOffloadingSpec
+    try:
+        from vllm.v1.kv_offload.cpu.spec import CPUOffloadingSpec
+    except ModuleNotFoundError:
+        return
 
     _original_init = CPUOffloadingSpec.__init__
 
