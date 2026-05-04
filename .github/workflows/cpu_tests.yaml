@@ -38,3 +38,39 @@ jobs:
         run: PYTEST_OUTPUT_DIR=/tmp/outputs uv run pytest tests/unit -m "not gpu"
       - name: Cleanup output_dir
         run: rm -rf /tmp/outputs
+
+  slim-install:
+    name: Slim install (configs only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install prime-rl with no extras
+        run: |
+          uv venv --python 3.12 /tmp/slim
+          uv pip install --python /tmp/slim/bin/python .
+      - name: Verify configs import without heavy deps
+        run: |
+          /tmp/slim/bin/python - <<'PY'
+          import sys
+
+          from prime_rl.configs.rl import RLConfig
+          from prime_rl.configs.sft import SFTConfig
+          from prime_rl.configs.inference import InferenceConfig
+          from prime_rl.configs.orchestrator import OrchestratorConfig
+          from prime_rl.configs.trainer import TrainerConfig
+          from prime_rl.configs.env_server import EnvServerConfig
+          from prime_rl.utils.config import rgetattr, rsetattr
+
+          forbidden = ["torch", "transformers", "vllm", "wandb", "ring_flash_attn",
+                       "verifiers", "prime", "datasets", "liger_kernel"]
+          leaked = [m for m in forbidden if m in sys.modules]
+          if leaked:
+              raise SystemExit(f"slim install leaked heavy deps into sys.modules: {leaked}")
+          print("slim install OK — configs import with no heavy deps loaded")
+          PY
