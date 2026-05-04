@@ -27,9 +27,9 @@ prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
 
 [project.optional-dependencies]
 # Heavy runtime deps required to actually run trainer/orchestrator/inference.
-# `pip install prime-rl` gives you configs only; `pip install prime-rl[full]`
+# `pip install prime-rl` gives you configs only; `pip install prime-rl[train]`
 # gives you the full training stack (today's default behavior).
-full = [
+train = [
     "beartype>=0.21.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
@@ -95,7 +95,7 @@ quack = [
     "quack-kernels>=0.3.3",
 ]
 all = [
-    "prime-rl[full]",
+    "prime-rl[train]",
     "prime-rl[flash-attn]",
     "prime-rl[disagg]",
     "prime-rl[quack]",

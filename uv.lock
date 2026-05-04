@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-27T22:00:48.932789304Z"
+exclude-newer = "2026-04-27T22:07:07.049262488Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2755,7 +2755,13 @@ flash-attn-3 = [
 flash-attn-cute = [
     { name = "flash-attn-4", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-full = [
+gpt-oss = [
+    { name = "kernels", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+quack = [
+    { name = "quack-kernels", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+train = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "beartype", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2783,12 +2789,6 @@ full = [
     { name = "vllm", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "wandb", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-gpt-oss = [
-    { name = "kernels", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-]
-quack = [
-    { name = "quack-kernels", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -2806,23 +2806,23 @@ mamba-ssm = [
 requires-dist = [
     { name = "aime2024", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "aime2025", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "aiolimiter", marker = "extra == 'full'", specifier = ">=1.2.1" },
+    { name = "aiolimiter", marker = "extra == 'train'", specifier = ">=1.2.1" },
     { name = "alphabet-sort", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "beartype", marker = "extra == 'full'", specifier = ">=0.21.0" },
+    { name = "beartype", marker = "extra == 'train'", specifier = ">=0.21.0" },
     { name = "code-env", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "color-codeword", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "datasets", marker = "extra == 'full'", specifier = ">=4.0.0" },
+    { name = "datasets", marker = "extra == 'train'", specifier = ">=4.0.0" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" },
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/deep_gemm-2.3.0+477618c-cp312-cp312-linux_x86_64.whl" },
     { name = "deepdive", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "dion", marker = "extra == 'full'", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
+    { name = "dion", marker = "extra == 'train'", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "flash-attn-4", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
-    { name = "flash-linear-attention", marker = "extra == 'full'", git = "https://github.com/fla-org/flash-linear-attention" },
-    { name = "jaxtyping", marker = "extra == 'full'", specifier = ">=0.3.2" },
+    { name = "flash-linear-attention", marker = "extra == 'train'", git = "https://github.com/fla-org/flash-linear-attention" },
+    { name = "jaxtyping", marker = "extra == 'train'", specifier = ">=0.3.2" },
     { name = "kernels", marker = "extra == 'gpt-oss'" },
-    { name = "liger-kernel", marker = "extra == 'full'", specifier = ">=0.5.10" },
+    { name = "liger-kernel", marker = "extra == 'train'", specifier = ">=0.5.10" },
     { name = "logic-env", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "math-env", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
@@ -2831,42 +2831,42 @@ requires-dist = [
     { name = "mini-swe-agent-plus", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "nixl", marker = "extra == 'disagg'" },
     { name = "nixl-cu12", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" },
-    { name = "numpy", marker = "extra == 'full'", specifier = ">=2.2.6" },
-    { name = "nvidia-ml-py", marker = "extra == 'full'", specifier = ">=12.575.51" },
-    { name = "openai", marker = "extra == 'full'", specifier = ">=1.106.1" },
-    { name = "prime", marker = "extra == 'full'", specifier = ">=0.5.73" },
+    { name = "numpy", marker = "extra == 'train'", specifier = ">=2.2.6" },
+    { name = "nvidia-ml-py", marker = "extra == 'train'", specifier = ">=12.575.51" },
+    { name = "openai", marker = "extra == 'train'", specifier = ">=1.106.1" },
+    { name = "prime", marker = "extra == 'train'", specifier = ">=0.5.73" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn-3"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn-cute"], marker = "extra == 'all'" },
-    { name = "prime-rl", extras = ["full"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
-    { name = "pyarrow", marker = "extra == 'full'", specifier = ">=21.0.0" },
+    { name = "prime-rl", extras = ["train"], marker = "extra == 'all'" },
+    { name = "pyarrow", marker = "extra == 'train'", specifier = ">=21.0.0" },
     { name = "pydantic", specifier = ">=1.10.13" },
     { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?branch=main" },
-    { name = "pyzmq", marker = "extra == 'full'", specifier = ">=27.1.0" },
+    { name = "pyzmq", marker = "extra == 'train'", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.3.3" },
     { name = "reverse-text", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "rich", marker = "extra == 'full'", specifier = ">=14.0.0" },
-    { name = "ring-flash-attn", marker = "extra == 'full'", specifier = ">=0.1.8" },
+    { name = "rich", marker = "extra == 'train'", specifier = ">=14.0.0" },
+    { name = "ring-flash-attn", marker = "extra == 'train'", specifier = ">=0.1.8" },
     { name = "science-env", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "setproctitle", marker = "extra == 'full'", specifier = ">=1.3.0" },
-    { name = "tenacity", marker = "extra == 'full'", specifier = ">=8.2.0" },
-    { name = "tilelang", marker = "extra == 'full'", specifier = ">=0.1.8" },
+    { name = "setproctitle", marker = "extra == 'train'", specifier = ">=1.3.0" },
+    { name = "tenacity", marker = "extra == 'train'", specifier = ">=8.2.0" },
+    { name = "tilelang", marker = "extra == 'train'", specifier = ">=0.1.8" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
-    { name = "torch", marker = "extra == 'full'", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "torchdata", marker = "extra == 'full'", specifier = ">=0.11.0" },
-    { name = "torchtitan", marker = "extra == 'full'", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
-    { name = "transformers", marker = "extra == 'full'", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
-    { name = "uvloop", marker = "extra == 'full'", specifier = ">=0.21.0" },
-    { name = "verifiers", marker = "extra == 'full'", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=3b77145" },
-    { name = "vllm", marker = "extra == 'full'", specifier = ">=0.19.0" },
+    { name = "torch", marker = "extra == 'train'", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torchdata", marker = "extra == 'train'", specifier = ">=0.11.0" },
+    { name = "torchtitan", marker = "extra == 'train'", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
+    { name = "transformers", marker = "extra == 'train'", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
+    { name = "uvloop", marker = "extra == 'train'", specifier = ">=0.21.0" },
+    { name = "verifiers", marker = "extra == 'train'", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=3b77145" },
+    { name = "vllm", marker = "extra == 'train'", specifier = ">=0.19.0" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" },
-    { name = "wandb", marker = "extra == 'full'", specifier = ">=0.26.1" },
+    { name = "wandb", marker = "extra == 'train'", specifier = ">=0.26.1" },
     { name = "wiki-search", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
 ]
-provides-extras = ["full", "flash-attn", "flash-attn-3", "flash-attn-cute", "envs", "disagg", "gpt-oss", "quack", "all"]
+provides-extras = ["train", "flash-attn", "flash-attn-3", "flash-attn-cute", "envs", "disagg", "gpt-oss", "quack", "all"]
 
 [package.metadata.requires-dev]
 dev = [
