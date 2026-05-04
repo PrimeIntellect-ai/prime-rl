@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from argparse import Namespace
 from http import HTTPStatus
 from typing import Any
@@ -339,6 +340,8 @@ import vllm.entrypoints.openai.api_server
 import vllm.v1.utils
 from vllm.entrypoints.openai.api_server import build_app as _original_build_app
 
+_build_app_accepts_model_config = "model_config" in inspect.signature(_original_build_app).parameters
+
 try:
     from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server_worker_proc
 
@@ -356,7 +359,10 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     """
     Wrap build_app to include our custom router.
     """
-    app = _original_build_app(args, supported_tasks, model_config)
+    if _build_app_accepts_model_config:
+        app = _original_build_app(args, supported_tasks, model_config)
+    else:
+        app = _original_build_app(args, supported_tasks)
     app.include_router(router)
     return app
 
