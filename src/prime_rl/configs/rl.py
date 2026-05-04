@@ -651,18 +651,38 @@ class RLConfig(BaseConfig):
 
         return self
 
+    def _resolve_quant_scheme(self) -> Literal["fp8_blockwise", "fp8_channelwise"] | None:
+        """Auto-detect quantization scheme when inference model differs from trainer."""
+        if self.weight_broadcast.quantize_in_weight_transfer:
+            return None
+
+        inference_model = self.inference.model.name if self.inference else self.model.name
+        if inference_model == self.model.name:
+            return None
+
+        from prime_rl.trainer.models.fp8_dispatch import detect_quant_scheme
+
+        result = detect_quant_scheme(inference_model)
+        if result is None:
+            return None
+        return result[0]
+
     @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
         if self.weight_broadcast is not None:
             if self.weight_broadcast.type == "nccl":
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+                quant_scheme = self._resolve_quant_scheme()
+                inference_model_name = self.inference.model.name if self.inference else ""
                 self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     inference_world_size=inference_world_size,
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+                    quant_scheme=quant_scheme,
+                    inference_model_name=inference_model_name if quant_scheme else "",
                 )
                 self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
@@ -670,6 +690,7 @@ class RLConfig(BaseConfig):
                     timeout=self.weight_broadcast.timeout,
                     inference_world_size=inference_world_size,
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+                    quant_scheme=quant_scheme,
                 )
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()

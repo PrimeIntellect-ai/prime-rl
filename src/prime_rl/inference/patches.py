@@ -18,6 +18,7 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_ep_scatter()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_offloading_connector_cpu_block_count()
+    monkey_patch_layerwise_reload_spurious_warnings()
 
 
 @triton.jit
@@ -1086,3 +1087,30 @@ def monkey_patch_no_moe_lora():
         self.is_lora_enabled = False
 
     FusedMoEConfig.__post_init__ = _patched__post_init__
+
+
+def monkey_patch_layerwise_reload_spurious_warnings():
+    """Suppress spurious "Failed to load weights" warnings for container modules.
+
+    Container modules (ModuleList, Qwen3Attention, Qwen2MLP, etc.) have no
+    direct parameters, so load_numel stays at 0 during layerwise reload.
+    vLLM 0.19 warns unconditionally when kernel_tensors is not None, even
+    though the empty-dict ({}, {}) case is harmless.
+
+    Fixed upstream in vllm-project/vllm#38032 (commit 648edcf) by tightening
+    the condition to `load_numel_total > 0`. Remove this patch once we
+    upgrade to vLLM >= 0.20.
+    """
+    from vllm.model_executor.model_loader.reload import layerwise
+
+    _original_finalize = layerwise.finalize_layerwise_processing
+
+    def _patched_finalize(model, model_config):
+        for layer in model.modules():
+            info = layerwise.get_layerwise_info(layer)
+            if info.kernel_tensors is not None and info.load_numel_total == 0:
+                info.kernel_tensors = None
+        _original_finalize(model, model_config)
+
+    layerwise.finalize_layerwise_processing = _patched_finalize
+    layerwise.finalize_layerwise_reload = _patched_finalize
