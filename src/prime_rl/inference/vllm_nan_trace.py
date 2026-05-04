@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 _INSTALL_LOCK = threading.Lock()
 _OUTPUT_PATCHED = False
 _SCHEDULER_PATCHED = False
+_MODEL_RUNNER_PATCHED = False
 _WRITE_LOCK = threading.Lock()
 _ACTIVE_STATE_DUMPED: set[str] = set()
 
@@ -26,6 +27,7 @@ def install_vllm_nan_trace() -> None:
     with _INSTALL_LOCK:
         _patch_output_processor()
         _patch_scheduler()
+        _patch_model_runner()
 
 
 def _trace_dir() -> str | None:
@@ -44,6 +46,10 @@ def _trace_token_id() -> int | None:
 
 def _scheduler_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_SCHEDULER", "1") != "0"
+
+
+def _model_runner_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_MODEL_RUNNER", "1") != "0"
 
 
 def _active_state_trace_enabled() -> bool:
@@ -116,6 +122,45 @@ def _patch_scheduler() -> None:
 
     Scheduler.schedule = _patched_schedule
     _SCHEDULER_PATCHED = True
+
+
+def _patch_model_runner() -> None:
+    global _MODEL_RUNNER_PATCHED
+    if _MODEL_RUNNER_PATCHED:
+        return
+
+    try:
+        from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+    except Exception:
+        logger.exception("Failed to import vLLM GPUModelRunner for NaN tracing")
+        return
+
+    original_sample = GPUModelRunner._sample
+
+    def _patched_sample(self, logits, spec_decode_metadata):
+        if not _model_runner_trace_enabled() or logits is None:
+            return original_sample(self, logits, spec_decode_metadata)
+
+        req_ids = list(getattr(self.input_batch, "req_ids", []) or [])
+        before = _logits_row_counts(logits)
+        sampler_output = original_sample(self, logits, spec_decode_metadata)
+        try:
+            sampled_token_ids = _sampled_token_ids(sampler_output)
+            after = _logits_row_counts(logits)
+            _trace_model_runner_sample(
+                req_ids=req_ids,
+                logits=logits,
+                before=before,
+                after=after,
+                sampled_token_ids=sampled_token_ids,
+                spec_decode=spec_decode_metadata is not None,
+            )
+        except Exception:
+            logger.exception("Failed to trace vLLM model runner sample")
+        return sampler_output
+
+    GPUModelRunner._sample = _patched_sample
+    _MODEL_RUNNER_PATCHED = True
 
 
 def _trace_engine_core_outputs(output_processor: Any, engine_core_outputs: list[Any], timestamp: float | None) -> None:
@@ -263,6 +308,62 @@ def _trace_scheduler_output(scheduler: Any, scheduler_output: Any) -> None:
     )
 
 
+def _trace_model_runner_sample(
+    *,
+    req_ids: list[str],
+    logits: Any,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    sampled_token_ids: list[int | None],
+    spec_decode: bool,
+) -> None:
+    watched_token_id = _trace_token_id()
+    selected_rows: set[int] = set()
+
+    for row_idx, count in enumerate(before["nan_counts"]):
+        if count:
+            selected_rows.add(row_idx)
+    for row_idx, count in enumerate(after["nan_counts"]):
+        if count:
+            selected_rows.add(row_idx)
+    if watched_token_id is not None:
+        for row_idx, token_id in enumerate(sampled_token_ids):
+            if token_id == watched_token_id:
+                selected_rows.add(row_idx)
+
+    if not selected_rows:
+        return
+
+    rows = []
+    for row_idx in sorted(selected_rows):
+        req_id = req_ids[row_idx] if row_idx < len(req_ids) else None
+        rows.append(
+            {
+                "row_index": row_idx,
+                "request_id": req_id,
+                "external_request_id_guess": _external_request_id_from_internal(req_id) if req_id else None,
+                "sampled_token_id": sampled_token_ids[row_idx] if row_idx < len(sampled_token_ids) else None,
+                "before": _row_count_at(before, row_idx),
+                "after": _row_count_at(after, row_idx),
+            }
+        )
+
+    _write_jsonl(
+        "model_runner_samples",
+        {
+            "schema": "prime_rl.vllm_model_runner_sample_trace.v1",
+            "created_unix": time.time(),
+            "pid": os.getpid(),
+            "shape": list(logits.shape),
+            "dtype": str(getattr(logits, "dtype", "")),
+            "spec_decode": spec_decode,
+            "watched_token_id": watched_token_id,
+            "num_rows": len(req_ids),
+            "rows": rows,
+        },
+    )
+
+
 def _scheduler_new_request_summary(
     new_req: Any,
     *,
@@ -364,6 +465,38 @@ def _block_ids_summary(block_ids: Any) -> Any:
         return None
     groups = list(block_ids)
     return [_block_list_summary(group) for group in groups]
+
+
+def _logits_row_counts(logits: Any) -> dict[str, list[int]]:
+    finite = logits.isfinite()
+    nan_counts = logits.isnan().sum(dim=-1).detach().cpu().tolist()
+    posinf_counts = logits.isposinf().sum(dim=-1).detach().cpu().tolist()
+    neginf_counts = logits.isneginf().sum(dim=-1).detach().cpu().tolist()
+    finite_counts = finite.sum(dim=-1).detach().cpu().tolist()
+    return {
+        "nan_counts": [int(value) for value in nan_counts],
+        "posinf_counts": [int(value) for value in posinf_counts],
+        "neginf_counts": [int(value) for value in neginf_counts],
+        "finite_counts": [int(value) for value in finite_counts],
+    }
+
+
+def _row_count_at(counts: dict[str, list[int]], row_idx: int) -> dict[str, int | None]:
+    return {
+        key.removesuffix("_counts"): values[row_idx] if row_idx < len(values) else None
+        for key, values in counts.items()
+    }
+
+
+def _sampled_token_ids(sampler_output: Any) -> list[int | None]:
+    sampled = getattr(sampler_output, "sampled_token_ids", None)
+    if sampled is None:
+        return []
+    try:
+        values = sampled.detach().cpu().view(-1).tolist()
+    except Exception:
+        return []
+    return [int(value) if value is not None else None for value in values]
 
 
 def _request_state_output_token_ids(req_state: Any) -> list[int]:
