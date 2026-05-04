@@ -222,7 +222,7 @@ def test_single_node_inference_cli_override_preserves_explicit_backend_and_rpc_p
     assert config.data_parallel_rpc_port == 13345
 
 
-def test_single_node_inference_cli_override_rejects_explicit_default_router_port():
+def test_single_node_inference_cli_override_rejects_explicit_mismatched_router_port():
     with pytest.raises(ValidationError, match="must match deployment.router.port"):
         cli(
             InferenceConfig,
@@ -232,7 +232,7 @@ def test_single_node_inference_cli_override_rejects_explicit_default_router_port
                 "--server.port",
                 "8001",
                 "--deployment.router.port",
-                "8000",
+                "9000",
             ],
         )
 

@@ -532,13 +532,17 @@ class InferenceConfig(BaseConfig):
         default_backend_port = default_router_port + 100
         default_rpc_port = 13345
         server_port_explicit = "port" in self.server.model_fields_set
-        router_port_explicit = "port" in self.deployment.router.model_fields_set
         backend_port_explicit = "backend_port" in self.deployment.model_fields_set
         rpc_port_explicit = "data_parallel_rpc_port" in self.model_fields_set
+        stale_default_router_port = (
+            server_port_explicit
+            and self.server.port != default_router_port
+            and self.deployment.router.port == default_router_port
+        )
 
         if self.deployment.router.port is None:
             _set_derived_field(self.deployment.router, "port", self.server.port)
-        elif server_port_explicit and not router_port_explicit:
+        elif stale_default_router_port:
             _set_derived_field(self.deployment.router, "port", self.server.port)
         elif not server_port_explicit:
             _set_derived_field(self.server, "port", self.deployment.router.port)
