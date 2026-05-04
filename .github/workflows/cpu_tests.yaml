@@ -66,11 +66,10 @@ jobs:
           from prime_rl.configs.trainer import TrainerConfig
           from prime_rl.configs.env_server import EnvServerConfig
           from prime_rl.utils.config import BaseConfig, find_package_resource, rgetattr, rsetattr
-          from prime_rl.utils.logger import get_logger
           from prime_rl.utils.validation import validate_shared_ckpt_config
 
           forbidden = ["torch", "transformers", "vllm", "wandb", "ring_flash_attn",
-                       "verifiers", "prime", "datasets", "liger_kernel"]
+                       "verifiers", "prime", "datasets", "liger_kernel", "loguru"]
           leaked = [m for m in forbidden if m in sys.modules]
           if leaked:
               raise SystemExit(f"slim install leaked heavy deps into sys.modules: {leaked}")

@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -39,7 +40,6 @@ from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
-from prime_rl.utils.logger import get_logger
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
     validate_shared_max_async_level,
@@ -745,9 +745,10 @@ class RLConfig(BaseConfig):
                 self.inference.enable_lora = True
                 self.inference.max_lora_rank = self.trainer.model.lora.rank
             else:
-                get_logger().warning(
+                warnings.warn(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
-                    "make sure to set --enable_lora and --max-lora-rank."
+                    "make sure to set --enable_lora and --max-lora-rank.",
+                    stacklevel=2,
                 )
 
         return self
@@ -763,13 +764,15 @@ class RLConfig(BaseConfig):
         if self.trainer.enable_router_replay:
             if self.inference is not None:
                 if self.inference.enable_return_routed_experts is False:
-                    get_logger().warning(
-                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True."
+                    warnings.warn(
+                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True.",
+                        stacklevel=2,
                     )
                 self.inference.enable_return_routed_experts = True
             else:
-                get_logger().warning(
-                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server."
+                warnings.warn(
+                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server.",
+                    stacklevel=2,
                 )
         return self
 

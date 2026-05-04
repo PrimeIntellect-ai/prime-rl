@@ -10,6 +10,7 @@ dependencies = [
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
     "liger-kernel>=0.5.10",
+    "loguru>=0.7.3",
     "pyarrow>=21.0.0",
     "numpy>=2.2.6",
     "torch>=2.9.0",
