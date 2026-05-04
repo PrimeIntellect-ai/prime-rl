@@ -521,6 +521,9 @@ class InferenceConfig(BaseConfig):
         if self.deployment.type != "single_node":
             return self
 
+        default_router_port = 8000
+        default_backend_port = default_router_port + 100
+        default_rpc_port = 13345
         server_port_explicit = "port" in self.server.model_fields_set
 
         if self.deployment.router.port is None:
@@ -533,7 +536,10 @@ class InferenceConfig(BaseConfig):
                 f"({self.deployment.router.port}) for single-node deployments."
             )
 
-        if self.deployment.backend_port is None:
+        stale_default_backend_port = (
+            self.deployment.router.port != default_router_port and self.deployment.backend_port == default_backend_port
+        )
+        if self.deployment.backend_port is None or stale_default_backend_port:
             backend_port = self.deployment.router.port + 100
             if backend_port > 65535:
                 raise ValueError(
@@ -545,8 +551,11 @@ class InferenceConfig(BaseConfig):
         if self.deployment.backend_port == self.deployment.router.port:
             raise ValueError("deployment.backend_port must differ from deployment.router.port for single-node.")
 
-        if "data_parallel_rpc_port" not in self.model_fields_set:
-            rpc_port = 13345 + (self.deployment.router.port - 8000)
+        stale_default_rpc_port = (
+            self.deployment.router.port != default_router_port and self.data_parallel_rpc_port == default_rpc_port
+        )
+        if "data_parallel_rpc_port" not in self.model_fields_set or stale_default_rpc_port:
+            rpc_port = default_rpc_port + (self.deployment.router.port - default_router_port)
             if not (1 <= rpc_port <= 65535):
                 raise ValueError(
                     "data_parallel_rpc_port was not set and deployment.router.port "
