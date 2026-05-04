@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
-from prime_rl.utils.utils import rgetattr, rsetattr
+from prime_rl.utils.config import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
 
