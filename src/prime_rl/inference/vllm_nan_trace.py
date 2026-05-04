@@ -15,6 +15,7 @@ _INSTALL_LOCK = threading.Lock()
 _OUTPUT_PATCHED = False
 _SCHEDULER_PATCHED = False
 _MODEL_RUNNER_PATCHED = False
+_NEMOTRON_H_LAYERS_PATCHED = False
 _WRITE_LOCK = threading.Lock()
 _ACTIVE_STATE_DUMPED: set[str] = set()
 
@@ -28,6 +29,7 @@ def install_vllm_nan_trace() -> None:
         _patch_output_processor()
         _patch_scheduler()
         _patch_model_runner()
+        _patch_nemotron_h_layers()
 
 
 def _trace_dir() -> str | None:
@@ -50,6 +52,10 @@ def _scheduler_trace_enabled() -> bool:
 
 def _model_runner_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_MODEL_RUNNER", "1") != "0"
+
+
+def _nemotron_h_layer_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_NEMOTRON_H_LAYERS", "0") != "0"
 
 
 def _active_state_trace_enabled() -> bool:
@@ -181,6 +187,65 @@ def _patch_model_runner() -> None:
     GPUModelRunner.execute_model = _patched_execute_model
     GPUModelRunner._sample = _patched_sample
     _MODEL_RUNNER_PATCHED = True
+
+
+def _patch_nemotron_h_layers() -> None:
+    global _NEMOTRON_H_LAYERS_PATCHED
+    if _NEMOTRON_H_LAYERS_PATCHED:
+        return
+    if not _nemotron_h_layer_trace_enabled():
+        return
+
+    try:
+        from vllm.model_executor.models import nemotron_h
+    except Exception:
+        logger.exception("Failed to import vLLM NemotronH layers for NaN tracing")
+        return
+
+    for layer_type_name in (
+        "NemotronHMLPDecoderLayer",
+        "NemotronHMoEDecoderLayer",
+        "NemotronHMambaDecoderLayer",
+        "NemotronHAttentionDecoderLayer",
+    ):
+        layer_type = getattr(nemotron_h, layer_type_name, None)
+        if layer_type is None:
+            continue
+        _patch_nemotron_h_layer_type(layer_type, layer_type_name)
+
+    _NEMOTRON_H_LAYERS_PATCHED = True
+
+
+def _patch_nemotron_h_layer_type(layer_type: Any, layer_type_name: str) -> None:
+    original_init = layer_type.__init__
+    original_forward = layer_type.forward
+
+    def _patched_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        layer_idx = kwargs.get("layer_idx")
+        if layer_idx is None and len(args) >= 2:
+            layer_idx = args[1]
+        self._prime_nan_trace_layer_idx = layer_idx
+        self._prime_nan_trace_layer_type = layer_type_name
+
+    def _patched_forward(self, *args, **kwargs):
+        hidden_in = kwargs.get("hidden_states")
+        residual_in = kwargs.get("residual")
+        output = original_forward(self, *args, **kwargs)
+        try:
+            _trace_nemotron_h_layer_output(
+                layer_idx=getattr(self, "_prime_nan_trace_layer_idx", None),
+                layer_type=getattr(self, "_prime_nan_trace_layer_type", layer_type_name),
+                hidden_in=hidden_in,
+                residual_in=residual_in,
+                output=output,
+            )
+        except Exception:
+            logger.exception("Failed to trace NemotronH layer output")
+        return output
+
+    layer_type.__init__ = _patched_init
+    layer_type.forward = _patched_forward
 
 
 def _trace_engine_core_outputs(output_processor: Any, engine_core_outputs: list[Any], timestamp: float | None) -> None:
@@ -449,6 +514,62 @@ def _trace_model_runner_logits_state(
     )
 
 
+def _trace_nemotron_h_layer_output(
+    *,
+    layer_idx: int | None,
+    layer_type: str,
+    hidden_in: Any,
+    residual_in: Any,
+    output: Any,
+) -> None:
+    if not isinstance(output, tuple) or len(output) < 2:
+        return
+
+    hidden_out, residual_out = output[0], output[1]
+    hidden_out_bad = _tensor_has_nonfinite(hidden_out)
+    residual_out_bad = _tensor_has_nonfinite(residual_out)
+    if not (hidden_out_bad or residual_out_bad):
+        return
+
+    hidden_out_counts = _tensor_row_counts(hidden_out)
+    residual_out_counts = _tensor_row_counts(residual_out) if residual_out is not None else None
+    hidden_in_counts = _tensor_row_counts(hidden_in) if hidden_in is not None else None
+    residual_in_counts = _tensor_row_counts(residual_in) if residual_in is not None else None
+
+    selected_rows: set[int] = set()
+    _add_nonfinite_rows(selected_rows, hidden_out_counts)
+    if residual_out_counts is not None:
+        _add_nonfinite_rows(selected_rows, residual_out_counts)
+
+    rows = []
+    for row_idx in sorted(selected_rows):
+        rows.append(
+            {
+                "row_index": row_idx,
+                "hidden_in": _row_count_at(hidden_in_counts, row_idx) if hidden_in_counts else None,
+                "residual_in": _row_count_at(residual_in_counts, row_idx) if residual_in_counts else None,
+                "hidden_out": _row_count_at(hidden_out_counts, row_idx),
+                "residual_out": _row_count_at(residual_out_counts, row_idx) if residual_out_counts else None,
+            }
+        )
+
+    _write_jsonl(
+        "nemotron_h_layer_states",
+        {
+            "schema": "prime_rl.vllm_nemotron_h_layer_trace.v1",
+            "created_unix": time.time(),
+            "pid": os.getpid(),
+            "layer_idx": layer_idx,
+            "layer_type": layer_type,
+            "hidden_in": _tensor_meta(hidden_in),
+            "residual_in": _tensor_meta(residual_in),
+            "hidden_out": _tensor_meta(hidden_out),
+            "residual_out": _tensor_meta(residual_out),
+            "rows": rows,
+        },
+    )
+
+
 def _scheduler_new_request_summary(
     new_req: Any,
     *,
@@ -574,6 +695,28 @@ def _tensor_row_counts(tensor: Any) -> dict[str, list[int]]:
         "posinf_counts": [int(value) for value in posinf_counts],
         "neginf_counts": [int(value) for value in neginf_counts],
         "finite_counts": [int(value) for value in finite_counts],
+    }
+
+
+def _tensor_has_nonfinite(tensor: Any) -> bool:
+    if tensor is None or not hasattr(tensor, "isfinite"):
+        return False
+    return not bool(tensor.isfinite().all().detach().cpu().item())
+
+
+def _add_nonfinite_rows(selected_rows: set[int], counts: dict[str, list[int]]) -> None:
+    for key in ("nan_counts", "posinf_counts", "neginf_counts"):
+        for row_idx, count in enumerate(counts[key]):
+            if count:
+                selected_rows.add(row_idx)
+
+
+def _tensor_meta(tensor: Any) -> dict[str, Any] | None:
+    if tensor is None or not hasattr(tensor, "shape"):
+        return None
+    return {
+        "shape": list(tensor.shape),
+        "dtype": str(getattr(tensor, "dtype", "")),
     }
 
 
