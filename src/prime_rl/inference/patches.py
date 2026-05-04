@@ -1114,3 +1114,36 @@ def monkey_patch_layerwise_reload_spurious_warnings():
 
     layerwise.finalize_layerwise_processing = _patched_finalize
     layerwise.finalize_layerwise_reload = _patched_finalize
+
+    _patch_layerwise_skip_tensors()
+
+
+def _patch_layerwise_skip_tensors():
+    """Skip expert-map and bias tensors during layerwise reload weight-loader wrapping.
+
+    Without this, initialize_online_processing wraps weight_loaders on tensors
+    like _expert_map and e_score_correction_bias, causing OOM when they are
+    materialized from meta device during reload.
+
+    Upstream: https://github.com/vllm-project/vllm/pull/38746
+    Remove this patch once we upgrade to vLLM >= 0.20.
+    """
+    from vllm.model_executor.model_loader.reload import layerwise, meta
+    from vllm.model_executor.model_loader.reload.utils import get_layer_tensors
+
+    meta.SKIP_TENSORS.add("e_score_correction_bias")
+
+    def _patched_init_online(layer):
+        info = layerwise.get_layerwise_info(layer)
+        from vllm.model_executor.model_loader.reload.utils import get_layer_size
+
+        info.load_numel = 0
+        info.load_numel_total = get_layer_size(layer)
+
+        for name, tensor in get_layer_tensors(layer).items():
+            if name in meta.SKIP_TENSORS:
+                continue
+            if layerwise._get_weight_loader(tensor).__name__ != "online_process_loader":
+                tensor.weight_loader = layerwise.make_online_process_loader(layer, name)
+
+    layerwise.initialize_online_processing = _patched_init_online
