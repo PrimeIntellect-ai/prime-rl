@@ -135,7 +135,26 @@ def _patch_model_runner() -> None:
         logger.exception("Failed to import vLLM GPUModelRunner for NaN tracing")
         return
 
+    original_execute_model = GPUModelRunner.execute_model
     original_sample = GPUModelRunner._sample
+
+    def _patched_execute_model(self, *args, **kwargs):
+        result = original_execute_model(self, *args, **kwargs)
+        if not _model_runner_trace_enabled():
+            return result
+
+        try:
+            state = getattr(self, "execute_model_state", None)
+            if state is not None:
+                _trace_model_runner_logits_state(
+                    req_ids=list(getattr(self.input_batch, "req_ids", []) or []),
+                    logits=getattr(state, "logits", None),
+                    sample_hidden_states=getattr(state, "sample_hidden_states", None),
+                    spec_decode=getattr(state, "spec_decode_metadata", None) is not None,
+                )
+        except Exception:
+            logger.exception("Failed to trace vLLM model runner logits state")
+        return result
 
     def _patched_sample(self, logits, spec_decode_metadata):
         if not _model_runner_trace_enabled() or logits is None:
@@ -159,6 +178,7 @@ def _patch_model_runner() -> None:
             logger.exception("Failed to trace vLLM model runner sample")
         return sampler_output
 
+    GPUModelRunner.execute_model = _patched_execute_model
     GPUModelRunner._sample = _patched_sample
     _MODEL_RUNNER_PATCHED = True
 
@@ -364,6 +384,71 @@ def _trace_model_runner_sample(
     )
 
 
+def _trace_model_runner_logits_state(
+    *,
+    req_ids: list[str],
+    logits: Any,
+    sample_hidden_states: Any,
+    spec_decode: bool,
+) -> None:
+    if logits is None or sample_hidden_states is None:
+        return
+
+    hidden_counts = _tensor_row_counts(sample_hidden_states)
+    logits_counts = _tensor_row_counts(logits)
+    selected_rows: set[int] = set()
+    for row_idx, count in enumerate(hidden_counts["nan_counts"]):
+        if count:
+            selected_rows.add(row_idx)
+    for row_idx, count in enumerate(logits_counts["nan_counts"]):
+        if count:
+            selected_rows.add(row_idx)
+    for row_idx, count in enumerate(hidden_counts["posinf_counts"]):
+        if count:
+            selected_rows.add(row_idx)
+    for row_idx, count in enumerate(hidden_counts["neginf_counts"]):
+        if count:
+            selected_rows.add(row_idx)
+    for row_idx, count in enumerate(logits_counts["posinf_counts"]):
+        if count:
+            selected_rows.add(row_idx)
+    for row_idx, count in enumerate(logits_counts["neginf_counts"]):
+        if count:
+            selected_rows.add(row_idx)
+
+    if not selected_rows:
+        return
+
+    rows = []
+    for row_idx in sorted(selected_rows):
+        req_id = req_ids[row_idx] if row_idx < len(req_ids) else None
+        rows.append(
+            {
+                "row_index": row_idx,
+                "request_id": req_id,
+                "external_request_id_guess": _external_request_id_from_internal(req_id) if req_id else None,
+                "hidden": _row_count_at(hidden_counts, row_idx),
+                "logits": _row_count_at(logits_counts, row_idx),
+            }
+        )
+
+    _write_jsonl(
+        "model_runner_logits",
+        {
+            "schema": "prime_rl.vllm_model_runner_logits_trace.v1",
+            "created_unix": time.time(),
+            "pid": os.getpid(),
+            "hidden_shape": list(sample_hidden_states.shape),
+            "hidden_dtype": str(getattr(sample_hidden_states, "dtype", "")),
+            "logits_shape": list(logits.shape),
+            "logits_dtype": str(getattr(logits, "dtype", "")),
+            "spec_decode": spec_decode,
+            "num_rows": len(req_ids),
+            "rows": rows,
+        },
+    )
+
+
 def _scheduler_new_request_summary(
     new_req: Any,
     *,
@@ -468,10 +553,21 @@ def _block_ids_summary(block_ids: Any) -> Any:
 
 
 def _logits_row_counts(logits: Any) -> dict[str, list[int]]:
-    finite = logits.isfinite()
-    nan_counts = logits.isnan().sum(dim=-1).detach().cpu().tolist()
-    posinf_counts = logits.isposinf().sum(dim=-1).detach().cpu().tolist()
-    neginf_counts = logits.isneginf().sum(dim=-1).detach().cpu().tolist()
+    return _tensor_row_counts(logits)
+
+
+def _tensor_row_counts(tensor: Any) -> dict[str, list[int]]:
+    if len(tensor.shape) == 0:
+        rows = tensor.reshape(1, 1)
+    elif len(tensor.shape) == 1:
+        rows = tensor.reshape(tensor.shape[0], 1)
+    else:
+        rows = tensor.reshape(tensor.shape[0], -1)
+
+    finite = rows.isfinite()
+    nan_counts = rows.isnan().sum(dim=-1).detach().cpu().tolist()
+    posinf_counts = rows.isposinf().sum(dim=-1).detach().cpu().tolist()
+    neginf_counts = rows.isneginf().sum(dim=-1).detach().cpu().tolist()
     finite_counts = finite.sum(dim=-1).detach().cpu().tolist()
     return {
         "nan_counts": [int(value) for value in nan_counts],
