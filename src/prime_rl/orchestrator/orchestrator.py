@@ -5,6 +5,7 @@ import time
 
 import tomli_w
 
+import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
@@ -31,10 +32,12 @@ monkey_patch_chat_completion_logprobs()
 
 import pandas as pd
 import verifiers as vf
+from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.utils.config import cli
+from prime_rl.utils.logger import setup_logger
 from renderers.base import create_renderer
 from transformers import AutoProcessor
 
-from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs, TrainEnvs
@@ -57,9 +60,7 @@ from prime_rl.utils.client import (
     init_nccl_broadcast,
     setup_inference_pool,
 )
-from prime_rl.utils.config import cli
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import (

@@ -1,8 +1,6 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.orchestrator import (
@@ -38,7 +36,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
-from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -50,6 +48,7 @@ from prime_rl.utils.validation import (
     validate_shared_wandb_config,
     validate_shared_weight_broadcast,
 )
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RLExperimentalConfig(BaseConfig):
@@ -957,13 +956,12 @@ class RLConfig(BaseConfig):
     def auto_setup_slurm_template(self):
         """Auto-setup the default single-node/multi-node SLURM template if no custom template is provided."""
         if self.slurm is not None and self.slurm.template_path is None:
-            import prime_rl
-
-            templates_dir = Path(prime_rl.__file__).parent / "templates"
-            if self.deployment.type == "single_node":
-                self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
-            else:
-                self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
+            templates_dir = find_package_resource("templates")
+            if templates_dir is not None:
+                if self.deployment.type == "single_node":
+                    self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
+                else:
+                    self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
         return self
 
     ### Warnings

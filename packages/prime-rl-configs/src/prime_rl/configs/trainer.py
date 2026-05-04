@@ -2,8 +2,6 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
-
 from prime_rl.configs.shared import (
     BaseModelConfig,
     FileSystemTransportConfig,
@@ -14,6 +12,7 @@ from prime_rl.configs.shared import (
     WandbConfig,
 )
 from prime_rl.utils.config import BaseConfig
+from pydantic import BaseModel, Field, model_validator
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 

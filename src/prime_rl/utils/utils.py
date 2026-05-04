@@ -12,7 +12,6 @@ from typing import Any, Callable
 import torch
 import torch.distributed as dist
 import wandb
-
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig
 from prime_rl.utils.logger import get_logger
 
@@ -39,77 +38,6 @@ def import_object(dotted_path: str) -> Any:
     module_path, _, name = dotted_path.rpartition(".")
     module = importlib.import_module(module_path)
     return getattr(module, name)
-
-
-def rgetattr(obj: Any, attr_path: str) -> Any:
-    """
-    Try to get a (nested) attribute from an object. For example:
-
-    ```python
-    class Foo:
-        bar = "baz"
-
-    class Bar:
-        foo = Foo()
-
-    foo = Foo()
-    bar = Bar()
-    ```
-
-    Here, the following holds:
-    - `getattr(foo, "bar")` will return `"baz"`.
-    - `getattr(bar, "foo)` will return an object of type `Foo`.
-    - `getattr(bar, "foo.bar")` will error
-
-    This function solves this. `rgetattr(bar, "foo.bar")` will return `"baz"`.
-
-    Args:
-        obj: The object to get the attribute from.
-        attr_path: The path to the attribute, nested using `.` as separator.
-
-    Returns:
-        The attribute
-    """
-    attrs = attr_path.split(".")
-    current = obj
-
-    for attr in attrs:
-        if not hasattr(current, attr):
-            raise AttributeError(f"'{type(current).__name__}' object has no attribute '{attr}'")
-        current = getattr(current, attr)
-
-    return current
-
-
-def rsetattr(obj: Any, attr_path: str, value: Any) -> None:
-    """
-    Try to set a (nested) attribute from an object. For example:
-
-    ```python
-    class Foo:
-        bar = "baz"
-
-    class Bar:
-        foo = Foo()
-
-    foo = Foo()
-    bar = Bar()
-    ```
-
-    Here, the following holds:
-    - `rsetattr(bar, "foo.bar", "qux")` will set `bar.foo.bar` to `"qux"`.
-    - `rsetattr(bar, "foo.bar", "qux")` will set `bar.foo.bar` to `"qux"`.
-
-    Args:
-        obj: The object to set the attribute on.
-        attr_path: The path to the attribute, nested using `.` as separator.
-        value: The value to set the attribute to.
-    """
-    if "." not in attr_path:
-        return setattr(obj, attr_path, value)
-    attr_path, attr = attr_path.rsplit(".", 1)
-    obj = rgetattr(obj, attr_path)
-    setattr(obj, attr, value)
 
 
 def capitalize(s: str) -> str:

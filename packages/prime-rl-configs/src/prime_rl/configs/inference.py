@@ -2,11 +2,10 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
+from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
+from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
-
-from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
-from prime_rl.utils.utils import rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
 
@@ -450,10 +449,9 @@ class InferenceConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         if self.slurm is not None and self.slurm.template_path is None:
-            import prime_rl
-
-            templates_dir = Path(prime_rl.__file__).parent / "templates"
-            self.slurm.template_path = templates_dir / "inference.sbatch.j2"
+            templates_dir = find_package_resource("templates")
+            if templates_dir is not None:
+                self.slurm.template_path = templates_dir / "inference.sbatch.j2"
         return self
 
     @model_validator(mode="after")
