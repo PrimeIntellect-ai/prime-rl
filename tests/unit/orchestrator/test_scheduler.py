@@ -174,3 +174,25 @@ def test_client_identity_distinguishes_base_url_and_dp_rank():
     )
 
     assert Scheduler._client_identity(client_a) != Scheduler._client_identity(client_b)
+
+
+def test_log_group_created_includes_example_mapping():
+    scheduler = make_scheduler()
+    scheduler.step = 42
+
+    scheduler._log_group_created(
+        group_id=7,
+        example={
+            "example_id": 2332,
+            "env_name": "opencode-swe",
+            "info": {"instance_id": "brazilian-utils__brutils-python-126"},
+        },
+    )
+
+    scheduler.logger.info.assert_called_once()
+    message = scheduler.logger.info.call_args.args[0]
+    assert "step=42" in message
+    assert "group_id=7" in message
+    assert "example_id=2332" in message
+    assert "instance_id=brazilian-utils__brutils-python-126" in message
+    assert "env_name=opencode-swe" in message

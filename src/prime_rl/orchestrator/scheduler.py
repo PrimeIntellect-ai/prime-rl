@@ -262,8 +262,23 @@ class Scheduler:
         group_id = self.next_group_id
         self.next_group_id += 1
         self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.rollouts_per_example)
+        self._log_group_created(group_id=group_id, example=example)
         await self.schedule_rollout(group_id=group_id)
         return True
+
+    def _log_group_created(self, group_id: int, example: dict) -> None:
+        info = example.get("info") or {}
+        instance_id = info.get("instance_id") if isinstance(info, dict) else None
+        parts = [
+            "Created rollout group",
+            f"step={self.step}",
+            f"group_id={group_id}",
+            f"example_id={example.get('example_id')}",
+        ]
+        if instance_id:
+            parts.append(f"instance_id={instance_id}")
+        parts.append(f"env_name={example.get('env_name')}")
+        self.logger.info(" | ".join(parts))
 
     async def _fill_inflight_requests(self) -> None:
         while await self._schedule_next_request():
