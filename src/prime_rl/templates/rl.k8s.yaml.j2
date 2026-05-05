@@ -1,0 +1,234 @@
+{#-
+  Minimal k8s manifest for an RL run. Mirrors the slurm sbatch template:
+  - ConfigMap embeds the rendered trainer/orchestrator/inference TOMLs
+  - One StatefulSet per role, mounts ConfigMap at /etc/prime-rl/configs/
+  - Headless services give stable DNS for trainer rendezvous and inference URLs
+  - Single PVC for outputs, mounted at {{ output_mount }} in every pod
+
+  Currently assumes single-node-per-inference-replica (no router fanout) and
+  single-node training rendezvous via trainer-0. Disagg PD / multi-node
+  inference replicas are intentionally out of scope for the minimal cut.
+-#}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ job_name }}-configs
+  namespace: {{ namespace }}
+data:
+{%- for filename, content in configs.items() %}
+  {{ filename }}: |
+{{ content | indent(4, first=True) }}
+{%- endfor %}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ job_name }}-outputs
+  namespace: {{ namespace }}
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: {{ storage_class }}
+  resources:
+    requests:
+      storage: {{ storage_size }}
+---
+{#Headless services for stable per-pod DNS #}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ job_name }}-trainer-headless
+  namespace: {{ namespace }}
+spec:
+  clusterIP: None
+  selector:
+    app: {{ job_name }}
+    role: trainer
+  ports:
+  - {name: rdzv, port: {{ master_port }}}
+{%- if has_inference %}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ job_name }}-inference-headless
+  namespace: {{ namespace }}
+spec:
+  clusterIP: None
+  selector:
+    app: {{ job_name }}
+    role: inference
+  ports:
+  - {name: api, port: {{ inference_port }}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ job_name }}-orchestrator-headless
+  namespace: {{ namespace }}
+spec:
+  clusterIP: None
+  selector:
+    app: {{ job_name }}
+    role: orchestrator
+  ports:
+  - {name: api, port: 8000}
+{%- endif %}
+---
+{#Trainer StatefulSet #}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ job_name }}-trainer
+  namespace: {{ namespace }}
+spec:
+  serviceName: {{ job_name }}-trainer-headless
+  replicas: {{ num_train_nodes }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: {app: {{ job_name }}, role: trainer}
+  template:
+    metadata:
+      labels: {app: {{ job_name }}, role: trainer}
+    spec:
+      {%- if gpu_runtime_class %}
+      runtimeClassName: {{ gpu_runtime_class }}
+      {%- endif %}
+      {%- if node_selector %}
+      nodeSelector:
+        {%- for k, v in node_selector.items() %}
+        {{ k }}: {{ v | tojson }}
+        {%- endfor %}
+      {%- endif %}
+      containers:
+      - name: trainer
+        image: {{ image }}
+        imagePullPolicy: {{ image_pull_policy }}
+        command: ["bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          export NODE_RANK=${HOSTNAME##*-}
+          export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+          uv run torchrun \
+            --nnodes={{ num_train_nodes }} \
+            --nproc-per-node={{ gpus_per_node }} \
+            --node-rank=$NODE_RANK \
+            --rdzv-id={{ job_name }} \
+            --rdzv-backend=c10d \
+            --rdzv-endpoint={{ job_name }}-trainer-0.{{ job_name }}-trainer-headless.{{ namespace }}.svc.cluster.local:{{ master_port }} \
+            --local-ranks-filter={{ ranks_filter }} \
+            -m prime_rl.trainer.rl.train \
+            @ /etc/prime-rl/configs/trainer.toml
+        env:
+        - {name: HF_HUB_OFFLINE, value: "0"}
+        {%- if secret_name %}
+        - {name: WANDB_API_KEY, valueFrom: {secretKeyRef: {name: {{ secret_name }}, key: wandb-api-key, optional: true}}}
+        - {name: HF_TOKEN, valueFrom: {secretKeyRef: {name: {{ secret_name }}, key: hf-token, optional: true}}}
+        {%- endif %}
+        resources:
+          limits:
+            nvidia.com/gpu: {{ gpus_per_node }}
+        volumeMounts:
+        - {name: configs, mountPath: /etc/prime-rl/configs, readOnly: true}
+        - {name: outputs, mountPath: {{ output_mount }}}
+        - {name: dshm, mountPath: /dev/shm}
+      volumes:
+      - {name: configs, configMap: {name: {{ job_name }}-configs}}
+      - {name: outputs, persistentVolumeClaim: {claimName: {{ job_name }}-outputs}}
+      - {name: dshm, emptyDir: {medium: Memory, sizeLimit: 16Gi}}
+{%- if has_inference %}
+---
+{#Inference StatefulSet (one pod per replica) #}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ job_name }}-inference
+  namespace: {{ namespace }}
+spec:
+  serviceName: {{ job_name }}-inference-headless
+  replicas: {{ num_infer_replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: {app: {{ job_name }}, role: inference}
+  template:
+    metadata:
+      labels: {app: {{ job_name }}, role: inference}
+    spec:
+      {%- if gpu_runtime_class %}
+      runtimeClassName: {{ gpu_runtime_class }}
+      {%- endif %}
+      {%- if node_selector %}
+      nodeSelector:
+        {%- for k, v in node_selector.items() %}
+        {{ k }}: {{ v | tojson }}
+        {%- endfor %}
+      {%- endif %}
+      containers:
+      - name: inference
+        image: {{ image }}
+        imagePullPolicy: {{ image_pull_policy }}
+        command: ["bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          uv run inference \
+            @ /etc/prime-rl/configs/inference.toml \
+            --server.host 0.0.0.0 \
+            --server.port {{ inference_port }}
+        ports:
+        - {containerPort: {{ inference_port }}, name: api}
+        env:
+        {%- if secret_name %}
+        - {name: HF_TOKEN, valueFrom: {secretKeyRef: {name: {{ secret_name }}, key: hf-token, optional: true}}}
+        {%- endif %}
+        resources:
+          limits:
+            nvidia.com/gpu: {{ gpus_per_node }}
+        volumeMounts:
+        - {name: configs, mountPath: /etc/prime-rl/configs, readOnly: true}
+        - {name: outputs, mountPath: {{ output_mount }}}
+        - {name: dshm, mountPath: /dev/shm}
+      volumes:
+      - {name: configs, configMap: {name: {{ job_name }}-configs}}
+      - {name: outputs, persistentVolumeClaim: {claimName: {{ job_name }}-outputs}}
+      - {name: dshm, emptyDir: {medium: Memory, sizeLimit: 16Gi}}
+---
+{#Orchestrator StatefulSet (single pod, no GPU) #}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ job_name }}-orchestrator
+  namespace: {{ namespace }}
+spec:
+  serviceName: {{ job_name }}-orchestrator-headless
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ job_name }}, role: orchestrator}
+  template:
+    metadata:
+      labels: {app: {{ job_name }}, role: orchestrator}
+    spec:
+      containers:
+      - name: orchestrator
+        image: {{ image }}
+        imagePullPolicy: {{ image_pull_policy }}
+        command: ["bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          uv run orchestrator \
+            @ /etc/prime-rl/configs/orchestrator.toml \
+            --client.base-url $INFER_URLS
+        env:
+        - {name: INFER_URLS, value: "{{ infer_urls }}"}
+        {%- if secret_name %}
+        - {name: WANDB_API_KEY, valueFrom: {secretKeyRef: {name: {{ secret_name }}, key: wandb-api-key, optional: true}}}
+        - {name: HF_TOKEN, valueFrom: {secretKeyRef: {name: {{ secret_name }}, key: hf-token, optional: true}}}
+        {%- endif %}
+        volumeMounts:
+        - {name: configs, mountPath: /etc/prime-rl/configs, readOnly: true}
+        - {name: outputs, mountPath: {{ output_mount }}}
+      volumes:
+      - {name: configs, configMap: {name: {{ job_name }}-configs}}
+      - {name: outputs, persistentVolumeClaim: {claimName: {{ job_name }}-outputs}}
+{%- endif %}

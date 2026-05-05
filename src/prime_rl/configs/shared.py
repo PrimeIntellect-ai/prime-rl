@@ -78,6 +78,80 @@ class SlurmConfig(BaseConfig):
         return self
 
 
+class K8sConfig(BaseConfig):
+    """Configures Kubernetes deployment. Mirrors SlurmConfig: the launcher
+    writes per-component TOMLs and renders a Jinja manifest with a ConfigMap
+    holding those TOMLs and StatefulSets that mount it at /etc/prime-rl/configs.
+    """
+
+    job_name: Annotated[
+        str, Field(description="Used to name all resources (StatefulSets, Services, ConfigMap, PVC).")
+    ] = "prime-rl"
+
+    namespace: Annotated[str, Field(description="Kubernetes namespace to deploy into.")] = "default"
+
+    image: Annotated[
+        str, Field(description="Container image with prime-rl pre-installed (e.g. primeintellect/prime-rl:main).")
+    ]
+
+    image_pull_policy: Annotated[
+        Literal["Always", "IfNotPresent", "Never"], Field(description="imagePullPolicy for all pods.")
+    ] = "IfNotPresent"
+
+    template_path: Annotated[
+        Path | None,
+        Field(description="Path to the k8s manifest Jinja template. If None, uses the default bundled template."),
+    ] = None
+
+    storage_class: Annotated[
+        str, Field(description="StorageClass for the outputs PVC. Must support ReadWriteMany.")
+    ] = "nfs"
+
+    storage_size: Annotated[str, Field(description="Size of the outputs PVC.")] = "100Gi"
+
+    output_mount: Annotated[
+        Path,
+        Field(description="In-pod mount path for the outputs PVC. The TOML output_dir must live under this path."),
+    ] = Path("/data")
+
+    local_output_dir: Annotated[
+        Path,
+        Field(description="Launcher-local directory where the rendered manifest and intermediate TOMLs are written."),
+    ] = Path("./k8s-runs")
+
+    gpu_runtime_class: Annotated[
+        str | None, Field(description="runtimeClassName for GPU pods (e.g. 'nvidia'). None to omit.")
+    ] = "nvidia"
+
+    secret_name: Annotated[
+        str | None,
+        Field(
+            description="Optional Secret holding wandb-api-key and hf-token; injected as WANDB_API_KEY and HF_TOKEN."
+        ),
+    ] = None
+
+    node_selector: Annotated[dict[str, str], Field(description="nodeSelector applied to all StatefulSets.")] = {}
+
+    submit: Annotated[Literal["kubectl", "dry"], Field(description="'kubectl' to apply, 'dry' to render only.")] = (
+        "kubectl"
+    )
+
+    @property
+    def template_vars(self) -> dict:
+        return {
+            "job_name": self.job_name,
+            "namespace": self.namespace,
+            "image": self.image,
+            "image_pull_policy": self.image_pull_policy,
+            "storage_class": self.storage_class,
+            "storage_size": self.storage_size,
+            "output_mount": str(self.output_mount),
+            "gpu_runtime_class": self.gpu_runtime_class,
+            "secret_name": self.secret_name,
+            "node_selector": self.node_selector,
+        }
+
+
 ServerType = Literal["vllm", "openai"]
 
 

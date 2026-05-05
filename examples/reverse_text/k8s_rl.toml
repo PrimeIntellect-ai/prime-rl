@@ -1,0 +1,18 @@
+# Usage: uv run rl @ examples/reverse_text/rl.toml @ examples/reverse_text/k8s_rl.toml
+# Renders manifests to ./k8s-runs/reverse-text-rl/rl.k8s.yaml and `kubectl apply`.
+output_dir = "/data/runs/reverse-text-rl"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 1
+gpus_per_node = 1
+
+[k8s]
+job_name = "reverse-text-rl"
+namespace = "default"
+image = "primeintellect/prime-rl:main"
+storage_class = "nfs"
+storage_size = "100Gi"
+# secret_name = "prime-rl-secrets"  # optional: kubectl create secret generic prime-rl-secrets --from-literal=wandb-api-key=... --from-literal=hf-token=...

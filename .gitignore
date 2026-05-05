@@ -199,3 +199,4 @@ debug_I2_zero_band
 .idea
 
 outputs/
+k8s-runs/

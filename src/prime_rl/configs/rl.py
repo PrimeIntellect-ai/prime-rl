@@ -18,6 +18,7 @@ from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
 from prime_rl.configs.shared import (
+    K8sConfig,
     SlurmConfig,
     VLMConfig,
     WandbConfig,
@@ -358,6 +359,10 @@ class RLConfig(BaseConfig):
 
     slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
 
+    k8s: Annotated[K8sConfig | None, Field(description="Kubernetes configuration. Mutually exclusive with slurm.")] = (
+        None
+    )
+
     dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
 
     experimental: Annotated[
@@ -370,8 +375,8 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_deployment(self):
         if self.deployment.type == "multi_node":
-            if self.slurm is None:
-                raise ValueError("Must use SLURM for multi-node deployment.")
+            if self.slurm is None and self.k8s is None:
+                raise ValueError("Must use SLURM or k8s for multi-node deployment.")
             if self.deployment.num_infer_nodes > 0 and not self.inference:
                 raise ValueError("Must configure inference when using multi-node deployment with inference nodes.")
             if self.deployment.num_infer_nodes == 0 and self.inference:
@@ -964,6 +969,20 @@ class RLConfig(BaseConfig):
                 self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
             else:
                 self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_k8s_template(self):
+        if self.k8s is not None and self.k8s.template_path is None:
+            import prime_rl
+
+            self.k8s.template_path = Path(prime_rl.__file__).parent / "templates" / "rl.k8s.yaml.j2"
+        return self
+
+    @model_validator(mode="after")
+    def slurm_xor_k8s(self):
+        if self.slurm is not None and self.k8s is not None:
+            raise ValueError("Set either [slurm] or [k8s], not both.")
         return self
 
     ### Warnings

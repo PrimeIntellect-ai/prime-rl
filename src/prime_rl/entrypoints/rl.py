@@ -31,6 +31,7 @@ from prime_rl.utils.utils import (
 
 RL_TOML = "rl.toml"
 RL_SBATCH = "rl.sbatch"
+RL_K8S_YAML = "rl.k8s.yaml"
 
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
@@ -478,6 +479,93 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
     script_path.write_text(script)
 
 
+def _build_infer_urls(job_name: str, namespace: str, num_replicas: int, port: int) -> str:
+    return ",".join(
+        f"http://{job_name}-inference-{i}.{job_name}-inference-headless.{namespace}.svc.cluster.local:{port}/v1"
+        for i in range(num_replicas)
+    )
+
+
+def write_k8s_manifest(config: RLConfig, config_dir: Path, manifest_path: Path) -> None:
+    """Render the k8s manifest from rendered TOML subconfigs."""
+    from jinja2 import Environment, FileSystemLoader
+
+    assert config.k8s is not None
+    assert config.k8s.template_path is not None
+    assert config.deployment.type == "multi_node", "k8s currently supports multi_node deployments only"
+
+    configs = {
+        TRAINER_TOML: (config_dir / TRAINER_TOML).read_text(),
+        ORCHESTRATOR_TOML: (config_dir / ORCHESTRATOR_TOML).read_text(),
+    }
+    if config.inference is not None:
+        configs[INFERENCE_TOML] = (config_dir / INFERENCE_TOML).read_text()
+
+    total_bytes = sum(len(v.encode()) for v in configs.values())
+    if total_bytes > 900_000:
+        raise ValueError(f"Configs too large for ConfigMap ({total_bytes} bytes); split or use a PVC.")
+
+    inference_port = (
+        getattr(config.inference.deployment, "backend_port", 8000) if config.inference is not None else 8000
+    )
+    infer_urls = (
+        _build_infer_urls(
+            config.k8s.job_name,
+            config.k8s.namespace,
+            config.deployment.num_infer_replicas,
+            inference_port,
+        )
+        if config.inference is not None
+        else ""
+    )
+
+    env = Environment(loader=FileSystemLoader(config.k8s.template_path.parent), keep_trailing_newline=True)
+    template = env.get_template(config.k8s.template_path.name)
+    manifest = template.render(
+        **config.k8s.template_vars,
+        configs=configs,
+        has_inference=config.inference is not None,
+        num_train_nodes=config.deployment.num_train_nodes,
+        num_infer_replicas=config.deployment.num_infer_replicas,
+        gpus_per_node=config.deployment.gpus_per_node,
+        master_port=29500,
+        inference_port=inference_port,
+        infer_urls=infer_urls,
+        ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(manifest)
+
+
+def rl_k8s(config: RLConfig):
+    assert config.k8s is not None
+
+    logger = setup_logger(
+        config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"), json_logging=config.log.json_logging
+    )
+
+    local_dir = config.k8s.local_output_dir / config.k8s.job_name
+    config_dir = local_dir / "configs"
+    write_subconfigs(config, config_dir)
+    logger.info(f"Wrote subconfigs to {config_dir}")
+
+    manifest_path = local_dir / RL_K8S_YAML
+    write_k8s_manifest(config, config_dir, manifest_path)
+    logger.info(f"Wrote k8s manifest to {manifest_path}")
+
+    if config.dry_run or config.k8s.submit == "dry":
+        logger.success(f"Dry run complete. To apply manually:\n\n  kubectl apply -f {manifest_path}\n")
+        return
+
+    cmd = ["kubectl", "apply", "-f", str(manifest_path)]
+    logger.info(f"Submitting: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"kubectl apply failed: {result.stderr.strip()}")
+        sys.exit(1)
+    logger.success(result.stdout.strip())
+
+
 def rl_slurm(config: RLConfig):
     assert config.slurm is not None
 
@@ -571,6 +659,8 @@ def rl(config: RLConfig):
 
     if config.slurm is not None:
         rl_slurm(config)
+    elif config.k8s is not None:
+        rl_k8s(config)
     else:
         rl_local(config)
 
