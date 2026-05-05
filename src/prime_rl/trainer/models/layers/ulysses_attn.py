@@ -41,9 +41,7 @@ def update_ulysses_params(cu_seqlens: torch.Tensor, max_seqlen: int) -> None:
     ULYSSES_PARAMS["max_seqlen"] = int(max_seqlen)
 
 
-def _all_to_all_seq_to_head(
-    t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup
-) -> torch.Tensor:
+def _all_to_all_seq_to_head(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
     """Redistribute [S_local, H, D] -> [S_global, H_local, D].
 
     Splits the head dim into cp_size groups and exchanges them so each rank
@@ -62,9 +60,7 @@ def _all_to_all_seq_to_head(
     return out.reshape(cp_size * s_local, h_local, d)
 
 
-def _all_to_all_head_to_seq(
-    t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup
-) -> torch.Tensor:
+def _all_to_all_head_to_seq(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
     """Inverse of `_all_to_all_seq_to_head`: [S_global, H_local, D] -> [S_local, H, D]."""
     s_global, h_local, d = t.shape
     assert s_global % cp_size == 0
@@ -263,6 +259,7 @@ def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
         ALL_ATTENTION_FUNCTIONS = None
 
     if ALL_ATTENTION_FUNCTIONS is not None:
+
         def _ulysses_flash_attention_forward_v2(
             module,
             query: torch.Tensor,
