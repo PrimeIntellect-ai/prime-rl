@@ -496,7 +496,7 @@ SchedulerConfig: TypeAlias = Annotated[
 
 class BaseOptimizerConfig(BaseModel):
     lr: Annotated[float, Field(ge=0)] = 1e-6
-    weight_decay: Annotated[float, Field(ge=0)] = 0.01
+    weight_decay: Annotated[float, Field(ge=0)] = 0.0
     max_norm: Annotated[
         float | None, Field(ge=0, description="Maximum gradient norm to clip. If None, gradient clipping is disabled.")
     ] = 1.0
