@@ -25,6 +25,9 @@ from prime_rl.utils.logger import get_logger
 
 # --- Shared discovery functions ---
 
+LORA_ADMIN_HEALTHCHECK_ADAPTER = "__prime_rl_healthcheck_probe_does_not_exist__"
+LORA_ADMIN_HEALTHCHECK_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+
 
 def discover_server_ips(hostname: str) -> list[str]:
     """Discover server IPs via DNS lookup."""
@@ -46,7 +49,7 @@ async def check_server_model(url: str, model_name: str, timeout: float = 5.0) ->
             models = [m.get("id") for m in data.get("data", [])]
             return model_name in models, len(models) > 0
     except Exception as e:
-        logger.debug(f"Failed to check server {url}: {e}")
+        logger.debug(f"Failed to check server {url}: {type(e).__name__}: {e!r}")
         return False, False
 
 
@@ -119,6 +122,7 @@ class ElasticInferencePool:
         self.hostname = client_config.elastic.hostname
         self.port = client_config.elastic.port
         self.sync_interval = client_config.elastic.sync_interval
+        self.max_sync_failures = client_config.elastic.max_sync_failures
         self.train_client_type = train_client_type
         self.eval_client_type = eval_client_type
         self.renderer_name = renderer_name
@@ -299,7 +303,7 @@ class ElasticInferencePool:
             self.logger.debug(f"No matching adapter found on {ip} for desired={self._desired.name}")
             return None
         except Exception as e:
-            self.logger.warning(f"Failed to query /v1/models on {ip}: {e}")
+            self.logger.warning(f"Failed to query /v1/models on {ip}: {type(e).__name__}: {e!r}")
             return None
 
     def _adapter_matches_desired(self, loaded: AdapterState | None) -> bool:
@@ -323,6 +327,7 @@ class ElasticInferencePool:
 
         if self._adapter_matches_desired(loaded):
             server.status = "ready"
+            server.sync_failures = 0
             return True
 
         # Debug: log why pre-check failed (before attempting load)
@@ -339,7 +344,9 @@ class ElasticInferencePool:
             except Exception as e:
                 server.status = "unhealthy"
                 server.sync_failures += 1
-                self.logger.error(f"Failed to sync server {ip}: {e}")
+                self.logger.error(
+                    f"Failed to sync server {ip} (failures={server.sync_failures}): {type(e).__name__}: {e!r}"
+                )
                 return False
 
         loaded = await self._get_loaded_adapter(ip)
@@ -366,7 +373,7 @@ class ElasticInferencePool:
             response = await admin_client.get("/health")
             response.raise_for_status()
         except Exception as e:
-            self.logger.debug(f"Server {ip} health check failed: {e}")
+            self.logger.debug(f"Server {ip} health check failed: {type(e).__name__}: {e!r}")
             return False
 
         try:
@@ -379,7 +386,26 @@ class ElasticInferencePool:
                 self.logger.debug(f"Server {ip} does not have base model {self.base_model_name}")
                 return False
         except Exception as e:
-            self.logger.debug(f"Server {ip} model check failed: {e}")
+            self.logger.debug(f"Server {ip} model check failed: {type(e).__name__}: {e!r}")
+            return False
+
+        try:
+            response = await admin_client.post(
+                "/v1/unload_lora_adapter",
+                json={"lora_name": LORA_ADMIN_HEALTHCHECK_ADAPTER},
+                timeout=LORA_ADMIN_HEALTHCHECK_TIMEOUT,
+            )
+            if response.status_code >= 500:
+                self.logger.debug(f"Server {ip} LoRA admin probe failed with status {response.status_code}")
+                return False
+        except httpx.TimeoutException as e:
+            self.logger.debug(f"Server {ip} LoRA admin probe timed out: {type(e).__name__}: {e!r}")
+            return False
+        except httpx.TransportError as e:
+            self.logger.debug(f"Server {ip} LoRA admin probe transport error: {type(e).__name__}: {e!r}")
+            return False
+        except Exception as e:
+            self.logger.debug(f"Server {ip} LoRA admin probe failed: {type(e).__name__}: {e!r}")
             return False
 
         return True
@@ -388,7 +414,7 @@ class ElasticInferencePool:
         try:
             admin_client = await self._create_admin_client(ip)
         except Exception as e:
-            self.logger.debug(f"Failed to create admin client for {ip}: {e}")
+            self.logger.debug(f"Failed to create admin client for {ip}: {type(e).__name__}: {e!r}")
             return False
 
         if not await self._check_server_health(admin_client, ip):
@@ -428,11 +454,19 @@ class ElasticInferencePool:
             for ip in list(self._servers.keys()):
                 if ip not in self._admin_clients:
                     continue
+                server = self._servers[ip]
+                if server.sync_failures >= self.max_sync_failures:
+                    self.logger.warning(
+                        f"Evicting inference server {ip} after {server.sync_failures} adapter sync failures"
+                    )
+                    await self._remove_server(ip)
+                    removed += 1
+                    continue
                 if not await self._check_server_health(self._admin_clients[ip], ip):
                     self.logger.debug(f"Server {ip} failed health check, removing")
                     await self._remove_server(ip)
                     removed += 1
-                elif self._servers[ip].status != "ready":
+                elif server.status != "ready":
                     await self._sync_server_adapter(ip)
 
             return added, removed
@@ -447,7 +481,7 @@ class ElasticInferencePool:
                         f"(total: {self.num_servers}, ready: {self.num_ready_servers})"
                     )
             except Exception as e:
-                self.logger.error(f"Error in elastic sync loop: {e}")
+                self.logger.error(f"Error in elastic sync loop: {type(e).__name__}: {e!r}")
             await asyncio.sleep(self.sync_interval)
 
     async def start(self) -> None:

@@ -214,6 +214,14 @@ class ElasticConfig(BaseConfig):
         ),
     ] = 5.0
 
+    max_sync_failures: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of consecutive adapter sync failures before evicting a discovered inference server.",
+        ),
+    ] = 5
+
 
 class ClientConfig(BaseConfig):
     """Configures the OAI client.
