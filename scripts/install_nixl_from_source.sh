@@ -58,6 +58,14 @@ fi
 cd "$NIXL_SRC"
 git checkout "$NIXL_VERSION"
 
+# Rename the package from the upstream-default `nixl-cu12` to match the CUDA
+# major we're building against (e.g. `nixl-cu13`). NVIDIA publishes both on PyPI
+# with that naming scheme; pyproject.toml URL pins must match the wheel name.
+TORCH_CUDA_MAJOR=$("$PYTHON" -c "import torch; print(torch.version.cuda.split('.')[0])")
+PKG_NAME="nixl-cu${TORCH_CUDA_MAJOR}"
+sed -i "s/^name = \"nixl-cu[0-9]\+\"/name = \"${PKG_NAME}\"/" pyproject.toml
+echo "=== NIXL package name set to ${PKG_NAME} ==="
+
 export PKG_CONFIG_PATH="$UCX_INSTALL/lib/pkgconfig"
 export LD_LIBRARY_PATH="$UCX_INSTALL/lib:$UCX_INSTALL/lib/ucx:${LD_LIBRARY_PATH:-}"
 
