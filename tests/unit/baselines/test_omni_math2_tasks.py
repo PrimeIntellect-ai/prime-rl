@@ -179,7 +179,7 @@ def test_hybrid_rubric_judge_fallback_calls_judge_directly():
         )
 
         assert score == 1.0
-        assert judge_rubric.parser is parser
+        assert judge_rubric.parser.base_parser is parser
         assert judge_rubric.parsed_responses == ["parsed"]
         assert judge_rubric.calls == [(prompt, completion, "right")]
         assert state["judge_score"] == 1.0
@@ -363,6 +363,45 @@ def test_hybrid_rubric_caches_parsed_answer_for_alias_checks():
         assert text_score == 1.0
         assert parser.calls == 1
         assert state[PARSED_ANSWER_STATE_KEY] == "\\emptyset"
+
+    asyncio.run(run())
+
+
+def test_hybrid_rubric_reuses_cached_parse_for_judge_fallback():
+    async def run():
+        parser = _CountingParser("wrong")
+        judge_rubric = _JudgeRubric()
+        rubric = MathVerifyThenJudgeRubric(
+            parser=parser,
+            math_rubric=_MathRubric(),
+            judge_rubric=judge_rubric,
+        )
+        prompt = [{"role": "user", "content": "Compute the value."}]
+        completion = [{"role": "assistant", "content": "Final answer: wrong"}]
+        state = {"math_verify_score": 0.0}
+
+        await rubric.choice_alias_score(
+            prompt=prompt,
+            completion=completion,
+            answer="right",
+            state=state,
+        )
+        await rubric.text_alias_score(
+            completion=completion,
+            answer="right",
+            state=state,
+        )
+        score = await rubric.judge_score(
+            prompt=prompt,
+            completion=completion,
+            answer="right",
+            state=state,
+        )
+
+        assert score == 1.0
+        assert parser.calls == 1
+        assert judge_rubric.parsed_responses == ["wrong"]
+        assert state[PARSED_ANSWER_STATE_KEY] == "wrong"
 
     asyncio.run(run())
 

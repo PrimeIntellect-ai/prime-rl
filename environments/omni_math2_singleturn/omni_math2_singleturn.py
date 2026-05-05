@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from contextvars import ContextVar
 from typing import Any
 
 import verifiers as vf
@@ -32,6 +33,7 @@ NO_SOLUTION_RE = re.compile(
 )
 MAX_FALLBACK_ANSWER_CHARS = 200
 PARSED_ANSWER_STATE_KEY = "omni_math2_parsed_answer"
+PARSE_CACHE_STATE: ContextVar[vf.State | None] = ContextVar("omni_math2_parse_cache_state", default=None)
 
 
 def _message_content(messages: vf.Messages) -> str:
@@ -155,6 +157,25 @@ def _text_alias_matches(response: str | None, answer: str) -> bool:
     return False
 
 
+def _validated_parsed_answer(parsed: Any) -> str | None:
+    if parsed is None or isinstance(parsed, str):
+        return parsed
+    raise TypeError(f"Expected parsed answer to be str or None, got {type(parsed).__name__}")
+
+
+class _StateCachedParser:
+    def __init__(self, parser: vf.Parser):
+        self.base_parser = parser
+
+    def parse_answer(self, completion: vf.Messages) -> str | None:
+        state = PARSE_CACHE_STATE.get()
+        if state is None:
+            return _validated_parsed_answer(self.base_parser.parse_answer(completion))
+        if PARSED_ANSWER_STATE_KEY not in state:
+            state[PARSED_ANSWER_STATE_KEY] = self.base_parser.parse_answer(completion)
+        return _validated_parsed_answer(state[PARSED_ANSWER_STATE_KEY])
+
+
 class MathVerifyThenJudgeRubric(vf.Rubric):
     def __init__(
         self,
@@ -167,7 +188,7 @@ class MathVerifyThenJudgeRubric(vf.Rubric):
         self.math_rubric = math_rubric
         self.judge_rubric = judge_rubric
         if judge_rubric is not None:
-            judge_rubric.parser = parser
+            judge_rubric.parser = _StateCachedParser(parser)
         self.add_reward_func(self.math_verify_score, weight=0)
         self.add_reward_func(self.choice_alias_score, weight=0)
         self.add_reward_func(self.text_alias_score, weight=0)
@@ -178,10 +199,7 @@ class MathVerifyThenJudgeRubric(vf.Rubric):
     def _parsed_answer(self, completion: vf.Messages, state: vf.State) -> str | None:
         if PARSED_ANSWER_STATE_KEY not in state:
             state[PARSED_ANSWER_STATE_KEY] = self.parser.parse_answer(completion)
-        parsed = state[PARSED_ANSWER_STATE_KEY]
-        if parsed is None or isinstance(parsed, str):
-            return parsed
-        raise TypeError(f"Expected parsed answer to be str or None, got {type(parsed).__name__}")
+        return _validated_parsed_answer(state[PARSED_ANSWER_STATE_KEY])
 
     async def math_verify_score(
         self,
@@ -258,7 +276,11 @@ class MathVerifyThenJudgeRubric(vf.Rubric):
             state["judge_score"] = 0.0
             return 0.0
 
-        raw_grade = await self.judge_rubric.judge(prompt, completion, answer, state)
+        token = PARSE_CACHE_STATE.set(state)
+        try:
+            raw_grade = await self.judge_rubric.judge(prompt, completion, answer, state)
+        finally:
+            PARSE_CACHE_STATE.reset(token)
         decision = state.get("judge_decision_last")
         if isinstance(decision, dict) and isinstance(decision.get("reward"), int | float):
             score = float(decision["reward"])
