@@ -11,37 +11,39 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-28T12:43:56.741623686Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-vllm = false
 verifiers = false
-vllm-router = false
+dion = false
 torch = false
 alphabet-sort = false
 science-env = false
-color-codeword = false
-dion = false
-flash-attn-3 = false
-prime-tunnel = false
-prime = false
-deep-gemm = false
-aime2024 = false
 prime-evals = false
 deepdive = false
 reverse-text = false
 code-env = false
+torchaudio = false
 mini-swe-agent-plus = false
 deep-ep = false
 pydantic-config = false
-math-env = false
-logic-env = false
 wiki-search = false
 math-python = false
 math500 = false
 aime2025 = false
+vllm = false
+vllm-router = false
+color-codeword = false
+flash-attn-3 = false
+prime-tunnel = false
+deep-gemm = false
+aime2024 = false
+torchvision = false
+math-env = false
+logic-env = false
 prime-sandboxes = false
+prime = false
 
 [manifest]
 overrides = [
