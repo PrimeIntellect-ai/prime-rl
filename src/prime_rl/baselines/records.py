@@ -6,6 +6,8 @@ from typing import Any
 
 
 def _message_text(messages: Any) -> str:
+    if isinstance(messages, str):
+        return messages.strip()
     if not messages:
         return ""
     parts: list[str] = []
@@ -70,10 +72,7 @@ def parse_answer(env: Any, completion: Any) -> str | None:
     parse = getattr(parser, "parse_answer", None)
     if parse is None:
         return None
-    try:
-        answer = parse(completion)
-    except Exception:
-        return None
+    answer = parse(completion)
     return None if answer is None else str(answer)
 
 

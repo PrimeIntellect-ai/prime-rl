@@ -291,10 +291,14 @@ def _apply_common_overrides(config: BaselineConfig, args: argparse.Namespace) ->
 
 
 def _effective_max_model_len(base: BaselineConfig, spec: ModelSpec, args: argparse.Namespace) -> int:
-    max_model_len = args.max_model_len if args.max_model_len is not None else base.launch.max_model_len
+    if args.max_model_len is not None:
+        max_model_len = args.max_model_len
+        if spec.max_model_len is not None:
+            return min(max_model_len, spec.max_model_len)
+        return max_model_len
     if spec.max_model_len is not None:
-        max_model_len = min(max_model_len, spec.max_model_len)
-    return max_model_len
+        return spec.max_model_len
+    return base.launch.max_model_len
 
 
 def _server_vllm_extra(spec: ModelSpec, args: argparse.Namespace) -> dict[str, Any]:
