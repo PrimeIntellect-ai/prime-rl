@@ -106,15 +106,14 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 
 def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
     """
-    DPPO+KL loss, combining:
+    IPO+KL loss, combining:
     - DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879)
     - Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)
 
-    The mask is conditioned on the advantage sign: for positive advantages,
-    we mask tokens whose probability increased too much (trust region violation
-    in the upweight direction); for negative advantages, we mask tokens whose
-    probability decreased too much (trust region violation in the downweight
-    direction).
+    Tokens whose importance ratio falls outside [α, β] are dropped from both
+    the policy-gradient and the KL terms, following IcePop's double-sided
+    masking (https://arxiv.org/abs/2512.16144). The KL term is therefore
+    only applied to tokens that contribute to the PG term.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
@@ -122,21 +121,14 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    trainer_probs = torch.exp(trainer_logprobs)
-    inference_probs = torch.exp(inference_logprobs)
-    probs_diff = trainer_probs - inference_probs
-    dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
-    dppo_invalid_mask_low = probs_diff < -loss_config.dppo_mask_low
-    dppo_invalid_mask = torch.where(advantages > 0, dppo_invalid_mask_high, dppo_invalid_mask_low)
-
-    is_masked = dppo_invalid_mask
-    is_masked_high = (advantages > 0) & dppo_invalid_mask_high
-    is_masked_low = (advantages < 0) & dppo_invalid_mask_low
-    keep_mask = loss_mask & ~is_masked
-
     log_importance_ratio = trainer_logprobs - inference_logprobs
     importance_ratio = torch.exp(log_importance_ratio)
     mismatch_kl = importance_ratio - log_importance_ratio - 1
+
+    is_masked_low = importance_ratio.detach() < loss_config.ipo_ratio_low
+    is_masked_high = importance_ratio.detach() > loss_config.ipo_ratio_high
+    is_masked = is_masked_low | is_masked_high
+    keep_mask = loss_mask & ~is_masked
 
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:
@@ -146,7 +138,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         teacher_kl = None
 
     pg_loss = keep_mask * advantages * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
+    kl_loss = keep_mask * log_importance_ratio**2
     loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
 
     metrics = {
