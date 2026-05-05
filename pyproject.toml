@@ -21,7 +21,7 @@ dependencies = [
     "torchvision",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.20.0",
+    "vllm>=0.20.1",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.73",
@@ -130,7 +130,7 @@ override-dependencies = [
 # pytorch-cu130 / pytorch-cu130-test indexes don't publish upload dates
 torch = false
 flash_attn_3 = false
-# Allow vllm 0.20.0 (uploaded 2026-04-27, inside the 7-day cooldown window)
+# Allow vllm 0.20.1 (uploaded 2026-05-04, inside the 7-day cooldown window)
 # while we explicitly bump in this branch.
 vllm = false
 # Self-vendored packages on our primeintellect index
