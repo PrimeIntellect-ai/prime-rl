@@ -53,6 +53,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 
@@ -275,9 +276,7 @@ def _patch_qwen3_5_linear_attn_varlen():
             pids = position_ids
             if pids.ndim == 3:
                 pids = pids[0]
-            flat = pids.view(-1)
-            seqlens = torch.cat([flat[0:1], flat[:-1][(flat == 0)[1:]] + 1, flat[-1:] + 1])
-            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+            cu_seqlens, _ = get_cu_seqlens_from_position_ids(pids)
         kwargs["cu_seqlens"] = cu_seqlens
         return _text_orig(
             self,
