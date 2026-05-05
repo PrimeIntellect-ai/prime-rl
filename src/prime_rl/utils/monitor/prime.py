@@ -452,11 +452,16 @@ class PrimeMonitor(Monitor):
 
         async with self._sample_upload_lock:
             while self._sample_upload_queue:
-                pending_step, pending_bytes = self._sample_upload_queue[0]
+                # Pop the in-flight item out of the queue entirely before awaiting,
+                # so concurrent eviction (which runs without the lock) cannot remove
+                # the head we are uploading. On failure we appendleft to preserve
+                # ordering; on success the item simply stays gone.
+                pending_step, pending_bytes = self._sample_upload_queue.popleft()
                 start = time.perf_counter()
                 try:
                     await self._upload_one_sample_step(pending_step, pending_bytes)
                 except Exception as e:
+                    self._sample_upload_queue.appendleft((pending_step, pending_bytes))
                     self.logger.opt(exception=True).warning(
                         f"Sample upload for step {pending_step} failed after retries; "
                         f"keeping in backlog (size={len(self._sample_upload_queue)}): "
@@ -465,8 +470,7 @@ class PrimeMonitor(Monitor):
                     # Stop draining; will retry on next log_samples tick.
                     return
 
-                # Success: pop and update bookkeeping.
-                self._sample_upload_queue.popleft()
+                # Success: bookkeeping (item is already popped).
                 self._pending_sample_steps.discard(pending_step)
                 self.last_log_samples_step = pending_step
                 self.logger.debug(f"Uploaded samples for step {pending_step} in {time.perf_counter() - start:.2f}s")
