@@ -17,9 +17,11 @@ dependencies = [
     "tomli-w>=1.2.0",
     "numpy>=2.2.6",
     "torch>=2.9.0",
+    "torchaudio",
+    "torchvision",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.19.0",
+    "vllm>=0.20.0",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.73",
@@ -128,6 +130,9 @@ override-dependencies = [
 # pytorch-cu128 / pytorch-cu128-test indexes don't publish upload dates
 torch = false
 flash_attn_3 = false
+# Allow vllm 0.20.0 (uploaded 2026-04-27, inside the 7-day cooldown window)
+# while we explicitly bump in this branch.
+vllm = false
 # Self-vendored packages on our primeintellect index
 reverse-text = false
 alphabet-sort = false
@@ -159,6 +164,12 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+# vllm 0.20.0 on PyPI is built against CUDA 13. Our env tracks pytorch-cu128
+# (CUDA 12), so we pull the cu129 wheel from wheels.vllm.ai instead — it links
+# against libcudart.so.12 like the rest of the cu12 stack.
+vllm = { url = "https://wheels.vllm.ai/88d34c6409e9fb3c7b8ca0c04756f061d2099eb1/vllm-0.20.0%2Bcu129-cp38-abi3-manylinux_2_31_x86_64.whl", marker = "platform_machine == 'x86_64'" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "3b77145" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
