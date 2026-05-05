@@ -291,7 +291,7 @@ def write_srun_multinode_driver_script(
 set -euo pipefail
 
 NODE_SCRIPT={str(node_script)!r}
-PRIME_RL_MULTINODE_HOSTS={hosts_literal!r}
+export PRIME_RL_MULTINODE_HOSTS={hosts_literal!r}
 GPUS_PER_NODE={gpus_per_node}
 JOB_ARG={job_arg!r}
 NETWORK_ARG={network_arg!r}

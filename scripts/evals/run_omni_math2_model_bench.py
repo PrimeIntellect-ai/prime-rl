@@ -443,6 +443,27 @@ def main() -> None:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    missing_multinode_specs = [
+        spec for spec in specs if spec.requires_multinode and args.multinode_nodes <= 1
+    ]
+    if missing_multinode_specs:
+        details = "\n".join(
+            f"- {spec.short_name}: requires --multinode-nodes > 1"
+            for spec in missing_multinode_specs
+        )
+        if requested or args.include_blocked:
+            raise SystemExit(
+                "Explicitly selected multi-node model(s) without "
+                f"--multinode-nodes > 1:\n{details}"
+            )
+        for spec in missing_multinode_specs:
+            blocked_summaries[spec.short_name] = {
+                "skipped": True,
+                "blocked": True,
+                "blocked_reason": "requires --multinode-nodes > 1",
+            }
+        missing_multinode_names = {spec.short_name for spec in missing_multinode_specs}
+        specs = [spec for spec in specs if spec.short_name not in missing_multinode_names]
     if not specs:
         if blocked_summaries:
             print(json.dumps({"summaries": blocked_summaries}, indent=2))
