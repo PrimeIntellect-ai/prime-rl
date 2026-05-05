@@ -323,11 +323,14 @@ class Scheduler:
 
         update_weights_start_time = time.perf_counter()
         if self.mx_rendezvous is not None:
-            self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
             weights_path = None
+            signal_trainer = lambda: self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
         else:
             weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-        await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
+            signal_trainer = None
+        await self.student_inference.update_weights(
+            weights_path, lora_name=self.lora_name, step=next_ckpt_step, on_engines_paused=signal_trainer
+        )
         if self.mx_rendezvous is not None:
             self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
