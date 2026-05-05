@@ -310,6 +310,11 @@ def setup_clients(
 ) -> list[vf.ClientConfig]:
     clients = []
     client_idx = 0
+    renderer_transport = (
+        "dynamo_chat_nvext"
+        if client_type == "renderer" and client_config.backend == "dynamo"
+        else "prime_vllm_generate"
+    )
     for base_url in client_config.base_url:
         for dp_rank in range(client_config.dp_rank_count):
             headers = client_config.headers.copy()
@@ -321,6 +326,7 @@ def setup_clients(
                     client_type=client_type,
                     renderer=renderer_name,
                     renderer_model_name=renderer_model_name,
+                    renderer_transport=renderer_transport,
                     renderer_pool_size=renderer_pool_size,
                     tool_parser=tool_parser,
                     reasoning_parser=reasoning_parser,
