@@ -66,6 +66,7 @@ ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
+export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
 
 {% if wandb_shared -%}
 export WANDB_SHARED_MODE=1

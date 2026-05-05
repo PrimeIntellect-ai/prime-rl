@@ -36,6 +36,7 @@ ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
+export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
 
 # Networking
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
