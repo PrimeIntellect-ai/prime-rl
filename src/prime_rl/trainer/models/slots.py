@@ -567,7 +567,7 @@ class ExpertSlot:
 # --- Builders -------------------------------------------------------------- #
 
 
-def build_slots_for_spec(
+def build_slots_for_conversion_spec(
     spec: ConversionSpec,
     *,
     prefix: str,
@@ -632,50 +632,4 @@ def build_slots_for_spec(
         row_off += raw.shape[0]
         if conversion.requires_scale:
             scale_row_off += ceil_div(raw.shape[0], BLOCK_SIZE)
-    return slots
-
-
-def build_slots(
-    state_dict: dict[str, Tensor],
-    *,
-    layer_specs_fn,
-    non_layer_specs: tuple[ConversionSpec, ...],
-    is_dense_fn,
-    num_layers: int,
-    parallel_dims: ParallelDims,
-    default_conversion: str,
-    base_dtype: torch.dtype,
-) -> list[Slot]:
-    """Build slots for every transformer layer plus the non-layer specs.
-
-    The caller is responsible for wrapping this in
-    :func:`prime_rl.transport.classic_cuda_pool.classic_cuda_alloc` so the
-    slot buffers come from a contiguous ``cudaMalloc`` pool — required for
-    NIXL pinning under ``PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"``.
-    """
-    slots: list[Slot] = []
-    for i in range(num_layers):
-        prefix = f"model.layers.{i}"
-        for spec in layer_specs_fn(i, is_dense_fn(i)):
-            slots.extend(
-                build_slots_for_spec(
-                    spec,
-                    prefix=prefix,
-                    state_dict=state_dict,
-                    parallel_dims=parallel_dims,
-                    default_conversion=default_conversion,
-                    base_dtype=base_dtype,
-                )
-            )
-    for spec in non_layer_specs:
-        slots.extend(
-            build_slots_for_spec(
-                spec,
-                prefix="",
-                state_dict=state_dict,
-                parallel_dims=parallel_dims,
-                default_conversion=default_conversion,
-                base_dtype=base_dtype,
-            )
-        )
     return slots

@@ -290,15 +290,15 @@ async def orchestrate(config: OrchestratorConfig):
             config.weight_broadcast.port,
             inference_world_size=config.weight_broadcast.inference_world_size,
         )
-        mx_orchestrator = MxRendezvous(
+        mx_rendezvous = MxRendezvous(
             client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
             role="orchestrator",
             rank=0,
             peer_world_size=1,
             model_name=config.student.model.name,
         )
-        mx_orchestrator.publish()
-        scheduler.mx_orchestrator = mx_orchestrator
+        mx_rendezvous.publish()
+        scheduler.mx_rendezvous = mx_rendezvous
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
