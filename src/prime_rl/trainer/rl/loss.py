@@ -125,8 +125,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     importance_ratio = torch.exp(log_importance_ratio)
     mismatch_kl = importance_ratio - log_importance_ratio - 1
 
-    is_masked_low = importance_ratio.detach() < loss_config.ipo_ratio_low
-    is_masked_high = importance_ratio.detach() > loss_config.ipo_ratio_high
+    is_masked_low = importance_ratio.detach() < loss_config.dppo_mask_low
+    is_masked_high = importance_ratio.detach() > loss_config.dppo_mask_high
     is_masked = is_masked_low | is_masked_high
     keep_mask = loss_mask & ~is_masked
 
