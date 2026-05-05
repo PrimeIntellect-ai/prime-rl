@@ -50,10 +50,15 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - name: Install prime-rl-configs in a fresh venv (no extras)
+      - name: Build the slim wheel
+        run: uv build --wheel ./packages/prime-rl-configs --out-dir /tmp/slim-wheel
+      - name: Install slim wheel from a directory with no workspace context
+        # Build the wheel and install it from /tmp so uv can't discover the
+        # repo's root pyproject.toml [tool.uv.sources] and silently apply
+        # them. This mirrors what an external pip-only user gets.
         run: |
           uv venv --python 3.12 /tmp/slim
-          uv pip install --python /tmp/slim/bin/python ./packages/prime-rl-configs
+          cd /tmp && uv pip install --python /tmp/slim/bin/python /tmp/slim-wheel/*.whl
       - name: Verify configs import without heavy deps
         run: |
           /tmp/slim/bin/python - <<'PY'
