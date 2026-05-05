@@ -811,6 +811,10 @@ class NCCLWeightBroadcastConfig(BaseModel):
         bool,
         Field(description="Use kernel-format FP8 quantized NCCL transfer for weight updates."),
     ] = False
+    quant_scheme: Annotated[
+        Literal["fp8_blockwise", "fp8_channelwise"] | None,
+        Field(description="Quantization scheme for layerwise reload. Auto-detected from inference model."),
+    ] = None
 
     inference_world_size: Annotated[
         int,

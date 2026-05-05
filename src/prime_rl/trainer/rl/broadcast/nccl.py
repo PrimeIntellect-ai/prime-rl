@@ -1,7 +1,7 @@
 import pickle
 import time
 from pathlib import Path
-from typing import Callable, Generator, cast
+from typing import Generator, cast
 
 import torch
 import torch.nn as nn
@@ -12,6 +12,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.fp8_dispatch import quantize_layer_for_scheme
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
@@ -109,6 +110,19 @@ def preprocess_layer_quantized(
     return model.convert_layer_to_vllm_kernel(layer_state_dict, layer_idx, quantize_fp8=True)
 
 
+def preprocess_layer_layerwise_quantize(
+    model: nn.Module,
+    layer_state_dict: dict[str, Tensor],
+    layer_idx: int,
+    scheme=None,
+) -> dict[str, Tensor]:
+    """Convert to HF checkpoint format with FP8 quantization matching the inference model."""
+    layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_idx)
+    if layer_idx < 0 or scheme is None:
+        return layer_state_dict
+    return quantize_layer_for_scheme(layer_state_dict, scheme)
+
+
 class NCCLWeightBroadcastSender:
     def __init__(
         self,
@@ -120,11 +134,23 @@ class NCCLWeightBroadcastSender:
         timeout: int,
         dtype: torch.dtype = torch.bfloat16,
         quantize_in_weight_transfer: bool = False,
+        inference_model_name: str = "",
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = dtype
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
+        self.quant_scheme = None
+        if inference_model_name and not quantize_in_weight_transfer:
+            from prime_rl.trainer.models.fp8_dispatch import detect_quant_scheme
+
+            result = detect_quant_scheme(inference_model_name)
+            if result is not None:
+                self.quant_scheme = result[1]
+                self.logger.info(
+                    f"Layerwise quantize: {result[0]}, "
+                    f"skip {len(self.quant_scheme.modules_to_not_convert)} modules"
+                )
 
         if self.world.is_master:
             disable_nccl_p2p_if_unavailable()
@@ -149,9 +175,13 @@ class NCCLWeightBroadcastSender:
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
-        preprocess_fn: Callable[[nn.Module, dict[str, Tensor], int], dict[str, Tensor]]
         if self.quantize_in_weight_transfer:
             preprocess_fn = preprocess_layer_quantized
+        elif self.quant_scheme is not None:
+            scheme = self.quant_scheme
+
+            def preprocess_fn(m: nn.Module, sd: dict[str, Tensor], idx: int) -> dict[str, Tensor]:
+                return preprocess_layer_layerwise_quantize(m, sd, idx, scheme=scheme)
         else:
             preprocess_fn = preprocess_layer_checkpoint
 
@@ -191,6 +221,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
             config.timeout,
             dtype,
             quantize_in_weight_transfer=config.quantize_in_weight_transfer,
+            inference_model_name=config.inference_model_name,
         )
 
     @torch.no_grad()

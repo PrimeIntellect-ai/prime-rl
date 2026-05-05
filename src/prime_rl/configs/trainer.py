@@ -727,6 +727,13 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
             ),
         ),
     ] = False
+    quant_scheme: Annotated[
+        Literal["fp8_blockwise", "fp8_channelwise"] | None,
+        Field(description="Quantization scheme for layerwise reload. Auto-detected from inference model."),
+    ] = None
+    inference_model_name: Annotated[
+        str, Field(description="Inference model name for quantization details. Auto-set.")
+    ] = ""
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

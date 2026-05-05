@@ -101,6 +101,7 @@ class NCCLWeightUpdateWorker(Worker):
         inference_world_size: int,
         timeout: int,
         quantize_in_weight_transfer: bool = False,
+        quant_scheme: str | None = None,
     ) -> None:
         """Initialize the NCCL broadcast receiver.
 
@@ -109,6 +110,7 @@ class NCCLWeightUpdateWorker(Worker):
             inference_world_size: Total number of inference GPUs across all servers.
         """
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
+        self.use_layerwise_reload = quant_scheme is not None
         # Use the worker's device index directly as the local rank.
         # The previous dp_group-based computation broke in vLLM v1 multiprocess
         # DP mode where each worker is a separate process with a singleton
@@ -145,14 +147,20 @@ class NCCLWeightUpdateWorker(Worker):
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
         device = next(model.parameters()).device
-        loader_fn: Callable[[Module, Generator[tuple[str, torch.Tensor], None, None]], None]
-        postprocess_fn: Callable[[Module, object, torch.device], None]
-        if self.quantize_in_weight_transfer:
-            loader_fn = load_weights_kernel
-            postprocess_fn = postprocess_weights_kernel
-        else:
-            loader_fn = load_weights_checkpoint
-            postprocess_fn = postprocess_weights_checkpoint
 
-        loader_fn(model, state_iter)
-        postprocess_fn(model, self.model_runner.model_config, device)
+        if self.use_layerwise_reload:
+            from vllm.model_executor.model_loader.reload import (
+                finalize_layerwise_reload,
+                initialize_layerwise_reload,
+            )
+
+            with torch.device(device):
+                initialize_layerwise_reload(model)
+                load_weights_checkpoint(model, state_iter)
+                finalize_layerwise_reload(model, self.model_runner.model_config)
+        elif self.quantize_in_weight_transfer:
+            load_weights_kernel(model, state_iter)
+            postprocess_weights_kernel(model, self.model_runner.model_config, device)
+        else:
+            load_weights_checkpoint(model, state_iter)
+            postprocess_weights_checkpoint(model, self.model_runner.model_config, device)

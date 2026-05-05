@@ -37,3 +37,15 @@ def quantize_to_fp8_blockwise(weight: Tensor, block_size: int = 128) -> tuple[Te
 
     quantized = blocks_fp8.permute(0, 2, 1, 3).reshape(padded_rows, padded_cols)[:rows, :cols].contiguous()
     return quantized, scales.float().contiguous()
+
+
+def quantize_to_fp8_channelwise(weight: Tensor) -> tuple[Tensor, Tensor]:
+    """Quantize a 2D tensor to FP8 e4m3 with per-row (channel-wise) scales."""
+    if weight.ndim != 2:
+        raise ValueError(f"FP8 quantization expects a 2D tensor, got shape={tuple(weight.shape)}")
+
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+    row_max = weight.float().abs().amax(dim=1, keepdim=True)
+    scales = (row_max / fp8_max).clamp(min=1e-12)
+    quantized = (weight.float() / scales).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn)
+    return quantized.contiguous(), scales.float().contiguous()

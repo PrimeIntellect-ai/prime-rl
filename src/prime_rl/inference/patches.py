@@ -18,6 +18,7 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_ep_scatter()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_offloading_connector_cpu_block_count()
+    monkey_patch_layerwise_reload_spurious_warnings()
 
 
 @triton.jit
@@ -1086,3 +1087,63 @@ def monkey_patch_no_moe_lora():
         self.is_lora_enabled = False
 
     FusedMoEConfig.__post_init__ = _patched__post_init__
+
+
+def monkey_patch_layerwise_reload_spurious_warnings():
+    """Suppress spurious "Failed to load weights" warnings for container modules.
+
+    Container modules (ModuleList, Qwen3Attention, Qwen2MLP, etc.) have no
+    direct parameters, so load_numel stays at 0 during layerwise reload.
+    vLLM 0.19 warns unconditionally when kernel_tensors is not None, even
+    though the empty-dict ({}, {}) case is harmless.
+
+    Fixed upstream in vllm-project/vllm#38032 (commit 648edcf) by tightening
+    the condition to `load_numel_total > 0`. Remove this patch once we
+    upgrade to vLLM >= 0.20.
+    """
+    from vllm.model_executor.model_loader.reload import layerwise
+
+    _original_finalize = layerwise.finalize_layerwise_processing
+
+    def _patched_finalize(model, model_config):
+        for layer in model.modules():
+            info = layerwise.get_layerwise_info(layer)
+            if info.kernel_tensors is not None and info.load_numel_total == 0:
+                info.kernel_tensors = None
+        _original_finalize(model, model_config)
+
+    layerwise.finalize_layerwise_processing = _patched_finalize
+    layerwise.finalize_layerwise_reload = _patched_finalize
+
+    _patch_layerwise_skip_tensors()
+
+
+def _patch_layerwise_skip_tensors():
+    """Skip expert-map and bias tensors during layerwise reload weight-loader wrapping.
+
+    Without this, initialize_online_processing wraps weight_loaders on tensors
+    like _expert_map and e_score_correction_bias, causing OOM when they are
+    materialized from meta device during reload.
+
+    Upstream: https://github.com/vllm-project/vllm/pull/38746
+    Remove this patch once we upgrade to vLLM >= 0.20.
+    """
+    from vllm.model_executor.model_loader.reload import layerwise, meta
+    from vllm.model_executor.model_loader.reload.utils import get_layer_tensors
+
+    meta.SKIP_TENSORS.add("e_score_correction_bias")
+
+    def _patched_init_online(layer):
+        info = layerwise.get_layerwise_info(layer)
+        from vllm.model_executor.model_loader.reload.utils import get_layer_size
+
+        info.load_numel = 0
+        info.load_numel_total = get_layer_size(layer)
+
+        for name, tensor in get_layer_tensors(layer).items():
+            if name in meta.SKIP_TENSORS:
+                continue
+            if layerwise._get_weight_loader(tensor).__name__ != "online_process_loader":
+                tensor.weight_loader = layerwise.make_online_process_loader(layer, name)
+
+    layerwise.initialize_online_processing = _patched_init_online
