@@ -107,8 +107,17 @@ def train(config: SFTConfig):
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
         cp_group = parallel_dims.world_mesh["cp"].get_group()
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-        substitute_hf_flash_attn(cp_group, heads_k_stride=1)
-        substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
+        if config.model.cp_style == "ring":
+            substitute_hf_flash_attn(cp_group, heads_k_stride=1)
+            substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
+        else:
+            from prime_rl.trainer.models.layers.ulysses_attn import (
+                substitute_hf_ulysses_attn,
+                substitute_ulysses_attn,
+            )
+
+            substitute_hf_ulysses_attn(cp_group)
+            substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
         from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
@@ -213,7 +222,9 @@ def train(config: SFTConfig):
         loss_mask = micro_batch["loss_mask"].to("cuda")
 
         if cp_enabled:
-            input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+            input_ids, position_ids = setup_cp_params(
+                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+            )
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 

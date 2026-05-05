@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import torch
 import torch.distributed as dist
 import torch.distributed.nn as dist_nn
 import torch.nn as nn
 from ring_flash_attn import update_ring_flash_attn_params
 
+from prime_rl.trainer.models.layers.ulysses_attn import update_ulysses_params
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+
+CPStyle = Literal["ring", "ulysses"]
 
 
 def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
@@ -140,35 +145,34 @@ def get_padding_logit_from_prev_cp_rank(
         return None
 
 
-def _get_cu_seqlens_for_cp(position_ids: torch.Tensor) -> torch.Tensor:
-    cu_seqlens, _ = get_cu_seqlens_from_position_ids(position_ids)
-    return cu_seqlens
-
-
 def setup_cp_params(
     input_ids: torch.Tensor,
     position_ids: torch.Tensor,
     cp_rank: int,
     cp_world_size: int,
     cp_group: dist.ProcessGroup,
+    cp_style: CPStyle = "ring",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Prepare the input for context parallelism and sets required parameters for ring flash attention.
-    Args:
-        input_ids: The input ids tensor.
-        position_ids: The position ids tensor.
-        cp_rank: The rank of the current process.
-        cp_world_size: The number of processes in the context parallel group.
-        cp_group: The context parallel group.
-    Returns:
-        The sharded input_ids and position_ids for context parallelism.
-    """
-    input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+    Prepare the input for context parallelism and set required attention params.
 
-    cu_seqlens = _get_cu_seqlens_for_cp(position_ids)
-    update_ring_flash_attn_params(cu_seqlens, cp_group)
+    Both ring and ulysses styles need cu_seqlens computed from the *full*
+    (un-sharded) position_ids, then publish them to the patched attention layer:
+      - ring: via ring_flash_attn's DATA_PARAMS (with local_k_slice).
+      - ulysses: via ULYSSES_PARAMS (just the full cu_seqlens / max_seqlen).
+
+    Returns the sequence-sharded input_ids and position_ids — the rest of the
+    model still runs sequence-sharded; only attention sees the full sequence.
+    """
+    cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+
+    if cp_style == "ring":
+        update_ring_flash_attn_params(cu_seqlens, cp_group)
+    elif cp_style == "ulysses":
+        update_ulysses_params(cu_seqlens, max_seqlen)
+    else:
+        raise ValueError(f"Unknown cp_style: {cp_style}")
+
+    input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     position_ids = shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
-    return (
-        input_ids,
-        position_ids,
-    )
+    return input_ids, position_ids

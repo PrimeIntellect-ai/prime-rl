@@ -299,6 +299,21 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = 1
 
+    cp_style: Annotated[
+        Literal["ring", "ulysses"],
+        Field(
+            description=(
+                "Context parallelism communication style. "
+                "'ring' uses ring-attention all-gather/reduce-scatter (current default, "
+                "requires custom kernels per attention type). "
+                "'ulysses' uses all-to-all to redistribute Q/K/V from sequence-sharded "
+                "to head-sharded, runs vanilla attention locally on the full sequence, "
+                "then all-to-all back. Works out-of-the-box with any attention kernel "
+                "(softmax FA, linear attention, mamba, etc.)."
+            ),
+        ),
+    ] = "ring"
+
     impl: Annotated[
         Literal["hf", "custom", "auto"],
         Field(
@@ -386,9 +401,13 @@ class ModelConfig(BaseModelConfig):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "fa4"]:
             raise ValueError("CP is only supported with flash attention 2, flash attention 3, or fa4")
         if self.cp > 1 and self.attn in ("flash_attention_3", "fa4") and self.impl != "custom":
+            # Both ring and ulysses route FA3/FA4 through our custom FlashAttention class:
+            # ring patches `_compute_attention` with the ring kernel, ulysses patches it with
+            # the all-to-all wrapper around the FA3/FA4 kernel. The HF path patches
+            # `_flash_attention_forward` which only wraps FA2.
             raise ValueError(
                 f"CP with {self.attn} requires model.impl='custom' "
-                "(the ring-attention kernel is only implemented for the custom model path)"
+                "(FA3/FA4 paths are only implemented for the custom model attention class)"
             )
         return self
 
