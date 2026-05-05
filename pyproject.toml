@@ -38,6 +38,8 @@ dependencies = [
     "tilelang>=0.1.8",
     "flash-linear-attention",
     "nvidia-ml-py>=12.575.51",
+    # TODO: temporary — vllm's nixl EP needs cu12 runtime; remove once everything is on cu13
+    "nvidia-cuda-runtime-cu12",
 ]
 
 [project.scripts]
