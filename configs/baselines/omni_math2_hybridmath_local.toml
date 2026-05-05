@@ -1,0 +1,75 @@
+env_id = "omni_math2_singleturn"
+model = "Qwen/Qwen3.5-4B"
+output_dir = "outputs/baselines/omni-math2-hybridmath"
+protocol = "maj_at_n"
+dataset = "omni_math2_stratified_600"
+seed = 42
+num_examples = 600
+rollouts_per_example = 16
+max_concurrency = 32
+score_max_concurrency = 256
+max_retries = 1
+ks = [1, 3, 5, 8, 16]
+success_threshold = 1.0
+api_key_var = "VLLM_API_KEY"
+api_profile = "vllm_permissive"
+verifiers_path = "/projects/a6r/joanv.a6r/tmp/verifiers-hf-task-envs"
+env_paths = ["environments/omni_math2_singleturn"]
+
+[env_args]
+dataset_name = "json"
+data_files = "benchmarks/datasets/omni_math2/omni_math2_stratified_600_seed42.jsonl"
+dataset_split = "train"
+question_key = "problem"
+answer_key = "answer"
+example_id_key = "id"
+task_name = "omni_math2"
+info_keys = [
+  "domain",
+  "primary_domain",
+  "difficulty",
+  "difficulty_label",
+  "source",
+  "source_bucket",
+  "tags",
+  "sampling_stratum",
+]
+prompts_ref = "configs/baselines/omni_math2_prompt_pack.yaml"
+prompt_role = "debater_a"
+prompt_phase = "propose"
+use_judge_fallback = true
+judge_base_url = "https://api.openai.com/v1"
+judge_api_key_var = "OPENAI_API_KEY"
+judge_model = "gpt-5.4-mini"
+judge_prompt_pack = "default"
+judge_prompt_kind = "grader"
+judge_sampling_args = { temperature = 0, max_completion_tokens = 64 }
+judge_cache_enabled = true
+judge_cache_size = 50000
+judge_max_retries = 2
+judge_retry_delay_s = 0.5
+judge_persistent_cache_path = "outputs/baselines/judge-cache/omni-math2-hybridmath-gpt54mini-v5.sqlite3"
+judge_persistent_cache_min_samples = 1
+judge_rubric_family = "omni_math2_hybrid_math_v1"
+judge_variant_id = "gpt-5.4-mini_default_grader_v5_flexible-final-answer"
+math_verify_timeout_seconds = 5
+math_verify_max_workers = 50
+
+[sampling]
+temperature = 0.7
+top_p = 0.95
+max_completion_tokens = 8192
+top_k = 40
+min_p = 0.0
+
+[launch]
+mode = "local"
+port = 8000
+gpus = "0,1,2,3"
+tp = 1
+dp = 4
+api_server_count = 4
+gpu_memory_utilization = 0.85
+max_model_len = 16384
+enforce_eager = false
+vllm_extra = { language_model_only = true, skip_mm_profiling = true, mm_processor_cache_gb = 0.0 }

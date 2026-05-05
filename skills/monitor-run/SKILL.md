@@ -73,7 +73,10 @@ Once you have the output directory, the resolved configs are at `{output_dir}/co
 
 ### Configs
 
-The launcher writes resolved configs as TOML files to `{output_dir}/configs/`. Read `rl.toml` to get the full picture of the experiment (model, envs, hyperparameters, wandb, deployment).
+The launcher writes resolved configs as TOML files to `{output_dir}/configs/`.
+For RL runs, read `trainer.toml`, `orchestrator.toml`, and `inference.toml`
+together to get the full picture of the experiment (model, envs,
+hyperparameters, W&B, deployment).
 
 ### Logs
 
@@ -251,4 +254,3 @@ PRIME-RL::Launcher
 ```
 
 For multi-node runs, trainer and inference processes are distributed across separate nodes. Use `srun` or `ssh` to inspect processes on other nodes directly.
-

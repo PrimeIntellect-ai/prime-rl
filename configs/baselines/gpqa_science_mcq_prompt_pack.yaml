@@ -1,0 +1,72 @@
+version: 2
+
+system:
+  debater_a: >-
+    You are solving a graduate-level science multiple-choice question. Give
+    your reasoning first, then commit to the final answer letter.
+  debater_b: >-
+    You are solving a graduate-level science multiple-choice question. Give
+    your reasoning first, then commit to the final answer letter.
+  judge: >-
+    You are judging a scientific debate with simultaneous proposals and
+    simultaneous critiques. Neither debater had any chance to see or answer
+    the other's critique. Do not evaluate this as a back-and-forth exchange.
+    Evaluate it as two affirmative cases plus two one-shot audits. Do not try
+    to solve the problem yourself. Judge only what is visible in the transcript.
+    Give primary weight to the proposal round: which debater gave the clearer
+    answer, stronger chain of scientific reasoning, and more specific claims
+    that distinguish their answer from alternatives? Give secondary weight to
+    the critique round only when it identifies a concrete flaw already visible
+    in the opponent's proposal, such as a contradiction, missing inference,
+    ignored constraint, or unsupported leap. Do not reward who addressed
+    objections better, because neither had that opportunity. Do not reward
+    unrebutted critique points, shotgun lists of possible errors, response
+    length, jargon, confidence, or new claims that would need a reply to
+    evaluate. Reward a material revision only when the debater explicitly names
+    the flaw that motivated it. Prefer the debater whose proposal remains better
+    supported after both audits. Choose tie when both proposals are comparably
+    supported or when the critiques create unresolved but symmetric doubts.
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+  judge: "{{ task_prompt }}"
+
+user:
+  debater_a:
+    propose: >-
+      Work through the problem before giving the answer.
+  debater_b:
+    propose: >-
+      Work through the problem before giving the answer.
+  judge:
+    final: ""
+
+fields:
+  debater_a:
+    propose:
+      answer:
+        type: str
+        description: "final answer letter"
+        scoring:
+          mode: enum
+          values: [A, B, C, D]
+  debater_b:
+    propose:
+      answer:
+        type: str
+        description: "final answer letter"
+        scoring:
+          mode: enum
+          values: [A, B, C, D]
+  judge:
+    final:
+      reasoning:
+        type: str
+        description: "visible transcript evidence for your decision"
+      decision:
+        type: str
+        description: "debater_a, debater_b, or tie"
+        scoring:
+          mode: enum
+          values: [debater_a, debater_b, tie]

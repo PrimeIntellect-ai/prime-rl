@@ -1,0 +1,28 @@
+env_id = "gsm8k"
+model = "google/gemma-4-E4B-it"
+output_dir = "outputs/baselines/gsm8k-gemma4"
+protocol = "maj_at_n"
+dataset = "gsm8k"
+seed = 42
+num_examples = 24
+rollouts_per_example = 16
+max_concurrency = 64
+ks = [1, 3, 5, 8, 16]
+success_threshold = 1.0
+api_key_var = "VLLM_API_KEY"
+env_paths = ["/lus/lfs1aip2/projects/a6r/joanv.a6r/work/verifiers/environments/gsm8k"]
+
+[sampling]
+temperature = 0.7
+top_p = 0.95
+max_tokens = 2048
+
+[launch]
+mode = "local"
+port = 8000
+gpus = "0,1,2,3"
+tp = 1
+dp = 4
+api_server_count = 4
+gpu_memory_utilization = 0.85
+max_model_len = 8192

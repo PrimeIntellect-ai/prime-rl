@@ -1,0 +1,131 @@
+version: 2
+
+system:
+  debater_a: >-
+    You are solving a graduate-level science question. Give your reasoning
+    first, then commit to the shortest standalone final answer that includes
+    all requested quantities.
+  debater_b: >-
+    You are solving a graduate-level science question. Give your reasoning
+    first, then commit to the shortest standalone final answer that includes
+    all requested quantities.
+  judge: >-
+    You are judging a scientific debate with simultaneous proposals and
+    simultaneous critiques. Neither debater had any chance to see or answer
+    the other's critique. Do not evaluate this as a back-and-forth exchange.
+    Evaluate it as two affirmative cases plus two one-shot audits. Do not try
+    to solve the problem yourself. Judge only what is visible in the transcript.
+    Give primary weight to the proposal round: which debater gave the clearer
+    answer, stronger chain of scientific reasoning, and more specific claims
+    that distinguish their answer from alternatives? Give secondary weight to
+    the critique round only when it identifies a concrete flaw already visible
+    in the opponent's proposal, such as a contradiction, missing inference,
+    ignored constraint, or unsupported leap. Do not reward who addressed
+    objections better, because neither had that opportunity. Do not reward
+    unrebutted critique points, shotgun lists of possible errors, response
+    length, jargon, confidence, or new claims that would need a reply to
+    evaluate. Reward a material revision only when the debater explicitly names
+    the flaw that motivated it. Prefer the debater whose proposal remains better
+    supported after both audits. Choose tie when both proposals are comparably
+    supported or when the critiques create unresolved but symmetric doubts.
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+  judge: "{{ task_prompt }}"
+
+user:
+  debater_a:
+    propose: >-
+      Work through the problem before giving the answer.
+  debater_b:
+    propose: >-
+      Work through the problem before giving the answer.
+  judge:
+    final: ""
+
+fields:
+  debater_a:
+    propose:
+      answer:
+        type: str
+        description: "shortest standalone final answer, including all requested quantities"
+  debater_b:
+    propose:
+      answer:
+        type: str
+        description: "shortest standalone final answer, including all requested quantities"
+  judge:
+    final:
+      reasoning:
+        type: str
+        description: "visible transcript evidence for your decision"
+      decision:
+        type: str
+        description: "debater_a, debater_b, or tie"
+        scoring:
+          mode: enum
+          values: [debater_a, debater_b, tie]
+
+_grader:
+  model: gpt-5.4-mini
+  sampling_args:
+    reasoning_effort: medium
+    max_completion_tokens: 1024
+  cache:
+    rubric_family: gpqa_science_oe_final_answer_v1
+    variant_id: gpt-5.4-mini_reference_anchored_oneword_v1
+  reward:
+    mode: soft
+    threshold: 0.5
+  calibration:
+    mode: confusion_matrix
+    correctness_prior: 0.2524752475
+    sensitivity: 0.9423076923
+    false_positive_rate: 0.0065789474
+    repeated_call_correlation: 0.95
+  system: |
+    Grade: CORRECT or INCORRECT.
+
+    The reference target is authoritative. Do not solve the problem yourself.
+    Use the question only to interpret units, precision, requested output shape,
+    and whether the target is multipart.
+
+    Decision policy:
+    - CORRECT means the response expresses the same final claim as the target.
+    - Numeric targets: if the target is rounded or has limited significant
+      figures, accept more precise values that round to it. Example: target
+      "0.77c", response "0.769c" => CORRECT. Example: target "3 060 000 km",
+      response "3,061,860 km" => CORRECT if the question/target indicates a
+      rounded distance.
+    - Symbolic targets: accept algebraically equivalent forms and explicit
+      constants. Example: target "(1+n*v)/(n+v)", response "(c^2+ncv)/(nc+v)"
+      => CORRECT when c=1 convention explains the target.
+    - Multipart/explanatory targets: the response must include the core
+      requested components. Example: if the target requires divergence,
+      integral, and singularity explanation, response "4*pi" alone is
+      INCORRECT.
+    - Exact/discrete targets: wrong order, count, sign, symmetry group,
+      stereochemistry, structure, mechanism, or named entity is INCORRECT.
+    - If question and target appear to conflict, grade against the target
+      rather than your own solution.
+
+    One word: CORRECT or INCORRECT.
+  user: |
+    Question: {question}
+    Target: {answer}
+    Response: {response}
+  positive: CORRECT
+  negative: INCORRECT
+
+_matcher:
+  system: |
+    Compare two answers for factual equivalence.
+    SAME = identical claim (format/notation differences OK).
+    DIFFERENT = any factual difference (wrong name, number, sign, mechanism).
+    One word: SAME or DIFFERENT.
+  user: |
+    Answer A: "{answer}"
+    Answer B: "{response}"
+  positive: SAME
+  negative: DIFFERENT

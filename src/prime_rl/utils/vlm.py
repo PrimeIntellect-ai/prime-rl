@@ -25,6 +25,7 @@ class VLMModelInfo:
 
 # Central registry: model_type -> architecture info.
 VLM_REGISTRY: dict[str, VLMModelInfo] = {
+    "gemma4": VLMModelInfo(vision_encoder_attr="model.vision_tower", language_model_attr="model.language_model"),
     "qwen3_vl": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
     "qwen3_5": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
     "qwen3_5_moe": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),

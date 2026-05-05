@@ -1,0 +1,29 @@
+version: 2
+
+system:
+  debater_a: >-
+    You are given a math problem to solve step by step, concisely. Commit to a
+    final answer upon completion.
+  debater_b: >-
+    You are given a math problem to solve step by step, concisely. Commit to a
+    final answer upon completion.
+
+question:
+  debater_a: |
+    Here's a problem for you to solve:
+
+    {{ task_prompt }}
+  debater_b: |
+    Here's a problem for you to solve:
+
+    {{ task_prompt }}
+
+user:
+  debater_a:
+    propose: |
+      Solve the problem in legible steps. Wrap your answer in:
+      `Final answer: \boxed{...}`
+  debater_b:
+    propose: |
+      Solve the problem in legible steps. Wrap your answer in:
+      `Final answer: \boxed{...}`

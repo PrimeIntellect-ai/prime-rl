@@ -13,6 +13,9 @@ def setup_vllm_env(config: InferenceConfig):
     if config.enable_lora:
         os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
 
+    if config.use_deep_gemm:
+        os.environ["VLLM_USE_DEEP_GEMM"] = "1"
+
 
 def main():
     config = cli(InferenceConfig)

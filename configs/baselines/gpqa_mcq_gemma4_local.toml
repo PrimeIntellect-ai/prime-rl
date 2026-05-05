@@ -1,0 +1,45 @@
+env_id = "hf_singleturn"
+model = "google/gemma-4-E4B-it"
+output_dir = "outputs/baselines/gpqa-mcq-gemma4"
+protocol = "maj_at_n"
+dataset = "gpqa_diamond_mcq"
+seed = 42
+num_examples = 24
+rollouts_per_example = 16
+max_concurrency = 64
+ks = [1, 3, 5, 8, 16]
+success_threshold = 1.0
+api_key_var = "VLLM_API_KEY"
+verifiers_path = "/projects/a6r/joanv.a6r/tmp/verifiers-hf-task-envs"
+env_paths = ["/projects/a6r/joanv.a6r/tmp/verifiers-hf-task-envs/environments/hf_singleturn"]
+
+[env_args]
+dataset_name = "Idavidrein/gpqa"
+dataset_subset = "gpqa_diamond"
+dataset_split = "train"
+task_type = "mcq"
+question_key = "Question"
+answer_key = "Correct Answer"
+choice_keys = ["Correct Answer", "Incorrect Answer 1", "Incorrect Answer 2", "Incorrect Answer 3"]
+answer_format = "text"
+example_id_key = "Record ID"
+info_keys = ["High-level domain", "Subdomain", "Writer's Difficulty Estimate"]
+shuffle_choices = true
+prompts_ref = "/lus/lfs1aip2/projects/a6r/joanv.a6r/work/prime-rl/configs/baselines/gpqa_science_mcq_prompt_pack.yaml"
+prompt_role = "debater_a"
+prompt_phase = "propose"
+
+[sampling]
+temperature = 0.7
+top_p = 0.95
+max_tokens = 8192
+
+[launch]
+mode = "local"
+port = 8000
+gpus = "0,1,2,3"
+tp = 1
+dp = 4
+api_server_count = 4
+gpu_memory_utilization = 0.85
+max_model_len = 12288

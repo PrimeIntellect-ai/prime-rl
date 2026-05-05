@@ -176,6 +176,7 @@ class ProgressTracker:
         json_logging: bool | None = None,
         log_every_percent: int = 10,
         step: int | None = None,
+        position: int | None = None,
     ):
         self.total = total
         self.desc = desc
@@ -192,7 +193,7 @@ class ProgressTracker:
         else:
             from tqdm import tqdm
 
-            self._pbar = tqdm(total=total, desc=desc)
+            self._pbar = tqdm(total=total, desc=desc, position=position)
 
     def update(self, n: int = 1):
         self.current += n

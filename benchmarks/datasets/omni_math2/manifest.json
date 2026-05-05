@@ -1,0 +1,6220 @@
+{
+  "dataset_fingerprint": "2b42505da9ff316a",
+  "dataset_name": "martheballon/Omni-MATH-2",
+  "dataset_revision": "1c10fd492252173c73468badf6dc1804225eb5bb",
+  "dataset_split": "train",
+  "population_size": 4428,
+  "population_strata": 439,
+  "sample_relationship": "separate_stratified_draws_not_nested",
+  "samples": [
+    {
+      "allocation": [
+        {
+          "allocated_count": 3,
+          "population_count": 21,
+          "quota": 2.3712737127371275,
+          "stratum": "Algebra | 1 | cayley"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 16,
+          "quota": 1.8066847335140017,
+          "stratum": "Algebra | 1 | fermat"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 64,
+          "quota": 7.226738934056007,
+          "stratum": "Algebra | 1 | pascal"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 56,
+          "quota": 6.323396567299007,
+          "stratum": "Algebra | 1.5 | cayley"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 20,
+          "quota": 2.2583559168925023,
+          "stratum": "Algebra | 1.5 | fermat"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 55,
+          "quota": 6.210478771454381,
+          "stratum": "Algebra | 1.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 2 | HMMT_2"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 26,
+          "quota": 2.935862691960253,
+          "stratum": "Algebra | 2 | cayley"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 27,
+          "quota": 3.048780487804878,
+          "stratum": "Algebra | 2 | fermat"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 17,
+          "quota": 1.919602529358627,
+          "stratum": "Algebra | 2 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 2.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 11,
+          "quota": 1.2420957542908762,
+          "stratum": "Algebra | 2.5 | cayley"
+        },
+        {
+          "allocated_count": 8,
+          "population_count": 67,
+          "quota": 7.565492321589883,
+          "stratum": "Algebra | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 2.5 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Algebra | 2.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 3 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Algebra | 3 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 3 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 20,
+          "quota": 2.2583559168925023,
+          "stratum": "Algebra | 3.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 27,
+          "quota": 3.048780487804878,
+          "stratum": "Algebra | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Algebra | 3.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 3.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 8,
+          "population_count": 65,
+          "quota": 7.339656729900632,
+          "stratum": "Algebra | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 62,
+          "quota": 7.000903342366757,
+          "stratum": "Algebra | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Algebra | 4 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 4.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 37,
+          "quota": 4.177958446251129,
+          "stratum": "Algebra | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 51,
+          "quota": 5.7588075880758804,
+          "stratum": "Algebra | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Algebra | 4.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 4.75 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 4.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 61,
+          "quota": 6.887985546522132,
+          "stratum": "Algebra | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 21,
+          "population_count": 188,
+          "quota": 21.22854561878952,
+          "stratum": "Algebra | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 42,
+          "quota": 4.742547425474255,
+          "stratum": "Algebra | 5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 5 | usamo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 11,
+          "quota": 1.2420957542908762,
+          "stratum": "Algebra | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 32,
+          "quota": 3.6133694670280034,
+          "stratum": "Algebra | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Algebra | 5.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 35,
+          "quota": 3.952122854561879,
+          "stratum": "Algebra | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 5.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 5.5 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Algebra | 5.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 17,
+          "quota": 1.919602529358627,
+          "stratum": "Algebra | 5.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 5.5 | usamo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Algebra | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 22,
+          "quota": 2.4841915085817523,
+          "stratum": "Algebra | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Algebra | 6 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Algebra | 6 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 6 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 6 | imo"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 50,
+          "quota": 5.645889792231256,
+          "stratum": "Algebra | 6 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Algebra | 6 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 6.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 6.25 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 6.25 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 6.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 6.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Algebra | 6.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 6.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 24,
+          "quota": 2.710027100271003,
+          "stratum": "Algebra | 6.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 6.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 7 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Algebra | 7 | HMMT_2"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 1.6937669376693767,
+          "stratum": "Algebra | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Algebra | 7 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Algebra | 7 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 7 | imo"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 23,
+          "quota": 2.5971093044263776,
+          "stratum": "Algebra | 7 | imo_shortlist"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 63,
+          "quota": 7.1138211382113825,
+          "stratum": "Algebra | 7 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 14,
+          "quota": 1.5808491418247517,
+          "stratum": "Algebra | 7 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 16,
+          "quota": 1.8066847335140017,
+          "stratum": "Algebra | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Algebra | 7.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 7.5 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 7.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 7.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 7.5 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 0.9033423667570009,
+          "stratum": "Algebra | 7.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 11,
+          "quota": 1.2420957542908762,
+          "stratum": "Algebra | 7.5 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Algebra | 7.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 8 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 8 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 8 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 18,
+          "quota": 2.032520325203252,
+          "stratum": "Algebra | 8 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 1.6937669376693767,
+          "stratum": "Algebra | 8 | imc"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.1291779584462511,
+          "stratum": "Algebra | 8 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Algebra | 8 | imo_shortlist"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 26,
+          "quota": 2.935862691960253,
+          "stratum": "Algebra | 8 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 1.6937669376693767,
+          "stratum": "Algebra | 8 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 17,
+          "quota": 1.919602529358627,
+          "stratum": "Algebra | 8 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 8.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 8.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Algebra | 8.5 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Algebra | 8.5 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 12,
+          "quota": 1.3550135501355014,
+          "stratum": "Algebra | 9 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 0.9033423667570009,
+          "stratum": "Algebra | 9 | imo"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 36,
+          "quota": 4.065040650406504,
+          "stratum": "Algebra | 9 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Algebra | 9 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Algebra | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Algebra | 9.5 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Algebra | 9.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Applied Mathematics | 1 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Applied Mathematics | 1 | fermat"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 16,
+          "quota": 1.8066847335140017,
+          "stratum": "Applied Mathematics | 1 | pascal"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 20,
+          "quota": 2.2583559168925023,
+          "stratum": "Applied Mathematics | 1.5 | cayley"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.1291779584462511,
+          "stratum": "Applied Mathematics | 1.5 | fermat"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 27,
+          "quota": 3.048780487804878,
+          "stratum": "Applied Mathematics | 1.5 | pascal"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 18,
+          "quota": 2.032520325203252,
+          "stratum": "Applied Mathematics | 2 | cayley"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 12,
+          "quota": 1.3550135501355014,
+          "stratum": "Applied Mathematics | 2 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 2 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 1.6937669376693767,
+          "stratum": "Applied Mathematics | 2 | pascal"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 9,
+          "quota": 1.016260162601626,
+          "stratum": "Applied Mathematics | 2.5 | cayley"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 26,
+          "quota": 2.935862691960253,
+          "stratum": "Applied Mathematics | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Applied Mathematics | 2.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 3 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Applied Mathematics | 3 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 3 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 3 | other"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 24,
+          "quota": 2.710027100271003,
+          "stratum": "Applied Mathematics | 3.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 36,
+          "quota": 4.065040650406504,
+          "stratum": "Applied Mathematics | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 3.5 | other"
+        },
+        {
+          "allocated_count": 8,
+          "population_count": 70,
+          "quota": 7.904245709123758,
+          "stratum": "Applied Mathematics | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 10,
+          "population_count": 90,
+          "quota": 10.16260162601626,
+          "stratum": "Applied Mathematics | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Applied Mathematics | 4 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 4 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 4.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 4.375 | HMMT_2"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 33,
+          "quota": 3.7262872628726287,
+          "stratum": "Applied Mathematics | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 37,
+          "quota": 4.177958446251129,
+          "stratum": "Applied Mathematics | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Applied Mathematics | 4.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Applied Mathematics | 4.75 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 4.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 50,
+          "quota": 5.645889792231256,
+          "stratum": "Applied Mathematics | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 10,
+          "population_count": 84,
+          "quota": 9.48509485094851,
+          "stratum": "Applied Mathematics | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 5 | usamo"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 26,
+          "quota": 2.935862691960253,
+          "stratum": "Applied Mathematics | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 41,
+          "quota": 4.62962962962963,
+          "stratum": "Applied Mathematics | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Applied Mathematics | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Applied Mathematics | 5.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Applied Mathematics | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 0.9033423667570009,
+          "stratum": "Applied Mathematics | 6 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 6.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Applied Mathematics | 6.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Applied Mathematics | 7 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Applied Mathematics | 7 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Applied Mathematics | 7 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Applied Mathematics | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 7.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Applied Mathematics | 7.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 8 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 8 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 8 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Applied Mathematics | 8 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Applied Mathematics | 8 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 9 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 9 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 9 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Applied Mathematics | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Calculus | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Calculus | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Calculus | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Calculus | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Calculus | 4.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Calculus | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Calculus | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Calculus | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Calculus | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Calculus | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Calculus | 6 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Calculus | 6.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Calculus | 7 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Calculus | 7 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Calculus | 7 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Calculus | 7 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Calculus | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Calculus | 7.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Calculus | 7.5 | putnam"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 0.9033423667570009,
+          "stratum": "Calculus | 8 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Calculus | 8 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 14,
+          "quota": 1.5808491418247517,
+          "stratum": "Calculus | 8 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Calculus | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 2 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 2 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 2 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Discrete Mathematics | 2 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 2.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Discrete Mathematics | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 2.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 3 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 3 | fermat"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Discrete Mathematics | 3.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 9,
+          "quota": 1.016260162601626,
+          "stratum": "Discrete Mathematics | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 19,
+          "quota": 2.145438121047877,
+          "stratum": "Discrete Mathematics | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 33,
+          "quota": 3.7262872628726287,
+          "stratum": "Discrete Mathematics | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 4 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 4.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 24,
+          "quota": 2.710027100271003,
+          "stratum": "Discrete Mathematics | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 25,
+          "quota": 2.822944896115628,
+          "stratum": "Discrete Mathematics | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.1291779584462511,
+          "stratum": "Discrete Mathematics | 4.5 | other"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 44,
+          "quota": 4.968383017163505,
+          "stratum": "Discrete Mathematics | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 9,
+          "population_count": 82,
+          "quota": 9.25925925925926,
+          "stratum": "Discrete Mathematics | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 20,
+          "quota": 2.2583559168925023,
+          "stratum": "Discrete Mathematics | 5 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 11,
+          "quota": 1.2420957542908762,
+          "stratum": "Discrete Mathematics | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 26,
+          "quota": 2.935862691960253,
+          "stratum": "Discrete Mathematics | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 5.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 1.6937669376693767,
+          "stratum": "Discrete Mathematics | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 5.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 5.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 20,
+          "quota": 2.2583559168925023,
+          "stratum": "Discrete Mathematics | 5.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Discrete Mathematics | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Discrete Mathematics | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 6 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Discrete Mathematics | 6 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 6 | imo_shortlist"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 34,
+          "quota": 3.839205058717254,
+          "stratum": "Discrete Mathematics | 6 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Discrete Mathematics | 6 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Discrete Mathematics | 6.25 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Discrete Mathematics | 6.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 6.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 6.5 | imc"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 13,
+          "quota": 1.4679313459801264,
+          "stratum": "Discrete Mathematics | 6.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 6.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 7 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 0.9033423667570009,
+          "stratum": "Discrete Mathematics | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Discrete Mathematics | 7 | imc"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Discrete Mathematics | 7 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 11,
+          "quota": 1.2420957542908762,
+          "stratum": "Discrete Mathematics | 7 | imo_shortlist"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 34,
+          "quota": 3.839205058717254,
+          "stratum": "Discrete Mathematics | 7 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Discrete Mathematics | 7 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 1.6937669376693767,
+          "stratum": "Discrete Mathematics | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 7.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 7.5 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Discrete Mathematics | 7.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Discrete Mathematics | 7.5 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Discrete Mathematics | 7.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Discrete Mathematics | 7.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 8 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Discrete Mathematics | 8 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Discrete Mathematics | 8 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Discrete Mathematics | 8 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 8 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Discrete Mathematics | 8 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.1291779584462511,
+          "stratum": "Discrete Mathematics | 8 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Discrete Mathematics | 8 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 12,
+          "quota": 1.3550135501355014,
+          "stratum": "Discrete Mathematics | 8 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Discrete Mathematics | 9 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.1291779584462511,
+          "stratum": "Discrete Mathematics | 9 | imo"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 20,
+          "quota": 2.2583559168925023,
+          "stratum": "Discrete Mathematics | 9 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Discrete Mathematics | 9 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Discrete Mathematics | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Discrete Mathematics | 9.5 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Discrete Mathematics | 9.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 1 | cayley"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Geometry | 1 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 1.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Geometry | 1.5 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 1.5 | fermat"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 0.9033423667570009,
+          "stratum": "Geometry | 1.5 | pascal"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.1291779584462511,
+          "stratum": "Geometry | 2 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Geometry | 2 | fermat"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 14,
+          "quota": 1.5808491418247517,
+          "stratum": "Geometry | 2 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 2.25 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Geometry | 2.25 | pascal"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Geometry | 2.5 | cayley"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 22,
+          "quota": 2.4841915085817523,
+          "stratum": "Geometry | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Geometry | 2.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 3 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 3 | fermat"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 23,
+          "quota": 2.5971093044263776,
+          "stratum": "Geometry | 3.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 27,
+          "quota": 3.048780487804878,
+          "stratum": "Geometry | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 10,
+          "population_count": 87,
+          "quota": 9.823848238482384,
+          "stratum": "Geometry | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 26,
+          "quota": 2.935862691960253,
+          "stratum": "Geometry | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 4 | other"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 62,
+          "quota": 7.000903342366757,
+          "stratum": "Geometry | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 43,
+          "quota": 4.85546522131888,
+          "stratum": "Geometry | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 4.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.1291779584462511,
+          "stratum": "Geometry | 4.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 4.75 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Geometry | 4.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 64,
+          "quota": 7.226738934056007,
+          "stratum": "Geometry | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 10,
+          "population_count": 89,
+          "quota": 10.049683830171634,
+          "stratum": "Geometry | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 14,
+          "quota": 1.5808491418247517,
+          "stratum": "Geometry | 5 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 16,
+          "quota": 1.8066847335140017,
+          "stratum": "Geometry | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 48,
+          "quota": 5.420054200542006,
+          "stratum": "Geometry | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Geometry | 5.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 0.9033423667570009,
+          "stratum": "Geometry | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.1291779584462511,
+          "stratum": "Geometry | 5.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Geometry | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Geometry | 6 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 6 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 19,
+          "quota": 2.145438121047877,
+          "stratum": "Geometry | 6 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Geometry | 6 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 6.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Geometry | 6.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 6.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 13,
+          "quota": 1.4679313459801264,
+          "stratum": "Geometry | 6.5 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Geometry | 6.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 6.75 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 7 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Geometry | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Geometry | 7 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Geometry | 7 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Geometry | 7 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 14,
+          "quota": 1.5808491418247517,
+          "stratum": "Geometry | 7 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Geometry | 7 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 1.6937669376693767,
+          "stratum": "Geometry | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 7.5 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 7.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Geometry | 7.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Geometry | 7.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 8 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 9,
+          "quota": 1.016260162601626,
+          "stratum": "Geometry | 8 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Geometry | 8 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Geometry | 8 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Geometry | 8 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 19,
+          "quota": 2.145438121047877,
+          "stratum": "Geometry | 8 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Geometry | 8 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Geometry | 8 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 8.25 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 8.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Geometry | 9 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Geometry | 9 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Geometry | 9 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Geometry | 9.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 1.5 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 1.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 1.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 2 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Number Theory | 2 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Number Theory | 2 | fermat"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 9,
+          "quota": 1.016260162601626,
+          "stratum": "Number Theory | 2 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 2.25 | cayley"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Number Theory | 2.5 | cayley"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.5645889792231256,
+          "stratum": "Number Theory | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 2.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 3 | fermat"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 0.9033423667570009,
+          "stratum": "Number Theory | 3.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 13,
+          "quota": 1.4679313459801264,
+          "stratum": "Number Theory | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 3.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 3.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 35,
+          "quota": 3.952122854561879,
+          "stratum": "Number Theory | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 33,
+          "quota": 3.7262872628726287,
+          "stratum": "Number Theory | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 4 | other"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 27,
+          "quota": 3.048780487804878,
+          "stratum": "Number Theory | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 17,
+          "quota": 1.919602529358627,
+          "stratum": "Number Theory | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Number Theory | 4.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 4.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 25,
+          "quota": 2.822944896115628,
+          "stratum": "Number Theory | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 61,
+          "quota": 6.887985546522132,
+          "stratum": "Number Theory | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 43,
+          "quota": 4.85546522131888,
+          "stratum": "Number Theory | 5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Number Theory | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 13,
+          "quota": 1.4679313459801264,
+          "stratum": "Number Theory | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Number Theory | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Number Theory | 5.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 16,
+          "quota": 1.8066847335140017,
+          "stratum": "Number Theory | 5.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Number Theory | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Number Theory | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Number Theory | 6 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 6 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 6 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 6 | imo_shortlist"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 39,
+          "quota": 4.403794037940379,
+          "stratum": "Number Theory | 6 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 6.25 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 6.5 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 6.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 6.5 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 6.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 21,
+          "quota": 2.3712737127371275,
+          "stratum": "Number Theory | 6.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 6.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 7 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 7 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Number Theory | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Number Theory | 7 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 7 | imc"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Number Theory | 7 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Number Theory | 7 | imo_shortlist"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 27,
+          "quota": 3.048780487804878,
+          "stratum": "Number Theory | 7 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 7 | putnam"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 11,
+          "quota": 1.2420957542908762,
+          "stratum": "Number Theory | 7 | usamo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Number Theory | 7.5 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 7.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.6775067750677507,
+          "stratum": "Number Theory | 7.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 7.5 | usamo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.1291779584462511,
+          "stratum": "Number Theory | 8 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Number Theory | 8 | imc"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.45167118337850043,
+          "stratum": "Number Theory | 8 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 8 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 0.9033423667570009,
+          "stratum": "Number Theory | 8 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Number Theory | 8 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 8 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 8.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 8.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 8.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.1291779584462511,
+          "stratum": "Number Theory | 9 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 9 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Number Theory | 9 | imo"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 20,
+          "quota": 2.2583559168925023,
+          "stratum": "Number Theory | 9 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Number Theory | 9 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Number Theory | 9.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Other | 8.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 1.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Precalculus | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 3 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Precalculus | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Precalculus | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Precalculus | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.33875338753387535,
+          "stratum": "Precalculus | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Precalculus | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.7904245709123758,
+          "stratum": "Precalculus | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Precalculus | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 5.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 6 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 6 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 6.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Precalculus | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.22583559168925021,
+          "stratum": "Precalculus | 7 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 7 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 7.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 7.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 8 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 8 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 8 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 8 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 8 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 9 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "Precalculus | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.11291779584462511,
+          "stratum": "missing | 5 | HMMT_11"
+        }
+      ],
+      "marginals": {
+        "difficulty": {
+          "max_abs_share_error": 0.007508581752484193,
+          "rows": [
+            {
+              "abs_error": 0.0015447154471544718,
+              "population_count": 126,
+              "population_share": 0.028455284552845527,
+              "sample_count": 15,
+              "sample_share": 0.03,
+              "value": "1"
+            },
+            {
+              "abs_error": 0.0031996386630532975,
+              "population_count": 209,
+              "population_share": 0.047199638663053295,
+              "sample_count": 22,
+              "sample_share": 0.044,
+              "value": "1.5"
+            },
+            {
+              "abs_error": 0.0014887082204155383,
+              "population_count": 166,
+              "population_share": 0.037488708220415536,
+              "sample_count": 18,
+              "sample_share": 0.036,
+              "value": "2"
+            },
+            {
+              "abs_error": 0.0009033423667570009,
+              "population_count": 4,
+              "population_share": 0.0009033423667570009,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "2.25"
+            },
+            {
+              "abs_error": 0.0029304426377597115,
+              "population_count": 173,
+              "population_share": 0.03906955736224029,
+              "sample_count": 21,
+              "sample_share": 0.042,
+              "value": "2.5"
+            },
+            {
+              "abs_error": 0.0007425474254742544,
+              "population_count": 21,
+              "population_share": 0.0047425474254742545,
+              "sample_count": 2,
+              "sample_share": 0.004,
+              "value": "3"
+            },
+            {
+              "abs_error": 0.0008328816621499535,
+              "population_count": 200,
+              "population_share": 0.045167118337850046,
+              "sample_count": 23,
+              "sample_share": 0.046,
+              "value": "3.5"
+            },
+            {
+              "abs_error": 0.0006775067750677507,
+              "population_count": 3,
+              "population_share": 0.0006775067750677507,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "3.75"
+            },
+            {
+              "abs_error": 0.0013712737127371255,
+              "population_count": 543,
+              "population_share": 0.12262872628726287,
+              "sample_count": 62,
+              "sample_share": 0.124,
+              "value": "4"
+            },
+            {
+              "abs_error": 0.0006775067750677507,
+              "population_count": 3,
+              "population_share": 0.0006775067750677507,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "4.25"
+            },
+            {
+              "abs_error": 0.00022583559168925022,
+              "population_count": 1,
+              "population_share": 0.00022583559168925022,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "4.375"
+            },
+            {
+              "abs_error": 0.0021174345076784146,
+              "population_count": 398,
+              "population_share": 0.08988256549232158,
+              "sample_count": 46,
+              "sample_share": 0.092,
+              "value": "4.5"
+            },
+            {
+              "abs_error": 0.0027100271002710027,
+              "population_count": 12,
+              "population_share": 0.0027100271002710027,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "4.75"
+            },
+            {
+              "abs_error": 0.0010063233965673102,
+              "population_count": 890,
+              "population_share": 0.2009936766034327,
+              "sample_count": 101,
+              "sample_share": 0.202,
+              "value": "5"
+            },
+            {
+              "abs_error": 0.0016061427280939441,
+              "population_count": 232,
+              "population_share": 0.052393857271906055,
+              "sample_count": 27,
+              "sample_share": 0.054,
+              "value": "5.25"
+            },
+            {
+              "abs_error": 0.0003179765130984641,
+              "population_count": 158,
+              "population_share": 0.03568202348690153,
+              "sample_count": 18,
+              "sample_share": 0.036,
+              "value": "5.5"
+            },
+            {
+              "abs_error": 0.007508581752484193,
+              "population_count": 259,
+              "population_share": 0.05849141824751581,
+              "sample_count": 33,
+              "sample_share": 0.066,
+              "value": "6"
+            },
+            {
+              "abs_error": 0.0015808491418247517,
+              "population_count": 7,
+              "population_share": 0.0015808491418247517,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "6.25"
+            },
+            {
+              "abs_error": 6.142728093947586e-05,
+              "population_count": 106,
+              "population_share": 0.023938572719060525,
+              "sample_count": 12,
+              "sample_share": 0.024,
+              "value": "6.5"
+            },
+            {
+              "abs_error": 0.00022583559168925022,
+              "population_count": 1,
+              "population_share": 0.00022583559168925022,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "6.75"
+            },
+            {
+              "abs_error": 0.006601626016260159,
+              "population_count": 387,
+              "population_share": 0.08739837398373984,
+              "sample_count": 47,
+              "sample_share": 0.094,
+              "value": "7"
+            },
+            {
+              "abs_error": 0.0033893405600722657,
+              "population_count": 77,
+              "population_share": 0.017389340560072266,
+              "sample_count": 7,
+              "sample_share": 0.014,
+              "value": "7.5"
+            },
+            {
+              "abs_error": 0.0018464317976513087,
+              "population_count": 265,
+              "population_share": 0.05984643179765131,
+              "sample_count": 29,
+              "sample_share": 0.058,
+              "value": "8"
+            },
+            {
+              "abs_error": 0.00022583559168925022,
+              "population_count": 1,
+              "population_share": 0.00022583559168925022,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "8.25"
+            },
+            {
+              "abs_error": 0.002935862691960253,
+              "population_count": 13,
+              "population_share": 0.002935862691960253,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "8.5"
+            },
+            {
+              "abs_error": 0.0054561878952122875,
+              "population_count": 157,
+              "population_share": 0.035456187895212286,
+              "sample_count": 15,
+              "sample_share": 0.03,
+              "value": "9"
+            },
+            {
+              "abs_error": 0.0003866305329719966,
+              "population_count": 16,
+              "population_share": 0.0036133694670280035,
+              "sample_count": 2,
+              "sample_share": 0.004,
+              "value": "9.5"
+            }
+          ],
+          "total_variation_distance": 0.026285456187895212
+        },
+        "has_image_tag": {
+          "max_abs_share_error": 0.004224028906955736,
+          "rows": [
+            {
+              "abs_error": 0.0042240289069557235,
+              "population_count": 4367,
+              "population_share": 0.9862240289069557,
+              "sample_count": 491,
+              "sample_share": 0.982,
+              "value": "False"
+            },
+            {
+              "abs_error": 0.004224028906955736,
+              "population_count": 61,
+              "population_share": 0.013775971093044263,
+              "sample_count": 9,
+              "sample_share": 0.018,
+              "value": "True"
+            }
+          ],
+          "total_variation_distance": 0.00422402890695573
+        },
+        "has_proof_tag": {
+          "max_abs_share_error": 0.01002890695573622,
+          "rows": [
+            {
+              "abs_error": 0.010028906955736216,
+              "population_count": 4313,
+              "population_share": 0.9740289069557362,
+              "sample_count": 482,
+              "sample_share": 0.964,
+              "value": "False"
+            },
+            {
+              "abs_error": 0.01002890695573622,
+              "population_count": 115,
+              "population_share": 0.025971093044263777,
+              "sample_count": 18,
+              "sample_share": 0.036,
+              "value": "True"
+            }
+          ],
+          "total_variation_distance": 0.010028906955736218
+        },
+        "primary_domain": {
+          "max_abs_share_error": 0.009291779584462511,
+          "rows": [
+            {
+              "abs_error": 0.006953929539295356,
+              "population_count": 1581,
+              "population_share": 0.35704607046070463,
+              "sample_count": 182,
+              "sample_share": 0.364,
+              "value": "Algebra"
+            },
+            {
+              "abs_error": 0.002462511291779601,
+              "population_count": 733,
+              "population_share": 0.1655374887082204,
+              "sample_count": 84,
+              "sample_share": 0.168,
+              "value": "Applied Mathematics"
+            },
+            {
+              "abs_error": 0.0022276422764227633,
+              "population_count": 63,
+              "population_share": 0.014227642276422764,
+              "sample_count": 6,
+              "sample_share": 0.012,
+              "value": "Calculus"
+            },
+            {
+              "abs_error": 0.00043721770551038985,
+              "population_count": 613,
+              "population_share": 0.1384372177055104,
+              "sample_count": 69,
+              "sample_share": 0.138,
+              "value": "Discrete Mathematics"
+            },
+            {
+              "abs_error": 0.0031382113821138147,
+              "population_count": 792,
+              "population_share": 0.17886178861788618,
+              "sample_count": 91,
+              "sample_share": 0.182,
+              "value": "Geometry"
+            },
+            {
+              "abs_error": 0.00014634146341463428,
+              "population_count": 594,
+              "population_share": 0.13414634146341464,
+              "sample_count": 67,
+              "sample_share": 0.134,
+              "value": "Number Theory"
+            },
+            {
+              "abs_error": 0.00022583559168925022,
+              "population_count": 1,
+              "population_share": 0.00022583559168925022,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "Other"
+            },
+            {
+              "abs_error": 0.009291779584462511,
+              "population_count": 50,
+              "population_share": 0.011291779584462511,
+              "sample_count": 1,
+              "sample_share": 0.002,
+              "value": "Precalculus"
+            },
+            {
+              "abs_error": 0.00022583559168925022,
+              "population_count": 1,
+              "population_share": 0.00022583559168925022,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "missing"
+            }
+          ],
+          "total_variation_distance": 0.012554652213188786
+        },
+        "source_bucket": {
+          "max_abs_share_error": 0.0069087624209575454,
+          "rows": [
+            {
+              "abs_error": 0.00034869015356819855,
+              "population_count": 896,
+              "population_share": 0.2023486901535682,
+              "sample_count": 101,
+              "sample_share": 0.202,
+              "value": "HMMT_11"
+            },
+            {
+              "abs_error": 0.0032177055103884133,
+              "population_count": 1385,
+              "population_share": 0.3127822944896116,
+              "sample_count": 158,
+              "sample_share": 0.316,
+              "value": "HMMT_2"
+            },
+            {
+              "abs_error": 0.0022240289069557374,
+              "population_count": 61,
+              "population_share": 0.013775971093044263,
+              "sample_count": 8,
+              "sample_share": 0.016,
+              "value": "apmoapmo_sol"
+            },
+            {
+              "abs_error": 0.001392953929539295,
+              "population_count": 201,
+              "population_share": 0.04539295392953929,
+              "sample_count": 22,
+              "sample_share": 0.044,
+              "value": "cayley"
+            },
+            {
+              "abs_error": 6.142728093947586e-05,
+              "population_count": 106,
+              "population_share": 0.023938572719060525,
+              "sample_count": 12,
+              "sample_share": 0.024,
+              "value": "china_team_selection_test"
+            },
+            {
+              "abs_error": 0.0003938572719060576,
+              "population_count": 232,
+              "population_share": 0.052393857271906055,
+              "sample_count": 26,
+              "sample_share": 0.052,
+              "value": "fermat"
+            },
+            {
+              "abs_error": 0.003356820234869015,
+              "population_count": 68,
+              "population_share": 0.015356820234869015,
+              "sample_count": 6,
+              "sample_share": 0.012,
+              "value": "imc"
+            },
+            {
+              "abs_error": 0.002711833785004515,
+              "population_count": 74,
+              "population_share": 0.016711833785004515,
+              "sample_count": 7,
+              "sample_share": 0.014,
+              "value": "imo"
+            },
+            {
+              "abs_error": 0.0069087624209575454,
+              "population_count": 190,
+              "population_share": 0.04290876242095754,
+              "sample_count": 18,
+              "sample_share": 0.036,
+              "value": "imo_shortlist"
+            },
+            {
+              "abs_error": 0.002688346883468834,
+              "population_count": 732,
+              "population_share": 0.16531165311653118,
+              "sample_count": 84,
+              "sample_share": 0.168,
+              "value": "other"
+            },
+            {
+              "abs_error": 0.001766937669376696,
+              "population_count": 249,
+              "population_share": 0.05623306233062331,
+              "sample_count": 29,
+              "sample_share": 0.058,
+              "value": "pascal"
+            },
+            {
+              "abs_error": 0.0031906052393857257,
+              "population_count": 101,
+              "population_share": 0.022809394760614273,
+              "sample_count": 13,
+              "sample_share": 0.026,
+              "value": "putnam"
+            },
+            {
+              "abs_error": 0.0019638663053297215,
+              "population_count": 133,
+              "population_share": 0.03003613369467028,
+              "sample_count": 16,
+              "sample_share": 0.032,
+              "value": "usamo"
+            }
+          ],
+          "total_variation_distance": 0.015112917795844616
+        }
+      },
+      "path": "benchmarks/datasets/omni_math2/omni_math2_stratified_500_seed42.jsonl",
+      "sample_size": 500,
+      "selected_strata": 197
+    },
+    {
+      "allocation": [
+        {
+          "allocated_count": 3,
+          "population_count": 21,
+          "quota": 2.845528455284553,
+          "stratum": "Algebra | 1 | cayley"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 16,
+          "quota": 2.168021680216802,
+          "stratum": "Algebra | 1 | fermat"
+        },
+        {
+          "allocated_count": 9,
+          "population_count": 64,
+          "quota": 8.672086720867208,
+          "stratum": "Algebra | 1 | pascal"
+        },
+        {
+          "allocated_count": 8,
+          "population_count": 56,
+          "quota": 7.588075880758808,
+          "stratum": "Algebra | 1.5 | cayley"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 20,
+          "quota": 2.710027100271003,
+          "stratum": "Algebra | 1.5 | fermat"
+        },
+        {
+          "allocated_count": 8,
+          "population_count": 55,
+          "quota": 7.452574525745257,
+          "stratum": "Algebra | 1.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 2 | HMMT_2"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 26,
+          "quota": 3.5230352303523036,
+          "stratum": "Algebra | 2 | cayley"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 27,
+          "quota": 3.658536585365854,
+          "stratum": "Algebra | 2 | fermat"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 17,
+          "quota": 2.303523035230352,
+          "stratum": "Algebra | 2 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 2.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 11,
+          "quota": 1.4905149051490514,
+          "stratum": "Algebra | 2.5 | cayley"
+        },
+        {
+          "allocated_count": 9,
+          "population_count": 67,
+          "quota": 9.07859078590786,
+          "stratum": "Algebra | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 2.5 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Algebra | 2.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 3 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Algebra | 3 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 3 | other"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 20,
+          "quota": 2.710027100271003,
+          "stratum": "Algebra | 3.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 27,
+          "quota": 3.658536585365854,
+          "stratum": "Algebra | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Algebra | 3.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 3.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 9,
+          "population_count": 65,
+          "quota": 8.807588075880759,
+          "stratum": "Algebra | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 8,
+          "population_count": 62,
+          "quota": 8.401084010840108,
+          "stratum": "Algebra | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Algebra | 4 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 4.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 37,
+          "quota": 5.013550135501355,
+          "stratum": "Algebra | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 51,
+          "quota": 6.9105691056910565,
+          "stratum": "Algebra | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Algebra | 4.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 4.75 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 4.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 8,
+          "population_count": 61,
+          "quota": 8.265582655826558,
+          "stratum": "Algebra | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 26,
+          "population_count": 188,
+          "quota": 25.474254742547426,
+          "stratum": "Algebra | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 42,
+          "quota": 5.691056910569106,
+          "stratum": "Algebra | 5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 5 | usamo"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 11,
+          "quota": 1.4905149051490514,
+          "stratum": "Algebra | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 32,
+          "quota": 4.336043360433604,
+          "stratum": "Algebra | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Algebra | 5.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 35,
+          "quota": 4.742547425474255,
+          "stratum": "Algebra | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 5.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 5.5 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Algebra | 5.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 17,
+          "quota": 2.303523035230352,
+          "stratum": "Algebra | 5.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 5.5 | usamo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Algebra | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 22,
+          "quota": 2.9810298102981028,
+          "stratum": "Algebra | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Algebra | 6 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Algebra | 6 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 6 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 6 | imo"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 50,
+          "quota": 6.775067750677507,
+          "stratum": "Algebra | 6 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Algebra | 6 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 6.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 6.25 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 6.25 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 6.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 6.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Algebra | 6.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 6.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 24,
+          "quota": 3.252032520325203,
+          "stratum": "Algebra | 6.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 6.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 7 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Algebra | 7 | HMMT_2"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 2.032520325203252,
+          "stratum": "Algebra | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Algebra | 7 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Algebra | 7 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 7 | imo"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 23,
+          "quota": 3.116531165311653,
+          "stratum": "Algebra | 7 | imo_shortlist"
+        },
+        {
+          "allocated_count": 9,
+          "population_count": 63,
+          "quota": 8.536585365853659,
+          "stratum": "Algebra | 7 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 14,
+          "quota": 1.897018970189702,
+          "stratum": "Algebra | 7 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 16,
+          "quota": 2.168021680216802,
+          "stratum": "Algebra | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Algebra | 7.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 7.5 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 7.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 7.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 7.5 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 1.084010840108401,
+          "stratum": "Algebra | 7.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 11,
+          "quota": 1.4905149051490514,
+          "stratum": "Algebra | 7.5 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Algebra | 7.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 8 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 8 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 8 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 18,
+          "quota": 2.4390243902439024,
+          "stratum": "Algebra | 8 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 2.032520325203252,
+          "stratum": "Algebra | 8 | imc"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.3550135501355014,
+          "stratum": "Algebra | 8 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Algebra | 8 | imo_shortlist"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 26,
+          "quota": 3.5230352303523036,
+          "stratum": "Algebra | 8 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 2.032520325203252,
+          "stratum": "Algebra | 8 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 17,
+          "quota": 2.303523035230352,
+          "stratum": "Algebra | 8 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 8.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 8.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Algebra | 8.5 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Algebra | 8.5 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 12,
+          "quota": 1.6260162601626016,
+          "stratum": "Algebra | 9 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 1.084010840108401,
+          "stratum": "Algebra | 9 | imo"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 36,
+          "quota": 4.878048780487805,
+          "stratum": "Algebra | 9 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Algebra | 9 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Algebra | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Algebra | 9.5 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Algebra | 9.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Applied Mathematics | 1 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Applied Mathematics | 1 | fermat"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 16,
+          "quota": 2.168021680216802,
+          "stratum": "Applied Mathematics | 1 | pascal"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 20,
+          "quota": 2.710027100271003,
+          "stratum": "Applied Mathematics | 1.5 | cayley"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.3550135501355014,
+          "stratum": "Applied Mathematics | 1.5 | fermat"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 27,
+          "quota": 3.658536585365854,
+          "stratum": "Applied Mathematics | 1.5 | pascal"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 18,
+          "quota": 2.4390243902439024,
+          "stratum": "Applied Mathematics | 2 | cayley"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 12,
+          "quota": 1.6260162601626016,
+          "stratum": "Applied Mathematics | 2 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 2 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 2.032520325203252,
+          "stratum": "Applied Mathematics | 2 | pascal"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 9,
+          "quota": 1.2195121951219512,
+          "stratum": "Applied Mathematics | 2.5 | cayley"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 26,
+          "quota": 3.5230352303523036,
+          "stratum": "Applied Mathematics | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Applied Mathematics | 2.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 3 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Applied Mathematics | 3 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 3 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 3 | other"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 24,
+          "quota": 3.252032520325203,
+          "stratum": "Applied Mathematics | 3.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 36,
+          "quota": 4.878048780487805,
+          "stratum": "Applied Mathematics | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 3.5 | other"
+        },
+        {
+          "allocated_count": 10,
+          "population_count": 70,
+          "quota": 9.48509485094851,
+          "stratum": "Applied Mathematics | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 12,
+          "population_count": 90,
+          "quota": 12.195121951219512,
+          "stratum": "Applied Mathematics | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Applied Mathematics | 4 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 4 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 4.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 4.375 | HMMT_2"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 33,
+          "quota": 4.471544715447155,
+          "stratum": "Applied Mathematics | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 37,
+          "quota": 5.013550135501355,
+          "stratum": "Applied Mathematics | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Applied Mathematics | 4.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Applied Mathematics | 4.75 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 4.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 50,
+          "quota": 6.775067750677507,
+          "stratum": "Applied Mathematics | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 11,
+          "population_count": 84,
+          "quota": 11.382113821138212,
+          "stratum": "Applied Mathematics | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 5 | usamo"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 26,
+          "quota": 3.5230352303523036,
+          "stratum": "Applied Mathematics | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 41,
+          "quota": 5.555555555555555,
+          "stratum": "Applied Mathematics | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Applied Mathematics | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Applied Mathematics | 5.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Applied Mathematics | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 1.084010840108401,
+          "stratum": "Applied Mathematics | 6 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 6.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Applied Mathematics | 6.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Applied Mathematics | 7 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Applied Mathematics | 7 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Applied Mathematics | 7 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Applied Mathematics | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 7.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Applied Mathematics | 7.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 8 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 8 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 8 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Applied Mathematics | 8 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Applied Mathematics | 8 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 9 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 9 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 9 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Applied Mathematics | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Calculus | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Calculus | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Calculus | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Calculus | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Calculus | 4.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Calculus | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Calculus | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Calculus | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Calculus | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Calculus | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Calculus | 6 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Calculus | 6.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Calculus | 7 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Calculus | 7 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Calculus | 7 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Calculus | 7 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Calculus | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Calculus | 7.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Calculus | 7.5 | putnam"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 1.084010840108401,
+          "stratum": "Calculus | 8 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Calculus | 8 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 14,
+          "quota": 1.897018970189702,
+          "stratum": "Calculus | 8 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Calculus | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 2 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 2 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 2 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Discrete Mathematics | 2 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 2.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Discrete Mathematics | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 2.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 3 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 3 | fermat"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Discrete Mathematics | 3.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 9,
+          "quota": 1.2195121951219512,
+          "stratum": "Discrete Mathematics | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 19,
+          "quota": 2.5745257452574526,
+          "stratum": "Discrete Mathematics | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 33,
+          "quota": 4.471544715447155,
+          "stratum": "Discrete Mathematics | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 4 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 4.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 24,
+          "quota": 3.252032520325203,
+          "stratum": "Discrete Mathematics | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 25,
+          "quota": 3.3875338753387534,
+          "stratum": "Discrete Mathematics | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.3550135501355014,
+          "stratum": "Discrete Mathematics | 4.5 | other"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 44,
+          "quota": 5.9620596205962055,
+          "stratum": "Discrete Mathematics | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 11,
+          "population_count": 82,
+          "quota": 11.11111111111111,
+          "stratum": "Discrete Mathematics | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 20,
+          "quota": 2.710027100271003,
+          "stratum": "Discrete Mathematics | 5 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 11,
+          "quota": 1.4905149051490514,
+          "stratum": "Discrete Mathematics | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 26,
+          "quota": 3.5230352303523036,
+          "stratum": "Discrete Mathematics | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 5.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 2.032520325203252,
+          "stratum": "Discrete Mathematics | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 5.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 5.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 20,
+          "quota": 2.710027100271003,
+          "stratum": "Discrete Mathematics | 5.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Discrete Mathematics | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Discrete Mathematics | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 6 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Discrete Mathematics | 6 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 6 | imo_shortlist"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 34,
+          "quota": 4.607046070460704,
+          "stratum": "Discrete Mathematics | 6 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Discrete Mathematics | 6 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Discrete Mathematics | 6.25 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Discrete Mathematics | 6.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 6.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 6.5 | imc"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 13,
+          "quota": 1.7615176151761518,
+          "stratum": "Discrete Mathematics | 6.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 6.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 7 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 1.084010840108401,
+          "stratum": "Discrete Mathematics | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Discrete Mathematics | 7 | imc"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Discrete Mathematics | 7 | imo"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 11,
+          "quota": 1.4905149051490514,
+          "stratum": "Discrete Mathematics | 7 | imo_shortlist"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 34,
+          "quota": 4.607046070460704,
+          "stratum": "Discrete Mathematics | 7 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Discrete Mathematics | 7 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 2.032520325203252,
+          "stratum": "Discrete Mathematics | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 7.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 7.5 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Discrete Mathematics | 7.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Discrete Mathematics | 7.5 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Discrete Mathematics | 7.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Discrete Mathematics | 7.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 8 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Discrete Mathematics | 8 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Discrete Mathematics | 8 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Discrete Mathematics | 8 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 8 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Discrete Mathematics | 8 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.3550135501355014,
+          "stratum": "Discrete Mathematics | 8 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Discrete Mathematics | 8 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 12,
+          "quota": 1.6260162601626016,
+          "stratum": "Discrete Mathematics | 8 | usamo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Discrete Mathematics | 9 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.3550135501355014,
+          "stratum": "Discrete Mathematics | 9 | imo"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 20,
+          "quota": 2.710027100271003,
+          "stratum": "Discrete Mathematics | 9 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Discrete Mathematics | 9 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Discrete Mathematics | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Discrete Mathematics | 9.5 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Discrete Mathematics | 9.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 1 | cayley"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Geometry | 1 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 1.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Geometry | 1.5 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 1.5 | fermat"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 1.084010840108401,
+          "stratum": "Geometry | 1.5 | pascal"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.3550135501355014,
+          "stratum": "Geometry | 2 | cayley"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Geometry | 2 | fermat"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 14,
+          "quota": 1.897018970189702,
+          "stratum": "Geometry | 2 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 2.25 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Geometry | 2.25 | pascal"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Geometry | 2.5 | cayley"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 22,
+          "quota": 2.9810298102981028,
+          "stratum": "Geometry | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Geometry | 2.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 3 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 3 | fermat"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 23,
+          "quota": 3.116531165311653,
+          "stratum": "Geometry | 3.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 27,
+          "quota": 3.658536585365854,
+          "stratum": "Geometry | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 12,
+          "population_count": 87,
+          "quota": 11.788617886178862,
+          "stratum": "Geometry | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 26,
+          "quota": 3.5230352303523036,
+          "stratum": "Geometry | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 4 | other"
+        },
+        {
+          "allocated_count": 8,
+          "population_count": 62,
+          "quota": 8.401084010840108,
+          "stratum": "Geometry | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 43,
+          "quota": 5.826558265582656,
+          "stratum": "Geometry | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 4.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.3550135501355014,
+          "stratum": "Geometry | 4.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 4.75 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Geometry | 4.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 9,
+          "population_count": 64,
+          "quota": 8.672086720867208,
+          "stratum": "Geometry | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 12,
+          "population_count": 89,
+          "quota": 12.059620596205962,
+          "stratum": "Geometry | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 14,
+          "quota": 1.897018970189702,
+          "stratum": "Geometry | 5 | other"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 16,
+          "quota": 2.168021680216802,
+          "stratum": "Geometry | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 7,
+          "population_count": 48,
+          "quota": 6.504065040650406,
+          "stratum": "Geometry | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Geometry | 5.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 1.084010840108401,
+          "stratum": "Geometry | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.3550135501355014,
+          "stratum": "Geometry | 5.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Geometry | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Geometry | 6 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 6 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 19,
+          "quota": 2.5745257452574526,
+          "stratum": "Geometry | 6 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Geometry | 6 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 6.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Geometry | 6.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 6.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 13,
+          "quota": 1.7615176151761518,
+          "stratum": "Geometry | 6.5 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Geometry | 6.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 6.75 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 7 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Geometry | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Geometry | 7 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Geometry | 7 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Geometry | 7 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 14,
+          "quota": 1.897018970189702,
+          "stratum": "Geometry | 7 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Geometry | 7 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 15,
+          "quota": 2.032520325203252,
+          "stratum": "Geometry | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 7.5 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 7.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Geometry | 7.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Geometry | 7.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 8 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 9,
+          "quota": 1.2195121951219512,
+          "stratum": "Geometry | 8 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Geometry | 8 | imc"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Geometry | 8 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Geometry | 8 | imo_shortlist"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 19,
+          "quota": 2.5745257452574526,
+          "stratum": "Geometry | 8 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Geometry | 8 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Geometry | 8 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 8.25 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 8.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Geometry | 9 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Geometry | 9 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Geometry | 9 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Geometry | 9.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 1.5 | cayley"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 1.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 1.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 2 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Number Theory | 2 | cayley"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Number Theory | 2 | fermat"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 9,
+          "quota": 1.2195121951219512,
+          "stratum": "Number Theory | 2 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 2.25 | cayley"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Number Theory | 2.5 | cayley"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 5,
+          "quota": 0.6775067750677507,
+          "stratum": "Number Theory | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 2.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 3 | fermat"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 1.084010840108401,
+          "stratum": "Number Theory | 3.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 13,
+          "quota": 1.7615176151761518,
+          "stratum": "Number Theory | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 3.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 3.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 35,
+          "quota": 4.742547425474255,
+          "stratum": "Number Theory | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 33,
+          "quota": 4.471544715447155,
+          "stratum": "Number Theory | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 4 | other"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 27,
+          "quota": 3.658536585365854,
+          "stratum": "Number Theory | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 17,
+          "quota": 2.303523035230352,
+          "stratum": "Number Theory | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Number Theory | 4.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 4.75 | HMMT_2"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 25,
+          "quota": 3.3875338753387534,
+          "stratum": "Number Theory | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 8,
+          "population_count": 61,
+          "quota": 8.265582655826558,
+          "stratum": "Number Theory | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 6,
+          "population_count": 43,
+          "quota": 5.826558265582656,
+          "stratum": "Number Theory | 5 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Number Theory | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 13,
+          "quota": 1.7615176151761518,
+          "stratum": "Number Theory | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Number Theory | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Number Theory | 5.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 16,
+          "quota": 2.168021680216802,
+          "stratum": "Number Theory | 5.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Number Theory | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Number Theory | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Number Theory | 6 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 6 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 6 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 6 | imo_shortlist"
+        },
+        {
+          "allocated_count": 5,
+          "population_count": 39,
+          "quota": 5.284552845528455,
+          "stratum": "Number Theory | 6 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 6.25 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 6.5 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 6.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 6.5 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 6.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 21,
+          "quota": 2.845528455284553,
+          "stratum": "Number Theory | 6.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 6.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 7 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 7 | HMMT_2"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Number Theory | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Number Theory | 7 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 7 | imc"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Number Theory | 7 | imo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Number Theory | 7 | imo_shortlist"
+        },
+        {
+          "allocated_count": 4,
+          "population_count": 27,
+          "quota": 3.658536585365854,
+          "stratum": "Number Theory | 7 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 7 | putnam"
+        },
+        {
+          "allocated_count": 2,
+          "population_count": 11,
+          "quota": 1.4905149051490514,
+          "stratum": "Number Theory | 7 | usamo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Number Theory | 7.5 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 7.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 6,
+          "quota": 0.8130081300813008,
+          "stratum": "Number Theory | 7.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 7.5 | usamo"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.3550135501355014,
+          "stratum": "Number Theory | 8 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Number Theory | 8 | imc"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 4,
+          "quota": 0.5420054200542005,
+          "stratum": "Number Theory | 8 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 8 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 8,
+          "quota": 1.084010840108401,
+          "stratum": "Number Theory | 8 | other"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Number Theory | 8 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 8 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 8.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 8.5 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 8.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 10,
+          "quota": 1.3550135501355014,
+          "stratum": "Number Theory | 9 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 9 | imc"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Number Theory | 9 | imo"
+        },
+        {
+          "allocated_count": 3,
+          "population_count": 20,
+          "quota": 2.710027100271003,
+          "stratum": "Number Theory | 9 | imo_shortlist"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Number Theory | 9 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Number Theory | 9.5 | imo_shortlist"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Other | 8.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 1.5 | pascal"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Precalculus | 2.5 | fermat"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 3 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Precalculus | 3.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 4 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Precalculus | 4 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Precalculus | 4.5 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 3,
+          "quota": 0.4065040650406504,
+          "stratum": "Precalculus | 4.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Precalculus | 5 | HMMT_11"
+        },
+        {
+          "allocated_count": 1,
+          "population_count": 7,
+          "quota": 0.948509485094851,
+          "stratum": "Precalculus | 5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 5.25 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Precalculus | 5.25 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 5.5 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 5.5 | china_team_selection_test"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 6 | HMMT_11"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 6 | HMMT_2"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 6 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 6 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 6.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Precalculus | 7 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 2,
+          "quota": 0.27100271002710025,
+          "stratum": "Precalculus | 7 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 7 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 7 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 7.5 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 7.5 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 8 | apmoapmo_sol"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 8 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 8 | other"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 8 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 8 | usamo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 9 | imo"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "Precalculus | 9 | putnam"
+        },
+        {
+          "allocated_count": 0,
+          "population_count": 1,
+          "quota": 0.13550135501355012,
+          "stratum": "missing | 5 | HMMT_11"
+        }
+      ],
+      "marginals": {
+        "difficulty": {
+          "max_abs_share_error": 0.0057046070460704534,
+          "rows": [
+            {
+              "abs_error": 0.00012195121951219523,
+              "population_count": 126,
+              "population_share": 0.028455284552845527,
+              "sample_count": 17,
+              "sample_share": 0.028333333333333332,
+              "value": "1"
+            },
+            {
+              "abs_error": 0.0011336946702800374,
+              "population_count": 209,
+              "population_share": 0.047199638663053295,
+              "sample_count": 29,
+              "sample_share": 0.04833333333333333,
+              "value": "1.5"
+            },
+            {
+              "abs_error": 0.0008446251129177948,
+              "population_count": 166,
+              "population_share": 0.037488708220415536,
+              "sample_count": 23,
+              "sample_share": 0.03833333333333333,
+              "value": "2"
+            },
+            {
+              "abs_error": 0.0009033423667570009,
+              "population_count": 4,
+              "population_share": 0.0009033423667570009,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "2.25"
+            },
+            {
+              "abs_error": 0.0009304426377597097,
+              "population_count": 173,
+              "population_share": 0.03906955736224029,
+              "sample_count": 24,
+              "sample_share": 0.04,
+              "value": "2.5"
+            },
+            {
+              "abs_error": 0.001409214092140921,
+              "population_count": 21,
+              "population_share": 0.0047425474254742545,
+              "sample_count": 2,
+              "sample_share": 0.0033333333333333335,
+              "value": "3"
+            },
+            {
+              "abs_error": 0.001499548328816623,
+              "population_count": 200,
+              "population_share": 0.045167118337850046,
+              "sample_count": 28,
+              "sample_share": 0.04666666666666667,
+              "value": "3.5"
+            },
+            {
+              "abs_error": 0.0006775067750677507,
+              "population_count": 3,
+              "population_share": 0.0006775067750677507,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "3.75"
+            },
+            {
+              "abs_error": 0.0057046070460704534,
+              "population_count": 543,
+              "population_share": 0.12262872628726287,
+              "sample_count": 77,
+              "sample_share": 0.12833333333333333,
+              "value": "4"
+            },
+            {
+              "abs_error": 0.0006775067750677507,
+              "population_count": 3,
+              "population_share": 0.0006775067750677507,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "4.25"
+            },
+            {
+              "abs_error": 0.00022583559168925022,
+              "population_count": 1,
+              "population_share": 0.00022583559168925022,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "4.375"
+            },
+            {
+              "abs_error": 0.0015492321589882507,
+              "population_count": 398,
+              "population_share": 0.08988256549232158,
+              "sample_count": 53,
+              "sample_share": 0.08833333333333333,
+              "value": "4.5"
+            },
+            {
+              "abs_error": 0.001043360433604336,
+              "population_count": 12,
+              "population_share": 0.0027100271002710027,
+              "sample_count": 1,
+              "sample_share": 0.0016666666666666668,
+              "value": "4.75"
+            },
+            {
+              "abs_error": 0.0009936766034326916,
+              "population_count": 890,
+              "population_share": 0.2009936766034327,
+              "sample_count": 120,
+              "sample_share": 0.2,
+              "value": "5"
+            },
+            {
+              "abs_error": 0.0042728093947606086,
+              "population_count": 232,
+              "population_share": 0.052393857271906055,
+              "sample_count": 34,
+              "sample_share": 0.056666666666666664,
+              "value": "5.25"
+            },
+            {
+              "abs_error": 0.0009846431797651337,
+              "population_count": 158,
+              "population_share": 0.03568202348690153,
+              "sample_count": 22,
+              "sample_share": 0.03666666666666667,
+              "value": "5.5"
+            },
+            {
+              "abs_error": 0.0031752484191508584,
+              "population_count": 259,
+              "population_share": 0.05849141824751581,
+              "sample_count": 37,
+              "sample_share": 0.06166666666666667,
+              "value": "6"
+            },
+            {
+              "abs_error": 0.0015808491418247517,
+              "population_count": 7,
+              "population_share": 0.0015808491418247517,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "6.25"
+            },
+            {
+              "abs_error": 0.003938572719060524,
+              "population_count": 106,
+              "population_share": 0.023938572719060525,
+              "sample_count": 12,
+              "sample_share": 0.02,
+              "value": "6.5"
+            },
+            {
+              "abs_error": 0.00022583559168925022,
+              "population_count": 1,
+              "population_share": 0.00022583559168925022,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "6.75"
+            },
+            {
+              "abs_error": 0.0026016260162601557,
+              "population_count": 387,
+              "population_share": 0.08739837398373984,
+              "sample_count": 54,
+              "sample_share": 0.09,
+              "value": "7"
+            },
+            {
+              "abs_error": 0.0023893405600722666,
+              "population_count": 77,
+              "population_share": 0.017389340560072266,
+              "sample_count": 9,
+              "sample_share": 0.015,
+              "value": "7.5"
+            },
+            {
+              "abs_error": 0.0015130984643179773,
+              "population_count": 265,
+              "population_share": 0.05984643179765131,
+              "sample_count": 35,
+              "sample_share": 0.058333333333333334,
+              "value": "8"
+            },
+            {
+              "abs_error": 0.00022583559168925022,
+              "population_count": 1,
+              "population_share": 0.00022583559168925022,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "8.25"
+            },
+            {
+              "abs_error": 0.0012691960252935862,
+              "population_count": 13,
+              "population_share": 0.002935862691960253,
+              "sample_count": 1,
+              "sample_share": 0.0016666666666666668,
+              "value": "8.5"
+            },
+            {
+              "abs_error": 0.0021228545618789535,
+              "population_count": 157,
+              "population_share": 0.035456187895212286,
+              "sample_count": 20,
+              "sample_share": 0.03333333333333333,
+              "value": "9"
+            },
+            {
+              "abs_error": 0.0002800361336946699,
+              "population_count": 16,
+              "population_share": 0.0036133694670280035,
+              "sample_count": 2,
+              "sample_share": 0.0033333333333333335,
+              "value": "9.5"
+            }
+          ],
+          "total_variation_distance": 0.021147244805781378
+        },
+        "has_image_tag": {
+          "max_abs_share_error": 0.007109304426377596,
+          "rows": [
+            {
+              "abs_error": 0.007109304426377583,
+              "population_count": 4367,
+              "population_share": 0.9862240289069557,
+              "sample_count": 596,
+              "sample_share": 0.9933333333333333,
+              "value": "False"
+            },
+            {
+              "abs_error": 0.007109304426377596,
+              "population_count": 61,
+              "population_share": 0.013775971093044263,
+              "sample_count": 4,
+              "sample_share": 0.006666666666666667,
+              "value": "True"
+            }
+          ],
+          "total_variation_distance": 0.00710930442637759
+        },
+        "has_proof_tag": {
+          "max_abs_share_error": 0.004304426377597204,
+          "rows": [
+            {
+              "abs_error": 0.004304426377597204,
+              "population_count": 4313,
+              "population_share": 0.9740289069557362,
+              "sample_count": 587,
+              "sample_share": 0.9783333333333334,
+              "value": "False"
+            },
+            {
+              "abs_error": 0.00430442637759711,
+              "population_count": 115,
+              "population_share": 0.025971093044263777,
+              "sample_count": 13,
+              "sample_share": 0.021666666666666667,
+              "value": "True"
+            }
+          ],
+          "total_variation_distance": 0.004304426377597157
+        },
+        "primary_domain": {
+          "max_abs_share_error": 0.009620596205962006,
+          "rows": [
+            {
+              "abs_error": 0.009620596205962006,
+              "population_count": 1581,
+              "population_share": 0.35704607046070463,
+              "sample_count": 220,
+              "sample_share": 0.36666666666666664,
+              "value": "Algebra"
+            },
+            {
+              "abs_error": 0.0005374887082204016,
+              "population_count": 733,
+              "population_share": 0.1655374887082204,
+              "sample_count": 99,
+              "sample_share": 0.165,
+              "value": "Applied Mathematics"
+            },
+            {
+              "abs_error": 0.004227642276422763,
+              "population_count": 63,
+              "population_share": 0.014227642276422764,
+              "sample_count": 6,
+              "sample_share": 0.01,
+              "value": "Calculus"
+            },
+            {
+              "abs_error": 0.0032294489611562616,
+              "population_count": 613,
+              "population_share": 0.1384372177055104,
+              "sample_count": 85,
+              "sample_share": 0.14166666666666666,
+              "value": "Discrete Mathematics"
+            },
+            {
+              "abs_error": 0.001138211382113813,
+              "population_count": 792,
+              "population_share": 0.17886178861788618,
+              "sample_count": 108,
+              "sample_share": 0.18,
+              "value": "Geometry"
+            },
+            {
+              "abs_error": 0.0008130081300813108,
+              "population_count": 594,
+              "population_share": 0.13414634146341464,
+              "sample_count": 80,
+              "sample_share": 0.13333333333333333,
+              "value": "Number Theory"
+            },
+            {
+              "abs_error": 0.00022583559168925022,
+              "population_count": 1,
+              "population_share": 0.00022583559168925022,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "Other"
+            },
+            {
+              "abs_error": 0.007958446251129177,
+              "population_count": 50,
+              "population_share": 0.011291779584462511,
+              "sample_count": 2,
+              "sample_share": 0.0033333333333333335,
+              "value": "Precalculus"
+            },
+            {
+              "abs_error": 0.00022583559168925022,
+              "population_count": 1,
+              "population_share": 0.00022583559168925022,
+              "sample_count": 0,
+              "sample_share": 0.0,
+              "value": "missing"
+            }
+          ],
+          "total_variation_distance": 0.013988256549232117
+        },
+        "source_bucket": {
+          "max_abs_share_error": 0.004688346883468836,
+          "rows": [
+            {
+              "abs_error": 0.0009846431797651267,
+              "population_count": 896,
+              "population_share": 0.2023486901535682,
+              "sample_count": 122,
+              "sample_share": 0.20333333333333334,
+              "value": "HMMT_11"
+            },
+            {
+              "abs_error": 0.0011156278229449423,
+              "population_count": 1385,
+              "population_share": 0.3127822944896116,
+              "sample_count": 187,
+              "sample_share": 0.31166666666666665,
+              "value": "HMMT_2"
+            },
+            {
+              "abs_error": 0.0004426377597109288,
+              "population_count": 61,
+              "population_share": 0.013775971093044263,
+              "sample_count": 8,
+              "sample_share": 0.013333333333333334,
+              "value": "apmoapmo_sol"
+            },
+            {
+              "abs_error": 0.0012737127371273763,
+              "population_count": 201,
+              "population_share": 0.04539295392953929,
+              "sample_count": 28,
+              "sample_share": 0.04666666666666667,
+              "value": "cayley"
+            },
+            {
+              "abs_error": 0.0010614272809394767,
+              "population_count": 106,
+              "population_share": 0.023938572719060525,
+              "sample_count": 15,
+              "sample_share": 0.025,
+              "value": "china_team_selection_test"
+            },
+            {
+              "abs_error": 0.0009394760614272815,
+              "population_count": 232,
+              "population_share": 0.052393857271906055,
+              "sample_count": 32,
+              "sample_share": 0.05333333333333334,
+              "value": "fermat"
+            },
+            {
+              "abs_error": 0.003690153568202348,
+              "population_count": 68,
+              "population_share": 0.015356820234869015,
+              "sample_count": 7,
+              "sample_share": 0.011666666666666667,
+              "value": "imc"
+            },
+            {
+              "abs_error": 0.003378500451671181,
+              "population_count": 74,
+              "population_share": 0.016711833785004515,
+              "sample_count": 8,
+              "sample_share": 0.013333333333333334,
+              "value": "imo"
+            },
+            {
+              "abs_error": 0.0004245709123757921,
+              "population_count": 190,
+              "population_share": 0.04290876242095754,
+              "sample_count": 26,
+              "sample_share": 0.043333333333333335,
+              "value": "imo_shortlist"
+            },
+            {
+              "abs_error": 0.004688346883468836,
+              "population_count": 732,
+              "population_share": 0.16531165311653118,
+              "sample_count": 102,
+              "sample_share": 0.17,
+              "value": "other"
+            },
+            {
+              "abs_error": 0.00043360433604335696,
+              "population_count": 249,
+              "population_share": 0.05623306233062331,
+              "sample_count": 34,
+              "sample_share": 0.056666666666666664,
+              "value": "pascal"
+            },
+            {
+              "abs_error": 0.0005239385727190612,
+              "population_count": 101,
+              "population_share": 0.022809394760614273,
+              "sample_count": 14,
+              "sample_share": 0.023333333333333334,
+              "value": "putnam"
+            },
+            {
+              "abs_error": 0.0017028003613369473,
+              "population_count": 133,
+              "population_share": 0.03003613369467028,
+              "sample_count": 17,
+              "sample_share": 0.028333333333333332,
+              "value": "usamo"
+            }
+          ],
+          "total_variation_distance": 0.010329719963866326
+        }
+      },
+      "path": "benchmarks/datasets/omni_math2/omni_math2_stratified_600_seed42.jsonl",
+      "sample_size": 600,
+      "selected_strata": 215
+    }
+  ],
+  "seed": 42,
+  "top_sources": [
+    "HMMT_11",
+    "HMMT_2",
+    "apmoapmo_sol",
+    "cayley",
+    "china_team_selection_test",
+    "fermat",
+    "imc",
+    "imo",
+    "imo_shortlist",
+    "pascal",
+    "putnam",
+    "usamo"
+  ]
+}
