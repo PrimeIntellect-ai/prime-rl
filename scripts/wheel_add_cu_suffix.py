@@ -11,12 +11,12 @@ output filename. Used by install_deep_gemm.sh / install_ep_kernels.sh so wheels
 stamped with the build's CUDA major can coexist with prior cu12 builds in the
 same release.
 """
+
 from __future__ import annotations
 
 import argparse
 import base64
 import hashlib
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -55,7 +55,7 @@ def rebrand(
         new_ver = f"{old_ver}.{cu}" if cu else old_ver
         new_dist_info = dist_info if cu is None else f"{pkg_name}-{new_ver}.dist-info"
 
-        rewrites = {n: (new_dist_info + n[len(dist_info):] if n.startswith(dist_info + "/") else n) for n in names}
+        rewrites = {n: (new_dist_info + n[len(dist_info) :] if n.startswith(dist_info + "/") else n) for n in names}
 
         meta = z.read(dist_info + "/METADATA").decode()
         if cu is None:
