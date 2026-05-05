@@ -70,6 +70,12 @@ cd "$REPO_ROOT"
 if [ -n "$WHEEL_DIR" ]; then
     mkdir -p "$WHEEL_DIR"
     uv build --no-build-isolation --wheel --out-dir "$WHEEL_DIR" "$TMPDIR/DeepGEMM"
+    # Stamp the wheel with the CUDA major so cu12/cu13 builds at the same source
+    # commit don't share a filename when uploaded to the same release.
+    BUILT_WHEEL=$(ls "$WHEEL_DIR"/deep_gemm-*-cp*.whl | grep -v '\.cu[0-9]\+-' | head -1 || true)
+    if [ -n "$BUILT_WHEEL" ]; then
+        python "$SCRIPT_DIR/wheel_add_cu_suffix.py" "$BUILT_WHEEL" --cu "cu${CUDA_MAJOR}" --out-dir "$WHEEL_DIR" --replace
+    fi
     echo ""
     echo "Wheel built:"
     ls -lh "$WHEEL_DIR"/deep_gemm*.whl

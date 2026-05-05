@@ -21,7 +21,7 @@ dependencies = [
     "torchvision",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.20.0",
+    "vllm>=0.20.1",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.73",
@@ -81,7 +81,7 @@ disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
     "deep-gemm ; platform_machine == 'x86_64'",
     "nixl",
-    "nixl-cu12 ; platform_machine == 'x86_64'",
+    "nixl-cu13 ; platform_machine == 'x86_64'",
     "vllm-router ; platform_machine == 'x86_64'",
 ]
 gpt-oss = [
@@ -130,8 +130,10 @@ override-dependencies = [
 [tool.uv.exclude-newer-package]
 # pytorch-cu130 / pytorch-cu130-test indexes don't publish upload dates
 torch = false
+torchvision = false
+torchaudio = false
 flash_attn_3 = false
-# Allow vllm 0.20.0 (uploaded 2026-04-27, inside the 7-day cooldown window)
+# Allow vllm 0.20.1 (uploaded 2026-05-04, inside the 7-day cooldown window)
 # while we explicitly bump in this branch.
 vllm = false
 # Self-vendored packages on our primeintellect index
@@ -162,7 +164,6 @@ dion = false
 pydantic-config = false
 deep-ep = false
 deep-gemm = false
-nixl-cu12 = false
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu130" }
@@ -190,9 +191,8 @@ aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
 deepdive = { index = "primeintellect" }
 mini_swe_agent_plus = { index = "primeintellect" }
-deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }
-deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.3.0+477618c-cp312-cp312-linux_x86_64.whl" }
-nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
+deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+73b6ea4.cu13-cp312-cp312-linux_x86_64.whl" }
+deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.3.0+477618c.cu13-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 flash_attn_3 = { index = "pytorch-cu130-test" }
 
