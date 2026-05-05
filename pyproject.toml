@@ -129,6 +129,8 @@ override-dependencies = [
 [tool.uv.exclude-newer-package]
 # pytorch-cu130 / pytorch-cu130-test indexes don't publish upload dates
 torch = false
+torchvision = false
+torchaudio = false
 flash_attn_3 = false
 # Allow vllm 0.20.1 (uploaded 2026-05-04, inside the 7-day cooldown window)
 # while we explicitly bump in this branch.
