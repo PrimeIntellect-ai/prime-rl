@@ -434,8 +434,8 @@ def main() -> None:
     args.vllm_extra = json.loads(args.vllm_extra_json)
     args.sampling_extra = json.loads(args.sampling_extra_json)
     requested = set(args.models or [])
-    specs = select_specs(_model_specs(args.model_set), requested)
     try:
+        specs = select_specs(_model_specs(args.model_set), requested)
         specs, blocked_summaries = filter_blocked_specs(
             specs,
             explicitly_requested=bool(requested),

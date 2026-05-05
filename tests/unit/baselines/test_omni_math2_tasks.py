@@ -14,6 +14,7 @@ sys.path.insert(0, str(VERIFIERS_PATH))
 from verifiers.utils.data_utils import extract_boxed_answer
 
 from environments.omni_math2_singleturn.omni_math2_singleturn import (
+    PARSED_ANSWER_STATE_KEY,
     MathVerifyThenJudgeRubric,
     extract_omni_math2_answer,
 )
@@ -34,6 +35,16 @@ class _OmniParser:
     def parse_answer(self, completion):
         content = completion[-1]["content"]
         return extract_omni_math2_answer(content)
+
+
+class _CountingParser:
+    def __init__(self, answer):
+        self.answer = answer
+        self.calls = 0
+
+    def parse_answer(self, completion):
+        self.calls += 1
+        return self.answer
 
 
 class _MathRubric:
@@ -321,6 +332,37 @@ def test_hybrid_rubric_accepts_targeted_text_aliases_without_judge():
             assert judge_score == 1.0
 
         assert judge_rubric.calls == []
+
+    asyncio.run(run())
+
+
+def test_hybrid_rubric_caches_parsed_answer_for_alias_checks():
+    async def run():
+        parser = _CountingParser("\\emptyset")
+        rubric = MathVerifyThenJudgeRubric(
+            parser=parser,
+            math_rubric=_MathRubric(),
+            judge_rubric=None,
+        )
+        completion = [{"role": "assistant", "content": "Final answer: \\boxed{\\emptyset}"}]
+        state = {"math_verify_score": 0.0}
+
+        choice_score = await rubric.choice_alias_score(
+            prompt=[{"role": "user", "content": "Find all natural n."}],
+            completion=completion,
+            answer="\\text{No such } n \\text{ exists}",
+            state=state,
+        )
+        text_score = await rubric.text_alias_score(
+            completion=completion,
+            answer="\\text{No such } n \\text{ exists}",
+            state=state,
+        )
+
+        assert choice_score == 0.0
+        assert text_score == 1.0
+        assert parser.calls == 1
+        assert state[PARSED_ANSWER_STATE_KEY] == "\\emptyset"
 
     asyncio.run(run())
 

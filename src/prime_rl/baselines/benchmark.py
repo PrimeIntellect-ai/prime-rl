@@ -52,10 +52,34 @@ def artifact_complete(path: Path, expected_rollout_count: int) -> bool:
         summary = json.loads(summary_path.read_text())
     except json.JSONDecodeError:
         return False
+    if "num_rollouts" not in summary or "error_rate" not in summary:
+        return False
+    try:
+        num_rollouts = int(summary["num_rollouts"])
+        error_rate = float(summary["error_rate"])
+    except (TypeError, ValueError):
+        return False
     return (
-        int(summary.get("num_rollouts", -1)) == expected_rollout_count
-        and float(summary.get("error_rate", 0.0) or 0.0) == 0.0
+        num_rollouts == expected_rollout_count
+        and error_rate == 0.0
+        and _records_complete(records_path, expected_rollout_count)
     )
+
+
+def _records_complete(records_path: Path, expected_rollout_count: int) -> bool:
+    count = 0
+    try:
+        with records_path.open() as records_file:
+            for line in records_file:
+                if not line.strip():
+                    return False
+                json.loads(line)
+                count += 1
+                if count > expected_rollout_count:
+                    return False
+    except (OSError, json.JSONDecodeError):
+        return False
+    return count == expected_rollout_count
 
 
 def blocked_summaries(specs: list[ModelSpec]) -> dict[str, dict[str, Any]]:
@@ -86,8 +110,17 @@ def filter_blocked_specs(
 def select_specs(specs: list[ModelSpec], requested: set[str]) -> list[ModelSpec]:
     if not requested:
         return specs
-    return [
-        spec
-        for spec in specs
-        if spec.model in requested or spec.short_name in requested or slug(spec.model) in requested
-    ]
+    selected = []
+    matched: set[str] = set()
+    for spec in specs:
+        aliases = {spec.model, spec.short_name, slug(spec.model)}
+        hits = aliases & requested
+        if hits:
+            selected.append(spec)
+            matched.update(hits)
+
+    unmatched = requested - matched
+    if unmatched:
+        names = ", ".join(sorted(unmatched))
+        raise ValueError(f"Unknown requested model(s): {names}")
+    return selected

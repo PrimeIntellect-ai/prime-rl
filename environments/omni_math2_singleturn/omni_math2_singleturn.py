@@ -31,6 +31,7 @@ NO_SOLUTION_RE = re.compile(
     re.IGNORECASE,
 )
 MAX_FALLBACK_ANSWER_CHARS = 200
+PARSED_ANSWER_STATE_KEY = "omni_math2_parsed_answer"
 
 
 def _message_content(messages: vf.Messages) -> str:
@@ -174,6 +175,14 @@ class MathVerifyThenJudgeRubric(vf.Rubric):
             self.add_reward_func(self.judge_score, weight=0)
         self.add_reward_func(self.correct_answer, weight=1)
 
+    def _parsed_answer(self, completion: vf.Messages, state: vf.State) -> str | None:
+        if PARSED_ANSWER_STATE_KEY not in state:
+            state[PARSED_ANSWER_STATE_KEY] = self.parser.parse_answer(completion)
+        parsed = state[PARSED_ANSWER_STATE_KEY]
+        if parsed is None or isinstance(parsed, str):
+            return parsed
+        raise TypeError(f"Expected parsed answer to be str or None, got {type(parsed).__name__}")
+
     async def math_verify_score(
         self,
         completion: vf.Messages,
@@ -203,7 +212,7 @@ class MathVerifyThenJudgeRubric(vf.Rubric):
             return score
 
         aliases = _inline_choice_aliases(_message_content(prompt), answer)
-        response = _canonical_choice_response(self.parser.parse_answer(completion))
+        response = _canonical_choice_response(self._parsed_answer(completion, state))
         score = 1.0 if response is not None and response in aliases else 0.0
         state["choice_aliases"] = sorted(aliases)
         state["choice_alias_score"] = score
@@ -216,7 +225,7 @@ class MathVerifyThenJudgeRubric(vf.Rubric):
         state: vf.State,
         **kwargs: Any,
     ) -> float:
-        response = self.parser.parse_answer(completion)
+        response = self._parsed_answer(completion, state)
         score = 1.0 if _text_alias_matches(response, answer) else 0.0
         state["text_alias_score"] = score
         return score
@@ -244,7 +253,7 @@ class MathVerifyThenJudgeRubric(vf.Rubric):
             state["judge_score"] = score
             return score
 
-        parsed = self.parser.parse_answer(completion)
+        parsed = self._parsed_answer(completion, state)
         if parsed is None or not parsed.strip():
             state["judge_score"] = 0.0
             return 0.0
