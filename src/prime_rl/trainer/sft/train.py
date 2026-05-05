@@ -138,9 +138,16 @@ def train(config: SFTConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=fused_cross_entropy)
 
     if parallel_dims.cp_enabled:
-        setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        from prime_rl.utils.cp import assert_cp_style_supports_model
+
+        assert_cp_style_supports_model(config.model.cp_style, model)
+        # sparse MLA is softmax (works with both ring and ulysses).
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
-        setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        # Linear-attn / Mamba layers are only configured under ulysses; with ring
+        # we'd have already raised above.
+        if config.model.cp_style == "ulysses":
+            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     if config.model.lora is not None:
         multi_run_manager = get_multi_run_manager()

@@ -14,8 +14,44 @@ from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 CPStyle = Literal["ring", "ulysses"]
 
 
+def _has_linear_attn_layer(model: nn.Module) -> bool:
+    """True if the model contains any non-softmax (linear/SSM) attention layer."""
+    inner = getattr(model, "model", model)
+    if hasattr(inner, "language_model"):
+        inner = inner.language_model
+    layers = getattr(inner, "layers", None)
+    if layers is None:
+        return False
+    for layer in layers:
+        # Qwen3.5 hybrid DeltaNet
+        if getattr(layer, "layer_type", None) == "linear_attention":
+            return True
+        # NemotronH Mamba
+        if hasattr(layer, "mamba"):
+            return True
+    return False
+
+
+def assert_cp_style_supports_model(cp_style: CPStyle, model: nn.Module) -> None:
+    """Refuse `cp_style='ring'` on models that have linear/SSM attention layers.
+
+    Ring CP is a softmax-attention algorithm (sequence ring all-gather of K/V).
+    For non-softmax layers (DeltaNet, Mamba) we'd need a fundamentally different
+    CP scheme, which is not implemented. Use `cp_style='ulysses'` for those:
+    ulysses' all-to-all is purely on Q/K/V tensors, so the linear/SSM kernel
+    runs unchanged on a sequence shard.
+    """
+    if cp_style == "ring" and _has_linear_attn_layer(model):
+        raise ValueError(
+            "cp_style='ring' is not supported for models with linear-attention "
+            "or Mamba/SSM layers (e.g. Qwen3.5 hybrid, NemotronH). Use "
+            "cp_style='ulysses' instead — its all-to-all on Q/K/V works "
+            "out-of-the-box with non-softmax kernels."
+        )
+
+
 def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-    """Configure DeltaNet modules in Qwen3.5 hybrid models for native fla CP."""
+    """Configure DeltaNet modules in Qwen3.5 hybrid models for ulysses-style CP."""
     layers = None
     if hasattr(model, "model"):
         inner = model.model
@@ -44,7 +80,7 @@ def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int,
 
 
 def setup_nemotron_h_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-    """Configure NemotronH Mamba layers for context-parallel gather/scatter."""
+    """Configure NemotronH Mamba layers for ulysses-style all-to-all head partitioning."""
     layers = None
     if hasattr(model, "model") and hasattr(model.model, "layers"):
         layers = model.model.layers
