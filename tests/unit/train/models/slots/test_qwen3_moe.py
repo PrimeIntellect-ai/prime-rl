@@ -13,16 +13,17 @@ from transformers import Qwen3MoeConfig
 
 from prime_rl.trainer.models.fp8 import BLOCK_SIZE, ceil_div
 from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
-    conversion_specs,
-    is_dense_layer,
-    non_layer_conversion_specs,
+    BASE_LAYER_CONVERSION_SPEC,
+    DENSE_LAYER_CONVERSION_SPEC,
+    NON_LAYER_CONVERSION_SPEC,
+    SPARSE_LAYER_CONVERSION_SPEC,
 )
 from prime_rl.trainer.models.slots import (
     SMALL_NON_EXPERT_BYTES,
     ExpertSlot,
     GatheredSlot,
     ShardedSlot,
-    build_slots,
+    build_slots_for_conversion_spec,
 )
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.transport.wire import PeerInfo
@@ -96,17 +97,33 @@ def inference_target(request) -> tuple[str, torch.dtype]:
     return request.param
 
 
+def _is_dense_layer(config, layer_idx: int) -> bool:
+    if layer_idx in config.mlp_only_layers:
+        return True
+    if config.num_experts == 0:
+        return True
+    return (layer_idx + 1) % config.decoder_sparse_step != 0
+
+
 def _build(config, sd, default, base):
-    return build_slots(
-        sd,
-        layer_specs_fn=conversion_specs,
-        non_layer_specs=non_layer_conversion_specs(),
-        is_dense_fn=lambda i: is_dense_layer(config, i),
-        num_layers=config.num_hidden_layers,
-        parallel_dims=_trivial_dims(),
-        default_conversion=default,
-        base_dtype=base,
-    )
+    slots = []
+    dims = _trivial_dims()
+    for i in range(config.num_hidden_layers):
+        prefix = f"model.layers.{i}"
+        tail = DENSE_LAYER_CONVERSION_SPEC if _is_dense_layer(config, i) else SPARSE_LAYER_CONVERSION_SPEC
+        for spec in BASE_LAYER_CONVERSION_SPEC + tail:
+            slots.extend(
+                build_slots_for_conversion_spec(
+                    spec, prefix=prefix, state_dict=sd, parallel_dims=dims, default_conversion=default, base_dtype=base
+                )
+            )
+    for spec in NON_LAYER_CONVERSION_SPEC:
+        slots.extend(
+            build_slots_for_conversion_spec(
+                spec, prefix="", state_dict=sd, parallel_dims=dims, default_conversion=default, base_dtype=base
+            )
+        )
+    return slots
 
 
 def test_dispatch_picks_expected_slot_types(tiny_state, inference_target):

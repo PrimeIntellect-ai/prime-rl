@@ -6,10 +6,10 @@ import pytest
 
 from prime_rl.trainer.models.conversions import resolve, select_default_conversion
 from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
-    _BASE,
-    _DENSE,
-    _SPARSE,
-    non_layer_conversion_specs,
+    BASE_LAYER_CONVERSION_SPEC,
+    DENSE_LAYER_CONVERSION_SPEC,
+    NON_LAYER_CONVERSION_SPEC,
+    SPARSE_LAYER_CONVERSION_SPEC,
 )
 
 
@@ -30,7 +30,12 @@ def test_select_default_conversion(qwen3_variant):
 
 def test_specs_resolve_correctly(qwen3_variant):
     _, default = qwen3_variant
-    for spec in _BASE + _DENSE + _SPARSE + non_layer_conversion_specs():
+    for spec in (
+        BASE_LAYER_CONVERSION_SPEC
+        + DENSE_LAYER_CONVERSION_SPEC
+        + SPARSE_LAYER_CONVERSION_SPEC
+        + NON_LAYER_CONVERSION_SPEC
+    ):
         entry = resolve(spec.conversion.conversion_type, default)
         expected = spec.conversion.conversion_type or default
         assert entry.fn.__name__ == expected, f"{spec.dst} -> {entry.fn.__name__}"

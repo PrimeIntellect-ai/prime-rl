@@ -27,6 +27,7 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.conversion_spec import ConversionSpec
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
@@ -35,6 +36,8 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
 from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
+    CONVERSION_SPECS,
+    NON_LAYER_CONVERSION_SPEC,
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
     convert_tt_layer_to_hf,
@@ -169,6 +172,21 @@ class Qwen3MoePreTrainedModel(PreTrainedModelPrimeRL):
         """Convert a single layer's MoE weights from HuggingFace format to PrimeRL format in-place."""
         convert_hf_layer_to_tt(state_dict, layer_idx)
         return state_dict
+
+    def get_conversion_specs_for_layer(self, layer_idx: int) -> list[ConversionSpec]:
+        if layer_idx in self.config.mlp_only_layers:
+            is_dense = True
+        elif self.config.num_experts == 0:
+            is_dense = True
+        else:
+            is_dense = (layer_idx + 1) % self.config.decoder_sparse_step != 0
+
+        tail = CONVERSION_SPECS["dense_layer"] if is_dense else CONVERSION_SPECS["sparse_layer"]
+        return list(CONVERSION_SPECS["base_layer"] + tail)
+
+    @property
+    def non_layer_specs(self) -> tuple[ConversionSpec, ...]:
+        return NON_LAYER_CONVERSION_SPEC
 
 
 @auto_docstring

@@ -1,5 +1,10 @@
+import torch
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
+
+from prime_rl.trainer.models.conversion_spec import ConversionSpec
+from prime_rl.trainer.models.slots import Slot, build_slots_for_conversion_spec
+from prime_rl.trainer.parallel_dims import ParallelDims
 
 
 class PreTrainedModelPrimeRL(PreTrainedModel):
@@ -146,6 +151,46 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         This is called after loading the model from a checkpoint with meta device.
         """
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
+
+    def get_conversion_specs_for_layer(self, layer_idx: int) -> list[ConversionSpec]:
+        raise NotImplementedError(f"get_conversion_specs_for_layer is not implemented for {self.__class__.__name__}")
+
+    @property
+    def non_layer_specs(self) -> tuple[ConversionSpec, ...]:
+        raise NotImplementedError(f"non_layer_specs is not implemented for {self.__class__.__name__}")
+
+    def build_slots(self, parallel_dims: ParallelDims, default_conversion: str, base_dtype: torch.dtype) -> list[Slot]:
+        state_dict = self.state_dict()
+        slots: list[Slot] = []
+
+        for layer_idx in range(self.config.num_hidden_layers):
+            layer_prefix = f"model.layers.{layer_idx}"
+            conversion_specs = self.get_conversion_specs_for_layer(layer_idx)
+
+            for spec in conversion_specs:
+                slots.extend(
+                    build_slots_for_conversion_spec(
+                        spec,
+                        prefix=layer_prefix,
+                        state_dict=state_dict,
+                        parallel_dims=parallel_dims,
+                        default_conversion=default_conversion,
+                        base_dtype=base_dtype,
+                    )
+                )
+
+        for spec in self.non_layer_specs:
+            slots.extend(
+                build_slots_for_conversion_spec(
+                    spec,
+                    prefix="",
+                    state_dict=state_dict,
+                    parallel_dims=parallel_dims,
+                    default_conversion=default_conversion,
+                    base_dtype=base_dtype,
+                )
+            )
+        return slots
 
 
 __all__ = ["PreTrainedModelPrimeRL"]

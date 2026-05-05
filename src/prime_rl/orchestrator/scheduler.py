@@ -102,7 +102,7 @@ class Scheduler:
         self.strict_async_level = strict_async_level
         self.lora_name = lora_name
         self.json_logging = config.log.json_logging
-        self.mx_orchestrator = None
+        self.mx_rendezvous = None
 
         # student_inference is the weight-sync target. teacher_inference is set
         # in opd (for logprobs) and sft (for rollouts). rollout_inference is
@@ -318,9 +318,9 @@ class Scheduler:
             )
             self.checkpoint_ready.clear()
             wait_for_ckpt_start_time = time.perf_counter()
-            if self.mx_orchestrator is not None:
+            if self.mx_rendezvous is not None:
                 await asyncio.to_thread(
-                    self.mx_orchestrator.wait_for_all_peers_ready,
+                    self.mx_rendezvous.wait_for_all_peers_ready,
                     role="trainer",
                     status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 )
@@ -336,14 +336,14 @@ class Scheduler:
         )
 
         update_weights_start_time = time.perf_counter()
-        if self.mx_orchestrator is not None:
-            self.mx_orchestrator.set_status(p2p_pb2.SOURCE_STATUS_READY)
+        if self.mx_rendezvous is not None:
+            self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
             weights_path = None
         else:
             weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
         await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
-        if self.mx_orchestrator is not None:
-            self.mx_orchestrator.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+        if self.mx_rendezvous is not None:
+            self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
