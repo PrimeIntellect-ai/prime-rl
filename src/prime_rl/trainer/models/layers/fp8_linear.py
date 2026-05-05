@@ -45,8 +45,20 @@ class _FP8BlockwiseMM(torch.autograd.Function):
             grad_x = grad_x_2d.reshape(ctx.x_shape)
 
         if ctx.needs_input_grad[1]:
-            grad_output_t = grad_output_2d.transpose(0, 1).contiguous()
-            x_t = x_2d.transpose(0, 1).contiguous()
+            # deep_gemm.fp8_gemm_nt with recipe=(1, 1, 128) requires the K (token)
+            # dim to be a multiple of 128. Zero-pad along the token axis so non-
+            # aligned per-rank batches (from sequence packing) don't trip the kernel.
+            M_tok = grad_output_2d.size(0)
+            M_pad = (M_tok + block_size - 1) // block_size * block_size
+            if M_pad != M_tok:
+                pad_rows = M_pad - M_tok
+                grad_output_2d_padded = torch.nn.functional.pad(grad_output_2d, (0, 0, 0, pad_rows))
+                x_2d_padded = torch.nn.functional.pad(x_2d, (0, 0, 0, pad_rows))
+            else:
+                grad_output_2d_padded = grad_output_2d
+                x_2d_padded = x_2d
+            grad_output_t = grad_output_2d_padded.transpose(0, 1).contiguous()
+            x_t = x_2d_padded.transpose(0, 1).contiguous()
             grad_output_t_fp8 = per_token_cast_to_fp8_triton(grad_output_t, False, block_size)
             x_t_fp8 = per_token_cast_to_fp8_triton(x_t, False, block_size)
             grad_weight_fp32 = torch.zeros_like(weight, dtype=torch.float32)
@@ -93,22 +105,51 @@ class Float8BlockwiseLinear(nn.Linear):
         return new_mod
 
 
-def replace_linear_with_fp8_blockwise_linear(
-    model: nn.Module, ignore_modules: list[str] = ["lm_head", "model.layers.*.router.gate"]
-) -> None:
+DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
+    "lm_head",
+    "router",
+    "mlp.gate.",
+    "eh_proj",
+    "weights_proj",
+    "in_proj_a",
+    "in_proj_b",
+]
+
+
+def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: list[str] | None = None) -> None:
+    """Replace nn.Linear in `model` with Float8BlockwiseLinear, skipping any
+    module whose qualified name matches an ignore pattern (substring or regex).
+
+    The default ignore list covers layers that should never be quantized:
+    - lm_head
+    - MoE routers and gates (router, mlp.gate.)
+    - sparse-MLA scalar projection (weights_proj)
+    - GLM-5.1 MTP head (eh_proj)
+    - hybrid-Mamba projections (in_proj_a, in_proj_b)
+
+    Conv1d, layer norms, and embedding tables are not nn.Linear and are
+    skipped automatically by the type check; we don't need to list them.
+    """
+    if ignore_modules is None:
+        ignore_modules = list(DEFAULT_FP8_IGNORE_PATTERNS)
     logger = get_logger()
-    logger.info("Replacing linear layers with FP8 blockwise linear layers")
+    logger.info(f"Replacing linear layers with FP8 blockwise linear layers (ignore={ignore_modules})")
     replaced_modules = []
+    skipped_modules = []
     named_modules = dict(model.named_modules())
     for name, module in named_modules.items():
-        if name in ignore_modules or any(re.match(pattern, name) for pattern in ignore_modules):
+        if not isinstance(module, nn.Linear):
             continue
-        if isinstance(module, nn.Linear):
-            parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)
-            parent = model.get_submodule(parent_name) if parent_name else model
-            setattr(parent, attr_name, Float8BlockwiseLinear.from_linear(module))
-            replaced_modules.append(name)
+        if any(re.search(pattern, name) for pattern in ignore_modules):
+            skipped_modules.append(name)
+            continue
+        parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)
+        parent = model.get_submodule(parent_name) if parent_name else model
+        setattr(parent, attr_name, Float8BlockwiseLinear.from_linear(module))
+        replaced_modules.append(name)
 
     logger.info(
-        f"Replaced {len(replaced_modules)} linear layers with FP8 blockwise linear layers: {replaced_modules[:5]}..."
+        f"Replaced {len(replaced_modules)} linear layers with FP8 blockwise linear "
+        f"(skipped {len(skipped_modules)}); first replaced={replaced_modules[:3]}, "
+        f"first skipped={skipped_modules[:3]}"
     )
