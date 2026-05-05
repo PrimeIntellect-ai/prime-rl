@@ -17,8 +17,8 @@ dependencies = [
     "tomli-w>=1.2.0",
     "numpy>=2.2.6",
     "torch>=2.9.0",
-    # Declared explicitly so [tool.uv.sources] routes to pytorch-cu128 - vllm 0.20.1
-    # pins them in requires_dist; without this they install cu13 wheels and clash with cu128 torch.
+    # Declared explicitly so [tool.uv.sources] routes to pytorch-cu130 - vllm 0.20.1
+    # pins them in requires_dist; without this they install cu13 wheels and clash with cu130 torch.
     "torchvision",
     "torchaudio",
     "torchdata>=0.11.0",
@@ -129,7 +129,7 @@ override-dependencies = [
 ]
 
 [tool.uv.exclude-newer-package]
-# pytorch-cu128 / pytorch-cu128-test indexes don't publish upload dates
+# pytorch-cu130 / pytorch-cu130-test indexes don't publish upload dates
 torch = false
 flash_attn_3 = false
 # Self-vendored packages on our primeintellect index
@@ -147,8 +147,10 @@ aime2024 = false
 aime2025 = false
 deepdive = false
 mini_swe_agent_plus = false
-# vLLM 0.20.1 (released 2026-05-03) - within exclude-newer window but needed
+# vLLM 0.20.1 / git-main builds - within exclude-newer window but needed
 vllm = false
+# xgrammar 0.2.0 required by vllm main - within exclude-newer window
+xgrammar = false
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime = false
 prime-sandboxes = false
@@ -164,9 +166,10 @@ deep-gemm = false
 nixl-cu12 = false
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
+vllm = { git = "https://github.com/vllm-project/vllm.git", rev = "be5983b" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "350c1604e8a944cc9c84d0bae72fecba1fd62f1c" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
@@ -192,7 +195,7 @@ deep-ep = { url = "https://github.com/samsja/research-pre-built-wheels/releases/
 deep-gemm = { url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/deep_gemm-2.3.0+477618c-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/samsja/research-pre-built-wheels/releases/download/v0.2/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
-flash_attn_3 = { index = "pytorch-cu128-test" }
+flash_attn_3 = { index = "pytorch-cu130-test" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -208,14 +211,14 @@ url = "https://hub.primeintellect.ai/primeintellect/simple/"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 
 [[tool.uv.index]]
-name = "pytorch-cu128-test"
-url = "https://download.pytorch.org/whl/test/cu128"
+name = "pytorch-cu130-test"
+url = "https://download.pytorch.org/whl/test/cu130"
 explicit = true
 
 [tool.ruff.lint]
