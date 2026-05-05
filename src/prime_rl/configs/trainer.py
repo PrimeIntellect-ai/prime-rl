@@ -654,10 +654,12 @@ class DefaultLossConfig(BaseModel):
     type: Literal["default"] = "default"
 
     ipo_ratio_low: Annotated[
-        float, Field(ge=0, description="Lower bound α on the importance ratio. Tokens below are dropped from PG and KL.")
+        float,
+        Field(ge=0, description="Lower bound α on the importance ratio. Tokens below are dropped from PG and KL."),
     ] = 0.2
     ipo_ratio_high: Annotated[
-        float, Field(ge=0, description="Upper bound β on the importance ratio. Tokens above are dropped from PG and KL.")
+        float,
+        Field(ge=0, description="Upper bound β on the importance ratio. Tokens above are dropped from PG and KL."),
     ] = 5.0
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
