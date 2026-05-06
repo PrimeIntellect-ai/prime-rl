@@ -689,6 +689,52 @@ class BufferConfig(BaseConfig):
         return self
 
 
+class TokensLengthPenaltyConfig(BaseModel):
+    """Length penalty by weighted token cost.
+
+    Effective cost = completion_weight * model_completion_tokens
+                   + tool_response_weight * tool_response_tokens.
+
+    Tool-response tokens are read from the rollout's harness metric
+    `*_total_tool_response_tokens` (e.g. `rlm_total_tool_response_tokens`); 0 if absent —
+    so for envs without tool accounting, only the completion term contributes regardless of weight.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["tokens"] = "tokens"
+    completion_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            allow_inf_nan=False,
+            description="Weight on model completion tokens. Finite and non-negative.",
+        ),
+    ] = 1.0
+    tool_response_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            allow_inf_nan=False,
+            description="Weight on tool-response tokens. Finite and non-negative.",
+        ),
+    ] = 1.0
+
+
+class TurnsLengthPenaltyConfig(BaseModel):
+    """Length penalty by trajectory turn count."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["turns"] = "turns"
+
+
+LengthPenaltyConfig: TypeAlias = Annotated[
+    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
+    Field(discriminator="type"),
+]
+
+
 class DefaultAdvantageConfig(BaseModel):
     """Config for the default advantage."""
 
@@ -696,53 +742,17 @@ class DefaultAdvantageConfig(BaseModel):
 
     type: Literal["default"] = "default"
     length_penalty: Annotated[
-        Literal["tokens", "turns"] | None,
+        LengthPenaltyConfig | None,
         Field(
             description=(
-                "Cost metric for correctness-gated length penalty. `tokens` shapes by completion-token "
-                "count, `turns` shapes by trajectory turn count, `None` disables shaping. In mixed "
+                "Correctness-gated length penalty. `tokens` shapes by weighted token cost, "
+                "`turns` shapes by trajectory turn count, `None` disables shaping. In mixed "
                 "groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct "
                 "rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost "
                 "rollouts get advantage in [0, 1], others get 0."
             )
         ),
     ] = None
-    length_penalty_completion_weight: Annotated[
-        float,
-        Field(
-            ge=0,
-            allow_inf_nan=False,
-            description=(
-                "Weight on model completion tokens when `length_penalty='tokens'`. "
-                "Effective cost = completion_weight * completion_tokens + tool_response_weight * tool_response_tokens. "
-                "Must be a finite, non-negative float. Ignored for other `length_penalty` values."
-            ),
-        ),
-    ] = 1.0
-    length_penalty_tool_response_weight: Annotated[
-        float,
-        Field(
-            ge=0,
-            allow_inf_nan=False,
-            description=(
-                "Weight on tool-response tokens when `length_penalty='tokens'`. "
-                "Tool-response tokens are read from the rollout's harness metric "
-                "`*_total_tool_response_tokens` (e.g. `rlm_total_tool_response_tokens`); 0 if absent. "
-                "Must be a finite, non-negative float. Ignored for other `length_penalty` values."
-            ),
-        ),
-    ] = 0.0
-
-    @model_validator(mode="after")
-    def validate_token_weights(self):
-        if self.length_penalty != "tokens" and (
-            self.length_penalty_completion_weight != 1.0 or self.length_penalty_tool_response_weight != 0.0
-        ):
-            raise ValueError(
-                "`length_penalty_completion_weight` and `length_penalty_tool_response_weight` "
-                "only apply when `length_penalty='tokens'`."
-            )
-        return self
 
 
 class CustomAdvantageConfig(BaseModel):

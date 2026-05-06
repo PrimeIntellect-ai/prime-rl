@@ -1,16 +1,20 @@
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Callable
 
 import torch
 import verifiers as vf
 from jaxtyping import Float
 from torch import Tensor
 
-from prime_rl.configs.orchestrator import AdvantageConfig, CustomAdvantageConfig
+from prime_rl.configs.orchestrator import (
+    AdvantageConfig,
+    CustomAdvantageConfig,
+    LengthPenaltyConfig,
+    TokensLengthPenaltyConfig,
+    TurnsLengthPenaltyConfig,
+)
 from prime_rl.orchestrator.vf_utils import get_model_completion_len, get_num_turns, get_tool_response_len
 from prime_rl.utils.utils import import_object
-
-LengthPenalty = Literal["tokens", "turns"]
 
 
 @dataclass
@@ -42,32 +46,27 @@ Expected signature:
 
 def default_advantage_fn(
     inputs: AdvantageInputs,
-    length_penalty: LengthPenalty | None = None,
-    completion_weight: float = 1.0,
-    tool_response_weight: float = 0.0,
+    length_penalty: LengthPenaltyConfig | None = None,
 ) -> AdvantageOutputs:
     """Default GRPO advantage: reward minus per-problem baseline.
 
-    When `length_penalty='tokens'`, each rollout's cost is
-    `completion_weight * model_completion_tokens + tool_response_weight * tool_response_tokens`,
-    letting callers shape on model output, tool-response tokens, or any weighted mix.
-    `completion_weight` and `tool_response_weight` are ignored for other `length_penalty` values.
+    `length_penalty` enables correctness-gated efficiency shaping over a per-rollout
+    cost: tokens (weighted completion + tool-response) or trajectory turn count.
     """
     rewards = torch.tensor([[r["reward"] for r in group] for group in inputs.rollouts], dtype=torch.float32)
 
-    if length_penalty == "tokens":
+    if isinstance(length_penalty, TokensLengthPenaltyConfig):
+        w_c = length_penalty.completion_weight
+        w_t = length_penalty.tool_response_weight
         costs = torch.tensor(
             [
-                [
-                    completion_weight * get_model_completion_len(r) + tool_response_weight * get_tool_response_len(r)
-                    for r in group
-                ]
+                [w_c * get_model_completion_len(r) + w_t * get_tool_response_len(r) for r in group]
                 for group in inputs.rollouts
             ],
             dtype=rewards.dtype,
         )
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs))
-    if length_penalty == "turns":
+    if isinstance(length_penalty, TurnsLengthPenaltyConfig):
         costs = torch.tensor(
             [[get_num_turns(r) for r in group] for group in inputs.rollouts],
             dtype=rewards.dtype,
@@ -130,12 +129,7 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
         return advantage_fn
 
     def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
-        return default_advantage_fn(
-            inputs,
-            length_penalty=config.length_penalty,
-            completion_weight=config.length_penalty_completion_weight,
-            tool_response_weight=config.length_penalty_tool_response_weight,
-        )
+        return default_advantage_fn(inputs, length_penalty=config.length_penalty)
 
     return advantage_fn
 
