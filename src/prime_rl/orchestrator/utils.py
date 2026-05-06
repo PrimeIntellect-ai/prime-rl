@@ -7,7 +7,6 @@ from typing import Any
 
 import pandas as pd
 import verifiers as vf
-from openai.types.chat.chat_completion import ChatCompletion
 from rich.console import Console
 from rich.table import Table
 from verifiers.utils.client_utils import setup_openai_client
@@ -85,28 +84,24 @@ async def compute_teacher_logprobs(
     samples: list[TrainingSample],
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
+    from prime_rl.inference.vllm.serving_generate import GenerateResponse
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
         client = setup_openai_client(client_config)
 
         response = await client.post(
-            "/chat/completions/tokens",
+            "/generate",
+            cast_to=GenerateResponse,
             body={
                 "model": model_name,
-                "messages": [{"role": "user", "content": ""}],
-                "tokens": sample.prompt_ids + sample.completion_ids,
+                "prompt_token_ids": sample.prompt_ids + sample.completion_ids,
                 "max_tokens": 1,
                 "temperature": 1.0,
                 "top_p": 1.0,
-                "skip_special_tokens": False,
                 "prompt_logprobs": True,
             },
-            cast_to=ChatCompletion,
         )
-        return [
-            0.0 if lp is None else float(next(iter(lp.values()))["logprob"])
-            for lp in getattr(response, "prompt_logprobs", [])
-        ]
+        return [0.0 if lp is None else float(lp) for lp in response.prompt_logprobs or []]
 
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 

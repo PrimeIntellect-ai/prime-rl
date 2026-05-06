@@ -188,10 +188,11 @@ def train(config: TrainerConfig):
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
         substitute_hf_flash_attn(cp_group, heads_k_stride=1)
         substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_hybrid_cp, setup_sparse_mla_cp
+        from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
 
         setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -444,6 +445,7 @@ def train(config: TrainerConfig):
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_fn=loss_fn,
                 loss_scale=loss_scale,
+                sft_loss=micro_batch["sft_loss"],
             )
 
             # Backward pass
@@ -510,9 +512,8 @@ def train(config: TrainerConfig):
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
-        perf_counter.count_tokens(num_tokens)
-        throughput = perf_counter.get_tokens_per_second() or 0
-        mfu = perf_counter.get_mfu() or 0
+        throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
+        mfu = perf_counter.get_step_mfu(num_tokens, forward_backward_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
 
         # Log step metrics

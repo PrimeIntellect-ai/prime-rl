@@ -75,7 +75,7 @@ inference:
 
   runtimeClassName: nvidia
 
-  # Health probes for inference server (requires /health endpoint)
+  # Health probes for inference server (/health for startup/readiness, /liveness for engine liveness)
   probes:
     enabled: false
     # Startup probe: allows long model loading time (up to 45 min by default)
@@ -86,7 +86,7 @@ inference:
     liveness:
       periodSeconds: 10
       failureThreshold: 3
-      timeoutSeconds: 60
+      timeoutSeconds: 10
     readiness:
       periodSeconds: 5
       failureThreshold: 2

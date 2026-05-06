@@ -59,6 +59,11 @@ def get_model_completion_len(output: vf.RolloutOutput) -> int:
     return sum(len(step["tokens"]["completion_ids"]) for step in output["trajectory"] if step.get("tokens"))
 
 
+def get_num_turns(output: vf.RolloutOutput) -> int:
+    """Number of turns (trajectory steps) in a rollout."""
+    return len(output["trajectory"])
+
+
 def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path, exclude_keys: set[str] | None = None) -> None:
     """Save rollouts to a JSONL file using verifiers serialization."""
     path.parent.mkdir(parents=True, exist_ok=True)

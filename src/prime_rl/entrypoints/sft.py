@@ -8,7 +8,9 @@ from threading import Event, Thread
 
 import tomli_w
 
+import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.trainer.model import pre_download_model
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, validate_output_dir
@@ -195,6 +197,9 @@ def sft(config: SFTConfig):
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
     validate_output_dir(config.output_dir, resuming=resuming, clean=clean)
     config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not config.dry_run:
+        pre_download_model(config.model.name)
 
     if config.slurm is not None:
         sft_slurm(config)

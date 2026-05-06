@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
-from prime_rl.utils.utils import rgetattr, rsetattr
+from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
 
@@ -85,7 +85,7 @@ class ModelConfig(BaseModelConfig):
             description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`. "
             'Set to "auto" to infer from the model name.',
         ),
-    ] = None
+    ] = "auto"
 
     reasoning_parser: Annotated[
         str | None,
@@ -246,15 +246,6 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 
 class InferenceExperimentalConfig(BaseConfig):
     """Experimental features for inference."""
-
-    reset_prefix_cache_after_update: Annotated[
-        bool,
-        Field(
-            description="Whether to reset the prefix cache after weight updates (update_weights, load_lora_adapter). "
-            "Ensures all KV states are recomputed with the new weights at the cost of extra prefill. "
-            "When False, prefer using orchestrator.experimental.use_prefix_cache_salt to invalidate stale caches via salt instead.",
-        ),
-    ] = False
 
 
 class InferenceConfig(BaseConfig):
@@ -459,10 +450,9 @@ class InferenceConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         if self.slurm is not None and self.slurm.template_path is None:
-            import prime_rl
-
-            templates_dir = Path(prime_rl.__file__).parent / "templates"
-            self.slurm.template_path = templates_dir / "inference.sbatch.j2"
+            templates_dir = find_package_resource("templates")
+            if templates_dir is not None:
+                self.slurm.template_path = templates_dir / "inference.sbatch.j2"
         return self
 
     @model_validator(mode="after")

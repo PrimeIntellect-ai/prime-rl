@@ -37,11 +37,16 @@ def setup_monitor(
     run_config: BaseConfig | None = None,
     *,
     prime_config: PrimeMonitorConfig | None = None,
+    keep_full_history: bool = True,
     # Backward compatibility: support old 'config' keyword argument
     config: WandbWithExtrasConfig | None = None,
 ) -> Monitor:
     """
     Sets up monitors to log metrics.
+
+    `keep_full_history`: when False, monitors retain only the most recent
+    metrics dict. The orchestrator passes False outside `--bench` mode to
+    avoid an unbounded list growing for the lifetime of the run.
     """
     global _MONITOR
     if _MONITOR is not None:
@@ -59,6 +64,7 @@ def setup_monitor(
                 output_dir=output_dir,
                 tokenizer=tokenizer,
                 run_config=run_config,
+                keep_full_history=keep_full_history,
             )
         )
 
@@ -69,11 +75,12 @@ def setup_monitor(
                 output_dir=output_dir,
                 tokenizer=tokenizer,
                 run_config=run_config,
+                keep_full_history=keep_full_history,
             )
         )
 
     if len(monitors) == 0:
-        _MONITOR = NoOpMonitor()
+        _MONITOR = NoOpMonitor(keep_full_history=keep_full_history)
     elif len(monitors) == 1:
         _MONITOR = monitors[0]
     else:

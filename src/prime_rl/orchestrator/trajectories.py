@@ -199,12 +199,32 @@ def _convert_tools_to_oai_format(tool_defs: list) -> list[dict[str, Any]] | None
     ]
 
 
+def _tokenize_step_with_renderer(
+    step: vf.TrajectoryStep,
+    renderer,
+    tools: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Tokenize a trajectory step using a Renderer."""
+    from renderers.base import build_trajectory_step
+
+    prompt = _normalize_messages(step.get("prompt"), default_role="user")
+    completion = _normalize_messages(step.get("completion"), default_role="assistant")
+    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
+    completion = _strip_message_content(_deserialize_tool_calls(completion))
+    return build_trajectory_step(renderer, prompt, completion, tools=tools)
+
+
 def pretokenize_rollout_trajectory(
     output: vf.RolloutOutput,
     tokenizer: PreTrainedTokenizer,
     processor=None,
+    renderer=None,
 ) -> bool:
-    """Populate missing step tokens from prompt/completion messages."""
+    """Populate missing step tokens from prompt/completion messages.
+
+    When a renderer is provided, uses it for tokenization (faster, deterministic).
+    Otherwise falls back to the tokenizer + apply_chat_template path.
+    """
     logger = get_logger()
     tools = _convert_tools_to_oai_format(output.get("tool_defs", []))
 
@@ -212,17 +232,19 @@ def pretokenize_rollout_trajectory(
         if step["tokens"] is not None:
             continue
 
-        reconstructed = _tokenize_step_from_messages(step, tokenizer, tools=tools, processor=processor)
-        if reconstructed["prompt_prefix_len"] < reconstructed["original_prompt_len"]:
-            logger.debug(
-                f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "
-                f"Using longest common prefix length {reconstructed['prompt_prefix_len']} "
-                f"(original prompt had {reconstructed['original_prompt_len']} tokens)."
-            )
-
-        reconstructed.pop("prompt_prefix_len")
-        reconstructed.pop("original_prompt_len")
-        step["tokens"] = reconstructed
+        if renderer is not None:
+            step["tokens"] = _tokenize_step_with_renderer(step, renderer, tools=tools)
+        else:
+            reconstructed = _tokenize_step_from_messages(step, tokenizer, tools=tools, processor=processor)
+            if reconstructed["prompt_prefix_len"] < reconstructed["original_prompt_len"]:
+                logger.debug(
+                    f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "
+                    f"Using longest common prefix length {reconstructed['prompt_prefix_len']} "
+                    f"(original prompt had {reconstructed['original_prompt_len']} tokens)."
+                )
+            reconstructed.pop("prompt_prefix_len")
+            reconstructed.pop("original_prompt_len")
+            step["tokens"] = reconstructed
 
     return True
 
@@ -384,7 +406,11 @@ def interleave_rollout(
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples.append((new_prefix, make_sample(tokens), step_idx))
 
-    # Attach images once per sample using only the last merged step
+    # Attach images once per sample using only the last merged step. Prompt
+    # tokens already contain fully expanded <|image_pad|> placeholders because
+    # VLMs go through MITO (chat completions), which runs apply_chat_template
+    # server-side; the orchestrator re-tokenizes via the same processor in the
+    # fallback path so features and tokens stay 1:1.
     if vlm_cache is not None:
         key = output["example_id"] if cache_key is None else cache_key
         for _, sample, last_step_idx in active_samples:
@@ -797,7 +823,7 @@ def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMIma
     Caches per rollout to keep images aligned with divergent multi-turn trajectories.
     """
     examples = [(idx, rollout) for idx, rollout in enumerate(rollouts)]
-    unique_example_ids = {rollout["example_id"] for rollout in rollouts}
+    unique_example_ids = {(rollout.get("env_name"), rollout["example_id"]) for rollout in rollouts}
 
     # Extract images (also strips base64 data from rollout prompts to free memory)
     extract_start = time.perf_counter()

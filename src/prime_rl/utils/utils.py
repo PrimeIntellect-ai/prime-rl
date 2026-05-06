@@ -41,77 +41,6 @@ def import_object(dotted_path: str) -> Any:
     return getattr(module, name)
 
 
-def rgetattr(obj: Any, attr_path: str) -> Any:
-    """
-    Try to get a (nested) attribute from an object. For example:
-
-    ```python
-    class Foo:
-        bar = "baz"
-
-    class Bar:
-        foo = Foo()
-
-    foo = Foo()
-    bar = Bar()
-    ```
-
-    Here, the following holds:
-    - `getattr(foo, "bar")` will return `"baz"`.
-    - `getattr(bar, "foo)` will return an object of type `Foo`.
-    - `getattr(bar, "foo.bar")` will error
-
-    This function solves this. `rgetattr(bar, "foo.bar")` will return `"baz"`.
-
-    Args:
-        obj: The object to get the attribute from.
-        attr_path: The path to the attribute, nested using `.` as separator.
-
-    Returns:
-        The attribute
-    """
-    attrs = attr_path.split(".")
-    current = obj
-
-    for attr in attrs:
-        if not hasattr(current, attr):
-            raise AttributeError(f"'{type(current).__name__}' object has no attribute '{attr}'")
-        current = getattr(current, attr)
-
-    return current
-
-
-def rsetattr(obj: Any, attr_path: str, value: Any) -> None:
-    """
-    Try to set a (nested) attribute from an object. For example:
-
-    ```python
-    class Foo:
-        bar = "baz"
-
-    class Bar:
-        foo = Foo()
-
-    foo = Foo()
-    bar = Bar()
-    ```
-
-    Here, the following holds:
-    - `rsetattr(bar, "foo.bar", "qux")` will set `bar.foo.bar` to `"qux"`.
-    - `rsetattr(bar, "foo.bar", "qux")` will set `bar.foo.bar` to `"qux"`.
-
-    Args:
-        obj: The object to set the attribute on.
-        attr_path: The path to the attribute, nested using `.` as separator.
-        value: The value to set the attribute to.
-    """
-    if "." not in attr_path:
-        return setattr(obj, attr_path, value)
-    attr_path, attr = attr_path.rsplit(".", 1)
-    obj = rgetattr(obj, attr_path)
-    setattr(obj, attr, value)
-
-
 def capitalize(s: str) -> str:
     """Capitalize the first letter of a string."""
     return s[0].upper() + s[1:]
@@ -206,27 +135,32 @@ def to_row_format(dict_of_lists: dict[str, list[Any]]) -> list[dict[str, Any]]:
     return [dict(zip(dict_of_lists.keys(), values)) for values in zip(*dict_of_lists.values())]
 
 
-def format_time(time_in_seconds: float) -> str:
-    """Format a time in seconds to a human-readable format."""
-    from datetime import timedelta
-
-    td = timedelta(seconds=time_in_seconds)
-    days = td.days
-    hours, remainder = divmod(td.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-
-    # Format based on magnitude
-    if days > 0:
-        total_hours = days * 24 + hours
-        return f"{total_hours + minutes / 60:.2f}h"
-    elif hours > 0:
-        return f"{hours + minutes / 60:.2f}h"
-    elif minutes > 0:
-        return f"{minutes + seconds / 60:.2f}m"
+def format_time(time_s: float) -> str:
+    """
+    Format a time in seconds to a human-readable format:
+    - >1d -> Xd Yh
+    - >1h -> Xh Ym
+    - >1m -> Xm Ys
+    - <1s -> Xms
+    - Else: Xs
+    """
+    if time_s >= 86400:
+        d = time_s // 86400
+        h = (time_s % 86400) // 3600
+        return f"{d:.0f}d" + (f" {h:.0f}h" if h > 0 else "")
+    elif time_s >= 3600:
+        h = time_s // 3600
+        m = (time_s % 3600) // 60
+        return f"{h:.0f}h" + (f" {m:.0f}m" if m > 0 else "")
+    elif time_s >= 60:
+        m = time_s // 60
+        s = (time_s % 60) // 1
+        return f"{m:.0f}m" + (f" {s:.0f}s" if s > 0 else "")
+    elif time_s < 1:
+        ms = time_s * 1e3
+        return f"{ms:.0f}ms"
     else:
-        # Include microseconds for sub-second precision
-        total_seconds = seconds + td.microseconds / 1_000_000
-        return f"{total_seconds:.2f}s"
+        return f"{time_s:.0f}s"
 
 
 def format_num(num: float | int, precision: int = 2) -> str:

@@ -203,6 +203,7 @@ def compute_loss(
     loss_mask: list[Bool[Tensor, " seq_i"]],
     loss_fn: LossFn,
     loss_scale: int,
+    sft_loss: bool = False,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -215,10 +216,13 @@ def compute_loss(
         loss_mask: Loss mask for each sequence
         loss_fn: Per-sequence loss function
         loss_scale: Scale factor to normalize the loss
+        sft_loss: If True, use SFT loss instead of the configured loss_fn for this batch
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
     """
+    effective_loss_fn = sft_loss_fn if sft_loss else loss_fn
+
     total_loss = 0.0
     all_metrics: dict[str, list[Tensor]] = {}
 
@@ -236,7 +240,7 @@ def compute_loss(
             loss_mask=mask,
         )
 
-        result = loss_fn(inputs)
+        result = effective_loss_fn(inputs)
 
         total_loss = total_loss + result.loss
 

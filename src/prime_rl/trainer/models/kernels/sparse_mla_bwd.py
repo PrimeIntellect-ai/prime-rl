@@ -174,7 +174,10 @@ def bwd(
             acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
             acc_dkv_tail_shared = T.alloc_shared([BS // split_store, D_tail], accum_dtype)
 
-            max_kv_i = s_i
+            # See sparse_mla_fwd: sentinel is at index S_kv - 1 (zero KV), valid indices
+            # live in [0, S_kv - 1). Using this single bound makes the kernel work for
+            # both full and CP-sharded Q without needing a global Q offset.
+            max_kv_i = S_kv - 2
 
             T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :D], Q_shared)
             T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, D:], Q_tail_shared)

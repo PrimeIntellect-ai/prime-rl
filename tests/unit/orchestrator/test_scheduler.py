@@ -3,6 +3,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import verifiers as vf
+
 from prime_rl.orchestrator.scheduler import InflightRequest, Scheduler
 from prime_rl.utils.async_utils import safe_cancel
 
@@ -29,7 +31,6 @@ def make_scheduler() -> Scheduler:
     scheduler.inflight_policy_update_task = None
     scheduler.update_policy_task = None
     scheduler.enable_policy_updates = True
-    scheduler.use_prefix_cache_salt = False
     return scheduler
 
 
@@ -160,3 +161,16 @@ def test_stop_cancels_inflight_policy_update_task():
         assert scheduler.inflight_policy_update_task is None
 
     asyncio.run(run())
+
+
+def test_client_identity_distinguishes_base_url_and_dp_rank():
+    client_a = vf.ClientConfig(
+        api_base_url="http://worker-a:8000/v1",
+        extra_headers={"X-data-parallel-rank": "0"},
+    )
+    client_b = vf.ClientConfig(
+        api_base_url="http://worker-a:8000/v1",
+        extra_headers={"X-data-parallel-rank": "1"},
+    )
+
+    assert Scheduler._client_identity(client_a) != Scheduler._client_identity(client_b)

@@ -39,6 +39,7 @@ from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 
 class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
@@ -216,16 +217,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            flat_position_ids = position_ids.view(-1)
-            seqlens = torch.cat(
-                [
-                    flat_position_ids[0:1],
-                    flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
-                    flat_position_ids[-1:] + 1,
-                ]
-            )
-            max_seqlen = seqlens.max().item()
-            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None
@@ -279,6 +271,10 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices of input tokens in the KV cache. Accepted only for HuggingFace API
+            compatibility — prime-rl asserts `use_cache is None` since training does not
+            perform autoregressive decoding, so this argument is unused.
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
             If not provided, the wrapped LM head returns logits only.
