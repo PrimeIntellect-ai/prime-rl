@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Colors for output
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+  GREEN=$'\033[0;32m'
+  YELLOW=$'\033[1;33m'
+  STDOUT_NC=$'\033[0m'
+else
+  GREEN=''
+  YELLOW=''
+  STDOUT_NC=''
+fi
 
-log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+  RED=$'\033[0;31m'
+  STDERR_NC=$'\033[0m'
+else
+  RED=''
+  STDERR_NC=''
+fi
+
+log_info() { printf '%s[INFO]%s %s\n' "$GREEN" "$STDOUT_NC" "$*"; }
+log_warn() { printf '%s[WARN]%s %s\n' "$YELLOW" "$STDOUT_NC" "$*"; }
+log_error() { printf '%s[ERROR]%s %s\n' "$RED" "$STDERR_NC" "$*" >&2; }
 
 REPO_ID="prime-rl"
 
