@@ -144,6 +144,45 @@ def test_sample_upload_failure_keeps_step_in_backlog_and_retries_next_tick():
     assert attempts == [0, 0, 10]
 
 
+def test_non_retryable_sample_upload_failure_does_not_block_queue():
+    """A permanent failure (e.g. 400 from presign, expired API key) must not
+    re-enqueue and block the head — it should be dropped so the rest of the
+    backlog can drain.
+    """
+    monitor = _new_drain_monitor()
+    attempted: list[int] = []
+
+    async def upload_one(step: int, _bytes: bytes) -> None:
+        attempted.append(step)
+        if step == 0:
+            request = httpx.Request("POST", "https://example/presign")
+            raise httpx.HTTPStatusError(
+                "bad request",
+                request=request,
+                response=httpx.Response(400, request=request),
+            )
+
+    monitor._upload_one_sample_step = upload_one  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        # Pre-load queue so the drain has work to do behind the failing head.
+        for s in [0, 10, 20]:
+            monitor._pending_sample_steps.add(s)
+            monitor._sample_upload_queue.append((s, f"p{s}".encode()))
+
+        # Trigger drain via a fresh log_samples call.
+        monitor._pending_sample_steps.add(30)
+        await monitor._enqueue_and_drain_samples_async(30, b"p30")
+
+    asyncio.run(scenario())
+
+    # Step 0 (non-retryable 400) was attempted and dropped; 10/20/30 all uploaded.
+    assert attempted == [0, 10, 20, 30]
+    assert list(monitor._sample_upload_queue) == []
+    assert monitor._pending_sample_steps == set()
+    assert monitor.last_log_samples_step == 30
+
+
 def test_in_flight_sample_upload_survives_concurrent_eviction():
     """Regression test: backlog eviction runs without the upload lock, so a
     concurrent log_samples() call could previously popleft the head that the

@@ -454,21 +454,36 @@ class PrimeMonitor(Monitor):
             while self._sample_upload_queue:
                 # Pop the in-flight item out of the queue entirely before awaiting,
                 # so concurrent eviction (which runs without the lock) cannot remove
-                # the head we are uploading. On failure we appendleft to preserve
-                # ordering; on success the item simply stays gone.
+                # the head we are uploading. On retryable failure we appendleft to
+                # preserve ordering; on success or permanent failure the item simply
+                # stays gone.
                 pending_step, pending_bytes = self._sample_upload_queue.popleft()
                 start = time.perf_counter()
                 try:
                     await self._upload_one_sample_step(pending_step, pending_bytes)
                 except Exception as e:
-                    self._sample_upload_queue.appendleft((pending_step, pending_bytes))
+                    if _is_retryable_upload_error(e):
+                        # Transient — keep at the head for next log_samples tick.
+                        self._sample_upload_queue.appendleft((pending_step, pending_bytes))
+                        self.logger.opt(exception=True).warning(
+                            f"Sample upload for step {pending_step} failed after retries; "
+                            f"keeping in backlog (size={len(self._sample_upload_queue)}): "
+                            f"{type(e).__name__}: {e}"
+                        )
+                        # Stop draining; if this step keeps failing, later steps shouldn't
+                        # be blocked behind it indefinitely — backlog overflow eviction
+                        # eventually frees them.
+                        return
+
+                    # Permanent (e.g. 4xx that's not 408/429): drop this step so it
+                    # doesn't block the queue head, and continue draining the rest.
+                    self._pending_sample_steps.discard(pending_step)
                     self.logger.opt(exception=True).warning(
-                        f"Sample upload for step {pending_step} failed after retries; "
-                        f"keeping in backlog (size={len(self._sample_upload_queue)}): "
+                        f"Sample upload for step {pending_step} failed with non-retryable error; "
+                        f"dropping step (queue size={len(self._sample_upload_queue)}): "
                         f"{type(e).__name__}: {e}"
                     )
-                    # Stop draining; will retry on next log_samples tick.
-                    return
+                    continue
 
                 # Success: bookkeeping (item is already popped).
                 self._pending_sample_steps.discard(pending_step)
