@@ -19,7 +19,7 @@ dependencies = [
     "torch>=2.9.0",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.19.0",
+    "vllm>=0.20.1",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.73",
@@ -109,7 +109,6 @@ dev = [
 
 
 [tool.uv]
-exclude-newer = "7 days"
 preview = true
 no-build-isolation-package = ["flash-attn"]
 environments = [
