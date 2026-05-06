@@ -52,6 +52,12 @@ _UPLOAD_BACKOFF_MAX_S = 30.0
 # survive a few intervals of R2 unavailability without unbounded memory growth.
 _MAX_PENDING_SAMPLE_UPLOADS = 5
 
+# After a retryable upload failure (R2/API outage), suppress further drain
+# attempts for this long so coroutines queued during the failed drain don't
+# each consume another full tenacity retry budget back-to-back. The next
+# log_samples tick after this expires picks up the backlog.
+_RETRYABLE_COOLDOWN_S = 60.0
+
 
 def _json(val: Any) -> str:
     """JSON-serialize dicts/lists, pass strings through, default to empty string for None."""
@@ -452,6 +458,13 @@ class PrimeMonitor(Monitor):
 
         async with self._sample_upload_lock:
             while self._sample_upload_queue:
+                # If a previous drain just hit a retryable failure, every coroutine
+                # queued on this lock would otherwise pop the same head and burn
+                # another full tenacity budget. Bail out and let a later tick (after
+                # the cooldown elapses) pick up the backlog.
+                if self._retryable_cooldown_until is not None and time.monotonic() < self._retryable_cooldown_until:
+                    return
+
                 # Pop the in-flight item out of the queue entirely before awaiting,
                 # so concurrent eviction (which runs without the lock) cannot remove
                 # the head we are uploading. On retryable failure we appendleft to
@@ -463,16 +476,16 @@ class PrimeMonitor(Monitor):
                     await self._upload_one_sample_step(pending_step, pending_bytes)
                 except Exception as e:
                     if _is_retryable_upload_error(e):
-                        # Transient — keep at the head for next log_samples tick.
+                        # Transient — keep at the head and arm the cooldown so other
+                        # waiters don't immediately retry the same head.
                         self._sample_upload_queue.appendleft((pending_step, pending_bytes))
+                        self._retryable_cooldown_until = time.monotonic() + _RETRYABLE_COOLDOWN_S
                         self.logger.opt(exception=True).warning(
                             f"Sample upload for step {pending_step} failed after retries; "
-                            f"keeping in backlog (size={len(self._sample_upload_queue)}): "
+                            f"keeping in backlog (size={len(self._sample_upload_queue)}, "
+                            f"cooldown={_RETRYABLE_COOLDOWN_S:.0f}s): "
                             f"{type(e).__name__}: {e}"
                         )
-                        # Stop draining; if this step keeps failing, later steps shouldn't
-                        # be blocked behind it indefinitely — backlog overflow eviction
-                        # eventually frees them.
                         return
 
                     # Permanent (e.g. 4xx that's not 408/429): drop this step so it
@@ -485,7 +498,9 @@ class PrimeMonitor(Monitor):
                     )
                     continue
 
-                # Success: bookkeeping (item is already popped).
+                # Success: bookkeeping (item is already popped). Clear any stale
+                # cooldown — R2 is healthy.
+                self._retryable_cooldown_until = None
                 self._pending_sample_steps.discard(pending_step)
                 self.last_log_samples_step = pending_step
                 self.logger.debug(f"Uploaded samples for step {pending_step} in {time.perf_counter() - start:.2f}s")
@@ -684,6 +699,9 @@ class PrimeMonitor(Monitor):
         # to the right asyncio loop after fork.
         self._sample_upload_queue: deque[tuple[int, bytes]] = deque()
         self._sample_upload_lock: asyncio.Lock | None = None
+        # Set to a future monotonic timestamp after a retryable failure so queued
+        # drains don't all reattempt the same failing head back-to-back.
+        self._retryable_cooldown_until: float | None = None
         if hasattr(self, "_pending_sample_steps") and self._pending_sample_steps:
             self._pending_sample_steps.clear()
 

@@ -27,6 +27,7 @@ def _new_drain_monitor() -> PrimeMonitor:
     monitor._pending_sample_steps = set()
     monitor._sample_upload_queue = deque()
     monitor._sample_upload_lock = None
+    monitor._retryable_cooldown_until = None
     monitor.last_log_samples_step = -1
     return monitor
 
@@ -112,10 +113,16 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert rows[0]["sample_id"] == 0
 
 
-def test_sample_upload_failure_keeps_step_in_backlog_and_retries_next_tick():
+def test_sample_upload_failure_keeps_step_in_backlog_and_retries_next_tick(monkeypatch):
     monitor = _new_drain_monitor()
     attempts: list[int] = []
     fail_steps_once = {0}
+
+    fake_time = [1000.0]
+    monkeypatch.setattr(
+        "prime_rl.utils.monitor.prime.time.monotonic",
+        lambda: fake_time[0],
+    )
 
     async def upload_one(step: int, _bytes: bytes) -> None:
         attempts.append(step)
@@ -131,6 +138,9 @@ def test_sample_upload_failure_keeps_step_in_backlog_and_retries_next_tick():
         # First tick fails: step 0 stays at the head of the backlog.
         assert list(monitor._sample_upload_queue) == [(0, b"p0")]
         assert 0 in monitor._pending_sample_steps
+
+        # Advance past the retryable cooldown before the next tick.
+        fake_time[0] += 120.0
 
         # Second tick adds step 10 and drains both, oldest-first.
         monitor._pending_sample_steps.add(10)
@@ -181,6 +191,58 @@ def test_non_retryable_sample_upload_failure_does_not_block_queue():
     assert list(monitor._sample_upload_queue) == []
     assert monitor._pending_sample_steps == set()
     assert monitor.last_log_samples_step == 30
+
+
+def test_retryable_failure_arms_cooldown_to_prevent_back_to_back_retries(monkeypatch):
+    """When R2 is down, multiple log_samples calls would otherwise each consume a
+    full tenacity retry budget on the same failing head back-to-back. The cooldown
+    timestamp set on retryable failure makes subsequent drains short-circuit until
+    it elapses.
+    """
+    monitor = _new_drain_monitor()
+    attempts: list[int] = []
+
+    # Freeze monotonic time so we can move it deterministically.
+    fake_time = [1000.0]
+    monkeypatch.setattr(
+        "prime_rl.utils.monitor.prime.time.monotonic",
+        lambda: fake_time[0],
+    )
+
+    async def scenario() -> None:
+        async def fail(step: int, _bytes: bytes) -> None:
+            attempts.append(step)
+            raise httpx.ConnectError("R2 down")
+
+        monitor._upload_one_sample_step = fail  # type: ignore[method-assign]
+
+        # Three log_samples calls in rapid succession while R2 is "down".
+        for s in [0, 10, 20]:
+            monitor._pending_sample_steps.add(s)
+            await monitor._enqueue_and_drain_samples_async(s, f"p{s}".encode())
+
+        # Only step 0 should have been attempted; the cooldown must suppress
+        # retries for the drains triggered by steps 10 and 20.
+        assert attempts == [0], f"expected only step 0 attempted, got {attempts}"
+        assert [s for s, _ in monitor._sample_upload_queue] == [0, 10, 20]
+        assert monitor._retryable_cooldown_until is not None
+
+        # Advance time past the cooldown and switch to a successful uploader
+        # — next drain should resume processing.
+        fake_time[0] += 120.0
+
+        async def ok(step: int, _bytes: bytes) -> None:
+            attempts.append(step)
+
+        monitor._upload_one_sample_step = ok  # type: ignore[method-assign]
+        monitor._pending_sample_steps.add(30)
+        await monitor._enqueue_and_drain_samples_async(30, b"p30")
+
+        assert attempts == [0, 0, 10, 20, 30]
+        assert list(monitor._sample_upload_queue) == []
+        assert monitor._retryable_cooldown_until is None
+
+    asyncio.run(scenario())
 
 
 def test_in_flight_sample_upload_survives_concurrent_eviction():
