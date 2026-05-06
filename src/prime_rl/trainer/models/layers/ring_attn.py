@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# ruff: noqa: I001 — `prime_rl._compat` must run before `ring_flash_attn` imports below.
+import prime_rl._compat  # noqa: F401
+
 import torch
 import torch.distributed as dist
 from ring_flash_attn.utils import AllGatherComm, get_default_args
