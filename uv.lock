@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-29T21:40:32.078972044Z"
+exclude-newer = "2026-04-29T22:02:38.080794009Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -707,7 +707,7 @@ name = "deep-gemm"
 version = "2.3.0+d30fc36"
 source = { path = "tools/wheels/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl" }
 wheels = [
-    { filename = "deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl", hash = "sha256:e712edc7186d69776e2019d3826f9c2c74ad60c28e49bcc4c6911e2bb20c7f0e" },
+    { filename = "deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl", hash = "sha256:dfa8dbeff3d820193f4f94b75f12734c7d73650495e9e8bbdb276953316db6f9" },
 ]
 
 [[package]]
