@@ -1,0 +1,225 @@
+"""/v1/generate endpoint — accepts pre-tokenized inputs.
+
+Text-only tokens in, tokens out. The Renderer does all tokenization client-side.
+No Jinja rendering, no server-side chat template application.
+
+VLMs do not use this endpoint. The orchestrator routes VLMs to MITO
+(/v1/chat/completions) where vLLM handles image preprocessing and chat
+templating server-side.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+from collections.abc import Mapping
+from typing import Any
+from uuid import uuid4
+
+import numpy as np
+from fastapi import Request
+from pydantic import BaseModel
+from vllm.engine.protocol import EngineClient
+from vllm.inputs.engine import tokens_input
+from vllm.logger import init_logger
+from vllm.outputs import RequestOutput
+from vllm.sampling_params import SamplingParams
+
+logger = init_logger(__name__)
+
+
+# ── Request / Response schemas ───────────────────────────────────────
+
+
+class GenerateRequest(BaseModel):
+    model: str | None = None
+    prompt_token_ids: list[int]
+
+    # When unset, fill from max_model_len - prompt_len at request time so we
+    # match /v1/chat/completions behavior. The previous 4096 hard default
+    # silently truncated long completions on 8k+ context runs (e.g. hendrycks
+    # reasoning rollouts capped at 4096 tokens, making rendered rollouts look
+    # shorter than main's for the same model).
+    max_tokens: int | None = None
+    temperature: float = 1.0
+    top_p: float = 1.0
+    top_k: int = -1
+    min_p: float = 0.0
+    seed: int | None = None
+    n: int = 1
+    stop_token_ids: list[int] | None = None
+    repetition_penalty: float = 1.0
+    min_tokens: int = 0
+    prompt_logprobs: bool = False
+    priority: int = 0
+    # Prefix-cache invalidation salt. Must match main's
+    # /v1/chat/completions/tokens path: the orchestrator sets
+    # `extra_body["cache_salt"] = str(ckpt_step)` on every rollout
+    # request. vLLM's KV cache hashes include this salt, so when the
+    # step changes the cache misses and KV is recomputed with fresh
+    # weights. Without this, renderers path silently reuses stale KV
+    # from before the latest weight update and its logprobs drift from
+    # the trainer's forward pass (mismatch_kl grows 3x over training).
+    cache_salt: str | None = None
+
+
+class GenerateChoiceResponse(BaseModel):
+    index: int
+    token_ids: list[int]
+    logprobs: list[float]
+    finish_reason: str | None = None
+    routed_experts: dict | None = None
+
+
+class GenerateResponse(BaseModel):
+    id: str
+    model: str
+    prompt_token_ids: list[int]
+    choices: list[GenerateChoiceResponse]
+    usage: dict
+    prompt_logprobs: list[float | None] | None = None
+
+
+# ── Handler ──────────────────────────────────────────────────────────
+
+
+class OpenAIServingGenerate:
+    """Lightweight generate handler — tokens in, tokens out."""
+
+    def __init__(self, engine_client: EngineClient, chat_handler: Any | None = None):
+        self.engine_client = engine_client
+        self.chat_handler = chat_handler
+
+    async def generate(self, request: GenerateRequest, raw_request: Request) -> GenerateResponse | dict:
+        # Pre-rendered TokensInput shape (type="token") — avoids vLLM's
+        # "raw prompt" deprecation that targets plain lists/strings.
+        engine_prompt = tokens_input(request.prompt_token_ids, cache_salt=request.cache_salt)
+
+        # Match /v1/chat/completions: if the client didn't ask for a specific
+        # cap, let the model generate up to whatever room is left in context.
+        # vLLM v1 AsyncLLM exposes model_config directly (no async getter).
+        max_tokens = request.max_tokens
+        if max_tokens is None:
+            max_model_len = self.engine_client.model_config.max_model_len
+            max_tokens = max(1, max_model_len - len(request.prompt_token_ids))
+
+        sampling_params = SamplingParams(
+            max_tokens=max_tokens,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            top_k=request.top_k,
+            min_p=request.min_p,
+            seed=request.seed,
+            n=request.n,
+            stop_token_ids=request.stop_token_ids or [],
+            repetition_penalty=request.repetition_penalty,
+            min_tokens=request.min_tokens,
+            logprobs=1,
+            prompt_logprobs=1 if request.prompt_logprobs else None,
+            skip_special_tokens=False,
+        )
+
+        request_id = f"gen-{uuid4().hex[:16]}"
+        routed_experts_map: dict[int, dict] = {}
+        final_output: RequestOutput | None = None
+        data_parallel_rank = None
+        lora_request = None
+        trace_headers = None
+        if self.chat_handler is not None:
+            data_parallel_rank = self.chat_handler._get_data_parallel_rank(raw_request)
+            trace_headers = await self.chat_handler._get_trace_headers(raw_request.headers)
+            lora_request = self.chat_handler._maybe_get_adapters(request)
+
+        generator = self.engine_client.generate(
+            engine_prompt,
+            sampling_params,
+            request_id,
+            lora_request=lora_request,
+            trace_headers=trace_headers,
+            priority=request.priority,
+            data_parallel_rank=data_parallel_rank,
+        )
+
+        # Drain the generator without polling ``raw_request.is_disconnected``
+        # per decode step. That poll is one ASGI ``receive()`` await per
+        # yielded token — at ~2k concurrent rollouts each producing dozens of
+        # tokens, it was the single largest per-step overhead on the /generate
+        # path (vLLM's own chat completions handler uses the CancelledError
+        # pattern for the same reason). Starlette cancels this coroutine on
+        # client disconnect, so the except branch still catches it.
+        try:
+            async for output in generator:
+                for comp_output in output.outputs:
+                    if comp_output.routed_experts is not None:
+                        routed_experts_map[comp_output.index] = _encode_routed_experts(comp_output.routed_experts)
+                final_output = output
+        except asyncio.CancelledError:
+            await self.engine_client.abort(request_id)
+            raise
+
+        if final_output is None:
+            return {"error": "No output generated"}
+
+        choices = []
+        for output in final_output.outputs:
+            token_ids = list(output.token_ids)
+            logprobs_list: list[float] = []
+            if output.logprobs:
+                for i, lp_dict in enumerate(output.logprobs):
+                    if i < len(token_ids) and token_ids[i] in lp_dict:
+                        logprobs_list.append(lp_dict[token_ids[i]].logprob)
+                    else:
+                        logprobs_list.append(0.0)
+
+            choices.append(
+                GenerateChoiceResponse(
+                    index=output.index,
+                    token_ids=token_ids,
+                    logprobs=logprobs_list,
+                    finish_reason=output.finish_reason,
+                    routed_experts=routed_experts_map.get(output.index),
+                )
+            )
+
+        prompt_len = len(final_output.prompt_token_ids)
+        completion_len = sum(len(c.token_ids) for c in choices)
+        prompt_logprobs = _extract_prompt_logprobs(final_output.prompt_logprobs)
+
+        return GenerateResponse(
+            id=request_id,
+            model=request.model or "",
+            prompt_token_ids=list(final_output.prompt_token_ids),
+            choices=choices,
+            usage={
+                "prompt_tokens": prompt_len,
+                "completion_tokens": completion_len,
+                "total_tokens": prompt_len + completion_len,
+            },
+            prompt_logprobs=prompt_logprobs,
+        )
+
+
+def _encode_routed_experts(arr: np.ndarray) -> dict:
+    return {
+        "data": base64.b85encode(arr.tobytes()).decode("ascii"),
+        "shape": list(arr.shape),
+    }
+
+
+def _extract_prompt_logprobs(
+    prompt_logprobs: list[dict[int, Any] | None] | Mapping[int, Any] | None,
+) -> list[float | None] | None:
+    if prompt_logprobs is None:
+        return None
+    if isinstance(prompt_logprobs, Mapping):
+        prompt_logprobs = [prompt_logprobs]
+
+    extracted: list[float | None] = []
+    for token_logprobs in prompt_logprobs:
+        if not token_logprobs:
+            extracted.append(None)
+            continue
+        selected = next(iter(token_logprobs.values()))
+        logprob = selected.logprob if hasattr(selected, "logprob") else selected.get("logprob")
+        extracted.append(float(logprob) if logprob is not None else None)
+    return extracted

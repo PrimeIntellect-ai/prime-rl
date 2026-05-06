@@ -207,7 +207,7 @@ spec:
           timeoutSeconds: {{ .Values.inference.probes.startup.timeoutSeconds }}
         livenessProbe:
           httpGet:
-            path: /health
+            path: /liveness
             port: {{ .Values.inference.service.port }}
           periodSeconds: {{ .Values.inference.probes.liveness.periodSeconds }}
           failureThreshold: {{ .Values.inference.probes.liveness.failureThreshold }}

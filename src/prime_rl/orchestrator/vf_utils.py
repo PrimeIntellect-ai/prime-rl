@@ -59,6 +59,11 @@ def get_model_completion_len(output: vf.RolloutOutput) -> int:
     return sum(len(step["tokens"]["completion_ids"]) for step in output["trajectory"] if step.get("tokens"))
 
 
+def get_num_turns(output: vf.RolloutOutput) -> int:
+    """Number of turns (trajectory steps) in a rollout."""
+    return len(output["trajectory"])
+
+
 def get_tool_response_len(output: vf.RolloutOutput) -> int:
     """
     Total tool-response tokens consumed across the whole rollout.

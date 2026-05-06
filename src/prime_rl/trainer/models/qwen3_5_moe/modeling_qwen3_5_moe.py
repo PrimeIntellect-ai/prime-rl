@@ -18,6 +18,7 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
 from .converting_qwen3_5_moe import (
@@ -255,7 +256,11 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             conv1d_kernel_size=self.conv_kernel_size,
         )
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.LongTensor | None = None,
+    ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
 
         mixed_qkv = self.in_proj_qkv(hidden_states).transpose(1, 2)
@@ -263,15 +268,32 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
-        # Causal conv1d
+        # Causal conv1d — must reset at sequence boundaries for packed batches,
+        # otherwise the kernel-1 left pad leaks state across sequences.
         if self._causal_conv1d_fn is not None:
+            seq_idx = None
+            if cu_seqlens is not None:
+                seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+                seq_idx = torch.repeat_interleave(
+                    torch.arange(seg_lens.numel(), dtype=torch.int32, device=hidden_states.device),
+                    seg_lens,
+                ).unsqueeze(0)
             mixed_qkv = self._causal_conv1d_fn(
                 x=mixed_qkv,
                 weight=self.conv1d.weight.squeeze(1),
                 bias=self.conv1d.bias,
                 activation=self.activation,
-                seq_idx=None,
+                seq_idx=seq_idx,
             )
+        elif cu_seqlens is not None:
+            cu = cu_seqlens.tolist()
+            conv_outs = []
+            for i in range(len(cu) - 1):
+                s, e = cu[i], cu[i + 1]
+                if s == e:
+                    continue
+                conv_outs.append(self.conv1d(mixed_qkv[:, :, s:e])[:, :, : e - s])
+            mixed_qkv = F.silu(torch.cat(conv_outs, dim=-1))
         else:
             mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
 
@@ -313,6 +335,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
                 initial_state=None,
                 output_final_state=False,
                 use_qk_l2norm_in_kernel=True,
+                cu_seqlens=cu_seqlens,
             )
 
         # Gated RMSNorm
@@ -458,11 +481,19 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
             self._flash_attn_call = torch._dynamo.disable(self.func)
 
     def _compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
-        args = [q, k, v, cu_seqlens, cu_seqlens]
-        if self._flash_attn_version != 4:
-            args.extend([max_seqlen, max_seqlen])
+        """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
         kwargs: dict = {"causal": True}
-        out = self._flash_attn_call(*args, **kwargs)
+        sliding_window = getattr(self, "sliding_window", None)
+        if sliding_window is not None:
+            kwargs["window_size"] = (sliding_window - 1, 0)
+        if self._flash_attn_version == 4:
+            # FA4's flash_attn_varlen_func has qv as the 4th positional arg,
+            # so cu_seqlens must be passed as keyword args to avoid misalignment.
+            kwargs["cu_seqlens_q"] = cu_seqlens
+            kwargs["cu_seqlens_k"] = cu_seqlens
+            out = self._flash_attn_call(q, k, v, **kwargs)
+        else:
+            out = self._flash_attn_call(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
         if isinstance(out, tuple):
             out = out[0]
         return out
@@ -606,7 +637,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
 
         # Token mixer
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(hidden_states)
+            hidden_states = self.linear_attn(hidden_states, cu_seqlens=cu_seqlens)
         elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
@@ -733,16 +764,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            flat_position_ids = position_ids.view(-1)
-            seqlens = torch.cat(
-                [
-                    flat_position_ids[0:1],
-                    flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
-                    flat_position_ids[-1:] + 1,
-                ]
-            )
-            max_seqlen = seqlens.max().item()
-            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None

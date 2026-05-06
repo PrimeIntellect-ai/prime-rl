@@ -37,7 +37,7 @@ def _build_rollout(*, example_id: int, reward: float, task: str) -> dict:
         "reward": reward,
         "advantage": reward / 2,
         "metrics": {"accuracy": reward},
-        "timing": {"generation_ms": 12.5},
+        "timing": {"generation": {"start": 0.0, "end": 12.5, "duration": 12.5}},
     }
 
 

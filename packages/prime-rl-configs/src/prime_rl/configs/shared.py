@@ -132,6 +132,61 @@ class BaseModelConfig(BaseConfig):
     ] = None
 
 
+class RendererConfig(BaseConfig):
+    """Configures the client-side renderer (chat-template + response parsing).
+
+    Only consumed when ``orchestrator.use_renderer = true``. The renderer
+    owns both directions: render messages → token ids on the client, and
+    parse model output tokens → structured ``content`` / ``reasoning_content``
+    / ``tool_calls``.
+    """
+
+    name: Annotated[
+        str,
+        Field(
+            description=(
+                "Renderer to use for chat template tokenization. "
+                "Options: 'auto' (detect from tokenizer), 'qwen3', 'qwen3_vl', "
+                "'qwen3.5', 'glm5', 'glm4.5', 'minimax-m2', 'deepseek_v3', "
+                "'kimi_k2', 'kimi_k25', 'nemotron3', 'gpt_oss', 'default'."
+            ),
+        ),
+    ] = "auto"
+
+    tool_parser: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Name of a tool parser in renderers.parsers. Only consumed by "
+                "DefaultRenderer (model-specific renderers bake their own parsing "
+                "in). Options today: 'qwen3', 'qwen3.5', 'glm', 'deepseek_v3'."
+            ),
+        ),
+    ] = None
+
+    reasoning_parser: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Name of a reasoning parser in renderers.parsers. Only consumed "
+                "by DefaultRenderer. Options today: 'think'."
+            ),
+        ),
+    ] = None
+
+    pool_size: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description=(
+                "Number of renderer slots shared across concurrent rollouts. "
+                "None keeps the verifiers default (1). Bump for long multi-turn "
+                "prompts where client-side jinja tokenization serializes."
+            ),
+        ),
+    ] = None
+
+
 class ElasticConfig(BaseConfig):
     """Configures elastic inference pool with DNS-based service discovery.
 
@@ -183,6 +238,14 @@ class ClientConfig(BaseConfig):
             description="TCP connect timeout in seconds for inference API requests.",
         ),
     ] = 30.0
+
+    wait_for_ready_timeout: Annotated[
+        int,
+        Field(
+            description="Timeout in seconds for waiting for the inference pool to become ready at startup. "
+            "Applies to both the static health check and elastic DNS-based discovery. Defaults to 1800 seconds.",
+        ),
+    ] = 1800
 
     base_url: Annotated[
         list[str],
@@ -354,10 +417,31 @@ class WandbConfig(BaseConfig):
     # Shared configs (May be overwritten by WandbConfig from `rl.py`)
     project: Annotated[str, Field(description="The W&B project to log to.")] = "prime-rl"
 
+    entity: Annotated[
+        str | None,
+        Field(
+            description="The W&B entity to log to.",
+        ),
+    ] = None
+
     name: Annotated[
         str | None,
         Field(
             description="The W&B name to to use for logging.",
+        ),
+    ] = None
+
+    group: Annotated[
+        str | None,
+        Field(
+            description="The W&B group to use for logging.",
+        ),
+    ] = None
+
+    tags: Annotated[
+        list[str] | None,
+        Field(
+            description="The W&B tags to attach to the run.",
         ),
     ] = None
 

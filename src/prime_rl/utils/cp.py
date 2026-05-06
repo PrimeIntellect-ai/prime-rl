@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+# ruff: noqa: I001 — `prime_rl._compat` must run before `ring_flash_attn` imports below.
+import prime_rl._compat  # noqa: F401
+
 import torch
 import torch.distributed as dist
 import torch.distributed.nn as dist_nn
 import torch.nn as nn
 from ring_flash_attn import update_ring_flash_attn_params
+
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 
 def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
@@ -139,15 +144,7 @@ def get_padding_logit_from_prev_cp_rank(
 
 
 def _get_cu_seqlens_for_cp(position_ids: torch.Tensor) -> torch.Tensor:
-    flat_position_ids = position_ids.view(-1)
-    seqlens = torch.cat(
-        [
-            flat_position_ids[0:1],
-            flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
-            flat_position_ids[-1:] + 1,
-        ]
-    )
-    cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+    cu_seqlens, _ = get_cu_seqlens_from_position_ids(position_ids)
     return cu_seqlens
 
 

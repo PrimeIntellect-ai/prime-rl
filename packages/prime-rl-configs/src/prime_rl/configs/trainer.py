@@ -139,7 +139,13 @@ class LoRAConfig(BaseConfig):
     target_modules: Annotated[
         list[str],
         Field(
-            description="Module names or regex patterns for modules to apply LoRA to. Simple names (e.g., 'q_proj') match any component in the module path. Regex patterns match anywhere in the name.",
+            description=(
+                "Module names or regex patterns for modules to apply LoRA to. Simple names (e.g., 'q_proj') "
+                "match any component in the module path. Regex patterns match anywhere in the name. "
+                "Names unknown to the current model are silently ignored, so defaults cover multiple architectures. "
+                "NemotronH note: 'experts' matches NonGatedGroupedExperts inside LatentMoE; 'fc1_latent_proj' and "
+                "'fc2_latent_proj' adapt the latent up/down projections. Add 'in_proj'/'out_proj' to also LoRA Mamba."
+            ),
         ),
     ] = [
         "q_proj",
@@ -150,6 +156,8 @@ class LoRAConfig(BaseConfig):
         "up_proj",
         "down_proj",
         "experts",
+        "fc1_latent_proj",
+        "fc2_latent_proj",
     ]
 
     modules_to_save: Annotated[
@@ -172,6 +180,13 @@ class DebugModelConfig(BaseConfig):
         bool,
         Field(
             description="Whether to random initialize the model.",
+        ),
+    ] = False
+
+    force_balanced_routing: Annotated[
+        bool,
+        Field(
+            description="If True, override MoE token-choice routing with a round-robin assignment so every expert receives an equal share of tokens. Intended for fake-data smoke tests where untrained routing would otherwise produce severe expert imbalance and OOM. Gating scores are still gathered from the override indices so the forward pass stays consistent.",
         ),
     ] = False
 

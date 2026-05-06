@@ -148,7 +148,10 @@ class Scheduler:
 
     @staticmethod
     def _client_identity(c: vf.ClientConfig) -> tuple[str, str | None]:
-        return (c.api_base_url, c.extra_headers.get("X-data-parallel-rank"))
+        return (
+            c.api_base_url,
+            c.extra_headers.get("X-data-parallel-rank"),
+        )
 
     async def _select_least_loaded_client(self) -> vf.ClientConfig:
         """Select the client with the fewest in-flight tasks.

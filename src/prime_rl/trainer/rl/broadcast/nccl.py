@@ -198,43 +198,61 @@ class NCCLWeightBroadcast(WeightBroadcast):
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
-        notified_runs: list[tuple[int, Path]] = []
+        # `_compute_notified_runs` is a pure function of SPMD-replicated state on
+        # multi_run_manager, so every trainer rank derives the same list. Only
+        # the master touches the filesystem to notify the orchestrator, but all
+        # ranks must wait on NCCL_READY before entering the broadcast path:
+        # the broadcast preparation (DTensor resolution, quantization) enqueues
+        # collectives on non-master ranks, and if those ranks start prep before
+        # the orchestrator has paused inference, the collectives sit unmatched
+        # until NCCL's watchdog kills the process after 10 min.
+        notified_runs = self._compute_notified_runs()
         if self.world.is_master:
-            notified_runs = self._notify_orchestrator()
-            # Wait for inference workers to signal readiness before starting NCCL broadcast
-            self._wait_for_nccl_ready(notified_runs)
+            self._notify_orchestrator(notified_runs)
+        self._wait_for_nccl_ready(notified_runs)
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
-    def _notify_orchestrator(self) -> list[tuple[int, Path]]:
-        """Notify the orchestrator to initiate weight broadcast.
+    def _compute_notified_runs(self) -> list[tuple[int, Path]]:
+        """Derive the list of (run_idx, save_dir) pairs that need broadcasting.
 
-        Returns:
-            List of (run_idx, save_dir) tuples for runs that were notified.
+        Pure function of `multi_run_manager` state, which is replicated across
+        trainer ranks (SPMD). Returns the same list on every rank so master and
+        non-master ranks agree on which NCCL_READY markers to wait for.
         """
         notified_runs: list[tuple[int, Path]] = []
-        if self.world.is_master:
-            for idx in self.multi_run_manager.used_idxs:
-                if not self.multi_run_manager.ready_to_update[idx]:
-                    continue
-
-                try:
-                    save_dir = get_step_path(
-                        get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
-                        self.multi_run_manager.progress[idx].step,
-                    )
-                    save_dir.mkdir(parents=True, exist_ok=True)
-
-                    stable_file = save_dir / "STABLE"
-                    stable_file.touch()
-                    notified_runs.append((idx, save_dir))
-                except FileNotFoundError:
-                    self.logger.warning(f"Run {idx} is deleted, skipping")
-                except Exception as e:
-                    self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
-                finally:
-                    self.multi_run_manager.ready_to_update[idx] = False
+        for idx in self.multi_run_manager.used_idxs:
+            if not self.multi_run_manager.ready_to_update[idx]:
+                continue
+            try:
+                save_dir = get_step_path(
+                    get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
+                    self.multi_run_manager.progress[idx].step,
+                )
+                notified_runs.append((idx, save_dir))
+            except FileNotFoundError:
+                self.logger.warning(f"Run {idx} is deleted, skipping")
+            except Exception as e:
+                self.logger.error(f"Error resolving broadcast dir for run {idx}: {e}")
         return notified_runs
+
+    def _notify_orchestrator(self, notified_runs: list[tuple[int, Path]]) -> None:
+        """Create STABLE markers for each notified run and clear their ready flags.
+
+        Master-only side effects (filesystem writes + state mutation). Called
+        after `_compute_notified_runs`; non-master ranks skip this entirely.
+        """
+        for idx, save_dir in notified_runs:
+            try:
+                save_dir.mkdir(parents=True, exist_ok=True)
+                stable_file = save_dir / "STABLE"
+                stable_file.touch()
+            except FileNotFoundError:
+                self.logger.warning(f"Run {idx} is deleted, skipping")
+            except Exception as e:
+                self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
+            finally:
+                self.multi_run_manager.ready_to_update[idx] = False
 
     def _wait_for_nccl_ready(self, notified_runs: list[tuple[int, Path]]):
         """Wait for inference workers to signal they are ready to receive NCCL broadcast."""
