@@ -1,15 +1,33 @@
+import asyncio
 import io
 import json
+from collections import deque
 from unittest.mock import Mock
 
+import httpx
 import pyarrow.parquet as pq
 
-from prime_rl.utils.monitor.prime import PrimeMonitor
+from prime_rl.utils.monitor.prime import (
+    _MAX_PENDING_SAMPLE_UPLOADS,
+    PrimeMonitor,
+)
 
 
 def _new_monitor() -> PrimeMonitor:
     monitor = PrimeMonitor.__new__(PrimeMonitor)
     monitor._closed = True
+    return monitor
+
+
+def _new_drain_monitor() -> PrimeMonitor:
+    """Monitor with the minimum state needed for sample-upload drain tests."""
+    monitor = _new_monitor()
+    monitor.logger = Mock()
+    monitor.run_id = "run-test"
+    monitor._pending_sample_steps = set()
+    monitor._sample_upload_queue = deque()
+    monitor._sample_upload_lock = None
+    monitor.last_log_samples_step = -1
     return monitor
 
 
@@ -92,6 +110,94 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert len(rows) == 1
     assert rows[0]["problem_id"] == 1
     assert rows[0]["sample_id"] == 0
+
+
+def test_sample_upload_failure_keeps_step_in_backlog_and_retries_next_tick():
+    monitor = _new_drain_monitor()
+    attempts: list[int] = []
+    fail_steps_once = {0}
+
+    async def upload_one(step: int, _bytes: bytes) -> None:
+        attempts.append(step)
+        if step in fail_steps_once:
+            fail_steps_once.discard(step)
+            raise httpx.ConnectError("transient")
+
+    monitor._upload_one_sample_step = upload_one  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        monitor._pending_sample_steps.add(0)
+        await monitor._enqueue_and_drain_samples_async(0, b"p0")
+        # First tick fails: step 0 stays at the head of the backlog.
+        assert list(monitor._sample_upload_queue) == [(0, b"p0")]
+        assert 0 in monitor._pending_sample_steps
+
+        # Second tick adds step 10 and drains both, oldest-first.
+        monitor._pending_sample_steps.add(10)
+        await monitor._enqueue_and_drain_samples_async(10, b"p10")
+        assert list(monitor._sample_upload_queue) == []
+        assert monitor._pending_sample_steps == set()
+        assert monitor.last_log_samples_step == 10
+
+    asyncio.run(scenario())
+    # Step 0: failed, retried, succeeded; then step 10 succeeded.
+    assert attempts == [0, 0, 10]
+
+
+def test_in_flight_sample_upload_survives_concurrent_eviction():
+    """Regression test: backlog eviction runs without the upload lock, so a
+    concurrent log_samples() call could previously popleft the head that the
+    drain coroutine was peeking at and currently uploading. The fix pops the
+    in-flight item out of the queue into a local variable before awaiting,
+    making it invisible to eviction.
+    """
+    monitor = _new_drain_monitor()
+    completed: list[int] = []
+
+    async def scenario() -> None:
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def slow_upload(step: int, _bytes: bytes) -> None:
+            if not started.is_set():
+                started.set()
+            await finish.wait()
+            completed.append(step)
+
+        monitor._upload_one_sample_step = slow_upload  # type: ignore[method-assign]
+
+        # Pre-load step 10; it will become the in-flight item.
+        monitor._pending_sample_steps.add(10)
+        monitor._sample_upload_queue.append((10, b"p10"))
+
+        # Drain coroutine A: enqueues step 20, acquires lock, popleft's step 10
+        # into a local variable, awaits.
+        monitor._pending_sample_steps.add(20)
+        a = asyncio.create_task(monitor._enqueue_and_drain_samples_async(20, b"p20"))
+        await started.wait()
+        assert list(monitor._sample_upload_queue) == [(20, b"p20")]
+
+        # Five concurrent log_samples calls. Each appends + evicts outside the lock.
+        # Queue grows to size 6 on the last call; eviction popleft's step 20.
+        # Step 10 is in A's local var, so eviction can never see it.
+        extra_steps = [30, 40, 50, 60, 70]
+        for s in extra_steps:
+            monitor._pending_sample_steps.add(s)
+        bs = [asyncio.create_task(monitor._enqueue_and_drain_samples_async(s, f"p{s}".encode())) for s in extra_steps]
+        await asyncio.sleep(0.05)
+        queue_before_release = [s for s, _ in monitor._sample_upload_queue]
+        assert queue_before_release == [30, 40, 50, 60, 70]
+
+        finish.set()
+        await asyncio.gather(a, *bs)
+
+    asyncio.run(scenario())
+    # The in-flight step survived, the correctly-oldest queued step was evicted.
+    assert 10 in completed
+    assert 20 not in completed
+    for s in [30, 40, 50, 60, 70]:
+        assert s in completed
+    assert _MAX_PENDING_SAMPLE_UPLOADS == 5
 
 
 def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
