@@ -144,7 +144,7 @@ def rl_local(config: RLConfig):
 
     # Build shared W&B env vars for subprocesses
     wandb_shared_env: dict[str, str] = {}
-    if config.wandb and config.wandb.shared:
+    if config.wandb and config.wandb.shared and os.environ.get("WANDB_MODE", "").lower() != "offline":
         wandb_shared_env["WANDB_SHARED_MODE"] = "1"
         wandb_shared_env["WANDB_SHARED_RUN_ID"] = os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex)
 

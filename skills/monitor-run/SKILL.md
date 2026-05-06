@@ -75,6 +75,8 @@ Once you have the output directory, the resolved configs are at `{output_dir}/co
 
 The launcher writes resolved configs as TOML files to `{output_dir}/configs/`. Read `rl.toml` to get the full picture of the experiment (model, envs, hyperparameters, wandb, deployment).
 
+For fork PR CI runs, GitHub Actions may not provide `WANDB_API_KEY`. The workflows force `WANDB_MODE=offline` in that case. If you are debugging a fork CI failure, treat the environment variable as the source of truth even when the resolved TOML still shows `wandb.offline = false`.
+
 ### Logs
 
 Logs are usually the most informative place to monitor a run.
