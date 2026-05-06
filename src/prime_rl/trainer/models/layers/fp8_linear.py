@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import re
 
-import deep_gemm
+try:
+    import deep_gemm
+except ImportError:
+    deep_gemm = None  # CPU-only environments don't ship deep_gemm; FP8 paths
+    # are GPU-only at runtime, so leaving the symbol None is safe — only the
+    # autograd Function bodies below actually call into it.
 import torch
 from torch import nn
 
