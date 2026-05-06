@@ -7,7 +7,11 @@
 # ensures dlsym finds it before the stub's own exports.
 import ctypes as _ctypes
 
-_ctypes.CDLL("libcudart.so", mode=_ctypes.RTLD_GLOBAL)
+try:
+    _ctypes.CDLL("libcudart.so", mode=_ctypes.RTLD_GLOBAL)
+except Exception:
+    # This is expected on CPU-only machines
+    pass
 
 import tilelang
 import torch
