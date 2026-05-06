@@ -2,15 +2,17 @@ import asyncio
 from dataclasses import dataclass
 
 import verifiers as vf
-from aiolimiter import AsyncLimiter
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.group import Group, setup_group
 from prime_rl.orchestrator.scheduler import Kind, Scheduler, Task
 from prime_rl.utils.logger import get_logger
 
 
 @dataclass
-class Group:
+class GroupOutput:
+    """One produced + scored group, queued from engine to batcher."""
+
     example: dict
     env_id: str
     kind: Kind
@@ -29,15 +31,13 @@ class Inflight:
 @dataclass
 class EngineInputs:
     """Pre-built inputs for the RolloutEngine. `setup_rollout_engine` produces
-    this from config; tests construct it directly with stub scheduler + env."""
+    this from config; tests construct it directly with stub scheduler + group."""
 
     scheduler: Scheduler
-    out_q: asyncio.Queue[Group]
-    client: vf.ClientConfig
-    model: str
+    out_q: asyncio.Queue[GroupOutput]
+    group: Group
     max_off_policy: int
     concurrency: int
-    tasks_per_minute: int | None = None
     max_rollout_time_seconds: float | None = None
     lora_name: str | None = None
 
@@ -46,17 +46,13 @@ class RolloutEngine:
     def __init__(self, inputs: EngineInputs):
         self.scheduler = inputs.scheduler
         self.out_q = inputs.out_q
-        self.client = inputs.client
-        self.model = inputs.model
+        self.group = inputs.group
         # When set, swap rollouts to the LoRA adapter name on the first
         # successful weight update (step 0 rollouts always use the base model
         # since no adapter is loaded yet).
         self.lora_name = inputs.lora_name
         self.max_off_policy = inputs.max_off_policy
         self.concurrency = inputs.concurrency
-        self.rate_limiter = (
-            AsyncLimiter(max_rate=inputs.tasks_per_minute, time_period=60) if inputs.tasks_per_minute else None
-        )
         self.max_rollout_time_seconds = inputs.max_rollout_time_seconds
         self.policy_version = 0
         self._inflight: list[Inflight] = []
@@ -81,7 +77,7 @@ class RolloutEngine:
     ) -> None:
         try:
             version = self.policy_version  # snapshot; current version may advance during await
-            gather = asyncio.gather(*(self._rollout(task, example) for _ in range(task.rollouts_per_group)))
+            gather = asyncio.ensure_future(self.group.run(task, example))
             inflight = Inflight(version=version, gather=gather, kind=task.kind)
             self._inflight.append(inflight)
 
@@ -108,7 +104,7 @@ class RolloutEngine:
                 # the partial epoch; otherwise it would wait forever.
                 if task.kind == "eval":
                     await self.out_q.put(
-                        Group(
+                        GroupOutput(
                             example=example,
                             env_id=task.id,
                             kind="eval",
@@ -126,7 +122,7 @@ class RolloutEngine:
                 return
 
             await self.out_q.put(
-                Group(
+                item=GroupOutput(
                     example=example,
                     env_id=task.id,
                     kind=task.kind,
@@ -138,25 +134,14 @@ class RolloutEngine:
         finally:
             sem.release()
 
-    async def _rollout(self, task: Task, example: dict) -> vf.RolloutOutput:
-        if self.rate_limiter is not None:
-            await self.rate_limiter.acquire()
-        return await task.env.run_rollout(
-            vf.RolloutInput(**example),
-            client=self.client,
-            model=self.model,
-            sampling_args=task.sampling_args,
-            state_columns=["trajectory", "sampling_args"],
-        )
-
     async def on_new_version(self, step: int) -> None:
         self.policy_version = step
         # First successful adapter load: switch rollout target from the base
         # model to the LoRA adapter name so future rollouts hit the trained
         # adapter on vLLM.
-        if self.lora_name and self.model != self.lora_name:
-            self.logger.info(f"Switching rollouts to LoRA adapter '{self.lora_name}' (was '{self.model}')")
-            self.model = self.lora_name
+        if self.lora_name and self.group.model != self.lora_name:
+            self.logger.info(f"Switching rollouts to LoRA adapter '{self.lora_name}' (was '{self.group.model}')")
+            self.group.model = self.lora_name
         for inflight in list(self._inflight):
             if inflight.kind == "eval":
                 continue  # never cancel eval; it's tagged with its trigger step
@@ -175,7 +160,7 @@ def setup_rollout_engine(
     cfg: OrchestratorConfig,
     *,
     scheduler: Scheduler,
-    out_q: asyncio.Queue[Group],
+    out_q: asyncio.Queue[GroupOutput],
     client: vf.ClientConfig,
     concurrency: int,
     lora_name: str | None = None,
@@ -187,11 +172,9 @@ def setup_rollout_engine(
         EngineInputs(
             scheduler=scheduler,
             out_q=out_q,
-            client=client,
-            model=cfg.model.name,
+            group=setup_group(cfg, client=client),
             max_off_policy=cfg.max_off_policy_steps,
             concurrency=concurrency,
-            tasks_per_minute=cfg.tasks_per_minute,
             max_rollout_time_seconds=(cfg.max_rollout_time_minutes * 60.0) if cfg.max_rollout_time_minutes else None,
             lora_name=lora_name,
         )

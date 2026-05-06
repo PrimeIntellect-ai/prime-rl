@@ -13,7 +13,7 @@ from collections import defaultdict
 from typing import Any, Literal, TypeAlias
 
 from prime_rl.configs.orchestrator import BufferConfig
-from prime_rl.orchestrator.engine import Group
+from prime_rl.orchestrator.engine import GroupOutput
 from prime_rl.utils.logger import get_logger
 
 Pool: TypeAlias = Literal["easy", "normal", "hard"]
@@ -62,7 +62,7 @@ class DifficultyBuffer:
             return False
         return self.example_hash(env_id, example) in self._evicted[env_id]
 
-    def observe(self, group: Group) -> Pool:
+    def observe(self, group: GroupOutput) -> Pool:
         """Classify a completed train group and update pool state. Returns the
         assigned pool for metric aggregation."""
         if not group.rollouts:

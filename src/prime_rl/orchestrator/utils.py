@@ -12,7 +12,7 @@ import verifiers as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import CkptManager
-from prime_rl.orchestrator.engine import Group, RolloutEngine
+from prime_rl.orchestrator.engine import GroupOutput, RolloutEngine
 from prime_rl.orchestrator.inference_admin import InferenceAdmin
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -52,7 +52,7 @@ def resolve_resume_step(cfg: OrchestratorConfig, ckpt_manager: CkptManager | Non
     return latest
 
 
-def make_groups_queue(cfg: OrchestratorConfig, scheduler: Scheduler) -> tuple[asyncio.Queue[Group], int]:
+def make_groups_queue(cfg: OrchestratorConfig, scheduler: Scheduler) -> tuple[asyncio.Queue[GroupOutput], int]:
     """Engine concurrency cap + bounded queue between engine and batcher.
     Concurrency is in *groups*; max_inflight_rollouts is the legacy per-rollout
     figure, so divide. Queue is sized so the batcher's async-level barrier

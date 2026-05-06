@@ -5,14 +5,13 @@ _rollout_timing) directly, plus the routing/lifecycle methods of
 TrainBatcher (_handle_eval, _flush_eval, _maybe_save_ckpt, _wait_barrier).
 
 The full run() loop is exercised by the reverse-text smoke test, not here —
-it would need stubs for everything (advantage, post-processor, sender,
-buffer) and the value/cost ratio is poor.
+it would need stubs for everything (post-processor, sender, buffer) and the
+value/cost ratio is poor.
 """
 
 import asyncio
 from dataclasses import dataclass
 
-from prime_rl.configs.orchestrator import DefaultAdvantageConfig
 from prime_rl.orchestrator.batcher import (
     BatcherInputs,
     StepStrategy,
@@ -21,7 +20,7 @@ from prime_rl.orchestrator.batcher import (
     _rollout_metrics,
     _rollout_timing,
 )
-from prime_rl.orchestrator.engine import Group
+from prime_rl.orchestrator.engine import GroupOutput
 
 
 def _run(coro):
@@ -140,8 +139,8 @@ def test_rollout_metrics_emits_timing_means_when_present():
 # --- _eval_metrics -----------------------------------------------------------
 
 
-def _eval_group(rewards: list[float], env_id: str = "env_a") -> Group:
-    return Group(
+def _eval_group(rewards: list[float], env_id: str = "env_a") -> GroupOutput:
+    return GroupOutput(
         example={"example_id": 0},
         env_id=env_id,
         kind="eval",
@@ -155,7 +154,7 @@ def test_eval_metrics_empty_when_all_groups_empty():
     """All groups timed out (no rollouts) — return empty so the batcher
     can short-circuit logging."""
     groups = [
-        Group(example={}, env_id="e", kind="eval", rollouts=[], policy_version=0, eval_step=0),
+        GroupOutput(example={}, env_id="e", kind="eval", rollouts=[], policy_version=0, eval_step=0),
     ]
     assert _eval_metrics("eval", groups) == {}
 
@@ -237,7 +236,6 @@ def _build(
             post=_StubPostProcessor(),  # type: ignore[arg-type]
             policy=policy or _StubPolicy(),  # type: ignore[arg-type]
             strategy=StepStrategy(size=1),
-            advantage_cfg=DefaultAdvantageConfig(type="default"),
             filters=[],
             max_steps=max_steps,
             max_training_batches_ahead=max_training_batches_ahead,

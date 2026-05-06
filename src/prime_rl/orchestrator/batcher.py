@@ -4,21 +4,18 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-import torch
 import verifiers as vf
 
 from prime_rl.configs.orchestrator import (
-    AdvantageConfig,
     BatchingConfig,
     OrchestratorConfig,
     SamplesBatching,
     StepBatching,
     TokensBatching,
 )
-from prime_rl.orchestrator.advantage import AdvantageInputs, setup_advantage_fn
 from prime_rl.orchestrator.buffer import DifficultyBuffer
 from prime_rl.orchestrator.ckpt import CkptManager, OrchState
-from prime_rl.orchestrator.engine import Group
+from prime_rl.orchestrator.engine import GroupOutput
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters, setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.trajectories import interleave_rollout, pretokenize_rollout_trajectory
@@ -50,23 +47,6 @@ class EvalCounter(Protocol):
     last_eval_step: int
 
     def expected_eval_count(self, step: int) -> int | None: ...
-
-
-class Advantage:
-    """Scores groups in place: computes advantages and attaches them to rollouts.
-    Dispatches between DefaultAdvantageConfig (built-in GRPO + optional length
-    shaping) and CustomAdvantageConfig (user-imported function) via
-    setup_advantage_fn."""
-
-    def __init__(self, cfg: AdvantageConfig):
-        self.advantage_fn = setup_advantage_fn(cfg)
-
-    def score(self, group: Group) -> None:
-        rewards = torch.tensor([[r.get("reward", 0.0) for r in group.rollouts]], dtype=torch.float32)
-        lens = torch.tensor([[get_completion_len(r) for r in group.rollouts]], dtype=torch.int64)
-        out = self.advantage_fn(AdvantageInputs(rewards=rewards, completion_lengths=lens))
-        for r, a in zip(group.rollouts, out.advantages[0].tolist()):
-            r["advantage"] = a
 
 
 def _split(rollouts: list[vf.RolloutOutput]) -> tuple[list[vf.RolloutOutput], list[vf.RolloutOutput]]:
@@ -234,7 +214,7 @@ def _rollout_metrics(prefix: str, rollouts: list[vf.RolloutOutput]) -> dict:
     return m
 
 
-def _eval_metrics(prefix: str, groups: list[Group]) -> dict:
+def _eval_metrics(prefix: str, groups: list[GroupOutput]) -> dict:
     """Eval-only per-example stats: pass_at_k (any rollout passed), avg_at_k
     (mean of per-example mean rewards), n_examples."""
     non_empty = [g for g in groups if g.rollouts]
@@ -353,11 +333,10 @@ class BatcherInputs:
     """Pre-built inputs for the TrainBatcher. `setup_batcher` produces this
     from config; tests construct it directly with stub policy/eval/post."""
 
-    in_q: asyncio.Queue[Group]
+    in_q: asyncio.Queue[GroupOutput]
     post: "PostProcessor"
     policy: PolicyState
     strategy: BatchingStrategy
-    advantage_cfg: AdvantageConfig
     filters: list[RolloutFilter] = field(default_factory=list)
     max_steps: int | None = None
     max_training_batches_ahead: int = 1
@@ -371,15 +350,15 @@ class BatcherInputs:
 
 
 class TrainBatcher:
-    """Wires the stages: score (Advantage) → annotate (filters) → accumulate
-    (BatchingStrategy) → post-process (PostProcessor). Also routes eval groups
-    into an eval aggregator keyed by the eval trigger step."""
+    """Wires the stages: annotate (filters) → accumulate (BatchingStrategy) →
+    post-process (PostProcessor). Rollouts arrive pre-scored by the engine's
+    Group, so this stage no longer computes advantages. Also routes
+    eval groups into an eval aggregator keyed by the eval trigger step."""
 
     def __init__(self, inputs: BatcherInputs):
         self.in_q = inputs.in_q
         self.policy = inputs.policy
         self.strategy = inputs.strategy
-        self.advantage = Advantage(inputs.advantage_cfg)
         self.filters = inputs.filters
         self.post = inputs.post
         self.max_steps = inputs.max_steps
@@ -387,7 +366,7 @@ class TrainBatcher:
         self.strict = inputs.strict_async_level
         self.step = 0
         self.eval_counter = inputs.eval_counter
-        self._eval_buf: dict[int, list[Group]] = defaultdict(list)
+        self._eval_buf: dict[int, list[GroupOutput]] = defaultdict(list)
         self.ckpt_manager = inputs.ckpt_manager
         self.ckpt_interval = inputs.ckpt_interval
         self.buffer = inputs.buffer
@@ -425,7 +404,7 @@ class TrainBatcher:
                 next_warn = elapsed + 60.0
             await asyncio.sleep(0.1)
 
-    def _handle_eval(self, group: Group) -> None:
+    def _handle_eval(self, group: GroupOutput) -> None:
         if group.eval_step is None or self.eval_counter is None:
             return
         # Annotate (never drop) so we can report per-filter rates on eval. The
@@ -439,8 +418,8 @@ class TrainBatcher:
             return
         self._flush_eval(group.eval_step, self._eval_buf.pop(group.eval_step))
 
-    def _flush_eval(self, step: int, groups: list[Group]) -> None:
-        per_env: dict[str, list[Group]] = defaultdict(list)
+    def _flush_eval(self, step: int, groups: list[GroupOutput]) -> None:
+        per_env: dict[str, list[GroupOutput]] = defaultdict(list)
         for g in groups:
             per_env[g.env_id].append(g)
         metrics: dict = {}
@@ -491,7 +470,6 @@ class TrainBatcher:
                 continue
             if self.buffer is not None:
                 self.buffer.observe(group)
-            self.advantage.score(group)
             apply_filters(self.filters, group.rollouts)
             self.strategy.add(group.rollouts)
             while self.strategy.has_batch():
@@ -515,7 +493,7 @@ class TrainBatcher:
 def setup_batcher(
     cfg: OrchestratorConfig,
     *,
-    in_q: asyncio.Queue[Group],
+    in_q: asyncio.Queue[GroupOutput],
     tokenizer: Any,
     policy: PolicyState,
     eval_counter: EvalCounter | None = None,
@@ -537,7 +515,6 @@ def setup_batcher(
             post=post,
             policy=policy,
             strategy=strategy,
-            advantage_cfg=cfg.advantage,
             filters=filters,
             max_steps=cfg.max_steps,
             max_training_batches_ahead=cfg.max_async_level,
