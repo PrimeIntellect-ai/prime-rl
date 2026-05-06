@@ -102,8 +102,12 @@ def _efficiency_shaping(
     correct_costs = costs * correct_mask
     mean_correct_cost = correct_costs.sum(dim=1, keepdim=True) / num_correct.clamp(min=1)
 
-    # Bounded efficiency bonus: [0, 1], positive for below-average cost, zero for above
-    bonus = (1 - costs / mean_correct_cost).clamp(0, 1)
+    # Bounded efficiency bonus: [0, 1], positive for below-average cost, zero for above.
+    # When mean_correct_cost is 0 (e.g. tool-only shaping with no harness metric, or
+    # all-zero turn counts), no rollouts can be differentiated — fall back to no bonus.
+    has_cost = mean_correct_cost > 0
+    safe_mean = torch.where(has_cost, mean_correct_cost, torch.ones_like(mean_correct_cost))
+    bonus = (1 - costs / safe_mean).clamp(0, 1) * has_cost
 
     # Shape rewards: correct rollouts amplified by up to 2x, incorrect untouched
     shaped_rewards = rewards * (1 + bonus * correct_mask)

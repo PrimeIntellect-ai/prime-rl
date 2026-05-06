@@ -234,6 +234,23 @@ def test_efficiency_tokens_with_tool_response_weight():
     assert torch.allclose(result_tool_only.advantages.mean(dim=1), torch.zeros(1), atol=1e-6)
 
 
+def test_efficiency_zero_costs_falls_back_to_plain_grpo():
+    """When all effective costs are zero, shaping is a no-op (no NaNs from div-by-zero)."""
+    # tool-only weights but no harness metric → all costs == 0
+    rollouts = [
+        [
+            {"reward": 1.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
+            {"reward": 1.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
+            {"reward": 0.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
+        ]
+    ]
+    inputs = AdvantageInputs(rollouts=rollouts)
+    result = default_advantage_fn(inputs, length_penalty="tokens", completion_weight=0.0, tool_response_weight=1.0)
+    expected = default_advantage_fn(inputs)  # plain GRPO
+    assert not torch.isnan(result.advantages).any()
+    assert torch.allclose(result.advantages, expected.advantages, atol=1e-6)
+
+
 def test_efficiency_tokens_missing_tool_response_metric_is_zero():
     """Rollouts without the harness metric contribute 0 tool-response tokens (no-op)."""
     inputs = _make_inputs(
